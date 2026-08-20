@@ -1,0 +1,38 @@
+name: Feature request
+description: Propose a change to the platform, tooling, or documentation.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user or operator problem should the project solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed outcome
+      description: Describe observable behavior without assuming an implementation.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Documentation and community
+        - Infrastructure
+        - Host configuration
+        - Control plane
+        - Provisioner
+        - Tenant runtime
+        - Operations and security
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives and tradeoffs
+      description: What other approaches should maintainers consider?

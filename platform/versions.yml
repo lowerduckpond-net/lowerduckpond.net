@@ -1,0 +1,5 @@
+---
+platform_versions:
+  caddy: "2.11.4"
+  host_os: "ubuntu-26.04"
+  podman_package: "5.7.0+ds2-3build1"

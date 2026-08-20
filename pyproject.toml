@@ -1,0 +1,73 @@
+[project]
+name = "lowerduckpond-development"
+version = "0.0.0"
+description = "Development environment for the Lower Duck Pond hosting platform"
+requires-python = ">=3.14,<3.15"
+dependencies = []
+
+[dependency-groups]
+dev = [
+  "ansible-core>=2.21.2,<2.22",
+  "ansible-lint>=26.8.0,<27",
+  "httpx2>=2.12.0,<3",
+  "mypy>=1.18.0,<2",
+  "pre-commit>=4.6.2,<5",
+  "pytest>=9.0.0,<10",
+  "ruff>=0.16.3,<0.17",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = [
+  "services/control-plane",
+  "services/provisioner",
+]
+
+[tool.pytest.ini_options]
+addopts = ["-ra", "--strict-config", "--strict-markers"]
+testpaths = [
+  "services/control-plane/tests",
+  "services/provisioner/tests",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+select = [
+  "A",
+  "ANN",
+  "B",
+  "C4",
+  "E",
+  "F",
+  "I",
+  "N",
+  "PERF",
+  "PIE",
+  "PL",
+  "PTH",
+  "RET",
+  "RUF",
+  "S",
+  "SIM",
+  "UP",
+  "W",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"**/tests/**" = ["S101"]
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+warn_unreachable = true
+files = [
+  "services/control-plane/src",
+  "services/control-plane/tests",
+  "services/provisioner/src",
+  "services/provisioner/tests",
+]

@@ -1,0 +1,12 @@
+title = "Lower Duck Pond Hosting gitleaks configuration"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Generated local state and tool environments"
+paths = [
+  '''(^|/)\.git/''',
+  '''(^|/)\.terraform/''',
+  '''(^|/)\.venv/''',
+]
