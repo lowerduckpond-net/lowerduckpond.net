@@ -41,7 +41,9 @@ This is also a portfolio and educational project. Infrastructure, platform code,
 
 The project uses three distinct automation layers:
 
-1. **OpenTofu provisions infrastructure:** the DigitalOcean project, VPC, Droplet, reserved IP, firewall, block/object storage, and related DNS resources.
+1. **OpenTofu provisions infrastructure:** project resource assignments, the
+   DigitalOcean VPC, Droplet, reserved IP, firewall, block/object storage, and
+   related DNS resources. The existing project itself remains operator-owned.
 2. **Ansible configures hosts:** packages, users, Caddy, Podman, Quadlet, database services, backup jobs, monitoring, and host security.
 3. **The control plane manages tenants:** signup records, site manifests, deployments, credentials, lifecycle transitions, quotas, and routing entries.
 
@@ -78,7 +80,8 @@ The initial production environment consists of:
 
 - One DigitalOcean project dedicated to Lower Duck Pond Hosting.
 - One VPC for private service traffic and future expansion.
-- One Basic Droplet, initially in the roughly 2-vCPU/4-GiB class.
+- One Basic Droplet, beginning at 1 vCPU/2 GiB during development and moving to
+  the roughly 2-vCPU/4-GiB class before tenant onboarding.
 - One reserved IP so the origin address survives Droplet replacement.
 - One Cloud Firewall allowing public HTTP/HTTPS and tightly restricted administration.
 - One Spaces bucket for encrypted backups and archived tenant bundles.
@@ -217,7 +220,9 @@ Primary backups should be application-aware rather than relying only on Droplet 
 
 - Restic encrypts tenant files, manifests, control-plane data, and SQL dumps into Spaces.
 - Database dumps run before the corresponding Restic snapshot.
-- Spaces lifecycle rules expire old backup generations according to policy.
+- Restic forget/prune expires backup generations according to policy; Spaces
+  lifecycle rules remove incomplete uploads and stale object versions without
+  deleting current repository objects by age.
 - DigitalOcean Droplet backups or snapshots provide a secondary whole-machine recovery option.
 - Restore tests run on a schedule and produce an auditable result.
 - Tenant export and disaster recovery use the same archive format where practical.

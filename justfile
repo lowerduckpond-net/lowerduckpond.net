@@ -20,7 +20,7 @@ format: _sync
     tofu fmt -recursive infra/opentofu
 
 # Run every validation required by CI.
-check: check-pre-commit check-links check-python check-opentofu check-ansible check-secrets
+check: check-pre-commit check-links check-python check-opentofu check-ansible check-actions check-secrets
 
 # Run file hygiene, Markdown, Python, secret, and OpenTofu format hooks.
 check-pre-commit: _sync
@@ -37,15 +37,20 @@ check-python: _sync
     uv run mypy
     uv run pytest
 
-# Format and validate every resource-free OpenTofu environment.
+# Format, validate, lint, and security-scan every OpenTofu root and module.
 check-opentofu:
     tofu fmt -check -recursive infra/opentofu
-    for environment in infra/opentofu/environments/*; do tofu -chdir="$environment" init -backend=false -input=false; tofu -chdir="$environment" validate; done
+    for root in infra/opentofu/bootstrap-state infra/opentofu/environments/*; do TF_VAR_state_encryption_passphrase=ci-only-example-passphrase-0000000000 tofu -chdir="$root" init -backend=false -input=false; TF_VAR_state_encryption_passphrase=ci-only-example-passphrase-0000000000 tofu -chdir="$root" validate; tflint --chdir="$root" --config="$(pwd)/.tflint.hcl"; done
+    trivy config --exit-code 1 --severity HIGH,CRITICAL infra/opentofu
 
 # Lint the Ansible tree and syntax-check its foundation playbook.
 check-ansible: _sync
     ANSIBLE_CONFIG=config/ansible/ansible.cfg uv run ansible-lint config/ansible
     ANSIBLE_CONFIG=config/ansible/ansible.cfg uv run ansible-playbook --inventory config/ansible/inventories/development/hosts.yml --syntax-check config/ansible/playbooks/site.yml
+
+# Validate GitHub Actions workflow syntax and expressions.
+check-actions:
+    actionlint
 
 # Scan the complete Git history and every working-tree file for credentials.
 check-secrets:

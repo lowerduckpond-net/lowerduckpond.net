@@ -9,3 +9,4 @@ globs:
   - "**/*.md"
 ignores:
   - ".venv/**"
+  - "**/.terraform/**"

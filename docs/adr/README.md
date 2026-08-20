@@ -20,3 +20,4 @@ Accepted decisions:
 - [0012: Use FastAPI, SQLAlchemy, and uv](0012-python-application-stack.md)
 - [0013: Standardize the developer workflow](0013-developer-tooling.md)
 - [0014: Use Ubuntu 26.04 LTS initially](0014-ubuntu-host-baseline.md)
+- [0015: Start small and preserve resize reversibility](0015-start-small-and-preserve-resize-reversibility.md)
