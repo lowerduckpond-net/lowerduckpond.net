@@ -1,6 +1,7 @@
 accept = [200, 204, 206, 429]
 exclude = [
   '^https://github\.com/lowerduckpond-net/lowerduckpond\.net/security/advisories/new$',
+  '^https://www\.reddit\.com/r/HaveWeMet/$',
 ]
 exclude_all_private = true
 max_concurrency = 8
