@@ -1,0 +1,6 @@
+---
+- name: Configure Lower Duck Pond hosting nodes
+  hosts: hosting_nodes
+  become: true
+  gather_facts: true
+  roles: []

@@ -1,0 +1,14 @@
+[project]
+name = "lowerduckpond-control-plane"
+version = "0.0.0"
+description = "Public control-plane service for Lower Duck Pond Hosting"
+requires-python = ">=3.14,<3.15"
+dependencies = [
+  "fastapi>=0.140.8,<0.141",
+  "sqlalchemy>=2.0.51,<2.1",
+  "uvicorn>=0.35.0,<1",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13"]
+build-backend = "uv_build"
