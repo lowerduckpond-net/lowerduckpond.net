@@ -1,0 +1,309 @@
+---
+name: Infrastructure
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/infrastructure.yml"
+      - "infra/opentofu/**"
+      - "scripts/assert_opentofu_plan.py"
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Create a plan or apply an already reviewed main-branch plan
+        required: true
+        type: choice
+        options:
+          - plan
+          - apply
+      plan_run_id:
+        description: Successful main-branch plan run ID; required for apply
+        required: false
+        type: string
+      replace_droplet:
+        description: Force the reviewed Droplet replacement drill during plan
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: opentofu-production
+  cancel-in-progress: false
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  PRODUCTION_ROOT: infra/opentofu/environments/production
+
+jobs:
+  speculative-plan:
+    name: Speculative pull-request plan
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      CLOUDFLARE_API_TOKEN: speculative-plan
+      DIGITALOCEAN_TOKEN: speculative-plan
+      SPACES_ACCESS_KEY_ID: speculative-plan
+      SPACES_SECRET_ACCESS_KEY: speculative-plan
+      SPECULATIVE_ROOT: /tmp/lowerduckpond-speculative/opentofu/environments/production
+      TF_VAR_admin_source_cidrs: '["192.0.2.10/32"]'
+      TF_VAR_admin_ssh_public_key: >-
+        ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFakeExampleOnlyDoNotUse speculative-plan
+      TF_VAR_backup_bucket_name: lowerduckpond-net-backups-speculative
+      TF_VAR_cloudflare_zone_id: 00000000000000000000000000000000
+      TF_VAR_digitalocean_project_id: 00000000-0000-0000-0000-000000000000
+      TF_VAR_state_encryption_passphrase: speculative-plan-passphrase-000000000000
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install pinned tools
+        uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+        with:
+          version: 2026.8.8
+          install_args: python opentofu
+      - name: Prepare isolated local backend
+        run: |
+          mkdir -p /tmp/lowerduckpond-speculative
+          cp -R infra/opentofu /tmp/lowerduckpond-speculative/opentofu
+          rm "${SPECULATIVE_ROOT}/backend.tf"
+      - name: Initialize providers and modules
+        working-directory: ${{ env.SPECULATIVE_ROOT }}
+        run: tofu init -input=false
+      - name: Create no-credential speculative plan
+        working-directory: ${{ env.SPECULATIVE_ROOT }}
+        run: |
+          tofu plan -input=false -lock=false -no-color -refresh=false \
+            -out=speculative.tfplan | tee plan.txt
+      - name: Enforce plan policy
+        working-directory: ${{ env.SPECULATIVE_ROOT }}
+        run: |
+          tofu show -json speculative.tfplan > plan.json
+          python "${GITHUB_WORKSPACE}/scripts/assert_opentofu_plan.py" plan.json
+          rm plan.json
+      - name: Publish speculative plan summary
+        working-directory: ${{ env.SPECULATIVE_ROOT }}
+        run: |
+          {
+            echo '## Speculative OpenTofu plan'
+            echo
+            echo 'This no-credential plan uses empty state and example inputs.'
+            echo 'A protected main-branch plan is still required before apply.'
+            echo
+            echo '```text'
+            sed -n '1,500p' plan.txt
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  plan:
+    name: Production plan
+    if: >-
+      vars.INFRASTRUCTURE_PLANS_ENABLED == 'true' &&
+      github.event_name == 'workflow_dispatch' &&
+      inputs.operation == 'plan' &&
+      github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: production
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.OPENTOFU_STATE_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.OPENTOFU_STATE_SECRET_ACCESS_KEY }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+      SPACES_ACCESS_KEY_ID: ${{ secrets.SPACES_OPERATOR_ACCESS_KEY_ID }}
+      SPACES_SECRET_ACCESS_KEY: ${{ secrets.SPACES_OPERATOR_SECRET_ACCESS_KEY }}
+      STATE_BUCKET: ${{ vars.OPENTOFU_STATE_BUCKET }}
+      SPACES_REGION: ${{ vars.SPACES_REGION }}
+      TF_VAR_admin_source_cidrs: ${{ secrets.ADMIN_SOURCE_CIDRS_JSON }}
+      TF_VAR_admin_ssh_public_key: ${{ secrets.ADMIN_SSH_PUBLIC_KEY }}
+      TF_VAR_backup_bucket_name: ${{ vars.BACKUP_BUCKET_NAME }}
+      TF_VAR_cloudflare_zone_id: ${{ vars.CLOUDFLARE_ZONE_ID }}
+      TF_VAR_digitalocean_project_id: ${{ vars.DIGITALOCEAN_PROJECT_ID }}
+      TF_VAR_state_encryption_passphrase: ${{ secrets.OPENTOFU_ENCRYPTION_PASSPHRASE }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install pinned tools
+        uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+        with:
+          version: 2026.8.8
+          install_args: python opentofu
+      - name: Initialize the production backend
+        working-directory: ${{ env.PRODUCTION_ROOT }}
+        run: |
+          tofu init -input=false -reconfigure \
+            -backend-config="bucket=${STATE_BUCKET}" \
+            -backend-config="key=production/opentofu.tfstate" \
+            -backend-config="region=us-east-1" \
+            -backend-config="endpoints={s3=\"https://${SPACES_REGION}.digitaloceanspaces.com\"}" \
+            -backend-config="skip_credentials_validation=true" \
+            -backend-config="skip_requesting_account_id=true" \
+            -backend-config="skip_metadata_api_check=true" \
+            -backend-config="skip_region_validation=true" \
+            -backend-config="skip_s3_checksum=true" \
+            -backend-config="use_lockfile=false"
+      - name: Create production plan
+        id: plan
+        working-directory: ${{ env.PRODUCTION_ROOT }}
+        run: |
+          plan_arguments=()
+          if [[ "${{ inputs.replace_droplet }}" == "true" ]]; then
+            plan_arguments+=("-replace=module.host.digitalocean_droplet.host")
+          fi
+          set +e
+          tofu plan -detailed-exitcode -input=false -lock-timeout=5m -no-color \
+            -out=production.tfplan "${plan_arguments[@]}" \
+            | tee plan.txt
+          plan_status=${PIPESTATUS[0]}
+          set -e
+          if [[ ${plan_status} -eq 1 ]]; then
+            exit 1
+          fi
+          if [[ ${plan_status} -eq 2 ]]; then
+            echo "changes=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "changes=false" >> "${GITHUB_OUTPUT}"
+          fi
+      - name: Enforce plan policy
+        working-directory: ${{ env.PRODUCTION_ROOT }}
+        run: |
+          tofu show -json production.tfplan > plan.json
+          policy_arguments=()
+          if [[ "${{ inputs.replace_droplet }}" == "true" ]]; then
+            policy_arguments+=("--allow-droplet-replacement")
+          fi
+          python "${GITHUB_WORKSPACE}/scripts/assert_opentofu_plan.py" \
+            "${policy_arguments[@]}" plan.json
+          rm plan.json
+      - name: Record plan metadata
+        working-directory: ${{ env.PRODUCTION_ROOT }}
+        env:
+          PLAN_CHANGES: ${{ steps.plan.outputs.changes }}
+        run: |
+          jq -n \
+            --arg commit "${GITHUB_SHA}" \
+            --arg event "${GITHUB_EVENT_NAME}" \
+            --arg ref "${GITHUB_REF}" \
+            --arg run_id "${GITHUB_RUN_ID}" \
+            --arg changes "${PLAN_CHANGES}" \
+            --arg replace_droplet "${{ inputs.replace_droplet }}" \
+            --arg sha256 "$(sha256sum production.tfplan | cut -d ' ' -f 1)" \
+            '{commit: $commit, event: $event, ref: $ref, run_id: $run_id,
+              changes: $changes, replace_droplet: $replace_droplet,
+              plan_sha256: $sha256}' \
+            > plan-metadata.json
+      - name: Publish plan summary
+        working-directory: ${{ env.PRODUCTION_ROOT }}
+        run: |
+          {
+            echo '## Production OpenTofu plan'
+            echo
+            echo '```text'
+            sed -n '1,500p' plan.txt
+            echo '```'
+            echo
+            echo "Apply eligibility: only a workflow-dispatched plan from the current main commit."
+          } >> "${GITHUB_STEP_SUMMARY}"
+      - name: Upload reviewed plan
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: production-plan
+          path: |
+            ${{ env.PRODUCTION_ROOT }}/production.tfplan
+            ${{ env.PRODUCTION_ROOT }}/plan-metadata.json
+            ${{ env.PRODUCTION_ROOT }}/plan.txt
+          if-no-files-found: error
+          retention-days: 3
+
+  apply:
+    name: Production apply
+    if: >-
+      vars.INFRASTRUCTURE_PLANS_ENABLED == 'true' &&
+      github.event_name == 'workflow_dispatch' &&
+      inputs.operation == 'apply' &&
+      github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: production
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.OPENTOFU_STATE_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.OPENTOFU_STATE_SECRET_ACCESS_KEY }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+      SPACES_ACCESS_KEY_ID: ${{ secrets.SPACES_OPERATOR_ACCESS_KEY_ID }}
+      SPACES_SECRET_ACCESS_KEY: ${{ secrets.SPACES_OPERATOR_SECRET_ACCESS_KEY }}
+      STATE_BUCKET: ${{ vars.OPENTOFU_STATE_BUCKET }}
+      SPACES_REGION: ${{ vars.SPACES_REGION }}
+      TF_VAR_admin_source_cidrs: ${{ secrets.ADMIN_SOURCE_CIDRS_JSON }}
+      TF_VAR_admin_ssh_public_key: ${{ secrets.ADMIN_SSH_PUBLIC_KEY }}
+      TF_VAR_backup_bucket_name: ${{ vars.BACKUP_BUCKET_NAME }}
+      TF_VAR_cloudflare_zone_id: ${{ vars.CLOUDFLARE_ZONE_ID }}
+      TF_VAR_digitalocean_project_id: ${{ vars.DIGITALOCEAN_PROJECT_ID }}
+      TF_VAR_state_encryption_passphrase: ${{ secrets.OPENTOFU_ENCRYPTION_PASSPHRASE }}
+    steps:
+      - name: Require main and a plan run ID
+        env:
+          PLAN_RUN_ID: ${{ inputs.plan_run_id }}
+        run: |
+          if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
+            echo "Production applies must run from main." >&2
+            exit 1
+          fi
+          if [[ ! "${PLAN_RUN_ID}" =~ ^[0-9]+$ ]]; then
+            echo "plan_run_id must be the numeric ID of a successful plan run." >&2
+            exit 1
+          fi
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install pinned tools
+        uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+        with:
+          version: 2026.8.8
+          install_args: opentofu
+      - name: Download reviewed plan
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: production-plan
+          path: ${{ env.PRODUCTION_ROOT }}
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.plan_run_id }}
+      - name: Verify reviewed plan provenance
+        working-directory: ${{ env.PRODUCTION_ROOT }}
+        run: |
+          test "$(jq -r .commit plan-metadata.json)" = "${GITHUB_SHA}"
+          test "$(jq -r .event plan-metadata.json)" = "workflow_dispatch"
+          test "$(jq -r .ref plan-metadata.json)" = "refs/heads/main"
+          test "$(jq -r .run_id plan-metadata.json)" = "${{ inputs.plan_run_id }}"
+          test "$(jq -r .plan_sha256 plan-metadata.json)" = \
+            "$(sha256sum production.tfplan | cut -d ' ' -f 1)"
+      - name: Initialize the production backend
+        working-directory: ${{ env.PRODUCTION_ROOT }}
+        run: |
+          tofu init -input=false -reconfigure \
+            -backend-config="bucket=${STATE_BUCKET}" \
+            -backend-config="key=production/opentofu.tfstate" \
+            -backend-config="region=us-east-1" \
+            -backend-config="endpoints={s3=\"https://${SPACES_REGION}.digitaloceanspaces.com\"}" \
+            -backend-config="skip_credentials_validation=true" \
+            -backend-config="skip_requesting_account_id=true" \
+            -backend-config="skip_metadata_api_check=true" \
+            -backend-config="skip_region_validation=true" \
+            -backend-config="skip_s3_checksum=true" \
+            -backend-config="use_lockfile=false"
+      - name: Apply the reviewed plan
+        working-directory: ${{ env.PRODUCTION_ROOT }}
+        run: tofu apply -input=false -auto-approve production.tfplan
+      - name: Export Ansible inventory
+        working-directory: ${{ env.PRODUCTION_ROOT }}
+        run: tofu output -json ansible_inventory > production-inventory.json
+      - name: Upload Ansible inventory
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: production-ansible-inventory
+          path: ${{ env.PRODUCTION_ROOT }}/production-inventory.json
+          if-no-files-found: error
+          retention-days: 3

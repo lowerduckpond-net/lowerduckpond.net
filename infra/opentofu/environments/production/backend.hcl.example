@@ -1,0 +1,16 @@
+bucket = "lowerduckpond-net-opentofu-state-unique-suffix"
+key    = "production/opentofu.tfstate"
+region = "us-east-1"
+
+endpoints = {
+  s3 = "https://nyc3.digitaloceanspaces.com"
+}
+
+skip_credentials_validation = true
+skip_requesting_account_id  = true
+skip_metadata_api_check     = true
+skip_region_validation      = true
+skip_s3_checksum            = true
+
+# Keep false until conditional-write locking has been tested against Spaces.
+use_lockfile = false

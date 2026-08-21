@@ -27,9 +27,11 @@ members = [
 
 [tool.pytest.ini_options]
 addopts = ["-ra", "--strict-config", "--strict-markers"]
+pythonpath = ["."]
 testpaths = [
   "services/control-plane/tests",
   "services/provisioner/tests",
+  "tests/infrastructure",
 ]
 
 [tool.ruff]

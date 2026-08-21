@@ -1,0 +1,2 @@
+state_bucket_name = "lowerduckpond-net-opentofu-state-unique-suffix"
+spaces_region     = "nyc3"

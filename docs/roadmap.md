@@ -69,6 +69,7 @@ Create short architecture decision records for:
 12. Control-plane application stack: FastAPI with SQLAlchemy 2 and `uv`.
 13. Developer workflow: `mise`, `just`, pre-commit, and Renovate.
 14. Initial host baseline: Ubuntu 26.04 LTS with its distribution Podman package.
+15. Start on a small Droplet and preserve reversible CPU/RAM resizing.
 
 Operator-accepted defaults:
 
@@ -117,6 +118,10 @@ A contributor can clone the repository, install documented prerequisites, run on
 - Cloudflare apex and wildcard DNS records.
 - Outputs suitable for generating the Ansible inventory.
 
+The operator-created `lowerduckpond.net` DigitalOcean project is referenced by
+ID rather than recreated. OpenTofu owns assignment of the resources it creates
+to that project.
+
 The firewall should expose only:
 
 - TCP 80 from the Internet.
@@ -128,7 +133,10 @@ Keep host-level nftables policy under Ansible as a second boundary.
 
 ### State bootstrap
 
-Create remote state separately from the production stack. DigitalOcean Spaces is S3-compatible and is suitable for encrypted state storage, but OpenTofu's native S3 lockfile depends on conditional-write behavior that must be verified against the selected Spaces configuration.
+Create remote state separately from the production stack. DigitalOcean Spaces
+is S3-compatible; encrypt state and saved plans client-side with OpenTofu before
+storing them there. OpenTofu's native S3 lockfile depends on conditional-write
+behavior that must be verified against the selected Spaces configuration.
 
 Until that verification exists:
 

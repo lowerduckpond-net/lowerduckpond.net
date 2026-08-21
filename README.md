@@ -5,9 +5,9 @@ the `r/HaveWeMet` role-playing community. It is intended for small, handmade
 sites belonging to fictional residents, businesses, clubs, campaigns, and civic
 departments.
 
-The project is currently **pre-alpha**. Milestone 0 establishes the repository,
-toolchain, application boundaries, and validation workflow; it does not create
-cloud resources or host tenant content.
+The project is currently **pre-alpha**. Milestone 1 defines the DigitalOcean and
+Cloudflare foundation, remote-state bootstrap, and protected infrastructure
+workflow; it does not yet configure the host or serve tenant content.
 
 ## Start here
 
@@ -32,6 +32,8 @@ reporting failure; rerun the command after reviewing those changes.
   boundary.
 - `infra/opentofu/` and `config/ansible/` contain infrastructure and host
   configuration foundations.
+- [`docs/operations/infrastructure.md`](docs/operations/infrastructure.md)
+  describes state bootstrap, protected plans, applies, and required secrets.
 
 The fictional city site at `lowerduckpond.com` will live in a separate
 repository and use the same tenant interface as every other site.

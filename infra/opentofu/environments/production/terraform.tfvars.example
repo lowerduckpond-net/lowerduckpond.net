@@ -1,0 +1,10 @@
+digitalocean_project_id = "00000000-0000-0000-0000-000000000000"
+backup_bucket_name      = "lowerduckpond-net-backups-unique-suffix"
+cloudflare_zone_id      = "00000000000000000000000000000000"
+
+admin_ssh_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFakeExampleOnlyDoNotUse lowerduckpond-admin"
+admin_source_cidrs   = ["192.0.2.10/32"]
+
+# Milestone 1 begins on the inexpensive development size. Promote this to
+# s-2vcpu-4gb-amd before onboarding production tenants.
+droplet_size = "s-1vcpu-2gb"
