@@ -11,17 +11,10 @@
     name: caddy
     system: true
 
-- name: Create the Caddy routes group
-  ansible.builtin.group:
-    name: "{{ caddy_routes_group }}"
-    system: true
-
 - name: Create the Caddy system account
   ansible.builtin.user:
     name: caddy
     group: caddy
-    groups: "{{ caddy_routes_group }}"
-    append: true
     home: /var/lib/caddy
     shell: /usr/sbin/nologin
     system: true
@@ -63,13 +56,9 @@
       owner: root
       group: caddy
       mode: "0750"
-    - path: "{{ caddy_routes_release_root }}"
+    - path: "{{ caddy_routes_active_path }}"
       owner: root
-      group: "{{ caddy_routes_group }}"
-      mode: "0750"
-    - path: "{{ caddy_routes_release_root }}/{{ caddy_routes_bootstrap_release }}"
-      owner: root
-      group: "{{ caddy_routes_group }}"
+      group: caddy
       mode: "0750"
     - path: /var/lib/caddy
       owner: caddy
@@ -83,46 +72,6 @@
       owner: root
       group: caddy
       mode: "0750"
-
-- name: Inspect the active Caddy routes link
-  ansible.builtin.stat:
-    path: "{{ caddy_routes_active_path }}"
-    follow: false
-  register: caddy_routes_active
-
-- name: Refuse to replace an unmanaged live routes path
-  ansible.builtin.assert:
-    that:
-      - >-
-        not caddy_routes_active.stat.exists or
-        (caddy_routes_active.stat.islnk | default(false))
-    fail_msg: >-
-      {{ caddy_routes_active_path }} must be absent or a managed release symlink;
-      refusing to replace a directory that may contain routes.
-
-- name: Select the empty bootstrap routes release initially
-  ansible.builtin.file:
-    path: "{{ caddy_routes_active_path }}"
-    src: "{{ caddy_routes_release_root }}/{{ caddy_routes_bootstrap_release }}"
-    state: link
-  when: not (caddy_routes_active.stat.islnk | default(false))
-
-- name: Resolve the active Caddy routes release
-  ansible.builtin.command:
-    argv:
-      - readlink
-      - --canonicalize
-      - "{{ caddy_routes_active_path }}"
-  register: caddy_routes_active_release
-  changed_when: false
-
-- name: Verify the active Caddy routes release is managed
-  ansible.builtin.assert:
-    that:
-      - >-
-        caddy_routes_active_release.stdout is
-        ansible.builtin.match('^' ~ (caddy_routes_release_root | regex_escape) ~ '/')
-    fail_msg: The active Caddy routes link points outside the managed release root.
 
 - name: Build pinned Caddy with the pinned Cloudflare module
   ansible.builtin.command:

@@ -1,18 +1,13 @@
 ---
-- name: Create the provisioner groups
+- name: Create the provisioner group
   ansible.builtin.group:
-    name: "{{ item }}"
+    name: "{{ provisioner_group }}"
     system: true
-  loop:
-    - "{{ provisioner_group }}"
-    - "{{ provisioner_routes_group }}"
 
 - name: Create the non-login provisioner account
   ansible.builtin.user:
     name: "{{ provisioner_user }}"
     group: "{{ provisioner_group }}"
-    groups: "{{ provisioner_routes_group }}"
-    append: true
     home: "{{ provisioner_state_root }}/provisioner"
     shell: /usr/sbin/nologin
     system: true
@@ -25,13 +20,6 @@
     owner: "{{ provisioner_user }}"
     group: "{{ provisioner_group }}"
     mode: "0750"
-
-- name: Permit Caddy to read generated routes
-  ansible.builtin.user:
-    name: caddy
-    groups: "{{ provisioner_routes_group }}"
-    append: true
-  notify: Restart Caddy after route group change
 
 - name: Create provisioner state and content directories
   ansible.builtin.file:
@@ -57,32 +45,11 @@
       owner: "{{ provisioner_user }}"
       group: "{{ provisioner_group }}"
       mode: "0750"
-    - path: "{{ provisioner_routes_staging_root }}"
-      owner: "{{ provisioner_user }}"
-      group: "{{ provisioner_group }}"
-      mode: "0750"
-    - path: "{{ provisioner_content_root }}/sites"
-      owner: "{{ provisioner_user }}"
-      group: caddy
-      mode: "0750"
 
-- name: Install the restricted Caddy route publisher
-  ansible.builtin.template:
-    src: publish-caddy-routes.j2
-    dest: /usr/local/libexec/lowerduckpond/publish-caddy-routes
-    owner: root
-    group: root
-    mode: "0755"
-    validate: /bin/bash -n %s
-
-- name: Permit only validated Caddy route publication through sudo
-  ansible.builtin.template:
-    src: sudoers.j2
-    dest: /etc/sudoers.d/lowerduckpond-provisioner
-    owner: root
-    group: root
-    mode: "0440"
-    validate: /usr/sbin/visudo --check --file=%s
-
-- name: Flush provisioner handlers
-  ansible.builtin.meta: flush_handlers
+- name: Remove the retired Milestone 2 route-publishing capability
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/sudoers.d/lowerduckpond-provisioner
+    - /usr/local/libexec/lowerduckpond/publish-caddy-routes

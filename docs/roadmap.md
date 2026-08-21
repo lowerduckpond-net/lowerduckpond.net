@@ -173,6 +173,11 @@ Implement small composable roles rather than one monolithic playbook:
 - `monitoring`: exporters, collection, dashboards, and alerts.
 - `provisioner`: service account, directories, queue access, and restricted privileged operations.
 
+Milestone 2 does not grant the provisioner a Caddy reload or route-publication
+capability. Milestone 3 introduces one privileged activation contract covering
+both immutable tenant content and its generated root-owned route, so neither
+half can be changed independently after validation.
+
 For the initial 1-vCPU/2-GiB development node, install a loopback-only node
 exporter and emit service/backup health through its textfile collector and
 journald. Keep Caddy's metrics endpoint loopback-only. A central Prometheus,

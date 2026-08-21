@@ -36,7 +36,8 @@ check 'node exporter service is active' \
 check 'Caddy configuration validates' \
     /usr/local/libexec/lowerduckpond/caddy-validate /etc/caddy/Caddyfile
 check 'Caddy metrics endpoint responds' \
-    curl --fail --silent --show-error http://127.0.0.1:2019/metrics
+    curl --fail --silent --show-error \
+    --unix-socket {{ caddy_admin_socket_path | quote }} http://localhost/metrics
 check 'rootless Podman responds' systemctl --user \
     --machine={{ podman_service_user }}@.host \
     restart lowerduckpond-podman-ready.service

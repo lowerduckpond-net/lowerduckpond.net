@@ -1,5 +1,0 @@
----
-- name: Restart Caddy after route group change
-  ansible.builtin.systemd_service:
-    name: caddy.service
-    state: restarted

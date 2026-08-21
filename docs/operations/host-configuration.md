@@ -78,20 +78,13 @@ configure-production`. Ansible validates a candidate Caddyfile before its
 atomic rename, and systemd validates the live configuration before every
 reload.
 
-The provisioner cannot write Caddy syntax or its live import tree. It writes a
-complete declarative set under
-`/var/lib/lowerduckpond/caddy-routes-staging`: each regular
-`<site-id>.route` file contains exactly one lowercase DNS label for a static
-tenant. The sole permitted sudo command, `publish-caddy-routes`, rejects
-symlinks, malformed identifiers, malformed or duplicate labels, and every
-other input shape. It generates only a hostname matcher, the tenant's fixed
-`/srv/lowerduckpond/sites/<site-id>/current` document root, and `file_server`.
-
-The command writes those generated fragments into a root-owned immutable
-release, validates that exact release, switches the live symlink atomically
-under an exclusive lock, and only then reloads Caddy. A failed reload restores
-the prior release. Supporting another route type requires an explicit extension
-to this root-owned generator; provisioner-authored Caddy is never accepted.
+Milestone 2 grants the provisioner no sudo capability and no access to Caddy's
+configuration, admin socket, or empty root-owned route import directory. Tenant
+publication begins in Milestone 3, where archive validation, immutable content
+releases, and root-owned Caddy routes will be activated through one privileged
+contract. Keeping content and route activation together prevents a validated
+route from later following a provisioner-controlled link outside its tenant
+release.
 
 Useful host-side checks are:
 
@@ -108,3 +101,9 @@ database, rootless-runtime, and backup health as Prometheus textfile metrics and
 in journald; a central collector, dashboards, and routed alerts belong with the
 control-plane observability work rather than consuming the small development
 Droplet now.
+
+The exact Caddy build inputs and the supported Ubuntu package ranges live in
+`platform/versions.yml`. Ansible installs distribution packages normally so
+security updates remain available, then refuses to converge when MariaDB,
+Podman, or Restic falls outside the acceptance-tested range. Widening a range
+therefore requires a reviewed change and a complete Molecule run.

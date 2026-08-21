@@ -14,10 +14,10 @@
   backup, applies retention, and supplies a disposable restore check.
 - `monitoring` exposes node and project health metrics only on loopback and
   records health failures in the journal.
-- `provisioner` creates queue/content boundaries and permits only atomic
-  publication of a validated, root-owned Caddy route release through sudo. The
-  privileged publisher generates static Caddy routes from narrow declarations;
-  it never accepts provisioner-authored Caddy syntax.
+- `provisioner` creates the non-login service account and its private job,
+  manifest, and audit directories without granting host-configuration or Caddy
+  privileges.
 
 Roles own host configuration, not tenant lifecycle state. Tenant-specific
-routes, identities, containers, and databases begin in Milestone 3.
+content activation, routes, identities, containers, and databases begin in
+Milestone 3 so content and routing can cross the privilege boundary together.

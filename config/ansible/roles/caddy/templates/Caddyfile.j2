@@ -2,7 +2,7 @@
 {% if caddy_email | length > 0 %}
 	email {{ caddy_email }}
 {% endif %}
-	admin 127.0.0.1:2019
+	admin unix/{{ caddy_admin_socket_path }}
 	metrics
 }
 

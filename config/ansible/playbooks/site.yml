@@ -3,14 +3,17 @@
   hosts: hosting_nodes
   become: true
   gather_facts: true
+  vars_files:
+    - ../../../platform/versions.yml
   pre_tasks:
     - name: Verify the supported host operating system
       ansible.builtin.assert:
         that:
-          - ansible_facts.distribution == "Ubuntu"
-          - ansible_facts.distribution_version == "26.04"
+          - ansible_facts.distribution == platform_versions.host_os_distribution
+          - ansible_facts.distribution_version == platform_versions.host_os_release
         fail_msg: >-
-          Milestone 2 supports only Ubuntu 26.04 LTS; refusing to configure
+          Milestone 2 supports only {{ platform_versions.host_os_distribution }}
+          {{ platform_versions.host_os_release }} LTS; refusing to configure
           {{ ansible_facts.distribution }} {{ ansible_facts.distribution_version }}.
 
     - name: Verify required production inputs
