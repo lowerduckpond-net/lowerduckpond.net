@@ -24,6 +24,10 @@ def test_only_expected_ports_listen_publicly(host: Host) -> None:
 
 
 def test_caddy_custom_build_and_https_fixture(host: Host) -> None:
+    selected_binary = host.run("readlink --canonicalize /usr/local/bin/caddy")
+    assert selected_binary.rc == 0
+    assert selected_binary.stdout.strip().endswith("/caddy-2.11.4-xcaddy-0.4.7-cloudflare-0.2.4")
+
     modules = host.run("/usr/local/bin/caddy list-modules")
     assert modules.rc == 0
     assert "dns.providers.cloudflare" in modules.stdout.splitlines()
