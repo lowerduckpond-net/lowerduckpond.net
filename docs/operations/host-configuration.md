@@ -106,11 +106,14 @@ boundary is exercised before deployment. A central collector, dashboards, and
 routed alerts belong with the control-plane observability work rather than
 consuming the small development Droplet now.
 
-Backup and retention status records are bound to a fingerprint of the active
-repository and node name. Changing either setting therefore cannot reuse old
-local success evidence: convergence recovers backup status only from matching
-scheduled snapshots and runs retention once for the new scope before health can
-become green.
+The root-only backup environment is activated with one atomic rename and carries
+the repository, node name, retention policy, credentials, and their status
+fingerprint together. A scheduled job therefore sees either the complete old
+configuration or the complete new one. Changing the repository or node cannot
+reuse old local success evidence: convergence recovers backup status only from
+matching scheduled snapshots and runs retention once for the new scope before
+health can become green. Local repositories are also added explicitly to the
+backup services' otherwise narrow writable-path sandbox.
 
 The exact Caddy build inputs and the supported Ubuntu package ranges live in
 `platform/versions.yml`. Ansible installs distribution packages normally so

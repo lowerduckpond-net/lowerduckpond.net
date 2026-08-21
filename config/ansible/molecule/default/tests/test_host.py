@@ -17,6 +17,7 @@ DATABASE_BACKUP_PRIVILEGES = {
 BACKUP_SCOPE_PATH = "/etc/lowerduckpond/backup-scope"
 BACKUP_SCOPE_LENGTH = 64
 STATUS_FIELD_COUNT = 2
+LOCAL_BACKUP_REPOSITORY = "/mnt/lowerduckpond-restic-test"
 
 
 def read_backup_scope(host: Host) -> str:
@@ -218,7 +219,7 @@ def test_nftables_policy_compiles_and_blocks_metadata(host: Host) -> None:
     assert policy.contains("policy drop")
 
 
-def test_backup_configuration_is_atomic(host: Host) -> None:
+def test_backup_configuration_is_atomic_and_sandboxed(host: Host) -> None:
     assert host.file("/etc/lowerduckpond/backup.env").mode == BACKUP_ENVIRONMENT_MODE
     assert not host.file(BACKUP_SCOPE_PATH).exists
     backup_script = host.file("/usr/local/libexec/lowerduckpond/backup")
@@ -239,6 +240,11 @@ def test_backup_configuration_is_atomic(host: Host) -> None:
     restic_index = maintenance_script.content_string.index("restic forget")
     assert lock_index < restic_index
     assert maintenance_script.contains("--tag scheduled")
+    assert host.file(LOCAL_BACKUP_REPOSITORY).is_directory
+    backup_unit = host.file("/etc/systemd/system/lowerduckpond-backup.service")
+    maintenance_unit = host.file("/etc/systemd/system/lowerduckpond-backup-maintenance.service")
+    assert backup_unit.contains(LOCAL_BACKUP_REPOSITORY)
+    assert maintenance_unit.contains(LOCAL_BACKUP_REPOSITORY)
 
 
 def test_backup_repository_and_restore(host: Host) -> None:

@@ -33,7 +33,7 @@ provisioner:
         caddy_domain: lowerduckpond.test
         caddy_tls_mode: internal
         podman_cgroup_manager: cgroupfs
-        backup_repository: /var/lib/lowerduckpond/restic-test
+        backup_repository: /mnt/lowerduckpond-restic-test
         backup_restic_password: "molecule-restic-password-\u0024RANDOM-\u0024(false)-'0000000000"
         backup_spaces_access_key_id: molecule-spaces-access-key
         backup_spaces_secret_access_key: molecule-spaces-secret-key
