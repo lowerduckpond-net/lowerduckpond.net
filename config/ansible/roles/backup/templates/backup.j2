@@ -4,9 +4,7 @@ umask 077
 
 status_directory=/var/lib/lowerduckpond/backup-status
 staging_directory=/var/cache/lowerduckpond-backup/staging
-mkdir -p "${staging_directory}"
-exec 9>/run/lock/lowerduckpond-backup.lock
-flock --exclusive 9
+lock_path=/var/cache/lowerduckpond-backup/repository.lock
 
 record_status() {
     local status_name=$1
@@ -40,6 +38,10 @@ finish() {
     exit "${result}"
 }
 trap finish EXIT
+
+mkdir -p "${staging_directory}"
+exec 9>"${lock_path}"
+flock --exclusive 9
 
 /usr/bin/env --ignore-environment PATH=/usr/bin:/bin \
     /usr/sbin/runuser --user {{ backup_database_service_user }} -- \

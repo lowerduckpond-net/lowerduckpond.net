@@ -193,10 +193,20 @@ def test_nftables_policy_compiles_and_blocks_metadata(host: Host) -> None:
 def test_backup_repository_and_restore(host: Host) -> None:
     assert host.file("/etc/lowerduckpond/backup.env").mode == BACKUP_ENVIRONMENT_MODE
     backup_script = host.file("/usr/local/libexec/lowerduckpond/backup")
+    maintenance_script = host.file("/usr/local/libexec/lowerduckpond/backup-maintenance")
+    lock_path = "/var/cache/lowerduckpond-backup/repository.lock"
     assert backup_script.content_string.index("mariadb-dump") < (
         backup_script.content_string.index("source /etc/lowerduckpond/backup.env")
     )
     assert backup_script.contains("/usr/bin/env --ignore-environment")
+    assert backup_script.contains(f"lock_path={lock_path}")
+    assert maintenance_script.contains(f"lock_path={lock_path}")
+
+    backup = host.run("systemctl start lowerduckpond-backup.service")
+    backup_journal = host.run(
+        "journalctl --unit lowerduckpond-backup.service --no-pager --lines 50"
+    )
+    assert backup.rc == 0, backup_journal.stdout
 
     check = host.run("/usr/local/libexec/lowerduckpond/restic-check")
     assert check.rc == 0
@@ -221,13 +231,43 @@ def test_backup_repository_and_restore(host: Host) -> None:
     restore = host.run("/usr/local/libexec/lowerduckpond/restore-smoke-test")
     assert restore.rc == 0
 
-    maintenance_script = host.file("/usr/local/libexec/lowerduckpond/backup-maintenance")
     lock_index = maintenance_script.content_string.index("flock --exclusive 9")
     restic_index = maintenance_script.content_string.index("restic forget")
     assert lock_index < restic_index
     assert maintenance_script.contains("--tag scheduled")
-    maintenance = host.run("/usr/local/libexec/lowerduckpond/backup-maintenance")
-    assert maintenance.rc == 0
+    lock_probe_script = f"""
+set -euo pipefail
+exec 8>{lock_path}
+flock --exclusive 8
+cleanup() {{ flock --unlock 8 || true; }}
+trap cleanup EXIT
+systemctl start --no-block lowerduckpond-backup-maintenance.service
+for _ in {{1..50}}; do
+    state=$(systemctl show --property ActiveState --value \
+        lowerduckpond-backup-maintenance.service)
+    [[ $state == activating ]] && break
+    [[ $state == failed ]] && exit 1
+    sleep 0.1
+done
+[[ $state == activating ]]
+flock --unlock 8
+trap - EXIT
+for _ in {{1..300}}; do
+    state=$(systemctl show --property ActiveState --value \
+        lowerduckpond-backup-maintenance.service)
+    [[ $state == inactive ]] && break
+    [[ $state == failed ]] && exit 1
+    sleep 0.1
+done
+[[ $state == inactive ]]
+[[ $(systemctl show --property Result --value \
+    lowerduckpond-backup-maintenance.service) == success ]]
+"""
+    maintenance = host.run("/bin/bash -c %s", lock_probe_script)
+    maintenance_journal = host.run(
+        "journalctl --unit lowerduckpond-backup-maintenance.service --no-pager --lines 50"
+    )
+    assert maintenance.rc == 0, maintenance_journal.stdout
     assert host.file("/var/lib/lowerduckpond/backup-status/maintenance-last-success").exists
     assert host.service("lowerduckpond-backup.timer").is_enabled
     assert host.service("lowerduckpond-backup-maintenance.timer").is_enabled

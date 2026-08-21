@@ -99,10 +99,12 @@ sudo /usr/local/libexec/lowerduckpond/restic-check
 The node exporter listens only on `127.0.0.1:9100`. Milestone 2 records Caddy,
 database, rootless-runtime, scheduled-backup, and weekly-retention health as
 Prometheus textfile metrics and in journald. Backup and retention share a host
-lock, and retention and restore checks select only snapshots tagged
-`scheduled`. A central collector, dashboards, and routed alerts belong with the
-control-plane observability work rather than consuming the small development
-Droplet now.
+lock in the root-only backup working directory, and retention and restore checks
+select only snapshots tagged `scheduled`. Convergence and integration tests run
+the initial jobs through their hardened systemd units so the scheduled execution
+boundary is exercised before deployment. A central collector, dashboards, and
+routed alerts belong with the control-plane observability work rather than
+consuming the small development Droplet now.
 
 The exact Caddy build inputs and the supported Ubuntu package ranges live in
 `platform/versions.yml`. Ansible installs distribution packages normally so
