@@ -166,9 +166,15 @@ cloud credential.
 To prove that compute remains replaceable, dispatch a main-branch plan with
 `replace_droplet` enabled. The policy permits a create-before-destroy Droplet
 replacement plus only the required reserved-IP assignment, firewall, and
-project-membership changes. It rejects all unrelated resource changes and any
-deletion of the reserved address or Spaces bucket. After review, apply that
-exact plan normally, then verify:
+host-project-membership changes. The reserved IP and Spaces bucket use a
+separate project assignment that must remain unchanged. The policy checks both
+the action types and their field-level deltas, and rejects any deletion of the
+reserved address or Spaces bucket.
+
+After a change to the project-assignment structure itself, first apply a normal
+non-drill plan and confirm that the Droplet, reserved IP, and Spaces bucket still
+appear in the production project. Then create a fresh replacement plan. After
+review, apply that exact plan normally and verify:
 
 - the reserved public address is unchanged;
 - the apex and wildcard records are unchanged;

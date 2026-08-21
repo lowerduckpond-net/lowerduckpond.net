@@ -8,9 +8,15 @@ import pytest
 from scripts.assert_opentofu_plan import PlanPolicyError, assert_plan
 
 
-def _resource(resource_type: str, name: str, after: dict[str, Any]) -> dict[str, Any]:
+def _resource(
+    resource_type: str,
+    name: str,
+    after: dict[str, Any],
+    *,
+    address: str | None = None,
+) -> dict[str, Any]:
     return {
-        "address": f"module.test.{resource_type}.{name}",
+        "address": address or f"module.test.{resource_type}.{name}",
         "type": resource_type,
         "change": {"actions": ["create"], "after": after},
     }
@@ -38,6 +44,7 @@ def _valid_plan() -> dict[str, Any]:
                 "digitalocean_firewall",
                 "host",
                 {
+                    "droplet_ids": [42],
                     "inbound_rule": [
                         {
                             "protocol": "tcp",
@@ -54,7 +61,14 @@ def _valid_plan() -> dict[str, Any]:
                             "port_range": "443",
                             "source_addresses": ["0.0.0.0/0", "::/0"],
                         },
-                    ]
+                    ],
+                    "outbound_rule": [
+                        {
+                            "protocol": "tcp",
+                            "port_range": "443",
+                            "destination_addresses": ["0.0.0.0/0", "::/0"],
+                        }
+                    ],
                 },
             ),
             _resource(
@@ -76,8 +90,34 @@ def _valid_plan() -> dict[str, Any]:
                 {"grant": [{"bucket": "example-backups", "permission": "readwrite"}]},
             ),
             _resource("digitalocean_reserved_ip", "host", {}),
-            _resource("digitalocean_reserved_ip_assignment", "host", {}),
-            _resource("digitalocean_project_resources", "production", {}),
+            _resource(
+                "digitalocean_reserved_ip_assignment",
+                "host",
+                {"droplet_id": 42, "id": "203.0.113.10-42", "ip_address": "203.0.113.10"},
+            ),
+            _resource(
+                "digitalocean_project_resources",
+                "production",
+                {
+                    "id": "project-id",
+                    "project": "project-id",
+                    "resources": [
+                        "do:floatingip:203.0.113.10",
+                        "do:space:example-backups",
+                    ],
+                },
+                address="digitalocean_project_resources.production",
+            ),
+            _resource(
+                "digitalocean_project_resources",
+                "host",
+                {
+                    "id": "project-id",
+                    "project": "project-id",
+                    "resources": ["do:droplet:42"],
+                },
+                address="digitalocean_project_resources.host",
+            ),
             _resource(
                 "cloudflare_dns_record",
                 "apex",
@@ -88,7 +128,75 @@ def _valid_plan() -> dict[str, Any]:
                 "wildcard",
                 {"name": "*.lowerduckpond.net", "type": "A", "proxied": False},
             ),
-        ]
+        ],
+        "configuration": {
+            "root_module": {
+                "resources": [
+                    {
+                        "address": "digitalocean_project_resources.production",
+                        "expressions": {
+                            "project": {"references": ["var.digitalocean_project_id"]},
+                            "resources": {
+                                "references": [
+                                    "module.host.reserved_ip_urn",
+                                    "module.host",
+                                    "module.storage.bucket_urn",
+                                    "module.storage",
+                                ]
+                            },
+                        },
+                    },
+                    {
+                        "address": "digitalocean_project_resources.host",
+                        "expressions": {
+                            "project": {"references": ["var.digitalocean_project_id"]},
+                            "resources": {
+                                "references": [
+                                    "module.host.droplet_urn",
+                                    "module.host",
+                                ]
+                            },
+                        },
+                    },
+                ],
+                "module_calls": {
+                    "host": {
+                        "module": {
+                            "resources": [
+                                {
+                                    "address": "digitalocean_firewall.host",
+                                    "expressions": {
+                                        "droplet_ids": {
+                                            "references": [
+                                                "digitalocean_droplet.host.id",
+                                                "digitalocean_droplet.host",
+                                            ]
+                                        }
+                                    },
+                                },
+                                {
+                                    "address": "digitalocean_reserved_ip_assignment.host",
+                                    "expressions": {
+                                        "droplet_id": {
+                                            "references": [
+                                                "digitalocean_droplet.host.id",
+                                                "digitalocean_droplet.host",
+                                            ]
+                                        },
+                                        "ip_address": {
+                                            "references": [
+                                                "digitalocean_reserved_ip.host.ip_address",
+                                                "digitalocean_reserved_ip.host",
+                                            ]
+                                        },
+                                    },
+                                },
+                            ]
+                        }
+                    }
+                },
+            }
+        },
     }
 
 
@@ -100,7 +208,7 @@ def _valid_rebuild_drill_plan() -> dict[str, Any]:
         "digitalocean_reserved_ip_assignment": (
             "module.host.digitalocean_reserved_ip_assignment.host"
         ),
-        "digitalocean_project_resources": "digitalocean_project_resources.production",
+        "digitalocean_project_resources": "digitalocean_project_resources.host",
     }
     drill_actions = {
         "digitalocean_droplet": ["create", "delete"],
@@ -109,11 +217,51 @@ def _valid_rebuild_drill_plan() -> dict[str, Any]:
         "digitalocean_project_resources": ["update"],
     }
     for resource in plan["resource_changes"]:
+        resource["change"]["before"] = deepcopy(resource["change"]["after"])
+        resource["change"]["after_unknown"] = {}
         resource["change"]["actions"] = ["no-op"]
         resource_type = resource["type"]
-        if resource_type in addresses:
+        is_drill_resource = resource_type in addresses and (
+            resource_type != "digitalocean_project_resources"
+            or resource.get("address") == addresses[resource_type]
+        )
+        if is_drill_resource:
             resource["address"] = addresses[resource_type]
             resource["change"]["actions"] = drill_actions[resource_type]
+
+    droplet = next(
+        resource
+        for resource in plan["resource_changes"]
+        if resource["address"] == "module.host.digitalocean_droplet.host"
+    )
+    droplet["action_reason"] = "replace_by_request"
+    droplet["change"]["before"].update({"id": "42", "urn": "do:droplet:42"})
+    droplet["change"]["after_unknown"] = {"id": True, "urn": True}
+
+    firewall = next(
+        resource
+        for resource in plan["resource_changes"]
+        if resource["address"] == "module.host.digitalocean_firewall.host"
+    )
+    del firewall["change"]["after"]["droplet_ids"]
+    firewall["change"]["after_unknown"] = {"droplet_ids": True}
+
+    assignment = next(
+        resource
+        for resource in plan["resource_changes"]
+        if resource["address"] == "module.host.digitalocean_reserved_ip_assignment.host"
+    )
+    del assignment["change"]["after"]["droplet_id"]
+    del assignment["change"]["after"]["id"]
+    assignment["change"]["after_unknown"] = {"droplet_id": True, "id": True}
+
+    project = next(
+        resource
+        for resource in plan["resource_changes"]
+        if resource["address"] == "digitalocean_project_resources.host"
+    )
+    del project["change"]["after"]["resources"]
+    project["change"]["after_unknown"] = {"resources": True}
     return plan
 
 
@@ -210,4 +358,60 @@ def test_rejects_missing_rebuild_drill_attachment_change() -> None:
     firewall["change"]["actions"] = ["no-op"]
 
     with pytest.raises(PlanPolicyError, match="must change during the rebuild drill"):
+        assert_plan(plan, allow_droplet_replacement=True)
+
+
+def test_rejects_firewall_rule_change_hidden_inside_expected_update() -> None:
+    plan = _valid_rebuild_drill_plan()
+    firewall = next(
+        resource
+        for resource in plan["resource_changes"]
+        if resource["type"] == "digitalocean_firewall"
+    )
+    firewall["change"]["after"]["outbound_rule"] = []
+
+    with pytest.raises(PlanPolicyError, match="unrelated rebuild-drill field changes"):
+        assert_plan(plan, allow_droplet_replacement=True)
+
+
+def test_rejects_durable_project_membership_change_during_drill() -> None:
+    plan = _valid_rebuild_drill_plan()
+    durable = next(
+        resource
+        for resource in plan["resource_changes"]
+        if resource["address"] == "digitalocean_project_resources.production"
+    )
+    durable["change"]["actions"] = ["update"]
+    durable["change"]["after"]["resources"] = ["do:floatingip:203.0.113.10"]
+
+    with pytest.raises(PlanPolicyError, match="unrelated rebuild-drill actions"):
+        assert_plan(plan, allow_droplet_replacement=True)
+
+
+def test_rejects_missing_durable_project_configuration_reference() -> None:
+    plan = _valid_rebuild_drill_plan()
+    durable_configuration = next(
+        resource
+        for resource in plan["configuration"]["root_module"]["resources"]
+        if resource["address"] == "digitalocean_project_resources.production"
+    )
+    durable_configuration["expressions"]["resources"]["references"] = [
+        "module.host.reserved_ip_urn",
+        "module.host",
+    ]
+
+    with pytest.raises(PlanPolicyError, match="must retain its exact infrastructure references"):
+        assert_plan(plan, allow_droplet_replacement=True)
+
+
+def test_rejects_incidental_droplet_replacement_during_drill() -> None:
+    plan = _valid_rebuild_drill_plan()
+    droplet = next(
+        resource
+        for resource in plan["resource_changes"]
+        if resource["type"] == "digitalocean_droplet"
+    )
+    droplet["action_reason"] = "replace_because_cannot_update"
+
+    with pytest.raises(PlanPolicyError, match="explicit -replace request"):
         assert_plan(plan, allow_droplet_replacement=True)
