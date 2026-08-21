@@ -106,6 +106,12 @@ boundary is exercised before deployment. A central collector, dashboards, and
 routed alerts belong with the control-plane observability work rather than
 consuming the small development Droplet now.
 
+Backup and retention status records are bound to a fingerprint of the active
+repository and node name. Changing either setting therefore cannot reuse old
+local success evidence: convergence recovers backup status only from matching
+scheduled snapshots and runs retention once for the new scope before health can
+become green.
+
 The exact Caddy build inputs and the supported Ubuntu package ranges live in
 `platform/versions.yml`. Ansible installs distribution packages normally so
 security updates remain available, then refuses to converge when MariaDB,

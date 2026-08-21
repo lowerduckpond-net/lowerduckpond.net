@@ -4,22 +4,36 @@ umask 077
 
 status_directory=/var/lib/lowerduckpond/backup-status
 lock_path=/var/cache/lowerduckpond-backup/repository.lock
+scope_path=/etc/lowerduckpond/backup-scope
+status_scope=
+scope_extra=
+read -r status_scope scope_extra < "${scope_path}"
+if [[ ! "${status_scope}" =~ ^[0-9a-f]{64}$ ]] || [[ -n "${scope_extra}" ]]; then
+    echo "Invalid active backup status scope." >&2
+    exit 1
+fi
+
 record_status() {
     local status_name=$1
     local prior_status_name=$2
-    local prior_timestamp
+    local prior_extra=
+    local prior_scope=
+    local prior_timestamp=
     local timestamp
     local temporary_status
     timestamp=$(date +%s)
     if [[ -s "${status_directory}/${prior_status_name}" ]]; then
-        read -r prior_timestamp < "${status_directory}/${prior_status_name}"
+        read -r prior_timestamp prior_scope prior_extra \
+            < "${status_directory}/${prior_status_name}" || true
         if [[ "${prior_timestamp}" =~ ^[0-9]+$ ]] &&
+           [[ "${prior_scope}" == "${status_scope}" ]] &&
+           [[ -z "${prior_extra}" ]] &&
            (( timestamp <= prior_timestamp )); then
             timestamp=$((prior_timestamp + 1))
         fi
     fi
     temporary_status=$(mktemp "${status_directory}/.${status_name}.XXXXXXXX")
-    printf '%s\n' "${timestamp}" > "${temporary_status}"
+    printf '%s %s\n' "${timestamp}" "${status_scope}" > "${temporary_status}"
     chmod 0600 "${temporary_status}"
     mv --force --no-target-directory \
         "${temporary_status}" "${status_directory}/${status_name}"

@@ -15,6 +15,16 @@ trap cleanup EXIT
 temporary_file=$(mktemp "${metric_directory}/.lowerduckpond.prom.XXXXXXXX")
 failure_count=0
 
+active_backup_scope=
+scope_extra=
+if ! read -r active_backup_scope scope_extra < /etc/lowerduckpond/backup-scope ||
+   [[ ! "${active_backup_scope}" =~ ^[0-9a-f]{64}$ ]] ||
+   [[ -n "${scope_extra}" ]]; then
+    printf 'health check failed: invalid active backup status scope\n' >&2
+    failure_count=$((failure_count + 1))
+    active_backup_scope=
+fi
+
 check() {
     local description=$1
     local output
@@ -45,14 +55,18 @@ check 'rootless Podman responds' systemctl --user \
 read_status() {
     local variable_name=$1
     local status_name=$2
+    local recorded_scope=
+    local extra=
     local value=0
     local status_path="/var/lib/lowerduckpond/backup-status/${status_name}"
 
     if [[ -s "${status_path}" ]]; then
-        read -r value < "${status_path}"
-        if [[ ! "${value}" =~ ^[0-9]+$ ]]; then
+        read -r value recorded_scope extra < "${status_path}" || true
+        if [[ ! "${value}" =~ ^[0-9]+$ ]] || [[ -n "${extra}" ]]; then
             printf 'health check failed: invalid %s timestamp\n' "${status_name}" >&2
             failure_count=$((failure_count + 1))
+            value=0
+        elif [[ "${recorded_scope}" != "${active_backup_scope}" ]]; then
             value=0
         fi
     fi

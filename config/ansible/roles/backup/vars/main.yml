@@ -1,0 +1,6 @@
+---
+# Status evidence must not survive a repository or node identity change. Keep
+# the inputs themselves out of the status files while retaining a stable,
+# non-secret identity for the active backup scope.
+backup_status_scope: >-
+  {{ [backup_repository, backup_node_name] | to_json | hash('sha256') }}

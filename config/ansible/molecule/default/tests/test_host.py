@@ -14,6 +14,29 @@ DATABASE_BACKUP_PRIVILEGES = {
     "SHOW VIEW:NO",
     "TRIGGER:NO",
 }
+BACKUP_SCOPE_PATH = "/etc/lowerduckpond/backup-scope"
+BACKUP_SCOPE_LENGTH = 64
+STATUS_FIELD_COUNT = 2
+
+
+def read_backup_scope(host: Host) -> str:
+    scope = host.file(BACKUP_SCOPE_PATH).content_string.strip()
+    assert len(scope) == BACKUP_SCOPE_LENGTH
+    assert all(character in "0123456789abcdef" for character in scope)
+    return scope
+
+
+def read_status_record(host: Host, path: str) -> tuple[int, str]:
+    fields = host.file(path).content_string.split()
+    assert len(fields) == STATUS_FIELD_COUNT
+    timestamp, scope = fields
+    assert timestamp.isdigit()
+    return int(timestamp), scope
+
+
+def write_status_record(host: Host, path: str, timestamp: int, scope: str) -> None:
+    result = host.run(f"printf '%s %s\\n' {timestamp} {scope} > {path}")
+    assert result.rc == 0
 
 
 def test_supported_operating_system(host: Host) -> None:
@@ -268,7 +291,11 @@ done
         "journalctl --unit lowerduckpond-backup-maintenance.service --no-pager --lines 50"
     )
     assert maintenance.rc == 0, maintenance_journal.stdout
-    assert host.file("/var/lib/lowerduckpond/backup-status/maintenance-last-success").exists
+    active_scope = read_backup_scope(host)
+    backup_status_path = "/var/lib/lowerduckpond/backup-status/backup-last-success"
+    maintenance_status_path = "/var/lib/lowerduckpond/backup-status/maintenance-last-success"
+    assert read_status_record(host, backup_status_path)[1] == active_scope
+    assert read_status_record(host, maintenance_status_path)[1] == active_scope
     assert host.service("lowerduckpond-backup.timer").is_enabled
     assert host.service("lowerduckpond-backup-maintenance.timer").is_enabled
 
@@ -304,16 +331,19 @@ def test_monitoring_is_local_and_healthy(host: Host) -> None:
 
 def test_monitoring_reports_newer_backup_failures(host: Host) -> None:
     status_root = "/var/lib/lowerduckpond/backup-status"
-    backup_success = host.file(f"{status_root}/backup-last-success")
+    backup_success_path = f"{status_root}/backup-last-success"
     original_failure = host.file(f"{status_root}/backup-last-failure")
     original_failure_value = original_failure.content_string if original_failure.exists else None
-    future_failure = int(backup_success.content_string.strip()) + 1
+    backup_success_timestamp, active_scope = read_status_record(host, backup_success_path)
+    future_failure = backup_success_timestamp + 1
 
     try:
-        write_failure = host.run(
-            f"printf '%s\\n' {future_failure} > {status_root}/backup-last-failure"
+        write_status_record(
+            host,
+            f"{status_root}/backup-last-failure",
+            future_failure,
+            active_scope,
         )
-        assert write_failure.rc == 0
         unhealthy = host.run("/usr/local/libexec/lowerduckpond/health-check")
         assert unhealthy.rc != 0
         assert "latest scheduled backup failed" in unhealthy.stderr
@@ -321,8 +351,13 @@ def test_monitoring_reports_newer_backup_failures(host: Host) -> None:
         if original_failure_value is None:
             host.run(f"rm -f {status_root}/backup-last-failure")
         else:
-            restored_value = int(original_failure_value.strip())
-            host.run(f"printf '%s\\n' {restored_value} > {status_root}/backup-last-failure")
+            restored_timestamp, restored_scope = original_failure_value.split()
+            write_status_record(
+                host,
+                f"{status_root}/backup-last-failure",
+                int(restored_timestamp),
+                restored_scope,
+            )
 
     restored = host.run("/usr/local/libexec/lowerduckpond/health-check")
     assert restored.rc == 0, restored.stderr
@@ -337,9 +372,10 @@ def test_monitoring_reports_newer_maintenance_failures(host: Host) -> None:
         original_values[status_name] = status.content_string if status.exists else None
 
     now = int(host.run("date +%s").stdout.strip())
+    active_scope = read_backup_scope(host)
     try:
-        host.run(f"printf '%s\\n' {now} > {status_root}/maintenance-last-success")
-        host.run(f"printf '%s\\n' {now + 1} > {status_root}/maintenance-last-failure")
+        write_status_record(host, f"{status_root}/maintenance-last-success", now, active_scope)
+        write_status_record(host, f"{status_root}/maintenance-last-failure", now + 1, active_scope)
         unhealthy = host.run("/usr/local/libexec/lowerduckpond/health-check")
         assert unhealthy.rc != 0
         assert "latest backup maintenance failed" in unhealthy.stderr
@@ -349,8 +385,8 @@ def test_monitoring_reports_newer_maintenance_failures(host: Host) -> None:
             if original_value is None:
                 host.run(f"rm -f {status_path}")
             else:
-                restored_value = int(original_value.strip())
-                host.run(f"printf '%s\\n' {restored_value} > {status_path}")
+                restored_timestamp, restored_scope = original_value.split()
+                write_status_record(host, status_path, int(restored_timestamp), restored_scope)
 
     restored = host.run("/usr/local/libexec/lowerduckpond/health-check")
     assert restored.rc == 0, restored.stderr
@@ -358,16 +394,34 @@ def test_monitoring_reports_newer_maintenance_failures(host: Host) -> None:
 
 def test_monitoring_reports_stale_maintenance(host: Host) -> None:
     status_path = "/var/lib/lowerduckpond/backup-status/maintenance-last-success"
-    original_success = int(host.file(status_path).content_string.strip())
+    original_success, active_scope = read_status_record(host, status_path)
     stale_success = int(host.run("date +%s").stdout.strip()) - 691201
 
     try:
-        host.run(f"printf '%s\\n' {stale_success} > {status_path}")
+        write_status_record(host, status_path, stale_success, active_scope)
         unhealthy = host.run("/usr/local/libexec/lowerduckpond/health-check")
         assert unhealthy.rc != 0
         assert "latest backup maintenance is too old" in unhealthy.stderr
     finally:
-        host.run(f"printf '%s\\n' {original_success} > {status_path}")
+        write_status_record(host, status_path, original_success, active_scope)
+
+    restored = host.run("/usr/local/libexec/lowerduckpond/health-check")
+    assert restored.rc == 0, restored.stderr
+
+
+def test_monitoring_ignores_status_from_another_backup_scope(host: Host) -> None:
+    status_path = "/var/lib/lowerduckpond/backup-status/maintenance-last-success"
+    original_success, active_scope = read_status_record(host, status_path)
+    zero_scope = "0" * BACKUP_SCOPE_LENGTH
+    inactive_scope = zero_scope if active_scope != zero_scope else "1" * BACKUP_SCOPE_LENGTH
+
+    try:
+        write_status_record(host, status_path, original_success, inactive_scope)
+        unhealthy = host.run("/usr/local/libexec/lowerduckpond/health-check")
+        assert unhealthy.rc != 0
+        assert "no successful backup maintenance is recorded" in unhealthy.stderr
+    finally:
+        write_status_record(host, status_path, original_success, active_scope)
 
     restored = host.run("/usr/local/libexec/lowerduckpond/health-check")
     assert restored.rc == 0, restored.stderr

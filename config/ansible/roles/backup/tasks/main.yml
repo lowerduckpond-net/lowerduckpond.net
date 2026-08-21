@@ -44,6 +44,14 @@
     mode: "0700"
   when: backup_repository is ansible.builtin.match('^/')
 
+- name: Install the active backup status scope
+  ansible.builtin.copy:
+    content: "{{ backup_status_scope }}\n"
+    dest: /etc/lowerduckpond/backup-scope
+    owner: root
+    group: root
+    mode: "0600"
+
 - name: Install the protected backup environment
   ansible.builtin.template:
     src: backup.env.j2
@@ -118,20 +126,25 @@
   no_log: true
 
 - name: Inspect the local backup health status
-  ansible.builtin.stat:
+  ansible.builtin.slurp:
     path: /var/lib/lowerduckpond/backup-status/backup-last-success
   register: backup_local_health_status
+  failed_when: false
 
 - name: Restore local health status from the repository
   ansible.builtin.copy:
-    content: "{{ backup_latest_snapshot.stdout | trim }}\n"
+    content: |
+      {{ backup_latest_snapshot.stdout | trim }} {{ backup_status_scope }}
     dest: /var/lib/lowerduckpond/backup-status/backup-last-success
     owner: root
     group: root
     mode: "0600"
   when:
     - backup_latest_snapshot.rc == 0
-    - not backup_local_health_status.stat.exists
+    - >-
+      (backup_local_health_status.content | default('') |
+      ansible.builtin.b64decode | trim) is not ansible.builtin.match(
+      '^[0-9]+ ' ~ backup_status_scope ~ '$')
 
 - name: Create the first encrypted off-host backup
   ansible.builtin.systemd_service:
@@ -144,9 +157,10 @@
   no_log: true
 
 - name: Inspect initial backup maintenance status
-  ansible.builtin.stat:
+  ansible.builtin.slurp:
     path: /var/lib/lowerduckpond/backup-status/maintenance-last-success
   register: backup_initial_maintenance_status
+  failed_when: false
 
 - name: Apply backup retention initially
   ansible.builtin.systemd_service:
@@ -154,7 +168,10 @@
     state: started
   when:
     - backup_run_initial_maintenance
-    - not backup_initial_maintenance_status.stat.exists
+    - >-
+      (backup_initial_maintenance_status.content | default('') |
+      ansible.builtin.b64decode | trim) is not ansible.builtin.match(
+      '^[0-9]+ ' ~ backup_status_scope ~ '$')
   changed_when: true
   no_log: true
 
