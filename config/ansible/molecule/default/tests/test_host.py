@@ -20,16 +20,24 @@ STATUS_FIELD_COUNT = 2
 LOCAL_BACKUP_REPOSITORY = "/mnt/lowerduckpond-restic-test"
 
 
-def read_backup_scope(host: Host) -> str:
+def read_status_scope(host: Host, variable_name: str) -> str:
     result = host.run(
         "/bin/bash -c %s",
-        'source /etc/lowerduckpond/backup.env; printf "%s" "$LOWERDUCKPOND_BACKUP_STATUS_SCOPE"',
+        f'source /etc/lowerduckpond/backup.env; printf "%s" "${{{variable_name}}}"',
     )
     assert result.rc == 0
     scope = result.stdout.strip()
     assert len(scope) == BACKUP_SCOPE_LENGTH
     assert all(character in "0123456789abcdef" for character in scope)
     return scope
+
+
+def read_backup_scope(host: Host) -> str:
+    return read_status_scope(host, "LOWERDUCKPOND_BACKUP_STATUS_SCOPE")
+
+
+def read_maintenance_scope(host: Host) -> str:
+    return read_status_scope(host, "LOWERDUCKPOND_BACKUP_MAINTENANCE_STATUS_SCOPE")
 
 
 def read_status_record(host: Host, path: str) -> tuple[int, str]:
@@ -233,7 +241,8 @@ def test_backup_configuration_is_atomic_and_sandboxed(host: Host) -> None:
     assert backup_script.contains(f"lock_path={lock_path}")
     assert maintenance_script.contains(f"lock_path={lock_path}")
     assert backup_script.contains("LOWERDUCKPOND_BACKUP_STATUS_SCOPE")
-    assert maintenance_script.contains("LOWERDUCKPOND_BACKUP_STATUS_SCOPE")
+    assert maintenance_script.contains("LOWERDUCKPOND_BACKUP_MAINTENANCE_STATUS_SCOPE")
+    assert read_backup_scope(host) != read_maintenance_scope(host)
     assert not backup_script.contains(BACKUP_SCOPE_PATH)
     assert not maintenance_script.contains(BACKUP_SCOPE_PATH)
     lock_index = maintenance_script.content_string.index("flock --exclusive 9")
@@ -325,11 +334,12 @@ done
         "journalctl --unit lowerduckpond-backup-maintenance.service --no-pager --lines 50"
     )
     assert maintenance.rc == 0, maintenance_journal.stdout
-    active_scope = read_backup_scope(host)
+    active_backup_scope = read_backup_scope(host)
+    active_maintenance_scope = read_maintenance_scope(host)
     backup_status_path = "/var/lib/lowerduckpond/backup-status/backup-last-success"
     maintenance_status_path = "/var/lib/lowerduckpond/backup-status/maintenance-last-success"
-    assert read_status_record(host, backup_status_path)[1] == active_scope
-    assert read_status_record(host, maintenance_status_path)[1] == active_scope
+    assert read_status_record(host, backup_status_path)[1] == active_backup_scope
+    assert read_status_record(host, maintenance_status_path)[1] == active_maintenance_scope
     assert host.service("lowerduckpond-backup.timer").is_enabled
     assert host.service("lowerduckpond-backup-maintenance.timer").is_enabled
 
@@ -410,7 +420,7 @@ def test_monitoring_reports_newer_maintenance_failures(host: Host) -> None:
         original_values[status_name] = status.content_string if status.exists else None
 
     now = int(host.run("date +%s").stdout.strip())
-    active_scope = read_backup_scope(host)
+    active_scope = read_maintenance_scope(host)
     try:
         write_status_record(host, f"{status_root}/maintenance-last-success", now, active_scope)
         write_status_record(host, f"{status_root}/maintenance-last-failure", now + 1, active_scope)
@@ -433,6 +443,7 @@ def test_monitoring_reports_newer_maintenance_failures(host: Host) -> None:
 def test_monitoring_reports_stale_maintenance(host: Host) -> None:
     status_path = "/var/lib/lowerduckpond/backup-status/maintenance-last-success"
     original_success, active_scope = read_status_record(host, status_path)
+    assert active_scope == read_maintenance_scope(host)
     stale_success = int(host.run("date +%s").stdout.strip()) - 691201
 
     try:
@@ -447,9 +458,10 @@ def test_monitoring_reports_stale_maintenance(host: Host) -> None:
     assert restored.rc == 0, restored.stderr
 
 
-def test_monitoring_ignores_status_from_another_backup_scope(host: Host) -> None:
+def test_monitoring_ignores_status_from_another_maintenance_scope(host: Host) -> None:
     status_path = "/var/lib/lowerduckpond/backup-status/maintenance-last-success"
     original_success, active_scope = read_status_record(host, status_path)
+    assert active_scope == read_maintenance_scope(host)
     zero_scope = "0" * BACKUP_SCOPE_LENGTH
     inactive_scope = zero_scope if active_scope != zero_scope else "1" * BACKUP_SCOPE_LENGTH
 

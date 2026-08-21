@@ -107,13 +107,15 @@ routed alerts belong with the control-plane observability work rather than
 consuming the small development Droplet now.
 
 The root-only backup environment is activated with one atomic rename and carries
-the repository, node name, retention policy, credentials, and their status
-fingerprint together. A scheduled job therefore sees either the complete old
-configuration or the complete new one. Changing the repository or node cannot
-reuse old local success evidence: convergence recovers backup status only from
-matching scheduled snapshots and runs retention once for the new scope before
-health can become green. Local repositories are also added explicitly to the
-backup services' otherwise narrow writable-path sandbox.
+the repository, node name, retention policy, credentials, and separate backup
+and maintenance status fingerprints together. A scheduled job therefore sees
+either the complete old configuration or the complete new one. Changing the
+repository or node cannot reuse old local success evidence, while changing any
+retention input invalidates only maintenance evidence. Convergence recovers
+backup status only from matching scheduled snapshots and immediately runs
+retention for a new repository, node, or policy scope before health can become
+green. Local repositories are also added explicitly to the backup services'
+otherwise narrow writable-path sandbox.
 Paths below `/home`, `/root`, and `/run/user` are rejected because the service
 sandbox deliberately hides those trees with `ProtectHome=true`.
 

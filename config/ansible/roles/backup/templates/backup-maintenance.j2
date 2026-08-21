@@ -8,7 +8,7 @@ lock_path=/var/cache/lowerduckpond-backup/repository.lock
 source /etc/lowerduckpond/backup.env
 export -n AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION
 export -n RESTIC_PASSWORD RESTIC_REPOSITORY RESTIC_CACHE_DIR
-status_scope=${LOWERDUCKPOND_BACKUP_STATUS_SCOPE:-}
+status_scope=${LOWERDUCKPOND_BACKUP_MAINTENANCE_STATUS_SCOPE:-}
 if [[ ! "${status_scope}" =~ ^[0-9a-f]{64}$ ]] ||
    [[ -z "${LOWERDUCKPOND_BACKUP_NODE_NAME:-}" ]]; then
     echo "Invalid active backup configuration." >&2

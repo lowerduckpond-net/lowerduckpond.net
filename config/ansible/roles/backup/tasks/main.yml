@@ -187,7 +187,7 @@
     - >-
       (backup_initial_maintenance_status.content | default('') |
       ansible.builtin.b64decode | trim) is not ansible.builtin.match(
-      '^[0-9]+ ' ~ backup_status_scope ~ '$')
+      '^[0-9]+ ' ~ backup_maintenance_status_scope ~ '$')
   changed_when: true
   no_log: true
 

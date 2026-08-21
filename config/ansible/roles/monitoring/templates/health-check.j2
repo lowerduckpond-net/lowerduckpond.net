@@ -20,10 +20,16 @@ source /etc/lowerduckpond/backup.env
 export -n AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION
 export -n RESTIC_PASSWORD RESTIC_REPOSITORY RESTIC_CACHE_DIR
 active_backup_scope=${LOWERDUCKPOND_BACKUP_STATUS_SCOPE:-}
+active_maintenance_scope=${LOWERDUCKPOND_BACKUP_MAINTENANCE_STATUS_SCOPE:-}
 if [[ ! "${active_backup_scope}" =~ ^[0-9a-f]{64}$ ]]; then
     printf 'health check failed: invalid active backup configuration\n' >&2
     failure_count=$((failure_count + 1))
     active_backup_scope=
+fi
+if [[ ! "${active_maintenance_scope}" =~ ^[0-9a-f]{64}$ ]]; then
+    printf 'health check failed: invalid active backup maintenance configuration\n' >&2
+    failure_count=$((failure_count + 1))
+    active_maintenance_scope=
 fi
 
 check() {
@@ -56,6 +62,7 @@ check 'rootless Podman responds' systemctl --user \
 read_status() {
     local variable_name=$1
     local status_name=$2
+    local active_scope=$3
     local recorded_scope=
     local extra=
     local value=0
@@ -67,7 +74,7 @@ read_status() {
             printf 'health check failed: invalid %s timestamp\n' "${status_name}" >&2
             failure_count=$((failure_count + 1))
             value=0
-        elif [[ "${recorded_scope}" != "${active_backup_scope}" ]]; then
+        elif [[ "${recorded_scope}" != "${active_scope}" ]]; then
             value=0
         fi
     fi
@@ -78,10 +85,10 @@ backup_success=0
 backup_failure=0
 maintenance_success=0
 maintenance_failure=0
-read_status backup_success backup-last-success
-read_status backup_failure backup-last-failure
-read_status maintenance_success maintenance-last-success
-read_status maintenance_failure maintenance-last-failure
+read_status backup_success backup-last-success "${active_backup_scope}"
+read_status backup_failure backup-last-failure "${active_backup_scope}"
+read_status maintenance_success maintenance-last-success "${active_maintenance_scope}"
+read_status maintenance_failure maintenance-last-failure "${active_maintenance_scope}"
 
 now=$(date +%s)
 if (( backup_success > 0 )); then
