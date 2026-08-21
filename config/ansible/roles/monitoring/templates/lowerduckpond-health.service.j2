@@ -1,6 +1,6 @@
 [Unit]
 Description=Report Lower Duck Pond hosting-node health
-After=caddy.service mariadb.service prometheus-node-exporter.service
+After=caddy.service mariadb.service prometheus-node-exporter.service user@{{ podman_service_uid }}.service
 
 [Service]
 Type=oneshot
@@ -16,5 +16,4 @@ NoNewPrivileges=true
 RestrictSUIDSGID=true
 LockPersonality=true
 ReadWritePaths={{ monitoring_textfile_directory }}
-ReadWritePaths={{ podman_service_home }}
-ReadWritePaths=/run/user/{{ podman_service_uid }}
+BindReadOnlyPaths=/run/user/{{ podman_service_uid }}

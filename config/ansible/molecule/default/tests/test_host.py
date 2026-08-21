@@ -133,10 +133,13 @@ def test_monitoring_is_local_and_healthy(host: Host) -> None:
     assert not host.socket("tcp://0.0.0.0:9100").is_listening
 
     health_unit = host.file("/etc/systemd/system/lowerduckpond-health.service")
-    assert health_unit.contains("ReadWritePaths=/var/lib/lowerduckpond/runtime")
-    assert health_unit.contains("ReadWritePaths=/run/user/21000")
+    assert health_unit.contains("BindReadOnlyPaths=/run/user/21000")
+    assert not health_unit.contains("ReadWritePaths=/var/lib/lowerduckpond/runtime")
     scheduled_health = host.run("systemctl start lowerduckpond-health.service")
-    assert scheduled_health.rc == 0
+    health_journal = host.run(
+        "journalctl --unit lowerduckpond-health.service --no-pager --lines 50"
+    )
+    assert scheduled_health.rc == 0, health_journal.stdout
 
     metrics = host.file("/var/lib/prometheus/node-exporter/lowerduckpond.prom")
     assert metrics.contains("lowerduckpond_health_failures 0")
