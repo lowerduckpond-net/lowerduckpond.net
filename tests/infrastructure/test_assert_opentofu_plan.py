@@ -33,12 +33,14 @@ def _valid_plan() -> dict[str, Any]:
                     "monitoring": True,
                     "backups": False,
                     "size": "s-1vcpu-2gb",
+                    "urn": "do:droplet:42",
                     "tags": [
                         "environment:production",
                         "managed-by:opentofu",
                         "project:lowerduckpond",
                     ],
                 },
+                address="module.host.digitalocean_droplet.host",
             ),
             _resource(
                 "digitalocean_firewall",
@@ -77,19 +79,26 @@ def _valid_plan() -> dict[str, Any]:
                 {
                     "acl": "private",
                     "force_destroy": False,
+                    "urn": "do:space:example-backups",
                     "versioning": [{"enabled": True}],
                     "lifecycle_rule": [
                         {"prefix": "backups/"},
                         {"prefix": "archives/"},
                     ],
                 },
+                address="module.storage.digitalocean_spaces_bucket.backups",
             ),
             _resource(
                 "digitalocean_spaces_key",
                 "runtime",
                 {"grant": [{"bucket": "example-backups", "permission": "readwrite"}]},
             ),
-            _resource("digitalocean_reserved_ip", "host", {}),
+            _resource(
+                "digitalocean_reserved_ip",
+                "host",
+                {"urn": "do:reservedip:203.0.113.10"},
+                address="module.host.digitalocean_reserved_ip.host",
+            ),
             _resource(
                 "digitalocean_reserved_ip_assignment",
                 "host",
@@ -102,7 +111,7 @@ def _valid_plan() -> dict[str, Any]:
                     "id": "project-id",
                     "project": "project-id",
                     "resources": [
-                        "do:floatingip:203.0.113.10",
+                        "do:reservedip:203.0.113.10",
                         "do:space:example-backups",
                     ],
                 },
@@ -269,6 +278,19 @@ def test_accepts_expected_foundation() -> None:
     assert_plan(_valid_plan())
 
 
+def test_rejects_durable_project_membership_that_does_not_match_resources() -> None:
+    plan = _valid_plan()
+    durable = next(
+        resource
+        for resource in plan["resource_changes"]
+        if resource["address"] == "digitalocean_project_resources.production"
+    )
+    durable["change"]["after"]["resources"][0] = "do:reservedip:203.0.113.99"
+
+    with pytest.raises(PlanPolicyError, match="must exactly match the planned reserved IP"):
+        assert_plan(plan)
+
+
 def test_rejects_world_accessible_ssh() -> None:
     plan = _valid_plan()
     firewall = next(
@@ -382,7 +404,7 @@ def test_rejects_durable_project_membership_change_during_drill() -> None:
         if resource["address"] == "digitalocean_project_resources.production"
     )
     durable["change"]["actions"] = ["update"]
-    durable["change"]["after"]["resources"] = ["do:floatingip:203.0.113.10"]
+    durable["change"]["after"]["resources"] = ["do:reservedip:203.0.113.10"]
 
     with pytest.raises(PlanPolicyError, match="unrelated rebuild-drill actions"):
         assert_plan(plan, allow_droplet_replacement=True)
