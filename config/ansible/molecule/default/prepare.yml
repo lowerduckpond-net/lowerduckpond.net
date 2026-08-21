@@ -67,13 +67,18 @@
             GRANT INSERT, FILE ON *.* TO 'ldp-backup'@'localhost';
       changed_when: true
 
-    - name: Create the legacy backup status fixture directory
+    - name: Create the legacy backup status fixture directories
       ansible.builtin.file:
-        path: /var/lib/lowerduckpond/backup-status
+        path: "{{ item.path }}"
         state: directory
         owner: root
         group: root
-        mode: "0700"
+        mode: "{{ item.mode }}"
+      loop:
+        - path: /var/lib/lowerduckpond
+          mode: "0711"
+        - path: /var/lib/lowerduckpond/backup-status
+          mode: "0700"
 
     - name: Seed maintenance success for a different backup scope
       ansible.builtin.copy:
