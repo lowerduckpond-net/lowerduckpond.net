@@ -6,6 +6,15 @@ BACKUP_ENVIRONMENT_MODE = 0o600
 CONTENT_ROOT_MODE = 0o711
 ROUTE_FILE_MODE = 0o640
 SUDOERS_MODE = 0o440
+DATABASE_BACKUP_PRIVILEGES = {
+    "EVENT:NO",
+    "LOCK TABLES:NO",
+    "PROCESS:NO",
+    "RELOAD:NO",
+    "SELECT:NO",
+    "SHOW VIEW:NO",
+    "TRIGGER:NO",
+}
 
 
 def test_supported_operating_system(host: Host) -> None:
@@ -72,6 +81,32 @@ def test_database_is_loopback_only(host: Host) -> None:
     assert query.stdout.strip() == "127.0.0.1"
     assert host.service("mariadb").is_running
     assert host.service("mariadb").is_enabled
+
+    privileges = host.run(
+        'mariadb --batch --skip-column-names --execute "'
+        "SELECT CONCAT(PRIVILEGE_TYPE, ':', IS_GRANTABLE) "
+        "FROM information_schema.USER_PRIVILEGES "
+        "WHERE GRANTEE=\\\"'ldp-backup'@'localhost'\\\"\""
+    )
+    assert privileges.rc == 0
+    assert set(privileges.stdout.splitlines()) == DATABASE_BACKUP_PRIVILEGES
+
+    scoped_or_role_privileges = host.run(
+        'mariadb --batch --skip-column-names --execute "'
+        "SELECT "
+        "(SELECT COUNT(*) FROM information_schema.SCHEMA_PRIVILEGES "
+        "WHERE GRANTEE=\\\"'ldp-backup'@'localhost'\\\") + "
+        "(SELECT COUNT(*) FROM information_schema.TABLE_PRIVILEGES "
+        "WHERE GRANTEE=\\\"'ldp-backup'@'localhost'\\\") + "
+        "(SELECT COUNT(*) FROM information_schema.COLUMN_PRIVILEGES "
+        "WHERE GRANTEE=\\\"'ldp-backup'@'localhost'\\\") + "
+        "(SELECT COUNT(*) FROM information_schema.ROUTINE_PRIVILEGES "
+        "WHERE GRANTEE=\\\"'ldp-backup'@'localhost'\\\") + "
+        "(SELECT COUNT(*) FROM mysql.roles_mapping "
+        "WHERE User='ldp-backup' AND Host='localhost')\""
+    )
+    assert scoped_or_role_privileges.rc == 0
+    assert scoped_or_role_privileges.stdout.strip() == "0"
 
 
 def test_nftables_policy_compiles_and_blocks_metadata(host: Host) -> None:

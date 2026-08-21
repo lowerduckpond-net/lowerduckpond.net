@@ -11,3 +11,10 @@ database_required_backup_privileges:
   - SELECT
   - SHOW VIEW
   - TRIGGER
+database_required_backup_privilege_records: >-
+  {{
+    database_required_backup_privileges
+    | map('regex_replace', '^', 'GLOBAL:')
+    | map('regex_replace', '$', ':NO')
+    | list
+  }}

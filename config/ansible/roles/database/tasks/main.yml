@@ -74,23 +74,49 @@
       - --skip-column-names
       - --execute
       - >-
-        SELECT PRIVILEGE_TYPE FROM information_schema.USER_PRIVILEGES
-        WHERE GRANTEE='\'{{ database_backup_user }}\'@\'localhost\''
-        ORDER BY PRIVILEGE_TYPE
+        SELECT privilege_record FROM (
+          SELECT CONCAT('GLOBAL:', PRIVILEGE_TYPE, ':', IS_GRANTABLE)
+            AS privilege_record
+          FROM information_schema.USER_PRIVILEGES
+          WHERE GRANTEE='\'{{ database_backup_user }}\'@\'localhost\''
+          UNION ALL
+          SELECT CONCAT('SCHEMA:', PRIVILEGE_TYPE, ':', IS_GRANTABLE)
+          FROM information_schema.SCHEMA_PRIVILEGES
+          WHERE GRANTEE='\'{{ database_backup_user }}\'@\'localhost\''
+          UNION ALL
+          SELECT CONCAT('TABLE:', PRIVILEGE_TYPE, ':', IS_GRANTABLE)
+          FROM information_schema.TABLE_PRIVILEGES
+          WHERE GRANTEE='\'{{ database_backup_user }}\'@\'localhost\''
+          UNION ALL
+          SELECT CONCAT('COLUMN:', PRIVILEGE_TYPE, ':', IS_GRANTABLE)
+          FROM information_schema.COLUMN_PRIVILEGES
+          WHERE GRANTEE='\'{{ database_backup_user }}\'@\'localhost\''
+          UNION ALL
+          SELECT CONCAT('ROUTINE:', PRIVILEGE_TYPE, ':', IS_GRANTABLE)
+          FROM information_schema.ROUTINE_PRIVILEGES
+          WHERE GRANTEE='\'{{ database_backup_user }}\'@\'localhost\''
+          UNION ALL
+          SELECT CONCAT('ROLE:', Role, ':', Admin_option)
+          FROM mysql.roles_mapping
+          WHERE User='{{ database_backup_user }}' AND Host='localhost'
+        ) AS actual_privileges
+        ORDER BY privilege_record
   register: database_backup_privileges
   changed_when: false
 
-- name: Grant only database dump privileges
+- name: Reset drifted database backup privileges
   ansible.builtin.command:
     argv:
       - mariadb
       - --execute
       - >-
-        GRANT SELECT, SHOW VIEW, EVENT, TRIGGER, LOCK TABLES, RELOAD, PROCESS
-        ON *.* TO '{{ database_backup_user }}'@'localhost'
+        DROP USER '{{ database_backup_user }}'@'localhost';
+        CREATE USER '{{ database_backup_user }}'@'localhost'
+        IDENTIFIED VIA unix_socket;
+        GRANT {{ database_required_backup_privileges | join(', ') }}
+        ON *.* TO '{{ database_backup_user }}'@'localhost';
   when: >-
-    database_required_backup_privileges |
-    difference(database_backup_privileges.stdout_lines) |
-    length > 0
+    database_backup_privileges.stdout_lines | sort !=
+    database_required_backup_privilege_records | sort
   changed_when: true
   no_log: true

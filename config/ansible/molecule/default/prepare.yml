@@ -43,3 +43,26 @@
       failed_when: >-
         molecule_systemd_status.rc != 0 and
         'degraded' not in molecule_systemd_status.stdout
+
+    - name: Install MariaDB for the privilege-drift fixture
+      ansible.builtin.apt:
+        name:
+          - mariadb-client
+          - mariadb-server
+        state: present
+
+    - name: Start MariaDB for the privilege-drift fixture
+      ansible.builtin.systemd_service:
+        name: mariadb.service
+        state: started
+
+    - name: Seed an over-privileged database backup account
+      ansible.builtin.command:
+        argv:
+          - mariadb
+          - --execute
+          - >-
+            CREATE USER IF NOT EXISTS 'ldp-backup'@'localhost'
+            IDENTIFIED VIA unix_socket;
+            GRANT INSERT, FILE ON *.* TO 'ldp-backup'@'localhost';
+      changed_when: true
