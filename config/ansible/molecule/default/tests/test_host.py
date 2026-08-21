@@ -183,7 +183,7 @@ def test_provisioner_privilege_is_narrow(host: Host) -> None:
     assert published_route.group == "ldp-caddy-routes"
     assert published_route.mode == ROUTE_FILE_MODE
     assert published_route.contains("host molecule.lowerduckpond.test")
-    assert published_route.contains(f"root * /srv/lowerduckpond/sites/{site_id}/current")
+    assert published_route.contains(rf"root \* /srv/lowerduckpond/sites/{site_id}/current")
     assert published_route.contains("file_server")
     assert not published_route.contains("CLOUDFLARE_API_TOKEN")
 
