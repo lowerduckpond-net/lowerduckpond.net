@@ -32,6 +32,22 @@
       owner: root
       group: root
       mode: "0755"
+    - path: /var/cache/lowerduckpond-go
+      owner: root
+      group: root
+      mode: "0755"
+    - path: /var/cache/lowerduckpond-go/build
+      owner: root
+      group: root
+      mode: "0755"
+    - path: /var/cache/lowerduckpond-go/modules
+      owner: root
+      group: root
+      mode: "0755"
+    - path: /var/cache/lowerduckpond-go/tmp
+      owner: root
+      group: root
+      mode: "0755"
     - path: /usr/local/libexec/lowerduckpond
       owner: root
       group: root
@@ -73,6 +89,7 @@
   environment:
     GOCACHE: /var/cache/lowerduckpond-go/build
     GOMODCACHE: /var/cache/lowerduckpond-go/modules
+    GOTMPDIR: /var/cache/lowerduckpond-go/tmp
   notify: Restart Caddy
 
 - name: Set custom Caddy binary ownership and mode
