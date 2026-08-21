@@ -14,3 +14,4 @@ backup_calendar: "*-*-* 03:15:00"
 backup_maintenance_calendar: "Sun *-*-* 05:30:00"
 backup_randomized_delay_seconds: 1800
 backup_run_initial: true
+backup_run_initial_maintenance: true

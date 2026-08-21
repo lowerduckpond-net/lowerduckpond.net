@@ -142,6 +142,20 @@
   changed_when: true
   no_log: true
 
+- name: Inspect initial backup maintenance status
+  ansible.builtin.stat:
+    path: /var/lib/lowerduckpond/backup-status/maintenance-last-success
+  register: backup_initial_maintenance_status
+
+- name: Apply backup retention initially
+  ansible.builtin.command:
+    cmd: /usr/local/libexec/lowerduckpond/backup-maintenance
+  when:
+    - backup_run_initial_maintenance
+    - not backup_initial_maintenance_status.stat.exists
+  changed_when: true
+  no_log: true
+
 - name: Enable backup schedules
   ansible.builtin.systemd_service:
     name: "{{ item }}"

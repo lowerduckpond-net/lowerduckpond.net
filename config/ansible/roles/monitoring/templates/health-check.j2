@@ -68,8 +68,8 @@ read_status backup_failure backup-last-failure
 read_status maintenance_success maintenance-last-success
 read_status maintenance_failure maintenance-last-failure
 
+now=$(date +%s)
 if (( backup_success > 0 )); then
-    now=$(date +%s)
     if (( now - backup_success > {{ monitoring_backup_max_age_seconds }} )); then
         printf 'health check failed: latest backup is too old\n' >&2
         failure_count=$((failure_count + 1))
@@ -81,6 +81,16 @@ fi
 
 if (( backup_failure > backup_success )); then
     printf 'health check failed: latest scheduled backup failed\n' >&2
+    failure_count=$((failure_count + 1))
+fi
+
+if (( maintenance_success > 0 )); then
+    if (( now - maintenance_success > {{ monitoring_backup_maintenance_max_age_seconds }} )); then
+        printf 'health check failed: latest backup maintenance is too old\n' >&2
+        failure_count=$((failure_count + 1))
+    fi
+else
+    printf 'health check failed: no successful backup maintenance is recorded\n' >&2
     failure_count=$((failure_count + 1))
 fi
 

@@ -204,8 +204,28 @@ def test_backup_repository_and_restore(host: Host) -> None:
     assert latest.rc == 0
     assert latest.stdout.strip().isdigit()
 
+    diagnostic_root = "/var/cache/lowerduckpond-backup/diagnostic"
+    diagnostic_fixture = host.run(
+        f"install -d -m 0700 {diagnostic_root} && "
+        f"printf '%s\\n' diagnostic > {diagnostic_root}/not-a-host-backup"
+    )
+    assert diagnostic_fixture.rc == 0
+    diagnostic_backup = host.run(
+        "/bin/bash -c 'set -a; source /etc/lowerduckpond/backup.env; set +a; "
+        f"restic backup --host molecule --tag diagnostic {diagnostic_root}'"
+    )
+    assert diagnostic_backup.rc == 0
+
+    restore_script = host.file("/usr/local/libexec/lowerduckpond/restore-smoke-test")
+    assert restore_script.contains("--tag scheduled")
     restore = host.run("/usr/local/libexec/lowerduckpond/restore-smoke-test")
     assert restore.rc == 0
+
+    maintenance_script = host.file("/usr/local/libexec/lowerduckpond/backup-maintenance")
+    lock_index = maintenance_script.content_string.index("flock --exclusive 9")
+    restic_index = maintenance_script.content_string.index("restic forget")
+    assert lock_index < restic_index
+    assert maintenance_script.contains("--tag scheduled")
     maintenance = host.run("/usr/local/libexec/lowerduckpond/backup-maintenance")
     assert maintenance.rc == 0
     assert host.file("/var/lib/lowerduckpond/backup-status/maintenance-last-success").exists
@@ -283,6 +303,23 @@ def test_monitoring_reports_newer_maintenance_failures(host: Host) -> None:
             else:
                 restored_value = int(original_value.strip())
                 host.run(f"printf '%s\\n' {restored_value} > {status_path}")
+
+    restored = host.run("/usr/local/libexec/lowerduckpond/health-check")
+    assert restored.rc == 0
+
+
+def test_monitoring_reports_stale_maintenance(host: Host) -> None:
+    status_path = "/var/lib/lowerduckpond/backup-status/maintenance-last-success"
+    original_success = int(host.file(status_path).content_string.strip())
+    stale_success = int(host.run("date +%s").stdout.strip()) - 691201
+
+    try:
+        host.run(f"printf '%s\\n' {stale_success} > {status_path}")
+        unhealthy = host.run("/usr/local/libexec/lowerduckpond/health-check")
+        assert unhealthy.rc != 0
+        assert "latest backup maintenance is too old" in unhealthy.stderr
+    finally:
+        host.run(f"printf '%s\\n' {original_success} > {status_path}")
 
     restored = host.run("/usr/local/libexec/lowerduckpond/health-check")
     assert restored.rc == 0

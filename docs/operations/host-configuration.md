@@ -97,8 +97,10 @@ sudo /usr/local/libexec/lowerduckpond/restic-check
 ```
 
 The node exporter listens only on `127.0.0.1:9100`. Milestone 2 records Caddy,
-database, rootless-runtime, and backup health as Prometheus textfile metrics and
-in journald; a central collector, dashboards, and routed alerts belong with the
+database, rootless-runtime, scheduled-backup, and weekly-retention health as
+Prometheus textfile metrics and in journald. Backup and retention share a host
+lock, and retention and restore checks select only snapshots tagged
+`scheduled`. A central collector, dashboards, and routed alerts belong with the
 control-plane observability work rather than consuming the small development
 Droplet now.
 

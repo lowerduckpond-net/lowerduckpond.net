@@ -1,4 +1,5 @@
 ---
 monitoring_health_calendar: "*:0/5"
 monitoring_backup_max_age_seconds: 129600
+monitoring_backup_maintenance_max_age_seconds: 691200
 monitoring_textfile_directory: /var/lib/prometheus/node-exporter

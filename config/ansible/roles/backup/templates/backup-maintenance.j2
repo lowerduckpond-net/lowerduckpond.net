@@ -35,6 +35,9 @@ finish() {
 }
 trap finish EXIT
 
+exec 9>/run/lock/lowerduckpond-backup.lock
+flock --exclusive 9
+
 set -a
 # shellcheck disable=SC1091
 source /etc/lowerduckpond/backup.env
@@ -42,6 +45,7 @@ set +a
 
 restic forget \
     --host {{ backup_node_name | quote }} \
+    --tag scheduled \
     --keep-daily {{ backup_keep_daily }} \
     --keep-weekly {{ backup_keep_weekly }} \
     --keep-monthly {{ backup_keep_monthly }} \
