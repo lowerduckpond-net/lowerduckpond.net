@@ -253,7 +253,8 @@ def test_monitoring_reports_newer_backup_failures(host: Host) -> None:
         if original_failure_value is None:
             host.run(f"rm -f {status_root}/backup-last-failure")
         else:
-            host.run(f"printf '%s' {original_failure_value!r} > {status_root}/backup-last-failure")
+            restored_value = int(original_failure_value.strip())
+            host.run(f"printf '%s\\n' {restored_value} > {status_root}/backup-last-failure")
 
     restored = host.run("/usr/local/libexec/lowerduckpond/health-check")
     assert restored.rc == 0
@@ -280,7 +281,8 @@ def test_monitoring_reports_newer_maintenance_failures(host: Host) -> None:
             if original_value is None:
                 host.run(f"rm -f {status_path}")
             else:
-                host.run(f"printf '%s' {original_value!r} > {status_path}")
+                restored_value = int(original_value.strip())
+                host.run(f"printf '%s\\n' {restored_value} > {status_path}")
 
     restored = host.run("/usr/local/libexec/lowerduckpond/health-check")
     assert restored.rc == 0
