@@ -16,8 +16,6 @@ platforms:
       - /run
       - /run/lock
       - /tmp
-    volumes:
-      - /sys/fs/cgroup:/sys/fs/cgroup:ro
 provisioner:
   name: ansible
   config_options:

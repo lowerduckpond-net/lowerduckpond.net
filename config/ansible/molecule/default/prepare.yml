@@ -1,4 +1,35 @@
 ---
+- name: Verify the acceptance container started
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Inspect the acceptance container state
+      ansible.builtin.command:
+        cmd: docker inspect lowerduckpond-ubuntu-2604
+      register: molecule_container_state
+      changed_when: false
+
+    - name: Read startup logs from a stopped container
+      ansible.builtin.command:
+        cmd: docker logs lowerduckpond-ubuntu-2604
+      register: molecule_container_logs
+      changed_when: false
+      failed_when: false
+      when: >-
+        (molecule_container_state.stdout | from_json | first).State.Status != "running"
+
+    - name: Display startup logs from a stopped container
+      ansible.builtin.debug:
+        var: molecule_container_logs.stderr_lines
+      when: >-
+        (molecule_container_state.stdout | from_json | first).State.Status != "running"
+
+    - name: Require a running acceptance container
+      ansible.builtin.assert:
+        that:
+          - (molecule_container_state.stdout | from_json | first).State.Status == "running"
+        fail_msg: The Ubuntu acceptance container exited during systemd startup.
+
 - name: Prepare the Ubuntu acceptance container
   hosts: all
   become: true
