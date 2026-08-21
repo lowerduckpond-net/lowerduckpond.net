@@ -41,6 +41,10 @@
     group: "{{ item.group }}"
     mode: "{{ item.mode }}"
   loop:
+    - path: "{{ provisioner_content_root }}"
+      owner: root
+      group: root
+      mode: "0711"
     - path: "{{ provisioner_state_root }}/jobs"
       owner: "{{ provisioner_user }}"
       group: "{{ provisioner_group }}"

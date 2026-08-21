@@ -3,6 +3,7 @@ from __future__ import annotations
 from testinfra.host import Host
 
 BACKUP_ENVIRONMENT_MODE = 0o600
+CONTENT_ROOT_MODE = 0o711
 SUDOERS_MODE = 0o440
 
 
@@ -103,6 +104,14 @@ def test_provisioner_privilege_is_narrow(host: Host) -> None:
     account = host.user("ldp-provisioner")
     assert account.exists
     assert account.shell == "/usr/sbin/nologin"
+
+    content_root = host.file("/srv/lowerduckpond")
+    assert content_root.user == "root"
+    assert content_root.group == "root"
+    assert content_root.mode == CONTENT_ROOT_MODE
+    traversal = host.run("runuser --user ldp-provisioner -- test -x /srv/lowerduckpond")
+    assert traversal.rc == 0
+
     sudoers = host.file("/etc/sudoers.d/lowerduckpond-provisioner")
     assert sudoers.mode == SUDOERS_MODE
     assert sudoers.contains("/usr/local/libexec/lowerduckpond/reload-caddy")
