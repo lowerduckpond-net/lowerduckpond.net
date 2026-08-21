@@ -117,7 +117,9 @@ retention for a new repository, node, or policy scope before health can become
 green. Local repositories are also added explicitly to the backup services'
 otherwise narrow writable-path sandbox.
 Paths below `/home`, `/root`, and `/run/user` are rejected because the service
-sandbox deliberately hides those trees with `ProtectHome=true`.
+sandbox deliberately hides those trees with `ProtectHome=true`. Canonical local
+repository paths equal to or below any backed-up directory are also rejected so
+a snapshot can never ingest repository files that Restic is writing.
 
 The exact Caddy build inputs and the supported Ubuntu package ranges live in
 `platform/versions.yml`. Ansible installs distribution packages normally so

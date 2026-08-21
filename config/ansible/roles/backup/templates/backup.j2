@@ -70,8 +70,7 @@ export RESTIC_PASSWORD RESTIC_REPOSITORY RESTIC_CACHE_DIR
 restic backup \
     --host "${LOWERDUCKPOND_BACKUP_NODE_NAME}" \
     --tag scheduled \
-    /srv/lowerduckpond \
-    /var/lib/caddy \
-    /var/lib/lowerduckpond/manifests \
-    /var/lib/lowerduckpond/audit \
+{% for source_path in backup_source_paths %}
+    {{ source_path | quote }} \
+{% endfor %}
     "${staging_directory}/mariadb.sql.gz"

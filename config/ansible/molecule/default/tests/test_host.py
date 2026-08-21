@@ -18,6 +18,12 @@ BACKUP_SCOPE_PATH = "/etc/lowerduckpond/backup-scope"
 BACKUP_SCOPE_LENGTH = 64
 STATUS_FIELD_COUNT = 2
 LOCAL_BACKUP_REPOSITORY = "/mnt/lowerduckpond-restic-test"
+BACKUP_SOURCE_PATHS = (
+    "/srv/lowerduckpond",
+    "/var/lib/caddy",
+    "/var/lib/lowerduckpond/manifests",
+    "/var/lib/lowerduckpond/audit",
+)
 
 
 def read_status_scope(host: Host, variable_name: str) -> str:
@@ -267,6 +273,14 @@ def test_backup_configuration_is_atomic_and_sandboxed(host: Host) -> None:
     canonical_repository = host.run(f"realpath {LOCAL_BACKUP_REPOSITORY}")
     assert canonical_repository.rc == 0
     assert not canonical_repository.stdout.startswith(("/home/", "/root/", "/run/user/"))
+    for source_path in BACKUP_SOURCE_PATHS:
+        canonical_source = host.run(f"realpath {source_path}")
+        assert canonical_source.rc == 0
+        source = canonical_source.stdout.strip()
+        repository = canonical_repository.stdout.strip()
+        assert repository != source
+        assert not repository.startswith(f"{source}/")
+        assert backup_script.contains(source_path)
     backup_unit = host.file("/etc/systemd/system/lowerduckpond-backup.service")
     maintenance_unit = host.file("/etc/systemd/system/lowerduckpond-backup-maintenance.service")
     assert backup_unit.contains(LOCAL_BACKUP_REPOSITORY)

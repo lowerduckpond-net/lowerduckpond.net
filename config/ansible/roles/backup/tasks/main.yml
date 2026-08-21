@@ -46,6 +46,18 @@
   when: backup_repository is ansible.builtin.match('^/')
   changed_when: false
 
+- name: Resolve configured backup sources for a local repository
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/realpath
+      - --canonicalize-missing
+      - --
+      - "{{ item }}"
+  loop: "{{ backup_source_paths }}"
+  register: backup_local_source_paths
+  when: backup_repository is ansible.builtin.match('^/')
+  changed_when: false
+
 - name: Reject local repositories hidden by service isolation
   ansible.builtin.assert:
     that:
@@ -55,6 +67,20 @@
     fail_msg: >-
       Local backup repositories cannot be placed below /home, /root, or
       /run/user because the hardened backup services use ProtectHome=true.
+  when: backup_repository is ansible.builtin.match('^/')
+
+- name: Reject local repositories nested inside backup sources
+  ansible.builtin.assert:
+    that:
+      - >-
+        backup_local_repository_path.stdout is not ansible.builtin.match(
+        '^' ~ (item.stdout | ansible.builtin.regex_escape) ~ '(/|$)')
+    fail_msg: >-
+      Local backup repository {{ backup_local_repository_path.stdout }} cannot
+      equal or descend from backed-up path {{ item.stdout }}.
+  loop: "{{ backup_local_source_paths.results }}"
+  loop_control:
+    label: "{{ item.stdout }}"
   when: backup_repository is ansible.builtin.match('^/')
 
 - name: Create a local Restic repository parent when requested
