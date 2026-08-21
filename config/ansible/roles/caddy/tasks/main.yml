@@ -1,0 +1,177 @@
+---
+- name: Install Caddy build dependencies
+  ansible.builtin.apt:
+    name:
+      - git
+      - golang-go
+    state: present
+
+- name: Create the Caddy system group
+  ansible.builtin.group:
+    name: caddy
+    system: true
+
+- name: Create the Caddy system account
+  ansible.builtin.user:
+    name: caddy
+    group: caddy
+    home: /var/lib/caddy
+    shell: /usr/sbin/nologin
+    system: true
+    create_home: false
+
+- name: Create Caddy build and runtime directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - path: "{{ caddy_build_root }}"
+      owner: root
+      group: root
+      mode: "0755"
+    - path: /var/cache/lowerduckpond-go
+      owner: root
+      group: root
+      mode: "0755"
+    - path: /var/cache/lowerduckpond-go/build
+      owner: root
+      group: root
+      mode: "0755"
+    - path: /var/cache/lowerduckpond-go/modules
+      owner: root
+      group: root
+      mode: "0755"
+    - path: /var/cache/lowerduckpond-go/tmp
+      owner: root
+      group: root
+      mode: "0755"
+    - path: /usr/local/libexec/lowerduckpond
+      owner: root
+      group: root
+      mode: "0755"
+    - path: /etc/caddy
+      owner: root
+      group: caddy
+      mode: "0750"
+    - path: "{{ caddy_routes_active_path }}"
+      owner: root
+      group: caddy
+      mode: "0750"
+    - path: /var/lib/caddy
+      owner: caddy
+      group: caddy
+      mode: "0700"
+    - path: /var/log/caddy
+      owner: caddy
+      group: caddy
+      mode: "0750"
+    - path: "{{ caddy_fixture_root }}"
+      owner: root
+      group: caddy
+      mode: "0750"
+
+- name: Build pinned Caddy with the pinned Cloudflare module
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/go
+      - run
+      - "github.com/caddyserver/xcaddy/cmd/xcaddy@v{{ caddy_xcaddy_version }}"
+      - build
+      - "v{{ caddy_version }}"
+      - --with
+      - "github.com/caddy-dns/cloudflare@v{{ caddy_cloudflare_module_version }}"
+      - --output
+      - "{{ caddy_binary_path }}"
+    creates: "{{ caddy_binary_path }}"
+  environment:
+    GOCACHE: /var/cache/lowerduckpond-go/build
+    GOMODCACHE: /var/cache/lowerduckpond-go/modules
+    GOTMPDIR: /var/cache/lowerduckpond-go/tmp
+  notify: Restart Caddy
+
+- name: Set custom Caddy binary ownership and mode
+  ansible.builtin.file:
+    path: "{{ caddy_binary_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Select the pinned Caddy binary
+  ansible.builtin.file:
+    path: /usr/local/bin/caddy
+    src: "{{ caddy_binary_path }}"
+    state: link
+    force: true
+  notify: Restart Caddy
+
+- name: Read installed Caddy modules
+  ansible.builtin.command:
+    cmd: /usr/local/bin/caddy list-modules
+  register: caddy_installed_modules
+  changed_when: false
+
+- name: Verify the Cloudflare DNS module is present
+  ansible.builtin.assert:
+    that:
+      - '"dns.providers.cloudflare" in caddy_installed_modules.stdout_lines'
+    fail_msg: The custom Caddy binary does not contain dns.providers.cloudflare.
+
+- name: Install the Caddy environment file
+  ansible.builtin.template:
+    src: environment.j2
+    dest: /etc/caddy/environment
+    owner: root
+    group: caddy
+    mode: "0640"
+  no_log: true
+  notify: Restart Caddy
+
+- name: Install the Caddy validation wrapper
+  ansible.builtin.copy:
+    src: caddy-validate
+    dest: /usr/local/libexec/lowerduckpond/caddy-validate
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the known static fixture
+  ansible.builtin.template:
+    src: index.html.j2
+    dest: "{{ caddy_fixture_root }}/index.html"
+    owner: root
+    group: caddy
+    mode: "0640"
+
+- name: Install the Caddy configuration atomically after validation
+  ansible.builtin.template:
+    src: Caddyfile.j2
+    dest: /etc/caddy/Caddyfile
+    owner: root
+    group: caddy
+    mode: "0640"
+    validate: /usr/local/libexec/lowerduckpond/caddy-validate %s
+  no_log: true
+  notify: Reload Caddy
+
+- name: Install the hardened Caddy service
+  ansible.builtin.template:
+    src: caddy.service.j2
+    dest: /etc/systemd/system/caddy.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd for Caddy
+    - Restart Caddy
+
+- name: Flush Caddy handlers before starting the service
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start Caddy
+  ansible.builtin.systemd_service:
+    name: caddy.service
+    enabled: true
+    state: started

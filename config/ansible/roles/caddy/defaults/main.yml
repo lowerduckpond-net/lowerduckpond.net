@@ -1,0 +1,17 @@
+---
+caddy_version: "{{ platform_versions.caddy }}"
+caddy_xcaddy_version: "{{ platform_versions.xcaddy }}"
+caddy_cloudflare_module_version: "{{ platform_versions.caddy_cloudflare_module }}"
+caddy_cloudflare_api_token: ""
+caddy_domain: lowerduckpond.net
+caddy_tls_mode: cloudflare
+caddy_email: ""
+caddy_runtime_directory: caddy
+caddy_admin_socket_path: "/run/{{ caddy_runtime_directory }}/admin.sock"
+caddy_fixture_root: /srv/lowerduckpond/fixture
+caddy_routes_active_path: /etc/caddy/routes.d
+caddy_routes_glob: "{{ caddy_routes_active_path }}/*.caddy"
+caddy_build_root: /usr/local/lib/lowerduckpond
+caddy_binary_path: >-
+  {{ caddy_build_root }}/caddy-{{ caddy_version }}-xcaddy-{{ caddy_xcaddy_version
+  }}-cloudflare-{{ caddy_cloudflare_module_version }}

@@ -1,0 +1,10 @@
+[Unit]
+Description=Verify rootless Podman is ready
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/podman info
+
+[Install]
+WantedBy=default.target

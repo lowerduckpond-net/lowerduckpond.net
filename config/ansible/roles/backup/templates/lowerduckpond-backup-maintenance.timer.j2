@@ -1,0 +1,11 @@
+[Unit]
+Description=Schedule Lower Duck Pond backup retention
+
+[Timer]
+OnCalendar={{ backup_maintenance_calendar }}
+RandomizedDelaySec={{ backup_randomized_delay_seconds }}
+Persistent=true
+Unit=lowerduckpond-backup-maintenance.service
+
+[Install]
+WantedBy=timers.target

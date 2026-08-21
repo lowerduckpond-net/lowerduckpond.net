@@ -1,0 +1,15 @@
+---
+# Backup evidence must not survive a repository or node identity change. Keep
+# the inputs themselves out of the status files while retaining stable,
+# non-secret identities for the active backup and maintenance scopes.
+backup_status_scope: >-
+  {{ [backup_repository, backup_node_name] | to_json | hash('sha256') }}
+backup_maintenance_status_scope: >-
+  {{ [backup_repository, backup_node_name,
+      backup_keep_daily | string, backup_keep_weekly | string,
+      backup_keep_monthly | string] | to_json | hash('sha256') }}
+backup_source_paths:
+  - /srv/lowerduckpond
+  - /var/lib/caddy
+  - /var/lib/lowerduckpond/manifests
+  - /var/lib/lowerduckpond/audit

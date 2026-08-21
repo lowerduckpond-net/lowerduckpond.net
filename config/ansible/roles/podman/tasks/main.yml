@@ -1,0 +1,179 @@
+---
+- name: Install rootless Podman prerequisites
+  ansible.builtin.apt:
+    name:
+      - dbus-user-session
+      - fuse-overlayfs
+      - passt
+      - podman
+      - slirp4netns
+      - uidmap
+    state: present
+
+- name: Verify the installed Podman package is within tested bounds
+  ansible.builtin.command:
+    argv:
+      - /usr/local/libexec/lowerduckpond/assert-package-version
+      - podman
+      - "{{ platform_versions.podman_package_minimum }}"
+      - "{{ platform_versions.podman_package_maximum_exclusive }}"
+  changed_when: false
+
+- name: Create the rootless runtime account
+  ansible.builtin.user:
+    name: "{{ podman_service_user }}"
+    uid: "{{ podman_service_uid }}"
+    home: "{{ podman_service_home }}"
+    shell: /usr/sbin/nologin
+    system: true
+    create_home: true
+
+- name: Protect the rootless runtime home
+  ansible.builtin.file:
+    path: "{{ podman_service_home }}"
+    state: directory
+    owner: "{{ podman_service_user }}"
+    group: "{{ podman_service_user }}"
+    mode: "0750"
+
+- name: Create rootless container configuration directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ podman_service_user }}"
+    group: "{{ podman_service_user }}"
+    mode: "0750"
+  loop:
+    - "{{ podman_service_home }}/.config/containers"
+    - "{{ podman_service_home }}/.local/share/containers"
+
+- name: Configure the rootless container engine
+  ansible.builtin.template:
+    src: containers.conf.j2
+    dest: "{{ podman_service_home }}/.config/containers/containers.conf"
+    owner: "{{ podman_service_user }}"
+    group: "{{ podman_service_user }}"
+    mode: "0640"
+
+- name: Configure rootless overlay storage
+  ansible.builtin.template:
+    src: storage.conf.j2
+    dest: "{{ podman_service_home }}/.config/containers/storage.conf"
+    owner: "{{ podman_service_user }}"
+    group: "{{ podman_service_user }}"
+    mode: "0640"
+
+- name: Install the subordinate-ID allocation helper
+  ansible.builtin.copy:
+    src: ensure-subid-allocation
+    dest: /usr/local/libexec/lowerduckpond/ensure-subid-allocation
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Validate the subordinate-ID allocations together
+  ansible.builtin.command:
+    argv:
+      - /usr/local/libexec/lowerduckpond/ensure-subid-allocation
+      - "{{ item }}"
+      - "{{ podman_service_user }}"
+      - "{{ podman_subid_start | string }}"
+      - "{{ podman_subid_count | string }}"
+      - --check
+  loop:
+    - /etc/subuid
+    - /etc/subgid
+  changed_when: false
+
+- name: Converge the subordinate-ID allocations
+  ansible.builtin.command:
+    argv:
+      - /usr/local/libexec/lowerduckpond/ensure-subid-allocation
+      - "{{ item }}"
+      - "{{ podman_service_user }}"
+      - "{{ podman_subid_start | string }}"
+      - "{{ podman_subid_count | string }}"
+  loop:
+    - /etc/subuid
+    - /etc/subgid
+  register: podman_subid_allocation
+  changed_when: "'allocation was updated' in podman_subid_allocation.stdout"
+
+- name: Enable user lingering for rootless services
+  ansible.builtin.command:
+    cmd: "loginctl enable-linger {{ podman_service_user }}"
+    creates: "/var/lib/systemd/linger/{{ podman_service_user }}"
+
+- name: Start the rootless user manager
+  ansible.builtin.systemd_service:
+    name: "user@{{ podman_service_uid }}.service"
+    state: started
+
+- name: Create the user systemd unit directory
+  ansible.builtin.file:
+    path: "{{ podman_service_home }}/.config/systemd/user"
+    state: directory
+    owner: "{{ podman_service_user }}"
+    group: "{{ podman_service_user }}"
+    mode: "0750"
+
+- name: Install the rootless Podman readiness unit
+  ansible.builtin.template:
+    src: lowerduckpond-podman-ready.service.j2
+    dest: >-
+      {{ podman_service_home }}/.config/systemd/user/lowerduckpond-podman-ready.service
+    owner: "{{ podman_service_user }}"
+    group: "{{ podman_service_user }}"
+    mode: "0640"
+  notify: Reload rootless Podman services
+
+- name: Inspect the rootless tenant network
+  ansible.builtin.command:
+    cmd: "podman network exists {{ podman_network_name }}"
+  become_user: "{{ podman_service_user }}"
+  become: true
+  environment:
+    HOME: "{{ podman_service_home }}"
+    XDG_RUNTIME_DIR: "/run/user/{{ podman_service_uid }}"
+  register: podman_network_status
+  failed_when: false
+  changed_when: false
+
+- name: Create the rootless tenant network
+  ansible.builtin.command:
+    cmd: "podman network create {{ podman_network_name }}"
+  become_user: "{{ podman_service_user }}"
+  become: true
+  environment:
+    HOME: "{{ podman_service_home }}"
+    XDG_RUNTIME_DIR: "/run/user/{{ podman_service_uid }}"
+  when: podman_network_status.rc != 0
+  changed_when: true
+
+- name: Flush rootless Podman handlers
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable the rootless readiness unit
+  ansible.builtin.systemd_service:
+    name: lowerduckpond-podman-ready.service
+    scope: user
+    enabled: true
+  become_user: "{{ podman_service_user }}"
+  become: true
+  environment:
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ podman_service_uid }}/bus"
+    HOME: "{{ podman_service_home }}"
+    XDG_RUNTIME_DIR: "/run/user/{{ podman_service_uid }}"
+
+- name: Verify rootless Podman readiness
+  ansible.builtin.systemd_service:
+    name: lowerduckpond-podman-ready.service
+    scope: user
+    state: started
+  become_user: "{{ podman_service_user }}"
+  become: true
+  environment:
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ podman_service_uid }}/bus"
+    HOME: "{{ podman_service_home }}"
+    XDG_RUNTIME_DIR: "/run/user/{{ podman_service_uid }}"
+  changed_when: false

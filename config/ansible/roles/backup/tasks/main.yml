@@ -1,0 +1,271 @@
+---
+- name: Install backup packages
+  ansible.builtin.apt:
+    name:
+      - gzip
+      - restic
+    state: present
+
+- name: Verify the installed Restic package is within tested bounds
+  ansible.builtin.command:
+    argv:
+      - /usr/local/libexec/lowerduckpond/assert-package-version
+      - restic
+      - "{{ platform_versions.restic_package_minimum }}"
+      - "{{ platform_versions.restic_package_maximum_exclusive }}"
+  changed_when: false
+
+- name: Create backup directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - path: /etc/lowerduckpond
+      mode: "0700"
+    - path: /var/cache/lowerduckpond-backup
+      mode: "0700"
+    - path: /var/lib/lowerduckpond
+      # Service-specific children own their own access policy. The shared parent
+      # must remain searchable so non-root service accounts can reach them,
+      # while omitting read permission prevents directory enumeration.
+      mode: "0711"
+    - path: /var/lib/lowerduckpond/backup-status
+      mode: "0700"
+
+- name: Resolve a configured local Restic repository
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/realpath
+      - --canonicalize-missing
+      - --
+      - "{{ backup_repository }}"
+  register: backup_local_repository_path
+  when: backup_repository is ansible.builtin.match('^/')
+  changed_when: false
+
+- name: Resolve configured backup sources for a local repository
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/realpath
+      - --canonicalize-missing
+      - --
+      - "{{ item }}"
+  loop: "{{ backup_source_paths }}"
+  register: backup_local_source_paths
+  when: backup_repository is ansible.builtin.match('^/')
+  changed_when: false
+
+- name: Reject local repositories hidden by service isolation
+  ansible.builtin.assert:
+    that:
+      - >-
+        backup_local_repository_path.stdout is not ansible.builtin.match(
+        '^/(home|root|run/user)(/|$)')
+    fail_msg: >-
+      Local backup repositories cannot be placed below /home, /root, or
+      /run/user because the hardened backup services use ProtectHome=true.
+  when: backup_repository is ansible.builtin.match('^/')
+
+- name: Reject the filesystem root as a local repository
+  ansible.builtin.assert:
+    that:
+      - backup_local_repository_path.stdout != '/'
+    fail_msg: The filesystem root cannot be used as a local backup repository.
+  when: backup_repository is ansible.builtin.match('^/')
+
+- name: Reject local repositories overlapping backup sources
+  ansible.builtin.assert:
+    that:
+      - >-
+        backup_local_repository_path.stdout is not ansible.builtin.match(
+        '^' ~ (item.stdout | ansible.builtin.regex_escape) ~ '(/|$)')
+      - >-
+        item.stdout is not ansible.builtin.match(
+        '^' ~ (backup_local_repository_path.stdout |
+        ansible.builtin.regex_escape) ~ '(/|$)')
+    fail_msg: >-
+      Local backup repository {{ backup_local_repository_path.stdout }} cannot
+      equal, descend from, or contain backed-up path {{ item.stdout }}.
+  loop: "{{ backup_local_source_paths.results }}"
+  loop_control:
+    label: "{{ item.stdout }}"
+  when: backup_repository is ansible.builtin.match('^/')
+
+- name: Inspect an existing local repository path
+  ansible.builtin.stat:
+    path: "{{ backup_repository }}"
+    follow: false
+  register: backup_local_repository_stat
+  when: backup_repository is ansible.builtin.match('^/')
+
+- name: Refuse to repurpose an existing local path
+  ansible.builtin.assert:
+    that:
+      - >-
+        not backup_local_repository_stat.stat.exists or
+        (backup_local_repository_stat.stat.isdir | default(false))
+      - >-
+        not backup_local_repository_stat.stat.exists or
+        not (backup_local_repository_stat.stat.islnk | default(false))
+      - >-
+        not backup_local_repository_stat.stat.exists or
+        (backup_local_repository_stat.stat.uid | default(-1)) == 0
+      - >-
+        not backup_local_repository_stat.stat.exists or
+        (backup_local_repository_stat.stat.gid | default(-1)) == 0
+      - >-
+        not backup_local_repository_stat.stat.exists or
+        (backup_local_repository_stat.stat.mode | default('')) == '0700'
+    fail_msg: >-
+      An existing local repository path must already be a dedicated,
+      non-symlinked, root-owned directory with mode 0700; refusing to change
+      attributes on {{ backup_repository }}.
+  when: backup_repository is ansible.builtin.match('^/')
+
+- name: Create a new local Restic repository when requested
+  ansible.builtin.file:
+    path: "{{ backup_repository }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  when:
+    - backup_repository is ansible.builtin.match('^/')
+    - not (backup_local_repository_stat.stat.exists | default(false))
+
+- name: Install backup and recovery commands
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "/usr/local/libexec/lowerduckpond/{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - src: backup.j2
+      dest: backup
+    - src: backup-maintenance.j2
+      dest: backup-maintenance
+    - src: latest-backup-snapshot.j2
+      dest: latest-backup-snapshot
+    - src: restic-check.j2
+      dest: restic-check
+    - src: restore-smoke-test.j2
+      dest: restore-smoke-test
+
+- name: Install backup systemd units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - lowerduckpond-backup.service
+    - lowerduckpond-backup.timer
+    - lowerduckpond-backup-maintenance.service
+    - lowerduckpond-backup-maintenance.timer
+  notify: Reload systemd for backups
+
+- name: Flush backup unit handlers
+  ansible.builtin.meta: flush_handlers
+
+- name: Activate the protected backup configuration atomically
+  ansible.builtin.template:
+    src: backup.env.j2
+    dest: /etc/lowerduckpond/backup.env
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Inspect the Restic repository
+  ansible.builtin.command:
+    cmd: /usr/local/libexec/lowerduckpond/restic-check
+  register: backup_repository_status
+  failed_when: false
+  changed_when: false
+  no_log: true
+
+- name: Initialize the encrypted Restic repository
+  ansible.builtin.shell:
+    cmd: >-
+      exec 9>/var/cache/lowerduckpond-backup/repository.lock &&
+      flock --exclusive 9 &&
+      set -o allexport &&
+      source /etc/lowerduckpond/backup.env &&
+      set +o allexport &&
+      exec /usr/bin/restic init
+    executable: /bin/bash
+  when: backup_repository_status.rc != 0
+  changed_when: true
+  no_log: true
+
+- name: Inspect the backup repository for this node
+  ansible.builtin.command:
+    cmd: /usr/local/libexec/lowerduckpond/latest-backup-snapshot
+  register: backup_latest_snapshot
+  failed_when: backup_latest_snapshot.rc not in [0, 1]
+  changed_when: false
+  no_log: true
+
+- name: Inspect the local backup health status
+  ansible.builtin.slurp:
+    path: /var/lib/lowerduckpond/backup-status/backup-last-success
+  register: backup_local_health_status
+  failed_when: false
+
+- name: Restore local health status from the repository
+  ansible.builtin.copy:
+    content: |
+      {{ backup_latest_snapshot.stdout | trim }} {{ backup_status_scope }}
+    dest: /var/lib/lowerduckpond/backup-status/backup-last-success
+    owner: root
+    group: root
+    mode: "0600"
+  when:
+    - backup_latest_snapshot.rc == 0
+    - >-
+      (backup_local_health_status.content | default('') |
+      ansible.builtin.b64decode | trim) is not ansible.builtin.match(
+      '^[0-9]+ ' ~ backup_status_scope ~ '$')
+
+- name: Create the first encrypted off-host backup
+  ansible.builtin.systemd_service:
+    name: lowerduckpond-backup.service
+    state: started
+  when:
+    - backup_run_initial
+    - backup_latest_snapshot.rc == 1
+  changed_when: true
+  no_log: true
+
+- name: Inspect initial backup maintenance status
+  ansible.builtin.slurp:
+    path: /var/lib/lowerduckpond/backup-status/maintenance-last-success
+  register: backup_initial_maintenance_status
+  failed_when: false
+
+- name: Apply backup retention initially
+  ansible.builtin.systemd_service:
+    name: lowerduckpond-backup-maintenance.service
+    state: started
+  when:
+    - backup_run_initial_maintenance
+    - >-
+      (backup_initial_maintenance_status.content | default('') |
+      ansible.builtin.b64decode | trim) is not ansible.builtin.match(
+      '^[0-9]+ ' ~ backup_maintenance_status_scope ~ '$')
+  changed_when: true
+  no_log: true
+
+- name: Enable backup schedules
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop:
+    - lowerduckpond-backup.timer
+    - lowerduckpond-backup-maintenance.timer

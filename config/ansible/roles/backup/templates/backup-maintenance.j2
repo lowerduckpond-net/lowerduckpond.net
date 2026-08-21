@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+status_directory=/var/lib/lowerduckpond/backup-status
+lock_path=/var/cache/lowerduckpond-backup/repository.lock
+exec 9>"${lock_path}"
+flock --exclusive 9
+
+# shellcheck disable=SC1091
+source /etc/lowerduckpond/backup.env
+export -n AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION
+export -n RESTIC_PASSWORD RESTIC_REPOSITORY RESTIC_CACHE_DIR
+status_scope=${LOWERDUCKPOND_BACKUP_MAINTENANCE_STATUS_SCOPE:-}
+if [[ ! "${status_scope}" =~ ^[0-9a-f]{64}$ ]] ||
+   [[ -z "${LOWERDUCKPOND_BACKUP_NODE_NAME:-}" ]]; then
+    echo "Invalid active backup configuration." >&2
+    exit 1
+fi
+
+record_status() {
+    local status_name=$1
+    local prior_status_name=$2
+    local prior_extra=
+    local prior_scope=
+    local prior_timestamp=
+    local timestamp
+    local temporary_status
+    timestamp=$(date +%s)
+    if [[ -s "${status_directory}/${prior_status_name}" ]]; then
+        read -r prior_timestamp prior_scope prior_extra \
+            < "${status_directory}/${prior_status_name}" || true
+        if [[ "${prior_timestamp}" =~ ^[0-9]+$ ]] &&
+           [[ "${prior_scope}" == "${status_scope}" ]] &&
+           [[ -z "${prior_extra}" ]] &&
+           (( timestamp <= prior_timestamp )); then
+            timestamp=$((prior_timestamp + 1))
+        fi
+    fi
+    temporary_status=$(mktemp "${status_directory}/.${status_name}.XXXXXXXX")
+    printf '%s %s\n' "${timestamp}" "${status_scope}" > "${temporary_status}"
+    chmod 0600 "${temporary_status}"
+    mv --force --no-target-directory \
+        "${temporary_status}" "${status_directory}/${status_name}"
+}
+
+finish() {
+    result=$?
+    if [[ ${result} -eq 0 ]]; then
+        record_status maintenance-last-success maintenance-last-failure
+    else
+        record_status maintenance-last-failure maintenance-last-success
+    fi
+    exit "${result}"
+}
+trap finish EXIT
+
+export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION
+export RESTIC_PASSWORD RESTIC_REPOSITORY RESTIC_CACHE_DIR
+
+restic forget \
+    --host "${LOWERDUCKPOND_BACKUP_NODE_NAME}" \
+    --tag scheduled \
+    --keep-daily "${LOWERDUCKPOND_BACKUP_KEEP_DAILY}" \
+    --keep-weekly "${LOWERDUCKPOND_BACKUP_KEEP_WEEKLY}" \
+    --keep-monthly "${LOWERDUCKPOND_BACKUP_KEEP_MONTHLY}" \
+    --prune

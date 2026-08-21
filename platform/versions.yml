@@ -1,5 +1,13 @@
 ---
 platform_versions:
   caddy: "2.11.4"
-  host_os: "ubuntu-26.04"
-  podman_package: "5.7.0+ds2-3build1"
+  caddy_cloudflare_module: "0.2.4"
+  host_os_distribution: Ubuntu
+  host_os_release: "26.04"
+  mariadb_package_minimum: "1:11.8"
+  mariadb_package_maximum_exclusive: "1:11.9"
+  podman_package_minimum: "5.7"
+  podman_package_maximum_exclusive: "6"
+  restic_package_minimum: "0.18.1"
+  restic_package_maximum_exclusive: "0.19"
+  xcaddy: "0.4.7"

@@ -1,0 +1,59 @@
+---
+- name: Install the Prometheus node exporter
+  ansible.builtin.apt:
+    name: prometheus-node-exporter
+    state: present
+
+- name: Configure the node exporter as loopback-only
+  ansible.builtin.template:
+    src: prometheus-node-exporter.default.j2
+    dest: /etc/default/prometheus-node-exporter
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart node exporter
+
+- name: Create the node exporter textfile directory
+  ansible.builtin.file:
+    path: "{{ monitoring_textfile_directory }}"
+    state: directory
+    owner: root
+    group: prometheus
+    mode: "0755"
+
+- name: Install the local health reporter
+  ansible.builtin.template:
+    src: health-check.j2
+    dest: /usr/local/libexec/lowerduckpond/health-check
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install health-reporting systemd units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - lowerduckpond-health.service
+    - lowerduckpond-health.timer
+  notify: Reload systemd for monitoring
+
+- name: Flush monitoring handlers
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable monitoring services
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop:
+    - prometheus-node-exporter.service
+    - lowerduckpond-health.timer
+
+- name: Run the initial health report
+  ansible.builtin.command:
+    cmd: /usr/local/libexec/lowerduckpond/health-check
+  changed_when: false

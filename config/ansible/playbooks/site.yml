@@ -3,4 +3,42 @@
   hosts: hosting_nodes
   become: true
   gather_facts: true
-  roles: []
+  vars_files:
+    - ../../../platform/versions.yml
+  pre_tasks:
+    - name: Verify the supported host operating system
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.distribution == platform_versions.host_os_distribution
+          - ansible_facts.distribution_version == platform_versions.host_os_release
+        fail_msg: >-
+          Milestone 2 supports only {{ platform_versions.host_os_distribution }}
+          {{ platform_versions.host_os_release }} LTS; refusing to configure
+          {{ ansible_facts.distribution }} {{ ansible_facts.distribution_version }}.
+
+    - name: Verify required production inputs
+      ansible.builtin.assert:
+        that:
+          - firewall_admin_source_cidrs | length > 0
+          - '"0.0.0.0/0" not in firewall_admin_source_cidrs'
+          - '"::/0" not in firewall_admin_source_cidrs'
+          - caddy_cloudflare_api_token | length >= 20
+          - backup_repository | length > 0
+          - backup_restic_password | length >= 32
+          - backup_spaces_access_key_id | length > 0
+          - backup_spaces_secret_access_key | length > 0
+        fail_msg: >-
+          Supply the administrative CIDRs, Caddy token, Restic password, and
+          bucket-scoped Spaces credentials through the documented environment variables.
+        quiet: true
+      no_log: true
+
+  roles:
+    - role: base
+    - role: firewall
+    - role: caddy
+    - role: podman
+    - role: database
+    - role: provisioner
+    - role: backup
+    - role: monitoring

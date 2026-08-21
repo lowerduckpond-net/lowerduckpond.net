@@ -1,0 +1,34 @@
+{
+{% if caddy_email | length > 0 %}
+	email {{ caddy_email }}
+{% endif %}
+	admin unix/{{ caddy_admin_socket_path }}
+	metrics
+}
+
+{{ caddy_domain }}, *.{{ caddy_domain }} {
+{% if caddy_tls_mode == 'internal' %}
+	tls internal
+{% else %}
+	tls {
+		dns cloudflare {$CLOUDFLARE_API_TOKEN}
+	}
+{% endif %}
+
+	log {
+		output stdout
+		format json
+	}
+
+	@apex host {{ caddy_domain }}
+	handle @apex {
+		root * {{ caddy_fixture_root }}
+		file_server
+	}
+
+	import {$CADDY_ROUTES_GLOB}
+
+	handle {
+		respond "No Lower Duck Pond site has been provisioned for this name.\n" 404
+	}
+}

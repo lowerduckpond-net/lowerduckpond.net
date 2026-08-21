@@ -1,0 +1,26 @@
+[Unit]
+Description=Create an encrypted Lower Duck Pond backup
+Wants=network-online.target
+After=network-online.target mariadb.service caddy.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/lowerduckpond/backup
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+NoNewPrivileges=true
+RestrictSUIDSGID=true
+LockPersonality=true
+IPAddressDeny=169.254.169.254/32
+ReadWritePaths=/var/cache/lowerduckpond-backup /var/lib/lowerduckpond /var/lib/caddy
+{% if backup_repository.startswith('/') %}
+ReadWritePaths={{ backup_repository | to_json }}
+{% endif %}

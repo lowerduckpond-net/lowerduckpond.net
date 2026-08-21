@@ -1,0 +1,136 @@
+---
+- name: Install baseline packages
+  ansible.builtin.apt:
+    name: "{{ base_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create the Lower Duck Pond command directory
+  ansible.builtin.file:
+    path: /usr/local/libexec/lowerduckpond
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the public TCP listener classifier
+  ansible.builtin.copy:
+    src: public-tcp-listeners
+    dest: /usr/local/libexec/lowerduckpond/public-tcp-listeners
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the package-version assertion helper
+  ansible.builtin.copy:
+    src: assert-package-version
+    dest: /usr/local/libexec/lowerduckpond/assert-package-version
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Configure the system timezone link
+  ansible.builtin.file:
+    path: /etc/localtime
+    src: "/usr/share/zoneinfo/{{ base_timezone }}"
+    state: link
+    force: true
+
+- name: Record the system timezone
+  ansible.builtin.copy:
+    content: "{{ base_timezone }}\n"
+    dest: /etc/timezone
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Enable the configured locale
+  ansible.builtin.lineinfile:
+    path: /etc/locale.gen
+    regexp: "^#?{{ base_locale | regex_escape }} UTF-8$"
+    line: "{{ base_locale }} UTF-8"
+  notify: Generate configured locale
+
+- name: Configure the default locale
+  ansible.builtin.copy:
+    content: "LANG={{ base_locale }}\n"
+    dest: /etc/default/locale
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Create journald configuration directory
+  ansible.builtin.file:
+    path: /etc/systemd/journald.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Configure persistent bounded journal storage
+  ansible.builtin.template:
+    src: journald.conf.j2
+    dest: /etc/systemd/journald.conf.d/50-lowerduckpond.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart journald
+
+- name: Configure baseline kernel hardening
+  ansible.builtin.template:
+    src: sysctl.conf.j2
+    dest: /etc/sysctl.d/90-lowerduckpond.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Apply sysctl configuration
+
+- name: Configure unattended security upgrades
+  ansible.builtin.template:
+    src: unattended-upgrades.j2
+    dest: /etc/apt/apt.conf.d/52lowerduckpond-unattended-upgrades
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Create OpenSSH drop-in directory
+  ansible.builtin.file:
+    path: /etc/ssh/sshd_config.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the OpenSSH hardening drop-in
+  ansible.builtin.template:
+    src: sshd-hardening.conf.j2
+    dest: /etc/ssh/sshd_config.d/50-lowerduckpond.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: /usr/sbin/sshd -t -f %s
+  notify: Reload OpenSSH
+
+- name: Enable baseline services at boot
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+  loop:
+    - chrony.service
+    - ssh.service
+    - unattended-upgrades.service
+
+- name: Start baseline services
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: started
+  loop:
+    - ssh.service
+    - unattended-upgrades.service
+
+- name: Start host time synchronization
+  ansible.builtin.systemd_service:
+    name: chrony.service
+    state: started
+  when: base_start_time_synchronization

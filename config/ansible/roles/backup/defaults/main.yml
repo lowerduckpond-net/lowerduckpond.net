@@ -1,0 +1,17 @@
+---
+backup_service_user: root
+backup_database_service_user: ldp-backup
+backup_node_name: lowerduckpond-node
+backup_repository: ""
+backup_restic_password: ""
+backup_spaces_access_key_id: ""
+backup_spaces_secret_access_key: ""
+backup_spaces_region: us-east-1
+backup_keep_daily: 7
+backup_keep_weekly: 5
+backup_keep_monthly: 12
+backup_calendar: "*-*-* 03:15:00"
+backup_maintenance_calendar: "Sun *-*-* 05:30:00"
+backup_randomized_delay_seconds: 1800
+backup_run_initial: true
+backup_run_initial_maintenance: true

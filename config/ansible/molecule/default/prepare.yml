@@ -1,0 +1,90 @@
+---
+- name: Verify the acceptance container started
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Inspect the acceptance container state
+      ansible.builtin.command:
+        cmd: docker inspect lowerduckpond-ubuntu-2604
+      register: molecule_container_state
+      changed_when: false
+
+    - name: Read startup logs from a stopped container
+      ansible.builtin.command:
+        cmd: docker logs lowerduckpond-ubuntu-2604
+      register: molecule_container_logs
+      changed_when: false
+      failed_when: false
+      when: >-
+        (molecule_container_state.stdout | from_json | first).State.Status != "running"
+
+    - name: Display startup logs from a stopped container
+      ansible.builtin.debug:
+        var: molecule_container_logs.stderr_lines
+      when: >-
+        (molecule_container_state.stdout | from_json | first).State.Status != "running"
+
+    - name: Require a running acceptance container
+      ansible.builtin.assert:
+        that:
+          - (molecule_container_state.stdout | from_json | first).State.Status == "running"
+        fail_msg: The Ubuntu acceptance container exited during systemd startup.
+
+- name: Prepare the Ubuntu acceptance container
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Wait for systemd to become ready  # noqa command-instead-of-module
+      ansible.builtin.command:
+        cmd: systemctl is-system-running --wait
+      register: molecule_systemd_status
+      changed_when: false
+      failed_when: >-
+        molecule_systemd_status.rc != 0 and
+        'degraded' not in molecule_systemd_status.stdout
+
+    - name: Install MariaDB for the privilege-drift fixture
+      ansible.builtin.apt:
+        name:
+          - mariadb-client
+          - mariadb-server
+        state: present
+
+    - name: Start MariaDB for the privilege-drift fixture
+      ansible.builtin.systemd_service:
+        name: mariadb.service
+        state: started
+
+    - name: Seed an over-privileged database backup account
+      ansible.builtin.command:
+        argv:
+          - mariadb
+          - --execute
+          - >-
+            CREATE USER IF NOT EXISTS 'ldp-backup'@'localhost'
+            IDENTIFIED VIA unix_socket;
+            GRANT INSERT, FILE ON *.* TO 'ldp-backup'@'localhost';
+      changed_when: true
+
+    - name: Create the legacy backup status fixture directories
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "{{ item.mode }}"
+      loop:
+        - path: /var/lib/lowerduckpond
+          mode: "0711"
+        - path: /var/lib/lowerduckpond/backup-status
+          mode: "0700"
+
+    - name: Seed maintenance success for a different backup scope
+      ansible.builtin.copy:
+        content: |
+          1 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        dest: /var/lib/lowerduckpond/backup-status/maintenance-last-success
+        owner: root
+        group: root
+        mode: "0600"

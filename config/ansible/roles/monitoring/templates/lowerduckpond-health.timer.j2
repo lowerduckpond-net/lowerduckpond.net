@@ -1,0 +1,10 @@
+[Unit]
+Description=Schedule Lower Duck Pond hosting-node health reports
+
+[Timer]
+OnCalendar={{ monitoring_health_calendar }}
+Persistent=true
+Unit=lowerduckpond-health.service
+
+[Install]
+WantedBy=timers.target

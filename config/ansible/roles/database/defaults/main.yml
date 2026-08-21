@@ -1,0 +1,20 @@
+---
+database_backup_user: ldp-backup
+database_backup_service_user: ldp-backup
+database_max_connections: 75
+database_innodb_buffer_pool_size: 256M
+database_required_backup_privileges:
+  - EVENT
+  - LOCK TABLES
+  - PROCESS
+  - RELOAD
+  - SELECT
+  - SHOW VIEW
+  - TRIGGER
+database_required_backup_privilege_records: >-
+  {{
+    database_required_backup_privileges
+    | map('regex_replace', '^', 'GLOBAL:')
+    | map('regex_replace', '$', ':NO')
+    | list
+  }}

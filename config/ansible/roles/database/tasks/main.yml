@@ -1,0 +1,131 @@
+---
+- name: Install MariaDB
+  ansible.builtin.apt:
+    name:
+      - mariadb-client
+      - mariadb-server
+    state: present
+
+- name: Verify the installed MariaDB package is within tested bounds
+  ansible.builtin.command:
+    argv:
+      - /usr/local/libexec/lowerduckpond/assert-package-version
+      - mariadb-server
+      - "{{ platform_versions.mariadb_package_minimum }}"
+      - "{{ platform_versions.mariadb_package_maximum_exclusive }}"
+  changed_when: false
+
+- name: Create the database backup operating-system account
+  ansible.builtin.user:
+    name: "{{ database_backup_service_user }}"
+    home: /var/lib/lowerduckpond/backup
+    shell: /usr/sbin/nologin
+    system: true
+    create_home: true
+
+- name: Protect the database backup account home
+  ansible.builtin.file:
+    path: /var/lib/lowerduckpond/backup
+    state: directory
+    owner: "{{ database_backup_service_user }}"
+    group: "{{ database_backup_service_user }}"
+    mode: "0700"
+
+- name: Install the local-only MariaDB configuration
+  ansible.builtin.template:
+    src: lowerduckpond.cnf.j2
+    dest: /etc/mysql/mariadb.conf.d/90-lowerduckpond.cnf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart MariaDB
+
+- name: Flush MariaDB configuration handler
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start MariaDB
+  ansible.builtin.systemd_service:
+    name: mariadb.service
+    enabled: true
+    state: started
+
+- name: Inspect the database backup account plugin
+  ansible.builtin.command:
+    argv:
+      - mariadb
+      - --batch
+      - --skip-column-names
+      - --execute
+      - >-
+        SELECT COALESCE(MAX(plugin), '') FROM mysql.user
+        WHERE User='{{ database_backup_user }}' AND Host='localhost'
+  register: database_backup_plugin
+  changed_when: false
+
+- name: Create the socket-authenticated database backup account
+  ansible.builtin.command:
+    argv:
+      - mariadb
+      - --execute
+      - >-
+        CREATE USER IF NOT EXISTS '{{ database_backup_user }}'@'localhost'
+        IDENTIFIED VIA unix_socket;
+        ALTER USER '{{ database_backup_user }}'@'localhost' IDENTIFIED VIA unix_socket;
+  when: database_backup_plugin.stdout | trim != "unix_socket"
+  changed_when: true
+  no_log: true
+
+- name: Inspect database backup privileges
+  ansible.builtin.command:
+    argv:
+      - mariadb
+      - --batch
+      - --skip-column-names
+      - --execute
+      - >-
+        SELECT privilege_record FROM (
+          SELECT CONCAT('GLOBAL:', PRIVILEGE_TYPE, ':', IS_GRANTABLE)
+            AS privilege_record
+          FROM information_schema.USER_PRIVILEGES
+          WHERE GRANTEE='\'{{ database_backup_user }}\'@\'localhost\''
+          UNION ALL
+          SELECT CONCAT('SCHEMA:', PRIVILEGE_TYPE, ':', IS_GRANTABLE)
+          FROM information_schema.SCHEMA_PRIVILEGES
+          WHERE GRANTEE='\'{{ database_backup_user }}\'@\'localhost\''
+          UNION ALL
+          SELECT CONCAT('TABLE:', PRIVILEGE_TYPE, ':', IS_GRANTABLE)
+          FROM information_schema.TABLE_PRIVILEGES
+          WHERE GRANTEE='\'{{ database_backup_user }}\'@\'localhost\''
+          UNION ALL
+          SELECT CONCAT('COLUMN:', PRIVILEGE_TYPE, ':', IS_GRANTABLE)
+          FROM information_schema.COLUMN_PRIVILEGES
+          WHERE GRANTEE='\'{{ database_backup_user }}\'@\'localhost\''
+          UNION ALL
+          SELECT 'ROUTINE:present'
+          FROM mysql.procs_priv
+          WHERE User='{{ database_backup_user }}' AND Host='localhost'
+          UNION ALL
+          SELECT CONCAT('ROLE:', Role, ':', Admin_option)
+          FROM mysql.roles_mapping
+          WHERE User='{{ database_backup_user }}' AND Host='localhost'
+        ) AS actual_privileges
+        ORDER BY privilege_record
+  register: database_backup_privileges
+  changed_when: false
+
+- name: Reset drifted database backup privileges
+  ansible.builtin.command:
+    argv:
+      - mariadb
+      - --execute
+      - >-
+        DROP USER '{{ database_backup_user }}'@'localhost';
+        CREATE USER '{{ database_backup_user }}'@'localhost'
+        IDENTIFIED VIA unix_socket;
+        GRANT {{ database_required_backup_privileges | join(', ') }}
+        ON *.* TO '{{ database_backup_user }}'@'localhost';
+  when: >-
+    database_backup_privileges.stdout_lines | sort !=
+    database_required_backup_privilege_records | sort
+  changed_when: true
+  no_log: true

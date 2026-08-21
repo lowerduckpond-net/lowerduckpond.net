@@ -173,6 +173,26 @@ Implement small composable roles rather than one monolithic playbook:
 - `monitoring`: exporters, collection, dashboards, and alerts.
 - `provisioner`: service account, directories, queue access, and restricted privileged operations.
 
+Milestone 2 does not grant the provisioner a Caddy reload or route-publication
+capability. Milestone 3 introduces one privileged activation contract covering
+both immutable tenant content and its generated root-owned route, so neither
+half can be changed independently after validation.
+
+For the initial 1-vCPU/2-GiB development node, install a loopback-only node
+exporter and emit service/backup health through its textfile collector and
+journald. Keep Caddy's metrics endpoint loopback-only. A central Prometheus,
+Grafana, and Alertmanager stack is deferred until control-plane and tenant
+semantics exist; running those services now would consume scarce node capacity
+without providing meaningful tenant dashboards. DigitalOcean monitoring
+remains the external host-level signal in the interim.
+
+Production convergence runs from the trusted administrative workstation, not a
+GitHub-hosted runner. This preserves the administrative CIDR restriction and
+keeps the passphrase-protected human SSH key outside GitHub. The runner reads
+the bucket-scoped backup key from encrypted OpenTofu state, accepts the Caddy
+and Restic credentials only through its environment, and never writes a secret
+inventory or variables file.
+
 ### Host acceptance tests
 
 Use Molecule plus Testinfra, Goss, or equivalent assertions to verify:
@@ -185,10 +205,14 @@ Use Molecule plus Testinfra, Goss, or equivalent assertions to verify:
 - Database administrative interfaces are not public.
 - Backup jobs can reach Spaces.
 - Reapplying Ansible reports no unintended changes.
+- A disposable restore of the latest Restic snapshot contains the known static
+  fixture.
 
 ### Exit criteria
 
-A newly provisioned Droplet becomes a working empty hosting node after one Ansible command, and a second run is idempotent.
+A newly provisioned Droplet becomes a working empty hosting node after one
+operator command. That command performs a second converge with zero changes and
+runs host, HTTPS, backup, and disposable-restore acceptance checks.
 
 ## 6. Milestone 3: static tenant MVP
 

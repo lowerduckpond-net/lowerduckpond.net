@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+exec 9>/var/cache/lowerduckpond-backup/repository.lock
+flock --exclusive 9
+
+# shellcheck disable=SC1091
+source /etc/lowerduckpond/backup.env
+export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION
+export RESTIC_PASSWORD RESTIC_REPOSITORY RESTIC_CACHE_DIR
+
+restore_directory=$(mktemp -d /var/cache/lowerduckpond-backup/restore.XXXXXXXX)
+finish() {
+    find "${restore_directory}" -depth -delete
+}
+trap finish EXIT
+
+restic restore latest \
+    --host "${LOWERDUCKPOND_BACKUP_NODE_NAME}" \
+    --tag scheduled \
+    --target "${restore_directory}"
+test -s "${restore_directory}{{ caddy_fixture_root }}/index.html"
+test -d "${restore_directory}/var/lib/lowerduckpond/manifests"
+test -d "${restore_directory}/var/lib/lowerduckpond/audit"
+test -s \
+    "${restore_directory}/var/cache/lowerduckpond-backup/staging/mariadb.sql.gz"
+grep --quiet "Lower Duck Pond Hosting" \
+    "${restore_directory}{{ caddy_fixture_root }}/index.html"

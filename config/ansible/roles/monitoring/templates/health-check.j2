@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 022
+
+metric_directory={{ monitoring_textfile_directory | quote }}
+metric_file="${metric_directory}/lowerduckpond.prom"
+temporary_file=
+cleanup() {
+    if [[ -n "${temporary_file}" ]]; then
+        rm -f -- "${temporary_file}"
+    fi
+}
+trap cleanup EXIT
+
+temporary_file=$(mktemp "${metric_directory}/.lowerduckpond.prom.XXXXXXXX")
+failure_count=0
+
+# shellcheck disable=SC1091
+source /etc/lowerduckpond/backup.env
+export -n AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION
+export -n RESTIC_PASSWORD RESTIC_REPOSITORY RESTIC_CACHE_DIR
+active_backup_scope=${LOWERDUCKPOND_BACKUP_STATUS_SCOPE:-}
+active_maintenance_scope=${LOWERDUCKPOND_BACKUP_MAINTENANCE_STATUS_SCOPE:-}
+if [[ ! "${active_backup_scope}" =~ ^[0-9a-f]{64}$ ]]; then
+    printf 'health check failed: invalid active backup configuration\n' >&2
+    failure_count=$((failure_count + 1))
+    active_backup_scope=
+fi
+if [[ ! "${active_maintenance_scope}" =~ ^[0-9a-f]{64}$ ]]; then
+    printf 'health check failed: invalid active backup maintenance configuration\n' >&2
+    failure_count=$((failure_count + 1))
+    active_maintenance_scope=
+fi
+
+check() {
+    local description=$1
+    local output
+    shift
+
+    if ! output=$("$@" 2>&1); then
+        printf 'health check failed: %s\n' "${description}" >&2
+        if [[ -n "${output}" ]]; then
+            printf '%s\n' "${output}" >&2
+        fi
+        failure_count=$((failure_count + 1))
+    fi
+}
+
+check 'Caddy service is active' systemctl is-active --quiet caddy.service
+check 'MariaDB service is active' systemctl is-active --quiet mariadb.service
+check 'node exporter service is active' \
+    systemctl is-active --quiet prometheus-node-exporter.service
+check 'Caddy configuration validates' \
+    /usr/local/libexec/lowerduckpond/caddy-validate /etc/caddy/Caddyfile
+check 'Caddy metrics endpoint responds' \
+    curl --fail --silent --show-error \
+    --unix-socket {{ caddy_admin_socket_path | quote }} http://localhost/metrics
+check 'rootless Podman responds' systemctl --user \
+    --machine={{ podman_service_user }}@.host \
+    start lowerduckpond-podman-ready.service
+
+read_status() {
+    local variable_name=$1
+    local status_name=$2
+    local active_scope=$3
+    local recorded_scope=
+    local extra=
+    local value=0
+    local status_path="/var/lib/lowerduckpond/backup-status/${status_name}"
+
+    if [[ -s "${status_path}" ]]; then
+        read -r value recorded_scope extra < "${status_path}" || true
+        if [[ ! "${value}" =~ ^[0-9]+$ ]] || [[ -n "${extra}" ]]; then
+            printf 'health check failed: invalid %s timestamp\n' "${status_name}" >&2
+            failure_count=$((failure_count + 1))
+            value=0
+        elif [[ "${recorded_scope}" != "${active_scope}" ]]; then
+            value=0
+        fi
+    fi
+    printf -v "${variable_name}" '%s' "${value}"
+}
+
+backup_success=0
+backup_failure=0
+maintenance_success=0
+maintenance_failure=0
+read_status backup_success backup-last-success "${active_backup_scope}"
+read_status backup_failure backup-last-failure "${active_backup_scope}"
+read_status maintenance_success maintenance-last-success "${active_maintenance_scope}"
+read_status maintenance_failure maintenance-last-failure "${active_maintenance_scope}"
+
+now=$(date +%s)
+if (( backup_success > 0 )); then
+    if (( now - backup_success > {{ monitoring_backup_max_age_seconds }} )); then
+        printf 'health check failed: latest backup is too old\n' >&2
+        failure_count=$((failure_count + 1))
+    fi
+else
+    printf 'health check failed: no successful backup is recorded\n' >&2
+    failure_count=$((failure_count + 1))
+fi
+
+if (( backup_failure > backup_success )); then
+    printf 'health check failed: latest scheduled backup failed\n' >&2
+    failure_count=$((failure_count + 1))
+fi
+
+if (( maintenance_success > 0 )); then
+    if (( now - maintenance_success > {{ monitoring_backup_maintenance_max_age_seconds }} )); then
+        printf 'health check failed: latest backup maintenance is too old\n' >&2
+        failure_count=$((failure_count + 1))
+    fi
+else
+    printf 'health check failed: no successful backup maintenance is recorded\n' >&2
+    failure_count=$((failure_count + 1))
+fi
+
+if (( maintenance_failure > maintenance_success )); then
+    printf 'health check failed: latest backup maintenance failed\n' >&2
+    failure_count=$((failure_count + 1))
+fi
+
+cat > "${temporary_file}" <<METRICS
+# HELP lowerduckpond_health_failures Number of failed local hosting-node checks.
+# TYPE lowerduckpond_health_failures gauge
+lowerduckpond_health_failures ${failure_count}
+# HELP lowerduckpond_backup_last_success_unixtime Last successful backup as Unix time.
+# TYPE lowerduckpond_backup_last_success_unixtime gauge
+lowerduckpond_backup_last_success_unixtime ${backup_success}
+# HELP lowerduckpond_backup_last_failure_unixtime Last failed backup as Unix time.
+# TYPE lowerduckpond_backup_last_failure_unixtime gauge
+lowerduckpond_backup_last_failure_unixtime ${backup_failure}
+# HELP lowerduckpond_backup_maintenance_last_success_unixtime Last successful retention run as Unix time.
+# TYPE lowerduckpond_backup_maintenance_last_success_unixtime gauge
+lowerduckpond_backup_maintenance_last_success_unixtime ${maintenance_success}
+# HELP lowerduckpond_backup_maintenance_last_failure_unixtime Last failed retention run as Unix time.
+# TYPE lowerduckpond_backup_maintenance_last_failure_unixtime gauge
+lowerduckpond_backup_maintenance_last_failure_unixtime ${maintenance_failure}
+METRICS
+chown root:prometheus "${temporary_file}"
+chmod 0644 "${temporary_file}"
+mv "${temporary_file}" "${metric_file}"
+temporary_file=
+
+if (( failure_count > 0 )); then
+    logger --tag lowerduckpond-health "${failure_count} hosting-node health checks failed"
+    exit 1
+fi

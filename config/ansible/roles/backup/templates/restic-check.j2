@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+exec 9>/var/cache/lowerduckpond-backup/repository.lock
+flock --exclusive 9
+
+# shellcheck disable=SC1091
+source /etc/lowerduckpond/backup.env
+export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION
+export RESTIC_PASSWORD RESTIC_REPOSITORY RESTIC_CACHE_DIR
+
+exec restic check --read-data-subset=1/100

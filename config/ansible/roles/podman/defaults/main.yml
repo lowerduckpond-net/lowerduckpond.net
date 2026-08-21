@@ -1,0 +1,8 @@
+---
+podman_service_user: ldp-runtime
+podman_service_uid: 21000
+podman_service_home: /var/lib/lowerduckpond/runtime
+podman_subid_start: 200000
+podman_subid_count: 65536
+podman_network_name: lowerduckpond-tenants
+podman_cgroup_manager: systemd

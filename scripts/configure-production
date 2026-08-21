@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+production_root="${repository_root}/infra/opentofu/environments/production"
+inventory="${repository_root}/config/ansible/inventories/production/hosts.yml"
+site_playbook="${repository_root}/config/ansible/playbooks/site.yml"
+acceptance_playbook="${repository_root}/config/ansible/playbooks/acceptance.yml"
+
+required_environment=(
+    ADMIN_SOURCE_CIDRS_JSON
+    ANSIBLE_PRIVATE_KEY_FILE
+    CADDY_CLOUDFLARE_API_TOKEN
+    OPENTOFU_ENCRYPTION_PASSPHRASE
+    OPENTOFU_STATE_ACCESS_KEY_ID
+    OPENTOFU_STATE_BUCKET
+    OPENTOFU_STATE_SECRET_ACCESS_KEY
+    RESTIC_PASSWORD
+    SPACES_REGION
+)
+
+for variable_name in "${required_environment[@]}"; do
+    if [[ -z ${!variable_name:-} ]]; then
+        echo "Required environment variable ${variable_name} is not set." >&2
+        exit 2
+    fi
+done
+
+for command_name in ssh-keygen tofu uv; do
+    if ! command -v "${command_name}" >/dev/null 2>&1; then
+        echo "Required command ${command_name} is not installed." >&2
+        exit 2
+    fi
+done
+
+if [[ ! -f ${ANSIBLE_PRIVATE_KEY_FILE} ]]; then
+    echo "ANSIBLE_PRIVATE_KEY_FILE does not name a regular file." >&2
+    exit 2
+fi
+
+if ! ssh-keygen -F lowerduckpond.net >/dev/null; then
+    cat >&2 <<'MESSAGE'
+lowerduckpond.net is absent from your SSH known_hosts file. Verify the current
+host key through an independent DigitalOcean console session, then record the
+verified key before running production configuration.
+MESSAGE
+    exit 2
+fi
+
+export AWS_ACCESS_KEY_ID=${OPENTOFU_STATE_ACCESS_KEY_ID}
+export AWS_SECRET_ACCESS_KEY=${OPENTOFU_STATE_SECRET_ACCESS_KEY}
+export TF_VAR_state_encryption_passphrase=${OPENTOFU_ENCRYPTION_PASSPHRASE}
+
+tofu -chdir="${production_root}" init -input=false -reconfigure \
+    -backend-config="bucket=${OPENTOFU_STATE_BUCKET}" \
+    -backend-config="key=production/opentofu.tfstate" \
+    -backend-config="region=us-east-1" \
+    -backend-config="endpoints={s3=\"https://${SPACES_REGION}.digitaloceanspaces.com\"}" \
+    -backend-config="skip_credentials_validation=true" \
+    -backend-config="skip_requesting_account_id=true" \
+    -backend-config="skip_metadata_api_check=true" \
+    -backend-config="skip_region_validation=true" \
+    -backend-config="skip_s3_checksum=true" \
+    -backend-config="use_lockfile=false"
+
+export SPACES_BACKUP_ACCESS_KEY_ID
+SPACES_BACKUP_ACCESS_KEY_ID=$(tofu -chdir="${production_root}" \
+    output -raw backup_runtime_access_key_id)
+export SPACES_BACKUP_SECRET_ACCESS_KEY
+SPACES_BACKUP_SECRET_ACCESS_KEY=$(tofu -chdir="${production_root}" \
+    output -raw backup_runtime_secret_access_key)
+backup_bucket_name=$(tofu -chdir="${production_root}" output -raw backup_bucket_name)
+export BACKUP_REPOSITORY="s3:https://${SPACES_REGION}.digitaloceanspaces.com/${backup_bucket_name}/backups/lowerduckpond-production-01"
+
+temporary_directory=$(mktemp -d)
+cleanup() {
+    find "${temporary_directory}" -depth -delete
+}
+trap cleanup EXIT
+second_converge_output="${temporary_directory}/second-converge.log"
+
+export ANSIBLE_CONFIG="${repository_root}/config/ansible/ansible.cfg"
+export ANSIBLE_PRIVATE_KEY_FILE
+
+echo "Converging the production hosting node."
+uv run ansible-playbook --inventory "${inventory}" "${site_playbook}"
+
+echo "Reapplying the production configuration to prove idempotence."
+uv run ansible-playbook --inventory "${inventory}" "${site_playbook}" |
+    tee "${second_converge_output}"
+
+if ! grep --extended-regexp --quiet \
+    'changed=0[[:space:]]+unreachable=0[[:space:]]+failed=0' \
+    "${second_converge_output}"; then
+    echo "The second production converge was not idempotent." >&2
+    exit 1
+fi
+
+echo "Running production host acceptance checks, including a disposable restore."
+uv run ansible-playbook --inventory "${inventory}" "${acceptance_playbook}"

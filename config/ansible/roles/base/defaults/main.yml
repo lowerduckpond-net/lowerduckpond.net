@@ -1,0 +1,15 @@
+---
+base_timezone: Etc/UTC
+base_locale: en_US.UTF-8
+base_start_time_synchronization: true
+base_packages:
+  - acl
+  - ca-certificates
+  - chrony
+  - curl
+  - jq
+  - locales
+  - openssh-server
+  - python3-apt
+  - sudo
+  - unattended-upgrades

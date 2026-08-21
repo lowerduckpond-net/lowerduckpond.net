@@ -43,10 +43,20 @@ check-opentofu:
     validation_dir="$(mktemp -d)"; trap 'find "$validation_dir" -depth -delete' EXIT; git ls-files --cached --others --exclude-standard -z -- infra/opentofu | tar --null -cf - -T - | tar -xf - -C "$validation_dir"; for root in "$validation_dir"/infra/opentofu/bootstrap-state "$validation_dir"/infra/opentofu/environments/*; do TF_VAR_state_encryption_passphrase=ci-only-example-passphrase-0000000000 tofu -chdir="$root" init -backend=false -input=false; TF_VAR_state_encryption_passphrase=ci-only-example-passphrase-0000000000 tofu -chdir="$root" validate; tflint --chdir="$root" --config="$(pwd)/.tflint.hcl"; done
     trivy config --exit-code 1 --severity HIGH,CRITICAL infra/opentofu
 
-# Lint the Ansible tree and syntax-check its foundation playbook.
+# Lint, syntax-check, and acceptance-test the Ansible configuration.
 check-ansible: _sync
+    bash -n scripts/configure-production
+    bash -n scripts/check-production-inventory
+    scripts/check-production-inventory
+    uv run ansible-galaxy collection install --requirements-file config/ansible/requirements.yml
     ANSIBLE_CONFIG=config/ansible/ansible.cfg uv run ansible-lint config/ansible
     ANSIBLE_CONFIG=config/ansible/ansible.cfg uv run ansible-playbook --inventory config/ansible/inventories/development/hosts.yml --syntax-check config/ansible/playbooks/site.yml
+    ANSIBLE_CONFIG=config/ansible/ansible.cfg uv run ansible-playbook --inventory config/ansible/inventories/development/hosts.yml --syntax-check config/ansible/playbooks/acceptance.yml
+    cd config/ansible && ANSIBLE_CONFIG="$(pwd)/ansible.cfg" uv run molecule test --scenario-name default
+
+# Converge production twice and run host acceptance and restore checks.
+configure-production: _sync
+    scripts/configure-production
 
 # Validate GitHub Actions workflow syntax and expressions.
 check-actions:

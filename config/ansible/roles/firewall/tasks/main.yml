@@ -1,0 +1,32 @@
+---
+- name: Install nftables
+  ansible.builtin.apt:
+    name: nftables
+    state: present
+
+- name: Install the Lower Duck Pond nftables policy
+  ansible.builtin.template:
+    src: lowerduckpond.nft.j2
+    dest: /etc/nftables.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: /usr/sbin/nft --check --file %s
+  notify: Reload nftables
+
+- name: Enable the nftables policy
+  ansible.builtin.systemd_service:
+    name: nftables.service
+    enabled: true
+    state: started
+  when: firewall_enable_service
+
+- name: Leave nftables enabled for reboot in acceptance containers
+  ansible.builtin.systemd_service:
+    name: nftables.service
+    enabled: true
+    state: stopped
+  when: not firewall_enable_service
+
+- name: Apply firewall changes before configuring later services
+  ansible.builtin.meta: flush_handlers

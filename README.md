@@ -5,9 +5,10 @@ the `r/HaveWeMet` role-playing community. It is intended for small, handmade
 sites belonging to fictional residents, businesses, clubs, campaigns, and civic
 departments.
 
-The project is currently **pre-alpha**. Milestone 1 defines the DigitalOcean and
-Cloudflare foundation, remote-state bootstrap, and protected infrastructure
-workflow; it does not yet configure the host or serve tenant content.
+The project is currently **pre-alpha**. Milestone 2 adds reproducible Ubuntu
+host configuration, an HTTPS readiness fixture, rootless Podman and MariaDB
+foundations, encrypted scheduled backups, and host acceptance tests. Tenant
+provisioning begins in Milestone 3.
 
 ## Start here
 
@@ -34,6 +35,9 @@ reporting failure; rerun the command after reviewing those changes.
   configuration foundations.
 - [`docs/operations/infrastructure.md`](docs/operations/infrastructure.md)
   describes state bootstrap, protected plans, applies, and required secrets.
+- [`docs/operations/host-configuration.md`](docs/operations/host-configuration.md)
+  describes protected host convergence, backup recovery checks, and runtime
+  credential boundaries.
 
 The fictional city site at `lowerduckpond.com` will live in a separate
 repository and use the same tenant interface as every other site.

@@ -1,0 +1,11 @@
+[Unit]
+Description=Schedule encrypted Lower Duck Pond backups
+
+[Timer]
+OnCalendar={{ backup_calendar }}
+RandomizedDelaySec={{ backup_randomized_delay_seconds }}
+Persistent=true
+Unit=lowerduckpond-backup.service
+
+[Install]
+WantedBy=timers.target
