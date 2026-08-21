@@ -100,6 +100,8 @@
 - name: Initialize the encrypted Restic repository
   ansible.builtin.shell:
     cmd: >-
+      exec 9>/var/cache/lowerduckpond-backup/repository.lock &&
+      flock --exclusive 9 &&
       set -o allexport &&
       source /etc/lowerduckpond/backup.env &&
       set +o allexport &&

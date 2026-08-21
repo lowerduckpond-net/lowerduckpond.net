@@ -240,6 +240,15 @@ def test_backup_configuration_is_atomic_and_sandboxed(host: Host) -> None:
     restic_index = maintenance_script.content_string.index("restic forget")
     assert lock_index < restic_index
     assert maintenance_script.contains("--tag scheduled")
+    for helper_name, restic_command in (
+        ("restic-check", "restic check"),
+        ("latest-backup-snapshot", "restic snapshots"),
+        ("restore-smoke-test", "restic restore"),
+    ):
+        helper = host.file(f"/usr/local/libexec/lowerduckpond/{helper_name}")
+        assert helper.content_string.index("flock --exclusive 9") < (
+            helper.content_string.index(restic_command)
+        )
     assert host.file(LOCAL_BACKUP_REPOSITORY).is_directory
     backup_unit = host.file("/etc/systemd/system/lowerduckpond-backup.service")
     maintenance_unit = host.file("/etc/systemd/system/lowerduckpond-backup-maintenance.service")

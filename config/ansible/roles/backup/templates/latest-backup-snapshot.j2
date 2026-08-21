@@ -2,6 +2,9 @@
 set -euo pipefail
 umask 077
 
+exec 9>/var/cache/lowerduckpond-backup/repository.lock
+flock --exclusive 9
+
 # shellcheck disable=SC1091
 source /etc/lowerduckpond/backup.env
 export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION
