@@ -346,7 +346,9 @@ def test_monitoring_is_local_and_healthy(host: Host) -> None:
         "/var/lib/lowerduckpond/runtime/.config/systemd/user/lowerduckpond-podman-ready.service"
     )
     assert not readiness_unit.contains("RemainAfterExit=yes")
+    assert not readiness_unit.contains("After=default.target")
     assert readiness_unit.contains("StartLimitIntervalSec=0")
+    assert readiness_unit.contains("WantedBy=default.target")
     health_script = host.file("/usr/local/libexec/lowerduckpond/health-check")
     assert health_script.contains("start lowerduckpond-podman-ready.service")
     assert not health_script.contains("restart lowerduckpond-podman-ready.service")
