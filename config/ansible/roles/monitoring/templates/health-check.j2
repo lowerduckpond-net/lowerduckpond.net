@@ -40,7 +40,7 @@ check 'Caddy metrics endpoint responds' \
     --unix-socket {{ caddy_admin_socket_path | quote }} http://localhost/metrics
 check 'rootless Podman responds' systemctl --user \
     --machine={{ podman_service_user }}@.host \
-    restart lowerduckpond-podman-ready.service
+    start lowerduckpond-podman-ready.service
 
 read_status() {
     local variable_name=$1

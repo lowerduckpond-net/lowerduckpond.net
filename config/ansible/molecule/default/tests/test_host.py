@@ -281,6 +281,13 @@ def test_monitoring_is_local_and_healthy(host: Host) -> None:
     health_unit = host.file("/etc/systemd/system/lowerduckpond-health.service")
     assert not health_unit.contains("ReadWritePaths=/var/lib/lowerduckpond/runtime")
     assert not health_unit.contains("BindReadOnlyPaths=/run/user/21000")
+    readiness_unit = host.file(
+        "/var/lib/lowerduckpond/runtime/.config/systemd/user/lowerduckpond-podman-ready.service"
+    )
+    assert not readiness_unit.contains("RemainAfterExit=yes")
+    health_script = host.file("/usr/local/libexec/lowerduckpond/health-check")
+    assert health_script.contains("start lowerduckpond-podman-ready.service")
+    assert not health_script.contains("restart lowerduckpond-podman-ready.service")
     caddy_validator = host.file("/usr/local/libexec/lowerduckpond/caddy-validate")
     assert caddy_validator.contains("lowerduckpond-caddy-validate")
     scheduled_health = host.run("systemctl start lowerduckpond-health.service")
@@ -317,7 +324,7 @@ def test_monitoring_reports_newer_backup_failures(host: Host) -> None:
             host.run(f"printf '%s\\n' {restored_value} > {status_root}/backup-last-failure")
 
     restored = host.run("/usr/local/libexec/lowerduckpond/health-check")
-    assert restored.rc == 0
+    assert restored.rc == 0, restored.stderr
 
 
 def test_monitoring_reports_newer_maintenance_failures(host: Host) -> None:
@@ -345,7 +352,7 @@ def test_monitoring_reports_newer_maintenance_failures(host: Host) -> None:
                 host.run(f"printf '%s\\n' {restored_value} > {status_path}")
 
     restored = host.run("/usr/local/libexec/lowerduckpond/health-check")
-    assert restored.rc == 0
+    assert restored.rc == 0, restored.stderr
 
 
 def test_monitoring_reports_stale_maintenance(host: Host) -> None:
@@ -362,7 +369,7 @@ def test_monitoring_reports_stale_maintenance(host: Host) -> None:
         host.run(f"printf '%s\\n' {original_success} > {status_path}")
 
     restored = host.run("/usr/local/libexec/lowerduckpond/health-check")
-    assert restored.rc == 0
+    assert restored.rc == 0, restored.stderr
 
 
 def test_provisioner_privilege_is_narrow(host: Host) -> None:
