@@ -98,13 +98,26 @@ sudo /usr/local/libexec/lowerduckpond/restic-check
 
 The node exporter listens only on `127.0.0.1:9100`. Milestone 2 records Caddy,
 database, rootless-runtime, scheduled-backup, and weekly-retention health as
-Prometheus textfile metrics and in journald. Backup and retention share a host
-lock in the root-only backup working directory, and retention and restore checks
-select only snapshots tagged `scheduled`. Convergence and integration tests run
-the initial jobs through their hardened systemd units so the scheduled execution
-boundary is exercised before deployment. A central collector, dashboards, and
-routed alerts belong with the control-plane observability work rather than
-consuming the small development Droplet now.
+Prometheus textfile metrics and in journald. Every Restic repository operation
+takes the shared host lock in the root-only backup working directory before
+loading the active backup configuration. Snapshot discovery, retention, and
+restore select only snapshots tagged `scheduled`. Convergence and integration
+tests run the initial jobs through their hardened systemd units so the scheduled
+execution boundary is exercised before deployment. A central collector,
+dashboards, and routed alerts belong with the control-plane observability work
+rather than consuming the small development Droplet now.
+
+Scheduled snapshots contain:
+
+- site content under `/srv/lowerduckpond`;
+- Caddy state under `/var/lib/caddy`;
+- provisioner state under `/var/lib/lowerduckpond/manifests` and
+  `/var/lib/lowerduckpond/audit`; and
+- a staged, compressed dump of all MariaDB databases.
+
+The current retention policy keeps 7 daily, 5 weekly, and 12 monthly scheduled
+snapshots. A change to any of those counts invalidates the prior maintenance
+evidence and causes convergence to apply the new policy immediately.
 
 The root-only backup environment is activated with one atomic rename and carries
 the repository, node name, retention policy, credentials, and separate backup
