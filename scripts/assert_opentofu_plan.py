@@ -93,6 +93,10 @@ EXPECTED_PROJECT_RESOURCE_ADDRESSES = {
     "digitalocean_project_resources.host",
     "digitalocean_project_resources.production",
 }
+EXPECTED_DURABLE_PROJECT_MEMBERS = {
+    "module.host.digitalocean_reserved_ip.host": "urn",
+    "module.storage.digitalocean_spaces_bucket.backups": "urn",
+}
 NON_MUTATING_ACTIONS = {("no-op",), ("read",)}
 
 
@@ -106,6 +110,17 @@ def _changes_by_type(plan: dict[str, Any], resource_type: str) -> list[dict[str,
         for resource in plan.get("resource_changes", [])
         if resource.get("type") == resource_type
     ]
+
+
+def _change_by_address(plan: dict[str, Any], address: str) -> dict[str, Any] | None:
+    return next(
+        (
+            resource
+            for resource in plan.get("resource_changes", [])
+            if resource.get("address") == address
+        ),
+        None,
+    )
 
 
 def _after(resource: dict[str, Any]) -> dict[str, Any]:
@@ -266,12 +281,10 @@ def _check_rebuild_drill_actions(plan: dict[str, Any], errors: list[str]) -> Non
         _check_configuration_references(plan, address, errors)
 
 
-def _has_exact_urn_prefixes(resources: object, prefixes: set[str]) -> bool:
-    if not isinstance(resources, list) or len(resources) != len(prefixes):
-        return False
-    return all(
-        sum(str(resource).startswith(prefix) for resource in resources) == 1 for prefix in prefixes
-    )
+def _planned_attribute(resource: dict[str, Any], field: str) -> tuple[object, bool]:
+    value = _after(resource).get(field)
+    unknown = _contains_unknown(resource.get("change", {}).get("after_unknown", {}).get(field))
+    return value, unknown
 
 
 def _check_project_resources(plan: dict[str, Any], errors: list[str]) -> None:
@@ -289,30 +302,52 @@ def _check_project_resources(plan: dict[str, Any], errors: list[str]) -> None:
 
     resources_by_address = {str(resource.get("address", "")): resource for resource in resources}
     durable = resources_by_address["digitalocean_project_resources.production"]
-    durable_members = _after(durable).get("resources")
-    durable_members_unknown = _contains_unknown(
-        durable.get("change", {}).get("after_unknown", {}).get("resources")
-    )
+    durable_members, durable_members_unknown = _planned_attribute(durable, "resources")
     durable_actions = tuple(durable.get("change", {}).get("actions", []))
-    if durable_members_unknown and durable_actions != ("create",):
-        errors.append("durable project membership may be unknown only during initial creation")
-    elif not durable_members_unknown and not _has_exact_urn_prefixes(
-        durable_members, {"do:floatingip:", "do:space:"}
+    expected_durable_members: list[object] = []
+    durable_sources_unknown = False
+    for address, field in EXPECTED_DURABLE_PROJECT_MEMBERS.items():
+        source = _change_by_address(plan, address)
+        if source is None:
+            errors.append(f"{address} is missing from the plan")
+            continue
+        value, unknown = _planned_attribute(source, field)
+        durable_sources_unknown |= unknown
+        expected_durable_members.append(value)
+
+    if durable_members_unknown:
+        if durable_actions != ("create",) or not durable_sources_unknown:
+            errors.append("durable project membership may be unknown only during initial creation")
+    elif (
+        durable_sources_unknown
+        or not isinstance(durable_members, list)
+        or len(durable_members) != len(expected_durable_members)
+        or not all(isinstance(member, str) for member in durable_members)
+        or not all(isinstance(member, str) for member in expected_durable_members)
+        or set(durable_members) != set(expected_durable_members)
     ):
         errors.append(
-            "durable project assignment must retain exactly the reserved IP and Spaces bucket"
+            "durable project assignment must exactly match the planned reserved IP and "
+            "Spaces bucket URNs"
         )
 
     host = resources_by_address["digitalocean_project_resources.host"]
-    host_members = _after(host).get("resources")
-    host_members_unknown = _contains_unknown(
-        host.get("change", {}).get("after_unknown", {}).get("resources")
-    )
+    host_members, host_members_unknown = _planned_attribute(host, "resources")
     host_actions = tuple(host.get("change", {}).get("actions", []))
-    if host_members_unknown and host_actions not in {("create",), ("update",)}:
-        errors.append("host project membership is unexpectedly unknown")
-    elif not host_members_unknown and not _has_exact_urn_prefixes(host_members, {"do:droplet:"}):
-        errors.append("host project assignment must contain exactly the replaceable Droplet")
+    droplet = _change_by_address(plan, "module.host.digitalocean_droplet.host")
+    if droplet is None:
+        errors.append("module.host.digitalocean_droplet.host is missing from the plan")
+    else:
+        droplet_urn, droplet_urn_unknown = _planned_attribute(droplet, "urn")
+        if host_members_unknown:
+            if host_actions not in {("create",), ("update",)} or not droplet_urn_unknown:
+                errors.append("host project membership is unexpectedly unknown")
+        elif (
+            droplet_urn_unknown
+            or not isinstance(host_members, list)
+            or host_members != [droplet_urn]
+        ):
+            errors.append("host project assignment must exactly match the planned Droplet URN")
 
     for address in sorted(EXPECTED_PROJECT_RESOURCE_ADDRESSES):
         _check_configuration_references(plan, address, errors)
