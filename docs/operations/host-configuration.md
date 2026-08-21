@@ -78,12 +78,20 @@ configure-production`. Ansible validates a candidate Caddyfile before its
 atomic rename, and systemd validates the live configuration before every
 reload.
 
-The provisioner cannot write Caddy's live import tree. It writes a complete
-candidate set under `/var/lib/lowerduckpond/caddy-routes-staging`, then invokes
-the sole permitted sudo command, `publish-caddy-routes`. That command copies the
-set into a root-owned immutable release, validates that exact release, switches
-the live symlink atomically under an exclusive lock, and only then reloads
-Caddy. A failed reload restores the prior release.
+The provisioner cannot write Caddy syntax or its live import tree. It writes a
+complete declarative set under
+`/var/lib/lowerduckpond/caddy-routes-staging`: each regular
+`<site-id>.route` file contains exactly one lowercase DNS label for a static
+tenant. The sole permitted sudo command, `publish-caddy-routes`, rejects
+symlinks, malformed identifiers, malformed or duplicate labels, and every
+other input shape. It generates only a hostname matcher, the tenant's fixed
+`/srv/lowerduckpond/sites/<site-id>/current` document root, and `file_server`.
+
+The command writes those generated fragments into a root-owned immutable
+release, validates that exact release, switches the live symlink atomically
+under an exclusive lock, and only then reloads Caddy. A failed reload restores
+the prior release. Supporting another route type requires an explicit extension
+to this root-owned generator; provisioner-authored Caddy is never accepted.
 
 Useful host-side checks are:
 

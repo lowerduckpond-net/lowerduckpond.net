@@ -118,10 +118,11 @@ def test_provisioner_privilege_is_narrow(host: Host) -> None:
     live_write = host.run("runuser --user ldp-provisioner -- test -w /etc/caddy/sites-enabled")
     assert live_write.rc != 0
 
+    site_id = "01JMOLECULE00000000000000"
     stage_route = host.run(
         "runuser --user ldp-provisioner -- sh -c "
-        '\'printf "# molecule route\\n" > '
-        "/var/lib/lowerduckpond/caddy-routes-staging/molecule.caddy'"
+        '\'printf "molecule\\n" > '
+        f"/var/lib/lowerduckpond/caddy-routes-staging/{site_id}.route'"
     )
     assert stage_route.rc == 0
     publish = host.run(
@@ -132,17 +133,21 @@ def test_provisioner_privilege_is_narrow(host: Host) -> None:
 
     active_release = host.run("readlink --canonicalize /etc/caddy/sites-enabled")
     assert active_release.rc == 0
-    published_route = host.file(f"{active_release.stdout.strip()}/molecule.caddy")
+    published_route = host.file(f"{active_release.stdout.strip()}/{site_id}.caddy")
     assert published_route.user == "root"
     assert published_route.group == "ldp-caddy-routes"
     assert published_route.mode == ROUTE_FILE_MODE
+    assert published_route.contains("host molecule.lowerduckpond.test")
+    assert published_route.contains(f"root * /srv/lowerduckpond/sites/{site_id}/current")
+    assert published_route.contains("file_server")
+    assert not published_route.contains("CLOUDFLARE_API_TOKEN")
 
-    unsafe_stage = host.run(
-        "runuser --user ldp-provisioner -- "
-        "ln --symbolic /etc/shadow "
-        "/var/lib/lowerduckpond/caddy-routes-staging/unsafe.caddy"
+    malicious_stage = host.run(
+        "runuser --user ldp-provisioner -- sh -c "
+        '\'printf "{\\$CLOUDFLARE_API_TOKEN}\\n" > '
+        "/var/lib/lowerduckpond/caddy-routes-staging/attacker.route'"
     )
-    assert unsafe_stage.rc == 0
+    assert malicious_stage.rc == 0
     rejected = host.run(
         "runuser --user ldp-provisioner -- "
         "sudo /usr/local/libexec/lowerduckpond/publish-caddy-routes"
@@ -150,6 +155,25 @@ def test_provisioner_privilege_is_narrow(host: Host) -> None:
     assert rejected.rc != 0
     unchanged_release = host.run("readlink --canonicalize /etc/caddy/sites-enabled")
     assert unchanged_release.stdout == active_release.stdout
+
+    remove_malicious = host.run(
+        "runuser --user ldp-provisioner -- "
+        "rm /var/lib/lowerduckpond/caddy-routes-staging/attacker.route"
+    )
+    assert remove_malicious.rc == 0
+    unsafe_stage = host.run(
+        "runuser --user ldp-provisioner -- "
+        "ln --symbolic /etc/shadow "
+        "/var/lib/lowerduckpond/caddy-routes-staging/unsafe.route"
+    )
+    assert unsafe_stage.rc == 0
+    rejected_symlink = host.run(
+        "runuser --user ldp-provisioner -- "
+        "sudo /usr/local/libexec/lowerduckpond/publish-caddy-routes"
+    )
+    assert rejected_symlink.rc != 0
+    unchanged_after_symlink = host.run("readlink --canonicalize /etc/caddy/sites-enabled")
+    assert unchanged_after_symlink.stdout == active_release.stdout
 
     sudoers = host.file("/etc/sudoers.d/lowerduckpond-provisioner")
     assert sudoers.mode == SUDOERS_MODE

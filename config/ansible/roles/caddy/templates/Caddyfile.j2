@@ -26,8 +26,9 @@
 		file_server
 	}
 
+	import {$CADDY_ROUTES_GLOB}
+
 	handle {
-		import {$CADDY_ROUTES_GLOB}
 		respond "No Lower Duck Pond site has been provisioned for this name.\n" 404
 	}
 }
