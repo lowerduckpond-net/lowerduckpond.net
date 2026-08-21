@@ -16,6 +16,13 @@ EXPECTED_TAGS = {
 WORLD_CIDRS = {"0.0.0.0/0", "::/0"}
 DURABLE_TYPES = {"digitalocean_reserved_ip", "digitalocean_spaces_bucket"}
 EXPECTED_DNS_RECORD_COUNT = 2
+REBUILD_DRILL_ACTIONS = {
+    "module.host.digitalocean_droplet.host": ("create", "delete"),
+    "module.host.digitalocean_reserved_ip_assignment.host": ("delete", "create"),
+    "module.host.digitalocean_firewall.host": ("update",),
+    "digitalocean_project_resources.production": ("update",),
+}
+NON_MUTATING_ACTIONS = {("no-op",), ("read",)}
 
 
 class PlanPolicyError(RuntimeError):
@@ -62,6 +69,32 @@ def _check_destructive_actions(
                 f"{resource.get('address')} replaces the Droplet; "
                 "review it through a dedicated drill"
             )
+
+
+def _check_rebuild_drill_actions(plan: dict[str, Any], errors: list[str]) -> None:
+    observed_changes: set[str] = set()
+    for resource in plan.get("resource_changes", []):
+        address = str(resource.get("address", ""))
+        actions = tuple(resource.get("change", {}).get("actions", []))
+        if actions in NON_MUTATING_ACTIONS:
+            continue
+
+        expected_actions = REBUILD_DRILL_ACTIONS.get(address)
+        if expected_actions is None:
+            errors.append(f"{address} has unrelated rebuild-drill actions: {list(actions)}")
+            continue
+
+        observed_changes.add(address)
+        if actions != expected_actions:
+            errors.append(
+                f"{address} rebuild-drill actions must be "
+                f"{list(expected_actions)}, found {list(actions)}"
+            )
+
+    missing_changes = REBUILD_DRILL_ACTIONS.keys() - observed_changes
+    errors.extend(
+        f"{address} must change during the rebuild drill" for address in sorted(missing_changes)
+    )
 
 
 def _check_droplet(plan: dict[str, Any], errors: list[str]) -> None:
@@ -150,11 +183,14 @@ def assert_plan(plan: dict[str, Any], *, allow_droplet_replacement: bool = False
     """Raise PlanPolicyError when a production plan violates policy."""
     errors: list[str] = []
     _check_destructive_actions(plan, errors, allow_droplet_replacement=allow_droplet_replacement)
+    if allow_droplet_replacement:
+        _check_rebuild_drill_actions(plan, errors)
     _check_droplet(plan, errors)
     _check_firewall(plan, errors)
     _check_spaces(plan, errors)
     _check_dns(plan, errors)
     _require_one(plan, "digitalocean_reserved_ip", errors)
+    _require_one(plan, "digitalocean_reserved_ip_assignment", errors)
     _require_one(plan, "digitalocean_project_resources", errors)
     if errors:
         detail = "\n".join(f"- {error}" for error in errors)
@@ -167,7 +203,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--allow-droplet-replacement",
         action="store_true",
-        help="allow the explicit rebuild drill to replace only the Droplet",
+        help="allow only the explicit Droplet rebuild and its required attachment changes",
     )
     return parser.parse_args()
 

@@ -164,9 +164,11 @@ cloud credential.
 ## Rebuild drill
 
 To prove that compute remains replaceable, dispatch a main-branch plan with
-`replace_droplet` enabled. The policy permits replacement of the Droplet only;
-it still rejects deletion of the reserved address or Spaces bucket. After
-review, apply that exact plan normally, then verify:
+`replace_droplet` enabled. The policy permits a create-before-destroy Droplet
+replacement plus only the required reserved-IP assignment, firewall, and
+project-membership changes. It rejects all unrelated resource changes and any
+deletion of the reserved address or Spaces bucket. After review, apply that
+exact plan normally, then verify:
 
 - the reserved public address is unchanged;
 - the apex and wildcard records are unchanged;

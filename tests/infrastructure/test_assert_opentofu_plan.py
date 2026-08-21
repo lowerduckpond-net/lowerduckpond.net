@@ -76,6 +76,7 @@ def _valid_plan() -> dict[str, Any]:
                 {"grant": [{"bucket": "example-backups", "permission": "readwrite"}]},
             ),
             _resource("digitalocean_reserved_ip", "host", {}),
+            _resource("digitalocean_reserved_ip_assignment", "host", {}),
             _resource("digitalocean_project_resources", "production", {}),
             _resource(
                 "cloudflare_dns_record",
@@ -89,6 +90,31 @@ def _valid_plan() -> dict[str, Any]:
             ),
         ]
     }
+
+
+def _valid_rebuild_drill_plan() -> dict[str, Any]:
+    plan = deepcopy(_valid_plan())
+    addresses = {
+        "digitalocean_droplet": "module.host.digitalocean_droplet.host",
+        "digitalocean_firewall": "module.host.digitalocean_firewall.host",
+        "digitalocean_reserved_ip_assignment": (
+            "module.host.digitalocean_reserved_ip_assignment.host"
+        ),
+        "digitalocean_project_resources": "digitalocean_project_resources.production",
+    }
+    drill_actions = {
+        "digitalocean_droplet": ["create", "delete"],
+        "digitalocean_firewall": ["update"],
+        "digitalocean_reserved_ip_assignment": ["delete", "create"],
+        "digitalocean_project_resources": ["update"],
+    }
+    for resource in plan["resource_changes"]:
+        resource["change"]["actions"] = ["no-op"]
+        resource_type = resource["type"]
+        if resource_type in addresses:
+            resource["address"] = addresses[resource_type]
+            resource["change"]["actions"] = drill_actions[resource_type]
+    return plan
 
 
 def test_accepts_expected_foundation() -> None:
@@ -145,12 +171,43 @@ def test_rejects_permanent_disk_resize() -> None:
 
 
 def test_allows_explicit_droplet_replacement_drill() -> None:
-    plan = _valid_plan()
+    assert_plan(_valid_rebuild_drill_plan(), allow_droplet_replacement=True)
+
+
+def test_rejects_unrelated_rebuild_drill_change() -> None:
+    plan = _valid_rebuild_drill_plan()
+    bucket = next(
+        resource
+        for resource in plan["resource_changes"]
+        if resource["type"] == "digitalocean_spaces_bucket"
+    )
+    bucket["change"]["actions"] = ["update"]
+
+    with pytest.raises(PlanPolicyError, match="unrelated rebuild-drill actions"):
+        assert_plan(plan, allow_droplet_replacement=True)
+
+
+def test_rejects_destroy_before_create_droplet_drill() -> None:
+    plan = _valid_rebuild_drill_plan()
     droplet = next(
         resource
         for resource in plan["resource_changes"]
         if resource["type"] == "digitalocean_droplet"
     )
-    droplet["change"]["actions"] = ["create", "delete"]
+    droplet["change"]["actions"] = ["delete", "create"]
 
-    assert_plan(plan, allow_droplet_replacement=True)
+    with pytest.raises(PlanPolicyError, match="rebuild-drill actions must be"):
+        assert_plan(plan, allow_droplet_replacement=True)
+
+
+def test_rejects_missing_rebuild_drill_attachment_change() -> None:
+    plan = _valid_rebuild_drill_plan()
+    firewall = next(
+        resource
+        for resource in plan["resource_changes"]
+        if resource["type"] == "digitalocean_firewall"
+    )
+    firewall["change"]["actions"] = ["no-op"]
+
+    with pytest.raises(PlanPolicyError, match="must change during the rebuild drill"):
+        assert_plan(plan, allow_droplet_replacement=True)
