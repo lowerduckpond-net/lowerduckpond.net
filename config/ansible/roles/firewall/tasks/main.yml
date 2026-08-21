@@ -27,3 +27,6 @@
     enabled: true
     state: stopped
   when: not firewall_enable_service
+
+- name: Apply firewall changes before configuring later services
+  ansible.builtin.meta: flush_handlers
