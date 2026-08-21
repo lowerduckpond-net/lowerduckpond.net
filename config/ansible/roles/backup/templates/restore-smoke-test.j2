@@ -15,6 +15,8 @@ trap finish EXIT
 
 restic restore latest --host {{ backup_node_name | quote }} --target "${restore_directory}"
 test -s "${restore_directory}{{ caddy_fixture_root }}/index.html"
+test -d "${restore_directory}/var/lib/lowerduckpond/manifests"
+test -d "${restore_directory}/var/lib/lowerduckpond/audit"
 test -s \
     "${restore_directory}/var/cache/lowerduckpond-backup/staging/mariadb.sql.gz"
 grep --quiet "Lower Duck Pond Hosting" \

@@ -36,6 +36,6 @@
     - role: caddy
     - role: podman
     - role: database
+    - role: provisioner
     - role: backup
     - role: monitoring
-    - role: provisioner
