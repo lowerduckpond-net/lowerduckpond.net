@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+inventory="${repository_root}/config/ansible/inventories/production/hosts.yml"
+playbook="${repository_root}/config/ansible/playbooks/check-production-inventory.yml"
+
+export ADMIN_SOURCE_CIDRS_JSON='["192.0.2.1/32"]'
+export BACKUP_REPOSITORY=inventory-test-repository
+export CADDY_CLOUDFLARE_API_TOKEN=inventory-test-caddy-token
+export RESTIC_PASSWORD=inventory-test-restic-password
+export SPACES_BACKUP_ACCESS_KEY_ID=inventory-test-access-key
+export SPACES_BACKUP_SECRET_ACCESS_KEY=inventory-test-secret-key
+export SPACES_REGION=inventory-test-region
+
+export ANSIBLE_CONFIG="${repository_root}/config/ansible/ansible.cfg"
+uv run ansible-playbook --inventory "${inventory}" "${playbook}"
