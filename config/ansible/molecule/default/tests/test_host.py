@@ -234,9 +234,15 @@ def test_backup_configuration_is_atomic_and_sandboxed(host: Host) -> None:
     maintenance_script = host.file("/usr/local/libexec/lowerduckpond/backup-maintenance")
     lock_path = "/var/cache/lowerduckpond-backup/repository.lock"
     source_index = backup_script.content_string.index("source /etc/lowerduckpond/backup.env")
+    backup_lock_index = backup_script.content_string.index("flock --exclusive 9")
+    maintenance_source_index = maintenance_script.content_string.index(
+        "source /etc/lowerduckpond/backup.env"
+    )
+    maintenance_lock_index = maintenance_script.content_string.index("flock --exclusive 9")
     dump_index = backup_script.content_string.index("mariadb-dump")
     credential_export_index = backup_script.content_string.index("export AWS_ACCESS_KEY_ID")
-    assert source_index < dump_index < credential_export_index
+    assert backup_lock_index < source_index < dump_index < credential_export_index
+    assert maintenance_lock_index < maintenance_source_index
     assert backup_script.contains("/usr/bin/env --ignore-environment")
     assert backup_script.contains(f"lock_path={lock_path}")
     assert maintenance_script.contains(f"lock_path={lock_path}")
@@ -245,9 +251,8 @@ def test_backup_configuration_is_atomic_and_sandboxed(host: Host) -> None:
     assert read_backup_scope(host) != read_maintenance_scope(host)
     assert not backup_script.contains(BACKUP_SCOPE_PATH)
     assert not maintenance_script.contains(BACKUP_SCOPE_PATH)
-    lock_index = maintenance_script.content_string.index("flock --exclusive 9")
     restic_index = maintenance_script.content_string.index("restic forget")
-    assert lock_index < restic_index
+    assert maintenance_lock_index < restic_index
     assert maintenance_script.contains("--tag scheduled")
     for helper_name, restic_command in (
         ("restic-check", "restic check"),

@@ -5,6 +5,9 @@ umask 077
 status_directory=/var/lib/lowerduckpond/backup-status
 staging_directory=/var/cache/lowerduckpond-backup/staging
 lock_path=/var/cache/lowerduckpond-backup/repository.lock
+exec 9>"${lock_path}"
+flock --exclusive 9
+
 # shellcheck disable=SC1091
 source /etc/lowerduckpond/backup.env
 export -n AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION
@@ -55,8 +58,6 @@ finish() {
 trap finish EXIT
 
 mkdir -p "${staging_directory}"
-exec 9>"${lock_path}"
-flock --exclusive 9
 
 /usr/bin/env --ignore-environment PATH=/usr/bin:/bin \
     /usr/sbin/runuser --user {{ backup_database_service_user }} -- \
