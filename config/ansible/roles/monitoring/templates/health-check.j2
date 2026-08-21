@@ -1,9 +1,17 @@
 #!/usr/bin/env bash
-set -uo pipefail
+set -euo pipefail
 umask 022
 
 metric_directory={{ monitoring_textfile_directory | quote }}
 metric_file="${metric_directory}/lowerduckpond.prom"
+temporary_file=
+cleanup() {
+    if [[ -n "${temporary_file}" ]]; then
+        rm -f -- "${temporary_file}"
+    fi
+}
+trap cleanup EXIT
+
 temporary_file=$(mktemp "${metric_directory}/.lowerduckpond.prom.XXXXXXXX")
 failure_count=0
 
@@ -58,6 +66,7 @@ METRICS
 chown root:prometheus "${temporary_file}"
 chmod 0644 "${temporary_file}"
 mv "${temporary_file}" "${metric_file}"
+temporary_file=
 
 if (( failure_count > 0 )); then
     logger --tag lowerduckpond-health "${failure_count} hosting-node health checks failed"
