@@ -4,8 +4,7 @@ from testinfra.host import Host
 
 BACKUP_ENVIRONMENT_MODE = 0o600
 CONTENT_ROOT_MODE = 0o711
-ROUTE_FILE_MODE = 0o640
-SUDOERS_MODE = 0o440
+ROUTE_DIRECTORY_MODE = 0o750
 DATABASE_BACKUP_PRIVILEGES = {
     "EVENT:NO",
     "LOCK TABLES:NO",
@@ -22,16 +21,46 @@ def test_supported_operating_system(host: Host) -> None:
     assert release.contains('VERSION_ID="26.04"')
 
 
+def test_distribution_packages_are_within_supported_bounds(host: Host) -> None:
+    supported_packages = {
+        "mariadb-server": ("1:11.8", "1:11.9"),
+        "podman": ("5.7", "6"),
+        "restic": ("0.18.1", "0.19"),
+    }
+    for package, (minimum, maximum) in supported_packages.items():
+        result = host.run(
+            f"/usr/local/libexec/lowerduckpond/assert-package-version {package} {minimum} {maximum}"
+        )
+        assert result.rc == 0
+
+
 def test_only_expected_ports_listen_publicly(host: Host) -> None:
-    listeners = host.run(
-        "ss --listening --numeric --tcp | "
-        "awk 'NR > 1 && ($4 ~ /^0.0.0.0:/ || $4 ~ /^\\[::\\]:/ || $4 ~ /^\\*:/) "
-        '{sub(/^.*:/, "", $4); print $4}\''
-    )
+    listeners = host.run("/usr/local/libexec/lowerduckpond/public-tcp-listeners")
     assert listeners.rc == 0
-    ports = set(listeners.stdout.splitlines())
+    ports = {listener.rsplit(":", 1)[1] for listener in listeners.stdout.splitlines()}
     assert {"80", "443"}.issubset(ports)
     assert ports.issubset({"22", "80", "443"})
+
+
+def test_public_listener_classifier_handles_concrete_addresses(host: Host) -> None:
+    fixture = "\n".join(
+        [
+            "LISTEN 0 4096 127.0.0.1:9100 0.0.0.0:*",
+            "LISTEN 0 4096 [::1]:3306 [::]:*",
+            "LISTEN 0 4096 0.0.0.0:22 0.0.0.0:*",
+            "LISTEN 0 4096 192.0.2.10:8443 0.0.0.0:*",
+            "LISTEN 0 4096 [2001:db8::10]:9443 [::]:*",
+        ]
+    )
+    result = host.run(
+        f"printf '%b' {fixture!r} | /usr/local/libexec/lowerduckpond/public-tcp-listeners --stdin"
+    )
+    assert result.rc == 0
+    assert set(result.stdout.splitlines()) == {
+        "0.0.0.0:22",
+        "192.0.2.10:8443",
+        "[2001:db8::10]:9443",
+    }
 
 
 def test_caddy_custom_build_and_https_fixture(host: Host) -> None:
@@ -60,6 +89,25 @@ def test_caddy_reload_always_validates_first(host: Host) -> None:
     validate_index = unit.content_string.index("ExecReload=/usr/local/bin/caddy validate")
     reload_index = unit.content_string.index("ExecReload=/usr/local/bin/caddy reload")
     assert validate_index < reload_index
+    assert "--address unix//run/caddy/admin.sock" in unit.content_string
+    assert "Restart=on-failure" in unit.content_string
+
+
+def test_caddy_admin_api_is_caddy_only(host: Host) -> None:
+    configuration = host.file("/etc/caddy/Caddyfile")
+    assert configuration.contains("admin unix//run/caddy/admin.sock")
+
+    socket = host.file("/run/caddy/admin.sock")
+    assert socket.exists
+    assert socket.user == "caddy"
+    assert not host.socket("tcp://127.0.0.1:2019").is_listening
+
+    denied = host.run(
+        "runuser --user ldp-provisioner -- "
+        "curl --fail --silent --unix-socket /run/caddy/admin.sock "
+        "http://localhost/config/"
+    )
+    assert denied.rc != 0
 
 
 def test_rootless_podman_non_login_account(host: Host) -> None:
@@ -73,6 +121,31 @@ def test_rootless_podman_non_login_account(host: Host) -> None:
     )
     assert podman.rc == 0
     assert host.file("/var/lib/systemd/linger/ldp-runtime").exists
+
+
+def test_subordinate_ids_are_unique_and_overlap_is_rejected(host: Host) -> None:
+    for path in ("/etc/subuid", "/etc/subgid"):
+        allocations = [
+            line
+            for line in host.file(path).content_string.splitlines()
+            if line.startswith("ldp-runtime:")
+        ]
+        assert allocations == ["ldp-runtime:200000:65536"]
+
+    fixture_result = host.run("mktemp")
+    assert fixture_result.rc == 0
+    fixture = fixture_result.stdout.strip()
+    seed = host.run(
+        f"printf '%s\\n' 'another-user:190000:20000' > {fixture} && chmod 0644 {fixture}"
+    )
+    assert seed.rc == 0
+    overlap = host.run(
+        "/usr/local/libexec/lowerduckpond/ensure-subid-allocation "
+        f"{fixture} ldp-runtime 200000 65536 --check"
+    )
+    assert overlap.rc != 0
+    assert "overlaps another-user:190000:20000" in overlap.stderr
+    assert host.file(fixture).content_string == "another-user:190000:20000\n"
 
 
 def test_database_is_loopback_only(host: Host) -> None:
@@ -119,10 +192,23 @@ def test_nftables_policy_compiles_and_blocks_metadata(host: Host) -> None:
 
 def test_backup_repository_and_restore(host: Host) -> None:
     assert host.file("/etc/lowerduckpond/backup.env").mode == BACKUP_ENVIRONMENT_MODE
+    backup_script = host.file("/usr/local/libexec/lowerduckpond/backup")
+    assert backup_script.content_string.index("mariadb-dump") < (
+        backup_script.content_string.index("source /etc/lowerduckpond/backup.env")
+    )
+    assert backup_script.contains("/usr/bin/env --ignore-environment")
+
     check = host.run("/usr/local/libexec/lowerduckpond/restic-check")
     assert check.rc == 0
+    latest = host.run("/usr/local/libexec/lowerduckpond/latest-backup-snapshot")
+    assert latest.rc == 0
+    assert latest.stdout.strip().isdigit()
+
     restore = host.run("/usr/local/libexec/lowerduckpond/restore-smoke-test")
     assert restore.rc == 0
+    maintenance = host.run("/usr/local/libexec/lowerduckpond/backup-maintenance")
+    assert maintenance.rc == 0
+    assert host.file("/var/lib/lowerduckpond/backup-status/maintenance-last-success").exists
     assert host.service("lowerduckpond-backup.timer").is_enabled
     assert host.service("lowerduckpond-backup-maintenance.timer").is_enabled
 
@@ -148,6 +234,58 @@ def test_monitoring_is_local_and_healthy(host: Host) -> None:
     assert host.service("lowerduckpond-health.timer").is_enabled
 
 
+def test_monitoring_reports_newer_backup_failures(host: Host) -> None:
+    status_root = "/var/lib/lowerduckpond/backup-status"
+    backup_success = host.file(f"{status_root}/backup-last-success")
+    original_failure = host.file(f"{status_root}/backup-last-failure")
+    original_failure_value = original_failure.content_string if original_failure.exists else None
+    future_failure = int(backup_success.content_string.strip()) + 1
+
+    try:
+        write_failure = host.run(
+            f"printf '%s\\n' {future_failure} > {status_root}/backup-last-failure"
+        )
+        assert write_failure.rc == 0
+        unhealthy = host.run("/usr/local/libexec/lowerduckpond/health-check")
+        assert unhealthy.rc != 0
+        assert "latest scheduled backup failed" in unhealthy.stderr
+    finally:
+        if original_failure_value is None:
+            host.run(f"rm -f {status_root}/backup-last-failure")
+        else:
+            host.run(f"printf '%s' {original_failure_value!r} > {status_root}/backup-last-failure")
+
+    restored = host.run("/usr/local/libexec/lowerduckpond/health-check")
+    assert restored.rc == 0
+
+
+def test_monitoring_reports_newer_maintenance_failures(host: Host) -> None:
+    status_root = "/var/lib/lowerduckpond/backup-status"
+    status_names = ("maintenance-last-success", "maintenance-last-failure")
+    original_values = {}
+    for status_name in status_names:
+        status = host.file(f"{status_root}/{status_name}")
+        original_values[status_name] = status.content_string if status.exists else None
+
+    now = int(host.run("date +%s").stdout.strip())
+    try:
+        host.run(f"printf '%s\\n' {now} > {status_root}/maintenance-last-success")
+        host.run(f"printf '%s\\n' {now + 1} > {status_root}/maintenance-last-failure")
+        unhealthy = host.run("/usr/local/libexec/lowerduckpond/health-check")
+        assert unhealthy.rc != 0
+        assert "latest backup maintenance failed" in unhealthy.stderr
+    finally:
+        for status_name, original_value in original_values.items():
+            status_path = f"{status_root}/{status_name}"
+            if original_value is None:
+                host.run(f"rm -f {status_path}")
+            else:
+                host.run(f"printf '%s' {original_value!r} > {status_path}")
+
+    restored = host.run("/usr/local/libexec/lowerduckpond/health-check")
+    assert restored.rc == 0
+
+
 def test_provisioner_privilege_is_narrow(host: Host) -> None:
     account = host.user("ldp-provisioner")
     assert account.exists
@@ -160,69 +298,16 @@ def test_provisioner_privilege_is_narrow(host: Host) -> None:
     traversal = host.run("runuser --user ldp-provisioner -- test -x /srv/lowerduckpond")
     assert traversal.rc == 0
 
-    active_routes = host.file("/etc/caddy/sites-enabled")
-    assert active_routes.is_symlink
-    live_write = host.run("runuser --user ldp-provisioner -- test -w /etc/caddy/sites-enabled")
+    active_routes = host.file("/etc/caddy/routes.d")
+    assert active_routes.is_directory
+    assert active_routes.user == "root"
+    assert active_routes.group == "caddy"
+    assert active_routes.mode == ROUTE_DIRECTORY_MODE
+
+    live_write = host.run("runuser --user ldp-provisioner -- test -w /etc/caddy/routes.d")
     assert live_write.rc != 0
+    content_write = host.run("runuser --user ldp-provisioner -- mkdir /srv/lowerduckpond/sites")
+    assert content_write.rc != 0
 
-    site_id = "01JMOLECULE00000000000000"
-    stage_route = host.run(
-        "runuser --user ldp-provisioner -- sh -c "
-        '\'printf "molecule\\n" > '
-        f"/var/lib/lowerduckpond/caddy-routes-staging/{site_id}.route'"
-    )
-    assert stage_route.rc == 0
-    publish = host.run(
-        "runuser --user ldp-provisioner -- "
-        "sudo /usr/local/libexec/lowerduckpond/publish-caddy-routes"
-    )
-    assert publish.rc == 0
-
-    active_release = host.run("readlink --canonicalize /etc/caddy/sites-enabled")
-    assert active_release.rc == 0
-    published_route = host.file(f"{active_release.stdout.strip()}/{site_id}.caddy")
-    assert published_route.user == "root"
-    assert published_route.group == "ldp-caddy-routes"
-    assert published_route.mode == ROUTE_FILE_MODE
-    assert published_route.contains("host molecule.lowerduckpond.test")
-    assert published_route.contains(rf"root \* /srv/lowerduckpond/sites/{site_id}/current")
-    assert published_route.contains("file_server")
-    assert not published_route.contains("CLOUDFLARE_API_TOKEN")
-
-    malicious_stage = host.run(
-        "runuser --user ldp-provisioner -- sh -c "
-        '\'printf "{\\$CLOUDFLARE_API_TOKEN}\\n" > '
-        "/var/lib/lowerduckpond/caddy-routes-staging/attacker.route'"
-    )
-    assert malicious_stage.rc == 0
-    rejected = host.run(
-        "runuser --user ldp-provisioner -- "
-        "sudo /usr/local/libexec/lowerduckpond/publish-caddy-routes"
-    )
-    assert rejected.rc != 0
-    unchanged_release = host.run("readlink --canonicalize /etc/caddy/sites-enabled")
-    assert unchanged_release.stdout == active_release.stdout
-
-    remove_malicious = host.run(
-        "runuser --user ldp-provisioner -- "
-        "rm /var/lib/lowerduckpond/caddy-routes-staging/attacker.route"
-    )
-    assert remove_malicious.rc == 0
-    unsafe_stage = host.run(
-        "runuser --user ldp-provisioner -- "
-        "ln --symbolic /etc/shadow "
-        "/var/lib/lowerduckpond/caddy-routes-staging/unsafe.route"
-    )
-    assert unsafe_stage.rc == 0
-    rejected_symlink = host.run(
-        "runuser --user ldp-provisioner -- "
-        "sudo /usr/local/libexec/lowerduckpond/publish-caddy-routes"
-    )
-    assert rejected_symlink.rc != 0
-    unchanged_after_symlink = host.run("readlink --canonicalize /etc/caddy/sites-enabled")
-    assert unchanged_after_symlink.stdout == active_release.stdout
-
-    sudoers = host.file("/etc/sudoers.d/lowerduckpond-provisioner")
-    assert sudoers.mode == SUDOERS_MODE
-    assert sudoers.contains("/usr/local/libexec/lowerduckpond/publish-caddy-routes")
-    assert not sudoers.contains(" ALL=(ALL)")
+    assert not host.file("/usr/local/libexec/lowerduckpond/publish-caddy-routes").exists
+    assert not host.file("/etc/sudoers.d/lowerduckpond-provisioner").exists
