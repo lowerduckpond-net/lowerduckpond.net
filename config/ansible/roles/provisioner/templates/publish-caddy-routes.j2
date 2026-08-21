@@ -59,8 +59,12 @@ for route_specification in "${staging_directory}"/*; do
 
     site_id=${BASH_REMATCH[1]}
     mapfile -t route_lines < "${route_specification}"
-    if (( ${#route_lines[@]} != 1 )) ||
-       [[ ! "${route_lines[0]}" =~ ${slug_pattern} ]]; then
+    if [[ -z "${route_lines[0]+present}" ||
+          -n "${route_lines[1]+present}" ]]; then
+        echo "Refusing malformed static-route declaration: ${route_name}" >&2
+        exit 1
+    fi
+    if [[ ! "${route_lines[0]}" =~ ${slug_pattern} ]]; then
         echo "Refusing malformed static-route declaration: ${route_name}" >&2
         exit 1
     fi
