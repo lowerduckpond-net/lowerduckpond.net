@@ -8,17 +8,28 @@ temporary_file=$(mktemp "${metric_directory}/.lowerduckpond.prom.XXXXXXXX")
 failure_count=0
 
 check() {
-    if ! "$@" >/dev/null 2>&1; then
+    local description=$1
+    local output
+    shift
+
+    if ! output=$("$@" 2>&1); then
+        printf 'health check failed: %s\n' "${description}" >&2
+        if [[ -n "${output}" ]]; then
+            printf '%s\n' "${output}" >&2
+        fi
         failure_count=$((failure_count + 1))
     fi
 }
 
-check systemctl is-active --quiet caddy.service
-check systemctl is-active --quiet mariadb.service
-check systemctl is-active --quiet prometheus-node-exporter.service
-check /usr/local/libexec/lowerduckpond/caddy-validate /etc/caddy/Caddyfile
-check curl --fail --silent --show-error http://127.0.0.1:2019/metrics
-check runuser --user {{ podman_service_user }} -- env \
+check 'Caddy service is active' systemctl is-active --quiet caddy.service
+check 'MariaDB service is active' systemctl is-active --quiet mariadb.service
+check 'node exporter service is active' \
+    systemctl is-active --quiet prometheus-node-exporter.service
+check 'Caddy configuration validates' \
+    /usr/local/libexec/lowerduckpond/caddy-validate /etc/caddy/Caddyfile
+check 'Caddy metrics endpoint responds' \
+    curl --fail --silent --show-error http://127.0.0.1:2019/metrics
+check 'rootless Podman responds' runuser --user {{ podman_service_user }} -- env \
     HOME={{ podman_service_home | quote }} \
     XDG_RUNTIME_DIR=/run/user/{{ podman_service_uid }} \
     podman info
@@ -28,9 +39,11 @@ if [[ -s /var/lib/lowerduckpond/backup-status/last-success ]]; then
     backup_success=$(cat /var/lib/lowerduckpond/backup-status/last-success)
     now=$(date +%s)
     if (( now - backup_success > {{ monitoring_backup_max_age_seconds }} )); then
+        printf 'health check failed: latest backup is too old\n' >&2
         failure_count=$((failure_count + 1))
     fi
 else
+    printf 'health check failed: no successful backup is recorded\n' >&2
     failure_count=$((failure_count + 1))
 fi
 
