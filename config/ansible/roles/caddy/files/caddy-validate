@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+configuration=${1:?usage: caddy-validate Caddyfile}
+set -a
+# shellcheck disable=SC1091
+source /etc/caddy/environment
+set +a
+exec /usr/local/bin/caddy validate --config "${configuration}" --adapter caddyfile

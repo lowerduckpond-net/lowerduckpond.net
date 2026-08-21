@@ -1,0 +1,88 @@
+---
+- name: Install MariaDB
+  ansible.builtin.apt:
+    name:
+      - mariadb-client
+      - mariadb-server
+    state: present
+
+- name: Create the database backup operating-system account
+  ansible.builtin.user:
+    name: "{{ database_backup_service_user }}"
+    home: /var/lib/lowerduckpond/backup
+    shell: /usr/sbin/nologin
+    system: true
+    create_home: true
+
+- name: Install the local-only MariaDB configuration
+  ansible.builtin.template:
+    src: lowerduckpond.cnf.j2
+    dest: /etc/mysql/mariadb.conf.d/90-lowerduckpond.cnf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart MariaDB
+
+- name: Flush MariaDB configuration handler
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start MariaDB
+  ansible.builtin.systemd_service:
+    name: mariadb.service
+    enabled: true
+    state: started
+
+- name: Inspect the database backup account plugin
+  ansible.builtin.command:
+    argv:
+      - mariadb
+      - --batch
+      - --skip-column-names
+      - --execute
+      - >-
+        SELECT COALESCE(MAX(plugin), '') FROM mysql.user
+        WHERE User='{{ database_backup_user }}' AND Host='localhost'
+  register: database_backup_plugin
+  changed_when: false
+
+- name: Create the socket-authenticated database backup account
+  ansible.builtin.command:
+    argv:
+      - mariadb
+      - --execute
+      - >-
+        CREATE USER IF NOT EXISTS '{{ database_backup_user }}'@'localhost'
+        IDENTIFIED VIA unix_socket;
+        ALTER USER '{{ database_backup_user }}'@'localhost' IDENTIFIED VIA unix_socket;
+  when: database_backup_plugin.stdout | trim != "unix_socket"
+  changed_when: true
+  no_log: true
+
+- name: Inspect database backup privileges
+  ansible.builtin.command:
+    argv:
+      - mariadb
+      - --batch
+      - --skip-column-names
+      - --execute
+      - >-
+        SELECT PRIVILEGE_TYPE FROM information_schema.USER_PRIVILEGES
+        WHERE GRANTEE='\'{{ database_backup_user }}\'@\'localhost\''
+        ORDER BY PRIVILEGE_TYPE
+  register: database_backup_privileges
+  changed_when: false
+
+- name: Grant only database dump privileges
+  ansible.builtin.command:
+    argv:
+      - mariadb
+      - --execute
+      - >-
+        GRANT SELECT, SHOW VIEW, EVENT, TRIGGER, LOCK TABLES, RELOAD, PROCESS
+        ON *.* TO '{{ database_backup_user }}'@'localhost'
+  when: >-
+    database_required_backup_privileges |
+    difference(database_backup_privileges.stdout_lines) |
+    length > 0
+  changed_when: true
+  no_log: true

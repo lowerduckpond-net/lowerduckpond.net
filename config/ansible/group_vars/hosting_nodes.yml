@@ -1,0 +1,15 @@
+---
+firewall_admin_source_cidrs: >-
+  {{ lookup('ansible.builtin.env', 'ADMIN_SOURCE_CIDRS_JSON') |
+  default('[]', true) | from_json }}
+
+caddy_cloudflare_api_token: >-
+  {{ lookup('ansible.builtin.env', 'CADDY_CLOUDFLARE_API_TOKEN') }}
+
+backup_repository: "{{ lookup('ansible.builtin.env', 'BACKUP_REPOSITORY') }}"
+backup_restic_password: "{{ lookup('ansible.builtin.env', 'RESTIC_PASSWORD') }}"
+backup_spaces_access_key_id: >-
+  {{ lookup('ansible.builtin.env', 'SPACES_BACKUP_ACCESS_KEY_ID') }}
+backup_spaces_secret_access_key: >-
+  {{ lookup('ansible.builtin.env', 'SPACES_BACKUP_SECRET_ACCESS_KEY') }}
+backup_spaces_region: "{{ lookup('ansible.builtin.env', 'SPACES_REGION') }}"

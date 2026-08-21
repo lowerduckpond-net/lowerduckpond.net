@@ -1,0 +1,14 @@
+---
+- name: Prepare the Ubuntu acceptance container
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Wait for systemd to become ready  # noqa command-instead-of-module
+      ansible.builtin.command:
+        cmd: systemctl is-system-running --wait
+      register: molecule_systemd_status
+      changed_when: false
+      failed_when: >-
+        molecule_systemd_status.rc != 0 and
+        'degraded' not in molecule_systemd_status.stdout

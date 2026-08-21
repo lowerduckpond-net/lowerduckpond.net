@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+exec 9>/run/lock/lowerduckpond-caddy-reload.lock
+flock --exclusive 9
+/usr/local/libexec/lowerduckpond/caddy-validate /etc/caddy/Caddyfile
+exec systemctl reload caddy.service

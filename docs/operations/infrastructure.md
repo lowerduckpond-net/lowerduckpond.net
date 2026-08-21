@@ -62,6 +62,11 @@ token does not need Zone Read. The production stack creates a separate Spaces
 key limited to read/write operations on the backup bucket; later Ansible work
 will deliver that key to the host.
 
+This OpenTofu token is distinct from the Caddy runtime token documented in
+[`host-configuration.md`](host-configuration.md). Caddy needs both Zone Read
+and DNS Edit for its provider module and must not receive the infrastructure
+token.
+
 ## Administrative SSH key
 
 Create a dedicated, passphrase-protected Ed25519 key named for the project.

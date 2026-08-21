@@ -1,0 +1,18 @@
+[Unit]
+Description=Report Lower Duck Pond hosting-node health
+After=caddy.service mariadb.service prometheus-node-exporter.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/lowerduckpond/health-check
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+NoNewPrivileges=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths={{ monitoring_textfile_directory }}

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+set -a
+# shellcheck disable=SC1091
+source /etc/lowerduckpond/backup.env
+set +a
+
+exec restic forget \
+    --host {{ backup_node_name | quote }} \
+    --keep-daily {{ backup_keep_daily }} \
+    --keep-weekly {{ backup_keep_weekly }} \
+    --keep-monthly {{ backup_keep_monthly }} \
+    --prune

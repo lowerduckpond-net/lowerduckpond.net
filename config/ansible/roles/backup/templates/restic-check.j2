@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+set -a
+# shellcheck disable=SC1091
+source /etc/lowerduckpond/backup.env
+set +a
+
+exec restic check --read-data-subset=1/100

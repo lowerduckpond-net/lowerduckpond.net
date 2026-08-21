@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+set -uo pipefail
+umask 022
+
+metric_directory={{ monitoring_textfile_directory | quote }}
+metric_file="${metric_directory}/lowerduckpond.prom"
+temporary_file=$(mktemp "${metric_directory}/.lowerduckpond.prom.XXXXXXXX")
+failure_count=0
+
+check() {
+    if ! "$@" >/dev/null 2>&1; then
+        failure_count=$((failure_count + 1))
+    fi
+}
+
+check systemctl is-active --quiet caddy.service
+check systemctl is-active --quiet mariadb.service
+check systemctl is-active --quiet prometheus-node-exporter.service
+check /usr/local/libexec/lowerduckpond/caddy-validate /etc/caddy/Caddyfile
+check curl --fail --silent --show-error http://127.0.0.1:2019/metrics
+check runuser --user {{ podman_service_user }} -- env \
+    HOME={{ podman_service_home | quote }} \
+    XDG_RUNTIME_DIR=/run/user/{{ podman_service_uid }} \
+    podman info
+
+backup_success=0
+if [[ -s /var/lib/lowerduckpond/backup-status/last-success ]]; then
+    backup_success=$(cat /var/lib/lowerduckpond/backup-status/last-success)
+    now=$(date +%s)
+    if (( now - backup_success > {{ monitoring_backup_max_age_seconds }} )); then
+        failure_count=$((failure_count + 1))
+    fi
+else
+    failure_count=$((failure_count + 1))
+fi
+
+cat > "${temporary_file}" <<METRICS
+# HELP lowerduckpond_health_failures Number of failed local hosting-node checks.
+# TYPE lowerduckpond_health_failures gauge
+lowerduckpond_health_failures ${failure_count}
+# HELP lowerduckpond_backup_last_success_unixtime Last successful backup as Unix time.
+# TYPE lowerduckpond_backup_last_success_unixtime gauge
+lowerduckpond_backup_last_success_unixtime ${backup_success}
+METRICS
+chown root:prometheus "${temporary_file}"
+chmod 0644 "${temporary_file}"
+mv "${temporary_file}" "${metric_file}"
+
+if (( failure_count > 0 )); then
+    logger --tag lowerduckpond-health "${failure_count} hosting-node health checks failed"
+    exit 1
+fi

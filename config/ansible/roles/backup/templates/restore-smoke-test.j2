@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+set -a
+# shellcheck disable=SC1091
+source /etc/lowerduckpond/backup.env
+set +a
+
+restore_directory=$(mktemp -d /var/cache/lowerduckpond-backup/restore.XXXXXXXX)
+finish() {
+    find "${restore_directory}" -depth -delete
+}
+trap finish EXIT
+
+restic restore latest --host {{ backup_node_name | quote }} --target "${restore_directory}"
+test -s "${restore_directory}{{ caddy_fixture_root }}/index.html"
+test -s \
+    "${restore_directory}/var/cache/lowerduckpond-backup/staging/mariadb.sql.gz"
+grep --quiet "Lower Duck Pond Hosting" \
+    "${restore_directory}{{ caddy_fixture_root }}/index.html"

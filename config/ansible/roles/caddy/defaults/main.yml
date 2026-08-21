@@ -1,0 +1,12 @@
+---
+caddy_version: "2.11.4"
+caddy_xcaddy_version: "0.4.7"
+caddy_cloudflare_module_version: "0.2.4"
+caddy_cloudflare_api_token: ""
+caddy_domain: lowerduckpond.net
+caddy_tls_mode: cloudflare
+caddy_email: ""
+caddy_fixture_root: /srv/lowerduckpond/fixture
+caddy_build_root: /usr/local/lib/lowerduckpond
+caddy_binary_path: >-
+  {{ caddy_build_root }}/caddy-{{ caddy_version }}-cloudflare-{{ caddy_cloudflare_module_version }}

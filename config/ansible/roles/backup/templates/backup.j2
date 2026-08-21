@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+set -a
+# shellcheck disable=SC1091
+source /etc/lowerduckpond/backup.env
+set +a
+
+status_directory=/var/lib/lowerduckpond/backup-status
+staging_directory=/var/cache/lowerduckpond-backup/staging
+mkdir -p "${staging_directory}"
+exec 9>/run/lock/lowerduckpond-backup.lock
+flock --exclusive 9
+
+finish() {
+    result=$?
+    rm -f "${staging_directory}/mariadb.sql.gz"
+    if [[ ${result} -eq 0 ]]; then
+        date +%s > "${status_directory}/last-success"
+        rm -f "${status_directory}/last-failure"
+    else
+        date +%s > "${status_directory}/last-failure"
+    fi
+    exit "${result}"
+}
+trap finish EXIT
+
+runuser --user {{ backup_database_service_user }} -- \
+    mariadb-dump --all-databases --single-transaction --quick \
+    --routines --events --triggers | gzip --best > "${staging_directory}/mariadb.sql.gz"
+
+restic backup \
+    --host {{ backup_node_name | quote }} \
+    --tag scheduled \
+    /srv/lowerduckpond \
+    /var/lib/caddy \
+    "${staging_directory}/mariadb.sql.gz"

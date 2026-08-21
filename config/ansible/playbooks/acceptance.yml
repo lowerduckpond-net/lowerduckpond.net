@@ -1,0 +1,105 @@
+---
+- name: Verify Lower Duck Pond hosting nodes
+  hosts: hosting_nodes
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Validate the installed Caddy configuration
+      ansible.builtin.command:
+        cmd: /usr/local/libexec/lowerduckpond/caddy-validate /etc/caddy/Caddyfile
+      changed_when: false
+      no_log: true
+
+    - name: Verify the HTTPS fixture locally  # noqa command-instead-of-module
+      ansible.builtin.command:
+        cmd: >-
+          curl --fail --silent --show-error
+          {{ '--insecure' if caddy_tls_mode == 'internal' else '' }}
+          --resolve {{ caddy_domain }}:443:127.0.0.1
+          https://{{ caddy_domain }}/
+      register: acceptance_https_fixture
+      changed_when: false
+      failed_when: '"Lower Duck Pond Hosting" not in acceptance_https_fixture.stdout'
+
+    - name: Read public TCP listeners
+      ansible.builtin.shell:
+        cmd: >-
+          set -o pipefail &&
+          ss --listening --numeric --tcp --process |
+          awk 'NR > 1 && ($4 ~ /^0\.0\.0\.0:/ || $4 ~ /^\[::\]:/ || $4 ~ /^\*:/) {print $4}'
+        executable: /bin/bash
+      register: acceptance_public_tcp_listeners
+      changed_when: false
+
+    - name: Verify only intended ports listen publicly
+      ansible.builtin.assert:
+        that:
+          - >-
+            acceptance_public_tcp_listeners.stdout_lines |
+            map('regex_replace', '^.*:', '') |
+            difference(['22', '80', '443']) |
+            length == 0
+          - >-
+            '80' in (acceptance_public_tcp_listeners.stdout_lines |
+            map('regex_replace', '^.*:', '') | list)
+          - >-
+            '443' in (acceptance_public_tcp_listeners.stdout_lines |
+            map('regex_replace', '^.*:', '') | list)
+
+    - name: Verify MariaDB accepts only local connections
+      ansible.builtin.command:
+        cmd: mariadb --batch --skip-column-names --execute "SELECT @@bind_address"
+      register: acceptance_mariadb_bind_address
+      changed_when: false
+      failed_when: acceptance_mariadb_bind_address.stdout | trim != "127.0.0.1"
+
+    - name: Verify rootless Podman for the runtime account
+      ansible.builtin.command:
+        cmd: podman info --format json
+      become_user: "{{ podman_service_user }}"
+      become: true
+      environment:
+        HOME: "{{ podman_service_home }}"
+        XDG_RUNTIME_DIR: "/run/user/{{ podman_service_uid }}"
+      changed_when: false
+
+    - name: Verify the encrypted Restic repository
+      ansible.builtin.command:
+        cmd: /usr/local/libexec/lowerduckpond/restic-check
+      become_user: "{{ backup_service_user }}"
+      become: true
+      changed_when: false
+      no_log: true
+
+    - name: Exercise a disposable restore
+      ansible.builtin.command:
+        cmd: /usr/local/libexec/lowerduckpond/restore-smoke-test
+      become_user: "{{ backup_service_user }}"
+      become: true
+      changed_when: false
+      no_log: true
+
+    - name: Verify required system services are enabled  # noqa command-instead-of-module
+      ansible.builtin.command:
+        cmd: "systemctl is-enabled {{ item }}"
+      loop:
+        - caddy.service
+        - chrony.service
+        - mariadb.service
+        - nftables.service
+        - prometheus-node-exporter.service
+        - lowerduckpond-backup.timer
+        - lowerduckpond-backup-maintenance.timer
+        - lowerduckpond-health.timer
+      changed_when: false
+
+    - name: Verify the rootless readiness service is enabled  # noqa command-instead-of-module
+      ansible.builtin.command:
+        cmd: systemctl --user is-enabled lowerduckpond-podman-ready.service
+      become_user: "{{ podman_service_user }}"
+      become: true
+      environment:
+        DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ podman_service_uid }}/bus"
+        HOME: "{{ podman_service_home }}"
+        XDG_RUNTIME_DIR: "/run/user/{{ podman_service_uid }}"
+      changed_when: false

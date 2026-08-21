@@ -1,0 +1,119 @@
+---
+- name: Install backup packages
+  ansible.builtin.apt:
+    name:
+      - gzip
+      - restic
+    state: present
+
+- name: Create backup directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - path: /etc/lowerduckpond
+      mode: "0700"
+    - path: /var/cache/lowerduckpond-backup
+      mode: "0700"
+    - path: /var/lib/lowerduckpond
+      mode: "0750"
+    - path: /var/lib/lowerduckpond/backup-status
+      mode: "0700"
+
+- name: Create a local Restic repository parent when requested
+  ansible.builtin.file:
+    path: "{{ backup_repository }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  when: backup_repository is ansible.builtin.match('^/')
+
+- name: Install the protected backup environment
+  ansible.builtin.template:
+    src: backup.env.j2
+    dest: /etc/lowerduckpond/backup.env
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Install backup and recovery commands
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "/usr/local/libexec/lowerduckpond/{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - src: backup.j2
+      dest: backup
+    - src: backup-maintenance.j2
+      dest: backup-maintenance
+    - src: restic-check.j2
+      dest: restic-check
+    - src: restore-smoke-test.j2
+      dest: restore-smoke-test
+
+- name: Inspect the Restic repository
+  ansible.builtin.command:
+    cmd: /usr/local/libexec/lowerduckpond/restic-check
+  register: backup_repository_status
+  failed_when: false
+  changed_when: false
+  no_log: true
+
+- name: Initialize the encrypted Restic repository
+  ansible.builtin.shell:
+    cmd: >-
+      set -o allexport &&
+      source /etc/lowerduckpond/backup.env &&
+      set +o allexport &&
+      exec /usr/bin/restic init
+    executable: /bin/bash
+  when: backup_repository_status.rc != 0
+  changed_when: true
+  no_log: true
+
+- name: Install backup systemd units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - lowerduckpond-backup.service
+    - lowerduckpond-backup.timer
+    - lowerduckpond-backup-maintenance.service
+    - lowerduckpond-backup-maintenance.timer
+  notify: Reload systemd for backups
+
+- name: Flush backup unit handlers
+  ansible.builtin.meta: flush_handlers
+
+- name: Inspect initial backup status
+  ansible.builtin.stat:
+    path: /var/lib/lowerduckpond/backup-status/last-success
+  register: backup_initial_status
+
+- name: Create the first encrypted off-host backup
+  ansible.builtin.command:
+    cmd: /usr/local/libexec/lowerduckpond/backup
+  when:
+    - backup_run_initial
+    - not backup_initial_status.stat.exists
+  changed_when: true
+  no_log: true
+
+- name: Enable backup schedules
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop:
+    - lowerduckpond-backup.timer
+    - lowerduckpond-backup-maintenance.timer

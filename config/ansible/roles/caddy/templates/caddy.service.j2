@@ -1,0 +1,35 @@
+[Unit]
+Description=Lower Duck Pond Caddy edge
+Documentation=https://caddyserver.com/docs/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+User=caddy
+Group=caddy
+EnvironmentFile=/etc/caddy/environment
+Environment=XDG_CONFIG_HOME=/etc/caddy
+Environment=XDG_DATA_HOME=/var/lib/caddy
+ExecStart=/usr/local/bin/caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+ExecReload=/usr/local/bin/caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+ExecReload=/usr/local/bin/caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile --force
+TimeoutStopSec=5s
+LimitNOFILE=1048576
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+NoNewPrivileges=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+ReadWritePaths=/var/lib/caddy /var/log/caddy
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

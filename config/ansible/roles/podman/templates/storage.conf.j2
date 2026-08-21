@@ -1,0 +1,8 @@
+[storage]
+driver = "overlay"
+runroot = "/run/user/{{ podman_service_uid }}/containers"
+graphroot = "{{ podman_service_home }}/.local/share/containers/storage"
+
+[storage.options.overlay]
+mount_program = "/usr/bin/fuse-overlayfs"
+mountopt = "nodev,metacopy=on"
