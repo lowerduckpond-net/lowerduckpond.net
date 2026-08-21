@@ -41,8 +41,16 @@ module "dns" {
 resource "digitalocean_project_resources" "production" {
   project = var.digitalocean_project_id
   resources = [
-    module.host.droplet_urn,
     module.host.reserved_ip_urn,
     module.storage.bucket_urn,
   ]
+}
+
+resource "digitalocean_project_resources" "host" {
+  project   = var.digitalocean_project_id
+  resources = [module.host.droplet_urn]
+
+  # On the one-time migration from the combined assignment, first remove the
+  # old Droplet URN from production and then add it through this resource.
+  depends_on = [digitalocean_project_resources.production]
 }
