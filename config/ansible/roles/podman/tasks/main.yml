@@ -19,6 +19,14 @@
     system: true
     create_home: true
 
+- name: Protect the rootless runtime home
+  ansible.builtin.file:
+    path: "{{ podman_service_home }}"
+    state: directory
+    owner: "{{ podman_service_user }}"
+    group: "{{ podman_service_user }}"
+    mode: "0750"
+
 - name: Create rootless container configuration directories
   ansible.builtin.file:
     path: "{{ item }}"

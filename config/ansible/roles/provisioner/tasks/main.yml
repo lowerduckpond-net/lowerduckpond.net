@@ -18,6 +18,14 @@
     system: true
     create_home: true
 
+- name: Protect the provisioner home
+  ansible.builtin.file:
+    path: "{{ provisioner_state_root }}/provisioner"
+    state: directory
+    owner: "{{ provisioner_user }}"
+    group: "{{ provisioner_group }}"
+    mode: "0750"
+
 - name: Permit Caddy to read generated routes
   ansible.builtin.user:
     name: caddy

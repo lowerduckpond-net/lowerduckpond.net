@@ -19,7 +19,10 @@
     - path: /var/cache/lowerduckpond-backup
       mode: "0700"
     - path: /var/lib/lowerduckpond
-      mode: "0750"
+      # Service-specific children own their own access policy. The shared parent
+      # must remain searchable so non-root service accounts can reach them,
+      # while omitting read permission prevents directory enumeration.
+      mode: "0711"
     - path: /var/lib/lowerduckpond/backup-status
       mode: "0700"
 
