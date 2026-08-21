@@ -69,28 +69,72 @@
       /run/user because the hardened backup services use ProtectHome=true.
   when: backup_repository is ansible.builtin.match('^/')
 
-- name: Reject local repositories nested inside backup sources
+- name: Reject the filesystem root as a local repository
+  ansible.builtin.assert:
+    that:
+      - backup_local_repository_path.stdout != '/'
+    fail_msg: The filesystem root cannot be used as a local backup repository.
+  when: backup_repository is ansible.builtin.match('^/')
+
+- name: Reject local repositories overlapping backup sources
   ansible.builtin.assert:
     that:
       - >-
         backup_local_repository_path.stdout is not ansible.builtin.match(
         '^' ~ (item.stdout | ansible.builtin.regex_escape) ~ '(/|$)')
+      - >-
+        item.stdout is not ansible.builtin.match(
+        '^' ~ (backup_local_repository_path.stdout |
+        ansible.builtin.regex_escape) ~ '(/|$)')
     fail_msg: >-
       Local backup repository {{ backup_local_repository_path.stdout }} cannot
-      equal or descend from backed-up path {{ item.stdout }}.
+      equal, descend from, or contain backed-up path {{ item.stdout }}.
   loop: "{{ backup_local_source_paths.results }}"
   loop_control:
     label: "{{ item.stdout }}"
   when: backup_repository is ansible.builtin.match('^/')
 
-- name: Create a local Restic repository parent when requested
+- name: Inspect an existing local repository path
+  ansible.builtin.stat:
+    path: "{{ backup_repository }}"
+    follow: false
+  register: backup_local_repository_stat
+  when: backup_repository is ansible.builtin.match('^/')
+
+- name: Refuse to repurpose an existing local path
+  ansible.builtin.assert:
+    that:
+      - >-
+        not backup_local_repository_stat.stat.exists or
+        (backup_local_repository_stat.stat.isdir | default(false))
+      - >-
+        not backup_local_repository_stat.stat.exists or
+        not (backup_local_repository_stat.stat.islnk | default(false))
+      - >-
+        not backup_local_repository_stat.stat.exists or
+        (backup_local_repository_stat.stat.uid | default(-1)) == 0
+      - >-
+        not backup_local_repository_stat.stat.exists or
+        (backup_local_repository_stat.stat.gid | default(-1)) == 0
+      - >-
+        not backup_local_repository_stat.stat.exists or
+        (backup_local_repository_stat.stat.mode | default('')) == '0700'
+    fail_msg: >-
+      An existing local repository path must already be a dedicated,
+      non-symlinked, root-owned directory with mode 0700; refusing to change
+      attributes on {{ backup_repository }}.
+  when: backup_repository is ansible.builtin.match('^/')
+
+- name: Create a new local Restic repository when requested
   ansible.builtin.file:
     path: "{{ backup_repository }}"
     state: directory
     owner: root
     group: root
     mode: "0700"
-  when: backup_repository is ansible.builtin.match('^/')
+  when:
+    - backup_repository is ansible.builtin.match('^/')
+    - not (backup_local_repository_stat.stat.exists | default(false))
 
 - name: Install backup and recovery commands
   ansible.builtin.template:

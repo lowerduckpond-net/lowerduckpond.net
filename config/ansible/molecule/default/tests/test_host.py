@@ -18,6 +18,7 @@ BACKUP_SCOPE_PATH = "/etc/lowerduckpond/backup-scope"
 BACKUP_SCOPE_LENGTH = 64
 STATUS_FIELD_COUNT = 2
 LOCAL_BACKUP_REPOSITORY = "/mnt/lowerduckpond-restic-test"
+LOCAL_BACKUP_REPOSITORY_MODE = 0o700
 BACKUP_SOURCE_PATHS = (
     "/srv/lowerduckpond",
     "/var/lib/caddy",
@@ -270,6 +271,9 @@ def test_backup_configuration_is_atomic_and_sandboxed(host: Host) -> None:
             helper.content_string.index(restic_command)
         )
     assert host.file(LOCAL_BACKUP_REPOSITORY).is_directory
+    assert host.file(LOCAL_BACKUP_REPOSITORY).user == "root"
+    assert host.file(LOCAL_BACKUP_REPOSITORY).group == "root"
+    assert host.file(LOCAL_BACKUP_REPOSITORY).mode == LOCAL_BACKUP_REPOSITORY_MODE
     canonical_repository = host.run(f"realpath {LOCAL_BACKUP_REPOSITORY}")
     assert canonical_repository.rc == 0
     assert not canonical_repository.stdout.startswith(("/home/", "/root/", "/run/user/"))
@@ -280,6 +284,7 @@ def test_backup_configuration_is_atomic_and_sandboxed(host: Host) -> None:
         repository = canonical_repository.stdout.strip()
         assert repository != source
         assert not repository.startswith(f"{source}/")
+        assert not source.startswith(f"{repository}/")
         assert backup_script.contains(source_path)
     backup_unit = host.file("/etc/systemd/system/lowerduckpond-backup.service")
     maintenance_unit = host.file("/etc/systemd/system/lowerduckpond-backup-maintenance.service")
