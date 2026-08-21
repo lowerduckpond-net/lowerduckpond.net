@@ -44,23 +44,6 @@
     mode: "0700"
   when: backup_repository is ansible.builtin.match('^/')
 
-- name: Install the active backup status scope
-  ansible.builtin.copy:
-    content: "{{ backup_status_scope }}\n"
-    dest: /etc/lowerduckpond/backup-scope
-    owner: root
-    group: root
-    mode: "0600"
-
-- name: Install the protected backup environment
-  ansible.builtin.template:
-    src: backup.env.j2
-    dest: /etc/lowerduckpond/backup.env
-    owner: root
-    group: root
-    mode: "0600"
-  no_log: true
-
 - name: Install backup and recovery commands
   ansible.builtin.template:
     src: "{{ item.src }}"
@@ -79,6 +62,32 @@
       dest: restic-check
     - src: restore-smoke-test.j2
       dest: restore-smoke-test
+
+- name: Install backup systemd units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - lowerduckpond-backup.service
+    - lowerduckpond-backup.timer
+    - lowerduckpond-backup-maintenance.service
+    - lowerduckpond-backup-maintenance.timer
+  notify: Reload systemd for backups
+
+- name: Flush backup unit handlers
+  ansible.builtin.meta: flush_handlers
+
+- name: Activate the protected backup configuration atomically
+  ansible.builtin.template:
+    src: backup.env.j2
+    dest: /etc/lowerduckpond/backup.env
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
 
 - name: Inspect the Restic repository
   ansible.builtin.command:
@@ -99,23 +108,6 @@
   when: backup_repository_status.rc != 0
   changed_when: true
   no_log: true
-
-- name: Install backup systemd units
-  ansible.builtin.template:
-    src: "{{ item }}.j2"
-    dest: "/etc/systemd/system/{{ item }}"
-    owner: root
-    group: root
-    mode: "0644"
-  loop:
-    - lowerduckpond-backup.service
-    - lowerduckpond-backup.timer
-    - lowerduckpond-backup-maintenance.service
-    - lowerduckpond-backup-maintenance.timer
-  notify: Reload systemd for backups
-
-- name: Flush backup unit handlers
-  ansible.builtin.meta: flush_handlers
 
 - name: Inspect the backup repository for this node
   ansible.builtin.command:

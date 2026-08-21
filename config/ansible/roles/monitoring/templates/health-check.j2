@@ -15,12 +15,13 @@ trap cleanup EXIT
 temporary_file=$(mktemp "${metric_directory}/.lowerduckpond.prom.XXXXXXXX")
 failure_count=0
 
-active_backup_scope=
-scope_extra=
-if ! read -r active_backup_scope scope_extra < /etc/lowerduckpond/backup-scope ||
-   [[ ! "${active_backup_scope}" =~ ^[0-9a-f]{64}$ ]] ||
-   [[ -n "${scope_extra}" ]]; then
-    printf 'health check failed: invalid active backup status scope\n' >&2
+# shellcheck disable=SC1091
+source /etc/lowerduckpond/backup.env
+export -n AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION
+export -n RESTIC_PASSWORD RESTIC_REPOSITORY RESTIC_CACHE_DIR
+active_backup_scope=${LOWERDUCKPOND_BACKUP_STATUS_SCOPE:-}
+if [[ ! "${active_backup_scope}" =~ ^[0-9a-f]{64}$ ]]; then
+    printf 'health check failed: invalid active backup configuration\n' >&2
     failure_count=$((failure_count + 1))
     active_backup_scope=
 fi

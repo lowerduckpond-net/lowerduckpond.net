@@ -20,7 +20,12 @@ STATUS_FIELD_COUNT = 2
 
 
 def read_backup_scope(host: Host) -> str:
-    scope = host.file(BACKUP_SCOPE_PATH).content_string.strip()
+    result = host.run(
+        "/bin/bash -c %s",
+        'source /etc/lowerduckpond/backup.env; printf "%s" "$LOWERDUCKPOND_BACKUP_STATUS_SCOPE"',
+    )
+    assert result.rc == 0
+    scope = result.stdout.strip()
     assert len(scope) == BACKUP_SCOPE_LENGTH
     assert all(character in "0123456789abcdef" for character in scope)
     return scope
@@ -213,18 +218,31 @@ def test_nftables_policy_compiles_and_blocks_metadata(host: Host) -> None:
     assert policy.contains("policy drop")
 
 
-def test_backup_repository_and_restore(host: Host) -> None:
+def test_backup_configuration_is_atomic(host: Host) -> None:
     assert host.file("/etc/lowerduckpond/backup.env").mode == BACKUP_ENVIRONMENT_MODE
+    assert not host.file(BACKUP_SCOPE_PATH).exists
     backup_script = host.file("/usr/local/libexec/lowerduckpond/backup")
     maintenance_script = host.file("/usr/local/libexec/lowerduckpond/backup-maintenance")
     lock_path = "/var/cache/lowerduckpond-backup/repository.lock"
-    assert backup_script.content_string.index("mariadb-dump") < (
-        backup_script.content_string.index("source /etc/lowerduckpond/backup.env")
-    )
+    source_index = backup_script.content_string.index("source /etc/lowerduckpond/backup.env")
+    dump_index = backup_script.content_string.index("mariadb-dump")
+    credential_export_index = backup_script.content_string.index("export AWS_ACCESS_KEY_ID")
+    assert source_index < dump_index < credential_export_index
     assert backup_script.contains("/usr/bin/env --ignore-environment")
     assert backup_script.contains(f"lock_path={lock_path}")
     assert maintenance_script.contains(f"lock_path={lock_path}")
+    assert backup_script.contains("LOWERDUCKPOND_BACKUP_STATUS_SCOPE")
+    assert maintenance_script.contains("LOWERDUCKPOND_BACKUP_STATUS_SCOPE")
+    assert not backup_script.contains(BACKUP_SCOPE_PATH)
+    assert not maintenance_script.contains(BACKUP_SCOPE_PATH)
+    lock_index = maintenance_script.content_string.index("flock --exclusive 9")
+    restic_index = maintenance_script.content_string.index("restic forget")
+    assert lock_index < restic_index
+    assert maintenance_script.contains("--tag scheduled")
 
+
+def test_backup_repository_and_restore(host: Host) -> None:
+    lock_path = "/var/cache/lowerduckpond-backup/repository.lock"
     backup = host.run("systemctl start lowerduckpond-backup.service")
     backup_journal = host.run(
         "journalctl --unit lowerduckpond-backup.service --no-pager --lines 50"
@@ -254,10 +272,6 @@ def test_backup_repository_and_restore(host: Host) -> None:
     restore = host.run("/usr/local/libexec/lowerduckpond/restore-smoke-test")
     assert restore.rc == 0
 
-    lock_index = maintenance_script.content_string.index("flock --exclusive 9")
-    restic_index = maintenance_script.content_string.index("restic forget")
-    assert lock_index < restic_index
-    assert maintenance_script.contains("--tag scheduled")
     lock_probe_script = f"""
 set -euo pipefail
 exec 8>{lock_path}
@@ -316,6 +330,8 @@ def test_monitoring_is_local_and_healthy(host: Host) -> None:
     health_script = host.file("/usr/local/libexec/lowerduckpond/health-check")
     assert health_script.contains("start lowerduckpond-podman-ready.service")
     assert not health_script.contains("restart lowerduckpond-podman-ready.service")
+    assert health_script.contains("source /etc/lowerduckpond/backup.env")
+    assert not health_script.contains(BACKUP_SCOPE_PATH)
     caddy_validator = host.file("/usr/local/libexec/lowerduckpond/caddy-validate")
     assert caddy_validator.contains("lowerduckpond-caddy-validate")
     scheduled_health = host.run("systemctl start lowerduckpond-health.service")
