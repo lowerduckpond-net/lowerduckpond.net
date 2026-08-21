@@ -10,6 +10,15 @@
       - uidmap
     state: present
 
+- name: Verify the installed Podman package is within tested bounds
+  ansible.builtin.command:
+    argv:
+      - /usr/local/libexec/lowerduckpond/assert-package-version
+      - podman
+      - "{{ platform_versions.podman_package_minimum }}"
+      - "{{ platform_versions.podman_package_maximum_exclusive }}"
+  changed_when: false
+
 - name: Create the rootless runtime account
   ansible.builtin.user:
     name: "{{ podman_service_user }}"
@@ -54,25 +63,41 @@
     group: "{{ podman_service_user }}"
     mode: "0640"
 
-- name: Allocate subordinate user IDs
-  ansible.builtin.lineinfile:
-    path: /etc/subuid
-    regexp: "^{{ podman_service_user | regex_escape }}:"
-    line: "{{ podman_service_user }}:{{ podman_subid_start }}:{{ podman_subid_count }}"
-    create: true
+- name: Install the subordinate-ID allocation helper
+  ansible.builtin.copy:
+    src: ensure-subid-allocation
+    dest: /usr/local/libexec/lowerduckpond/ensure-subid-allocation
     owner: root
     group: root
-    mode: "0644"
+    mode: "0755"
 
-- name: Allocate subordinate group IDs
-  ansible.builtin.lineinfile:
-    path: /etc/subgid
-    regexp: "^{{ podman_service_user | regex_escape }}:"
-    line: "{{ podman_service_user }}:{{ podman_subid_start }}:{{ podman_subid_count }}"
-    create: true
-    owner: root
-    group: root
-    mode: "0644"
+- name: Validate the subordinate-ID allocations together
+  ansible.builtin.command:
+    argv:
+      - /usr/local/libexec/lowerduckpond/ensure-subid-allocation
+      - "{{ item }}"
+      - "{{ podman_service_user }}"
+      - "{{ podman_subid_start | string }}"
+      - "{{ podman_subid_count | string }}"
+      - --check
+  loop:
+    - /etc/subuid
+    - /etc/subgid
+  changed_when: false
+
+- name: Converge the subordinate-ID allocations
+  ansible.builtin.command:
+    argv:
+      - /usr/local/libexec/lowerduckpond/ensure-subid-allocation
+      - "{{ item }}"
+      - "{{ podman_service_user }}"
+      - "{{ podman_subid_start | string }}"
+      - "{{ podman_subid_count | string }}"
+  loop:
+    - /etc/subuid
+    - /etc/subgid
+  register: podman_subid_allocation
+  changed_when: "'allocation was updated' in podman_subid_allocation.stdout"
 
 - name: Enable user lingering for rootless services
   ansible.builtin.command:

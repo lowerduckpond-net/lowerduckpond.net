@@ -22,12 +22,8 @@
       failed_when: '"Lower Duck Pond Hosting" not in acceptance_https_fixture.stdout'
 
     - name: Read public TCP listeners
-      ansible.builtin.shell:
-        cmd: >-
-          set -o pipefail &&
-          ss --listening --numeric --tcp --process |
-          awk 'NR > 1 && ($4 ~ /^0\.0\.0\.0:/ || $4 ~ /^\[::\]:/ || $4 ~ /^\*:/) {print $4}'
-        executable: /bin/bash
+      ansible.builtin.command:
+        cmd: /usr/local/libexec/lowerduckpond/public-tcp-listeners
       register: acceptance_public_tcp_listeners
       changed_when: false
 
@@ -45,6 +41,14 @@
           - >-
             '443' in (acceptance_public_tcp_listeners.stdout_lines |
             map('regex_replace', '^.*:', '') | list)
+
+    - name: Verify the Caddy admin API has no TCP listener
+      ansible.builtin.shell:
+        cmd: ss --no-header --listening --numeric --tcp 'sport = :2019'
+        executable: /bin/bash
+      register: acceptance_caddy_admin_tcp_listener
+      changed_when: false
+      failed_when: acceptance_caddy_admin_tcp_listener.stdout | length > 0
 
     - name: Verify MariaDB accepts only local connections
       ansible.builtin.command:

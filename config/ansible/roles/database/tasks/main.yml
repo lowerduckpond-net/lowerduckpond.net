@@ -6,6 +6,15 @@
       - mariadb-server
     state: present
 
+- name: Verify the installed MariaDB package is within tested bounds
+  ansible.builtin.command:
+    argv:
+      - /usr/local/libexec/lowerduckpond/assert-package-version
+      - mariadb-server
+      - "{{ platform_versions.mariadb_package_minimum }}"
+      - "{{ platform_versions.mariadb_package_maximum_exclusive }}"
+  changed_when: false
+
 - name: Create the database backup operating-system account
   ansible.builtin.user:
     name: "{{ database_backup_service_user }}"

@@ -6,6 +6,15 @@
       - restic
     state: present
 
+- name: Verify the installed Restic package is within tested bounds
+  ansible.builtin.command:
+    argv:
+      - /usr/local/libexec/lowerduckpond/assert-package-version
+      - restic
+      - "{{ platform_versions.restic_package_minimum }}"
+      - "{{ platform_versions.restic_package_maximum_exclusive }}"
+  changed_when: false
+
 - name: Create backup directories
   ansible.builtin.file:
     path: "{{ item.path }}"

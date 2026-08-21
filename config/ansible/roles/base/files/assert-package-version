@@ -1,0 +1,41 @@
+#!/usr/bin/env python3
+"""Require an installed Debian package version to remain within tested bounds."""
+
+from __future__ import annotations
+
+import argparse
+import subprocess
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("package")
+    parser.add_argument("minimum")
+    parser.add_argument("maximum_exclusive")
+    arguments = parser.parse_args()
+
+    installed = subprocess.run(
+        ["dpkg-query", "--show", "--showformat=${Version}", arguments.package],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    lower_bound = subprocess.run(
+        ["dpkg", "--compare-versions", installed, "ge", arguments.minimum],
+        check=False,
+    )
+    upper_bound = subprocess.run(
+        ["dpkg", "--compare-versions", installed, "lt", arguments.maximum_exclusive],
+        check=False,
+    )
+    if lower_bound.returncode != 0 or upper_bound.returncode != 0:
+        parser.error(
+            f"{arguments.package} {installed} is outside the supported range "
+            f"[{arguments.minimum}, {arguments.maximum_exclusive})"
+        )
+    print(f"{arguments.package} {installed} is within the supported range")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

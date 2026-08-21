@@ -6,6 +6,30 @@
     update_cache: true
     cache_valid_time: 3600
 
+- name: Create the Lower Duck Pond command directory
+  ansible.builtin.file:
+    path: /usr/local/libexec/lowerduckpond
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the public TCP listener classifier
+  ansible.builtin.copy:
+    src: public-tcp-listeners
+    dest: /usr/local/libexec/lowerduckpond/public-tcp-listeners
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the package-version assertion helper
+  ansible.builtin.copy:
+    src: assert-package-version
+    dest: /usr/local/libexec/lowerduckpond/assert-package-version
+    owner: root
+    group: root
+    mode: "0755"
+
 - name: Configure the system timezone link
   ansible.builtin.file:
     path: /etc/localtime

@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""Print every listening TCP endpoint that is not bound to loopback."""
+
+from __future__ import annotations
+
+import argparse
+import ipaddress
+import subprocess
+import sys
+
+
+def split_endpoint(endpoint: str) -> tuple[str, str]:
+    if endpoint.startswith("["):
+        closing_bracket = endpoint.rfind("]:")
+        if closing_bracket == -1:
+            raise ValueError(f"unrecognized listener endpoint: {endpoint}")
+        return endpoint[1:closing_bracket], endpoint[closing_bracket + 2 :]
+    parts = endpoint.rsplit(":", 1)
+    if len(parts) != 2:
+        raise ValueError(f"unrecognized listener endpoint: {endpoint}")
+    return parts[0], parts[1]
+
+
+def is_loopback(address: str) -> bool:
+    if address == "*":
+        return False
+    address = address.split("%", 1)[0]
+    parsed = ipaddress.ip_address(address)
+    if isinstance(parsed, ipaddress.IPv6Address) and parsed.ipv4_mapped is not None:
+        return parsed.ipv4_mapped.is_loopback
+    return parsed.is_loopback
+
+
+def render_endpoint(address: str, port: str) -> str:
+    if ":" in address and not address.startswith("["):
+        return f"[{address}]:{port}"
+    return f"{address}:{port}"
+
+
+def public_listeners(lines: list[str]) -> list[str]:
+    listeners = []
+    for line in lines:
+        fields = line.split()
+        if len(fields) < 4:
+            raise ValueError(f"unrecognized ss output: {line}")
+        address, port = split_endpoint(fields[3])
+        if not is_loopback(address):
+            listeners.append(render_endpoint(address, port))
+    return listeners
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--stdin",
+        action="store_true",
+        help="parse headerless ss output from standard input instead of invoking ss",
+    )
+    arguments = parser.parse_args()
+
+    if arguments.stdin:
+        lines = sys.stdin.read().splitlines()
+    else:
+        result = subprocess.run(
+            ["ss", "--no-header", "--listening", "--numeric", "--tcp"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        lines = result.stdout.splitlines()
+
+    try:
+        listeners = public_listeners(lines)
+    except ValueError as error:
+        parser.error(str(error))
+    print("\n".join(listeners))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
