@@ -57,24 +57,25 @@
       owner: "{{ provisioner_user }}"
       group: "{{ provisioner_group }}"
       mode: "0750"
+    - path: "{{ provisioner_routes_staging_root }}"
+      owner: "{{ provisioner_user }}"
+      group: "{{ provisioner_group }}"
+      mode: "0750"
     - path: "{{ provisioner_content_root }}/sites"
       owner: "{{ provisioner_user }}"
       group: caddy
       mode: "0750"
-    - path: /etc/caddy/sites-enabled
-      owner: root
-      group: "{{ provisioner_routes_group }}"
-      mode: "0770"
 
-- name: Install the restricted Caddy reload command
-  ansible.builtin.copy:
-    src: reload-caddy
-    dest: /usr/local/libexec/lowerduckpond/reload-caddy
+- name: Install the restricted Caddy route publisher
+  ansible.builtin.template:
+    src: publish-caddy-routes.j2
+    dest: /usr/local/libexec/lowerduckpond/publish-caddy-routes
     owner: root
     group: root
     mode: "0755"
+    validate: /bin/bash -n %s
 
-- name: Permit only validated Caddy reloads through sudo
+- name: Permit only validated Caddy route publication through sudo
   ansible.builtin.template:
     src: sudoers.j2
     dest: /etc/sudoers.d/lowerduckpond-provisioner

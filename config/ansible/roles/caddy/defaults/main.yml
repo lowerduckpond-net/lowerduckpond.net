@@ -8,6 +8,10 @@ caddy_tls_mode: cloudflare
 caddy_email: ""
 caddy_fixture_root: /srv/lowerduckpond/fixture
 caddy_routes_group: ldp-caddy-routes
+caddy_routes_release_root: /etc/caddy/routes-releases
+caddy_routes_active_path: /etc/caddy/sites-enabled
+caddy_routes_bootstrap_release: bootstrap
+caddy_routes_glob: "{{ caddy_routes_active_path }}/*.caddy"
 caddy_build_root: /usr/local/lib/lowerduckpond
 caddy_binary_path: >-
   {{ caddy_build_root }}/caddy-{{ caddy_version }}-xcaddy-{{ caddy_xcaddy_version

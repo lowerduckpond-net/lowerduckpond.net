@@ -1,9 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-configuration=${1:?usage: caddy-validate Caddyfile}
+if (( $# < 1 || $# > 2 )); then
+    echo "usage: caddy-validate Caddyfile [routes-glob]" >&2
+    exit 2
+fi
+
+configuration=$1
+candidate_routes_glob=${2:-}
 set -a
 # shellcheck disable=SC1091
 source /etc/caddy/environment
+if [[ -n "${candidate_routes_glob}" ]]; then
+    CADDY_ROUTES_GLOB=${candidate_routes_glob}
+fi
 set +a
 exec /usr/local/bin/caddy validate --config "${configuration}" --adapter caddyfile

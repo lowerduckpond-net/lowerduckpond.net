@@ -78,6 +78,13 @@ configure-production`. Ansible validates a candidate Caddyfile before its
 atomic rename, and systemd validates the live configuration before every
 reload.
 
+The provisioner cannot write Caddy's live import tree. It writes a complete
+candidate set under `/var/lib/lowerduckpond/caddy-routes-staging`, then invokes
+the sole permitted sudo command, `publish-caddy-routes`. That command copies the
+set into a root-owned immutable release, validates that exact release, switches
+the live symlink atomically under an exclusive lock, and only then reloads
+Caddy. A failed reload restores the prior release.
+
 Useful host-side checks are:
 
 ```console

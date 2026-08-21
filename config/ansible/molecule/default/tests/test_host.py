@@ -4,6 +4,7 @@ from testinfra.host import Host
 
 BACKUP_ENVIRONMENT_MODE = 0o600
 CONTENT_ROOT_MODE = 0o711
+ROUTE_FILE_MODE = 0o640
 SUDOERS_MODE = 0o440
 
 
@@ -112,7 +113,45 @@ def test_provisioner_privilege_is_narrow(host: Host) -> None:
     traversal = host.run("runuser --user ldp-provisioner -- test -x /srv/lowerduckpond")
     assert traversal.rc == 0
 
+    active_routes = host.file("/etc/caddy/sites-enabled")
+    assert active_routes.is_symlink
+    live_write = host.run("runuser --user ldp-provisioner -- test -w /etc/caddy/sites-enabled")
+    assert live_write.rc != 0
+
+    stage_route = host.run(
+        "runuser --user ldp-provisioner -- sh -c "
+        '\'printf "# molecule route\\n" > '
+        "/var/lib/lowerduckpond/caddy-routes-staging/molecule.caddy'"
+    )
+    assert stage_route.rc == 0
+    publish = host.run(
+        "runuser --user ldp-provisioner -- "
+        "sudo /usr/local/libexec/lowerduckpond/publish-caddy-routes"
+    )
+    assert publish.rc == 0
+
+    active_release = host.run("readlink --canonicalize /etc/caddy/sites-enabled")
+    assert active_release.rc == 0
+    published_route = host.file(f"{active_release.stdout.strip()}/molecule.caddy")
+    assert published_route.user == "root"
+    assert published_route.group == "ldp-caddy-routes"
+    assert published_route.mode == ROUTE_FILE_MODE
+
+    unsafe_stage = host.run(
+        "runuser --user ldp-provisioner -- "
+        "ln --symbolic /etc/shadow "
+        "/var/lib/lowerduckpond/caddy-routes-staging/unsafe.caddy"
+    )
+    assert unsafe_stage.rc == 0
+    rejected = host.run(
+        "runuser --user ldp-provisioner -- "
+        "sudo /usr/local/libexec/lowerduckpond/publish-caddy-routes"
+    )
+    assert rejected.rc != 0
+    unchanged_release = host.run("readlink --canonicalize /etc/caddy/sites-enabled")
+    assert unchanged_release.stdout == active_release.stdout
+
     sudoers = host.file("/etc/sudoers.d/lowerduckpond-provisioner")
     assert sudoers.mode == SUDOERS_MODE
-    assert sudoers.contains("/usr/local/libexec/lowerduckpond/reload-caddy")
+    assert sudoers.contains("/usr/local/libexec/lowerduckpond/publish-caddy-routes")
     assert not sudoers.contains(" ALL=(ALL)")

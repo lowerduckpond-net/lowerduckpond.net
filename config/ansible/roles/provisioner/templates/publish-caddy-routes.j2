@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+if (( $# != 0 )); then
+    echo "usage: publish-caddy-routes" >&2
+    exit 2
+fi
+
+staging_directory={{ provisioner_routes_staging_root | quote }}
+release_root={{ provisioner_routes_release_root | quote }}
+active_link={{ provisioner_routes_active_path | quote }}
+bootstrap_release={{ caddy_routes_bootstrap_release | quote }}
+routes_group={{ provisioner_routes_group | quote }}
+candidate_directory=
+temporary_link=
+published=false
+
+cleanup() {
+    result=$?
+    if [[ -n "${temporary_link}" && -L "${temporary_link}" ]]; then
+        rm -f -- "${temporary_link}"
+    fi
+    if [[ "${published}" == false && -n "${candidate_directory}" &&
+          -d "${candidate_directory}" ]]; then
+        find "${candidate_directory}" -depth -delete
+    fi
+    exit "${result}"
+}
+trap cleanup EXIT
+
+exec 9>/run/lock/lowerduckpond-caddy-routes.lock
+flock --exclusive 9
+
+if [[ ! -d "${staging_directory}" || -L "${staging_directory}" ]]; then
+    echo "Caddy route staging path is not a directory." >&2
+    exit 1
+fi
+
+candidate_directory=$(mktemp -d "${release_root}/.candidate.XXXXXXXX")
+chown root:"${routes_group}" "${candidate_directory}"
+chmod 0750 "${candidate_directory}"
+
+shopt -s dotglob nullglob
+for route in "${staging_directory}"/*; do
+    route_name=$(basename -- "${route}")
+    if [[ ! -f "${route}" || -L "${route}" ||
+          ! "${route_name}" =~ ^[a-z0-9][a-z0-9.-]*\.caddy$ ]]; then
+        echo "Refusing unsafe Caddy route entry: ${route_name}" >&2
+        exit 1
+    fi
+    install --owner=root --group="${routes_group}" --mode=0640 \
+        -- "${route}" "${candidate_directory}/${route_name}"
+done
+
+/usr/local/libexec/lowerduckpond/caddy-validate \
+    /etc/caddy/Caddyfile "${candidate_directory}/*.caddy"
+
+previous_target=$(readlink --canonicalize "${active_link}")
+case "${previous_target}" in
+    "${release_root}"/*) ;;
+    *)
+        echo "Active Caddy routes point outside the managed release root." >&2
+        exit 1
+        ;;
+esac
+
+temporary_link="${active_link}.new.$$"
+ln --symbolic -- "${candidate_directory}" "${temporary_link}"
+published=true
+if ! mv --force --no-target-directory -- "${temporary_link}" "${active_link}"; then
+    published=false
+    exit 1
+fi
+temporary_link=
+
+if ! systemctl reload caddy.service; then
+    temporary_link="${active_link}.rollback.$$"
+    ln --symbolic -- "${previous_target}" "${temporary_link}"
+    mv --force --no-target-directory -- "${temporary_link}" "${active_link}"
+    temporary_link=
+    systemctl reload caddy.service || true
+    published=false
+    echo "Caddy reload failed; restored the previous route release." >&2
+    exit 1
+fi
+
+if [[ "${previous_target}" != "${release_root}/${bootstrap_release}" ]]; then
+    if ! find "${previous_target}" -depth -delete; then
+        logger --tag lowerduckpond-provisioner \
+            "could not prune prior Caddy route release ${previous_target}" || true
+    fi
+fi
+
+logger --tag lowerduckpond-provisioner \
+    "published validated Caddy route release ${candidate_directory}" || true
