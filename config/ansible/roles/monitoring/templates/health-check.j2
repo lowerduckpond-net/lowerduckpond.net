@@ -37,10 +37,9 @@ check 'Caddy configuration validates' \
     /usr/local/libexec/lowerduckpond/caddy-validate /etc/caddy/Caddyfile
 check 'Caddy metrics endpoint responds' \
     curl --fail --silent --show-error http://127.0.0.1:2019/metrics
-check 'rootless Podman responds' runuser --user {{ podman_service_user }} -- env \
-    DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{{ podman_service_uid }}/bus \
-    XDG_RUNTIME_DIR=/run/user/{{ podman_service_uid }} \
-    systemctl --user restart lowerduckpond-podman-ready.service
+check 'rootless Podman responds' systemctl --user \
+    --machine={{ podman_service_user }}@.host \
+    restart lowerduckpond-podman-ready.service
 
 backup_success=0
 if [[ -s /var/lib/lowerduckpond/backup-status/last-success ]]; then

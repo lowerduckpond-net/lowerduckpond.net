@@ -133,8 +133,10 @@ def test_monitoring_is_local_and_healthy(host: Host) -> None:
     assert not host.socket("tcp://0.0.0.0:9100").is_listening
 
     health_unit = host.file("/etc/systemd/system/lowerduckpond-health.service")
-    assert health_unit.contains("BindReadOnlyPaths=/run/user/21000")
     assert not health_unit.contains("ReadWritePaths=/var/lib/lowerduckpond/runtime")
+    assert not health_unit.contains("BindReadOnlyPaths=/run/user/21000")
+    caddy_validator = host.file("/usr/local/libexec/lowerduckpond/caddy-validate")
+    assert caddy_validator.contains("lowerduckpond-caddy-validate")
     scheduled_health = host.run("systemctl start lowerduckpond-health.service")
     health_journal = host.run(
         "journalctl --unit lowerduckpond-health.service --no-pager --lines 50"

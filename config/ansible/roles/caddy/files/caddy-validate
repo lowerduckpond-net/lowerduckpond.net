@@ -8,11 +8,25 @@ fi
 
 configuration=$1
 candidate_routes_glob=${2:-}
+temporary_data_directory=
+cleanup() {
+    if [[ -n "${temporary_data_directory}" ]]; then
+        find "${temporary_data_directory}" -depth -delete
+    fi
+}
+trap cleanup EXIT
+
 set -a
 # shellcheck disable=SC1091
 source /etc/caddy/environment
 if [[ -n "${candidate_routes_glob}" ]]; then
     CADDY_ROUTES_GLOB=${candidate_routes_glob}
 fi
+if [[ -z "${XDG_DATA_HOME:-}" ]]; then
+    temporary_data_directory=$(mktemp -d \
+        "${TMPDIR:-/tmp}/lowerduckpond-caddy-validate.XXXXXXXX")
+    XDG_DATA_HOME=${temporary_data_directory}
+fi
+XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-/etc/caddy}
 set +a
-exec /usr/local/bin/caddy validate --config "${configuration}" --adapter caddyfile
+/usr/local/bin/caddy validate --config "${configuration}" --adapter caddyfile
