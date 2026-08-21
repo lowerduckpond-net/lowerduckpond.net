@@ -92,9 +92,9 @@
           FROM information_schema.COLUMN_PRIVILEGES
           WHERE GRANTEE='\'{{ database_backup_user }}\'@\'localhost\''
           UNION ALL
-          SELECT CONCAT('ROUTINE:', PRIVILEGE_TYPE, ':', IS_GRANTABLE)
-          FROM information_schema.ROUTINE_PRIVILEGES
-          WHERE GRANTEE='\'{{ database_backup_user }}\'@\'localhost\''
+          SELECT 'ROUTINE:present'
+          FROM mysql.procs_priv
+          WHERE User='{{ database_backup_user }}' AND Host='localhost'
           UNION ALL
           SELECT CONCAT('ROLE:', Role, ':', Admin_option)
           FROM mysql.roles_mapping

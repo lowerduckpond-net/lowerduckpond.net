@@ -100,8 +100,8 @@ def test_database_is_loopback_only(host: Host) -> None:
         "WHERE GRANTEE=\\\"'ldp-backup'@'localhost'\\\") + "
         "(SELECT COUNT(*) FROM information_schema.COLUMN_PRIVILEGES "
         "WHERE GRANTEE=\\\"'ldp-backup'@'localhost'\\\") + "
-        "(SELECT COUNT(*) FROM information_schema.ROUTINE_PRIVILEGES "
-        "WHERE GRANTEE=\\\"'ldp-backup'@'localhost'\\\") + "
+        "(SELECT COUNT(*) FROM mysql.procs_priv "
+        "WHERE User='ldp-backup' AND Host='localhost') + "
         "(SELECT COUNT(*) FROM mysql.roles_mapping "
         "WHERE User='ldp-backup' AND Host='localhost')\""
     )
