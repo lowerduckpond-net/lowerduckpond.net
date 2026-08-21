@@ -114,6 +114,8 @@ reuse old local success evidence: convergence recovers backup status only from
 matching scheduled snapshots and runs retention once for the new scope before
 health can become green. Local repositories are also added explicitly to the
 backup services' otherwise narrow writable-path sandbox.
+Paths below `/home`, `/root`, and `/run/user` are rejected because the service
+sandbox deliberately hides those trees with `ProtectHome=true`.
 
 The exact Caddy build inputs and the supported Ubuntu package ranges live in
 `platform/versions.yml`. Ansible installs distribution packages normally so

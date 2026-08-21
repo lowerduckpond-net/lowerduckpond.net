@@ -250,10 +250,15 @@ def test_backup_configuration_is_atomic_and_sandboxed(host: Host) -> None:
             helper.content_string.index(restic_command)
         )
     assert host.file(LOCAL_BACKUP_REPOSITORY).is_directory
+    canonical_repository = host.run(f"realpath {LOCAL_BACKUP_REPOSITORY}")
+    assert canonical_repository.rc == 0
+    assert not canonical_repository.stdout.startswith(("/home/", "/root/", "/run/user/"))
     backup_unit = host.file("/etc/systemd/system/lowerduckpond-backup.service")
     maintenance_unit = host.file("/etc/systemd/system/lowerduckpond-backup-maintenance.service")
     assert backup_unit.contains(LOCAL_BACKUP_REPOSITORY)
     assert maintenance_unit.contains(LOCAL_BACKUP_REPOSITORY)
+    assert backup_unit.contains("ProtectHome=true")
+    assert maintenance_unit.contains("ProtectHome=true")
 
 
 def test_backup_repository_and_restore(host: Host) -> None:

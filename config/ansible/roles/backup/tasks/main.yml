@@ -35,6 +35,28 @@
     - path: /var/lib/lowerduckpond/backup-status
       mode: "0700"
 
+- name: Resolve a configured local Restic repository
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/realpath
+      - --canonicalize-missing
+      - --
+      - "{{ backup_repository }}"
+  register: backup_local_repository_path
+  when: backup_repository is ansible.builtin.match('^/')
+  changed_when: false
+
+- name: Reject local repositories hidden by service isolation
+  ansible.builtin.assert:
+    that:
+      - >-
+        backup_local_repository_path.stdout is not ansible.builtin.match(
+        '^/(home|root|run/user)(/|$)')
+    fail_msg: >-
+      Local backup repositories cannot be placed below /home, /root, or
+      /run/user because the hardened backup services use ProtectHome=true.
+  when: backup_repository is ansible.builtin.match('^/')
+
 - name: Create a local Restic repository parent when requested
   ansible.builtin.file:
     path: "{{ backup_repository }}"
