@@ -9,3 +9,16 @@
     DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ podman_service_uid }}/bus"
     HOME: "{{ podman_service_home }}"
     XDG_RUNTIME_DIR: "/run/user/{{ podman_service_uid }}"
+
+- name: Reset rootless Podman readiness after unit changes
+  ansible.builtin.systemd_service:
+    name: lowerduckpond-podman-ready.service
+    scope: user
+    state: stopped
+  become_user: "{{ podman_service_user }}"
+  become: true
+  environment:
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ podman_service_uid }}/bus"
+    HOME: "{{ podman_service_home }}"
+    XDG_RUNTIME_DIR: "/run/user/{{ podman_service_uid }}"
+  listen: Reload rootless Podman services

@@ -153,11 +153,22 @@
 - name: Flush rootless Podman handlers
   ansible.builtin.meta: flush_handlers
 
-- name: Enable and start the rootless readiness unit
+- name: Enable the rootless readiness unit
   ansible.builtin.systemd_service:
     name: lowerduckpond-podman-ready.service
     scope: user
     enabled: true
+  become_user: "{{ podman_service_user }}"
+  become: true
+  environment:
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ podman_service_uid }}/bus"
+    HOME: "{{ podman_service_home }}"
+    XDG_RUNTIME_DIR: "/run/user/{{ podman_service_uid }}"
+
+- name: Verify rootless Podman readiness
+  ansible.builtin.systemd_service:
+    name: lowerduckpond-podman-ready.service
+    scope: user
     state: started
   become_user: "{{ podman_service_user }}"
   become: true
@@ -165,3 +176,4 @@
     DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ podman_service_uid }}/bus"
     HOME: "{{ podman_service_home }}"
     XDG_RUNTIME_DIR: "/run/user/{{ podman_service_uid }}"
+  changed_when: false
