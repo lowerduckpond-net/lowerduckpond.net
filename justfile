@@ -46,6 +46,7 @@ check-opentofu:
 # Lint, syntax-check, and acceptance-test the Ansible configuration.
 check-ansible: _sync
     bash -n scripts/configure-production
+    uv run ansible-galaxy collection install --requirements-file config/ansible/requirements.yml
     ANSIBLE_CONFIG=config/ansible/ansible.cfg uv run ansible-lint config/ansible
     ANSIBLE_CONFIG=config/ansible/ansible.cfg uv run ansible-playbook --inventory config/ansible/inventories/development/hosts.yml --syntax-check config/ansible/playbooks/site.yml
     ANSIBLE_CONFIG=config/ansible/ansible.cfg uv run ansible-playbook --inventory config/ansible/inventories/development/hosts.yml --syntax-check config/ansible/playbooks/acceptance.yml
