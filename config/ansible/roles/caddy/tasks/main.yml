@@ -11,10 +11,17 @@
     name: caddy
     system: true
 
+- name: Create the Caddy routes group
+  ansible.builtin.group:
+    name: "{{ caddy_routes_group }}"
+    system: true
+
 - name: Create the Caddy system account
   ansible.builtin.user:
     name: caddy
     group: caddy
+    groups: "{{ caddy_routes_group }}"
+    append: true
     home: /var/lib/caddy
     shell: /usr/sbin/nologin
     system: true
@@ -58,8 +65,8 @@
       mode: "0750"
     - path: /etc/caddy/sites-enabled
       owner: root
-      group: caddy
-      mode: "0750"
+      group: "{{ caddy_routes_group }}"
+      mode: "0770"
     - path: /var/lib/caddy
       owner: caddy
       group: caddy

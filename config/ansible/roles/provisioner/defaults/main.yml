@@ -1,6 +1,6 @@
 ---
 provisioner_user: ldp-provisioner
 provisioner_group: ldp-provisioner
-provisioner_routes_group: ldp-caddy-routes
+provisioner_routes_group: "{{ caddy_routes_group }}"
 provisioner_state_root: /var/lib/lowerduckpond
 provisioner_content_root: /srv/lowerduckpond

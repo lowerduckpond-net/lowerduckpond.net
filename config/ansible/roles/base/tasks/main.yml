@@ -88,12 +88,25 @@
     validate: /usr/sbin/sshd -t -f %s
   notify: Reload OpenSSH
 
-- name: Enable baseline services
+- name: Enable baseline services at boot
   ansible.builtin.systemd_service:
     name: "{{ item }}"
     enabled: true
-    state: started
   loop:
     - chrony.service
     - ssh.service
     - unattended-upgrades.service
+
+- name: Start baseline services
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: started
+  loop:
+    - ssh.service
+    - unattended-upgrades.service
+
+- name: Start host time synchronization
+  ansible.builtin.systemd_service:
+    name: chrony.service
+    state: started
+  when: base_start_time_synchronization

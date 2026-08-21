@@ -58,7 +58,7 @@
       group: caddy
       mode: "0750"
     - path: /etc/caddy/sites-enabled
-      owner: "{{ provisioner_user }}"
+      owner: root
       group: "{{ provisioner_routes_group }}"
       mode: "0770"
 

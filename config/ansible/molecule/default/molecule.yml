@@ -27,6 +27,7 @@ provisioner:
       hosting_nodes:
         firewall_admin_source_cidrs:
           - 192.0.2.0/24
+        base_start_time_synchronization: false
         firewall_enable_service: false
         caddy_cloudflare_api_token: molecule-cloudflare-token-example
         caddy_domain: lowerduckpond.test
