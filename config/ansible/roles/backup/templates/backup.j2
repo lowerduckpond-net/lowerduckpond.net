@@ -2,33 +2,54 @@
 set -euo pipefail
 umask 077
 
-set -a
-# shellcheck disable=SC1091
-source /etc/lowerduckpond/backup.env
-set +a
-
 status_directory=/var/lib/lowerduckpond/backup-status
 staging_directory=/var/cache/lowerduckpond-backup/staging
 mkdir -p "${staging_directory}"
 exec 9>/run/lock/lowerduckpond-backup.lock
 flock --exclusive 9
 
+record_status() {
+    local status_name=$1
+    local prior_status_name=$2
+    local prior_timestamp
+    local timestamp
+    local temporary_status
+    timestamp=$(date +%s)
+    if [[ -s "${status_directory}/${prior_status_name}" ]]; then
+        read -r prior_timestamp < "${status_directory}/${prior_status_name}"
+        if [[ "${prior_timestamp}" =~ ^[0-9]+$ ]] &&
+           (( timestamp <= prior_timestamp )); then
+            timestamp=$((prior_timestamp + 1))
+        fi
+    fi
+    temporary_status=$(mktemp "${status_directory}/.${status_name}.XXXXXXXX")
+    printf '%s\n' "${timestamp}" > "${temporary_status}"
+    chmod 0600 "${temporary_status}"
+    mv --force --no-target-directory \
+        "${temporary_status}" "${status_directory}/${status_name}"
+}
+
 finish() {
     result=$?
     rm -f "${staging_directory}/mariadb.sql.gz"
     if [[ ${result} -eq 0 ]]; then
-        date +%s > "${status_directory}/last-success"
-        rm -f "${status_directory}/last-failure"
+        record_status backup-last-success backup-last-failure
     else
-        date +%s > "${status_directory}/last-failure"
+        record_status backup-last-failure backup-last-success
     fi
     exit "${result}"
 }
 trap finish EXIT
 
-runuser --user {{ backup_database_service_user }} -- \
-    mariadb-dump --all-databases --single-transaction --quick \
+/usr/bin/env --ignore-environment PATH=/usr/bin:/bin \
+    /usr/sbin/runuser --user {{ backup_database_service_user }} -- \
+    /usr/bin/mariadb-dump --all-databases --single-transaction --quick \
     --routines --events --triggers | gzip --best > "${staging_directory}/mariadb.sql.gz"
+
+set -a
+# shellcheck disable=SC1091
+source /etc/lowerduckpond/backup.env
+set +a
 
 restic backup \
     --host {{ backup_node_name | quote }} \

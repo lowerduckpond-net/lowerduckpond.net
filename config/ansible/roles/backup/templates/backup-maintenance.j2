@@ -2,12 +2,45 @@
 set -euo pipefail
 umask 077
 
+status_directory=/var/lib/lowerduckpond/backup-status
+record_status() {
+    local status_name=$1
+    local prior_status_name=$2
+    local prior_timestamp
+    local timestamp
+    local temporary_status
+    timestamp=$(date +%s)
+    if [[ -s "${status_directory}/${prior_status_name}" ]]; then
+        read -r prior_timestamp < "${status_directory}/${prior_status_name}"
+        if [[ "${prior_timestamp}" =~ ^[0-9]+$ ]] &&
+           (( timestamp <= prior_timestamp )); then
+            timestamp=$((prior_timestamp + 1))
+        fi
+    fi
+    temporary_status=$(mktemp "${status_directory}/.${status_name}.XXXXXXXX")
+    printf '%s\n' "${timestamp}" > "${temporary_status}"
+    chmod 0600 "${temporary_status}"
+    mv --force --no-target-directory \
+        "${temporary_status}" "${status_directory}/${status_name}"
+}
+
+finish() {
+    result=$?
+    if [[ ${result} -eq 0 ]]; then
+        record_status maintenance-last-success maintenance-last-failure
+    else
+        record_status maintenance-last-failure maintenance-last-success
+    fi
+    exit "${result}"
+}
+trap finish EXIT
+
 set -a
 # shellcheck disable=SC1091
 source /etc/lowerduckpond/backup.env
 set +a
 
-exec restic forget \
+restic forget \
     --host {{ backup_node_name | quote }} \
     --keep-daily {{ backup_keep_daily }} \
     --keep-weekly {{ backup_keep_weekly }} \

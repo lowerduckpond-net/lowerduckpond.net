@@ -42,9 +42,33 @@ check 'rootless Podman responds' systemctl --user \
     --machine={{ podman_service_user }}@.host \
     restart lowerduckpond-podman-ready.service
 
+read_status() {
+    local variable_name=$1
+    local status_name=$2
+    local value=0
+    local status_path="/var/lib/lowerduckpond/backup-status/${status_name}"
+
+    if [[ -s "${status_path}" ]]; then
+        read -r value < "${status_path}"
+        if [[ ! "${value}" =~ ^[0-9]+$ ]]; then
+            printf 'health check failed: invalid %s timestamp\n' "${status_name}" >&2
+            failure_count=$((failure_count + 1))
+            value=0
+        fi
+    fi
+    printf -v "${variable_name}" '%s' "${value}"
+}
+
 backup_success=0
-if [[ -s /var/lib/lowerduckpond/backup-status/last-success ]]; then
-    backup_success=$(cat /var/lib/lowerduckpond/backup-status/last-success)
+backup_failure=0
+maintenance_success=0
+maintenance_failure=0
+read_status backup_success backup-last-success
+read_status backup_failure backup-last-failure
+read_status maintenance_success maintenance-last-success
+read_status maintenance_failure maintenance-last-failure
+
+if (( backup_success > 0 )); then
     now=$(date +%s)
     if (( now - backup_success > {{ monitoring_backup_max_age_seconds }} )); then
         printf 'health check failed: latest backup is too old\n' >&2
@@ -55,6 +79,16 @@ else
     failure_count=$((failure_count + 1))
 fi
 
+if (( backup_failure > backup_success )); then
+    printf 'health check failed: latest scheduled backup failed\n' >&2
+    failure_count=$((failure_count + 1))
+fi
+
+if (( maintenance_failure > maintenance_success )); then
+    printf 'health check failed: latest backup maintenance failed\n' >&2
+    failure_count=$((failure_count + 1))
+fi
+
 cat > "${temporary_file}" <<METRICS
 # HELP lowerduckpond_health_failures Number of failed local hosting-node checks.
 # TYPE lowerduckpond_health_failures gauge
@@ -62,6 +96,15 @@ lowerduckpond_health_failures ${failure_count}
 # HELP lowerduckpond_backup_last_success_unixtime Last successful backup as Unix time.
 # TYPE lowerduckpond_backup_last_success_unixtime gauge
 lowerduckpond_backup_last_success_unixtime ${backup_success}
+# HELP lowerduckpond_backup_last_failure_unixtime Last failed backup as Unix time.
+# TYPE lowerduckpond_backup_last_failure_unixtime gauge
+lowerduckpond_backup_last_failure_unixtime ${backup_failure}
+# HELP lowerduckpond_backup_maintenance_last_success_unixtime Last successful retention run as Unix time.
+# TYPE lowerduckpond_backup_maintenance_last_success_unixtime gauge
+lowerduckpond_backup_maintenance_last_success_unixtime ${maintenance_success}
+# HELP lowerduckpond_backup_maintenance_last_failure_unixtime Last failed retention run as Unix time.
+# TYPE lowerduckpond_backup_maintenance_last_failure_unixtime gauge
+lowerduckpond_backup_maintenance_last_failure_unixtime ${maintenance_failure}
 METRICS
 chown root:prometheus "${temporary_file}"
 chmod 0644 "${temporary_file}"

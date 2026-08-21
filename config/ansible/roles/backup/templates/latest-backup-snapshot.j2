@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+set -a
+# shellcheck disable=SC1091
+source /etc/lowerduckpond/backup.env
+set +a
+
+snapshot_file=$(mktemp /var/cache/lowerduckpond-backup/snapshots.XXXXXXXX)
+cleanup() {
+    rm -f -- "${snapshot_file}"
+}
+trap cleanup EXIT
+
+set +e
+restic snapshots \
+    --host {{ backup_node_name | quote }} \
+    --tag scheduled \
+    --json > "${snapshot_file}"
+restic_result=$?
+set -e
+if (( restic_result != 0 )); then
+    echo "Could not inspect the Restic repository for existing snapshots." >&2
+    exit 2
+fi
+
+python3 - "${snapshot_file}" <<'PY'
+import datetime
+import json
+import pathlib
+import sys
+
+snapshots = json.loads(pathlib.Path(sys.argv[1]).read_text())
+if not snapshots:
+    raise SystemExit(1)
+
+latest = max(
+    datetime.datetime.fromisoformat(snapshot["time"].replace("Z", "+00:00"))
+    for snapshot in snapshots
+)
+print(int(latest.timestamp()))
+PY
