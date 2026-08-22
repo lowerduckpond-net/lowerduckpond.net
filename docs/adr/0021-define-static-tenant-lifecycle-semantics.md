@@ -71,8 +71,8 @@ provisioner's ordinary activation capability cannot bypass that prerequisite.
 
 There is one ordinary archive-free deletion transition: an `undeployed` tenant
 whose root-owned deployment, release, archive, and audit history proves that it
-has never had a deployment. While holding the exclusive tenant-state and
-publication locks, the activator checks that complete authoritative history,
+has never had a deployment. While holding publication and then exclusive
+tenant-state, the activator checks that complete authoritative history,
 durably appends the deletion tombstone, and only then removes the empty desired
 manifest and releases its slug. Missing, inconsistent, or previously deployed
 history fails closed and requires a verified archive through the ordinary path.

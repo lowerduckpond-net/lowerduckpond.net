@@ -147,15 +147,17 @@ Lifecycle tests delete a never-deployed reservation through the ordinary
 audited path, then prove that any deployment record or ambiguous history makes
 the same archive-free operation fail closed without requiring or exposing the
 emergency command.
+
 Deletion tests archive, restore, and deploy a newer generation, then prove the
 old archive record cannot authorize deletion. They independently alter every
 bound archive-evidence field and prove delete fails closed until the current
 canonical manifest and deployment have a freshly verified durable bundle.
 Archive failure-injection tests terminate the activator after bundle upload,
-archive-record commit, intent commit, no-route selection, Caddy reload, manifest
-commit, observed-state commit, and audit append. Startup reconciliation must
-produce only the preceding active manifest and route or the archived manifest
-and absent route, never `active` desired state with archival intent ignored.
+archive-record staging, intent commit, no-route selection, Caddy reload,
+authoritative archive-record and manifest commit, observed-state commit, and
+audit append. Startup reconciliation must produce only the preceding active
+manifest and route or the archived manifest and absent route, never `active`
+desired state with archival intent ignored.
 
 After CI and disposable-host acceptance pass, publish a reserved production
 canary in the approved origin-isolated tenant namespace, verify browser

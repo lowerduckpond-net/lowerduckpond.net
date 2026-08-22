@@ -129,9 +129,10 @@ ordered persistence protocol:
    write desired and observed state through
    write-`fsync`-rename-directory-`fsync`, append and `fsync` the audit event,
    then remove the intent and `fsync` its directory.
-5. On validation or reload failure, atomically restore and durably persist the
-   prior reference before reloading the last-known-good generation. Persist the
-   failure result and audit event before removing intent.
+5. On validation, reload, or restart failure, atomically restore and durably
+   persist the prior reference before reloading or restarting the
+   last-known-good generation as appropriate. Persist the failure result and
+   audit event before removing intent.
 
 On startup and before any later mutation, reconciliation inspects durable
 intent, references, and state. It completes a transaction whose selected
