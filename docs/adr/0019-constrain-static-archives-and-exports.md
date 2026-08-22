@@ -148,6 +148,8 @@ and `manifest.json` as the UTF-8 JSON Canonicalization Scheme defined by RFC
 8785, without a byte-order mark and with exactly one trailing LF. The schema
 permits only values that JCS can represent; fail rather than coerce any other
 value. `format.json` contains only the fixed format name and integer version.
+Its exact bytes are
+`{"format":"lowerduckpond-export","version":1}\n`.
 Write lowercase SHA-256 values, two ASCII spaces, and the normalized
 envelope-relative UTF-8 path to `checksums.sha256`, sorted by path bytes and
 terminated by one LF; control characters are already invalid in accepted paths.
@@ -155,15 +157,18 @@ terminated by one LF; control characters are already invalid in accepted paths.
 Write ZIP members in this order: the three fixed metadata files, the `content/`
 directory, then all descendant directory and regular-file paths in normalized
 UTF-8 byte order. Use stored entries only, not implementation-dependent Deflate
-output. Every member has the fixed DOS timestamp `1980-01-01 00:00:00`, version
-made-by `3.20` (Unix), version-needed `2.0`, general-purpose flag `0x0800`,
-method `0`, disk number and internal attributes `0`, empty extra and comment
-fields, no data descriptor, and precomputed CRC-32 and sizes. External
-attributes encode Unix regular-file mode `0100644`, or directory mode `040755`
-plus the DOS directory bit. The archive has an empty comment, no disk spanning,
-and neither encryption nor ZIP64 metadata. The central directory repeats the
-same order and fixed values. A bundle implementation must reject a value it
-cannot represent canonically rather than substitute environment metadata.
+output. Every local and central member has DOS time `0x0000` and date `0x0021`
+(`1980-01-01 00:00:00`), version-made-by `0x0314` (Unix, 2.0),
+version-needed `0x0014`, general-purpose flags `0x0800`, method `0x0000`, and
+precomputed standard ZIP CRC-32 and 32-bit sizes. It has disk number and
+internal attributes `0`, matching UTF-8 filename bytes, empty extra and comment
+fields, and no data descriptor. Central external attributes are `0x81a40000`
+for a regular file and `0x41ed0010` for a directory. The end record uses disk
+numbers `0`, matching entry counts, the exact central-directory size and offset,
+and an empty comment. There is no disk spanning, encryption, or ZIP64 metadata.
+The central directory repeats the member order. A bundle implementation must
+reject a value it cannot represent canonically rather than substitute
+environment metadata.
 
 Consequently, the same versioned export snapshot produces byte-identical ZIP
 output and the portable-bundle SHA-256 is a reproducible identifier, not merely

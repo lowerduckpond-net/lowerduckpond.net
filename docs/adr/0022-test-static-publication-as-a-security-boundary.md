@@ -126,7 +126,9 @@ Golden export fixtures assert the complete ZIP bytes, including JSON and
 checksum serialization, member and central-directory order, timestamps, flags,
 modes, CRC and size fields, lack of extras/comments/descriptors/ZIP64, and final
 archive digest. Repeated processes and supported hosts must produce the same
-bytes from the same snapshot.
+bytes from the same snapshot. The fixture parser also compares every fixed
+numeric local-header, central-directory, and end-record field rather than
+relying only on successful extraction.
 
 Lifecycle tests delete a never-deployed reservation through the ordinary
 audited path, then prove that any deployment record or ambiguous history makes
