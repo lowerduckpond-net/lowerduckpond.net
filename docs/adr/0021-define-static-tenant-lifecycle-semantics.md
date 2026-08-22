@@ -44,19 +44,21 @@ size, and durable object identity. Restore validates that bundle and creates a
 new deployment while preserving the tenant ID; it does not mutate a historical
 release.
 
-After the bundle and archive record are durable, archive prepares and syncs the
-proposed `archived` manifest and a complete route-set generation without the
-tenant. Its write-ahead intent names the preceding active manifest and route set,
-the proposed archived manifest, the verified archive record, and the proposed
-route set. The activator then selects and reloads the no-route generation,
-durably commits desired and observed archived state plus the audit event, and
-only then clears intent. Reconciliation must inspect archive intent before
-ordinary desired-state reconciliation and converge on either the complete
-preceding active generation or the complete archived generation; it may never
-republish merely because an interrupted transaction left the old active
-manifest on disk. This is the ADR 0017 durability protocol applied to the
-manifest and route transition, rather than an assumption that two filesystem
-renames are literally atomic together.
+After the bundle is durable, archive acquires publication and exclusive
+tenant-state in the global order and proves the captured source manifest,
+deployment, and release are still current. It then prepares and syncs the
+proposed `archived` manifest and a complete Caddy runtime generation without the
+tenant. Its write-ahead intent names the preceding active manifest and runtime
+generation, the proposed archived manifest, the verified archive record, and
+the proposed no-route runtime generation. The activator then selects and reloads
+the no-route generation, durably commits desired and observed archived state
+plus the audit event, and only then clears intent. Reconciliation must inspect
+archive intent before ordinary desired-state reconciliation and converge on
+either the complete preceding active generation or the complete archived
+generation; it may never republish merely because an interrupted transaction
+left the old active manifest on disk. This is the ADR 0017 durability protocol
+applied to the manifest and route transition, rather than an assumption that
+two filesystem renames are literally atomic together.
 
 For a tenant that has ever been deployed, ordinary delete requires
 `desiredState: archived` and revalidates immediately before mutation that a

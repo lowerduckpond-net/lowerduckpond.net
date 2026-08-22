@@ -56,18 +56,19 @@ ratio, count, and per-file checks remain the primary policy; process limits are
 a host-availability backstop for parser bugs and adversarial valid Deflate
 streams.
 
-Before constructing an export, acquire the shared tenant-state lock used by
-backup. While holding it, resolve the canonical manifest and selected immutable
-release, then copy both into a new root-owned, non-writable export snapshot.
-Verify that complete snapshot before releasing the lock. Publication, rollback,
-rename, suspension, archival, restoration, deletion, and garbage collection
-take the lock exclusively, so the snapshot cannot combine metadata from one
-tenant generation with content from another or lose its release during capture.
-ZIP construction and checksum generation consume only the completed snapshot
-and may proceed after the lock is released.
+All export and archive bundle construction first takes one exclusive root-owned
+host export lock before snapshot admission. An ordinary export then acquires the
+shared tenant-state lock used by backup. While holding it, resolve the canonical
+manifest and selected immutable release, then copy both into a new root-owned,
+non-writable export snapshot. Verify that complete snapshot before releasing the
+tenant-state lock. Publication, rollback, rename, suspension, archival,
+restoration, deletion, and garbage collection take that lock exclusively, so
+the snapshot cannot combine metadata from one tenant generation with content
+from another or lose its release during capture. ZIP construction and checksum
+generation consume only the completed snapshot and may proceed while holding
+only the export lock.
 
-All export and archive bundle construction also takes one exclusive root-owned
-host export lock before snapshot admission. The initial host permits exactly
+The initial host permits exactly
 one in-progress snapshot and one completed, unacknowledged downloadable export
 in total. The activator accounts actual blocks and inodes already present in
 the root-owned export spool before admitting work and enforces aggregate hard
@@ -81,9 +82,19 @@ startup reconciliation. A completed downloadable export remains for at most 24
 hours or until the trusted client acknowledges its verified download, whichever
 comes first; admission rejects another export while that slot is occupied.
 Retries with the same correlation ID return the established result. Archive
-construction uses the same lock, spool, admission accounting, and cleanup, but
-moves the verified bundle into durable archive storage before releasing its
-transaction. The provisioner cannot create files directly in the spool or
+construction uses the same lock, spool, admission accounting, and cleanup. It
+captures the source manifest and release under shared tenant-state, releases
+that lock to build and move the verified bundle into durable archive storage,
+then—without releasing the export lock—acquires publication followed by
+exclusive tenant-state. It revalidates the exact source manifest, deployment,
+and release digests before committing the proposed archived generation. If any
+source changed, archive records an aborted result and retains no authorizing
+archive record; it never applies a stale snapshot. It immediately removes the
+unreferenced durable object, or records it in a root-owned quarantine ledger for
+bounded retry and garbage collection if object deletion fails. Quarantined
+objects grant no restore or deletion authority; archive admission remains
+closed while the quarantine ledger is nonempty, so repeated aborts cannot grow
+it without bound. The provisioner cannot create files directly in the spool or
 bypass these limits.
 
 Produce a portable ZIP export with this fixed versioned envelope:

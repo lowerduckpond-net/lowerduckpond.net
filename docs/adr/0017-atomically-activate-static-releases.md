@@ -82,6 +82,18 @@ operation. Backups take a shared tenant-state lock while publication and
 reconciliation take it exclusively, preventing a snapshot from combining
 incompatible content and manifest generations.
 
+Whenever an operation needs more than one host lock, acquire them only in this
+global order: export lock, publication lock, then tenant-state lock. Ordinary
+exports take the export lock and then shared tenant-state; archive takes the
+export lock before its capture and later publication transaction; other
+lifecycle mutations take publication and then exclusive tenant-state; backup
+takes only shared tenant-state; Ansible and the Caddy recovery/launcher paths
+take only publication. Never upgrade a shared lock or acquire an earlier lock
+while holding a later one. Contention returns a retryable busy result before
+creating a parser worker or staging artifact rather than accumulating unbounded
+lock waiters; the same correlation ID can retry. Root recovery may wait with
+its service runtime bound, but a timeout fails Caddy startup closed.
+
 Atomic rename is not a durability barrier. While holding the locks, apply this
 ordered persistence protocol:
 

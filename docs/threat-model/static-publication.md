@@ -109,6 +109,7 @@ record.
 | Validation-to-reload race | Validate one immutable complete runtime generation with its manifest-bound binary and environment, select it through one active reference under the publication lock, and reload from directory-pinned open inputs. |
 | Ansible convergence or automatic restart mixes Caddy inputs | Route all mutable binary, environment, base, route, reload, and restart changes through complete runtime generations and the shared publication lock. Before every start, the frozen bootstrap reconciles intent and pins one manifest-verified generation directory. Change the bootstrap only while Caddy is stopped and masked. |
 | Concurrent or replayed jobs | Serialize publication, bind results to correlation IDs and request digests, and make retries idempotent. |
+| Nested locks deadlock or accumulate waiters | Acquire export, publication, and tenant-state only in that global order; never upgrade; return retryable busy before allocating work; revalidate archive source state after its unlocked construction phase. |
 | Delayed rollback undoes suspension | Recheck lifecycle state under the publication lock; while suspended, change only the remembered deployment and require explicit resume before publishing. |
 | Manifest or audit tampering | Keep desired and observed state and append-only audit operations root-owned; allow the provisioner no direct write, replacement, truncation, or deletion authority. |
 | Crash or power loss between filesystem, route, reload, and state changes | Durably sync generation targets and parents before intent, sync intent before selecting and syncing the active reference, sync desired/observed state and audit before clearing intent, and reconcile from durable evidence. |
@@ -174,6 +175,9 @@ Implementation and review must preserve these invariants:
     complete Caddy configuration together. Every start reconciles intent and
     pins that generation once; automatic restart cannot combine live paths from
     different generations.
+20. Nested operations acquire export, publication, and tenant-state only in that
+    order, never upgrade, and do not queue unbounded waiters. Archive revalidates
+    its captured source generation under exclusive state before committing.
 
 ## Residual risks
 

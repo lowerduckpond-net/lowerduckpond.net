@@ -91,6 +91,12 @@ global construction slot, one unacknowledged result, hard spool and free-space
 admission limits, startup cleanup, expiry, acknowledged cleanup, and idempotent
 retry without an additional snapshot.
 
+Lock-schedule tests exercise every permitted pair and triple of export,
+publication, and tenant-state acquisition, including backup, archive, Ansible,
+Caddy restart, and ordinary lifecycle operations. They prove the global order,
+non-blocking busy response, absence of leaked waiters, and archive rejection if
+its source generation changes between snapshot and exclusive commit.
+
 Export fixtures give tenant content each reserved metadata basename and prove
 that round-trip restore preserves it below `content/`. Negative fixtures cover
 metadata outside the versioned envelope, duplicate metadata, unknown envelope

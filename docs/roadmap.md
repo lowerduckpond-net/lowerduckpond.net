@@ -350,6 +350,9 @@ Implement idempotent commands or jobs for:
 - Retain the active release and two preceding releases.
 - Generate allowlisted tenant routes without accepting Caddy text.
 - Validate, reload, and roll back Caddy under one publication lock.
+- Enforce the global export → publication → tenant-state lock order, reject
+  contended requests before staging, and revalidate two-phase archive capture
+  under exclusive state before commit.
 - Apply explicit file and parent-directory `fsync` barriers around releases,
   complete Caddy generations, intent, active references, state, audit, and
   rollback.
