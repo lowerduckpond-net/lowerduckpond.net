@@ -2,7 +2,8 @@
 
 - Status: accepted Milestone 3 baseline
 - Date: 2026-08-22
-- Related decision: [ADR 0016](../adr/0016-model-static-publication-threats.md)
+- Related decisions: [ADR 0016](../adr/0016-model-static-publication-threats.md)
+  and [ADR 0023](../adr/0023-separate-reusable-slugs-from-tenant-origins.md)
 
 ## Scope
 
@@ -21,6 +22,8 @@ features require their own threat-model extensions before activation.
   administration, another tenant, or backup credentials.
 - Tenant JavaScript cannot set parent-domain cookies that reach the platform or
   another tenant.
+- Reassigning a human-readable slug cannot transfer a browser origin, service
+  worker, cookie, or tenant-controlled storage to the next tenant.
 - A compromised provisioner cannot turn its narrow activation capability into
   arbitrary root, filesystem, process, or Caddy authority.
 - Only validated, quota-compliant regular files become publicly readable.
@@ -38,7 +41,8 @@ features require their own threat-model extensions before activation.
 - The Cloudflare DNS-edit token read by Caddy.
 - Caddy's root-owned configuration and Caddy-only admin socket.
 - Administrative SSH access and the root privilege boundary.
-- Tenant manifests, immutable releases, routes, archives, and audit history.
+- Tenant manifests, immutable releases, canonical-origin and alias routes,
+  archives, and audit history.
 - Other tenants' content and future credentials.
 - Restic password, Spaces credentials, repository contents, and backup health
   evidence.
@@ -76,8 +80,9 @@ and supply-chain risks.
    new root-owned temporary release.
 4. The activator normalizes and seals the release, generates a complete
    root-owned Caddy runtime generation containing a manifest-bound binary,
-   environment, and base-and-tenant configuration, and validates the generation
-   with its own inputs.
+   environment, canonical tenant-content routes, platform-only slug-alias
+   routes, and base configuration, and validates the generation with its own
+   inputs.
 5. Under the publication lock, the activator records intent, atomically selects
    the candidate runtime generation, reloads or restarts Caddy, and records
    observed state. Failure restores the preceding complete-generation reference.
@@ -103,7 +108,9 @@ record.
 | ZIP bomb, decoder allocation, oversized or overlapping metadata, deep paths, implicit-directory inflation, disk or inode exhaustion | Structurally gate end, directory, extra-field, offset, region, path-byte, component, and depth bounds before a decoder; count explicit and implicit directories; allow only stored and Deflate methods; require matching local and central headers; and constrain the privileged parser by memory, swap, task, descriptor, CPU, and runtime limits. Enforce compressed, expanded, per-file, total-entry, and ratio limits during streaming extraction and delete failed staging trees. Remove persistent provisioner-writable storage, hard-cap its private ephemeral workspace by aggregate bytes and inodes, bound root snapshots and cleanup, and preserve a host free-space reserve. |
 | Duplicate, Unicode, slash, backslash, case, or export-encoding ambiguity | Normalize first and reject ambiguity and collisions. Generate manifests canonically and define every portable ZIP byte: JSON, checksums, member order, stored encoding, timestamps, flags, modes, metadata, central directory, and archive digest. |
 | Duplicate YAML mapping keys | Reject duplicates during YAML composition, before schema validation or canonical JSON generation can discard the ambiguity. |
-| Platform or cross-tenant cookie poisoning | Keep `lowerduckpond.net` platform-only and require every tenant hostname to be a distinct registrable domain according to supported browser Public Suffix List behavior. |
+| Platform or cross-tenant cookie poisoning | Serve tenant content only from immutable UUID-derived hostnames that are distinct registrable domains according to supported browser Public Suffix List behavior. Keep `lowerduckpond.net` responses platform-controlled and platform authentication cookies host-only. |
+| Slug reassignment transfers persistent browser state | Treat the slug hostname only as a platform alias. Redirect its exact bare root without caching, referrer, cookie, path, query, tenant body, tenant header, or caller-selected target to the immutable tenant origin. Never reassign a tenant ID or canonical hostname; release only the slug mapping. |
+| Alias becomes a confused deputy, secret sink, or stale content URL | Generate its destination solely from root-owned tenant ID and suffix, redirect only active tenants, reject every non-root path, query, and unsupported method without forwarding, discard sensitive alias request fields before logging, and test that uploaded bytes and service workers are unreachable at the alias. |
 | Mutation after validation | Root performs final extraction; active releases and complete Caddy generations are root-owned and immutable to Caddy and the provisioner. |
 | Arbitrary Caddy behavior or secret disclosure | Generate allowlisted complete Caddy configurations from validated primitives; accept no Caddy text; keep generation environment files Caddy-only and excluded from backup, and keep the admin socket Caddy-only. |
 | Validation-to-reload race | Validate one immutable complete runtime generation with its manifest-bound binary and environment, select it through one active reference under the publication lock, and reload from directory-pinned open inputs. |
@@ -129,8 +136,9 @@ Implementation and review must preserve these invariants:
    or active route import.
 2. No caller can supply Caddy syntax, a destination path, an arbitrary command,
    a Unix identity, or a service name to the root activator.
-3. Every live route refers to one validated immutable release belonging to the
-   same tenant ID.
+3. Every live canonical content route refers to one validated immutable release
+   belonging to the same tenant ID. Every slug route is a platform-only alias
+   to that tenant's UUID-derived canonical origin and cannot reach a release.
 4. Candidate validation, active-generation selection, Ansible Caddy commits,
    reload or restart, and rollback occur while holding the global publication
    lock; no other path mutates live Caddy inputs.
@@ -149,8 +157,10 @@ Implementation and review must preserve these invariants:
    append-only operations.
 10. No tenant-controlled response is served from `lowerduckpond.net` or a
     hostname sharing a registrable domain with the platform or another tenant.
+    A slug alias returns only the fixed root-generated redirect contract in ADR
+    0023 and holds no tenant or authentication state.
 11. A rollback cannot transition a tenant out of `suspended`; only `resume` may
-    restore its public route.
+    restore its public routes.
 12. No active reference is durably selected before its immutable release and
     complete Caddy-generation targets; intent, state, audit, rollback, and
     intent removal follow the ordered file and parent-directory `fsync` protocol
@@ -167,9 +177,10 @@ Implementation and review must preserve these invariants:
 16. Portable-bundle construction is globally serialized and cannot exceed one
     root-owned snapshot, one unacknowledged output, or the aggregate export-spool
     byte, inode, output, and host free-space bounds.
-17. Archive commits the proposed archived manifest and removal of its route
-    through one recoverable intent transaction; reconciliation exposes only the
-    preceding active generation or the complete archived generation.
+17. Archive commits the proposed archived manifest and removal of its canonical
+    and alias routes through one recoverable intent transaction; reconciliation
+    exposes only the preceding active generation or the complete archived
+    generation.
 18. Privileged ZIP parsing starts inside its resource-limited service process;
     a bounded structural gate rejects every method except stored and Deflate
     before any entry decoder runs.
@@ -191,6 +202,10 @@ Implementation and review must preserve these invariants:
 24. A provisioner request cannot cause root-owned tenant, release, correlation,
     audit, request/result, reason, or rate limits to be exceeded; audit evidence
     is never overwritten or rotated without verified off-host recovery evidence.
+25. A tenant ID and its canonical origin are immutable and never reassigned.
+    Rename and deletion may release only the platform-controlled slug alias;
+    allocation consults live desired state rather than historical effort or
+    browser cleanup.
 
 ## Residual risks
 
@@ -200,6 +215,10 @@ Implementation and review must preserve these invariants:
   execute on the host; content policy and browser protections remain necessary.
 - Limits reduce but do not eliminate availability impact from expensive valid
   content or high request volume.
+- A stale or non-conforming cache can follow an obsolete alias redirect to the
+  preceding tenant's separate canonical origin. The `no-store` response and
+  non-forwarding alias contract reduce this usability risk; it cannot transfer
+  control of the new tenant's origin.
 - The single host remains one availability and blast-radius boundary.
 - A trusted administrator can intentionally override deletion safeguards or
   directly modify the host.

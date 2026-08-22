@@ -22,11 +22,12 @@ publication.
 
 The platform never accepts caller-generated Caddy text, never serves a
 provisioner-writable tree, and never extracts an archive into a public content
-tree. Milestone 3 supports only static content at a derived
+tree. Milestone 3 serves static content only at an immutable UUID-derived
 hostname in an operator-owned tenant namespace where each tenant is a distinct
-registrable domain according to supported browsers. `lowerduckpond.net` remains
-platform-only. Custom domains and executable content stay outside this
-boundary.
+registrable domain according to supported browsers. Reusable slug hostnames
+beneath `lowerduckpond.net` remain platform-only aliases that can return only a
+fixed redirect to that canonical tenant origin; they never serve tenant bytes
+or headers. Custom domains and executable content stay outside this boundary.
 
 Desired manifests, observed state, deployment records, archive records, and
 audit history are root-owned. The provisioner may receive narrowly scoped read
@@ -66,4 +67,5 @@ component that processes attacker-influenced tenant jobs.
 
 - [0003: Use Caddy and Cloudflare DNS-01](0003-caddy-cloudflare-dns.md)
 - [0006: Separate the control plane and provisioner](0006-separate-control-plane-provisioner.md)
+- [0023: Separate reusable slugs from immutable tenant origins](0023-separate-reusable-slugs-from-tenant-origins.md)
 - [Static-publication threat model](../threat-model/static-publication.md)

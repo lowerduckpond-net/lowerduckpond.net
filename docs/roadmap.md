@@ -287,7 +287,8 @@ accepted decisions, in dependency order:
 4. [Constrain static archives and exports](adr/0019-constrain-static-archives-and-exports.md).
 5. [Use a trusted-workstation static operator interface](adr/0020-use-a-trusted-workstation-static-operator-interface.md).
 6. [Define static tenant lifecycle semantics](adr/0021-define-static-tenant-lifecycle-semantics.md).
-7. [Test static publication as a security boundary](adr/0022-test-static-publication-as-a-security-boundary.md).
+7. [Separate reusable slugs from immutable tenant origins](adr/0023-separate-reusable-slugs-from-tenant-origins.md).
+8. [Test static publication as a security boundary](adr/0022-test-static-publication-as-a-security-boundary.md).
 
 ### Tenant manifest v1
 
@@ -311,14 +312,18 @@ spec:
     entries: 5000
 ```
 
-The hostname is derived from an operator-owned tenant namespace where each slug
-is a distinct registrable domain according to supported browsers; arbitrary and
-custom domains are not accepted in this version. `lowerduckpond.net` remains
-platform-only. Selecting and provisioning the origin-isolated tenant namespace
-is required before the production canary. The stable UUIDv7 tenant ID does not
-change when a public slug changes. Desired manifests are stored as canonical
-JSON, while observed activation state and immutable deployment records remain
-separate.
+The root activator generates the stable UUIDv7 tenant ID during `create`; a
+caller cannot select it. Tenant content is served at
+`t-<tenant-uuid-without-hyphens>.<tenant-origin-suffix>`, where the
+operator-owned namespace makes each canonical hostname a distinct registrable
+domain according to supported browsers. A reusable `<slug>.lowerduckpond.net`
+platform alias redirects only its bare root to that canonical origin and never
+serves tenant-controlled content. Arbitrary and custom domains are not accepted
+in this version. Selecting and provisioning the origin-isolated tenant
+namespace is required before the production canary. The tenant ID and canonical
+origin do not change when a public slug changes. Desired manifests are stored
+as canonical JSON, while observed activation state and immutable deployment
+records remain separate.
 
 ### Provisioner behavior
 
@@ -332,11 +337,13 @@ Implement idempotent commands or jobs for:
 - Remove the provisioner's persistent writable home and job directory; place
   its temporary work in a private service workspace hard-capped at 64 MiB and
   4,096 inodes while root owns intake, job records, and activation staging.
-- Validate slug and hostname uniqueness.
-- Reserve tenant IDs and slugs inside the serialized root-owned state
-  transaction so concurrent creates or renames cannot commit the same name.
-- Enforce a 1–63-byte ASCII DNS-label grammar and the complete derived-hostname
-  length with both an absolute-end JSON Schema pattern and an independent root
+- Generate immutable tenant IDs at the root boundary; derive and validate the
+  canonical tenant hostname without accepting a caller ID or domain.
+- Validate live slug uniqueness and both canonical and alias hostname lengths.
+- Reserve slugs inside the serialized root-owned state transaction so
+  concurrent creates or renames cannot commit the same alias.
+- Enforce a 1–63-byte ASCII DNS-label grammar and complete alias-hostname length
+  with both an absolute-end JSON Schema pattern and an independent root
   `fullmatch` before persisting a slug.
 - Stage and validate an uploaded archive.
 - Reject unsafe or ambiguous paths, links, special files, archive expansion,
@@ -351,7 +358,10 @@ Implement idempotent commands or jobs for:
 - Atomically activate one complete Caddy runtime generation whose manifest binds
   its binary, environment, full configuration, and immutable tenant releases.
 - Retain the active release and two preceding releases.
-- Generate allowlisted tenant routes without accepting Caddy text.
+- Generate allowlisted canonical content routes and platform-only slug redirect
+  routes without accepting Caddy text or a redirect target.
+- Enforce the exact bare-root, non-cached, no-referrer alias contract and omit
+  raw path, query, cookie, authorization, and referrer values from alias logs.
 - Validate, reload, and roll back Caddy under one publication lock.
 - Enforce the global export → publication → tenant-state lock order, reject
   contended requests before staging, and revalidate two-phase archive capture
@@ -366,10 +376,13 @@ Implement idempotent commands or jobs for:
   enforce a 256-MiB/4,096-inode aggregate cap, unique-inode accounting,
   free-space admission, and secret-safe cleanup.
 - Suspend, resume, export, archive, restore, and delete a site.
+- Keep canonical tenant origins stable across rename and restore; release slugs
+  after committed rename or deletion without reassigning a tenant origin.
 - Enforce and table-test the complete lifecycle operation/state matrix; reject
   every unlisted pair without desired or observed state changes.
-- Commit archive evidence, `desiredState: archived`, and route removal through
-  one write-ahead transaction that reconciles to the old or new generation.
+- Commit archive evidence, `desiredState: archived`, and both-route removal
+  through one write-ahead transaction that reconciles to the old or new
+  generation.
 - Allow audited archive-free deletion of a never-deployed reservation only when
   its complete root-owned history proves no deployment ever existed.
 - Capture each export's canonical manifest and immutable release into a
@@ -391,7 +404,7 @@ Implement idempotent commands or jobs for:
 ### End-to-end tests
 
 - Create an undeployed tenant and verify that it persists without a release or
-  public route.
+  public routes.
 - Provision a tenant and observe a valid HTTPS response.
 - Deploy a replacement and verify atomic cutover.
 - Roll back to the previous release.
@@ -406,6 +419,9 @@ Implement idempotent commands or jobs for:
 - Delay a rollback across suspension and prove it cannot republish the tenant;
   only resume may leave the suspended state.
 - Rename a slug while preserving the tenant identity.
+- Assign the released slug to another tenant and prove its alias points to a
+  different canonical origin while no tenant bytes, path, query, cookie, or
+  service worker are exposed at the alias.
 - Run the same provisioning job twice and prove convergence.
 - Race creates and rename against the same slug and prove exactly one operation
   can commit it.

@@ -22,11 +22,14 @@ immutable to both the provisioner and Caddy. Caddy receives read-only access.
 Generate complete, immutable, root-owned Caddy runtime generations below
 `/etc/caddy/generations/<generation-id>/`. Each generation contains a manifest
 of exact file digests, the pinned Caddy binary, Caddy-only environment, complete
-adapted base-and-tenant configuration, and route metadata. Each tenant route is
-derived only from validated tenant ID, slug, state, and deployment ID and points
-directly to an immutable release; it never follows a provisioner-controlled
-`current` link. Unchanged host payloads may be root-created hard links to the
-same immutable inodes, but every generation is independently manifest-verified.
+adapted base-and-tenant configuration, and route metadata. Each canonical
+tenant route is derived only from validated tenant ID, state, and deployment ID
+and points directly to an immutable release; it never follows a
+provisioner-controlled `current` link. A separate alias route is derived from
+the validated slug and tenant ID and can return only the fixed platform
+redirect defined by ADR 0023. It cannot serve or proxy the release. Unchanged
+host payloads may be root-created hard links to the same immutable inodes, but
+every generation is independently manifest-verified.
 Validate the complete candidate with its own binary and environment, atomically
 replace one root-owned active-generation reference, and reload or restart Caddy
 as the transaction declares. If activation fails, restore the preceding
@@ -83,21 +86,22 @@ backup, audit, logs, or diagnostic artifacts. Garbage collection limits the
 number of retired copies of secret-bearing inputs as well as disk consumption.
 
 An undeployed tenant has authoritative desired state but no deployment record,
-release, or route. Its first successful `deploy` operation creates those
-artifacts and changes desired state to `active` through the ordinary activation
-transaction.
+release, canonical content route, or slug alias route. Its first successful
+`deploy` operation creates those artifacts and changes desired state to
+`active` through the ordinary activation transaction.
 
 Serialize creation, activation, rollback, rename, suspension, archival,
 restoration, deletion, and reconciliation with one root-owned publication lock.
-Creation and rename acquire the exclusive tenant-state lock before checking
-tenant ID and slug uniqueness and hold it through the durable manifest commit.
-The uniqueness decision is therefore part of the root-owned state transaction,
-not an advisory provisioner check; no second create or rename can reserve the
-same slug between validation and commit. Record intent before changing the
-active reference so reconciliation can finish or reverse an interrupted
-operation. Backups take a shared tenant-state lock while publication and
-reconciliation take it exclusively, preventing a snapshot from combining
-incompatible content and manifest generations.
+Creation allocates the root-generated tenant ID and both creation and rename
+acquire the exclusive tenant-state lock before checking slug uniqueness. They
+hold it through the durable manifest commit. The uniqueness decision is
+therefore part of the root-owned state transaction, not an advisory provisioner
+check; no second create or rename can reserve the same slug between validation
+and commit. Record intent before changing the active reference so
+reconciliation can finish or reverse an interrupted operation. Backups take a
+shared tenant-state lock while publication and reconciliation take it
+exclusively, preventing a snapshot from combining incompatible content and
+manifest generations.
 
 Whenever an operation needs more than one host lock, acquire them only in this
 global order: export lock, publication lock, then tenant-state lock. Ordinary
@@ -260,4 +264,5 @@ closed on interruption.
 ## References
 
 - [0016: Model static publication as an untrusted boundary](0016-model-static-publication-threats.md)
+- [0023: Separate reusable slugs from immutable tenant origins](0023-separate-reusable-slugs-from-tenant-origins.md)
 - [Static-publication threat model](../threat-model/static-publication.md)

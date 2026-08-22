@@ -17,11 +17,17 @@ for `create`, `deploy`, `rollback`, `suspend`, `resume`, `rename`, `export`,
 `archive`, `restore`, `delete`, and `reconcile`.
 
 The client connects through the existing restricted administrative SSH path and
-transfers manifests and archives into a dedicated non-public intake boundary.
-It never edits live host files. Host-side commands accept structured inputs,
-return machine-readable results, and require a caller-supplied UUIDv7
-correlation ID. Reusing a correlation ID and request converges on the same
-result rather than duplicating releases or audit events.
+transfers structured operation requests, manifests, and archives into a
+dedicated non-public intake boundary. It never edits live host files. Host-side
+commands accept structured inputs, return machine-readable results, and require
+a caller-supplied UUIDv7 correlation ID. Reusing a correlation ID and request
+converges on the same result rather than duplicating releases or audit events.
+
+The `create` request supplies a slug and quotas but no tenant ID. The root
+activator generates that immutable ID and returns the resulting canonical
+manifest and UUID-derived tenant origin. Later operations identify the tenant
+by that ID; a slug is a mutable alias and is never accepted as proof of tenant
+identity or authority.
 
 Keep manifest validation, archive validation, lifecycle orchestration, and
 privileged activation behind transport-independent Python interfaces. The SSH
@@ -59,3 +65,4 @@ idempotence or audit requirements.
 - [0002: Use Ansible for durable host configuration](0002-use-ansible.md)
 - [0006: Separate the control plane and provisioner](0006-separate-control-plane-provisioner.md)
 - [0017: Atomically activate immutable static releases](0017-atomically-activate-static-releases.md)
+- [0023: Separate reusable slugs from immutable tenant origins](0023-separate-reusable-slugs-from-tenant-origins.md)

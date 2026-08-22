@@ -1,0 +1,135 @@
+# 0023: Separate reusable slugs from immutable tenant origins
+
+- Status: accepted
+- Date: 2026-08-22
+
+## Context
+
+Milestone 3 originally derived each tenant's content-serving hostname from its
+mutable public slug. Reassigning such a slug to another tenant would also
+reassign the browser origin. Service-worker registrations and browser storage
+can outlive a route, certificate, tenant, or quarantine period, so the previous
+tenant's client-side state could affect a later tenant at the same origin.
+
+Permanently tombstoning every published slug would prevent that cross-tenant
+handoff, but it would turn desirable human names into an ever-shrinking
+security namespace. Releasing a name would then require an operator to judge
+whether the previous tenant had used it enough to justify permanent retention.
+Slug reprovisioning is a product requirement, so a mutable human identifier
+cannot also be the tenant's browser security identity.
+
+## Decision
+
+Give every tenant two distinct public identifiers:
+
+- The **canonical tenant origin** is
+  `t-<tenant-uuid-without-hyphens>.<tenant-origin-suffix>`. The root activator
+  generates the immutable UUIDv7 tenant ID during `create`; a caller cannot
+  choose or replace it. Tenant-controlled content and headers are served only
+  from this hostname. The configured tenant-origin suffix must make every such
+  hostname a distinct registrable domain according to supported browsers.
+- The **slug alias** is `<slug>.lowerduckpond.net`. It is a reusable,
+  platform-controlled navigation handle, not a tenant origin. No uploaded
+  bytes, tenant headers, tenant redirect target, or tenant JavaScript are ever
+  served from it.
+
+For an active tenant, an exact `GET` or `HEAD` for `/` with no query at the
+current slug alias receives a root-generated `302` redirect to `/` at the
+tenant's canonical origin. The response uses `Cache-Control: no-store` and
+`Referrer-Policy: no-referrer`, sets no cookie, and has only a fixed inert
+platform body. Other paths, queries, methods, unknown aliases, and aliases for
+non-active tenants receive the same generic platform `404` without a tenant
+destination. The alias service does not register service workers or hold
+authentication state. Platform authentication cookies remain host-only and
+sensitive ones use the `__Host-` prefix, so they are not sent to sibling slug
+aliases. Alias access logs retain only a sanitized hostname, method class,
+status, and timing; they discard raw paths, queries, `Cookie`, `Authorization`,
+and `Referer` before persistence.
+
+The redirect generator accepts only the root-owned slug-to-tenant mapping and
+derives the destination from the stored tenant ID and configured suffix. DNS
+aliases, reverse-proxying tenant bytes through the slug hostname, arbitrary
+redirect destinations, and path or query forwarding are prohibited because
+they would preserve the recyclable hostname as a security or data-transfer
+boundary.
+
+One complete Caddy runtime generation contains both route classes:
+
+- a canonical content route from the immutable tenant hostname to the exact
+  validated release; and
+- a platform alias route from the current slug to the derived canonical
+  hostname.
+
+Activation, suspension, archival, restoration, deletion, rename, and
+reconciliation commit both route classes under the existing publication
+transaction. Suspension and archival remove both routes. Restore republishes
+both for the same tenant ID. Rename changes only the alias mapping; the
+canonical origin and content route remain stable. Once rename or deletion has
+durably removed an alias mapping, the old slug is eligible for another tenant
+without waiting for or proving browser cleanup. Milestone 4 may add a
+deterministic administrative grace period, but it is product policy rather than
+a security requirement.
+
+Tenant IDs and canonical hostnames are never reassigned. The deletion audit
+tombstone records the retired tenant ID for evidence, but it does not reserve
+the tenant's former slugs. A restore of the same archived tenant preserves its
+tenant ID and canonical origin; importing content as a new tenant creates a
+new identity and origin.
+
+The friendly alias is not a permanent content URL. Operators and the later
+portal may display it for discovery, while exports and status records retain
+the canonical tenant identity. A conforming cache must not retain the alias
+redirect, but a stale or non-conforming client can at worst reach the old,
+separate canonical origin; it cannot give the old tenant control of the new
+tenant's origin.
+
+## Consequences
+
+Slugs can be allocated by deterministic availability and lifecycle rules
+without asking whether a previous site deserves to consume a scarce name
+forever. Historical audit remains complete without participating in future
+slug allocation. The permanent namespace contains only non-semantic UUID-based
+origins, so consuming one does not deny another tenant a desirable name.
+
+Visitors see the canonical hostname after following a friendly alias. Deep
+links use the canonical hostname because the alias intentionally redirects
+only its bare root. Search, bookmarks, and browser storage attach to the stable
+tenant identity rather than its mutable display name.
+
+The Caddy route model and tests become slightly broader because every active
+tenant has a canonical content route and a platform alias route. In return,
+rename no longer changes the content origin, and slug reuse no longer requires
+an origin tombstone registry, browser cleanup ceremony, or subjective operator
+exception.
+
+The UUID-based hostname is an identifier rather than a secret. Knowing it does
+not grant access or authority. Custom domains remain a later feature with a
+separate ownership-transfer and browser-state policy.
+
+## Alternatives considered
+
+Permanently tombstoning published slugs was rejected because it creates scarce
+names, unbounded historical allocation state, and subjective release pressure.
+A finite quarantine plus `Clear-Site-Data` was rejected because offline clients
+may never receive the network response and service-worker state is persistent.
+Changing DNS, certificates, IP addresses, CNAME targets, or reverse-proxy
+backends was rejected because none changes the origin in the browser's URL.
+
+Putting tenant content at a slug plus generation suffix would permit base-slug
+reuse, but rename would either change the content origin or leave a stale slug
+inside the canonical name. A stable UUID-derived origin keeps lifecycle and
+browser identity aligned. Sandboxing all tenant pages at a shared or reusable
+origin was rejected because it would break ordinary static-site navigation,
+storage, workers, and compatibility while creating a much larger browser
+policy surface.
+
+## References
+
+- [0016: Model static publication as an untrusted boundary](0016-model-static-publication-threats.md)
+- [0017: Atomically activate immutable static releases](0017-atomically-activate-static-releases.md)
+- [0018: Version the static tenant manifest contract](0018-version-static-tenant-manifests.md)
+- [0021: Define static tenant lifecycle semantics](0021-define-static-tenant-lifecycle-semantics.md)
+- [Service Workers](https://w3c.github.io/ServiceWorker/)
+- [Clear Site Data](https://w3c.github.io/webappsec-clear-site-data/)
+- [Storage Standard](https://storage.spec.whatwg.org/)
+- [Building Protocols with HTTP](https://httpwg.org/specs/rfc9205.html#redirection)

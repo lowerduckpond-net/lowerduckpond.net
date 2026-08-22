@@ -107,9 +107,14 @@ Caddy is the only public web entry point. It:
 
 - Redirects HTTP to HTTPS.
 - Terminates TLS.
-- Serves static tenant directories directly.
+- Serves static tenant directories directly only from immutable canonical tenant
+  origins.
+- Redirects reusable platform-controlled slug aliases to canonical tenant
+  origins without serving or proxying tenant bytes from the alias.
 - Proxies approved dynamic tenants to loopback-only container ports or sockets.
 - Emits structured access logs tagged with the requested hostname and resolved tenant.
+- Omits raw path, query, cookie, authorization, and referrer values from slug
+  alias logs.
 - Serves the provider portal and `lowerduckpond.com` as distinct virtual hosts.
 
 The routing configuration is generated from tenant manifests. A bad tenant
@@ -126,13 +131,16 @@ write active routes.
 A static tenant receives:
 
 - A unique immutable tenant ID and mutable public slug.
+- An immutable UUID-derived canonical content origin and a reusable
+  `<slug>.lowerduckpond.net` platform alias.
 - Root-owned immutable releases that neither the provisioner nor Caddy can
   modify after validation.
 - Read-only content access from Caddy through a root-generated route that names
   one exact release.
 - File-count and storage quotas.
-- A generated route in a tenant namespace where each mutually untrusted tenant
-  is a distinct registrable domain according to supported browsers.
+- A generated canonical route in a tenant namespace where each mutually
+  untrusted tenant is a distinct registrable domain according to supported
+  browsers.
 - No executable server-side code.
 
 Static sites are inexpensive enough to remain online even when lightly visited. Lifecycle decisions should therefore be based primarily on owner activity and explicit renewal, not page views.
@@ -205,13 +213,21 @@ unversioned local binary.
 
 Do not publish tenant-controlled content beneath `lowerduckpond.net`: sibling
 subdomains can set parent-domain cookies that reach the platform and one
-another. Before Milestone 3 publication, provision an operator-owned tenant
-namespace where every tenant hostname is a distinct registrable domain under
-the Public Suffix List behavior of supported browsers. This may use a
-project-controlled private suffix after browser recognition or another source
-of distinct registrable tenant domains. A separate shared registrable domain
-without that boundary protects the platform but does not isolate tenants from
-one another.
+another. A `<slug>.lowerduckpond.net` hostname is therefore only a
+platform-controlled, non-cached redirect from its bare root to the tenant's
+canonical origin. It never serves uploaded content or accepts a tenant-selected
+destination, and its slug may be assigned to another tenant after rename or
+deletion.
+
+Before Milestone 3 publication, provision an operator-owned tenant namespace
+where every `t-<tenant-uuid-without-hyphens>.<tenant-origin-suffix>` canonical
+hostname is a distinct registrable domain under the Public Suffix List behavior
+of supported browsers. This may use a project-controlled private suffix after
+browser recognition or another source of distinct registrable tenant domains.
+A separate shared registrable domain without that boundary protects the
+platform but does not isolate tenants from one another. Tenant IDs and their
+canonical origins are immutable and never reassigned; only their friendly slug
+aliases are mutable and recyclable.
 
 `lowerduckpond.com` is configured as an ordinary independent tenant hostname and receives its own automatically managed certificate. Custom tenant domains can be considered later; they are not required for the initial service.
 

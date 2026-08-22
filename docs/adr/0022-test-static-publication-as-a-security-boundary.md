@@ -15,7 +15,8 @@ would discover security and destructive-lifecycle failures too late.
 Deliver Milestone 3 through these reviewable layers:
 
 1. threat model, ADRs, schema, fixtures, and test matrix;
-2. manifest parsing, validation, slug rules, and desired/observed state;
+2. manifest parsing, validation, slug and immutable-origin rules, and
+   desired/observed state;
 3. hostile archive validation and deterministic portable export;
 4. root-owned immutable release activation and generated Caddy routing;
 5. lifecycle commands, reconciliation, rollback, and audit records;
@@ -33,10 +34,13 @@ reload, backup overlap, restore, and reboot-relevant service configuration.
 Manifest fixtures include duplicate YAML keys for lifecycle, deployment, and
 quota fields and prove rejection occurs before schema validation and canonical
 JSON generation. Slug fixtures cover 1- and 63-byte valid labels, reject empty
-and 64-byte labels, and verify the complete derived hostname limit. They also
+and 64-byte labels, and verify the complete alias-hostname limit. They also
 append LF, CR, CRLF, NUL, spaces, non-ASCII, and other control characters and
 prove both schema validation and the independent root ASCII `fullmatch` reject
-them before uniqueness or persistence.
+them before uniqueness or persistence. Tenant-ID fixtures prove `create`
+rejects a caller-supplied ID, generates a UUIDv7, derives the canonical
+hostname without hyphens, and enforces its complete DNS length independently
+of the alias.
 
 An installed-host concurrency test pauses tenant activation while Ansible has a
 candidate Caddy base transaction ready to commit, then proves that only one
@@ -107,7 +111,7 @@ aliased regions, gaps, and every checked-arithmetic boundary.
 
 Lifecycle concurrency tests delay an active-state rollback until after
 suspension commits and prove that it can update only the remembered deployment,
-leaves the route absent, and requires a later explicit `resume` to publish.
+leaves both routes absent, and requires a later explicit `resume` to publish.
 They also race two creates, and a create against a rename, for the same slug and
 prove that exactly one root-owned state transaction can commit the name.
 Table-driven tests cover every lifecycle operation against every absent,
@@ -115,6 +119,25 @@ undeployed, active, suspended, and archived source, including idempotent
 same-state requests and every fail-closed cell. Deploy and rollback while
 suspended must change only the remembered deployment; rename while archived
 must fail rather than invalidate bound archive evidence.
+
+Origin tests activate tenant A, record its canonical UUID-derived hostname,
+rename it, and assign the released slug to tenant B. They prove B's alias
+redirects to a different canonical origin while A's content route and browser
+origin remain unchanged. Repeat the handoff after ordinary deletion and prove
+the deleted canonical hostname is not routed or reassigned. Suspension and
+archive remove both route classes, while resume and restore republish both for
+the same tenant ID.
+
+Alias tests prove only an exact `GET` or `HEAD` for a current active slug's bare
+root receives the fixed `302`; it includes `Cache-Control: no-store` and
+`Referrer-Policy: no-referrer`, sets no cookie, and derives its destination only
+from root-owned tenant state. Paths, queries, other methods, unknown or inactive
+slugs, and attempts to supply a redirect target never reach tenant content.
+Browser acceptance verifies no tenant can register a service worker or store
+tenant-controlled state at a slug alias and that alias reassignment exposes no
+state from the preceding canonical origin. Logging tests send sensitive path,
+query, cookie, authorization, and referrer values to aliases and prove none
+persist in access logs or diagnostics.
 Export concurrency tests overlap snapshot capture with deploy, rollback,
 rename, suspension, and garbage collection. Every resulting bundle must contain
 a canonical manifest and immutable release from the same generation, and the
@@ -160,11 +183,11 @@ manifest and route or the archived manifest and absent route, never `active`
 desired state with archival intent ignored.
 
 After CI and disposable-host acceptance pass, publish a reserved production
-canary in the approved origin-isolated tenant namespace, verify browser
-registrable-domain behavior, HTTPS, rollback, suspension, restore, backup
-recovery, and idempotence, and remove all canary state through the same operator
-interface. Dynamic or destructive isolation tests remain off the production
-host.
+canary in the approved origin-isolated tenant namespace. Verify browser
+registrable-domain behavior, the platform-only alias redirect, canonical HTTPS,
+rollback, suspension, restore, backup recovery, and idempotence, and remove all
+canary state through the same operator interface. Dynamic or destructive
+isolation tests remain off the production host.
 
 ## Consequences
 
@@ -189,4 +212,5 @@ rejected because a disposable environment can exercise them safely.
 
 - [0016: Model static publication as an untrusted boundary](0016-model-static-publication-threats.md)
 - [0017: Atomically activate immutable static releases](0017-atomically-activate-static-releases.md)
+- [0023: Separate reusable slugs from immutable tenant origins](0023-separate-reusable-slugs-from-tenant-origins.md)
 - [Static-publication threat model](../threat-model/static-publication.md)

@@ -12,18 +12,22 @@ state that the Milestone 4 scheduler cannot safely adopt.
 
 ## Decision
 
-Create establishes an `undeployed` tenant with no deployment or public route.
-The first successful deploy installs an immutable release and moves it to
-`active`; creation and deployment remain independently idempotent operations.
+Create establishes an `undeployed` tenant with a root-generated immutable ID,
+a reserved mutable slug, and no deployment or public route. The first
+successful deploy installs an immutable release and moves it to `active`;
+creation and deployment remain independently idempotent operations.
 
 Retain the active immutable release and its two immediately preceding releases.
 A successful activation triggers garbage collection only after the new route is
 serving and its state is durably recorded.
 
-Suspension removes the tenant route and therefore returns the same generic 404
-as an unknown tenant hostname; it preserves manifests, releases, and the last
-active deployment. Resume republishes that deployment. Rename atomically
-replaces the derived route while preserving the tenant ID.
+Suspension removes both the canonical content route and platform slug alias and
+therefore returns the same generic response as an unknown hostname; it
+preserves manifests, releases, the immutable tenant origin, and the last active
+deployment. Resume republishes that deployment and both routes. Rename
+atomically replaces only the platform alias while preserving the tenant ID and
+canonical content origin. After commit, the previous slug is available for
+another tenant.
 
 Rollback evaluates lifecycle state again while holding the publication lock.
 For an active tenant, it selects and publishes the retained release through the
@@ -37,7 +41,8 @@ state. Export produces a portable bundle without changing lifecycle state.
 Archive derives the proposed canonical `archived` manifest from the current
 manifest and selected deployment, creates and verifies a portable bundle for
 that exact manifest and release in durable archive storage, then commits the
-archived state and removes the public route through one lifecycle transaction.
+archived state and removes both public routes through one lifecycle
+transaction.
 Its root-owned archive record binds the tenant ID, selected deployment ID and
 content digest, canonical archived-manifest digest, portable-bundle digest and
 size, and durable object identity. Restore validates that bundle and creates a
@@ -50,9 +55,10 @@ deployment, and release are still current. It then prepares and syncs the
 proposed `archived` manifest and a complete Caddy runtime generation without the
 tenant. Its write-ahead intent names the preceding active manifest and runtime
 generation, the proposed archived manifest, the verified archive record, and
-the proposed no-route runtime generation. The activator then selects and reloads
-the no-route generation, durably commits desired and observed archived state
-plus the audit event, and only then clears intent. Reconciliation must inspect
+the proposed no-route runtime generation. The activator then selects and
+reloads the generation containing neither the canonical content route nor its
+slug alias, durably commits desired and observed archived state plus the audit
+event, and only then clears intent. Reconciliation must inspect
 archive intent before ordinary desired-state reconciliation and converge on
 either the complete preceding active generation or the complete archived
 generation; it may never republish merely because an interrupted transaction
@@ -79,6 +85,12 @@ history fails closed and requires a verified archive through the ordinary path.
 The never-deployed exception is idempotent by correlation ID, fully audited,
 and does not invoke or grant the emergency-deletion authority.
 
+The ordinary archived deletion path also releases the slug after its archive
+checks and deletion audit commit. Neither deletion path makes the immutable
+tenant ID or canonical hostname available to a new tenant. The audit tombstone
+records released slugs as history but does not participate in future slug
+availability checks.
+
 An emergency deletion without archive evidence uses a separate root-only
 operator command that is absent from the provisioner's sudo allowlist and
 transport-independent worker interface. It is available only through the
@@ -96,17 +108,17 @@ The complete ordinary transition matrix is:
 
 | Operation | Allowed source | Result |
 | --- | --- | --- |
-| `create` | absent | `undeployed`; an existing tenant or slug follows conflict/idempotency rules rather than creating another identity. |
-| `deploy` | `undeployed`, `active` | Installs a new deployment and becomes or remains `active`. |
+| `create` | absent | Generates a tenant ID and becomes `undeployed`; an existing live slug follows conflict/idempotency rules rather than creating another identity. |
+| `deploy` | `undeployed`, `active` | Installs a new deployment, publishes both routes, and becomes or remains `active`. |
 | `deploy` | `suspended` | Installs and remembers the new deployment but remains unrouted and `suspended`. |
 | `rollback` | `active` | Selects and publishes a retained prior deployment; remains `active`. |
 | `rollback` | `suspended` | Selects only the remembered deployment; remains unrouted and `suspended`. |
-| `suspend` | `active`, `suspended` | Removes the route and becomes or remains `suspended`. |
-| `resume` | `suspended`, `active` | Publishes the remembered deployment and becomes or remains `active`; no other operation may leave `suspended`. |
-| `rename` | `undeployed`, `active`, `suspended` | Changes the slug without changing lifecycle state; only `active` receives a replacement route. |
+| `suspend` | `active`, `suspended` | Removes both routes and becomes or remains `suspended`. |
+| `resume` | `suspended`, `active` | Publishes the remembered deployment and both routes and becomes or remains `active`; no other operation may leave `suspended`. |
+| `rename` | `undeployed`, `active`, `suspended` | Changes the reusable alias without changing tenant ID, canonical origin, or lifecycle state; only `active` receives a replacement alias route, and the old slug is released after commit. |
 | `export` | `active`, `suspended` | Snapshots the selected deployment without changing state. |
 | `export` | `archived` | Revalidates and returns the bound durable bundle without changing state. |
-| `archive` | `active`, `suspended` | Captures and verifies the selected deployment, removes any route, and becomes `archived`. |
+| `archive` | `active`, `suspended` | Captures and verifies the selected deployment, removes both routes, and becomes `archived`. |
 | `archive` | `archived` | Revalidates the existing bound durable bundle and remains `archived`. |
 | `restore` | `archived` | Validates the bound bundle as a new deployment and becomes `active`. |
 | `delete` | never-deployed `undeployed`, current-evidence `archived` | Applies the corresponding audited ordinary deletion rule and removes desired state. |
@@ -122,11 +134,11 @@ matrix.
 
 ## Consequences
 
-Suspended sites do not disclose whether a hostname exists, and rollback remains
-cheap because releases are immutable. A suspended tenant can select its next
-release safely without becoming public. Retaining three releases uses bounded
-additional storage that must be included in disk monitoring and release garbage
-collection.
+Suspended sites do not disclose whether an alias or canonical hostname exists,
+and rollback remains cheap because releases are immutable. A suspended tenant
+can select its next release safely without becoming public. Retaining three
+releases uses bounded additional storage that must be included in disk
+monitoring and release garbage collection.
 
 Archive storage and audit records become prerequisites for ordinary deletion of
 any tenant that has ever been deployed. The separately authenticated emergency
@@ -143,6 +155,10 @@ tenant is either active with its preceding route or archived with no route.
 Unused slug reservations can be removed without manufacturing an empty archive,
 while authoritative history—not caller-supplied lifecycle state—keeps the
 exception unavailable to any tenant that has ever stored content.
+
+Published slugs are also reusable after a committed rename or deletion because
+they never served tenant-controlled content. Browser state remains bound to the
+old tenant's UUID-derived canonical origin, which is not reassigned.
 
 ## Alternatives considered
 
@@ -162,3 +178,4 @@ reserving a slug before its first deployment.
 - [0018: Version the static tenant manifest contract](0018-version-static-tenant-manifests.md)
 - [0019: Constrain static archives and exports](0019-constrain-static-archives-and-exports.md)
 - [0020: Use a trusted-workstation static operator interface](0020-use-a-trusted-workstation-static-operator-interface.md)
+- [0023: Separate reusable slugs from immutable tenant origins](0023-separate-reusable-slugs-from-tenant-origins.md)

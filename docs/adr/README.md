@@ -28,3 +28,4 @@ Accepted decisions:
 - [0020: Use a trusted-workstation static operator interface](0020-use-a-trusted-workstation-static-operator-interface.md)
 - [0021: Define static tenant lifecycle semantics](0021-define-static-tenant-lifecycle-semantics.md)
 - [0022: Test static publication as a security boundary](0022-test-static-publication-as-a-security-boundary.md)
+- [0023: Separate reusable slugs from immutable tenant origins](0023-separate-reusable-slugs-from-tenant-origins.md)
