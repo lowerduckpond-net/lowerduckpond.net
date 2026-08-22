@@ -153,7 +153,12 @@ persist in access logs or diagnostics.
 Export concurrency tests overlap snapshot capture with deploy, rollback,
 rename, suspension, and garbage collection. Every resulting bundle must contain
 a canonical manifest and immutable release from the same generation, and the
-captured release must remain available until export construction completes.
+captured release must remain available until export construction completes. An
+ordinary export must bundle the captured current manifest. An archive from
+either active or suspended must retain that source manifest only as private
+compare-and-swap evidence and put the derived proposed archived manifest in
+`manifest.json`. Mutating any source field before commit must abort and remove
+or quarantine the unreferenced object without creating an archive record.
 They flood concurrent export and archive requests, leave work interrupted at
 each staging phase, and fill both byte and inode allowances. Tests prove one
 global construction slot, one unacknowledged result, hard spool and free-space
@@ -170,7 +175,8 @@ Export fixtures give tenant content each reserved metadata basename and prove
 that round-trip restore preserves it below `content/`. Negative fixtures cover
 metadata outside the versioned envelope, duplicate metadata, unknown envelope
 entries, checksum mismatch, and using an export as an ordinary deployment ZIP.
-Golden export fixtures assert the complete ZIP bytes, including JSON and
+Golden ordinary-export and archive fixtures assert the complete ZIP bytes,
+including their respective current or proposed archived manifest, JSON and
 checksum serialization, member and central-directory order, timestamps, flags,
 modes, CRC and size fields, lack of extras/comments/descriptors/ZIP64, and final
 archive digest. Repeated processes and supported hosts must produce the same

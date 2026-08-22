@@ -43,6 +43,9 @@ manifest and selected deployment, creates and verifies a portable bundle for
 that exact manifest and release in durable archive storage, then commits the
 archived state and removes both public routes through one lifecycle
 transaction.
+The snapshot retains the active or suspended source manifest separately for
+final compare-and-swap revalidation; the bundle's `manifest.json` is always the
+proposed archived manifest, not that source manifest.
 Its root-owned archive record binds the tenant ID, selected deployment ID and
 content digest, canonical archived-manifest digest, portable-bundle digest and
 size, and durable object identity. Restore validates that bundle and creates a

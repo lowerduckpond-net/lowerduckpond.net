@@ -102,19 +102,32 @@ hours or until the trusted client acknowledges its verified download, whichever
 comes first; admission rejects another export while that slot is occupied.
 Retries with the same correlation ID return the established result. Archive
 construction uses the same lock, spool, admission accounting, and cleanup. It
-captures the source manifest and release under shared tenant-state, releases
-that lock to build and move the verified bundle into durable archive storage,
-then—without releasing the export lock—acquires publication followed by
-exclusive tenant-state. It revalidates the exact source manifest, deployment,
-and release digests before committing the proposed archived generation. If any
-source changed, archive records an aborted result and retains no authorizing
-archive record; it never applies a stale snapshot. It immediately removes the
-unreferenced durable object, or records it in a root-owned quarantine ledger for
-bounded retry and garbage collection if object deletion fails. Quarantined
-objects grant no restore or deletion authority; archive admission remains
-closed while the quarantine ledger is nonempty, so repeated aborts cannot grow
-it without bound. The provisioner cannot create files directly in the spool or
-bypass these limits.
+captures the source manifest, its canonical digest, and the selected release
+under shared tenant-state. While still holding that lock, root derives the
+proposed canonical `archived` manifest by changing only the allowed lifecycle
+fields and stores both manifests separately in the non-writable snapshot. The
+source manifest is private compare-and-swap evidence and never becomes the
+archive bundle's `manifest.json`; the proposed archived manifest is the bundle
+manifest.
+
+Archive releases tenant-state to build and move the verified bundle into
+durable archive storage, then—without releasing the export lock—acquires
+publication followed by exclusive tenant-state. It revalidates the exact source
+manifest, deployment, and release digests before committing that already
+bundled proposed archived manifest and its archive record. The archive record
+binds the proposed archived-manifest digest, selected deployment and content
+digests, portable-bundle digest and size, and durable object identity. The
+bundle alone grants no deletion authority before this transaction commits the
+record.
+
+If any source changed, archive records an aborted result and retains no
+authorizing archive record; it never applies a stale snapshot. It immediately
+removes the unreferenced durable object, or records it in a root-owned
+quarantine ledger for bounded retry and garbage collection if object deletion
+fails. Quarantined objects grant no restore or deletion authority; archive
+admission remains closed while the quarantine ledger is nonempty, so repeated
+aborts cannot grow it without bound. The provisioner cannot create files
+directly in the spool or bypass these limits.
 
 Produce a portable ZIP export with this fixed versioned envelope:
 
@@ -128,14 +141,17 @@ lowerduckpond-export-v1/
     └── ...
 ```
 
-`format.json` identifies the export format and version, `manifest.json` is the
-canonical tenant manifest from the snapshot, and `checksums.sha256` lists those
-two files and every regular file below `content/` in normalized bytewise path
-order. Tenant files always appear below `content/`; they can therefore use any
-otherwise valid path without colliding with envelope metadata. Restore rejects
-entries outside the single envelope root, unknown or duplicate metadata,
-missing required entries, and checksum or canonicalization failures before it
-passes the `content/` subtree through the ordinary deployment validator.
+`format.json` identifies the export format and version. For an ordinary export,
+`manifest.json` is the current canonical manifest captured in the snapshot. For
+archive, it is the separately snapshotted proposed canonical `archived`
+manifest, never the active or suspended source manifest retained for
+compare-and-swap. `checksums.sha256` lists those two files and every regular
+file below `content/` in normalized bytewise path order. Tenant files always
+appear below `content/`; they can therefore use any otherwise valid path
+without colliding with envelope metadata. Restore rejects entries outside the
+single envelope root, unknown or duplicate metadata, missing required entries,
+and checksum or canonicalization failures before it passes the `content/`
+subtree through the ordinary deployment validator.
 
 Deployment uploads remain the flat, root-`index.html` ZIP format; a portable
 export is not accepted as a deployment archive without the explicit restore
@@ -202,6 +218,12 @@ longer part of export does not block lifecycle changes. Global bundle
 construction is intentionally serialized on the small initial host, and an
 unacknowledged result can delay later exports until it is downloaded or expires,
 in exchange for a strict disk and inode bound.
+
+Archive snapshots retain two bounded manifest files with different authority:
+the source manifest authorizes only final compare-and-swap revalidation, while
+the proposed archived manifest is portable evidence inside the bundle. This
+small duplication prevents a source-state bundle from being mistaken for the
+exact archived generation required by ordinary deletion.
 
 ## Alternatives considered
 

@@ -392,6 +392,9 @@ Implement idempotent commands or jobs for:
   its complete root-owned history proves no deployment ever existed.
 - Capture each export's canonical manifest and immutable release into a
   root-owned snapshot under the shared tenant-state lock before bundling it.
+- For archive, retain the active or suspended source manifest only for final
+  compare-and-swap and put the separately derived proposed archived manifest in
+  the durable bundle, with its digest bound by the archive record.
 - Serialize export and archive construction globally; enforce one snapshot,
   one unacknowledged result, a 256-MiB/5,120-inode spool, a 120-MiB output cap,
   the host free-space reserve, and bounded acknowledgement/expiry cleanup.
