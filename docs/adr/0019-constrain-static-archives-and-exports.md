@@ -19,6 +19,15 @@ ambiguity, empty or control-character path components, duplicate normalized
 names, case-folding collisions, symlinks, encrypted entries, and every special
 file type.
 
+Decode flagged names as strict UTF-8 and require unflagged names to be ASCII.
+Normalize paths to Unicode NFC before every comparison. Limit each normalized
+component to 255 UTF-8 bytes, each relative path to 1,024 UTF-8 bytes, and depth
+to 32 components. Reject `.` and `..`, NUL, leading separators, trailing or
+repeated separators except the single directory marker, and any change from
+backslash interpretation. Count every distinct implicit parent directory toward
+the entry ceiling and reject file/directory or explicit/implicit collisions
+after NFC and case folding.
+
 Allow only method `0` (stored) and method `8` (Deflate) in deployment ZIPs.
 Reject BZIP2, LZMA, Deflate64, vendor methods, and unknown methods before
 initializing any entry decoder. A bounded structural reader examines the end
@@ -31,6 +40,16 @@ flag; Deflate entries may additionally set a valid compression-option value.
 Reject data descriptors and every other general-purpose flag, and require a
 flagged UTF-8 name for any non-ASCII filename. The general ZIP library and
 decompressor run only after this structural gate.
+
+Require one single-disk end record at the physical end of the snapshot, no
+prepended or trailing data, an at-most-8-MiB central directory, and empty entry
+and archive comments. Limit each local and central extra-field area to 1 KiB;
+permit only structurally valid extended-timestamp (`0x5455`) and NTFS-timestamp
+(`0x000a`) fields and discard their values. Reject ZIP64 and every other extra
+field. Central-directory counts must equal parsed records. Local headers and
+compressed data regions must lie wholly before the central directory, neither
+overlap nor alias one another or metadata, and cover exactly the declared entry
+data. Checked arithmetic precedes every offset-plus-length operation.
 
 Apply these initial limits before and during root-side extraction:
 
@@ -74,7 +93,7 @@ in total. The activator accounts actual blocks and inodes already present in
 the root-owned export spool before admitting work and enforces aggregate hard
 ceilings of 256 MiB and 5,120 inodes as well as the configured host free-space
 reserve. A snapshot may contain at most the accepted 100 MiB and 5,000 tenant
-entries; encoded bundle output has a separate 105 MiB ceiling and never becomes
+entries; encoded bundle output has a separate 120 MiB ceiling and never becomes
 visible until complete and verified. Exceeding any limit fails closed.
 
 Incomplete snapshots and outputs are removed on every terminal path and during
@@ -159,8 +178,8 @@ general-purpose extraction helper. Large individual media files and archives
 that rely on Unix links or executable bits are deliberately unsupported.
 
 Stored portable bundles trade network and archive-storage size for reproducible
-bytes independent of zlib versions. The 100-MiB content and 105-MiB encoded
-output ceilings keep that cost bounded.
+bytes independent of zlib versions. The 100-MiB content and 120-MiB encoded
+output ceilings include the bounded path and ZIP-header overhead.
 
 The limits are platform policy and therefore belong in the schema and tests,
 not scattered constants. Raising them requires reviewing disk, backup, and

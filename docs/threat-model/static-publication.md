@@ -100,7 +100,7 @@ record.
 | --- | --- |
 | Path traversal or absolute extraction | Normalize and validate every path twice; extract through directory-relative, no-follow operations; hostile fixtures must fail. |
 | Symlink, hard-link, device, FIFO, socket, or permission abuse | Accept only regular files/directories; normalize modes; inspect ZIP metadata and actual created objects. |
-| ZIP bomb, decoder allocation, oversized metadata or entry set, disk or inode exhaustion | Structurally gate bounded ZIP metadata before a decoder, allow only stored and Deflate methods, require matching local and central headers, and constrain the privileged parser by memory, swap, task, descriptor, CPU, and runtime limits. Enforce compressed, expanded, per-file, total-entry, and ratio limits during streaming extraction; count directories as entries and delete failed staging trees. Remove persistent provisioner-writable storage, hard-cap its private ephemeral workspace by aggregate bytes and inodes, bound root snapshots and cleanup, and preserve a host free-space reserve. |
+| ZIP bomb, decoder allocation, oversized or overlapping metadata, deep paths, implicit-directory inflation, disk or inode exhaustion | Structurally gate end, directory, extra-field, offset, region, path-byte, component, and depth bounds before a decoder; count explicit and implicit directories; allow only stored and Deflate methods; require matching local and central headers; and constrain the privileged parser by memory, swap, task, descriptor, CPU, and runtime limits. Enforce compressed, expanded, per-file, total-entry, and ratio limits during streaming extraction and delete failed staging trees. Remove persistent provisioner-writable storage, hard-cap its private ephemeral workspace by aggregate bytes and inodes, bound root snapshots and cleanup, and preserve a host free-space reserve. |
 | Duplicate, Unicode, slash, backslash, case, or export-encoding ambiguity | Normalize first and reject ambiguity and collisions. Generate manifests canonically and define every portable ZIP byte: JSON, checksums, member order, stored encoding, timestamps, flags, modes, metadata, central directory, and archive digest. |
 | Duplicate YAML mapping keys | Reject duplicates during YAML composition, before schema validation or canonical JSON generation can discard the ambiguity. |
 | Platform or cross-tenant cookie poisoning | Keep `lowerduckpond.net` platform-only and require every tenant hostname to be a distinct registrable domain according to supported browser Public Suffix List behavior. |
@@ -178,6 +178,9 @@ Implementation and review must preserve these invariants:
 20. Nested operations acquire export, publication, and tenant-state only in that
     order, never upgrade, and do not queue unbounded waiters. Archive revalidates
     its captured source generation under exclusive state before committing.
+21. ZIP entry names, metadata, offsets, and data regions satisfy explicit byte,
+    depth, count, field, and non-overlap bounds before extraction; implicit
+    directories consume the same entry budget as explicit entries.
 
 ## Residual risks
 

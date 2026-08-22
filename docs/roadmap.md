@@ -344,6 +344,9 @@ Implement idempotent commands or jobs for:
 - Gate ZIP structure with bounded metadata reads, permit only stored and Deflate
   entries, match local and central headers, and run privileged parsing inside
   fixed memory, swap, task, descriptor, CPU, and runtime limits.
+- Bound normalized path, component, depth, central-directory, extra-field, and
+  region layout; count implicit parents and reject all post-normalization
+  collisions before extraction.
 - Revalidate and extract through the narrow root-owned activator.
 - Atomically activate one complete Caddy runtime generation whose manifest binds
   its binary, environment, full configuration, and immutable tenant releases.
@@ -367,7 +370,7 @@ Implement idempotent commands or jobs for:
 - Capture each export's canonical manifest and immutable release into a
   root-owned snapshot under the shared tenant-state lock before bundling it.
 - Serialize export and archive construction globally; enforce one snapshot,
-  one unacknowledged result, a 256-MiB/5,120-inode spool, a 105-MiB output cap,
+  one unacknowledged result, a 256-MiB/5,120-inode spool, a 120-MiB output cap,
   the host free-space reserve, and bounded acknowledgement/expiry cleanup.
 - Wrap portable exports in the versioned `lowerduckpond-export-v1/` envelope,
   with fixed metadata paths and all tenant-controlled files below `content/`.

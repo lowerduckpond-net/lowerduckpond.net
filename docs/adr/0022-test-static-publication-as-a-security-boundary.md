@@ -76,6 +76,15 @@ CRC, or sizes. Installed-host tests exhaust each process limit and verify failed
 staging cleanup, an audit result, no publication, and continued Caddy and backup
 service health.
 
+Path fixtures cover NFC-normalization and case-fold collisions, strict UTF-8 and
+ASCII flag behavior, 255/256-byte components, 1,024/1,025-byte paths, 32/33
+components, explicit and implicit directory accounting, file/directory
+collisions, and all separator and dot-component forms. Structural fixtures
+cover multiple or misplaced end records, prepended/trailing bytes, central
+directories at and over 8 MiB, comments, bounded allowlisted timestamp extras,
+unknown/oversized/malformed extras, ZIP64, record-count mismatch, overlapping or
+aliased regions, gaps, and every checked-arithmetic boundary.
+
 Lifecycle concurrency tests delay an active-state rollback until after
 suspension commits and prove that it can update only the remembered deployment,
 leaves the route absent, and requires a later explicit `resume` to publish.
