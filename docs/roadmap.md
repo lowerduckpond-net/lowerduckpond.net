@@ -362,6 +362,8 @@ Implement idempotent commands or jobs for:
   the host free-space reserve, and bounded acknowledgement/expiry cleanup.
 - Wrap portable exports in the versioned `lowerduckpond-export-v1/` envelope,
   with fixed metadata paths and all tenant-controlled files below `content/`.
+- Canonicalize every portable ZIP field and use stored entries so the same
+  export snapshot has byte-identical output and a reproducible archive digest.
 - Reconcile actual host state against all desired manifests.
 - Permit the provisioner to request validated state changes without granting it
   write access to desired state, observed state, or audit history.

@@ -75,6 +75,12 @@ Export fixtures give tenant content each reserved metadata basename and prove
 that round-trip restore preserves it below `content/`. Negative fixtures cover
 metadata outside the versioned envelope, duplicate metadata, unknown envelope
 entries, checksum mismatch, and using an export as an ordinary deployment ZIP.
+Golden export fixtures assert the complete ZIP bytes, including JSON and
+checksum serialization, member and central-directory order, timestamps, flags,
+modes, CRC and size fields, lack of extras/comments/descriptors/ZIP64, and final
+archive digest. Repeated processes and supported hosts must produce the same
+bytes from the same snapshot.
+
 Lifecycle tests delete a never-deployed reservation through the ordinary
 audited path, then prove that any deployment record or ambiguous history makes
 the same archive-free operation fail closed without requiring or exposing the

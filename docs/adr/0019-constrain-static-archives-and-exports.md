@@ -90,12 +90,43 @@ path. Export does not change site state. Archive and restore use this versioned
 portable bundle; a later Git integration must produce the same validated
 internal deployment artifact.
 
+The v1 bundle has one canonical byte representation. Serialize `format.json`
+and `manifest.json` as the UTF-8 JSON Canonicalization Scheme defined by RFC
+8785, without a byte-order mark and with exactly one trailing LF. The schema
+permits only values that JCS can represent; fail rather than coerce any other
+value. `format.json` contains only the fixed format name and integer version.
+Write lowercase SHA-256 values, two ASCII spaces, and the normalized
+envelope-relative UTF-8 path to `checksums.sha256`, sorted by path bytes and
+terminated by one LF; control characters are already invalid in accepted paths.
+
+Write ZIP members in this order: the three fixed metadata files, the `content/`
+directory, then all descendant directory and regular-file paths in normalized
+UTF-8 byte order. Use stored entries only, not implementation-dependent Deflate
+output. Every member has the fixed DOS timestamp `1980-01-01 00:00:00`, version
+made-by `3.20` (Unix), version-needed `2.0`, general-purpose flag `0x0800`,
+method `0`, disk number and internal attributes `0`, empty extra and comment
+fields, no data descriptor, and precomputed CRC-32 and sizes. External
+attributes encode Unix regular-file mode `0100644`, or directory mode `040755`
+plus the DOS directory bit. The archive has an empty comment, no disk spanning,
+and neither encryption nor ZIP64 metadata. The central directory repeats the
+same order and fixed values. A bundle implementation must reject a value it
+cannot represent canonically rather than substitute environment metadata.
+
+Consequently, the same versioned export snapshot produces byte-identical ZIP
+output and the portable-bundle SHA-256 is a reproducible identifier, not merely
+a checksum of one encoder attempt. A future format may choose compression only
+through a new version with equally complete canonical encoding rules.
+
 ## Consequences
 
 ZIP is familiar to Windows and non-Git users and is available through Python's
 standard library, but the platform must implement validation rather than call a
 general-purpose extraction helper. Large individual media files and archives
 that rely on Unix links or executable bits are deliberately unsupported.
+
+Stored portable bundles trade network and archive-storage size for reproducible
+bytes independent of zlib versions. The 100-MiB content and 105-MiB encoded
+output ceilings keep that cost bounded.
 
 The limits are platform policy and therefore belong in the schema and tests,
 not scattered constants. Raising them requires reviewing disk, backup, and
@@ -121,3 +152,4 @@ need executable or privileged filesystem bits.
 - [0008: Support archive upload before Git deployment](0008-archive-upload-first.md)
 - [0016: Model static publication as an untrusted boundary](0016-model-static-publication-threats.md)
 - [0018: Version the static tenant manifest contract](0018-version-static-tenant-manifests.md)
+- [RFC 8785: JSON Canonicalization Scheme](https://www.rfc-editor.org/rfc/rfc8785)
