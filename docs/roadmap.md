@@ -384,6 +384,9 @@ Implement idempotent commands or jobs for:
 - Reconcile actual host state against all desired manifests.
 - Permit the provisioner to request validated state changes without granting it
   write access to desired state, observed state, or audit history.
+- Bound indirect root-owned growth to 25 tenants, 10 GiB/500,000 release inodes,
+  10,000/64-MiB correlation records, 128 MiB of hash-chained ordinary audit, and
+  60 new IDs/hour; fail closed and rotate audit only after verified backup.
 
 ### End-to-end tests
 

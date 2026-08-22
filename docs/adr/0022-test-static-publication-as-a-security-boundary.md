@@ -60,6 +60,19 @@ the three-generation maximum, host free-space admission, preservation of every
 active/previous/intent/running target, eventual cleanup, and absence of Caddy
 environment or adapted configuration in backups and diagnostics.
 
+Admission tests create concurrent unique tenants, deployments, correlations,
+results, and audit records up to and beyond every global count, byte, inode,
+request-size, reason-size, rate, burst, and host-free-space boundary. They prove
+rejection occurs before staging or desired-state mutation, retries do not spend
+new capacity, hard links are counted once, and busy/rejected floods cannot fill
+audit or journald. Rotation tests verify hash chains and Restic evidence, reject
+unbacked segment removal, deny provisioner rotation and administrator-reserve
+use, and recover interrupted rotation without losing or duplicating evidence.
+Restart and clock-skew tests prove accepted-correlation timestamps reconstruct
+the rolling rate window and cannot reset or refund consumed admission.
+Free-space fixtures exercise both the absolute and percentage block/inode floors
+and prove root-reserved blocks are excluded from admission capacity.
+
 Durability tests record filesystem operations and inject failure after every
 file sync, directory sync, rename, reload, state commit, audit append, and intent
 removal boundary. Reconciliation must select only a fully durable new

@@ -110,6 +110,7 @@ record.
 | Ansible convergence or automatic restart mixes Caddy inputs | Route all mutable binary, environment, base, route, reload, and restart changes through complete runtime generations and the shared publication lock. Before every start, the frozen bootstrap reconciles intent and pins one manifest-verified generation directory. Change the bootstrap only while Caddy is stopped and masked. |
 | Runtime generations exhaust disk or retain secrets indefinitely | Admit at most active, last-known-good, and intent candidate generations; enforce aggregate unique-inode byte/inode and host-free-space bounds; clean unreferenced staging after terminal states and startup; keep environment/config Caddy-only and backup/diagnostic-excluded. |
 | Concurrent or replayed jobs | Serialize publication, bind results to correlation IDs and request digests, and make retries idempotent. |
+| Valid operations indirectly exhaust root-owned state | Enforce host-wide tenant, release byte/inode, correlation record, audit, request/result size, reason, and admission-rate ceilings before staging. Preserve audit in bounded hash-chained segments rotated only after verified off-host backup, with an isolated root-administrator reserve. |
 | Nested locks deadlock or accumulate waiters | Acquire export, publication, and tenant-state only in that global order; never upgrade; return retryable busy before allocating work; revalidate archive source state after its unlocked construction phase. |
 | Delayed rollback undoes suspension | Recheck lifecycle state under the publication lock; while suspended, change only the remembered deployment and require explicit resume before publishing. |
 | Manifest or audit tampering | Keep desired and observed state and append-only audit operations root-owned; allow the provisioner no direct write, replacement, truncation, or deletion authority. |
@@ -187,6 +188,9 @@ Implementation and review must preserve these invariants:
 23. Caddy runtime storage contains at most the active, immediate
     last-known-good, and current-intent candidate generations and remains within
     its aggregate byte, inode, and host-free-space bounds.
+24. A provisioner request cannot cause root-owned tenant, release, correlation,
+    audit, request/result, reason, or rate limits to be exceeded; audit evidence
+    is never overwritten or rotated without verified off-host recovery evidence.
 
 ## Residual risks
 

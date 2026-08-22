@@ -64,6 +64,9 @@ replace, or remove authoritative state or audit history.
 
 The initial platform ceilings are 100 MiB of extracted content and 5,000 total
 archive entries, counting both regular files and directories.
+They operate beneath the host-wide 25-tenant, 10-GiB, and 500,000-inode
+admission ceilings in ADR 0017; a schema-valid per-tenant quota never reserves
+capacity the host admission transaction cannot provide.
 The desired lifecycle states are `undeployed`, `active`, `suspended`, and
 `archived`. Schema conditionals reject a deployment reference in an undeployed
 manifest and require one in every other state. Deletion removes desired state

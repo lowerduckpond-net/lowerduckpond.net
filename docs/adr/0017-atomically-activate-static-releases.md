@@ -169,6 +169,51 @@ most one snapshot for a serialized operation, removes it on every terminal
 path, cleans abandoned snapshots during reconciliation, and rejects work that
 would cross the configured host free-space reserve.
 
+Root-side admission also bounds growth that a compromised provisioner could
+indirectly request from the activator. The Milestone 3 host initially permits:
+
+- at most 25 persisted tenants;
+- at most 10 GiB and 500,000 unique inodes across static releases and release
+  staging, including the worst-case candidate before garbage collection;
+- at most 10,000 immutable correlation request/result records occupying at most
+  64 MiB; and
+- at most 128 MiB of local ordinary audit segments, with a separate 8-MiB
+  root-administrator reserve that the provisioner entry point cannot consume.
+
+One structured request or result is at most 16 KiB after canonical encoding,
+and each operator reason is at most 512 UTF-8 bytes with control characters
+rejected. The root adapter admits at most 60 new provisioner correlation IDs per
+rolling hour with a burst of five; an idempotent retry of an established ID does
+not consume another slot. Lock-busy, rate-limited, and capacity-rejected calls
+fail before staging and cannot force an attacker-controlled audit payload.
+Their aggregate counters and sanitized, rate-limited diagnostic events use the
+already bounded monitoring and journald stores.
+
+The activator serializes storage-changing admission, counts actual unique
+inodes and allocated blocks, reserves worst-case staging and retention, and
+applies the host free-space floor. After the worst-case allocation, every
+affected filesystem must retain the greater of 5 GiB or 10% of filesystem
+blocks as ordinarily available space and the greater of 100,000 or 10% of
+filesystem inodes as ordinarily available inodes; root-reserved blocks do not
+satisfy the floor. It refuses a new tenant, deployment, or correlation ID before
+mutation if any ceiling would be crossed. Audit is written
+in root-owned hash-chained segments of at most 8 MiB. A root-only maintenance
+operation may remove a closed local segment only after a verified Restic
+snapshot contains it, then retains its terminal hash and snapshot identity in
+the local chain index. The ordinary audit limit closes admission until that
+rotation succeeds; the provisioner cannot rotate, truncate, or consume the
+administrator reserve. Correlation records are not pruned in Milestone 3,
+preserving idempotency; reaching their cap closes new-ID admission until an
+explicit later migration expands the durable store.
+
+Admission state is not an in-memory resettable counter. Tenant, content,
+correlation, and audit usage are derived from reconciled root-owned stores; the
+rolling rate window is rebuilt from durable accepted-correlation timestamps.
+Counter updates use the same write-`fsync`-rename-directory-`fsync` protocol as
+other state. Process or host restart, wall-clock rollback, and deletion of
+untrusted staging cannot restore spent capacity; an invalid time window fails
+new-ID admission closed until root reconciliation repairs it.
+
 ## Consequences
 
 The active Caddy-generation reference becomes the publication commit point.
@@ -190,6 +235,12 @@ The private workspace limits must be monitored and tested at both their byte
 and inode boundaries. Increasing either limit requires another host-capacity
 review; application cleanup is not the security boundary that prevents a
 compromised provisioner from filling the host filesystem.
+
+The global tenant, content, correlation, audit, and admission-rate ceilings mean
+a compromised provisioner can deliberately exhaust Milestone 3 service capacity
+but cannot turn valid root requests into unbounded host storage consumption.
+Capacity exhaustion is conspicuous, fails closed, and requires authenticated
+operator recovery rather than automatic evidence deletion.
 
 ## Alternatives considered
 
