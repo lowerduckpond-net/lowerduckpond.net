@@ -34,6 +34,12 @@ Manifest fixtures include duplicate YAML keys for lifecycle, deployment, and
 quota fields and prove rejection occurs before schema validation and canonical
 JSON generation.
 
+An installed-host concurrency test pauses tenant activation while Ansible has a
+candidate Caddy base transaction ready to commit, then proves that only one
+transaction can select live inputs and reload at a time. It verifies that the
+resulting Caddy configuration and observed tenant state describe the same
+committed generation.
+
 Hostile fixtures must cover traversal, absolute and ambiguous paths, links,
 special entries, duplicate and case-colliding names, expansion and quota abuse,
 arbitrary route input, cross-tenant reads, interrupted activation, failed Caddy

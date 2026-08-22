@@ -27,6 +27,15 @@ route set, atomically replace the root-owned active-route reference, and reload
 Caddy. If reload fails, restore the preceding reference and reload the last
 known-good route set.
 
+Every process that changes live Caddy inputs or reloads the service uses the
+same global publication lock. Before tenant publication is enabled, refactor the
+Ansible Caddy role to render candidate base configuration, environment, binary
+and unit selection, and route-root changes outside live paths, then apply and
+reload them through a root-owned host-configuration transaction under that
+lock. Ansible no longer writes a live Caddy input or invokes an independent
+reload. The provisioner's sudo capability cannot invoke this broader
+host-configuration transaction.
+
 An undeployed tenant has authoritative desired state but no deployment record,
 release, or route. Its first successful `deploy` operation creates those
 artifacts and changes desired state to `active` through the ordinary activation
@@ -57,9 +66,10 @@ immutable release, and rollback selects a prior release without rewriting its
 content. Route-set generations and write-ahead state consume small amounts of
 extra disk and need bounded garbage collection.
 
-The backup service and root activator must share a lock contract. Caddy route
-generation becomes intentionally limited; adding a new route capability
-requires changing reviewed root-owned code and its tests.
+The backup service, root activator, and Ansible Caddy transaction must share
+their respective state and publication lock contracts. Caddy route generation
+becomes intentionally limited; adding a new route capability requires changing
+reviewed root-owned code and its tests.
 
 ## Alternatives considered
 

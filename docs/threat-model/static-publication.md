@@ -52,6 +52,7 @@ features require their own threat-model extensions before activation.
 | Unprivileged provisioner | Potentially compromised; may request valid tenant operations but must not choose host paths, commands, or Caddy syntax. |
 | Trusted-workstation client | Authenticated operator transport; trusted to request operations, not to bypass root validation. |
 | Root activator | Trusted computing base; narrowly implements validation, release, route, lock, and recovery contracts. |
+| Ansible Caddy transaction | Trusted host-configuration path; stages candidates and shares the publication lock, but is not callable through provisioner sudo. |
 | Caddy | Trusted edge process with read-only tenant content and no provisioner-writable configuration. |
 | Backup service | Trusted root service holding repository credentials; synchronized with tenant-state mutation. |
 | Operating system and pinned dependencies | Trusted platform boundary, maintained through the reviewed host baseline. |
@@ -76,6 +77,9 @@ and supply-chain risks.
 6. Backup holds a shared tenant-state lock while reading content, manifests,
    and audit state. Restore writes outside live paths and reconciliation applies
    the same activation contract.
+7. Ansible stages Caddy host-configuration changes outside live paths and uses a
+   separate root-owned transaction under the global publication lock to select
+   live inputs and reload the service.
 
 No public request, tenant file, or unprivileged process can reach Caddy's admin
 socket or write an active route, immutable release, backup environment, or
@@ -94,6 +98,7 @@ record.
 | Mutation after validation | Root performs final extraction; active releases and route sets are root-owned and immutable to Caddy and the provisioner. |
 | Arbitrary Caddy behavior or secret disclosure | Generate allowlisted routes from validated primitives; accept no Caddy text; keep the admin socket Caddy-only. |
 | Validation-to-reload race | Validate an immutable complete route-set generation and select it under the shared publication lock. |
+| Ansible convergence races tenant activation | Route all live Caddy base, environment, binary/unit selection, route-root, and reload changes through a root-owned Ansible transaction that holds the same publication lock. |
 | Concurrent or replayed jobs | Serialize publication, bind results to correlation IDs and request digests, and make retries idempotent. |
 | Manifest or audit tampering | Keep desired and observed state and append-only audit operations root-owned; allow the provisioner no direct write, replacement, truncation, or deletion authority. |
 | Crash between filesystem, route, reload, and state changes | Write intent first; retain the prior route set; reconcile incomplete records on startup and before later operations. |
@@ -112,8 +117,9 @@ Implementation and review must preserve these invariants:
    a Unix identity, or a service name to the root activator.
 3. Every live route refers to one validated immutable release belonging to the
    same tenant ID.
-4. Candidate validation, active-route selection, reload, and rollback occur
-   while holding the global publication lock.
+4. Candidate validation, active-route selection, Ansible Caddy commits, reload,
+   and rollback occur while holding the global publication lock; no other path
+   mutates live Caddy inputs.
 5. Desired state, observed state, releases, and audit events are recoverable and
    reconciliation never publishes unvalidated content.
 6. Unknown manifest fields, unsupported archive semantics, and unrecognized
