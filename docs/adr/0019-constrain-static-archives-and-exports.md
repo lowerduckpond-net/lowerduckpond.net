@@ -33,6 +33,16 @@ executable, set-ID, and other archive-supplied permission semantics. Extract
 only into a new root-owned non-public temporary directory and fail closed if
 actual bytes or entry counts diverge from preflight metadata.
 
+Before constructing an export, acquire the shared tenant-state lock used by
+backup. While holding it, resolve the canonical manifest and selected immutable
+release, then copy both into a new root-owned, non-writable export snapshot.
+Verify that complete snapshot before releasing the lock. Publication, rollback,
+rename, suspension, archival, restoration, deletion, and garbage collection
+take the lock exclusively, so the snapshot cannot combine metadata from one
+tenant generation with content from another or lose its release during capture.
+ZIP construction and checksum generation consume only the completed snapshot
+and may proceed after the lock is released.
+
 Produce a portable ZIP export containing a format version, canonical tenant
 manifest, current static content, and SHA-256 checksums. Export does not change
 site state. Archive and restore use this versioned portable bundle; a later Git
@@ -48,6 +58,11 @@ that rely on Unix links or executable bits are deliberately unsupported.
 The limits are platform policy and therefore belong in the schema and tests,
 not scattered constants. Raising them requires reviewing disk, backup, and
 denial-of-service implications.
+
+Export briefly consumes another bounded copy of the current release. Capturing
+that copy under the shared state lock favors a coherent portable artifact over
+concurrent mutation; compression proceeds outside the lock so the longer part
+of export does not block lifecycle changes.
 
 ## Alternatives considered
 

@@ -351,6 +351,8 @@ Implement idempotent commands or jobs for:
 - Refactor Ansible Caddy convergence to commit every live Caddy input and reload
   through the same publication lock rather than racing tenant activation.
 - Suspend, resume, export, archive, restore, and delete a site.
+- Capture each export's canonical manifest and immutable release into a
+  root-owned snapshot under the shared tenant-state lock before bundling it.
 - Reconcile actual host state against all desired manifests.
 - Permit the provisioner to request validated state changes without granting it
   write access to desired state, observed state, or audit history.
@@ -377,6 +379,8 @@ Implement idempotent commands or jobs for:
 - Recover the preceding publication after interrupted activation or reload
   failure.
 - Serialize activation with backup and reconcile a restored state snapshot.
+- Overlap export capture with lifecycle mutations and release garbage
+  collection and prove each bundle describes one complete generation.
 
 ### Exit criteria
 

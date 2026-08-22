@@ -61,6 +61,10 @@ suspension commits and prove that it can update only the remembered deployment,
 leaves the route absent, and requires a later explicit `resume` to publish.
 They also race two creates, and a create against a rename, for the same slug and
 prove that exactly one root-owned state transaction can commit the name.
+Export concurrency tests overlap snapshot capture with deploy, rollback,
+rename, suspension, and garbage collection. Every resulting bundle must contain
+a canonical manifest and immutable release from the same generation, and the
+captured release must remain available until export construction completes.
 
 After CI and disposable-host acceptance pass, publish a reserved production
 canary in the approved origin-isolated tenant namespace, verify browser
