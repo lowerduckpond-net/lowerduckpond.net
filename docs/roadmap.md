@@ -2,6 +2,26 @@
 
 This roadmap turns the architecture in [`architecture.md`](architecture.md) into incremental, independently demonstrable releases. The ordering intentionally establishes static hosting, reproducible infrastructure, backups, and operational visibility before enabling untrusted PHP.
 
+## Progress
+
+Status as of 2026-08-22:
+
+| Milestone | Status | Outcome |
+| --- | --- | --- |
+| 0: Repository foundation | Complete | The public repository, development workflow, CI gates, application boundaries, and architecture decisions are established. |
+| 1: DigitalOcean foundation | Complete | OpenTofu manages the production network, Droplet, reserved IP, firewall, DNS, state, and durable backup storage; the guarded rebuild drill succeeded. |
+| 2: Reproducible host configuration | Complete | One trusted-workstation command converges production idempotently and passes host, HTTPS, backup, restore, and post-reboot acceptance checks. |
+| 3: Static tenant MVP | Current | Implement the accepted manifest, archive, privileged-activation, operator, lifecycle, and security-test contracts. |
+| 4: Control plane and lifecycle automation | Planned | Expose the static lifecycle through the FastAPI control plane with approvals, jobs, policy, and audit history. |
+| 5: Backup, observability, and operations | Planned | Complete platform-level recovery, central observability, alerting, and operator runbooks. Host backup and monitoring foundations arrived early in Milestone 2. |
+| 6: Dynamic PHP pilot | Planned | Introduce isolated PHP and tenant-scoped SQL only after the static platform and recovery path are proven. |
+| 7: Customer and community pilot | Planned | Deploy the city site through the ordinary tenant contract and onboard a small resident cohort. |
+
+“Complete” means the milestone's exit criterion has been demonstrated, not
+merely that its implementation was merged. “Current” identifies the active
+implementation target. Milestone 3's design is accepted; functional
+implementation has not started.
+
 ## 1. Proposed platform repository
 
 ```text
@@ -78,7 +98,7 @@ Operator-accepted defaults:
 - Require administrative approval during the pilot.
 - Keep Milestone 0 limited to repository foundations; define the tenant manifest in Milestone 3.
 
-## 3. Milestone 0: repository foundation
+## 3. Milestone 0: repository foundation — complete
 
 ### Deliverables
 
@@ -103,7 +123,13 @@ Operator-accepted defaults:
 
 A contributor can clone the repository, install documented prerequisites, run one validation command, and receive the same result as CI.
 
-## 4. Milestone 1: DigitalOcean foundation
+### Completion record
+
+[PR #1](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/1)
+delivered the repository foundation. The locked `just check` workflow and the
+required GitHub checks exercise the same validation entry points.
+
+## 4. Milestone 1: DigitalOcean foundation — complete
 
 ### OpenTofu resources
 
@@ -158,7 +184,18 @@ Until that verification exists:
 
 A CI-authorized apply can create a fresh Droplet and supporting resources without console intervention, and a destroy/recreate exercise retains the reserved address and off-host backup storage as designed.
 
-## 5. Milestone 2: reproducible host configuration
+### Completion record
+
+[PR #2](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/2)
+delivered the DigitalOcean and Cloudflare foundation. The guarded rebuild drill
+then proved that the Droplet could be replaced while retaining its reserved IP
+and off-host state and backup buckets. Follow-up
+[PR #3](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/3) and
+[PR #4](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/4)
+incorporated the drill and project-membership review findings into the durable
+plan policy.
+
+## 5. Milestone 2: reproducible host configuration — complete
 
 ### Ansible roles
 
@@ -170,8 +207,13 @@ Implement small composable roles rather than one monolithic playbook:
 - `podman`: rootless Podman prerequisites, subordinate IDs, lingering, storage, and networks.
 - `database`: database engine, durable storage, local-only administration, backup account, and tuning.
 - `backup`: database dumps, Restic, schedules, retention, and health reporting.
-- `monitoring`: exporters, collection, dashboards, and alerts.
-- `provisioner`: service account, directories, queue access, and restricted privileged operations.
+- `monitoring`: a loopback-only node exporter, local textfile metrics, scheduled
+  health checks, and journald reporting. Central collection, dashboards, and
+  routed alerts remain deferred to Milestone 5.
+- `provisioner`: an unprivileged non-login service account and private job,
+  manifest, and audit directories. It receives no queue integration, tenant
+  content ownership, Caddy access, sudo rule, or other privileged operation in
+  this milestone.
 
 Milestone 2 does not grant the provisioner a Caddy reload or route-publication
 capability. Milestone 3 introduces one privileged activation contract covering
@@ -214,42 +256,82 @@ A newly provisioned Droplet becomes a working empty hosting node after one
 operator command. That command performs a second converge with zero changes and
 runs host, HTTPS, backup, and disposable-restore acceptance checks.
 
-## 6. Milestone 3: static tenant MVP
+### Completion record
+
+[PR #5](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/5)
+delivered the host roles and production runner. Corrective
+[PR #6](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/6),
+[PR #7](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/7), and
+[PR #8](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/8)
+resolved standalone acceptance scope, removed misleading skipped-loop output,
+and added static verification of the installed systemd units.
+
+On 2026-08-22, production was cleanly rebooted and the operator reran `just
+configure-production` from the trusted workstation against current `main`.
+The second converge reported zero changes, and the host, HTTPS, encrypted
+backup, disposable-restore, service, timer, and rootless user-service checks
+all passed. This demonstrates the exit criterion and boot persistence on the
+real host.
+
+## 6. Milestone 3: static tenant MVP — current
+
+### Accepted implementation decisions
+
+Milestone 3 implementation is governed by the
+[static-publication threat model](threat-model/static-publication.md) and these
+accepted decisions, in dependency order:
+
+1. [Model static publication as an untrusted boundary](adr/0016-model-static-publication-threats.md).
+2. [Atomically activate immutable static releases](adr/0017-atomically-activate-static-releases.md).
+3. [Version the static tenant manifest contract](adr/0018-version-static-tenant-manifests.md).
+4. [Constrain static archives and exports](adr/0019-constrain-static-archives-and-exports.md).
+5. [Use a trusted-workstation static operator interface](adr/0020-use-a-trusted-workstation-static-operator-interface.md).
+6. [Define static tenant lifecycle semantics](adr/0021-define-static-tenant-lifecycle-semantics.md).
+7. [Test static publication as a security boundary](adr/0022-test-static-publication-as-a-security-boundary.md).
 
 ### Tenant manifest v1
 
-Define and version a machine-readable contract before building the portal. For example:
+Define and version a machine-readable contract before building the portal. The
+accepted v1alpha1 shape begins with:
 
 ```yaml
 apiVersion: hosting.lowerduckpond.net/v1alpha1
 kind: Site
 metadata:
-  id: 01JEXAMPLE0000000000000000
+  id: 0191e2c4-8f7a-7c3b-8d1e-5f62047a2100
   slug: duck-repair
 spec:
   runtime: static
-  domains:
-    - duck-repair.lowerduckpond.net
+  desiredState: active
+  desiredDeployment:
+    id: 0191e2ca-49f2-7608-8cf3-f80ab2cab151
+    archiveSha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
   quotas:
     storageMiB: 100
     files: 5000
-  state: active
 ```
 
-The stable tenant ID must not change when a public slug changes.
+The hostname is derived as `<slug>.lowerduckpond.net`; arbitrary and custom
+domains are not accepted in this version. The stable UUIDv7 tenant ID does not
+change when a public slug changes. Desired manifests are stored as canonical
+JSON, while observed activation state and immutable deployment records remain
+separate.
 
 ### Provisioner behavior
 
 Implement idempotent commands or jobs for:
 
-- Create tenant directory and metadata.
+- Create desired tenant state and root-owned immutable release storage.
 - Validate slug and hostname uniqueness.
 - Stage and validate an uploaded archive.
-- Reject unsafe paths, symlinks escaping the site root, excessive file counts, and quota violations.
-- Atomically activate a deployment.
-- Retain a bounded number of previous releases.
-- Generate the tenant's Caddy route.
-- Validate and reload Caddy.
+- Reject unsafe or ambiguous paths, links, special files, archive expansion,
+  excessive file counts, and quota violations.
+- Revalidate and extract through the narrow root-owned activator.
+- Atomically activate a complete route-set generation pointing directly to an
+  immutable deployment.
+- Retain the active release and two preceding releases.
+- Generate allowlisted tenant routes without accepting Caddy text.
+- Validate, reload, and roll back Caddy under one publication lock.
 - Suspend, resume, export, archive, restore, and delete a site.
 - Reconcile actual host state against all desired manifests.
 
@@ -259,15 +341,19 @@ Implement idempotent commands or jobs for:
 - Deploy a replacement and verify atomic cutover.
 - Roll back to the previous release.
 - Reject traversal paths and escaping symlinks.
+- Reject hostile links, special entries, collisions, and archive expansion.
 - Suspend and restore without data loss.
 - Rename a slug while preserving the tenant identity.
 - Run the same provisioning job twice and prove convergence.
+- Recover the preceding publication after interrupted activation or reload
+  failure.
+- Serialize activation with backup and reconcile a restored state snapshot.
 
 ### Exit criteria
 
 An administrator can create, deploy, suspend, restore, export, and delete a static site without manually editing the host.
 
-## 7. Milestone 4: control plane and lifecycle automation
+## 7. Milestone 4: control plane and lifecycle automation — planned
 
 ### Minimum domain model
 
@@ -323,7 +409,7 @@ Suggested configurable defaults for the pilot:
 
 The complete static-site lifecycle operates through the control plane, produces an audit history, and can recover cleanly from duplicated or interrupted jobs.
 
-## 8. Milestone 5: backup, observability, and operations
+## 8. Milestone 5: backup, observability, and operations — planned
 
 ### Backup implementation
 
@@ -370,7 +456,7 @@ The complete static-site lifecycle operates through the control plane, produces 
 
 An operator can detect a failed service, identify the affected tenant or subsystem, restore a test tenant from backup, and follow a documented recovery procedure.
 
-## 9. Milestone 6: dynamic PHP pilot
+## 9. Milestone 6: dynamic PHP pilot — planned
 
 Do not expose PHP publicly until the static platform and recovery path are working.
 
@@ -426,7 +512,7 @@ Run destructive isolation tests on an ephemeral test Droplet rather than the pro
 
 A small approved cohort can run PHP with tenant-scoped SQL, measured quotas, clean suspension/export behavior, and passing cross-tenant isolation tests.
 
-## 10. Milestone 7: first customer and community pilot
+## 10. Milestone 7: first customer and community pilot — planned
 
 Build `lowerduckpond.com` in its separate repository and deploy it through the ordinary tenant interface. It should exercise:
 
@@ -483,30 +569,22 @@ Provide a manually triggered or scheduled workflow that:
 
 Add a maximum-age cleanup job for tagged test resources so an interrupted CI run cannot leave them indefinitely billable.
 
-## 13. Suggested first three pull requests
+## 13. Delivered foundation pull requests
 
-### PR 1: repository skeleton and contracts
+The original three-pull-request implementation sketch evolved during review
+into eight focused pull requests:
 
-- Documentation, license, contribution and security files.
-- Tool pinning and common developer commands.
-- Minimal independently packaged control-plane and provisioner entry points.
-- CI for Markdown, schemas, secrets, OpenTofu, and Ansible.
+- [PR #1: repository skeleton and contracts](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/1)
+- [PR #2: single-host infrastructure](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/2)
+- [PR #3: rebuild-drill guardrails](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/3)
+- [PR #4: project-membership plan policy](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/4)
+- [PR #5: configured static host](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/5)
+- [PR #6: standalone production acceptance](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/6)
+- [PR #7: unambiguous backup convergence output](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/7)
+- [PR #8: static systemd unit verification](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/8)
 
-### PR 2: single-host infrastructure
-
-- DigitalOcean and Cloudflare OpenTofu modules.
-- Production environment inputs with secret-free examples.
-- Remote-state bootstrap documentation.
-- Plan assertions and deployment workflow with protected, serialized apply.
-
-### PR 3: configured static host
-
-- Minimal cloud-init.
-- Ansible roles for base, Caddy, static tenant directories, backup, and monitoring.
-- A fixture tenant served at a test subdomain.
-- Host acceptance and idempotence tests.
-
-After those three pull requests, the project has a reproducible foundation and a working vertical slice without yet accepting untrusted runtime code.
+Together they provide a reproducible foundation and a working empty-host
+vertical slice without yet accepting tenant content or untrusted runtime code.
 
 ## 14. Definition of initial public launch
 

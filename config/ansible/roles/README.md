@@ -19,5 +19,6 @@
   privileges.
 
 Roles own host configuration, not tenant lifecycle state. Tenant-specific
-content activation, routes, identities, containers, and databases begin in
-Milestone 3 so content and routing can cross the privilege boundary together.
+static content activation and routes begin together in Milestone 3. Queue-backed
+control-plane integration begins in Milestone 4; tenant-specific Unix
+identities, containers, and databases begin in Milestone 6.
