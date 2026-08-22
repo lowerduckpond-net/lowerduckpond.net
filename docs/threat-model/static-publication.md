@@ -69,8 +69,11 @@ and supply-chain risks.
    adapter into a fixed, non-public intake area.
 2. The unprivileged provisioner performs an advisory preflight and constructs a
    structured request with a correlation ID.
-3. The root activator opens only the fixed intake artifact, revalidates it, and
-   extracts it into a new root-owned temporary release.
+3. The root activator claims the fixed intake artifact, copies its bytes once
+   into a newly created root-owned snapshot while enforcing the upload limit
+   and computing its digest, and closes the intake descriptor. It verifies,
+   revalidates, and extracts only that non-provisioner-writable snapshot into a
+   new root-owned temporary release.
 4. The activator normalizes and seals the release, generates a complete
    root-owned candidate route set, and validates it with Caddy.
 5. Under the publication lock, the activator records intent, atomically selects
@@ -109,7 +112,7 @@ record.
 | Cross-tenant read or overwrite | Derive all paths from validated UUIDs, prohibit caller paths, use root ownership, and test hostile operations across two tenants. |
 | Backup captures incompatible generations | Backup uses a shared tenant-state lock; mutation uses it exclusively; restored state must reconcile before publication. |
 | Unsafe archive, restore, or deletion | Verify portable export checksums and durable archive evidence; restore as a new deployment; keep emergency deletion behind a distinct root-only operator command that the provisioner cannot invoke. |
-| Intake artifact replacement | Open beneath the fixed intake directory without following links, bind validation to the opened artifact digest, and move or mark the claimed request before activation. |
+| Intake artifact replacement or mutation through an existing descriptor | Open beneath the fixed intake directory without following links and claim the request. Stream the opened bytes exactly once into an exclusively created root-owned snapshot while enforcing the compressed-size limit and computing the digest; sync and close the snapshot, then verify the request digest and perform all parsing, validation, and extraction against that snapshot. Never return to the provisioner-writable inode. |
 
 ## Security invariants
 
@@ -144,6 +147,9 @@ Implementation and review must preserve these invariants:
 12. No active reference is durably selected before its immutable release and
     route-set targets; intent, state, audit, rollback, and intent removal follow
     the ordered file and parent-directory `fsync` protocol in ADR 0017.
+13. Privileged digest verification, archive parsing, validation, and extraction
+    consume the same root-owned intake snapshot, which cannot be modified by
+    the provisioner through its pathname or a previously opened descriptor.
 
 ## Residual risks
 

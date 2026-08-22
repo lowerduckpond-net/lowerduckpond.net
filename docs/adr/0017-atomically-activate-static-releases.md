@@ -74,9 +74,16 @@ generation and targets are durable, or restores the durable prior generation;
 it never infers completion from observed state alone.
 
 The root activator accepts structured identifiers and an artifact from the
-fixed intake boundary. It does not accept arbitrary destination paths, commands,
-or Caddy directives. It performs every security-critical check itself even when
-the unprivileged provisioner already performed a preflight validation.
+fixed intake boundary. It opens and claims that artifact without following
+links, then streams its bytes exactly once into an exclusively created,
+root-owned snapshot while enforcing the compressed-size limit and computing
+the digest. After syncing and closing the snapshot, the activator verifies the
+request digest and performs every security-critical parse, validation, and
+extraction against the snapshot. It never validates or extracts from the
+provisioner-writable inode, so an already-open provisioner file descriptor
+cannot change the privileged input. It does not accept arbitrary destination
+paths, commands, or Caddy directives, and it repeats every security-critical
+check even when the unprivileged provisioner already performed a preflight.
 
 The activator is also the only ordinary writer of root-owned desired manifests,
 observed state, deployment and archive records, and append-only audit events.
