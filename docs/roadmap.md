@@ -355,6 +355,9 @@ Implement idempotent commands or jobs for:
   its complete root-owned history proves no deployment ever existed.
 - Capture each export's canonical manifest and immutable release into a
   root-owned snapshot under the shared tenant-state lock before bundling it.
+- Serialize export and archive construction globally; enforce one snapshot,
+  one unacknowledged result, a 256-MiB/5,120-inode spool, a 105-MiB output cap,
+  the host free-space reserve, and bounded acknowledgement/expiry cleanup.
 - Wrap portable exports in the versioned `lowerduckpond-export-v1/` envelope,
   with fixed metadata paths and all tenant-controlled files below `content/`.
 - Reconcile actual host state against all desired manifests.

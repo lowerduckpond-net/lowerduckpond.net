@@ -43,6 +43,26 @@ tenant generation with content from another or lose its release during capture.
 ZIP construction and checksum generation consume only the completed snapshot
 and may proceed after the lock is released.
 
+All export and archive bundle construction also takes one exclusive root-owned
+host export lock before snapshot admission. The initial host permits exactly
+one in-progress snapshot and one completed, unacknowledged downloadable export
+in total. The activator accounts actual blocks and inodes already present in
+the root-owned export spool before admitting work and enforces aggregate hard
+ceilings of 256 MiB and 5,120 inodes as well as the configured host free-space
+reserve. A snapshot may contain at most the accepted 100 MiB and 5,000 tenant
+entries; encoded bundle output has a separate 105 MiB ceiling and never becomes
+visible until complete and verified. Exceeding any limit fails closed.
+
+Incomplete snapshots and outputs are removed on every terminal path and during
+startup reconciliation. A completed downloadable export remains for at most 24
+hours or until the trusted client acknowledges its verified download, whichever
+comes first; admission rejects another export while that slot is occupied.
+Retries with the same correlation ID return the established result. Archive
+construction uses the same lock, spool, admission accounting, and cleanup, but
+moves the verified bundle into durable archive storage before releasing its
+transaction. The provisioner cannot create files directly in the spool or
+bypass these limits.
+
 Produce a portable ZIP export with this fixed versioned envelope:
 
 ```text
@@ -83,8 +103,11 @@ denial-of-service implications.
 
 Export briefly consumes another bounded copy of the current release. Capturing
 that copy under the shared state lock favors a coherent portable artifact over
-concurrent mutation; compression proceeds outside the lock so the longer part
-of export does not block lifecycle changes.
+concurrent mutation; compression proceeds outside the tenant-state lock so the
+longer part of export does not block lifecycle changes. Global bundle
+construction is intentionally serialized on the small initial host, and an
+unacknowledged result can delay later exports until it is downloaded or expires,
+in exchange for a strict disk and inode bound.
 
 ## Alternatives considered
 

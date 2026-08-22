@@ -111,6 +111,7 @@ record.
 | Crash or power loss between filesystem, route, reload, and state changes | Durably sync generation targets and parents before intent, sync intent before selecting and syncing the active reference, sync desired/observed state and audit before clearing intent, and reconcile from durable evidence. |
 | Cross-tenant read or overwrite | Derive all paths from validated UUIDs, prohibit caller paths, use root ownership, and test hostile operations across two tenants. |
 | Backup or export captures incompatible generations | Backup uses a shared tenant-state lock; mutation uses it exclusively. Export captures its manifest and immutable release into a root-owned snapshot while holding that shared lock and constructs the bundle only from the snapshot. Restored state must reconcile before publication. |
+| Concurrent exports exhaust privileged storage | Serialize export and archive construction behind one root-owned host lock; enforce one snapshot, one unacknowledged result, aggregate spool byte/inode ceilings, an encoded-output ceiling, a host free-space reserve, and root-owned terminal, startup, acknowledgement, and expiry cleanup. |
 | Unsafe archive, restore, or deletion | Bind durable archive evidence to the exact current canonical manifest, desired deployment, content, and stored bundle and revalidate it immediately before delete; restore as a new deployment. Permit ordinary archive-free deletion only when root-owned history proves the tenant was never deployed, and keep emergency deletion behind a distinct root-only operator command that the provisioner cannot invoke. |
 | Intake artifact replacement or mutation through an existing descriptor | Open beneath the fixed intake directory without following links and claim the request. Stream the opened bytes exactly once into an exclusively created root-owned snapshot while enforcing the compressed-size limit and computing the digest; sync and close the snapshot, then verify the request digest and perform all parsing, validation, and extraction against that snapshot. Never return to the provisioner-writable inode. |
 
@@ -156,6 +157,9 @@ Implementation and review must preserve these invariants:
 15. Ordinary deletion of any previously deployed tenant requires a verified
     durable archive bound to the current canonical manifest and desired
     deployment; evidence for an older generation grants no deletion authority.
+16. Portable-bundle construction is globally serialized and cannot exceed one
+    root-owned snapshot, one unacknowledged output, or the aggregate export-spool
+    byte, inode, output, and host free-space bounds.
 
 ## Residual risks
 

@@ -65,6 +65,12 @@ Export concurrency tests overlap snapshot capture with deploy, rollback,
 rename, suspension, and garbage collection. Every resulting bundle must contain
 a canonical manifest and immutable release from the same generation, and the
 captured release must remain available until export construction completes.
+They flood concurrent export and archive requests, leave work interrupted at
+each staging phase, and fill both byte and inode allowances. Tests prove one
+global construction slot, one unacknowledged result, hard spool and free-space
+admission limits, startup cleanup, expiry, acknowledged cleanup, and idempotent
+retry without an additional snapshot.
+
 Export fixtures give tenant content each reserved metadata basename and prove
 that round-trip restore preserves it below `content/`. Negative fixtures cover
 metadata outside the versioned envelope, duplicate metadata, unknown envelope
