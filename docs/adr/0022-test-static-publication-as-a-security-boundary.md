@@ -35,7 +35,8 @@ special entries, duplicate and case-colliding names, expansion and quota abuse,
 arbitrary route input, cross-tenant reads, interrupted activation, failed Caddy
 reload, concurrent deployment, repeated correlation IDs, and restore followed
 by reconciliation. Tests must also prove that the provisioner cannot invoke or
-simulate the operator-authenticated emergency deletion path.
+simulate the operator-authenticated emergency deletion path, modify manifests
+or observed state, or truncate, replace, or remove audit evidence.
 
 After CI and disposable-host acceptance pass, publish a reserved production
 canary below the existing wildcard, verify HTTPS, rollback, suspension, restore,

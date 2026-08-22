@@ -39,6 +39,11 @@ fixed intake boundary. It does not accept arbitrary destination paths, commands,
 or Caddy directives. It performs every security-critical check itself even when
 the unprivileged provisioner already performed a preflight validation.
 
+The activator is also the only ordinary writer of root-owned desired manifests,
+observed state, deployment and archive records, and append-only audit events.
+The provisioner never receives directory write permission for those stores.
+Only its transient intake and job workspace remains provisioner-writable.
+
 ## Consequences
 
 The active route-set reference becomes the publication commit point. Releases

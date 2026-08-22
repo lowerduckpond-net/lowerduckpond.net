@@ -21,4 +21,6 @@
 Roles own host configuration, not tenant lifecycle state. Tenant-specific
 static content activation and routes begin together in Milestone 3. Queue-backed
 control-plane integration begins in Milestone 4; tenant-specific Unix
-identities, containers, and databases begin in Milestone 6.
+identities, containers, and databases begin in Milestone 6. Before accepting
+tenant data, Milestone 3 also migrates authoritative manifest and audit storage
+from the empty provisioner-owned baseline directories to root ownership.

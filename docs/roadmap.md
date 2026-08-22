@@ -322,6 +322,8 @@ separate.
 Implement idempotent commands or jobs for:
 
 - Create desired tenant state and root-owned immutable release storage.
+- Migrate authoritative manifest and audit storage from the empty Milestone 2
+  provisioner-owned directories to root ownership before accepting tenant data.
 - Validate slug and hostname uniqueness.
 - Stage and validate an uploaded archive.
 - Reject unsafe or ambiguous paths, links, special files, archive expansion,
@@ -334,6 +336,8 @@ Implement idempotent commands or jobs for:
 - Validate, reload, and roll back Caddy under one publication lock.
 - Suspend, resume, export, archive, restore, and delete a site.
 - Reconcile actual host state against all desired manifests.
+- Permit the provisioner to request validated state changes without granting it
+  write access to desired state, observed state, or audit history.
 
 ### End-to-end tests
 

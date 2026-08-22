@@ -26,6 +26,13 @@ tree. Milestone 3 supports only static content at a derived
 `<slug>.lowerduckpond.net` hostname. Custom domains and executable content stay
 outside this boundary.
 
+Desired manifests, observed state, deployment records, archive records, and
+audit history are root-owned. The provisioner may receive narrowly scoped read
+access where reconciliation requires it, but all state changes and audit
+appends pass through validated root-owned operations. Milestone 3 migrates the
+empty provisioner-owned manifest and audit directories created by the
+Milestone 2 host baseline before accepting tenant state.
+
 The detailed assets, actors, threats, invariants, and residual risks are
 maintained in the
 [static-publication threat model](../threat-model/static-publication.md).
@@ -36,6 +43,7 @@ The privileged activator must duplicate security-critical validation rather
 than trusting an unprivileged preflight result. A compromised provisioner can
 request valid tenant operations and cause bounded availability impact, but it
 must not gain arbitrary filesystem, Caddy, credential, or host authority.
+It also cannot rewrite desired or observed state or erase audit evidence.
 
 Publication requires explicit security tests for archive traversal, links,
 resource exhaustion, route injection, races, interrupted activation, backup

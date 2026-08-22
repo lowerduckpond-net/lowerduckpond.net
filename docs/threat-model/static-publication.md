@@ -79,7 +79,8 @@ and supply-chain risks.
 
 No public request, tenant file, or unprivileged process can reach Caddy's admin
 socket or write an active route, immutable release, backup environment, or
-observed-state record.
+authoritative desired-state, observed-state, archive, deployment, or audit
+record.
 
 ## Threats and required controls
 
@@ -93,6 +94,7 @@ observed-state record.
 | Arbitrary Caddy behavior or secret disclosure | Generate allowlisted routes from validated primitives; accept no Caddy text; keep the admin socket Caddy-only. |
 | Validation-to-reload race | Validate an immutable complete route-set generation and select it under the shared publication lock. |
 | Concurrent or replayed jobs | Serialize publication, bind results to correlation IDs and request digests, and make retries idempotent. |
+| Manifest or audit tampering | Keep desired and observed state and append-only audit operations root-owned; allow the provisioner no direct write, replacement, truncation, or deletion authority. |
 | Crash between filesystem, route, reload, and state changes | Write intent first; retain the prior route set; reconcile incomplete records on startup and before later operations. |
 | Cross-tenant read or overwrite | Derive all paths from validated UUIDs, prohibit caller paths, use root ownership, and test hostile operations across two tenants. |
 | Backup captures incompatible generations | Backup uses a shared tenant-state lock; mutation uses it exclusively; restored state must reconcile before publication. |
@@ -120,6 +122,9 @@ Implementation and review must preserve these invariants:
 8. The provisioner's capability cannot bypass archive evidence for deletion;
    emergency deletion requires the separately authenticated administrative
    entry point.
+9. Authoritative manifests, observed state, deployment and archive records, and
+   audit history are root-owned and writable only through narrow validated or
+   append-only operations.
 
 ## Residual risks
 

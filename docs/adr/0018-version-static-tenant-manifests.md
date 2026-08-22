@@ -28,6 +28,12 @@ immutable deployment record carries its creation time and correlation ID. Keep
 observed activation status, including the active release, separate from desired
 state so reconciliation can detect and repair drift.
 
+Persist desired and observed state, deployment and archive records, and audit
+history in root-owned stores. The root activator validates and commits desired
+state, changes observed state, and appends audit events. The provisioner may
+read only the records required to construct or reconcile work and cannot write,
+replace, or remove authoritative state or audit history.
+
 The initial platform ceilings are 100 MiB of extracted content and 5,000 total
 archive entries, counting both regular files and directories.
 The desired lifecycle states are `active`, `suspended`, and `archived`. Deletion
@@ -44,7 +50,8 @@ operator transport. Canonical JSON makes hashing and comparison deterministic,
 while YAML remains approachable for an operator. Custom domains require a later
 schema version and ownership-verification design.
 
-Desired and observed state require separate storage and reconciliation logic.
+Desired and observed state require separate root-owned storage and
+reconciliation logic.
 UUIDv7 avoids another identifier dependency on Python 3.14 but changes the
 illustrative ULID-shaped identifier in the original roadmap.
 
