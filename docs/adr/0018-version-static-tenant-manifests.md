@@ -20,9 +20,13 @@ because common loaders silently retain one duplicate value. Reject unknown
 fields so misspellings do not silently weaken policy.
 
 Use UUIDv7 values for immutable tenant and deployment IDs. Restrict slugs to
-lowercase ASCII letters, digits, and interior hyphens, and maintain a committed
-reserved-name list. Derive the Milestone 3 hostname from an operator-configured
-tenant-origin namespace; do not accept an arbitrary domain in this version.
+1–63 ASCII bytes matching
+`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`, and maintain a committed reserved-name
+list. Because the alphabet is ASCII, the byte and character counts are equal.
+Validate the configured tenant-origin suffix so the resulting fully qualified
+hostname also remains within the DNS limit. Derive the Milestone 3 hostname
+from that operator-configured namespace; do not accept an arbitrary domain in
+this version.
 
 The tenant-origin namespace must isolate mutually untrusted tenants from
 `lowerduckpond.net` and from one another at the browser cookie boundary. Each
@@ -75,6 +79,9 @@ The tenant-origin prerequisite adds DNS, certificate, Cloudflare credential,
 and possibly domain or public-suffix coordination before the production canary.
 It prevents tenant JavaScript from poisoning platform authentication cookies or
 the cookies of another tenant.
+
+The explicit DNS-label bound means every persisted slug can be routed later;
+creation cannot reserve a name that deployment must reject for length.
 
 Desired and observed state require separate root-owned storage and
 reconciliation logic.

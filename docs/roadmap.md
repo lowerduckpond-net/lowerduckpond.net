@@ -330,6 +330,8 @@ Implement idempotent commands or jobs for:
 - Migrate authoritative manifest and audit storage from the empty Milestone 2
   provisioner-owned directories to root ownership before accepting tenant data.
 - Validate slug and hostname uniqueness.
+- Enforce a 1–63-byte ASCII DNS-label grammar and the complete derived-hostname
+  length before persisting a slug.
 - Stage and validate an uploaded archive.
 - Reject unsafe or ambiguous paths, links, special files, archive expansion,
   excessive entry counts, and quota violations.
