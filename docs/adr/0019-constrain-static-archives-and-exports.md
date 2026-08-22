@@ -19,6 +19,19 @@ ambiguity, empty or control-character path components, duplicate normalized
 names, case-folding collisions, symlinks, encrypted entries, and every special
 file type.
 
+Allow only method `0` (stored) and method `8` (Deflate) in deployment ZIPs.
+Reject BZIP2, LZMA, Deflate64, vendor methods, and unknown methods before
+initializing any entry decoder. A bounded structural reader examines the end
+record and central directory from the root-owned snapshot first, caps their
+byte and entry counts, validates offsets and integer arithmetic, and allowlists
+flags and methods without materializing attacker-sized metadata. Streaming
+validation then requires each local header to agree with its central-directory
+record before consuming entry data. Stored entries may set only the UTF-8-name
+flag; Deflate entries may additionally set a valid compression-option value.
+Reject data descriptors and every other general-purpose flag, and require a
+flagged UTF-8 name for any non-ASCII filename. The general ZIP library and
+decompressor run only after this structural gate.
+
 Apply these initial limits before and during root-side extraction:
 
 - at most 100 MiB in the uploaded ZIP;
@@ -32,6 +45,16 @@ Normalize directories to mode `0755` and regular files to `0644`; discard
 executable, set-ID, and other archive-supplied permission semantics. Extract
 only into a new root-owned non-public temporary directory and fail closed if
 actual bytes or entry counts diverge from preflight metadata.
+
+Run each privileged archive parse and extraction in a dedicated constrained
+service process whose limits are active before it reads ZIP metadata: initially
+`MemoryMax=256M`, `MemorySwapMax=0`, `TasksMax=32`, `LimitNOFILE=1024`,
+`LimitCPU=120`, `RuntimeMaxSec=5min`, and at most one CPU through
+`CPUQuota=100%`. Termination by any resource limit is a failed activation and
+enters the ordinary staging cleanup and audit path. The compressed, expanded,
+ratio, count, and per-file checks remain the primary policy; process limits are
+a host-availability backstop for parser bugs and adversarial valid Deflate
+streams.
 
 Before constructing an export, acquire the shared tenant-state lock used by
 backup. While holding it, resolve the canonical manifest and selected immutable
@@ -131,6 +154,11 @@ output ceilings keep that cost bounded.
 The limits are platform policy and therefore belong in the schema and tests,
 not scattered constants. Raising them requires reviewing disk, backup, and
 denial-of-service implications.
+
+Supporting only stored and Deflate input avoids decoder-controlled dictionaries
+and reduces privileged parser surface. The constrained process can still delay
+one serialized operation until its CPU or runtime limit, but it cannot consume
+unbounded memory, swap, processes, descriptors, CPU concurrency, or wall time.
 
 Export briefly consumes another bounded copy of the current release. Capturing
 that copy under the shared state lock favors a coherent portable artifact over

@@ -341,6 +341,9 @@ Implement idempotent commands or jobs for:
 - Stage and validate an uploaded archive.
 - Reject unsafe or ambiguous paths, links, special files, archive expansion,
   excessive entry counts, and quota violations.
+- Gate ZIP structure with bounded metadata reads, permit only stored and Deflate
+  entries, match local and central headers, and run privileged parsing inside
+  fixed memory, swap, task, descriptor, CPU, and runtime limits.
 - Revalidate and extract through the narrow root-owned activator.
 - Atomically activate a complete route-set generation pointing directly to an
   immutable deployment.

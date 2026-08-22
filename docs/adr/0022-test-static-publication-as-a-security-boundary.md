@@ -59,6 +59,14 @@ by reconciliation. Tests must also prove that the provisioner cannot invoke or
 simulate the operator-authenticated emergency deletion path, modify manifests
 or observed state, or truncate, replace, or remove audit evidence.
 
+Archive-parser fixtures include stored and Deflate success; BZIP2, LZMA with an
+oversized dictionary request, Deflate64, unknown methods, malformed end and
+central-directory records, overlapping or overflowing offsets, excessive
+metadata, and disagreement between central and local flags, methods, names,
+CRC, or sizes. Installed-host tests exhaust each process limit and verify failed
+staging cleanup, an audit result, no publication, and continued Caddy and backup
+service health.
+
 Lifecycle concurrency tests delay an active-state rollback until after
 suspension commits and prove that it can update only the remembered deployment,
 leaves the route absent, and requires a later explicit `resume` to publish.
