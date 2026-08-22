@@ -53,6 +53,13 @@ reconciliation, unmask, and start. Until every bootstrap component is compatible
 and verified, Caddy must remain masked and unavailable rather than automatically
 starting with mixed bootstrap or runtime inputs.
 
+Generation-retention tests use shared hard links and distinct binary versions,
+fill byte and inode ceilings, interrupt every cleanup phase, and keep old Caddy
+process descriptors open across selection. They prove unique-inode accounting,
+the three-generation maximum, host free-space admission, preservation of every
+active/previous/intent/running target, eventual cleanup, and absence of Caddy
+environment or adapted configuration in backups and diagnostics.
+
 Durability tests record filesystem operations and inject failure after every
 file sync, directory sync, rename, reload, state commit, audit append, and intent
 removal boundary. Reconciliation must select only a fully durable new

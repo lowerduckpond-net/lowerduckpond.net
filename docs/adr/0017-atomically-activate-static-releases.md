@@ -65,6 +65,23 @@ complete configuration to the running matching binary. Host transactions that
 change binary or environment always restart rather than reload. Thus systemd
 `Restart=` cannot observe a partially selected set of paths.
 
+Retain at most three complete runtime generations: active, immediate
+last-known-good, and one candidate named by current intent. Before staging a
+candidate, the root transaction reconciles intent, removes every unreferenced
+temporary or failed generation, and accounts existing unique `(device, inode)`
+objects so hard-linked payloads are not double-counted. It enforces aggregate
+ceilings of 256 MiB and 4,096 inodes for runtime generations plus the configured
+host free-space reserve. Selection cannot begin unless the complete worst-case
+candidate fits. On success, garbage collection runs only after Caddy and
+observed state commit; on failure or startup, it preserves every active,
+last-known-good, intent, and still-running pinned generation and removes other
+staging. Exceeding a bound fails before live state changes.
+
+Every generation directory and manifest is root-owned; only the Caddy account
+can read the environment and adapted configuration, and neither is included in
+backup, audit, logs, or diagnostic artifacts. Garbage collection limits the
+number of retired copies of secret-bearing inputs as well as disk consumption.
+
 An undeployed tenant has authoritative desired state but no deployment record,
 release, or route. Its first successful `deploy` operation creates those
 artifacts and changes desired state to `active` through the ordinary activation
@@ -158,11 +175,11 @@ The active Caddy-generation reference becomes the publication commit point.
 Releases can be prepared without affecting traffic, retries can reuse an already
 verified immutable release, and rollback selects a prior release without
 rewriting its content. Complete Caddy generations duplicate some metadata and
-retain Caddy-only secret environment files, so they need strict ownership,
-backup exclusion, bounded garbage collection, and retention of every generation
-named by active or pending intent. Durably syncing every file and directory
-adds deployment latency, bounded by the archive limits, in exchange for a
-recoverable commit after process termination or power loss.
+retain Caddy-only secret environment files. Their three-generation and aggregate
+resource bounds add admission and garbage-collection work but keep that
+duplication finite. Durably syncing every file and directory adds deployment
+latency, bounded by the archive limits, in exchange for a recoverable commit
+after process termination or power loss.
 
 The backup service, root activator, and Ansible Caddy transaction must share
 their respective state and publication lock contracts. Caddy route generation

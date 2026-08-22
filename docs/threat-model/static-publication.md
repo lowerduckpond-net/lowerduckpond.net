@@ -104,10 +104,11 @@ record.
 | Duplicate, Unicode, slash, backslash, case, or export-encoding ambiguity | Normalize first and reject ambiguity and collisions. Generate manifests canonically and define every portable ZIP byte: JSON, checksums, member order, stored encoding, timestamps, flags, modes, metadata, central directory, and archive digest. |
 | Duplicate YAML mapping keys | Reject duplicates during YAML composition, before schema validation or canonical JSON generation can discard the ambiguity. |
 | Platform or cross-tenant cookie poisoning | Keep `lowerduckpond.net` platform-only and require every tenant hostname to be a distinct registrable domain according to supported browser Public Suffix List behavior. |
-| Mutation after validation | Root performs final extraction; active releases and route sets are root-owned and immutable to Caddy and the provisioner. |
+| Mutation after validation | Root performs final extraction; active releases and complete Caddy generations are root-owned and immutable to Caddy and the provisioner. |
 | Arbitrary Caddy behavior or secret disclosure | Generate allowlisted complete Caddy configurations from validated primitives; accept no Caddy text; keep generation environment files Caddy-only and excluded from backup, and keep the admin socket Caddy-only. |
 | Validation-to-reload race | Validate one immutable complete runtime generation with its manifest-bound binary and environment, select it through one active reference under the publication lock, and reload from directory-pinned open inputs. |
 | Ansible convergence or automatic restart mixes Caddy inputs | Route all mutable binary, environment, base, route, reload, and restart changes through complete runtime generations and the shared publication lock. Before every start, the frozen bootstrap reconciles intent and pins one manifest-verified generation directory. Change the bootstrap only while Caddy is stopped and masked. |
+| Runtime generations exhaust disk or retain secrets indefinitely | Admit at most active, last-known-good, and intent candidate generations; enforce aggregate unique-inode byte/inode and host-free-space bounds; clean unreferenced staging after terminal states and startup; keep environment/config Caddy-only and backup/diagnostic-excluded. |
 | Concurrent or replayed jobs | Serialize publication, bind results to correlation IDs and request digests, and make retries idempotent. |
 | Nested locks deadlock or accumulate waiters | Acquire export, publication, and tenant-state only in that global order; never upgrade; return retryable busy before allocating work; revalidate archive source state after its unlocked construction phase. |
 | Delayed rollback undoes suspension | Recheck lifecycle state under the publication lock; while suspended, change only the remembered deployment and require explicit resume before publishing. |
@@ -183,6 +184,9 @@ Implementation and review must preserve these invariants:
     directories consume the same entry budget as explicit entries.
 22. Every lifecycle operation is allowlisted by source state; an unlisted pair
     changes nothing, and no operation except `resume` may leave `suspended`.
+23. Caddy runtime storage contains at most the active, immediate
+    last-known-good, and current-intent candidate generations and remains within
+    its aggregate byte, inode, and host-free-space bounds.
 
 ## Residual risks
 

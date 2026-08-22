@@ -362,6 +362,9 @@ Implement idempotent commands or jobs for:
 - Refactor Ansible Caddy convergence to commit every mutable live Caddy input in
   one runtime generation under the publication lock. Freeze a small systemd
   bootstrap that reconciles intent and pins one generation before every start.
+- Retain only active, last-known-good, and current-intent Caddy generations;
+  enforce a 256-MiB/4,096-inode aggregate cap, unique-inode accounting,
+  free-space admission, and secret-safe cleanup.
 - Suspend, resume, export, archive, restore, and delete a site.
 - Enforce and table-test the complete lifecycle operation/state matrix; reject
   every unlisted pair without desired or observed state changes.
