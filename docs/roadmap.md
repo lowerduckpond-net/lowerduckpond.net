@@ -351,6 +351,8 @@ Implement idempotent commands or jobs for:
 - Refactor Ansible Caddy convergence to commit every live Caddy input and reload
   through the same publication lock rather than racing tenant activation.
 - Suspend, resume, export, archive, restore, and delete a site.
+- Allow audited archive-free deletion of a never-deployed reservation only when
+  its complete root-owned history proves no deployment ever existed.
 - Capture each export's canonical manifest and immutable release into a
   root-owned snapshot under the shared tenant-state lock before bundling it.
 - Wrap portable exports in the versioned `lowerduckpond-export-v1/` envelope,
@@ -372,6 +374,8 @@ Implement idempotent commands or jobs for:
   the limits cannot consume the host filesystem or leave persistent entries
   after a service restart.
 - Suspend and restore without data loss.
+- Delete a never-deployed reservation normally, then prove that deployed or
+  ambiguous history cannot use the archive-free transition.
 - Delay a rollback across suspension and prove it cannot republish the tenant;
   only resume may leave the suspended state.
 - Rename a slug while preserving the tenant identity.

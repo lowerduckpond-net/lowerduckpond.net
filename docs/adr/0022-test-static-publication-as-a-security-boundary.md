@@ -69,6 +69,10 @@ Export fixtures give tenant content each reserved metadata basename and prove
 that round-trip restore preserves it below `content/`. Negative fixtures cover
 metadata outside the versioned envelope, duplicate metadata, unknown envelope
 entries, checksum mismatch, and using an export as an ordinary deployment ZIP.
+Lifecycle tests delete a never-deployed reservation through the ordinary
+audited path, then prove that any deployment record or ambiguous history makes
+the same archive-free operation fail closed without requiring or exposing the
+emergency command.
 
 After CI and disposable-host acceptance pass, publish a reserved production
 canary in the approved origin-isolated tenant namespace, verify browser
