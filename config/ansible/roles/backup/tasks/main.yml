@@ -91,7 +91,7 @@
       equal, descend from, or contain backed-up path {{ item.stdout }}.
   loop: "{{ backup_local_source_paths.results }}"
   loop_control:
-    label: "{{ item.stdout }}"
+    label: "{{ item.item }}"
   when: backup_repository is ansible.builtin.match('^/')
 
 - name: Inspect an existing local repository path
