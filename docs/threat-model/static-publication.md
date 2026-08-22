@@ -83,16 +83,21 @@ and supply-chain risks.
    environment, canonical tenant-content routes, platform-only slug-alias
    routes, and base configuration, and validates the generation with its own
    inputs.
-5. Under the publication lock, the activator records intent, atomically selects
-   the candidate runtime generation, reloads or restarts Caddy, and records
-   observed state. Failure restores the preceding complete-generation reference.
+5. Under the publication lock, the activator records intent and atomically
+   selects the candidate runtime generation. Configuration-only changes reload
+   and commit synchronously. Binary or environment changes persist a phased
+   restart intent, release the lock, and queue a non-blocking systemd restart;
+   pre-start and post-start helpers separately acquire the lock to pin, verify,
+   and commit the generation. Failure uses the same handoff to restore the
+   preceding complete generation.
 6. Backup holds a shared tenant-state lock while reading content, manifests,
    and audit state. Restore writes outside live paths and reconciliation applies
    the same activation contract.
 7. Ansible stages a complete Caddy runtime generation outside live paths and
    uses a root-owned transaction under the global publication lock to select it
-   and restart the service. A frozen systemd bootstrap reconciles intent and
-   pins one generation directory before each start or automatic restart.
+   and persist restart intent, then releases the lock before handing the restart
+   to systemd. A frozen systemd bootstrap reconciles intent and pins one
+   generation directory before each start or automatic restart.
 
 No public request, tenant file, or unprivileged process can reach Caddy's admin
 socket or write an active route, immutable release, backup environment, or
@@ -114,14 +119,15 @@ record.
 | Mutation after validation | Root performs final extraction; active releases and complete Caddy generations are root-owned and immutable to Caddy and the provisioner. |
 | Arbitrary Caddy behavior or secret disclosure | Generate allowlisted complete Caddy configurations from validated primitives; accept no Caddy text; keep generation environment files Caddy-only and excluded from backup, and keep the admin socket Caddy-only. |
 | Validation-to-reload race | Validate one immutable complete runtime generation with its manifest-bound binary and environment, select it through one active reference under the publication lock, and reload from directory-pinned open inputs. |
-| Ansible convergence or automatic restart mixes Caddy inputs | Route all mutable binary, environment, base, route, reload, and restart changes through complete runtime generations and the shared publication lock. Before every start, the frozen bootstrap reconciles intent and pins one manifest-verified generation directory. Change the bootstrap only while Caddy is stopped and masked. |
+| Ansible convergence or automatic restart mixes Caddy inputs | Route all mutable binary, environment, base, route, reload, and restart changes through complete runtime generations and phased root-owned intent. Before every start, the frozen bootstrap reconciles intent and pins one manifest-verified generation directory. Change the bootstrap only while Caddy is stopped and masked. |
+| Synchronous restart deadlocks on the publication lock | Persist and select a restart candidate under the lock, release it before queuing a non-blocking systemd job, and let pre-start, launcher, post-start, and rollback helpers acquire it independently. Block later mutations on the durable intent, and never wait for a lock-acquiring systemd hook while retaining the lock. |
 | Runtime generations exhaust disk or retain secrets indefinitely | Admit at most active, last-known-good, and intent candidate generations; enforce aggregate unique-inode byte/inode and host-free-space bounds; clean unreferenced staging after terminal states and startup; keep environment/config Caddy-only and backup/diagnostic-excluded. |
 | Concurrent or replayed jobs | Serialize publication, bind results to correlation IDs and request digests, and make retries idempotent. |
 | Valid operations indirectly exhaust root-owned state | Enforce host-wide tenant, release byte/inode, correlation record, audit, request/result size, reason, and admission-rate ceilings before staging. Preserve audit in bounded hash-chained segments rotated only after verified off-host backup, with an isolated root-administrator reserve. |
-| Nested locks deadlock or accumulate waiters | Acquire export, publication, and tenant-state only in that global order; never upgrade; return retryable busy before allocating work; revalidate archive source state after its unlocked construction phase. |
+| Nested locks deadlock or accumulate waiters | Acquire export, publication, and tenant-state only in that global order; never upgrade; return retryable busy before allocating work; revalidate archive source state after its unlocked construction phase; and never wait for a systemd job that reacquires publication while holding it. |
 | Delayed rollback undoes suspension | Recheck lifecycle state under the publication lock; while suspended, change only the remembered deployment and require explicit resume before publishing. |
 | Manifest or audit tampering | Keep desired and observed state and append-only audit operations root-owned; allow the provisioner no direct write, replacement, truncation, or deletion authority. |
-| Crash or power loss between filesystem, route, reload, and state changes | Durably sync generation targets and parents before intent, sync intent before selecting and syncing the active reference, sync desired/observed state and audit before clearing intent, and reconcile from durable evidence. |
+| Crash or power loss between filesystem, route, reload, restart handoff, and state changes | Durably sync generation targets and parents before intent, sync intent before selecting and syncing the active reference, persist every restart phase before releasing its lock, sync desired/observed state and audit before clearing intent, and reconcile from durable evidence. |
 | Cross-tenant read or overwrite | Derive all paths from validated UUIDs, prohibit caller paths, use root ownership, and test hostile operations across two tenants. |
 | Backup or export captures incompatible generations | Backup uses a shared tenant-state lock; mutation uses it exclusively. Export captures its manifest and immutable release into a root-owned snapshot while holding that shared lock and constructs the bundle only from the snapshot. Restored state must reconcile before publication. |
 | Concurrent exports exhaust privileged storage | Serialize export and archive construction behind one root-owned host lock; enforce one snapshot, one unacknowledged result, aggregate spool byte/inode ceilings, an encoded-output ceiling, a host free-space reserve, and root-owned terminal, startup, acknowledgement, and expiry cleanup. |
@@ -139,9 +145,10 @@ Implementation and review must preserve these invariants:
 3. Every live canonical content route refers to one validated immutable release
    belonging to the same tenant ID. Every slug route is a platform-only alias
    to that tenant's UUID-derived canonical origin and cannot reach a release.
-4. Candidate validation, active-generation selection, Ansible Caddy commits,
-   reload or restart, and rollback occur while holding the global publication
-   lock; no other path mutates live Caddy inputs.
+4. Candidate validation, active-generation selection, synchronous reload, and
+   every restart or rollback phase transition occur while holding the global
+   publication lock; no other path mutates live Caddy inputs. External systemd
+   waits occur only after releasing it.
 5. Desired state, observed state, releases, and audit events are recoverable and
    reconciliation never publishes unvalidated content.
 6. Unknown manifest fields, unsupported archive semantics, and unrecognized
@@ -187,7 +194,8 @@ Implementation and review must preserve these invariants:
 19. One active reference selects the manifest-bound binary, environment, and
     complete Caddy configuration together. Every start reconciles intent and
     pins that generation once; automatic restart cannot combine live paths from
-    different generations.
+    different generations. A restart commits only after post-start verification,
+    and no initiator holds publication while waiting for systemd to reacquire it.
 20. Nested operations acquire export, publication, and tenant-state only in that
     order, never upgrade, and do not queue unbounded waiters. Archive revalidates
     its captured source generation under exclusive state before committing.

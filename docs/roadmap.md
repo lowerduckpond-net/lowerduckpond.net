@@ -362,7 +362,9 @@ Implement idempotent commands or jobs for:
   routes without accepting Caddy text or a redirect target.
 - Enforce the exact bare-root, non-cached, no-referrer alias contract and omit
   raw path, query, cookie, authorization, and referrer values from alias logs.
-- Validate, reload, and roll back Caddy under one publication lock.
+- Validate, select, reload, and advance every restart or rollback phase under
+  one publication lock, while releasing it before any systemd job must
+  reacquire it.
 - Enforce the global export → publication → tenant-state lock order, reject
   contended requests before staging, and revalidate two-phase archive capture
   under exclusive state before commit.
@@ -370,8 +372,11 @@ Implement idempotent commands or jobs for:
   complete Caddy generations, intent, active references, state, audit, and
   rollback.
 - Refactor Ansible Caddy convergence to commit every mutable live Caddy input in
-  one runtime generation under the publication lock. Freeze a small systemd
-  bootstrap that reconciles intent and pins one generation before every start.
+  one runtime generation under the publication lock. Use durable phased intent
+  and a non-blocking systemd handoff for binary or environment restarts, with
+  post-start verification and rollback after independent lock acquisitions.
+  Freeze a small systemd bootstrap that reconciles intent and pins one
+  generation before every start.
 - Retain only active, last-known-good, and current-intent Caddy generations;
   enforce a 256-MiB/4,096-inode aggregate cap, unique-inode accounting,
   free-space admission, and secret-safe cleanup.

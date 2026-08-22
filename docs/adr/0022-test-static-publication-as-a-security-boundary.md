@@ -44,12 +44,23 @@ of the alias.
 
 An installed-host concurrency test pauses tenant activation while Ansible has a
 candidate Caddy base transaction ready to commit, then proves that only one
-transaction can select a complete runtime generation and reload or restart at a
-time. At every durability phase it kills Caddy to trigger automatic restart and
-proves the recovery gate and launcher select one manifest-verified generation,
-never a mixed binary, environment, base configuration, or tenant route set. It
-verifies that the resulting Caddy configuration and observed tenant state
-describe the same committed generation.
+transaction can select a complete runtime generation and own a reload or
+restart intent at a time. At every durability phase it kills Caddy to trigger
+automatic restart and proves the recovery gate and launcher select one
+manifest-verified generation, never a mixed binary, environment, base
+configuration, or tenant route set. It verifies that the resulting Caddy
+configuration and observed tenant state describe the same committed generation.
+
+Restart-handoff tests pause after intent creation, active-reference selection,
+non-blocking job submission, pre-start transition, launcher pinning,
+post-start health verification, rollback selection, and recovery restart.
+They prove the initiating transaction never retains the publication lock while
+systemd needs it, later mutations return busy while intent is nonterminal, a
+lost or duplicated job submission is idempotent, and every crash converges on
+the complete candidate or preceding generation. Candidate and
+last-known-good start failures must preserve intent and evidence, stop after the
+single candidate and single recovery transitions, and never enter an automatic
+restart loop.
 
 Bootstrap tests interrupt the initial and upgrade maintenance transactions
 between stop, mask, unit installation, launcher installation, systemd reload,
@@ -78,11 +89,12 @@ Free-space fixtures exercise both the absolute and percentage block/inode floors
 and prove root-reserved blocks are excluded from admission capacity.
 
 Durability tests record filesystem operations and inject failure after every
-file sync, directory sync, rename, reload, state commit, audit append, and intent
+file sync, directory sync, rename, reload, restart-intent transition, systemd
+job handoff, post-start verification, state commit, audit append, and intent
 removal boundary. Reconciliation must select only a fully durable new
 generation or the durable prior generation. Installed-host tests additionally
-terminate the activator at each externally visible phase and verify restart
-recovery.
+terminate the activator and each restart helper at every externally visible
+phase and verify recovery.
 
 Hostile fixtures must cover traversal, absolute and ambiguous paths, links,
 special entries, duplicate and case-colliding names, expansion and quota abuse,

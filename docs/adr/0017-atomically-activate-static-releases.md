@@ -31,13 +31,16 @@ redirect defined by ADR 0023. It cannot serve or proxy the release. Unchanged
 host payloads may be root-created hard links to the same immutable inodes, but
 every generation is independently manifest-verified.
 Validate the complete candidate with its own binary and environment, atomically
-replace one root-owned active-generation reference, and reload or restart Caddy
-as the transaction declares. If activation fails, restore the preceding
-reference and the complete last-known-good runtime generation.
+replace one root-owned active-generation reference, and commit it through the
+synchronous reload path or durable restart state machine described below. If
+activation fails, restore the preceding reference and the complete
+last-known-good runtime generation.
 
-Every process that changes live Caddy inputs or reloads or restarts the service
-uses the same global publication lock. Before tenant publication is enabled,
-refactor the Ansible Caddy role to render a complete candidate runtime
+Every process that changes live Caddy inputs or advances a reload or restart
+uses the same global publication lock for each state transition. No process
+holds it while synchronously waiting for a systemd job whose `ExecStartPre`,
+launcher, or `ExecStartPost` must acquire it. Before tenant publication is
+enabled, refactor the Ansible Caddy role to render a complete candidate runtime
 generation outside live paths, combining its proposed base configuration,
 environment, and binary with the current validated tenant routes. Apply it
 through a root-owned host-configuration transaction under that lock. Ansible no
@@ -55,18 +58,63 @@ recovery gate, and runtime compatibility have been installed and verified; a
 crash leaves Caddy unavailable rather than starting a mixed generation.
 
 Before every start and automatic restart, a privileged `ExecStartPre` recovery
-gate acquires the publication lock and reconciles any intent. The unprivileged
-launcher then holds the lock while it reads the active reference once, opens
-that immutable generation directory, verifies its manifest, and opens every
-binary, environment, and configuration input relative to the pinned directory
-descriptor without following links. It loads the environment, passes the open
-configuration to Caddy, releases the lock after all inputs are pinned, and
-executes the already-open binary; it never resolves the active reference once
-per input, and it does not retain the lock for Caddy's lifetime. The reload
-helper uses the same pinned-directory-descriptor rule and sends the already-open
-complete configuration to the running matching binary. Host transactions that
-change binary or environment always restart rather than reload. Thus systemd
-`Restart=` cannot observe a partially selected set of paths.
+gate acquires the publication lock and reconciles any intent. It verifies that
+the active reference and named generation match stable observed state or an
+allowed start or restart phase, binds the current systemd invocation ID,
+durably advances a nonterminal intent to `starting`, and releases the lock. The
+unprivileged launcher then reacquires the lock while it reads the active
+reference once, opens that immutable generation directory, verifies its
+manifest, and opens every binary, environment, and configuration input relative
+to the pinned directory descriptor without following links. It loads the
+environment, passes the open configuration to Caddy, releases the lock after
+all inputs are pinned, and executes the already-open binary; it never resolves
+the active reference once per input, and it does not retain the lock for
+Caddy's lifetime.
+
+The reload helper uses the same pinned-directory-descriptor rule and sends the
+already-open complete configuration to the running matching binary. A
+configuration-only tenant transaction may reload and commit synchronously while
+holding the publication lock because it does not traverse systemd's start
+hooks. A host transaction that changes the binary or environment always uses
+the restart state machine rather than reload.
+
+For a restart, the host transaction reconciles any earlier intent, stages and
+validates the candidate, and then durably records a root-owned restart intent.
+The intent binds the operation and correlation IDs, previous and candidate
+generation IDs and manifests, expected running inputs, prior observed state,
+and a compare-and-swap phase. Under the publication lock it selects and syncs
+the candidate active reference and advances intent to `restart-required`. It
+then releases the lock before idempotently queuing
+`systemctl --no-block restart caddy`; a crash before or after queuing is
+indistinguishable and recovery may queue it again while the nonterminal intent
+remains authoritative.
+
+After Caddy starts, a privileged `ExecStartPost` verifier acquires the
+publication lock, proves that the systemd invocation, running executable,
+loaded configuration, active reference, and healthy admin response all match
+the intended candidate, and only then commits observed state, audit, and the
+immutable operation result before clearing intent. The originating host
+transaction waits for that result without holding any host lock. A bounded
+client timeout does not clear intent or independently roll back; the post-start
+verifier or reconciler owns the terminal transition.
+
+If candidate start or verification fails, a separate privileged recovery unit
+triggered through `OnFailure=` acquires the publication lock, selects and syncs
+the preceding complete generation, and advances the same intent to
+`rollback-restart-required`. It releases the lock before idempotently queuing
+the non-blocking recovery restart. The same pre-start, launcher, and post-start
+path pins and verifies the prior generation, records the failed operation
+result and audit event, and clears intent only after the last-known-good
+generation is healthy. One intent admits at most one candidate start transition
+and one last-known-good recovery transition. Any later failure leaves Caddy
+unavailable with intent and evidence intact for operator recovery instead of
+entering an automatic restart loop.
+
+Every later mutation that encounters a nonterminal restart intent returns a
+retryable busy result before staging. Startup reconciliation resumes the only
+valid next phase or selects the durable prior generation. Thus systemd
+`Restart=` cannot observe a mixed set of paths, and no transaction can wait for
+a lock callback while retaining the publication lock itself.
 
 Retain at most three complete runtime generations: active, immediate
 last-known-good, and one candidate named by current intent. Before staging a
@@ -129,14 +177,19 @@ ordered persistence protocol:
    over the old reference, and `fsync` its containing directory. A reference is
    never selected before its release and complete runtime generation are
    durable.
-4. Reload or restart Caddy according to the declared transaction. On success,
-   write desired and observed state through
+4. For a configuration-only reload, reload Caddy while holding the lock. On
+   success, write desired and observed state through
    write-`fsync`-rename-directory-`fsync`, append and `fsync` the audit event,
-   then remove the intent and `fsync` its directory.
-5. On validation, reload, or restart failure, atomically restore and durably
-   persist the prior reference before reloading or restarting the
-   last-known-good generation as appropriate. Persist the failure result and
-   audit event before removing intent.
+   then remove the intent and `fsync` its directory. For a restart, persist the
+   `restart-required` phase and release the lock before idempotently queuing the
+   non-blocking systemd job; the pre-start and post-start helpers advance and
+   commit the remaining phases under separate lock acquisitions.
+5. On validation or reload failure, atomically restore and durably persist the
+   prior reference before reloading the last-known-good generation as
+   appropriate. On restart failure, persist
+   `rollback-restart-required`, release the lock, and queue the recovery restart;
+   only its post-start verifier persists the failure result and audit event and
+   removes intent after the preceding generation is healthy.
 
 On startup and before any later mutation, reconciliation inspects durable
 intent, references, and state. It completes a transaction whose selected
@@ -221,15 +274,17 @@ new-ID admission closed until root reconciliation repairs it.
 
 ## Consequences
 
-The active Caddy-generation reference becomes the publication commit point.
-Releases can be prepared without affecting traffic, retries can reuse an already
-verified immutable release, and rollback selects a prior release without
-rewriting its content. Complete Caddy generations duplicate some metadata and
-retain Caddy-only secret environment files. Their three-generation and aggregate
-resource bounds add admission and garbage-collection work but keep that
-duplication finite. Durably syncing every file and directory adds deployment
-latency, bounded by the archive limits, in exchange for a recoverable commit
-after process termination or power loss.
+The active Caddy-generation reference is the atomic runtime-selection point;
+the terminal publication commit also requires successful reload or post-start
+verification plus durable observed state and audit while intent is present.
+Releases can be prepared without affecting traffic, retries can reuse an
+already verified immutable release, and rollback selects a prior release
+without rewriting its content. Complete Caddy generations duplicate some
+metadata and retain Caddy-only secret environment files. Their three-generation
+and aggregate resource bounds add admission and garbage-collection work but
+keep that duplication finite. Durably syncing every file and directory adds
+deployment latency, bounded by the archive limits, in exchange for a
+recoverable commit after process termination or power loss.
 
 The backup service, root activator, and Ansible Caddy transaction must share
 their respective state and publication lock contracts. Caddy route generation
