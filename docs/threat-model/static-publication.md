@@ -181,6 +181,8 @@ Implementation and review must preserve these invariants:
 21. ZIP entry names, metadata, offsets, and data regions satisfy explicit byte,
     depth, count, field, and non-overlap bounds before extraction; implicit
     directories consume the same entry budget as explicit entries.
+22. Every lifecycle operation is allowlisted by source state; an unlisted pair
+    changes nothing, and no operation except `resume` may leave `suspended`.
 
 ## Residual risks
 

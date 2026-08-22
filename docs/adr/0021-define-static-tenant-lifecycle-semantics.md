@@ -92,6 +92,34 @@ correlation ID and request returns the established result. Automated notices,
 grace periods, retention expiry, and scheduled deletion remain Milestone 4
 policy rather than Milestone 3 host behavior.
 
+The complete ordinary transition matrix is:
+
+| Operation | Allowed source | Result |
+| --- | --- | --- |
+| `create` | absent | `undeployed`; an existing tenant or slug follows conflict/idempotency rules rather than creating another identity. |
+| `deploy` | `undeployed`, `active` | Installs a new deployment and becomes or remains `active`. |
+| `deploy` | `suspended` | Installs and remembers the new deployment but remains unrouted and `suspended`. |
+| `rollback` | `active` | Selects and publishes a retained prior deployment; remains `active`. |
+| `rollback` | `suspended` | Selects only the remembered deployment; remains unrouted and `suspended`. |
+| `suspend` | `active`, `suspended` | Removes the route and becomes or remains `suspended`. |
+| `resume` | `suspended`, `active` | Publishes the remembered deployment and becomes or remains `active`; no other operation may leave `suspended`. |
+| `rename` | `undeployed`, `active`, `suspended` | Changes the slug without changing lifecycle state; only `active` receives a replacement route. |
+| `export` | `active`, `suspended` | Snapshots the selected deployment without changing state. |
+| `export` | `archived` | Revalidates and returns the bound durable bundle without changing state. |
+| `archive` | `active`, `suspended` | Captures and verifies the selected deployment, removes any route, and becomes `archived`. |
+| `archive` | `archived` | Revalidates the existing bound durable bundle and remains `archived`. |
+| `restore` | `archived` | Validates the bound bundle as a new deployment and becomes `active`. |
+| `delete` | never-deployed `undeployed`, current-evidence `archived` | Applies the corresponding audited ordinary deletion rule and removes desired state. |
+| `reconcile` | every persisted state | Repairs observed state to the same valid desired state; it does not select a new desired transition. |
+
+Every unlisted source/operation pair fails closed without changing desired or
+observed state. In particular, archived tenants cannot deploy, roll back,
+suspend, resume, or rename; they must restore first, preventing a manifest
+change from silently detaching the archive evidence. Undeployed tenants cannot
+export, archive, roll back, suspend, or resume because no deployment exists.
+The separately authenticated emergency deletion remains outside this ordinary
+matrix.
+
 ## Consequences
 
 Suspended sites do not disclose whether a hostname exists, and rollback remains

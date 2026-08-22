@@ -90,6 +90,11 @@ suspension commits and prove that it can update only the remembered deployment,
 leaves the route absent, and requires a later explicit `resume` to publish.
 They also race two creates, and a create against a rename, for the same slug and
 prove that exactly one root-owned state transaction can commit the name.
+Table-driven tests cover every lifecycle operation against every absent,
+undeployed, active, suspended, and archived source, including idempotent
+same-state requests and every fail-closed cell. Deploy and rollback while
+suspended must change only the remembered deployment; rename while archived
+must fail rather than invalidate bound archive evidence.
 Export concurrency tests overlap snapshot capture with deploy, rollback,
 rename, suspension, and garbage collection. Every resulting bundle must contain
 a canonical manifest and immutable release from the same generation, and the

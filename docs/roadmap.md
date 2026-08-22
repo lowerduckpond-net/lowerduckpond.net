@@ -363,6 +363,8 @@ Implement idempotent commands or jobs for:
   one runtime generation under the publication lock. Freeze a small systemd
   bootstrap that reconciles intent and pins one generation before every start.
 - Suspend, resume, export, archive, restore, and delete a site.
+- Enforce and table-test the complete lifecycle operation/state matrix; reject
+  every unlisted pair without desired or observed state changes.
 - Commit archive evidence, `desiredState: archived`, and route removal through
   one write-ahead transaction that reconciles to the old or new generation.
 - Allow audited archive-free deletion of a never-deployed reservation only when
