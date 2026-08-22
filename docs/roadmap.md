@@ -351,6 +351,8 @@ Implement idempotent commands or jobs for:
 - Refactor Ansible Caddy convergence to commit every live Caddy input and reload
   through the same publication lock rather than racing tenant activation.
 - Suspend, resume, export, archive, restore, and delete a site.
+- Commit archive evidence, `desiredState: archived`, and route removal through
+  one write-ahead transaction that reconciles to the old or new generation.
 - Allow audited archive-free deletion of a never-deployed reservation only when
   its complete root-owned history proves no deployment ever existed.
 - Capture each export's canonical manifest and immutable release into a

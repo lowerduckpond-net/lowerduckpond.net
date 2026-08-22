@@ -160,6 +160,9 @@ Implementation and review must preserve these invariants:
 16. Portable-bundle construction is globally serialized and cannot exceed one
     root-owned snapshot, one unacknowledged output, or the aggregate export-spool
     byte, inode, output, and host free-space bounds.
+17. Archive commits the proposed archived manifest and removal of its route
+    through one recoverable intent transaction; reconciliation exposes only the
+    preceding active generation or the complete archived generation.
 
 ## Residual risks
 
