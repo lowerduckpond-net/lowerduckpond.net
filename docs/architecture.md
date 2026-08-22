@@ -1,6 +1,6 @@
 # Lower Duck Pond Hosting: Project Vision and Architecture
 
-Status: proposed baseline for the initial public repository
+Status: accepted baseline through the Milestone 3 design decisions
 Primary domain: `lowerduckpond.net`
 First tenant: `lowerduckpond.com`
 
@@ -112,7 +112,12 @@ Caddy is the only public web entry point. It:
 - Emits structured access logs tagged with the requested hostname and resolved tenant.
 - Serves the provider portal and `lowerduckpond.com` as distinct virtual hosts.
 
-The routing configuration is generated from tenant manifests. A bad tenant deployment must not be able to replace the entire Caddy configuration. The provisioner validates a candidate configuration before atomically installing and reloading it.
+The routing configuration is generated from tenant manifests. A bad tenant
+deployment must not be able to replace the entire Caddy configuration. A
+narrow root-owned activator revalidates an immutable release, generates and
+validates a complete allowlisted route-set generation, atomically selects it,
+and reloads Caddy. The unprivileged provisioner cannot submit Caddy text or
+write active routes.
 
 ### 5.4 Tenant runtime
 
@@ -121,10 +126,13 @@ The routing configuration is generated from tenant manifests. A bad tenant deplo
 A static tenant receives:
 
 - A unique immutable tenant ID and mutable public slug.
-- A content directory owned by the deployment service, not by the Caddy process.
-- Read-only access from Caddy.
+- Root-owned immutable releases that neither the provisioner nor Caddy can
+  modify after validation.
+- Read-only content access from Caddy through a root-generated route that names
+  one exact release.
 - File-count and storage quotas.
-- A generated route for `<slug>.lowerduckpond.net`.
+- A generated route in a tenant namespace where each mutually untrusted tenant
+  is a distinct registrable domain according to supported browsers.
 - No executable server-side code.
 
 Static sites are inexpensive enough to remain online even when lightly visited. Lifecycle decisions should therefore be based primarily on owner activity and explicit renewal, not page views.
@@ -167,9 +175,15 @@ The database can later move to DigitalOcean Managed Databases without changing t
 The public web application should not run privileged container or filesystem operations directly. Split it conceptually into:
 
 - **Control plane:** authentication, signup, site metadata, user-visible status, approvals, renewal, cancellation, and audit history.
-- **Provisioner:** a narrowly privileged worker that consumes idempotent jobs and applies tenant manifests to the correct host.
+- **Provisioner:** an unprivileged worker that consumes idempotent jobs,
+  validates tenant inputs, and requests exact operations from a narrow
+  root-owned activator on the assigned host.
 
-The single-host implementation may deploy both components together, but their permissions and interfaces should remain separate. That boundary becomes the natural per-host agent interface when the platform grows.
+The single-host implementation may deploy both components together, but their
+permissions and interfaces should remain separate. Neither the public control
+plane nor the provisioner receives general sudo, arbitrary filesystem, or Caddy
+configuration access. That boundary becomes the natural per-host agent
+interface when the platform grows.
 
 Every provisioning operation should be idempotent and recorded with a correlation ID. Retrying `create site`, `suspend site`, or `archive site` must converge on the requested state rather than creating duplicate databases, credentials, containers, or routes.
 
@@ -182,7 +196,22 @@ Cloudflare remains the authoritative DNS provider. OpenTofu manages records such
 - `*.lowerduckpond.net`
 - Administrative or status hostnames
 
-The wildcard record points to the DigitalOcean reserved IP. Caddy obtains and renews certificates for `lowerduckpond.net` and `*.lowerduckpond.net` through the ACME DNS-01 challenge using a narrowly scoped Cloudflare API token. Caddy requires a DNS provider module for this flow, so the project should build and pin its Caddy image rather than relying on an unversioned local binary.
+The existing wildcard record points to the DigitalOcean reserved IP. Caddy
+obtains and renews certificates for `lowerduckpond.net` and
+`*.lowerduckpond.net` through the ACME DNS-01 challenge using a narrowly scoped
+Cloudflare API token. Caddy requires a DNS provider module for this flow, so the
+project should build and pin its Caddy image rather than relying on an
+unversioned local binary.
+
+Do not publish tenant-controlled content beneath `lowerduckpond.net`: sibling
+subdomains can set parent-domain cookies that reach the platform and one
+another. Before Milestone 3 publication, provision an operator-owned tenant
+namespace where every tenant hostname is a distinct registrable domain under
+the Public Suffix List behavior of supported browsers. This may use a
+project-controlled private suffix after browser recognition or another source
+of distinct registrable tenant domains. A separate shared registrable domain
+without that boundary protects the platform but does not isolate tenants from
+one another.
 
 `lowerduckpond.com` is configured as an ordinary independent tenant hostname and receives its own automatically managed certificate. Custom tenant domains can be considered later; they are not required for the initial service.
 
@@ -328,6 +357,7 @@ Keeping the first customer separate prevents the platform from receiving undocum
 - [DigitalOcean provider resources](https://docs.digitalocean.com/reference/terraform/reference/resources/)
 - [Caddy automatic HTTPS](https://caddyserver.com/docs/automatic-https)
 - [Caddy wildcard certificate pattern](https://caddyserver.com/docs/caddyfile/patterns#wildcard-certificates)
+- [Public Suffix List](https://publicsuffix.org/)
 - [Podman Quadlet](https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html)
 - [Podman Quadlet basic usage](https://docs.podman.io/en/latest/markdown/podman-quadlet-basic-usage.7.html)
 - [OpenTofu state locking](https://opentofu.org/docs/language/state/locking/)
