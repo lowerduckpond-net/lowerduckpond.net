@@ -25,6 +25,18 @@ BACKUP_SOURCE_PATHS = (
     "/var/lib/lowerduckpond/manifests",
     "/var/lib/lowerduckpond/audit",
 )
+SYSTEMD_SYSTEM_UNIT_PATHS = (
+    "/etc/systemd/system/caddy.service",
+    "/etc/systemd/system/lowerduckpond-backup.service",
+    "/etc/systemd/system/lowerduckpond-backup.timer",
+    "/etc/systemd/system/lowerduckpond-backup-maintenance.service",
+    "/etc/systemd/system/lowerduckpond-backup-maintenance.timer",
+    "/etc/systemd/system/lowerduckpond-health.service",
+    "/etc/systemd/system/lowerduckpond-health.timer",
+)
+SYSTEMD_USER_UNIT_PATH = (
+    "/var/lib/lowerduckpond/runtime/.config/systemd/user/lowerduckpond-podman-ready.service"
+)
 
 
 def read_status_scope(host: Host, variable_name: str) -> str:
@@ -232,6 +244,24 @@ def test_nftables_policy_compiles_and_blocks_metadata(host: Host) -> None:
     policy = host.file("/etc/nftables.conf")
     assert policy.contains("169.254.169.254")
     assert policy.contains("policy drop")
+
+
+def test_project_systemd_units_pass_static_verification(host: Host) -> None:
+    for unit_path in SYSTEMD_SYSTEM_UNIT_PATHS:
+        system_unit = host.run(
+            "systemd-analyze verify --recursive-errors=no %s",
+            unit_path,
+        )
+        assert system_unit.rc == 0, f"{unit_path}: {system_unit.stderr}"
+
+    user_unit = host.run(
+        "runuser --user ldp-runtime -- env "
+        "HOME=/var/lib/lowerduckpond/runtime "
+        "XDG_RUNTIME_DIR=/run/user/21000 "
+        "systemd-analyze --user verify --recursive-errors=no %s",
+        SYSTEMD_USER_UNIT_PATH,
+    )
+    assert user_unit.rc == 0, f"{SYSTEMD_USER_UNIT_PATH}: {user_unit.stderr}"
 
 
 def test_backup_configuration_is_atomic_and_sandboxed(host: Host) -> None:
