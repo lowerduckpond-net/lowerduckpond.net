@@ -308,7 +308,7 @@ spec:
     archiveSha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
   quotas:
     storageMiB: 100
-    files: 5000
+    entries: 5000
 ```
 
 The hostname is derived as `<slug>.lowerduckpond.net`; arbitrary and custom
@@ -325,7 +325,7 @@ Implement idempotent commands or jobs for:
 - Validate slug and hostname uniqueness.
 - Stage and validate an uploaded archive.
 - Reject unsafe or ambiguous paths, links, special files, archive expansion,
-  excessive file counts, and quota violations.
+  excessive entry counts, and quota violations.
 - Revalidate and extract through the narrow root-owned activator.
 - Atomically activate a complete route-set generation pointing directly to an
   immutable deployment.

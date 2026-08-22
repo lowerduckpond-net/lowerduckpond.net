@@ -87,7 +87,7 @@ observed-state record.
 | --- | --- |
 | Path traversal or absolute extraction | Normalize and validate every path twice; extract through directory-relative, no-follow operations; hostile fixtures must fail. |
 | Symlink, hard-link, device, FIFO, socket, or permission abuse | Accept only regular files/directories; normalize modes; inspect ZIP metadata and actual created objects. |
-| ZIP bomb, oversized file set, disk or inode exhaustion | Enforce compressed, expanded, per-file, file-count, and ratio limits during streaming extraction; delete failed staging trees. |
+| ZIP bomb, oversized entry set, disk or inode exhaustion | Enforce compressed, expanded, per-file, total-entry, and ratio limits during streaming extraction; count directories as entries and delete failed staging trees. |
 | Duplicate, Unicode, slash, backslash, or case ambiguity | Normalize first, reject ambiguity and collisions, and generate deterministic manifests and exports. |
 | Mutation after validation | Root performs final extraction; active releases and route sets are root-owned and immutable to Caddy and the provisioner. |
 | Arbitrary Caddy behavior or secret disclosure | Generate allowlisted routes from validated primitives; accept no Caddy text; keep the admin socket Caddy-only. |

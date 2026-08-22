@@ -28,7 +28,8 @@ immutable deployment record carries its creation time and correlation ID. Keep
 observed activation status, including the active release, separate from desired
 state so reconciliation can detect and repair drift.
 
-The initial platform ceilings are 100 MiB of extracted content and 5,000 files.
+The initial platform ceilings are 100 MiB of extracted content and 5,000 total
+archive entries, counting both regular files and directories.
 The desired lifecycle states are `active`, `suspended`, and `archived`. Deletion
 removes desired state only through an audited operation and retains a tombstone
 audit event rather than representing ordinary mutable state as `deleted`.

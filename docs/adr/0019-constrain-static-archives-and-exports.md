@@ -23,7 +23,8 @@ Apply these initial limits before and during root-side extraction:
 
 - at most 100 MiB in the uploaded ZIP;
 - at most 100 MiB of extracted regular-file content;
-- at most 5,000 regular files;
+- at most 5,000 extracted entries in total, counting both regular files and
+  directories;
 - at most 25 MiB in one file; and
 - at most a 100:1 declared or observed expansion ratio.
 
