@@ -43,10 +43,32 @@ tenant generation with content from another or lose its release during capture.
 ZIP construction and checksum generation consume only the completed snapshot
 and may proceed after the lock is released.
 
-Produce a portable ZIP export containing a format version, canonical tenant
-manifest, current static content, and SHA-256 checksums. Export does not change
-site state. Archive and restore use this versioned portable bundle; a later Git
-integration must produce the same validated internal deployment artifact.
+Produce a portable ZIP export with this fixed versioned envelope:
+
+```text
+lowerduckpond-export-v1/
+├── format.json
+├── manifest.json
+├── checksums.sha256
+└── content/
+    ├── index.html
+    └── ...
+```
+
+`format.json` identifies the export format and version, `manifest.json` is the
+canonical tenant manifest from the snapshot, and `checksums.sha256` lists those
+two files and every regular file below `content/` in normalized bytewise path
+order. Tenant files always appear below `content/`; they can therefore use any
+otherwise valid path without colliding with envelope metadata. Restore rejects
+entries outside the single envelope root, unknown or duplicate metadata,
+missing required entries, and checksum or canonicalization failures before it
+passes the `content/` subtree through the ordinary deployment validator.
+
+Deployment uploads remain the flat, root-`index.html` ZIP format; a portable
+export is not accepted as a deployment archive without the explicit restore
+path. Export does not change site state. Archive and restore use this versioned
+portable bundle; a later Git integration must produce the same validated
+internal deployment artifact.
 
 ## Consequences
 

@@ -353,6 +353,8 @@ Implement idempotent commands or jobs for:
 - Suspend, resume, export, archive, restore, and delete a site.
 - Capture each export's canonical manifest and immutable release into a
   root-owned snapshot under the shared tenant-state lock before bundling it.
+- Wrap portable exports in the versioned `lowerduckpond-export-v1/` envelope,
+  with fixed metadata paths and all tenant-controlled files below `content/`.
 - Reconcile actual host state against all desired manifests.
 - Permit the provisioner to request validated state changes without granting it
   write access to desired state, observed state, or audit history.

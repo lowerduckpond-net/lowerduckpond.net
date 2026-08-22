@@ -65,6 +65,10 @@ Export concurrency tests overlap snapshot capture with deploy, rollback,
 rename, suspension, and garbage collection. Every resulting bundle must contain
 a canonical manifest and immutable release from the same generation, and the
 captured release must remain available until export construction completes.
+Export fixtures give tenant content each reserved metadata basename and prove
+that round-trip restore preserves it below `content/`. Negative fixtures cover
+metadata outside the versioned envelope, duplicate metadata, unknown envelope
+entries, checksum mismatch, and using an export as an ordinary deployment ZIP.
 
 After CI and disposable-host acceptance pass, publish a reserved production
 canary in the approved origin-isolated tenant namespace, verify browser
