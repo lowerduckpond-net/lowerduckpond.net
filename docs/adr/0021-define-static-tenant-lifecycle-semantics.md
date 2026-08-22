@@ -12,6 +12,10 @@ state that the Milestone 4 scheduler cannot safely adopt.
 
 ## Decision
 
+Create establishes an `undeployed` tenant with no deployment or public route.
+The first successful deploy installs an immutable release and moves it to
+`active`; creation and deployment remain independently idempotent operations.
+
 Retain the active immutable release and its two immediately preceding releases.
 A successful activation triggers garbage collection only after the new route is
 serving and its state is durably recorded.
@@ -61,7 +65,9 @@ requires another public template. In-place rollback was rejected because it
 destroys immutable evidence. Treating `deleted` as an ordinary manifest state
 was rejected because deletion removes desired state and must retain only an
 audit tombstone. Immediate unarchived deletion was rejected as too easy to
-invoke accidentally.
+invoke accidentally. Requiring an archive during `create` was rejected because
+it would collapse two accepted operator operations and prevent reserving a slug
+before its first deployment.
 
 ## References
 

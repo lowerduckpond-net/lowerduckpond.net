@@ -23,10 +23,13 @@ reserved-name list. Derive the Milestone 3 hostname as
 `<slug>.lowerduckpond.net`; do not accept an arbitrary domain in this version.
 
 The desired manifest records the tenant ID, slug, `runtime: static`, desired
-lifecycle state, quotas, desired deployment ID, and archive SHA-256. An
-immutable deployment record carries its creation time and correlation ID. Keep
-observed activation status, including the active release, separate from desired
-state so reconciliation can detect and repair drift.
+lifecycle state, and quotas. `create` persists a manifest with
+`desiredState: undeployed` and no `desiredDeployment`. The deployment reference,
+containing a deployment UUIDv7 and archive SHA-256, becomes required when the
+state changes to `active`, `suspended`, or `archived`. An immutable deployment
+record carries its creation time and correlation ID. Keep observed activation
+status, including the active release, separate from desired state so
+reconciliation can detect and repair drift.
 
 Persist desired and observed state, deployment and archive records, and audit
 history in root-owned stores. The root activator validates and commits desired
@@ -36,9 +39,11 @@ replace, or remove authoritative state or audit history.
 
 The initial platform ceilings are 100 MiB of extracted content and 5,000 total
 archive entries, counting both regular files and directories.
-The desired lifecycle states are `active`, `suspended`, and `archived`. Deletion
-removes desired state only through an audited operation and retains a tombstone
-audit event rather than representing ordinary mutable state as `deleted`.
+The desired lifecycle states are `undeployed`, `active`, `suspended`, and
+`archived`. Schema conditionals reject a deployment reference in an undeployed
+manifest and require one in every other state. Deletion removes desired state
+only through an audited operation and retains a tombstone audit event rather
+than representing ordinary mutable state as `deleted`.
 
 Schema-version changes require explicit migration code and fixtures. A stable
 tenant ID does not change when its slug or active deployment changes.
@@ -60,7 +65,9 @@ illustrative ULID-shaped identifier in the original roadmap.
 ULID was rejected because Python 3.14 provides UUIDv7 directly. Caller-supplied
 hostnames were rejected because wildcard subdomains are the only approved
 Milestone 3 routing scope. Permissive schemas were rejected because ignored or
-misspelled security fields are unsafe at a privileged boundary.
+misspelled security fields are unsafe at a privileged boundary. Combining
+initial creation and deployment was rejected because the accepted operator
+interface exposes them as separate idempotent operations.
 
 ## References
 

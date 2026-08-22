@@ -27,6 +27,11 @@ route set, atomically replace the root-owned active-route reference, and reload
 Caddy. If reload fails, restore the preceding reference and reload the last
 known-good route set.
 
+An undeployed tenant has authoritative desired state but no deployment record,
+release, or route. Its first successful `deploy` operation creates those
+artifacts and changes desired state to `active` through the ordinary activation
+transaction.
+
 Serialize activation, rollback, rename, suspension, archival, restoration,
 deletion, and reconciliation with one root-owned publication lock. Record intent
 before changing the active reference so reconciliation can finish or reverse an

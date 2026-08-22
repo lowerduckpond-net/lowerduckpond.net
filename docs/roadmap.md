@@ -322,6 +322,8 @@ separate.
 Implement idempotent commands or jobs for:
 
 - Create desired tenant state and root-owned immutable release storage.
+- Represent a newly created tenant as undeployed, without requiring a synthetic
+  deployment ID or archive digest.
 - Migrate authoritative manifest and audit storage from the empty Milestone 2
   provisioner-owned directories to root ownership before accepting tenant data.
 - Validate slug and hostname uniqueness.
@@ -341,6 +343,8 @@ Implement idempotent commands or jobs for:
 
 ### End-to-end tests
 
+- Create an undeployed tenant and verify that it persists without a release or
+  public route.
 - Provision a tenant and observe a valid HTTPS response.
 - Deploy a replacement and verify atomic cutover.
 - Roll back to the previous release.
