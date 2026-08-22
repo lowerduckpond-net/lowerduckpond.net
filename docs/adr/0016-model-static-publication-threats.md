@@ -23,8 +23,10 @@ publication.
 The platform never accepts caller-generated Caddy text, never serves a
 provisioner-writable tree, and never extracts an archive into a public content
 tree. Milestone 3 supports only static content at a derived
-`<slug>.lowerduckpond.net` hostname. Custom domains and executable content stay
-outside this boundary.
+hostname in an operator-owned tenant namespace where each tenant is a distinct
+registrable domain according to supported browsers. `lowerduckpond.net` remains
+platform-only. Custom domains and executable content stay outside this
+boundary.
 
 Desired manifests, observed state, deployment records, archive records, and
 audit history are root-owned. The provisioner may receive narrowly scoped read

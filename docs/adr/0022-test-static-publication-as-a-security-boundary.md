@@ -49,10 +49,11 @@ simulate the operator-authenticated emergency deletion path, modify manifests
 or observed state, or truncate, replace, or remove audit evidence.
 
 After CI and disposable-host acceptance pass, publish a reserved production
-canary below the existing wildcard, verify HTTPS, rollback, suspension, restore,
-backup recovery, and idempotence, and remove all canary state through the same
-operator interface. Dynamic or destructive isolation tests remain off the
-production host.
+canary in the approved origin-isolated tenant namespace, verify browser
+registrable-domain behavior, HTTPS, rollback, suspension, restore, backup
+recovery, and idempotence, and remove all canary state through the same operator
+interface. Dynamic or destructive isolation tests remain off the production
+host.
 
 ## Consequences
 

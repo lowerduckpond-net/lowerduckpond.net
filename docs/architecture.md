@@ -131,7 +131,8 @@ A static tenant receives:
 - Read-only content access from Caddy through a root-generated route that names
   one exact release.
 - File-count and storage quotas.
-- A generated route for `<slug>.lowerduckpond.net`.
+- A generated route in a tenant namespace where each mutually untrusted tenant
+  is a distinct registrable domain according to supported browsers.
 - No executable server-side code.
 
 Static sites are inexpensive enough to remain online even when lightly visited. Lifecycle decisions should therefore be based primarily on owner activity and explicit renewal, not page views.
@@ -195,7 +196,22 @@ Cloudflare remains the authoritative DNS provider. OpenTofu manages records such
 - `*.lowerduckpond.net`
 - Administrative or status hostnames
 
-The wildcard record points to the DigitalOcean reserved IP. Caddy obtains and renews certificates for `lowerduckpond.net` and `*.lowerduckpond.net` through the ACME DNS-01 challenge using a narrowly scoped Cloudflare API token. Caddy requires a DNS provider module for this flow, so the project should build and pin its Caddy image rather than relying on an unversioned local binary.
+The existing wildcard record points to the DigitalOcean reserved IP. Caddy
+obtains and renews certificates for `lowerduckpond.net` and
+`*.lowerduckpond.net` through the ACME DNS-01 challenge using a narrowly scoped
+Cloudflare API token. Caddy requires a DNS provider module for this flow, so the
+project should build and pin its Caddy image rather than relying on an
+unversioned local binary.
+
+Do not publish tenant-controlled content beneath `lowerduckpond.net`: sibling
+subdomains can set parent-domain cookies that reach the platform and one
+another. Before Milestone 3 publication, provision an operator-owned tenant
+namespace where every tenant hostname is a distinct registrable domain under
+the Public Suffix List behavior of supported browsers. This may use a
+project-controlled private suffix after browser recognition or another source
+of distinct registrable tenant domains. A separate shared registrable domain
+without that boundary protects the platform but does not isolate tenants from
+one another.
 
 `lowerduckpond.com` is configured as an ordinary independent tenant hostname and receives its own automatically managed certificate. Custom tenant domains can be considered later; they are not required for the initial service.
 
@@ -341,6 +357,7 @@ Keeping the first customer separate prevents the platform from receiving undocum
 - [DigitalOcean provider resources](https://docs.digitalocean.com/reference/terraform/reference/resources/)
 - [Caddy automatic HTTPS](https://caddyserver.com/docs/automatic-https)
 - [Caddy wildcard certificate pattern](https://caddyserver.com/docs/caddyfile/patterns#wildcard-certificates)
+- [Public Suffix List](https://publicsuffix.org/)
 - [Podman Quadlet](https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html)
 - [Podman Quadlet basic usage](https://docs.podman.io/en/latest/markdown/podman-quadlet-basic-usage.7.html)
 - [OpenTofu state locking](https://opentofu.org/docs/language/state/locking/)

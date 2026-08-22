@@ -19,6 +19,8 @@ features require their own threat-model extensions before activation.
 
 - Tenant content cannot read or modify host secrets, host configuration, Caddy
   administration, another tenant, or backup credentials.
+- Tenant JavaScript cannot set parent-domain cookies that reach the platform or
+  another tenant.
 - A compromised provisioner cannot turn its narrow activation capability into
   arbitrary root, filesystem, process, or Caddy authority.
 - Only validated, quota-compliant regular files become publicly readable.
@@ -95,6 +97,7 @@ record.
 | ZIP bomb, oversized entry set, disk or inode exhaustion | Enforce compressed, expanded, per-file, total-entry, and ratio limits during streaming extraction; count directories as entries and delete failed staging trees. |
 | Duplicate, Unicode, slash, backslash, or case ambiguity | Normalize first, reject ambiguity and collisions, and generate deterministic manifests and exports. |
 | Duplicate YAML mapping keys | Reject duplicates during YAML composition, before schema validation or canonical JSON generation can discard the ambiguity. |
+| Platform or cross-tenant cookie poisoning | Keep `lowerduckpond.net` platform-only and require every tenant hostname to be a distinct registrable domain according to supported browser Public Suffix List behavior. |
 | Mutation after validation | Root performs final extraction; active releases and route sets are root-owned and immutable to Caddy and the provisioner. |
 | Arbitrary Caddy behavior or secret disclosure | Generate allowlisted routes from validated primitives; accept no Caddy text; keep the admin socket Caddy-only. |
 | Validation-to-reload race | Validate an immutable complete route-set generation and select it under the shared publication lock. |
@@ -133,6 +136,8 @@ Implementation and review must preserve these invariants:
 9. Authoritative manifests, observed state, deployment and archive records, and
    audit history are root-owned and writable only through narrow validated or
    append-only operations.
+10. No tenant-controlled response is served from `lowerduckpond.net` or a
+    hostname sharing a registrable domain with the platform or another tenant.
 
 ## Residual risks
 

@@ -311,8 +311,11 @@ spec:
     entries: 5000
 ```
 
-The hostname is derived as `<slug>.lowerduckpond.net`; arbitrary and custom
-domains are not accepted in this version. The stable UUIDv7 tenant ID does not
+The hostname is derived from an operator-owned tenant namespace where each slug
+is a distinct registrable domain according to supported browsers; arbitrary and
+custom domains are not accepted in this version. `lowerduckpond.net` remains
+platform-only. Selecting and provisioning the origin-isolated tenant namespace
+is required before the production canary. The stable UUIDv7 tenant ID does not
 change when a public slug changes. Desired manifests are stored as canonical
 JSON, while observed activation state and immutable deployment records remain
 separate.

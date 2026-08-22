@@ -21,7 +21,7 @@ A successful activation triggers garbage collection only after the new route is
 serving and its state is durably recorded.
 
 Suspension removes the tenant route and therefore returns the same generic 404
-as an unknown wildcard hostname; it preserves manifests, releases, and the last
+as an unknown tenant hostname; it preserves manifests, releases, and the last
 active deployment. Resume republishes that deployment. Rename atomically
 replaces the derived route while preserving the tenant ID. Rollback activates a
 retained prior release through the ordinary activation transaction. Export
