@@ -33,7 +33,10 @@ reload, backup overlap, restore, and reboot-relevant service configuration.
 Manifest fixtures include duplicate YAML keys for lifecycle, deployment, and
 quota fields and prove rejection occurs before schema validation and canonical
 JSON generation. Slug fixtures cover 1- and 63-byte valid labels, reject empty
-and 64-byte labels, and verify the complete derived hostname limit.
+and 64-byte labels, and verify the complete derived hostname limit. They also
+append LF, CR, CRLF, NUL, spaces, non-ASCII, and other control characters and
+prove both schema validation and the independent root ASCII `fullmatch` reject
+them before uniqueness or persistence.
 
 An installed-host concurrency test pauses tenant activation while Ansible has a
 candidate Caddy base transaction ready to commit, then proves that only one

@@ -21,12 +21,17 @@ fields so misspellings do not silently weaken policy.
 
 Use UUIDv7 values for immutable tenant and deployment IDs. Restrict slugs to
 1–63 ASCII bytes matching
-`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`, and maintain a committed reserved-name
-list. Because the alphabet is ASCII, the byte and character counts are equal.
-Validate the configured tenant-origin suffix so the resulting fully qualified
-hostname also remains within the DNS limit. Derive the Milestone 3 hostname
-from that operator-configured namespace; do not accept an arbitrary domain in
-this version.
+`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?![\s\S])`, whose final negative
+lookahead is an absolute-end assertion in both the JSON Schema ECMA-262 pattern
+dialect and Python. Do not use `$`, which can match before a final newline.
+Independently enforce the same grammar in the root validator with an ASCII
+`fullmatch` plus the encoded byte-length check; schema success alone is not the
+privileged boundary. Maintain a committed reserved-name list. Because the
+alphabet is ASCII, the byte and character counts are equal. Validate the
+configured tenant-origin suffix so the resulting fully qualified hostname also
+remains within the DNS limit. Derive the Milestone 3 hostname from that
+operator-configured namespace; do not accept an arbitrary domain in this
+version.
 
 The tenant-origin namespace must isolate mutually untrusted tenants from
 `lowerduckpond.net` and from one another at the browser cookie boundary. Each
@@ -81,7 +86,8 @@ It prevents tenant JavaScript from poisoning platform authentication cookies or
 the cookies of another tenant.
 
 The explicit DNS-label bound means every persisted slug can be routed later;
-creation cannot reserve a name that deployment must reject for length.
+creation cannot reserve a name that deployment must reject for length or hidden
+trailing characters.
 
 Desired and observed state require separate root-owned storage and
 reconciliation logic.

@@ -336,7 +336,8 @@ Implement idempotent commands or jobs for:
 - Reserve tenant IDs and slugs inside the serialized root-owned state
   transaction so concurrent creates or renames cannot commit the same name.
 - Enforce a 1–63-byte ASCII DNS-label grammar and the complete derived-hostname
-  length before persisting a slug.
+  length with both an absolute-end JSON Schema pattern and an independent root
+  `fullmatch` before persisting a slug.
 - Stage and validate an uploaded archive.
 - Reject unsafe or ambiguous paths, links, special files, archive expansion,
   excessive entry counts, and quota violations.
