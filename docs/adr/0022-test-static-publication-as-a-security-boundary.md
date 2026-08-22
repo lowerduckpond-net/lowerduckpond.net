@@ -30,6 +30,10 @@ step. Use Molecule and Testinfra to exercise actual Unix identities,
 permissions, immutable releases, the privileged helper, Caddy validation and
 reload, backup overlap, restore, and reboot-relevant service configuration.
 
+Manifest fixtures include duplicate YAML keys for lifecycle, deployment, and
+quota fields and prove rejection occurs before schema validation and canonical
+JSON generation.
+
 Hostile fixtures must cover traversal, absolute and ambiguous paths, links,
 special entries, duplicate and case-colliding names, expansion and quota abuse,
 arbitrary route input, cross-tenant reads, interrupted activation, failed Caddy

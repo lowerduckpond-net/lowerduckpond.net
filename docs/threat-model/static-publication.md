@@ -90,6 +90,7 @@ record.
 | Symlink, hard-link, device, FIFO, socket, or permission abuse | Accept only regular files/directories; normalize modes; inspect ZIP metadata and actual created objects. |
 | ZIP bomb, oversized entry set, disk or inode exhaustion | Enforce compressed, expanded, per-file, total-entry, and ratio limits during streaming extraction; count directories as entries and delete failed staging trees. |
 | Duplicate, Unicode, slash, backslash, or case ambiguity | Normalize first, reject ambiguity and collisions, and generate deterministic manifests and exports. |
+| Duplicate YAML mapping keys | Reject duplicates during YAML composition, before schema validation or canonical JSON generation can discard the ambiguity. |
 | Mutation after validation | Root performs final extraction; active releases and route sets are root-owned and immutable to Caddy and the provisioner. |
 | Arbitrary Caddy behavior or secret disclosure | Generate allowlisted routes from validated primitives; accept no Caddy text; keep the admin socket Caddy-only. |
 | Validation-to-reload race | Validate an immutable complete route-set generation and select it under the shared publication lock. |
@@ -116,7 +117,8 @@ Implementation and review must preserve these invariants:
 5. Desired state, observed state, releases, and audit events are recoverable and
    reconciliation never publishes unvalidated content.
 6. Unknown manifest fields, unsupported archive semantics, and unrecognized
-   lifecycle transitions fail closed.
+   lifecycle transitions fail closed; duplicate YAML keys are rejected before
+   schema validation.
 7. Credentials never enter tenant content, provisioner logs, results, exports,
    manifests, or audit payloads.
 8. The provisioner's capability cannot bypass archive evidence for deletion;

@@ -14,8 +14,10 @@ paths as application state.
 
 Commit a strict JSON Schema for `hosting.lowerduckpond.net/v1alpha1` static site
 manifests. Accept safe YAML as the human-authored representation and persist a
-canonical JSON form. Reject unknown fields so misspellings do not silently
-weaken policy.
+canonical JSON form. The YAML parser rejects duplicate mapping keys before
+schema validation or canonicalization; a safe loader alone is not sufficient
+because common loaders silently retain one duplicate value. Reject unknown
+fields so misspellings do not silently weaken policy.
 
 Use UUIDv7 values for immutable tenant and deployment IDs. Restrict slugs to
 lowercase ASCII letters, digits, and interior hyphens, and maintain a committed
