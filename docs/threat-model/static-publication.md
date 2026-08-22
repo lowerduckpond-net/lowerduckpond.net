@@ -103,6 +103,7 @@ record.
 | Validation-to-reload race | Validate an immutable complete route-set generation and select it under the shared publication lock. |
 | Ansible convergence races tenant activation | Route all live Caddy base, environment, binary/unit selection, route-root, and reload changes through a root-owned Ansible transaction that holds the same publication lock. |
 | Concurrent or replayed jobs | Serialize publication, bind results to correlation IDs and request digests, and make retries idempotent. |
+| Delayed rollback undoes suspension | Recheck lifecycle state under the publication lock; while suspended, change only the remembered deployment and require explicit resume before publishing. |
 | Manifest or audit tampering | Keep desired and observed state and append-only audit operations root-owned; allow the provisioner no direct write, replacement, truncation, or deletion authority. |
 | Crash between filesystem, route, reload, and state changes | Write intent first; retain the prior route set; reconcile incomplete records on startup and before later operations. |
 | Cross-tenant read or overwrite | Derive all paths from validated UUIDs, prohibit caller paths, use root ownership, and test hostile operations across two tenants. |
@@ -138,6 +139,8 @@ Implementation and review must preserve these invariants:
    append-only operations.
 10. No tenant-controlled response is served from `lowerduckpond.net` or a
     hostname sharing a registrable domain with the platform or another tenant.
+11. A rollback cannot transition a tenant out of `suspended`; only `resume` may
+    restore its public route.
 
 ## Residual risks
 

@@ -356,6 +356,8 @@ Implement idempotent commands or jobs for:
 - Reject traversal paths and escaping symlinks.
 - Reject hostile links, special entries, collisions, and archive expansion.
 - Suspend and restore without data loss.
+- Delay a rollback across suspension and prove it cannot republish the tenant;
+  only resume may leave the suspended state.
 - Rename a slug while preserving the tenant identity.
 - Run the same provisioning job twice and prove convergence.
 - Recover the preceding publication after interrupted activation or reload

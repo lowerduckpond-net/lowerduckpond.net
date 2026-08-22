@@ -48,6 +48,10 @@ by reconciliation. Tests must also prove that the provisioner cannot invoke or
 simulate the operator-authenticated emergency deletion path, modify manifests
 or observed state, or truncate, replace, or remove audit evidence.
 
+Lifecycle concurrency tests delay an active-state rollback until after
+suspension commits and prove that it can update only the remembered deployment,
+leaves the route absent, and requires a later explicit `resume` to publish.
+
 After CI and disposable-host acceptance pass, publish a reserved production
 canary in the approved origin-isolated tenant namespace, verify browser
 registrable-domain behavior, HTTPS, rollback, suspension, restore, backup

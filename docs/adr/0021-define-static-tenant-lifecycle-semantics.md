@@ -23,9 +23,16 @@ serving and its state is durably recorded.
 Suspension removes the tenant route and therefore returns the same generic 404
 as an unknown tenant hostname; it preserves manifests, releases, and the last
 active deployment. Resume republishes that deployment. Rename atomically
-replaces the derived route while preserving the tenant ID. Rollback activates a
-retained prior release through the ordinary activation transaction. Export
-produces a portable bundle without changing lifecycle state.
+replaces the derived route while preserving the tenant ID.
+
+Rollback evaluates lifecycle state again while holding the publication lock.
+For an active tenant, it selects and publishes the retained release through the
+ordinary activation transaction. For a suspended tenant, it changes only the
+remembered deployment that a later `resume` will publish; it does not create a
+route or leave `suspended`. Rollback is invalid for `undeployed` or `archived`
+tenants. Consequently, a delayed rollback queued before suspension cannot
+republish the tenant, and only an explicit `resume` can leave the suspended
+state. Export produces a portable bundle without changing lifecycle state.
 
 Archive first creates and verifies a portable bundle in durable archive storage,
 then removes the public route. Restore validates that bundle and creates a new
@@ -50,7 +57,8 @@ policy rather than Milestone 3 host behavior.
 ## Consequences
 
 Suspended sites do not disclose whether a hostname exists, and rollback remains
-cheap because releases are immutable. Retaining three releases uses bounded
+cheap because releases are immutable. A suspended tenant can select its next
+release safely without becoming public. Retaining three releases uses bounded
 additional storage that must be included in disk monitoring and release garbage
 collection.
 
