@@ -3,6 +3,10 @@
   hosts: hosting_nodes
   become: true
   gather_facts: false
+  pre_tasks:
+    - name: Resolve the installed host contract
+      ansible.builtin.import_tasks: tasks/resolve-acceptance-contract.yml
+
   tasks:
     - name: Validate the installed Caddy configuration
       ansible.builtin.command:
@@ -14,9 +18,9 @@
       ansible.builtin.command:
         cmd: >-
           curl --fail --silent --show-error
-          {{ '--insecure' if caddy_tls_mode == 'internal' else '' }}
-          --resolve {{ caddy_domain }}:443:127.0.0.1
-          https://{{ caddy_domain }}/
+          {{ '--insecure' if acceptance_caddy_tls_mode == 'internal' else '' }}
+          --resolve {{ acceptance_caddy_domain }}:443:127.0.0.1
+          https://{{ acceptance_caddy_domain }}/
       register: acceptance_https_fixture
       changed_when: false
       failed_when: '"Lower Duck Pond Hosting" not in acceptance_https_fixture.stdout'
@@ -60,17 +64,17 @@
     - name: Verify rootless Podman for the runtime account
       ansible.builtin.command:
         cmd: podman info --format json
-      become_user: "{{ podman_service_user }}"
+      become_user: "{{ acceptance_podman_service_user }}"
       become: true
       environment:
-        HOME: "{{ podman_service_home }}"
-        XDG_RUNTIME_DIR: "/run/user/{{ podman_service_uid }}"
+        HOME: "{{ acceptance_podman_service_home }}"
+        XDG_RUNTIME_DIR: "/run/user/{{ acceptance_podman_service_uid }}"
       changed_when: false
 
     - name: Verify the encrypted Restic repository
       ansible.builtin.command:
         cmd: /usr/local/libexec/lowerduckpond/restic-check
-      become_user: "{{ backup_service_user }}"
+      become_user: "{{ acceptance_backup_service_user }}"
       become: true
       changed_when: false
       no_log: true
@@ -78,7 +82,7 @@
     - name: Exercise a disposable restore
       ansible.builtin.command:
         cmd: /usr/local/libexec/lowerduckpond/restore-smoke-test
-      become_user: "{{ backup_service_user }}"
+      become_user: "{{ acceptance_backup_service_user }}"
       become: true
       changed_when: false
       no_log: true
@@ -100,10 +104,11 @@
     - name: Verify the rootless readiness service is enabled  # noqa command-instead-of-module
       ansible.builtin.command:
         cmd: systemctl --user is-enabled lowerduckpond-podman-ready.service
-      become_user: "{{ podman_service_user }}"
+      become_user: "{{ acceptance_podman_service_user }}"
       become: true
       environment:
-        DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ podman_service_uid }}/bus"
-        HOME: "{{ podman_service_home }}"
-        XDG_RUNTIME_DIR: "/run/user/{{ podman_service_uid }}"
+        DBUS_SESSION_BUS_ADDRESS: >-
+          unix:path=/run/user/{{ acceptance_podman_service_uid }}/bus
+        HOME: "{{ acceptance_podman_service_home }}"
+        XDG_RUNTIME_DIR: "/run/user/{{ acceptance_podman_service_uid }}"
       changed_when: false
