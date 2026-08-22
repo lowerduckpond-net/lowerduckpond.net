@@ -4,6 +4,9 @@
   connection: local
   gather_facts: false
   tasks:
+    - name: Resolve the standalone acceptance contract
+      ansible.builtin.import_tasks: tasks/resolve-acceptance-contract.yml
+
     - name: Verify production variables resolve from the operator environment
       ansible.builtin.assert:
         that:
@@ -14,5 +17,11 @@
           - backup_spaces_access_key_id == 'inventory-test-access-key'
           - backup_spaces_secret_access_key == 'inventory-test-secret-key'
           - backup_spaces_region == 'inventory-test-region'
+          - acceptance_caddy_domain == 'lowerduckpond.net'
+          - acceptance_caddy_tls_mode == 'cloudflare'
+          - acceptance_podman_service_user == 'ldp-runtime'
+          - acceptance_podman_service_uid == 21000
+          - acceptance_podman_service_home == '/var/lib/lowerduckpond/runtime'
+          - acceptance_backup_service_user == 'root'
         quiet: true
       no_log: true
