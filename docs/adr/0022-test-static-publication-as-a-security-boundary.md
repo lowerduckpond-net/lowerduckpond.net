@@ -59,6 +59,8 @@ or observed state, or truncate, replace, or remove audit evidence.
 Lifecycle concurrency tests delay an active-state rollback until after
 suspension commits and prove that it can update only the remembered deployment,
 leaves the route absent, and requires a later explicit `resume` to publish.
+They also race two creates, and a create against a rename, for the same slug and
+prove that exactly one root-owned state transaction can commit the name.
 
 After CI and disposable-host acceptance pass, publish a reserved production
 canary in the approved origin-isolated tenant namespace, verify browser

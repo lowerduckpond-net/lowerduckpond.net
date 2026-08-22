@@ -41,11 +41,16 @@ release, or route. Its first successful `deploy` operation creates those
 artifacts and changes desired state to `active` through the ordinary activation
 transaction.
 
-Serialize activation, rollback, rename, suspension, archival, restoration,
-deletion, and reconciliation with one root-owned publication lock. Record intent
-before changing the active reference so reconciliation can finish or reverse an
-interrupted operation. Backups take a shared tenant-state lock while publication
-and reconciliation take it exclusively, preventing a snapshot from combining
+Serialize creation, activation, rollback, rename, suspension, archival,
+restoration, deletion, and reconciliation with one root-owned publication lock.
+Creation and rename acquire the exclusive tenant-state lock before checking
+tenant ID and slug uniqueness and hold it through the durable manifest commit.
+The uniqueness decision is therefore part of the root-owned state transaction,
+not an advisory provisioner check; no second create or rename can reserve the
+same slug between validation and commit. Record intent before changing the
+active reference so reconciliation can finish or reverse an interrupted
+operation. Backups take a shared tenant-state lock while publication and
+reconciliation take it exclusively, preventing a snapshot from combining
 incompatible content and manifest generations.
 
 Atomic rename is not a durability barrier. While holding the locks, apply this

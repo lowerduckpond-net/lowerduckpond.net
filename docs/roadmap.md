@@ -333,6 +333,8 @@ Implement idempotent commands or jobs for:
   its temporary work in a private service workspace hard-capped at 64 MiB and
   4,096 inodes while root owns intake, job records, and activation staging.
 - Validate slug and hostname uniqueness.
+- Reserve tenant IDs and slugs inside the serialized root-owned state
+  transaction so concurrent creates or renames cannot commit the same name.
 - Enforce a 1–63-byte ASCII DNS-label grammar and the complete derived-hostname
   length before persisting a slug.
 - Stage and validate an uploaded archive.
@@ -370,6 +372,8 @@ Implement idempotent commands or jobs for:
   only resume may leave the suspended state.
 - Rename a slug while preserving the tenant identity.
 - Run the same provisioning job twice and prove convergence.
+- Race creates and rename against the same slug and prove exactly one operation
+  can commit it.
 - Recover the preceding publication after interrupted activation or reload
   failure.
 - Serialize activation with backup and reconcile a restored state snapshot.
