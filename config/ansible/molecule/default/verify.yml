@@ -1,7 +1,4 @@
 ---
-- name: Run the standalone host acceptance playbook
-  ansible.builtin.import_playbook: ../../playbooks/acceptance.yml
-
 - name: Run Testinfra acceptance assertions
   hosts: localhost
   gather_facts: false

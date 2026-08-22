@@ -1,3 +1,6 @@
 ---
 - name: Import the hosting-node playbook
   ansible.builtin.import_playbook: ../../playbooks/site.yml
+
+- name: Run the standalone host acceptance playbook
+  ansible.builtin.import_playbook: ../../playbooks/acceptance.yml
