@@ -190,9 +190,12 @@ canonical manifest and deployment have a freshly verified durable bundle.
 Archive failure-injection tests terminate the activator after bundle upload,
 archive-record staging, intent commit, no-route selection, Caddy reload,
 authoritative archive-record and manifest commit, observed-state commit, and
-audit append. Startup reconciliation must produce only the preceding active
-manifest and route or the archived manifest and absent route, never `active`
-desired state with archival intent ignored.
+audit append. Run every phase from both `active` and `suspended`. Startup
+reconciliation must produce only the exact preceding manifest, observed state,
+remembered deployment, runtime generation, and route set or the archived
+manifest and absent routes. In particular, no failure or recovery path may
+publish either route for a suspended source; only a later explicit `resume` may
+do so.
 
 After CI and disposable-host acceptance pass, publish a reserved production
 canary in the approved origin-isolated tenant namespace. Verify browser

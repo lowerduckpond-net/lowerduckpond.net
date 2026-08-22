@@ -51,20 +51,31 @@ release.
 
 After the bundle is durable, archive acquires publication and exclusive
 tenant-state in the global order and proves the captured source manifest,
-deployment, and release are still current. It then prepares and syncs the
-proposed `archived` manifest and a complete Caddy runtime generation without the
-tenant. Its write-ahead intent names the preceding active manifest and runtime
-generation, the proposed archived manifest, the verified archive record, and
-the proposed no-route runtime generation. The activator then selects and
-reloads the generation containing neither the canonical content route nor its
-slug alias, durably commits desired and observed archived state plus the audit
-event, and only then clears intent. Reconciliation must inspect
-archive intent before ordinary desired-state reconciliation and converge on
-either the complete preceding active generation or the complete archived
-generation; it may never republish merely because an interrupted transaction
-left the old active manifest on disk. This is the ADR 0017 durability protocol
-applied to the manifest and route transition, rather than an assumption that
-two filesystem renames are literally atomic together.
+deployment, and release are still current. Archive requires observed state to
+be reconciled to that source manifest before it prepares the transition. It
+then prepares and syncs the proposed `archived` manifest and a complete Caddy
+runtime generation without the tenant.
+
+Its write-ahead intent binds the exact preceding desired manifest and digest,
+`active` or `suspended` lifecycle state, observed state, remembered deployment,
+complete runtime generation, and presence or absence of both tenant routes. It
+also binds the proposed archived manifest, verified archive record, and
+proposed no-route runtime generation. The activator then selects and reloads
+the generation containing neither the canonical content route nor its slug
+alias, durably commits desired and observed archived state plus the audit event,
+and only then clears intent.
+
+Reconciliation inspects archive intent before ordinary desired-state
+reconciliation and converges on either the exact preceding state and runtime
+generation or the complete archived state and generation. Rolling back an
+archive whose source was `suspended` restores that suspended manifest,
+remembered deployment, observed state, and no-route generation; it cannot
+publish either tenant route. Rolling back an `active` source restores its
+active manifest, observed deployment, and both routes. Reconciliation never
+infers `active` from the existence of a retained release or from an old
+manifest left on disk. This is the ADR 0017 durability protocol applied to the
+manifest, lifecycle, and route-set transition, rather than an assumption that
+multiple filesystem renames are literally atomic together.
 
 For a tenant that has ever been deployed, ordinary delete requires
 `desiredState: archived` and revalidates immediately before mutation that a
@@ -150,7 +161,8 @@ Any later manifest or deployment generation needs a newly verified archive
 before ordinary deletion.
 
 Archival has no intermediate durable lifecycle state: after reconciliation the
-tenant is either active with its preceding route or archived with no route.
+tenant is in its exact preceding `active` or `suspended` state and route set, or
+it is `archived` with neither route.
 
 Unused slug reservations can be removed without manufacturing an empty archive,
 while authoritative history—not caller-supplied lifecycle state—keeps the

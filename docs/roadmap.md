@@ -386,8 +386,8 @@ Implement idempotent commands or jobs for:
 - Enforce and table-test the complete lifecycle operation/state matrix; reject
   every unlisted pair without desired or observed state changes.
 - Commit archive evidence, `desiredState: archived`, and both-route removal
-  through one write-ahead transaction that reconciles to the old or new
-  generation.
+  through one write-ahead transaction that reconciles to the exact preceding
+  active-or-suspended state and route set or the complete archived generation.
 - Allow audited archive-free deletion of a never-deployed reservation only when
   its complete root-owned history proves no deployment ever existed.
 - Capture each export's canonical manifest and immutable release into a
