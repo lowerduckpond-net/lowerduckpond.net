@@ -34,11 +34,23 @@ tenants. Consequently, a delayed rollback queued before suspension cannot
 republish the tenant, and only an explicit `resume` can leave the suspended
 state. Export produces a portable bundle without changing lifecycle state.
 
-Archive first creates and verifies a portable bundle in durable archive storage,
-then removes the public route. Restore validates that bundle and creates a new
-deployment while preserving the tenant ID; it does not mutate a historical
-release. For a tenant that has ever been deployed, delete refuses to remove
-desired state or live releases unless a verified archive record exists. The
+Archive derives the proposed canonical `archived` manifest from the current
+manifest and selected deployment, creates and verifies a portable bundle for
+that exact manifest and release in durable archive storage, then commits the
+archived state and removes the public route through one lifecycle transaction.
+Its root-owned archive record binds the tenant ID, selected deployment ID and
+content digest, canonical archived-manifest digest, portable-bundle digest and
+size, and durable object identity. Restore validates that bundle and creates a
+new deployment while preserving the tenant ID; it does not mutate a historical
+release.
+
+For a tenant that has ever been deployed, ordinary delete requires
+`desiredState: archived` and revalidates immediately before mutation that a
+durable archive record and object match the current canonical manifest and its
+desired deployment. An older verified archive never authorizes deletion after
+restore, deployment, rename, or any other manifest change; the operator must
+archive the current generation. Delete refuses to remove desired state or live
+releases when any bound digest, identity, size, or object check differs. The
 provisioner's ordinary activation capability cannot bypass that prerequisite.
 
 There is one ordinary archive-free deletion transition: an `undeployed` tenant
@@ -76,6 +88,10 @@ Archive storage and audit records become prerequisites for ordinary deletion of
 any tenant that has ever been deployed. The separately authenticated emergency
 command is deliberately conspicuous and must be covered by tests and
 operational documentation.
+
+Archive evidence is generation-specific rather than a permanent tenant flag.
+Any later manifest or deployment generation needs a newly verified archive
+before ordinary deletion.
 
 Unused slug reservations can be removed without manufacturing an empty archive,
 while authoritative history—not caller-supplied lifecycle state—keeps the

@@ -73,6 +73,10 @@ Lifecycle tests delete a never-deployed reservation through the ordinary
 audited path, then prove that any deployment record or ambiguous history makes
 the same archive-free operation fail closed without requiring or exposing the
 emergency command.
+Deletion tests archive, restore, and deploy a newer generation, then prove the
+old archive record cannot authorize deletion. They independently alter every
+bound archive-evidence field and prove delete fails closed until the current
+canonical manifest and deployment have a freshly verified durable bundle.
 
 After CI and disposable-host acceptance pass, publish a reserved production
 canary in the approved origin-isolated tenant namespace, verify browser
