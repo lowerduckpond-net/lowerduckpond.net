@@ -405,6 +405,9 @@ Implement idempotent commands or jobs for:
 - Reconcile actual host state against all desired manifests.
 - Permit the provisioner to request validated state changes without granting it
   write access to desired state, observed state, or audit history.
+- Cap raw operation requests at 32 KiB and raw manifests at 64 KiB before any
+  parser or correlation lookup, decode under fixed process limits, and retain
+  the 16-KiB canonical request, result, and manifest ceilings for every retry.
 - Bound indirect root-owned growth to 25 tenants, 10 GiB/500,000 release inodes,
   10,000/64-MiB correlation records, 128 MiB of hash-chained ordinary audit, and
   60 new IDs/hour; fail closed and rotate audit only after verified backup.

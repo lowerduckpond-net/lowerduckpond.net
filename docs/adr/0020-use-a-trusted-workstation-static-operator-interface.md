@@ -22,6 +22,10 @@ dedicated non-public intake boundary. It never edits live host files. Host-side
 commands accept structured inputs, return machine-readable results, and require
 a caller-supplied UUIDv7 correlation ID. Reusing a correlation ID and request
 converges on the same result rather than duplicating releases or audit events.
+Before any parser or correlation lookup, the host adapter applies ADR 0017's
+raw byte ceiling, bounded read, deadline, and constrained-decoder contract to
+every invocation, including retries. The client cannot use transport framing,
+discardable syntax, or an established ID to bypass those limits.
 
 The `create` request supplies a slug and quotas but no tenant ID. The root
 activator generates that immutable ID and returns the resulting canonical

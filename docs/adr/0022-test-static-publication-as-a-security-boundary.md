@@ -88,6 +88,15 @@ the rolling rate window and cannot reset or refund consumed admission.
 Free-space fixtures exercise both the absolute and percentage block/inode floors
 and prove root-reserved blocks are excluded from admission capacity.
 
+Raw-input tests stream requests at 32 KiB and 32 KiB plus one, manifests at
+64 KiB and 64 KiB plus one, delayed or missing EOF, invalid UTF-8, enormous
+discardable whitespace, deep nesting, and oversized scalar syntax. They prove
+the byte gate and deadline run before parser entry and correlation lookup, the
+decoder process limits terminate adversarial inputs, canonical values still
+obey 16 KiB, and an established-correlation retry cannot bypass any raw or
+canonical limit. Rejection logs and results contain no submitted bytes and stay
+within their fixed bounds.
+
 Durability tests record filesystem operations and inject failure after every
 file sync, directory sync, rename, reload, restart-intent transition, systemd
 job handoff, post-start verification, state commit, audit append, and intent

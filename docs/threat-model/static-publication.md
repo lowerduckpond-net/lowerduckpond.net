@@ -73,11 +73,13 @@ and supply-chain risks.
    adapter into a fixed, non-public intake area.
 2. The unprivileged provisioner performs an advisory preflight and constructs a
    structured request with a correlation ID.
-3. The root activator claims the fixed intake artifact, copies its bytes once
-   into a newly created root-owned snapshot while enforcing the upload limit
-   and computing its digest, and closes the intake descriptor. It verifies,
-   revalidates, and extracts only that non-provisioner-writable snapshot into a
-   new root-owned temporary release.
+3. A fixed-buffer privileged reader enforces raw operation and manifest byte
+   ceilings plus a read deadline before any constrained structured parser or
+   correlation lookup. The root activator then claims the fixed intake
+   artifact, copies its bytes once into a newly created root-owned snapshot
+   while enforcing the upload limit and computing its digest, and closes the
+   intake descriptor. It verifies, revalidates, and extracts only that
+   non-provisioner-writable snapshot into a new root-owned temporary release.
 4. The activator normalizes and seals the release, generates a complete
    root-owned Caddy runtime generation containing a manifest-bound binary,
    environment, canonical tenant-content routes, platform-only slug-alias
@@ -123,6 +125,7 @@ record.
 | Synchronous restart deadlocks on the publication lock | Persist and select a restart candidate under the lock, release it before queuing a non-blocking systemd job, and let pre-start, launcher, post-start, and rollback helpers acquire it independently. Block later mutations on the durable intent, and never wait for a lock-acquiring systemd hook while retaining the lock. |
 | Runtime generations exhaust disk or retain secrets indefinitely | Admit at most active, last-known-good, and intent candidate generations; enforce aggregate unique-inode byte/inode and host-free-space bounds; clean unreferenced staging after terminal states and startup; keep environment/config Caddy-only and backup/diagnostic-excluded. |
 | Concurrent or replayed jobs | Serialize publication, bind results to correlation IDs and request digests, and make retries idempotent. |
+| Oversized structured syntax exhausts the privileged parser before canonicalization | Read at most the raw ceiling plus one byte under a deadline before parsing, reject excess without inspecting correlation data, run the decoder under fixed process limits, and then enforce the smaller canonical request, result, and manifest ceilings. Apply the same path to retries. |
 | Valid operations indirectly exhaust root-owned state | Enforce host-wide tenant, release byte/inode, correlation record, audit, request/result size, reason, and admission-rate ceilings before staging. Preserve audit in bounded hash-chained segments rotated only after verified off-host backup, with an isolated root-administrator reserve. |
 | Nested locks deadlock or accumulate waiters | Acquire export, publication, and tenant-state only in that global order; never upgrade; return retryable busy before allocating work; revalidate archive source state after its unlocked construction phase; and never wait for a systemd job that reacquires publication while holding it. |
 | Delayed rollback undoes suspension | Recheck lifecycle state under the publication lock; while suspended, change only the remembered deployment and require explicit resume before publishing. |
@@ -215,6 +218,10 @@ Implementation and review must preserve these invariants:
     Rename and deletion may release only the platform-controlled slug alias;
     allocation consults live desired state rather than historical effort or
     browser cleanup.
+26. No structured parser reads an unbounded transport. Raw operation and
+    manifest byte ceilings and deadlines run before decoding or correlation
+    lookup, constrained decoding precedes canonical-size enforcement, and
+    retries receive no alternate path.
 
 ## Residual risks
 

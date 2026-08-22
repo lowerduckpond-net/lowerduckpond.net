@@ -197,16 +197,33 @@ generation and targets are durable, or restores the durable prior generation;
 it never infers completion from observed state alone.
 
 The root activator accepts structured identifiers and an artifact from the
-fixed intake boundary. It opens and claims that artifact without following
-links, then streams its bytes exactly once into an exclusively created,
-root-owned snapshot while enforcing the compressed-size limit and computing
-the digest. After syncing and closing the snapshot, the activator verifies the
-request digest and performs every security-critical parse, validation, and
-extraction against the snapshot. It never validates or extracts from the
-provisioner-writable inode, so an already-open provisioner file descriptor
-cannot change the privileged input. It does not accept arbitrary destination
-paths, commands, or Caddy directives, and it repeats every security-critical
-check even when the unprivileged provisioner already performed a preflight.
+fixed intake boundary. Its privileged transport reader never gives stdin, a
+pipe, socket, or file directly to a structured parser. It reads at most the
+configured raw ceiling plus one byte into a fixed bounded buffer under a
+15-second monotonic read deadline and requires EOF at or below the ceiling. An
+extra byte, timeout, invalid UTF-8, or incomplete document produces a fixed
+bounded error without parsing, correlation lookup, staging, or payload logging.
+A regular file size check is only an early rejection; the same bounded read
+remains authoritative.
+
+Only a raw-size-compliant buffer enters the structured decoder. Run that
+decoder in a resource-limited helper, reject duplicate keys and unsupported
+syntax, canonicalize its result, and enforce the smaller canonical limit before
+dispatch. The helper receives no host path or credential and can return only a
+bounded canonical value or fixed error. Idempotent retries and root-only
+operations traverse the same byte gate; an established correlation ID never
+bypasses it.
+
+The activator opens and claims the artifact without following links, then
+streams its bytes exactly once into an exclusively created, root-owned snapshot
+while enforcing the compressed-size limit and computing the digest. After
+syncing and closing the snapshot, the activator verifies the request digest and
+performs every security-critical parse, validation, and extraction against the
+snapshot. It never validates or extracts from the provisioner-writable inode,
+so an already-open provisioner file descriptor cannot change the privileged
+input. It does not accept arbitrary destination paths, commands, or Caddy
+directives, and it repeats every security-critical check even when the
+unprivileged provisioner already performed a preflight.
 
 The activator is also the only ordinary writer of root-owned desired manifests,
 observed state, deployment and archive records, and append-only audit events.
@@ -238,14 +255,21 @@ indirectly request from the activator. The Milestone 3 host initially permits:
 - at most 128 MiB of local ordinary audit segments, with a separate 8-MiB
   root-administrator reserve that the provisioner entry point cannot consume.
 
-One structured request or result is at most 16 KiB after canonical encoding,
-and each operator reason is at most 512 UTF-8 bytes with control characters
+A raw structured operation request is at most 32 KiB before decoding; its
+canonical request and result are each at most 16 KiB. A raw YAML manifest is at
+most 64 KiB before composition and remains subject to the same 16-KiB canonical
+manifest ceiling. The initial structured-decoder helper limits are
+`MemoryMax=64M`, `MemorySwapMax=0`, `TasksMax=8`, `LimitNOFILE=64`,
+`LimitCPU=5`, `RuntimeMaxSec=15s`, and one CPU through `CPUQuota=100%`.
+
+Each operator reason is at most 512 UTF-8 bytes with control characters
 rejected. The root adapter admits at most 60 new provisioner correlation IDs per
 rolling hour with a burst of five; an idempotent retry of an established ID does
-not consume another slot. Lock-busy, rate-limited, and capacity-rejected calls
-fail before staging and cannot force an attacker-controlled audit payload.
-Their aggregate counters and sanitized, rate-limited diagnostic events use the
-already bounded monitoring and journald stores.
+not consume another slot. Raw-size, parser-limit, lock-busy, rate-limited, and
+capacity-rejected calls fail before staging and cannot force an
+attacker-controlled audit payload. Their aggregate counters and sanitized,
+rate-limited diagnostic events use the already bounded monitoring and journald
+stores.
 
 The activator serializes storage-changing admission, counts actual unique
 inodes and allocated blocks, reserves worst-case staging and retention, and
