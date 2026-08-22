@@ -75,16 +75,19 @@ and supply-chain risks.
    revalidates, and extracts only that non-provisioner-writable snapshot into a
    new root-owned temporary release.
 4. The activator normalizes and seals the release, generates a complete
-   root-owned candidate route set, and validates it with Caddy.
+   root-owned Caddy runtime generation containing a manifest-bound binary,
+   environment, and base-and-tenant configuration, and validates the generation
+   with its own inputs.
 5. Under the publication lock, the activator records intent, atomically selects
-   the candidate route set, reloads Caddy, and records observed state. Failure
-   restores the preceding route-set reference.
+   the candidate runtime generation, reloads or restarts Caddy, and records
+   observed state. Failure restores the preceding complete-generation reference.
 6. Backup holds a shared tenant-state lock while reading content, manifests,
    and audit state. Restore writes outside live paths and reconciliation applies
    the same activation contract.
-7. Ansible stages Caddy host-configuration changes outside live paths and uses a
-   separate root-owned transaction under the global publication lock to select
-   live inputs and reload the service.
+7. Ansible stages a complete Caddy runtime generation outside live paths and
+   uses a root-owned transaction under the global publication lock to select it
+   and restart the service. A frozen systemd bootstrap reconciles intent and
+   pins one generation directory before each start or automatic restart.
 
 No public request, tenant file, or unprivileged process can reach Caddy's admin
 socket or write an active route, immutable release, backup environment, or
@@ -102,9 +105,9 @@ record.
 | Duplicate YAML mapping keys | Reject duplicates during YAML composition, before schema validation or canonical JSON generation can discard the ambiguity. |
 | Platform or cross-tenant cookie poisoning | Keep `lowerduckpond.net` platform-only and require every tenant hostname to be a distinct registrable domain according to supported browser Public Suffix List behavior. |
 | Mutation after validation | Root performs final extraction; active releases and route sets are root-owned and immutable to Caddy and the provisioner. |
-| Arbitrary Caddy behavior or secret disclosure | Generate allowlisted routes from validated primitives; accept no Caddy text; keep the admin socket Caddy-only. |
-| Validation-to-reload race | Validate an immutable complete route-set generation and select it under the shared publication lock. |
-| Ansible convergence races tenant activation | Route all live Caddy base, environment, binary/unit selection, route-root, and reload changes through a root-owned Ansible transaction that holds the same publication lock. |
+| Arbitrary Caddy behavior or secret disclosure | Generate allowlisted complete Caddy configurations from validated primitives; accept no Caddy text; keep generation environment files Caddy-only and excluded from backup, and keep the admin socket Caddy-only. |
+| Validation-to-reload race | Validate one immutable complete runtime generation with its manifest-bound binary and environment, select it through one active reference under the publication lock, and reload from directory-pinned open inputs. |
+| Ansible convergence or automatic restart mixes Caddy inputs | Route all mutable binary, environment, base, route, reload, and restart changes through complete runtime generations and the shared publication lock. Before every start, the frozen bootstrap reconciles intent and pins one manifest-verified generation directory. Change the bootstrap only while Caddy is stopped and masked. |
 | Concurrent or replayed jobs | Serialize publication, bind results to correlation IDs and request digests, and make retries idempotent. |
 | Delayed rollback undoes suspension | Recheck lifecycle state under the publication lock; while suspended, change only the remembered deployment and require explicit resume before publishing. |
 | Manifest or audit tampering | Keep desired and observed state and append-only audit operations root-owned; allow the provisioner no direct write, replacement, truncation, or deletion authority. |
@@ -125,9 +128,9 @@ Implementation and review must preserve these invariants:
    a Unix identity, or a service name to the root activator.
 3. Every live route refers to one validated immutable release belonging to the
    same tenant ID.
-4. Candidate validation, active-route selection, Ansible Caddy commits, reload,
-   and rollback occur while holding the global publication lock; no other path
-   mutates live Caddy inputs.
+4. Candidate validation, active-generation selection, Ansible Caddy commits,
+   reload or restart, and rollback occur while holding the global publication
+   lock; no other path mutates live Caddy inputs.
 5. Desired state, observed state, releases, and audit events are recoverable and
    reconciliation never publishes unvalidated content.
 6. Unknown manifest fields, unsupported archive semantics, and unrecognized
@@ -146,8 +149,9 @@ Implementation and review must preserve these invariants:
 11. A rollback cannot transition a tenant out of `suspended`; only `resume` may
     restore its public route.
 12. No active reference is durably selected before its immutable release and
-    route-set targets; intent, state, audit, rollback, and intent removal follow
-    the ordered file and parent-directory `fsync` protocol in ADR 0017.
+    complete Caddy-generation targets; intent, state, audit, rollback, and
+    intent removal follow the ordered file and parent-directory `fsync` protocol
+    in ADR 0017.
 13. Privileged digest verification, archive parsing, validation, and extraction
     consume the same root-owned intake snapshot, which cannot be modified by
     the provisioner through its pathname or a previously opened descriptor.
@@ -166,6 +170,10 @@ Implementation and review must preserve these invariants:
 18. Privileged ZIP parsing starts inside its resource-limited service process;
     a bounded structural gate rejects every method except stored and Deflate
     before any entry decoder runs.
+19. One active reference selects the manifest-bound binary, environment, and
+    complete Caddy configuration together. Every start reconciles intent and
+    pins that generation once; automatic restart cannot combine live paths from
+    different generations.
 
 ## Residual risks
 

@@ -40,9 +40,18 @@ them before uniqueness or persistence.
 
 An installed-host concurrency test pauses tenant activation while Ansible has a
 candidate Caddy base transaction ready to commit, then proves that only one
-transaction can select live inputs and reload at a time. It verifies that the
-resulting Caddy configuration and observed tenant state describe the same
-committed generation.
+transaction can select a complete runtime generation and reload or restart at a
+time. At every durability phase it kills Caddy to trigger automatic restart and
+proves the recovery gate and launcher select one manifest-verified generation,
+never a mixed binary, environment, base configuration, or tenant route set. It
+verifies that the resulting Caddy configuration and observed tenant state
+describe the same committed generation.
+
+Bootstrap tests interrupt the initial and upgrade maintenance transactions
+between stop, mask, unit installation, launcher installation, systemd reload,
+reconciliation, unmask, and start. Until every bootstrap component is compatible
+and verified, Caddy must remain masked and unavailable rather than automatically
+starting with mixed bootstrap or runtime inputs.
 
 Durability tests record filesystem operations and inject failure after every
 file sync, directory sync, rename, reload, state commit, audit append, and intent

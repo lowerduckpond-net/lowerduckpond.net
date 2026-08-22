@@ -345,15 +345,17 @@ Implement idempotent commands or jobs for:
   entries, match local and central headers, and run privileged parsing inside
   fixed memory, swap, task, descriptor, CPU, and runtime limits.
 - Revalidate and extract through the narrow root-owned activator.
-- Atomically activate a complete route-set generation pointing directly to an
-  immutable deployment.
+- Atomically activate one complete Caddy runtime generation whose manifest binds
+  its binary, environment, full configuration, and immutable tenant releases.
 - Retain the active release and two preceding releases.
 - Generate allowlisted tenant routes without accepting Caddy text.
 - Validate, reload, and roll back Caddy under one publication lock.
 - Apply explicit file and parent-directory `fsync` barriers around releases,
-  route sets, intent, active references, state, audit, and rollback.
-- Refactor Ansible Caddy convergence to commit every live Caddy input and reload
-  through the same publication lock rather than racing tenant activation.
+  complete Caddy generations, intent, active references, state, audit, and
+  rollback.
+- Refactor Ansible Caddy convergence to commit every mutable live Caddy input in
+  one runtime generation under the publication lock. Freeze a small systemd
+  bootstrap that reconciles intent and pins one generation before every start.
 - Suspend, resume, export, archive, restore, and delete a site.
 - Commit archive evidence, `desiredState: archived`, and route removal through
   one write-ahead transaction that reconciles to the old or new generation.
