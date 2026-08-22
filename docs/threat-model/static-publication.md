@@ -96,7 +96,7 @@ observed-state record.
 | Crash between filesystem, route, reload, and state changes | Write intent first; retain the prior route set; reconcile incomplete records on startup and before later operations. |
 | Cross-tenant read or overwrite | Derive all paths from validated UUIDs, prohibit caller paths, use root ownership, and test hostile operations across two tenants. |
 | Backup captures incompatible generations | Backup uses a shared tenant-state lock; mutation uses it exclusively; restored state must reconcile before publication. |
-| Unsafe archive, restore, or deletion | Verify portable export checksums and durable archive evidence; restore as a new deployment; require an audited override to delete without evidence. |
+| Unsafe archive, restore, or deletion | Verify portable export checksums and durable archive evidence; restore as a new deployment; keep emergency deletion behind a distinct root-only operator command that the provisioner cannot invoke. |
 | Intake artifact replacement | Open beneath the fixed intake directory without following links, bind validation to the opened artifact digest, and move or mark the claimed request before activation. |
 
 ## Security invariants
@@ -117,6 +117,9 @@ Implementation and review must preserve these invariants:
    lifecycle transitions fail closed.
 7. Credentials never enter tenant content, provisioner logs, results, exports,
    manifests, or audit payloads.
+8. The provisioner's capability cannot bypass archive evidence for deletion;
+   emergency deletion requires the separately authenticated administrative
+   entry point.
 
 ## Residual risks
 

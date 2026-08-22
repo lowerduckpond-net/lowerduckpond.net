@@ -31,6 +31,10 @@ without inheriting SSH or trusted-workstation assumptions.
 Do not add FastAPI endpoints, public authentication, or a production queue in
 Milestone 3. The unprivileged provisioner receives only the exact privileged
 activation capability defined by ADR 0017, not general sudo or Caddy access.
+Ordinary `delete` cannot bypass archive evidence. The emergency deletion
+command defined by ADR 0021 remains a distinct root-only administrative entry
+point and is never exposed through the worker interface or provisioner sudo
+rule.
 
 ## Consequences
 

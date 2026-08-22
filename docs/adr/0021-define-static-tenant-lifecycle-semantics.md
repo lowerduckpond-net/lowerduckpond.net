@@ -27,8 +27,16 @@ Archive first creates and verifies a portable bundle in durable archive storage,
 then removes the public route. Restore validates that bundle and creates a new
 deployment while preserving the tenant ID; it does not mutate a historical
 release. Delete refuses to remove desired state or live releases unless a
-verified archive record exists. A trusted operator may use an explicit
-emergency override only with a correlation ID and recorded reason.
+verified archive record exists. The provisioner's ordinary activation
+capability cannot bypass that prerequisite.
+
+An emergency deletion without archive evidence uses a separate root-only
+operator command that is absent from the provisioner's sudo allowlist and
+transport-independent worker interface. It is available only through the
+authenticated administrative SSH and sudo boundary and records the operator
+identity, correlation ID, and mandatory reason before deletion begins. A reason
+or correlation ID supplied through the provisioner is never authorization for
+this path.
 
 Every transition is idempotent and appends an audit event. Retrying the same
 correlation ID and request returns the established result. Automated notices,
@@ -43,8 +51,8 @@ additional storage that must be included in disk monitoring and release garbage
 collection.
 
 Archive storage and audit records become prerequisites for ordinary deletion.
-The emergency override is deliberately conspicuous and must be covered by
-tests and operational documentation.
+The separately authenticated emergency command is deliberately conspicuous and
+must be covered by tests and operational documentation.
 
 ## Alternatives considered
 
