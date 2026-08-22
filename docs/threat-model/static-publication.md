@@ -105,7 +105,7 @@ record.
 | Concurrent or replayed jobs | Serialize publication, bind results to correlation IDs and request digests, and make retries idempotent. |
 | Delayed rollback undoes suspension | Recheck lifecycle state under the publication lock; while suspended, change only the remembered deployment and require explicit resume before publishing. |
 | Manifest or audit tampering | Keep desired and observed state and append-only audit operations root-owned; allow the provisioner no direct write, replacement, truncation, or deletion authority. |
-| Crash between filesystem, route, reload, and state changes | Write intent first; retain the prior route set; reconcile incomplete records on startup and before later operations. |
+| Crash or power loss between filesystem, route, reload, and state changes | Durably sync generation targets and parents before intent, sync intent before selecting and syncing the active reference, sync desired/observed state and audit before clearing intent, and reconcile from durable evidence. |
 | Cross-tenant read or overwrite | Derive all paths from validated UUIDs, prohibit caller paths, use root ownership, and test hostile operations across two tenants. |
 | Backup captures incompatible generations | Backup uses a shared tenant-state lock; mutation uses it exclusively; restored state must reconcile before publication. |
 | Unsafe archive, restore, or deletion | Verify portable export checksums and durable archive evidence; restore as a new deployment; keep emergency deletion behind a distinct root-only operator command that the provisioner cannot invoke. |
@@ -141,6 +141,9 @@ Implementation and review must preserve these invariants:
     hostname sharing a registrable domain with the platform or another tenant.
 11. A rollback cannot transition a tenant out of `suspended`; only `resume` may
     restore its public route.
+12. No active reference is durably selected before its immutable release and
+    route-set targets; intent, state, audit, rollback, and intent removal follow
+    the ordered file and parent-directory `fsync` protocol in ADR 0017.
 
 ## Residual risks
 

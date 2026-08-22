@@ -339,6 +339,8 @@ Implement idempotent commands or jobs for:
 - Retain the active release and two preceding releases.
 - Generate allowlisted tenant routes without accepting Caddy text.
 - Validate, reload, and roll back Caddy under one publication lock.
+- Apply explicit file and parent-directory `fsync` barriers around releases,
+  route sets, intent, active references, state, audit, and rollback.
 - Refactor Ansible Caddy convergence to commit every live Caddy input and reload
   through the same publication lock rather than racing tenant activation.
 - Suspend, resume, export, archive, restore, and delete a site.

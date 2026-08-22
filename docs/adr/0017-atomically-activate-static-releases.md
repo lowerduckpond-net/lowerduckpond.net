@@ -48,6 +48,31 @@ interrupted operation. Backups take a shared tenant-state lock while publication
 and reconciliation take it exclusively, preventing a snapshot from combining
 incompatible content and manifest generations.
 
+Atomic rename is not a durability barrier. While holding the locks, apply this
+ordered persistence protocol:
+
+1. Normalize and `fsync` every completed release and route-set file, `fsync`
+   their directories from leaves upward, rename each temporary generation to
+   its final immutable name, and `fsync` each parent directory. The Ansible
+   Caddy transaction applies the same ordering to its candidate inputs.
+2. Write the transaction intent, including previous and proposed generations,
+   to a temporary file; `fsync` it, rename it into place, and `fsync` the state
+   directory.
+3. Create a temporary active-route reference, atomically rename it over the old
+   reference, and `fsync` its containing directory. A reference is never
+   selected before its release and route-set targets are durable.
+4. Reload Caddy. On success, write desired and observed state through
+   write-`fsync`-rename-directory-`fsync`, append and `fsync` the audit event,
+   then remove the intent and `fsync` its directory.
+5. On validation or reload failure, atomically restore and durably persist the
+   prior reference before reloading the last-known-good generation. Persist the
+   failure result and audit event before removing intent.
+
+On startup and before any later mutation, reconciliation inspects durable
+intent, references, and state. It completes a transaction whose selected
+generation and targets are durable, or restores the durable prior generation;
+it never infers completion from observed state alone.
+
 The root activator accepts structured identifiers and an artifact from the
 fixed intake boundary. It does not accept arbitrary destination paths, commands,
 or Caddy directives. It performs every security-critical check itself even when
@@ -64,7 +89,9 @@ The active route-set reference becomes the publication commit point. Releases
 can be prepared without affecting traffic, retries can reuse an already verified
 immutable release, and rollback selects a prior release without rewriting its
 content. Route-set generations and write-ahead state consume small amounts of
-extra disk and need bounded garbage collection.
+extra disk and need bounded garbage collection. Durably syncing every file and
+directory adds deployment latency, bounded by the archive limits, in exchange
+for a recoverable commit after process termination or power loss.
 
 The backup service, root activator, and Ansible Caddy transaction must share
 their respective state and publication lock contracts. Caddy route generation

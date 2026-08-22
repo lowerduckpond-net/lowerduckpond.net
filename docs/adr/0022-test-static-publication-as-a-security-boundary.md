@@ -40,6 +40,13 @@ transaction can select live inputs and reload at a time. It verifies that the
 resulting Caddy configuration and observed tenant state describe the same
 committed generation.
 
+Durability tests record filesystem operations and inject failure after every
+file sync, directory sync, rename, reload, state commit, audit append, and intent
+removal boundary. Reconciliation must select only a fully durable new
+generation or the durable prior generation. Installed-host tests additionally
+terminate the activator at each externally visible phase and verify restart
+recovery.
+
 Hostile fixtures must cover traversal, absolute and ambiguous paths, links,
 special entries, duplicate and case-colliding names, expansion and quota abuse,
 arbitrary route input, cross-tenant reads, interrupted activation, failed Caddy
