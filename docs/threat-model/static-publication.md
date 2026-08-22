@@ -97,7 +97,7 @@ record.
 | --- | --- |
 | Path traversal or absolute extraction | Normalize and validate every path twice; extract through directory-relative, no-follow operations; hostile fixtures must fail. |
 | Symlink, hard-link, device, FIFO, socket, or permission abuse | Accept only regular files/directories; normalize modes; inspect ZIP metadata and actual created objects. |
-| ZIP bomb, oversized entry set, disk or inode exhaustion | Enforce compressed, expanded, per-file, total-entry, and ratio limits during streaming extraction; count directories as entries and delete failed staging trees. |
+| ZIP bomb, oversized entry set, disk or inode exhaustion | Enforce compressed, expanded, per-file, total-entry, and ratio limits during streaming extraction; count directories as entries and delete failed staging trees. Remove persistent provisioner-writable storage, hard-cap its private ephemeral workspace by aggregate bytes and inodes, bound root snapshots and cleanup, and preserve a host free-space reserve. |
 | Duplicate, Unicode, slash, backslash, or case ambiguity | Normalize first, reject ambiguity and collisions, and generate deterministic manifests and exports. |
 | Duplicate YAML mapping keys | Reject duplicates during YAML composition, before schema validation or canonical JSON generation can discard the ambiguity. |
 | Platform or cross-tenant cookie poisoning | Keep `lowerduckpond.net` platform-only and require every tenant hostname to be a distinct registrable domain according to supported browser Public Suffix List behavior. |
@@ -150,6 +150,9 @@ Implementation and review must preserve these invariants:
 13. Privileged digest verification, archive parsing, validation, and extraction
     consume the same root-owned intake snapshot, which cannot be modified by
     the provisioner through its pathname or a previously opened descriptor.
+14. The provisioner has no general-purpose persistent writable filesystem; its
+    private ephemeral workspace has kernel-enforced aggregate byte and inode
+    limits and is not a live publication, intake, state, or backup path.
 
 ## Residual risks
 

@@ -329,6 +329,9 @@ Implement idempotent commands or jobs for:
   deployment ID or archive digest.
 - Migrate authoritative manifest and audit storage from the empty Milestone 2
   provisioner-owned directories to root ownership before accepting tenant data.
+- Remove the provisioner's persistent writable home and job directory; place
+  its temporary work in a private service workspace hard-capped at 64 MiB and
+  4,096 inodes while root owns intake, job records, and activation staging.
 - Validate slug and hostname uniqueness.
 - Enforce a 1–63-byte ASCII DNS-label grammar and the complete derived-hostname
   length before persisting a slug.
@@ -359,6 +362,9 @@ Implement idempotent commands or jobs for:
 - Roll back to the previous release.
 - Reject traversal paths and escaping symlinks.
 - Reject hostile links, special entries, collisions, and archive expansion.
+- Exhaust the provisioner's private workspace by bytes and by inodes and prove
+  the limits cannot consume the host filesystem or leave persistent entries
+  after a service restart.
 - Suspend and restore without data loss.
 - Delay a rollback across suspension and prove it cannot republish the tenant;
   only resume may leave the suspended state.

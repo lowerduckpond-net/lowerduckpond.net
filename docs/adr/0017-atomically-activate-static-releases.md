@@ -88,7 +88,21 @@ check even when the unprivileged provisioner already performed a preflight.
 The activator is also the only ordinary writer of root-owned desired manifests,
 observed state, deployment and archive records, and append-only audit events.
 The provisioner never receives directory write permission for those stores.
-Only its transient intake and job workspace remains provisioner-writable.
+Milestone 3 also removes the provisioner's ownership of the persistent home,
+intake, job, manifest, and audit directories installed by the Milestone 2 empty
+host baseline. The trusted SSH adapter creates root-owned intake artifacts and
+job records; the provisioner receives only the read access needed for advisory
+preflight and submits its structured request without making a writable copy.
+
+The provisioner's only general-purpose writable filesystem is a private
+ephemeral workspace mounted in its service namespace. Its initial hard limits
+are 64 MiB and 4,096 inodes in aggregate, independent of the per-archive
+limits, and the workspace is discarded whenever the unit stops or restarts.
+The service gets no persistent writable home. Root-owned intake snapshots and
+activation staging are not exposed in that namespace: the activator permits at
+most one snapshot for a serialized operation, removes it on every terminal
+path, cleans abandoned snapshots during reconciliation, and rejects work that
+would cross the configured host free-space reserve.
 
 ## Consequences
 
@@ -104,6 +118,11 @@ The backup service, root activator, and Ansible Caddy transaction must share
 their respective state and publication lock contracts. Caddy route generation
 becomes intentionally limited; adding a new route capability requires changing
 reviewed root-owned code and its tests.
+
+The private workspace limits must be monitored and tested at both their byte
+and inode boundaries. Increasing either limit requires another host-capacity
+review; application cleanup is not the security boundary that prevents a
+compromised provisioner from filling the host filesystem.
 
 ## Alternatives considered
 
