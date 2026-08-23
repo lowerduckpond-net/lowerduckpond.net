@@ -403,6 +403,10 @@ Implement idempotent commands or jobs for:
   the `archives/` storage prefix. Retain every bundle bound by authoritative
   archived tenant state until a coordinated, audited deletion transition makes
   it unreferenced; Milestone 4 owns retention expiry and scheduled deletion.
+- Persist and sync a construction intent containing the exact unique Spaces
+  object identity before archive upload. Reconcile it with any lifecycle intent
+  and authoritative archive record before admitting another archive; delete or
+  durably quarantine every unreferenced object.
 - Serialize export and archive construction globally; enforce one snapshot,
   one unacknowledged result, a 256-MiB/5,120-inode spool, a 120-MiB output cap,
   the host free-space reserve, and bounded acknowledgement/expiry cleanup.
@@ -454,6 +458,9 @@ Implement idempotent commands or jobs for:
 - Serialize activation with backup and reconcile a restored state snapshot.
 - Overlap export capture with lifecycle mutations and release garbage
   collection and prove each bundle describes one complete generation.
+- Interrupt archive construction around every local-intent, remote-upload, and
+  lifecycle-commit boundary and prove recovery preserves a bound object or
+  deletes/quarantines the one discoverable unreferenced object before retry.
 
 ### Exit criteria
 

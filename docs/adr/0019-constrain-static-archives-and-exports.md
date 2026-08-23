@@ -120,20 +120,44 @@ archive bundle's `manifest.json`; the proposed archived manifest is the bundle
 manifest.
 
 Archive releases tenant-state to build and move the verified bundle into
-durable archive storage, then—without releasing the export lock—acquires
-publication followed by exclusive tenant-state. It revalidates the exact source
-manifest, deployment, and release digests before committing that already
-bundled proposed archived manifest and its archive record. The archive record
-binds the proposed archived-manifest digest, selected deployment and content
-digests, portable-bundle digest and size, and durable object identity. The
-bundle alone grants no deletion authority before this transaction commits the
-record.
+durable archive storage. Before making the first remote storage request, and
+while still holding the export lock, root creates and syncs a construction
+intent and its parent directory. The intent binds the correlation ID, a
+root-generated unique upload-attempt ID, tenant ID, exact source and proposed
+manifest digests, selected deployment and content digests, portable-bundle
+digest and size, and the exact new durable object identity. The object identity
+cannot be caller-selected or overwrite an existing or previously bound object.
+The intent reaches durable `prepared` state before upload begins and durable
+`uploaded` state after the remote object has been independently revalidated;
+recovery needs only its already-synced object identity even if the host dies
+between remote upload success and the phase update.
+
+Archive then—without releasing the export lock—acquires publication followed by
+exclusive tenant-state. It revalidates the exact source manifest, deployment,
+and release digests before committing that already bundled proposed archived
+manifest and its archive record. The archive record binds the proposed
+archived-manifest digest, selected deployment and content digests,
+portable-bundle digest and size, and durable object identity. The bundle alone
+grants no deletion authority before this transaction commits the record.
+
+Startup and pre-archive reconciliation acquire the export lock and resolve any
+construction intent before admitting another archive. A matching lifecycle
+intent is reconciled first. If authoritative state then contains the exact
+bound archive record, recovery revalidates the durable object and clears the
+construction intent only after the lifecycle transaction is durably complete.
+Otherwise it deletes the named unreferenced object if present, or durably moves
+that identity into the quarantine ledger before clearing construction intent
+when deletion fails. Missing objects and failures before upload become an
+audited failed result. An unresolved construction intent or nonempty quarantine
+ledger closes archive admission, so process exit cannot turn the serialized
+upload boundary into unbounded remote-object growth.
 
 If any source changed, archive records an aborted result and retains no
 authorizing archive record; it never applies a stale snapshot. It immediately
 removes the unreferenced durable object, or records it in a root-owned
 quarantine ledger for bounded retry and garbage collection if object deletion
-fails. Quarantined objects grant no restore or deletion authority; archive
+fails, following the same durable construction-intent ordering. Quarantined
+objects grant no restore or deletion authority; archive
 admission remains closed while the quarantine ledger is nonempty, so repeated
 aborts cannot grow it without bound. The provisioner cannot create files
 directly in the spool or bypass these limits.

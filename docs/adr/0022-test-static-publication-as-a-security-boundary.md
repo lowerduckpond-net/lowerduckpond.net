@@ -184,6 +184,16 @@ global construction slot, one unacknowledged result, hard spool and free-space
 admission limits, startup cleanup, expiry, acknowledged cleanup, and idempotent
 retry without an additional snapshot.
 
+Remote archive failure injection terminates construction before and after
+construction-intent sync, during upload, after remote success but before the
+`uploaded` phase, after that phase, and across lifecycle-intent reconciliation
+and authoritative archive-record commit. Recovery must discover the exact
+object identity from durable local state, preserve it only when the reconciled
+authoritative record binds it, and otherwise delete it or journal it in
+quarantine before clearing construction intent. A remaining intent or
+quarantine entry must reject another archive, and repeated crashes or retries
+must never create more than one unclassified remote object.
+
 Lock-schedule tests exercise every permitted pair and triple of export,
 publication, and tenant-state acquisition, including backup, archive, Ansible,
 Caddy restart, and ordinary lifecycle operations. They prove the global order,
