@@ -377,6 +377,8 @@ Implement idempotent commands or jobs for:
   routes without accepting Caddy text or a redirect target.
 - Enforce the exact bare-root, non-cached, no-referrer alias contract and omit
   raw path, query, cookie, authorization, and referrer values from alias logs.
+  Apply the allowlist before automatic HTTPS on both listeners, redirecting only
+  a qualifying HTTP request directly to the canonical HTTPS origin.
 - Validate, select, reload, and advance every restart or rollback phase under
   one publication lock, while releasing it before any systemd job must
   reacquire it.

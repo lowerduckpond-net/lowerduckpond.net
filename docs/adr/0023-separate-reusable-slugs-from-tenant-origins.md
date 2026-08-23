@@ -38,16 +38,26 @@ Give every tenant two distinct public identifiers:
 
 For an active tenant, an exact `GET` or `HEAD` for `/` with no query at the
 current slug alias receives a root-generated `302` redirect to `/` at the
-tenant's canonical origin. The response uses `Cache-Control: no-store` and
-`Referrer-Policy: no-referrer`, sets no cookie, and has only a fixed inert
-platform body. Other paths, queries, methods, unknown aliases, and aliases for
-non-active tenants receive the same generic platform `404` without a tenant
-destination. The alias service does not register service workers or hold
-authentication state. Platform authentication cookies remain host-only and
-sensitive ones use the `__Host-` prefix, so they are not sent to sibling slug
-aliases. Alias access logs retain only a sanitized hostname, method class,
-status, and timing; they discard raw paths, queries, `Cookie`, `Authorization`,
-and `Referer` before persistence.
+tenant's canonical HTTPS origin. The response uses `Cache-Control: no-store`
+and `Referrer-Policy: no-referrer`, sets no cookie, and has only a fixed inert
+platform body.
+
+This allowlist runs on the alias hostname before Caddy's general HTTP-to-HTTPS
+handling. HTTPS and plain HTTP alias listeners apply the same hostname,
+lifecycle, method, exact-path, and absent-query checks. A qualifying HTTP
+request receives the same root-generated `302` directly to the canonical
+`https://` origin; it is not upgraded through an intermediate alias URL. Other
+paths, queries, methods, unknown aliases, and aliases for non-active tenants
+receive the same generic platform `404` on the scheme that received them, with
+no `Location` or tenant destination. No HTTP redirect copies an alias path or
+query.
+
+The alias service does not register service workers or hold authentication
+state. Platform authentication cookies remain host-only and sensitive ones use
+the `__Host-` prefix, so they are not sent to sibling slug aliases. Alias access
+logs retain only a sanitized hostname, method class, status, and timing; they
+discard raw paths, queries, `Cookie`, `Authorization`, and `Referer` before
+persistence.
 
 The redirect generator accepts only the root-owned slug-to-tenant mapping and
 uses the manifest origin after independently rederiving it from the stored

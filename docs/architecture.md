@@ -105,7 +105,10 @@ Ansible owns all durable system configuration after that point.
 
 Caddy is the only public web entry point. It:
 
-- Redirects HTTP to HTTPS.
+- Redirects HTTP to HTTPS, except that slug-alias requests first pass the alias
+  method/path/query allowlist: qualifying bare-root requests redirect directly
+  to the canonical HTTPS origin and all others receive the generic HTTP `404`
+  without forwarding a path or query.
 - Terminates TLS.
 - Serves static tenant directories directly only from immutable canonical tenant
   origins.

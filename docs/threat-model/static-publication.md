@@ -175,7 +175,9 @@ Implementation and review must preserve these invariants:
 10. No tenant-controlled response is served from `lowerduckpond.net` or a
     hostname sharing a registrable domain with the platform or another tenant.
     A slug alias returns only the fixed root-generated redirect contract in ADR
-    0023 and holds no tenant or authentication state.
+    0023 and holds no tenant or authentication state. Its HTTP listener applies
+    the alias allowlist before general HTTPS upgrades and never forwards a
+    rejected path or query.
 11. A rollback cannot transition a tenant out of `suspended`; only `resume` may
     restore its public routes.
 12. No active reference is durably selected before its immutable release and

@@ -201,8 +201,12 @@ record must reproduce the exact preceding canonical origin.
 Alias tests prove only an exact `GET` or `HEAD` for a current active slug's bare
 root receives the fixed `302`; it includes `Cache-Control: no-store` and
 `Referrer-Policy: no-referrer`, sets no cookie, and derives its destination only
-from root-owned tenant state. Paths, queries, other methods, unknown or inactive
-slugs, and attempts to supply a redirect target never reach tenant content.
+from root-owned tenant state. Run the complete matrix over both HTTP and HTTPS.
+A qualifying HTTP request redirects directly to the canonical HTTPS origin,
+without an intermediate alias upgrade; paths, queries, other methods, unknown
+or inactive slugs, and attempts to supply a redirect target receive the generic
+scheme-local `404` with no `Location` and never reach tenant content. Fixtures
+prove no alias path or query appears in an HTTP response header or body.
 Browser acceptance verifies no tenant can register a service worker or store
 tenant-controlled state at a slug alias and that alias reassignment exposes no
 state from the preceding canonical origin. Logging tests send sensitive path,
