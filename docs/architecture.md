@@ -275,6 +275,10 @@ Primary backups should be application-aware rather than relying only on Droplet 
   lifecycle rules remove incomplete uploads and stale object versions without
   deleting current repository objects or tenant archive bundles still bound by
   authoritative tenant state by age.
+- The tenant-archive prefix has a hard aggregate remote-object allowance.
+  Restore and deletion journal every bundle they unbind, permanently purge all
+  of its versions and markers after the authoritative transition commits, and
+  block new archives while cleanup is ambiguous or incomplete.
 - Root-created audit-archive snapshots remain outside ordinary backup retention
   until an explicit audit-retention transition; local audit rotation requires a
   restore-verified snapshot and durable chain index.

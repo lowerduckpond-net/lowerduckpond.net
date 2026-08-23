@@ -240,11 +240,25 @@ that only creates a marker must leave construction or quarantine charged and
 archive admission closed. Repeated source-change aborts, crashes, and retries
 must never retain more than the one classified object under cleanup.
 
+Remote-retirement tests interrupt restore, ordinary deletion, and emergency
+deletion of archived state before and after retirement-intent sync, lifecycle
+intent creation, authoritative-state and audit commit, each version-specific
+delete, absence confirmation, cleanup-result commit, and intent removal. They
+prove a still-bound version is never deleted; a committed unbinding eventually
+purges every version and marker for the unique key; and an ambiguous or failed
+cleanup remains durably charged and blocks another archive. Admission fixtures
+fill the managed prefix to 25 unique keys, 25 total data versions or delete
+markers, and 3,000 MiB, then test each boundary with the reserved 120-MiB upload.
+They include unknown and noncurrent versions, markers, interrupted accounting,
+and repeated restore/re-archive cycles and prove no process restart, lifecycle
+retry, or storage rule can exceed or refund the hard remote allowance.
+
 Lock-schedule tests exercise every permitted pair and triple of export,
-publication, and tenant-state acquisition, including backup, archive, Ansible,
-Caddy restart, and ordinary lifecycle operations. They prove the global order,
-non-blocking busy response, absence of leaked waiters, and archive rejection if
-its source generation changes between snapshot and exclusive commit.
+publication, and tenant-state acquisition, including backup, archive,
+archive-retiring restore and deletion, Ansible, Caddy restart, and ordinary
+lifecycle operations. They prove the global order, non-blocking busy response,
+absence of leaked waiters, and archive rejection if its source generation
+changes between snapshot and exclusive commit.
 
 Export fixtures give tenant content each reserved metadata basename and prove
 that round-trip restore preserves it below `content/`. Negative fixtures cover
@@ -276,6 +290,9 @@ Deletion tests archive, restore, and deploy a newer generation, then prove the
 old archive record cannot authorize deletion. They independently alter every
 bound archive-evidence field and prove delete fails closed until the current
 canonical manifest and deployment have a freshly verified durable bundle.
+They also prove successful restore and deletion retain the prior object through
+the authoritative commit, then retire it without losing the digest and object
+identity recorded in immutable audit evidence.
 Archive failure-injection tests terminate the activator after bundle upload,
 archive-record staging, intent commit, no-route selection, Caddy reload,
 authoritative archive-record and manifest commit, observed-state commit, and

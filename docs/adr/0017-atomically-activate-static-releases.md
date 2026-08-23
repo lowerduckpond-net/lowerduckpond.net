@@ -171,15 +171,16 @@ manifest generations.
 
 Whenever an operation needs more than one host lock, acquire them only in this
 global order: export lock, publication lock, then tenant-state lock. Ordinary
-exports take the export lock and then shared tenant-state; archive takes the
-export lock before its capture and later publication transaction; other
-lifecycle mutations take publication and then exclusive tenant-state; backup
-takes only shared tenant-state; Ansible and the Caddy recovery/launcher paths
-take only publication. Never upgrade a shared lock or acquire an earlier lock
-while holding a later one. Contention returns a retryable busy result before
-creating a parser worker or staging artifact rather than accumulating unbounded
-lock waiters; the same correlation ID can retry. Root recovery may wait with
-its service runtime bound, but a timeout fails Caddy startup closed.
+exports take the export lock and then shared tenant-state; archive and every
+restore or deletion that retires a bound archive take the export lock before
+their later publication transaction; other lifecycle mutations take
+publication and then exclusive tenant-state; backup takes only shared
+tenant-state; Ansible and the Caddy recovery/launcher paths take only
+publication. Never upgrade a shared lock or acquire an earlier lock while
+holding a later one. Contention returns a retryable busy result before creating
+a parser worker or staging artifact rather than accumulating unbounded lock
+waiters; the same correlation ID can retry. Root recovery may wait with its
+service runtime bound, but a timeout fails Caddy startup closed.
 
 Atomic rename is not a durability barrier. While holding the locks, apply this
 ordered persistence protocol:
@@ -283,6 +284,13 @@ indirectly request from the activator. The Milestone 3 host initially permits:
   64 MiB; and
 - at most 128 MiB of local ordinary audit segments, with a separate 8-MiB
   root-administrator reserve that the provisioner entry point cannot consume.
+
+ADR 0019 separately limits the versioned `archives/` prefix to 25 unique keys,
+25 total stored data versions or delete markers, and 3,000 MiB across all data
+versions. The one serialized upload reserves a key, version, and 120 MiB before
+it begins. Bound, constructing, retiring, and quarantined objects all consume
+that same allowance; successful retirement is not treated as free capacity
+until a version-aware listing proves the key absent.
 
 A raw structured operation request is at most 32 KiB before decoding; its
 canonical request and result are each at most 16 KiB. A raw YAML manifest is at

@@ -427,6 +427,14 @@ Implement idempotent commands or jobs for:
   admitting another archive; permanently purge and confirm absence of every
   unreferenced version and delete marker or keep them durably quarantined and
   charged.
+- Before restore or deletion unbinds an archive, sync a retirement intent for
+  its exact key and version. Reconcile lifecycle state first, preserve any
+  still-bound version, and permanently purge a committed retired key before
+  clearing its charge or admitting another archive.
+- Limit the managed archive prefix to 25 unique keys, 25 total data versions or
+  delete markers, and 3,000 MiB across all data versions. Reserve one key, one
+  version, and 120 MiB before upload; charge bound, constructing, retiring,
+  quarantined, and unknown objects until exact version listing proves absence.
 - Serialize export and archive construction globally; enforce one snapshot,
   one unacknowledged result, a 256-MiB/5,120-inode spool, a 120-MiB output cap,
   the host free-space reserve, and bounded acknowledgement/expiry cleanup.
@@ -501,6 +509,13 @@ Implement idempotent commands or jobs for:
   lifecycle-commit boundary and prove recovery preserves a bound object or
   version-purges/quarantines the one discoverable unreferenced object before
   retry, without treating a delete marker as reclaimed storage.
+- Interrupt archive-retiring restore and deletion around every journal,
+  lifecycle, audit, version-purge, confirmation, and cleanup-commit boundary;
+  prove a bound version survives and a committed retired version cannot
+  accumulate or release its remote charge early.
+- Fill remote archive key, version/marker, and aggregate-byte accounting at and
+  beyond each limit, including unknown and noncurrent versions, then prove
+  reservation, restart, and repeated restore/re-archive cannot exceed it.
 
 ### Exit criteria
 

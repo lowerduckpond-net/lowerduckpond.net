@@ -140,6 +140,7 @@ record.
 | Backup or export captures incompatible generations | Backup uses a shared tenant-state lock; mutation uses it exclusively. Ordinary export captures its current manifest and immutable release into a root-owned snapshot while holding that shared lock. Archive separately snapshots the source manifest for compare-and-swap and the proposed archived manifest for the bundle. Construction consumes only that snapshot, and restored state reconciles before publication. |
 | Concurrent exports exhaust privileged storage | Serialize export and archive construction behind one root-owned host lock; enforce one snapshot, one unacknowledged result, aggregate spool byte/inode ceilings, an encoded-output ceiling, a host free-space reserve, and root-owned terminal, startup, acknowledgement, and expiry cleanup. |
 | Crash or abort after versioned archive upload leaves billable remote bytes | Sync a construction intent containing a unique key before upload and its returned version ID afterward, then reconcile any associated lifecycle intent. Preserve only an exactly bound version; otherwise permanently delete every version and marker for the key and confirm absence, or keep quarantine charged and archive admission closed. |
+| Repeated restore, re-archive, or deletion accumulates successfully retired bundles | Before a transition unbinds an archive, sync a retirement intent for its exact object and hold the global export lock. Reconcile lifecycle state before cleanup, never delete a still-bound version, and permanently purge and confirm every version and marker after committed unbinding. Charge bound, constructing, retiring, quarantined, and unknown objects against hard aggregate remote key, version/marker, and byte ceilings; failed cleanup closes archive admission. |
 | Unsafe or implementation-dependent archive, restore, or deletion evidence | Put the proposed archived manifest—not its active or suspended source—in the durable bundle and bind the archive record to versioned canonical-manifest and length-delimited release-tree digests, the desired deployment, exact bundle bytes, and stored object version. Recompute the specified representations before archive commit and delete; restore as a new deployment. Permit ordinary archive-free deletion only when root-owned history proves the tenant was never deployed, and keep emergency deletion behind a distinct root-only operator command that the provisioner cannot invoke. |
 | Oversized, stalled, or abandoned intake transfer exhausts disk | Admit exactly one root-owned artifact, enforce the operation-specific byte ceiling plus aggregate allocation and host-free-space bounds while streaming, bound idle and total transfer time, publish only after sync, and clean every terminal or startup artifact before reopening admission. |
 | Intake artifact replacement or mutation through an existing descriptor | Open beneath the fixed intake directory without following links and claim the request. Stream the opened bytes exactly once into an exclusively created root-owned snapshot while enforcing the compressed-size limit and computing the digest; sync and close the snapshot, then verify the request digest and perform all parsing, validation, and extraction against that snapshot. Never return to the provisioner-writable inode. |
@@ -243,6 +244,12 @@ Implementation and review must preserve these invariants:
     resolves a related lifecycle intent, then either proves authoritative
     archive state binds that version or purges all versions and markers for the
     key; unconfirmed cleanup remains quarantined, charged, and admission-blocking.
+29. Every lifecycle transition that makes a bound archive unreferenced first
+    syncs a retirement intent for its exact object. Recovery preserves a
+    still-bound version or permanently purges and confirms a committed retired
+    key before clearing its charge. The managed prefix cannot exceed 25 unique
+    keys, 25 total data versions or delete markers, or 3,000 MiB across data
+    versions; a pending upload reserves one key, version, and 120 MiB.
 
 ## Residual risks
 

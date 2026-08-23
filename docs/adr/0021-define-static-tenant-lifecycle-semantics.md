@@ -58,7 +58,10 @@ versioned `lowerduckpond-release-tree-v1` content digest, versioned
 portable-bundle SHA-256 and size, and durable bucket, key, and Spaces version
 ID. Restore recomputes those representations from that exact version and
 creates a new deployment while preserving the tenant ID; it does not mutate a
-historical release.
+historical release. Before restore commits active state and makes that record
+unreferenced, it durably journals the exact object in the retirement protocol
+defined by ADR 0019 and retains the export lock until cleanup succeeds or
+archive admission is durably closed.
 
 After the bundle is durable, archive acquires publication and exclusive
 tenant-state in the global order and proves the captured source manifest,
@@ -111,7 +114,10 @@ The ordinary archived deletion path also releases the slug after its archive
 checks and deletion audit commit. Neither deletion path makes the immutable
 tenant ID or canonical hostname available to a new tenant. The audit tombstone
 records released slugs as history but does not participate in future slug
-availability checks.
+availability checks. Before the deletion commit makes the bound archive
+unreferenced, root syncs its retirement intent; after commit, it preserves the
+archive evidence digest and object identity in the tombstone while permanently
+purging the retired bytes through ADR 0019's version-aware protocol.
 
 An emergency deletion without archive evidence uses a separate root-only
 operator command that is absent from the provisioner's sudo allowlist and
@@ -134,7 +140,11 @@ must not independently delete a bundle that live tenant state requires for
 export, restore, or ordinary deletion. Version-aware cleanup permanently purges
 every version and delete marker of an unreferenced unique key and confirms none
 remain; lifecycle expiration is only a backstop and does not reclaim charged
-capacity or reopen archive admission.
+capacity or reopen archive admission. Restore, ordinary deletion, and an
+emergency deletion of archived state journal that cleanup before unbinding the
+record. Until the journal is reconciled and the key is proven absent, the
+object remains charged against the hard 25-key, 25-version-or-marker, and
+3,000-MiB remote archive ceilings and further archive admission stays closed.
 
 The complete ordinary transition matrix is:
 
@@ -182,7 +192,9 @@ Bound archive retention is therefore controlled by the tenant lifecycle rather
 than by an uncoordinated object-age timer. Milestone 4 may remove a bound bundle
 only as part of a scheduled, audited tenant-deletion transition; a storage
 lifecycle rule may provide later cleanup for objects that authoritative state
-already proves are unreferenced.
+already proves are unreferenced. Milestone 3 immediately retires an object made
+unreferenced by restore or deletion, so repeated valid lifecycle operations
+cannot accumulate old bundles while waiting for Milestone 4 policy.
 
 Archive evidence is generation-specific rather than a permanent tenant flag.
 Any later manifest or deployment generation needs a newly verified archive

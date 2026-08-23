@@ -229,6 +229,43 @@ charged while the ledger is nonempty, so repeated aborts cannot grow retained
 versions without bound. The provisioner cannot create files directly in the
 spool or bypass these limits.
 
+Remote archive accounting lists every version and delete marker below the
+dedicated `archives/` prefix; it does not rely on the mutable current-key view
+or lifecycle expiration. The initial hard ceilings are 25 unique managed keys,
+25 total stored data versions or delete markers, and 3,000 MiB summed from the
+size of every data version. Before an upload, admission reserves one key, one
+version, and the full 120-MiB encoded-bundle ceiling and refuses the operation
+if reconciled use plus that reservation would cross any ceiling. Every object
+bound by authoritative state, named by a construction or retirement intent, or
+recorded in quarantine is charged until an exact version listing proves it
+absent. An unknown key, version, or marker is durably quarantined and closes
+archive admission; exceeding a ceiling also closes admission but never blocks
+the reconciliation and deletion work needed to return below it.
+
+Restore, ordinary deletion, and any emergency deletion that will make an
+authoritative archive record unreferenced take the export lock before their
+publication and tenant-state transaction. Before changing authoritative state,
+root creates and syncs a retirement intent that binds the correlation ID,
+tenant ID, transition, exact preceding manifest and archive record, bucket,
+unique key, version ID, bundle digest, and size. The lifecycle transaction may
+then either preserve that exact archived state or durably commit the new state,
+result, and audit evidence that no longer bind the object. It never deletes the
+bundle before that choice is durable.
+
+Startup, pre-archive, and retirement reconciliation resolve any related
+lifecycle intent first and inspect all authoritative archive records. If state
+still binds the exact object, recovery preserves it and clears only a
+retirement attempt whose lifecycle transaction durably rolled back. If the
+completed transition made it unreferenced, recovery permanently purges every
+version and delete marker for its unique key, confirms an empty exact-key
+listing, records the cleanup result, and only then clears and syncs the
+retirement intent. Ambiguous state or failed discovery, deletion, or
+confirmation leaves the intent or quarantine ledger durable, keeps its full
+remote capacity charged, and closes archive admission. Audit tombstones retain
+the evidence digest and object identity needed to explain the deletion, not an
+authority to preserve or restore the retired bytes. No cleanup may delete a key
+while any authoritative tenant record still binds one of its versions.
+
 Produce a portable ZIP export with this fixed versioned envelope:
 
 ```text
