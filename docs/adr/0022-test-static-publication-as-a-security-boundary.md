@@ -63,13 +63,21 @@ systemd needs it, later mutations return busy while intent is nonterminal, a
 lost or duplicated job submission is idempotent, and every crash converges on
 the complete candidate or preceding generation. Candidate and
 last-known-good start failures must preserve intent and evidence, stop after the
-single candidate and single recovery transitions, and never enter an unbounded
-automatic restart loop. Tests exhaust the candidate start-rate limit, prove the
-recovery helper durably selects the preceding generation before releasing the
-lock, then require `reset-failed` to complete before its non-blocking recovery
-start. They interrupt both commands and prove reconciliation repeats them
-idempotently without selecting another generation or leaving a healthy prior
-generation blocked by the candidate's exhausted counter.
+single candidate and single recovery target transitions, and never enter an
+unbounded automatic restart loop. Tests prove the unit pins three attempts per
+target and a 60-second rate-limit interval. For every automatic retry, they
+require a new invocation ID, durably record the preceding failed attempt, and
+rebind only the same selected generation before its launcher runs. Delayed or
+duplicated pre-start and post-start callbacks for every earlier invocation must
+fail without advancing intent. Tests exhaust the candidate attempt and systemd
+start-rate limits, prove the recovery helper durably selects the preceding
+generation before releasing the lock, then require `reset-failed` to complete
+before its non-blocking recovery start. They interrupt both commands and prove
+reconciliation repeats them idempotently without refunding an attempt,
+selecting another generation, duplicating a pending job, or leaving a healthy
+prior generation blocked by the candidate's exhausted counter. Exhausting all
+three recovery attempts leaves one nonterminal intent and no further automatic
+target transition.
 
 Bootstrap tests interrupt the initial and upgrade maintenance transactions
 between stop, mask, unit installation, launcher installation, systemd reload,

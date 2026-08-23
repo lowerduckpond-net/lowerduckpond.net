@@ -126,7 +126,7 @@ record.
 | Arbitrary Caddy behavior or secret disclosure | Generate allowlisted complete Caddy configurations from validated primitives; accept no Caddy text; keep generation environment files Caddy-only and excluded from backup, and keep the admin socket Caddy-only. |
 | Validation-to-reload race | Validate one immutable complete runtime generation with its manifest-bound binary and environment, select it through one active reference under the publication lock, and reload from directory-pinned open inputs. |
 | Ansible convergence selects stale tenant routes or automatic restart mixes Caddy inputs | Stage only host inputs before locking; under publication reread authoritative tenant state, construct and validate the final complete route-bearing generation, and then select it through phased root-owned intent. Before every start, the frozen bootstrap reconciles intent and pins one manifest-verified generation directory. Change the bootstrap only while Caddy is stopped and masked. |
-| Synchronous restart deadlocks or exhausted candidate retries block recovery | Persist and select a restart candidate under the lock, release it before queuing a non-blocking systemd job, and let pre-start, launcher, post-start, and rollback helpers acquire it independently. After durably selecting the prior generation and releasing the lock, reset the service failed/start-limit state before queuing recovery. Block later mutations on durable intent, and never wait for a lock-acquiring systemd hook while retaining the lock. |
+| Synchronous restart deadlocks, automatic retries lose fencing, or exhausted candidate retries block recovery | Persist and select a restart candidate under the lock, release it before queuing a non-blocking systemd job, and let pre-start, launcher, post-start, and rollback helpers acquire it independently. Pin three attempts per candidate or recovery target. Under the lock, durably bind each automatic retry's distinct invocation ID and attempt number only to the unchanged selected generation; reject stale callbacks. After durably selecting the prior generation and releasing the lock, reset the service failed/start-limit state before queuing recovery. Block later mutations on durable intent, and never wait for a lock-acquiring systemd hook while retaining the lock. |
 | Runtime generations exhaust disk or retain secrets indefinitely | Admit at most active, last-known-good, and intent candidate generations; enforce aggregate unique-inode byte/inode and host-free-space bounds; clean unreferenced staging after terminal states and startup; keep environment/config Caddy-only and backup/diagnostic-excluded. |
 | Concurrent or replayed jobs | Serialize publication, bind results to correlation IDs and request digests, and make retries idempotent. |
 | Oversized structured syntax exhausts the privileged parser before canonicalization | Read at most the raw ceiling plus one byte under a deadline before parsing, reject excess without inspecting correlation data, run the decoder under fixed process limits, and then enforce the smaller canonical request, result, and manifest ceilings. Apply the same path to retries. |
@@ -162,8 +162,10 @@ Implementation and review must preserve these invariants:
    to that tenant's UUID-derived canonical origin and cannot reach a release.
 4. Candidate validation, active-generation selection, synchronous reload, and
    every restart or rollback phase transition occur while holding the global
-   publication lock; no other path mutates live Caddy inputs. External systemd
-   waits occur only after releasing it.
+   publication lock; no other path mutates live Caddy inputs. Every bounded
+   automatic retry durably binds its distinct invocation ID and attempt number
+   to the unchanged selected generation, and only that binding may verify the
+   start. External systemd waits occur only after releasing the lock.
 5. Desired state, observed state, releases, and audit events are recoverable and
    reconciliation never publishes unvalidated content.
 6. Unknown manifest fields, unsupported archive semantics, and unrecognized
