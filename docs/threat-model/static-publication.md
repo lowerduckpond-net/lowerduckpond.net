@@ -118,7 +118,7 @@ record.
 | Duplicate YAML mapping keys | Reject duplicates during YAML composition, before schema validation or canonical JSON generation can discard the ambiguity. |
 | Platform or cross-tenant cookie poisoning | Serve tenant content only from immutable UUID-derived hostnames that are distinct registrable domains according to supported browser Public Suffix List behavior. Keep `lowerduckpond.net` responses platform-controlled and platform authentication cookies host-only. |
 | Slug reassignment transfers persistent browser state | Treat the slug hostname only as a platform alias. Redirect its exact bare root without caching, referrer, cookie, path, query, tenant body, tenant header, or caller-selected target to the immutable tenant origin. Never reassign a tenant ID or canonical hostname; release only the slug mapping. |
-| Alias becomes a confused deputy, secret sink, or stale content URL | Generate its destination solely from root-owned tenant ID and suffix, redirect only active tenants, reject every non-root path, query, and unsupported method without forwarding, discard sensitive alias request fields before logging, and test that uploaded bytes and service workers are unreachable at the alias. |
+| Alias becomes a confused deputy, secret sink, or stale content URL | Generate its destination solely from root-owned tenant ID and suffix, redirect only active tenants, reject every non-root path, query, and unsupported method without forwarding, apply `Cache-Control: no-store` to every redirect and generic failure so lifecycle changes cannot leave a cached positive or negative result, discard sensitive alias request fields before logging, and test that uploaded bytes and service workers are unreachable at the alias. |
 | Mutation after validation | Root performs final extraction; active releases and complete Caddy generations are root-owned and immutable to Caddy and the provisioner. |
 | Arbitrary Caddy behavior or secret disclosure | Generate allowlisted complete Caddy configurations from validated primitives; accept no Caddy text; keep generation environment files Caddy-only and excluded from backup, and keep the admin socket Caddy-only. |
 | Validation-to-reload race | Validate one immutable complete runtime generation with its manifest-bound binary and environment, select it through one active reference under the publication lock, and reload from directory-pinned open inputs. |
@@ -259,10 +259,11 @@ Implementation and review must preserve these invariants:
   execute on the host; content policy and browser protections remain necessary.
 - Limits reduce but do not eliminate availability impact from expensive valid
   content or high request volume.
-- A stale or non-conforming cache can follow an obsolete alias redirect to the
-  preceding tenant's separate canonical origin. The `no-store` response and
-  non-forwarding alias contract reduce this usability risk; it cannot transfer
-  control of the new tenant's origin.
+- A stale or non-conforming cache can retain an obsolete alias redirect or
+  negative response. The uniform `no-store` and non-forwarding alias contract
+  reduce this usability risk; an obsolete redirect reaches only the preceding
+  tenant's separate canonical origin and cannot transfer control of the new
+  tenant's origin.
 - The single host remains one availability and blast-radius boundary.
 - A trusted administrator can intentionally override deletion safeguards or
   directly modify the host.

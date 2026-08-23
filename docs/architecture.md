@@ -113,7 +113,8 @@ Caddy is the only public web entry point. It:
 - Serves static tenant directories directly only from immutable canonical tenant
   origins.
 - Redirects reusable platform-controlled slug aliases to canonical tenant
-  origins without serving or proxying tenant bytes from the alias.
+  origins without serving or proxying tenant bytes from the alias; every alias
+  redirect and generic `404` explicitly uses `Cache-Control: no-store`.
 - Proxies approved dynamic tenants to loopback-only container ports or sockets.
 - Emits structured access logs tagged with the requested hostname and resolved tenant.
 - Omits raw path, query, cookie, authorization, and referrer values from slug

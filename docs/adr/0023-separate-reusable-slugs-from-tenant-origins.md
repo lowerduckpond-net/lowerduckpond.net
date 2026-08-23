@@ -38,9 +38,10 @@ Give every tenant two distinct public identifiers:
 
 For an active tenant, an exact `GET` or `HEAD` for `/` with no query at the
 current slug alias receives a root-generated `302` redirect to `/` at the
-tenant's canonical HTTPS origin. The response uses `Cache-Control: no-store`
-and `Referrer-Policy: no-referrer`, sets no cookie, and has only a fixed inert
-platform body.
+tenant's canonical HTTPS origin. Every response from an alias hostname,
+including every generic `404`, uses `Cache-Control: no-store`. The redirect
+also uses `Referrer-Policy: no-referrer`, sets no cookie, and has only a fixed
+inert platform body.
 
 This allowlist runs on the alias hostname before Caddy's general HTTP-to-HTTPS
 handling. HTTPS and plain HTTP alias listeners apply the same hostname,
@@ -49,8 +50,11 @@ request receives the same root-generated `302` directly to the canonical
 `https://` origin; it is not upgraded through an intermediate alias URL. Other
 paths, queries, methods, unknown aliases, and aliases for non-active tenants
 receive the same generic platform `404` on the scheme that received them, with
-no `Location` or tenant destination. No HTTP redirect copies an alias path or
-query.
+no `Location` or tenant destination and with the same explicit `no-store`
+policy. No HTTP redirect copies an alias path or query. Applying `no-store` to
+all alias failures avoids disclosing whether a hostname is unknown or merely
+inactive and prevents a negative response from surviving later deployment,
+resume, restore, rename, or slug reassignment.
 
 The alias service does not register service workers or hold authentication
 state. Platform authentication cookies remain host-only and sensitive ones use
