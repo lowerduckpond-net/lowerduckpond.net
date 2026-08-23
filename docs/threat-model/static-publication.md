@@ -113,7 +113,9 @@ and supply-chain risks.
    uses a root-owned transaction under the global publication lock to select it
    and persist restart intent, then releases the lock before handing the restart
    to systemd. A frozen systemd bootstrap reconciles intent and pins one
-   generation directory before each start or automatic restart.
+   generation directory before each start or automatic restart. If no
+   transaction intent exists, it first durably binds the current invocation to
+   the manifest-verified active generation in an ordinary-start intent.
 
 No public request, tenant file, or unprivileged process can reach Caddy's admin
 socket or write an active route, immutable release, backup environment, or
@@ -136,7 +138,7 @@ record.
 | Arbitrary Caddy behavior or secret disclosure | Generate allowlisted complete Caddy configurations from validated primitives; accept no Caddy text; keep generation environment files Caddy-only and excluded from backup, and keep the admin socket Caddy-only. |
 | Validation-to-reload race | Validate one immutable complete runtime generation with its manifest-bound binary and environment, select it through one active reference under the publication lock, and reload from directory-pinned open inputs. |
 | Ansible convergence selects stale tenant routes or automatic restart mixes Caddy inputs | Stage only host inputs before locking; under publication reread authoritative tenant state, construct and validate the final complete route-bearing generation, and then select it through phased root-owned intent. Before every start, the frozen bootstrap reconciles intent and pins one manifest-verified generation directory. Change the bootstrap only while Caddy is stopped and masked. |
-| Synchronous restart deadlocks, automatic retries lose fencing, or exhausted candidate retries block recovery | Persist and select a restart candidate under the lock, release it before queuing a non-blocking systemd job, and let pre-start, launcher, post-start, and rollback helpers acquire it independently. Pin three attempts per candidate or recovery target. Under the lock, durably bind each automatic retry's distinct invocation ID and attempt number only to the unchanged selected generation; reject stale callbacks. After durably selecting the prior generation and releasing the lock, reset the service failed/start-limit state before queuing recovery. Block later mutations on durable intent, and never wait for a lock-acquiring systemd hook while retaining the lock. |
+| Synchronous restart deadlocks, no-intent starts bypass fencing, automatic retries lose fencing, or exhausted candidate retries block recovery | Persist and select a restart candidate under the lock, release it before queuing a non-blocking systemd job, and let pre-start, launcher, post-start, and rollback helpers acquire it independently. For a start without transaction intent, validate current authoritative state and durably create an ordinary-start intent bound to the active generation and current invocation before launch. Pin three attempts per candidate, recovery, or ordinary-start target. Under the lock, durably bind each automatic retry's distinct invocation ID and attempt number only to the unchanged selected generation; reject stale callbacks. Never roll back an ordinary start. After durably selecting the prior generation for a failed transactional candidate and releasing the lock, reset the service failed/start-limit state before queuing recovery. Block later mutations on durable intent, and never wait for a lock-acquiring systemd hook while retaining the lock. |
 | Runtime generations exhaust disk or retain secrets indefinitely | Admit at most active, last-known-good, and intent candidate generations; enforce aggregate unique-inode byte/inode and host-free-space bounds; clean unreferenced staging after terminal states and startup; keep environment/config Caddy-only and backup/diagnostic-excluded. |
 | Concurrent or replayed jobs | Let only the authenticated issuer allocate a root-owned job and correlation. Bind operator, operation, target, canonical request, artifact, and expected state; durably claim before execution; serialize publication; and make an exact retry return one immutable result. Unknown IDs and changed bindings allocate nothing. |
 | Compromised provisioner chains valid archive and delete operations | Accept only a root-generated authorization-job ID through provisioner sudo. Archive and delete require distinct authenticated jobs and correlations; the latter can be issued only against and bind the resulting archived manifest, deployment, and exact archive record. Keep job issuance and emergency deletion outside provisioner authority. |
@@ -225,9 +227,13 @@ Implementation and review must preserve these invariants:
     before any entry decoder runs.
 19. One active reference selects the manifest-bound binary, environment, and
     complete Caddy configuration together. Every start reconciles intent and
-    pins that generation once; automatic restart cannot combine live paths from
-    different generations. A restart commits only after post-start verification,
+    pins that generation once; when no transaction intent exists, pre-start
+    durably creates an ordinary-start intent for the validated active generation
+    and current invocation. Automatic restart cannot combine live paths from
+    different generations. A start commits only after post-start verification,
     and no initiator holds publication while waiting for systemd to reacquire it.
+    Exhausted ordinary-start attempts leave Caddy unavailable and cannot select
+    another generation.
 20. Nested operations acquire export, publication, and tenant-state only in that
     order, never upgrade, and do not queue unbounded waiters. Archive revalidates
     its captured source generation under exclusive state before committing.

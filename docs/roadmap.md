@@ -409,7 +409,10 @@ Implement idempotent commands or jobs for:
   attempts per selected target and the rate-limit interval; durably bind each
   automatic retry's new invocation ID and fence callbacks from prior attempts.
   Freeze a small systemd bootstrap that reconciles intent and pins one
-  generation before every start.
+  generation before every start. When no transaction intent exists, durably
+  create an ordinary-start intent for the manifest-verified active generation;
+  retry only that target and never infer rollback authority from service
+  startup.
 - Retain only active, last-known-good, and current-intent Caddy generations;
   enforce a 256-MiB/4,096-inode aggregate cap, unique-inode accounting,
   free-space admission, and secret-safe cleanup.

@@ -79,6 +79,20 @@ prior generation blocked by the candidate's exhausted counter. Exhausting all
 three recovery attempts leaves one nonterminal intent and no further automatic
 target transition.
 
+Ordinary-start tests begin with no intent and exercise the first
+post-migration start, a normal boot, an explicit stop/start, and an automatic
+restart after a previously successful transaction cleared its intent. Before
+the launcher runs, the pre-start gate must validate the active generation and
+current authoritative route state and durably create an `ordinary-starting`
+intent bound to the current invocation. Post-start verifies that binding and
+clears it only after committing observed startup-health evidence. Failure
+injection around intent creation, parent sync, launcher handoff, verification,
+and clearing proves retries remain bound to the same active generation. Tests
+exhaust all three attempts and prove neither `OnFailure=` nor reconciliation
+selects last-known-good, resets the counter, creates an operation result, or
+starts another target. Missing, malformed, stale-route, and unreferenced active
+generations fail before Caddy executes.
+
 Bootstrap tests interrupt the initial and upgrade maintenance transactions
 between stop, mask, unit installation, launcher installation, systemd reload,
 reconciliation, unmask, and start. Until every bootstrap component is compatible

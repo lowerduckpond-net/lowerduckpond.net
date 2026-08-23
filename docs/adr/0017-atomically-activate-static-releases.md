@@ -66,12 +66,26 @@ crash leaves Caddy unavailable rather than starting a mixed generation.
 Pin `Restart=on-failure`, `RestartSec=5s`, `StartLimitBurst=3`, and
 `StartLimitIntervalSec=60s` in the frozen unit rather than relying on systemd
 defaults. Before every start and automatic restart, a privileged `ExecStartPre`
-recovery gate acquires the publication lock and reconciles any intent. The
-restart intent contains a selected start target (`candidate` or `previous`), a
-separate attempt counter for each target, and the systemd invocation ID bound
-to the current attempt. The first start for a target durably advances its phase
-to `candidate-starting` or `recovery-starting`, sets its counter to one, and
-binds the current invocation ID.
+recovery gate acquires the publication lock and reconciles any intent. A
+transactional restart intent contains a selected start target (`candidate` or
+`previous`), a separate attempt counter for each target, and the systemd
+invocation ID bound to the current attempt. The first start for a target durably
+advances its phase to `candidate-starting` or `recovery-starting`, sets its
+counter to one, and binds the current invocation ID.
+
+A start with no existing intent is an ordinary startup, including the first
+post-migration start, a normal boot, an explicit service start, or an automatic
+restart after a previously successful transaction cleared its intent. Under
+the publication lock, `ExecStartPre` reads the active reference once, opens and
+manifest-verifies that immutable generation, and proves its captured route
+state still matches current authoritative tenant state. It then creates and
+syncs a distinct root-owned `ordinary-starting` intent that binds that exact
+generation and manifest, expected running inputs, an attempt counter of one,
+and the current invocation ID before allowing the launcher to run. It never
+changes the active reference, chooses the last-known-good generation, or
+creates an operation result on this path. A missing, malformed, unreferenced,
+or authoritative-state-inconsistent active generation fails closed before
+Caddy starts and requires root reconciliation or operator repair.
 
 An automatic retry receives a different invocation ID. The gate may durably
 rebind only when the intent remains in the same starting phase, the active
@@ -114,10 +128,11 @@ publication lock, proves that the systemd invocation, running executable,
 loaded configuration, active reference, and healthy admin response all match
 the intent's selected target, current attempt number, and current invocation
 ID. A delayed verifier for an earlier attempt cannot advance state. Only the
-matching verifier commits observed state, audit, and the immutable operation
-result before clearing intent. The originating host
-transaction waits for that result without holding any host lock. A bounded
-client timeout does not clear intent or independently roll back; the post-start
+matching verifier commits observed state and audit before clearing intent. It
+also commits the immutable operation result for a transactional restart, or
+bounded startup-health evidence for an ordinary start. The originating host
+transaction waits for its result without holding any host lock. A bounded client
+timeout does not clear intent or independently roll back; the post-start
 verifier or reconciler owns the terminal transition.
 
 If candidate start or verification fails, a separate privileged recovery unit
@@ -146,13 +161,24 @@ target or reset its counter. Exhausted recovery attempts leave Caddy unavailable
 with intent and attempt evidence intact for operator recovery instead of
 entering an unbounded restart loop.
 
-Every later mutation that encounters a nonterminal restart intent returns a
+An `ordinary-starting` intent uses the same invocation fencing and permits at
+most three attempts at its one bound active generation. A successful matching
+`ExecStartPost` durably records the observed running generation and startup
+health evidence before clearing the intent; it does not invent a tenant or host
+operation result. If all attempts fail, `OnFailure=` preserves the intent and
+evidence and leaves Caddy unavailable. It must not select the last-known-good
+generation, reset the counter, or enter transactional rollback because no
+uncommitted generation transaction authorized that change. Root reconciliation
+may resume only the same bound target; selecting a different generation
+requires an explicit host transaction.
+
+Every later mutation that encounters a nonterminal start intent returns a
 retryable busy result before staging. Startup reconciliation resumes the only
-valid next phase or selects the durable prior generation. It never refunds an
-attempt, reuses an invocation binding, or queues another start when the same
-systemd job is already pending. Thus systemd `Restart=` cannot observe a mixed
-set of paths, and no transaction can wait for a lock callback while retaining
-the publication lock itself.
+valid next phase; only a transactional candidate failure may select its durable
+prior generation. Reconciliation never refunds an attempt, reuses an invocation
+binding, or queues another start when the same systemd job is already pending.
+Thus systemd `Restart=` cannot observe a mixed set of paths, and no transaction
+can wait for a lock callback while retaining the publication lock itself.
 
 Retain at most three complete runtime generations: active, immediate
 last-known-good, and one candidate named by current intent. Before staging a
