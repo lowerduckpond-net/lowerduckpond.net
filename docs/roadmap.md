@@ -392,8 +392,11 @@ Implement idempotent commands or jobs for:
   and validate the final route-bearing candidate so a stale route set cannot be
   selected. Use durable phased intent and a non-blocking systemd handoff for
   binary or environment restarts, with post-start verification and rollback
-  after independent lock acquisitions. Freeze a small systemd bootstrap that
-  reconciles intent and pins one generation before every start.
+  after independent lock acquisitions. Before a recovery start, durably select
+  the prior generation, release publication, reset the exhausted systemd failed
+  and start-limit state, and then queue the start idempotently. Freeze a small
+  systemd bootstrap that reconciles intent and pins one generation before every
+  start.
 - Retain only active, last-known-good, and current-intent Caddy generations;
   enforce a 256-MiB/4,096-inode aggregate cap, unique-inode accounting,
   free-space admission, and secret-safe cleanup.

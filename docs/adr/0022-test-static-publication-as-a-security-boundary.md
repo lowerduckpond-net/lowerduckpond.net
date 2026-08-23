@@ -63,8 +63,13 @@ systemd needs it, later mutations return busy while intent is nonterminal, a
 lost or duplicated job submission is idempotent, and every crash converges on
 the complete candidate or preceding generation. Candidate and
 last-known-good start failures must preserve intent and evidence, stop after the
-single candidate and single recovery transitions, and never enter an automatic
-restart loop.
+single candidate and single recovery transitions, and never enter an unbounded
+automatic restart loop. Tests exhaust the candidate start-rate limit, prove the
+recovery helper durably selects the preceding generation before releasing the
+lock, then require `reset-failed` to complete before its non-blocking recovery
+start. They interrupt both commands and prove reconciliation repeats them
+idempotently without selecting another generation or leaving a healthy prior
+generation blocked by the candidate's exhausted counter.
 
 Bootstrap tests interrupt the initial and upgrade maintenance transactions
 between stop, mask, unit installation, launcher installation, systemd reload,

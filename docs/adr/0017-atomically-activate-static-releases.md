@@ -108,13 +108,23 @@ If candidate start or verification fails, a separate privileged recovery unit
 triggered through `OnFailure=` acquires the publication lock, selects and syncs
 the preceding complete generation, and advances the same intent to
 `rollback-restart-required`. It releases the lock before idempotently queuing
-the non-blocking recovery restart. The same pre-start, launcher, and post-start
-path pins and verifies the prior generation, records the failed operation
-result and audit event, and clears intent only after the last-known-good
-generation is healthy. One intent admits at most one candidate start transition
-and one last-known-good recovery transition. Any later failure leaves Caddy
-unavailable with intent and evidence intact for operator recovery instead of
-entering an automatic restart loop.
+the non-blocking recovery start. Because the service retains
+`Restart=on-failure`, the recovery helper must first run the fixed
+`systemctl reset-failed caddy.service` operation after the prior reference and
+`rollback-restart-required` phase are durable, and only then run
+`systemctl --no-block start caddy.service`. This resets the failed state and
+start-rate counter that exhausted candidate retries without weakening the
+unit's ordinary automatic-restart limit. Both commands are idempotent; a crash
+between them leaves intent authoritative, and reconciliation repeats the reset
+and start without another recovery transition.
+
+The same pre-start, launcher, and post-start path pins and verifies the prior
+generation, records the failed operation result and audit event, and clears
+intent only after the last-known-good generation is healthy. One intent admits
+at most one candidate start transition and one last-known-good recovery
+transition. Any later failure may consume the ordinary bounded automatic
+retries, then leaves Caddy unavailable with intent and evidence intact for
+operator recovery instead of entering an unbounded restart loop.
 
 Every later mutation that encounters a nonterminal restart intent returns a
 retryable busy result before staging. Startup reconciliation resumes the only
