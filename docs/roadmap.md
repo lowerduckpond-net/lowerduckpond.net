@@ -72,8 +72,9 @@ implementation has not started.
 A platform-owned reference site should eventually live in a separate
 repository and deploy at an ordinary `.com` slug and immutable origin through
 the same contract available to residents. Its content, repository name, and
-slug remain a Milestone 7 product choice; the exact `lowerduckpond.com` apex is
-reserved as a stateless platform response during Milestone 3.
+slug remain a Milestone 7 product choice. The exact `lowerduckpond.com` apex is
+a stateless platform `404` during Milestone 3 and will then redirect to the
+designated municipal tenant's current slug while that tenant is active.
 
 ## 2. Decisions to record before implementation
 
@@ -781,13 +782,19 @@ A small approved cohort can run PHP with tenant-scoped SQL, measured quotas, cle
 
 Build a platform-owned reference site in its separate repository and deploy it
 through an ordinary `.com` slug alias and UUID-derived canonical origin. Its
-content, repository name, and slug are open product questions; it must not gain
-an undocumented exception at the exact `.com` apex. It should exercise:
+content, repository name, and slug are open product questions. Designate its
+immutable tenant ID in root-owned state as the municipal target for the exact
+`.com` apex. The apex remains stateless and redirects only a query-free `GET`
+or `HEAD` for `/` to the active tenant's current authoritative slug; it never
+serves tenant content directly. The reference tenant should exercise:
 
 - Ordinary wildcard DNS and HTTPS in the tenant namespace.
 - Static assets and intentionally period-inappropriate styling.
 - Ordinary deployment, rollback, export, and restore.
-- No undocumented platform-side exceptions.
+- Rename, suspension, restoration, and slug reassignment without allowing the
+  apex to follow a former slug to another tenant.
+- No platform-side exception beyond the documented root-owned apex
+  designation and redirect.
 
 Then onboard a deliberately small set of residents. Track where the support burden actually appears: content upload, DNS expectations, PHP compatibility, quota confusion, forgotten renewals, or moderation.
 

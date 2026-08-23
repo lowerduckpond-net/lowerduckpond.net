@@ -330,9 +330,9 @@ Implementation and review must preserve these invariants:
 - A trusted administrator can intentionally override deletion safeguards or
   directly modify the host.
 
-These risks are accepted for the static pilot and must be revisited before an
-authenticated `.com` apex, custom domains, public upload, PHP, or multi-host
-provisioning.
+These risks are accepted for the static pilot and must be revisited before any
+authenticated or dynamic `.com` application, custom domains, public upload,
+PHP, or multi-host provisioning.
 
 ## Review and acceptance gates
 

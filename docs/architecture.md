@@ -123,9 +123,11 @@ Caddy is the only public web entry point. It:
 - Emits structured access logs tagged with the requested hostname and resolved tenant.
 - Omits raw path, query, cookie, authorization, and referrer values from slug
   alias logs.
-- Serves the public platform website at `hosting.lowerduckpond.net`, reserves
-  `secure.lowerduckpond.net` for the future same-origin administration UI and
-  API, and serves no tenant-controlled bytes from `.net`.
+- Serves the public platform website directly at `lowerduckpond.net`, redirects
+  `hosting.lowerduckpond.net` and `www.lowerduckpond.net` to that canonical
+  site, reserves `secure.lowerduckpond.net` for the future same-origin
+  administration UI and API, and serves no tenant-controlled bytes from
+  `.net`.
 - Serves aliases and immutable tenant origins only below `lowerduckpond.com`;
   strips incoming `Cookie` and outgoing `Set-Cookie` on every Milestone 3
   `.com` route; and never varies static routing or content by cookies.
@@ -246,18 +248,24 @@ Edit only for the same two zones. Caddy requires its DNS provider module for
 this flow, so the project builds and pins its Caddy image rather than relying
 on an unversioned local binary.
 
-`lowerduckpond.net` is the trusted platform domain. In Milestone 3 its exact
-bare root temporarily redirects without caching to the public, unauthenticated
-website at `hosting.lowerduckpond.net`; every other apex request receives a
-generic platform `404`.
+`lowerduckpond.net` is the trusted platform domain and the canonical public,
+unauthenticated platform website. The site is platform-owned and served
+directly rather than provisioned as a tenant. `hosting.lowerduckpond.net` and
+`www.lowerduckpond.net` permanently redirect equivalent paths and queries to
+the HTTPS apex.
 `secure.lowerduckpond.net` is reserved for the future administration UI and
 same-origin API. Authentication there uses a unique host-only `__Host-` cookie
 plus exact-Origin and CSRF checks and never uses a parent-domain cookie.
 
 `lowerduckpond.com` is the untrusted tenant namespace. In Milestone 3 its exact
-bare root temporarily redirects without caching to
-`hosting.lowerduckpond.net`; every other apex request receives a generic
-stateless `404`. Each immutable
+apex returns a generic stateless `404`. In Milestone 7 a root-owned designation
+will bind the municipal reference role to one ordinary active tenant's
+immutable ID. An exact query-free `GET` or `HEAD` for `/` at the apex will then
+temporarily redirect without caching to that tenant's current authoritative
+slug alias. If the designation is absent or inactive, or for any other apex
+request, it continues to return the generic stateless `404`. Deriving the
+destination from the tenant ID prevents a later slug reassignment from
+retargeting the apex. Each immutable
 canonical tenant origin is
 `t-<tenant-uuid-without-hyphens>.lowerduckpond.com`. A
 `<slug>.lowerduckpond.com` hostname remains only a platform-controlled,
@@ -283,8 +291,8 @@ disagreement fails closed. Only friendly slug aliases are mutable and
 recyclable.
 
 Custom tenant domains can be considered later; they are not required for the
-initial service. Whether the exact `.com` apex later hosts a community-owned
-application is also deferred and does not change the Milestone 3 boundary.
+initial service. The `.com` apex remains a stateless platform route and never
+serves tenant bytes, including after the municipal redirect is enabled.
 
 ## 7. Tenant lifecycle
 
@@ -419,7 +427,9 @@ Use repository secret scanning and pre-commit checks from the beginning. Product
 
 Use at least two repositories once a platform-owned reference tenant exists:
 
-1. **Hosting platform repository:** infrastructure, host configuration, control plane, provisioner, tests, documentation, and operational tooling.
+1. **Hosting platform repository:** infrastructure, host configuration, control
+   plane, provisioner, the public `lowerduckpond.net` website, tests,
+   documentation, and operational tooling.
 2. **Reference tenant repository:** fictional city or other demonstration
    content, deployed at an ordinary `.com` slug and immutable origin through
    exactly the same tenant-facing mechanism offered to residents.
@@ -427,7 +437,9 @@ Use at least two repositories once a platform-owned reference tenant exists:
 Keeping reference content separate prevents the platform from receiving
 undocumented special cases and creates a genuine end-to-end example. The
 repository name, slug, and content are deferred until the community-pilot
-milestone; the exact `lowerduckpond.com` apex is not an ordinary tenant.
+milestone. The exact `lowerduckpond.com` apex is not an ordinary tenant; its
+documented root-owned route only redirects to the designated tenant's current
+slug while that tenant is active.
 
 ## 13. Principal risks and mitigations
 

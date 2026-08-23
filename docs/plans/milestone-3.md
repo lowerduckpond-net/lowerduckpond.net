@@ -13,14 +13,15 @@ accepted are now fixed:
 
 1. `lowerduckpond.net` is the trusted platform domain and
    `lowerduckpond.com` is the untrusted tenant domain. No PSL submission or
-   recognition is assumed. The `.net` apex may redirect to the public website
-   at `hosting.lowerduckpond.net`, `secure.lowerduckpond.net` is reserved for
-   the future trusted application, reusable `<slug>.lowerduckpond.com` aliases
-   remain platform-controlled, and tenant bytes are served only from immutable
-   `t-<tenant-uuid-without-hyphens>.lowerduckpond.com` origins. Caddy ignores
-   incoming cookies and removes outgoing `Set-Cookie` on all Milestone 3
-   `.com` routes; sibling browser-local cookie integrity is an accepted static
-   tier limitation.
+   recognition is assumed. The public platform website is served directly at
+   the `.net` apex, `hosting` and `www` redirect there, and `secure` is reserved
+   for the future trusted application. Reusable `<slug>.lowerduckpond.com`
+   aliases remain platform-controlled, and tenant bytes are served only from
+   immutable `t-<tenant-uuid-without-hyphens>.lowerduckpond.com` origins. The
+   `.com` apex is a stateless `404` until Milestone 7 designates an ordinary
+   municipal tenant by immutable ID. Caddy ignores incoming cookies and removes
+   outgoing `Set-Cookie` on all Milestone 3 `.com` routes; sibling
+   browser-local cookie integrity is an accepted static-tier limitation.
 2. Tenant archives use a separate private, versioned production Space and a
    dedicated bucket-only key. They do not share the Restic bucket or key.
 3. Routine operations use a dedicated-key, forced-command `ldp-operator`
@@ -393,12 +394,14 @@ stop and mask Caddy until the compatible launcher, unit, and recovery helpers
 are completely installed. Retain only active, preceding, and current-intent
 generations within 256 MiB and 4,096 unique inodes.
 
-The platform-only generation implements the `.net` apex redirect, public
-hosting fixture, reserved secure host, and the exact temporary, non-cached
-`.com` apex redirect and generic fallback from ADR 0024. Its `.com`
-wildcard rejects unknown hosts generically. Every `.com` route removes incoming
-`Cookie` before handling and outgoing `Set-Cookie` before response. With
-publication disabled it rejects every tenant canonical or alias route.
+The platform-only generation serves the public platform fixture directly at
+the `.net` apex, permanently redirects equivalent `hosting` and `www` requests
+to that canonical site, reserves the secure host, and returns the generic
+stateless `404` from the exact `.com` apex. Its `.com` wildcard rejects unknown
+hosts generically. Every `.com` route removes incoming `Cookie` before handling
+and outgoing `Set-Cookie` before response. With publication disabled it rejects
+every tenant canonical or alias route. The municipal apex designation and
+redirect are deferred to Milestone 7 and are not an M3 route exception.
 
 Gate: the reviewed OpenTofu plan and approved apply add only the intended
 `.com` records and inputs. Obtain and renew apex and wildcard certificates in
@@ -625,21 +628,15 @@ No unanswered product choice blocks M3.0. The following questions are
 deliberately deferred and must not be answered incidentally by Milestone 3
 code:
 
-1. **Authenticated `.com` apex:** whether a future community-owned application,
-   such as a wiki, should occupy `lowerduckpond.com`. The Milestone 3 apex uses
-   only a temporary, non-cached platform redirect. A stateful replacement needs
-   its own cookie, CSRF, cookie-capacity, credential, and database threat model.
-2. **Public platform-site home:** `hosting.lowerduckpond.net` is the current
-   canonical default. Moving a stateless public site later is inexpensive, but
-   authenticated platform functions remain on `.net`.
-3. **Dynamic tenant origins:** PHP applications cannot inherit the static
+1. **Dynamic tenant origins:** PHP applications cannot inherit the static
    tier's blanket cookie stripping. Milestone 6 must decide whether to constrain
    tenant cookies, use custom or provider-isolated domains, or select another
    boundary before enabling dynamic tenants.
-4. **Reference tenant:** Milestone 7 still needs the content, repository name,
-   and ordinary `.com` slug for a platform-owned demonstration site. The exact
-   `.com` apex is not that tenant by default.
-5. **Custom domains:** ownership proof, certificate authority, transfer,
+2. **Reference tenant:** Milestone 7 still needs the content, repository name,
+   and ordinary `.com` slug for the municipal site. Its ordinary tenant must be
+   created before its immutable ID is selected in root-owned state as the
+   stateless `.com` apex redirect target.
+3. **Custom domains:** ownership proof, certificate authority, transfer,
    canonical URLs, and browser-state migration remain a later feature; the
    immutable tenant identity stays compatible with such a design.
 

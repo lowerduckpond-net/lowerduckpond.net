@@ -31,17 +31,16 @@ Use `lowerduckpond.net` only for platform-controlled services and
 `lowerduckpond.com` only for the tenant-content namespace during Milestone 3.
 The initial layout is:
 
-- an exact `GET` or `HEAD` for `/` without a query at `lowerduckpond.net`
-  receives a temporary `302` to `https://hosting.lowerduckpond.net/` with
-  `Cache-Control: no-store`; every other apex request receives the generic
-  platform `404`;
-- `hosting.lowerduckpond.net` is the public, unauthenticated platform website;
+- `lowerduckpond.net` is the canonical public, unauthenticated platform
+  website and is served directly as platform-owned content, not through the
+  tenant publication contract;
+- `hosting.lowerduckpond.net` and `www.lowerduckpond.net` are compatibility
+  aliases that permanently redirect to the equivalent path and query at
+  `https://lowerduckpond.net`;
 - `secure.lowerduckpond.net` is reserved for the future authenticated UI and
   same-origin API;
-- an exact `GET` or `HEAD` for `/` without a query at `lowerduckpond.com`
-  receives a temporary `302` to `https://hosting.lowerduckpond.net/` with
-  `Cache-Control: no-store`; every other request receives the generic stateless
-  platform `404`;
+- the exact `lowerduckpond.com` apex returns the generic stateless platform
+  `404` during Milestone 3;
 - `<slug>.lowerduckpond.com` is the reusable platform-controlled alias from ADR
   0023; and
 - `t-<tenant-uuid-without-hyphens>.lowerduckpond.com` is the immutable
@@ -50,12 +49,17 @@ The initial layout is:
 No tenant-controlled bytes are served from `.net`. No LDP account, operator,
 control-plane, or other privileged application trusts authentication state
 received on `.com`. The exact `.com` apex and every alias remain
-platform-controlled, but they are stateless in Milestone 3. The temporary
-non-cached apex redirect preserves the option to change that use later without
-making it part of the tenant contract. Whether a future
-community application such as a wiki should occupy the `.com` apex is not
-decided here; doing so requires a separate threat-model and architecture
-decision.
+platform-controlled and stateless. Milestone 7 designates one ordinary active
+tenant as the municipal reference tenant by immutable tenant ID. After that
+designation, an exact `GET` or `HEAD` for `/` without a query at the `.com`
+apex receives a temporary `302` with `Cache-Control: no-store` to that tenant's
+current authoritative `<slug>.lowerduckpond.com` alias. The apex returns the
+generic stateless `404` if no tenant is designated or the designated tenant is
+not active, and for every other request. Resolving the destination from the
+immutable tenant ID, rather than storing a slug as the designation, prevents a
+released and reassigned slug from silently changing the municipal destination.
+The municipal tenant otherwise uses the same manifest, immutable origin,
+deployment, lifecycle, and slug-reuse contract as every resident tenant.
 
 Reserve `hosting`, `secure`, `www`, and every label matching the canonical
 `t-<32-lowercase-hex>` form from customer slug allocation. Keep the reserved
@@ -125,8 +129,8 @@ and Caddy tokens scoped to both zones. The `.com` suffix becomes authoritative
 tenant identity state and cannot later return to vanity/custom-domain use
 without an explicit origin migration.
 
-Dynamic tenants, authenticated tenant applications, and an authenticated
-`.com` apex cannot inherit the static-cookie decision automatically. Each must
+Dynamic tenants and authenticated tenant applications below `.com` cannot
+inherit the static-cookie decision automatically. Each must
 define how server-side cookies, CSRF, cookie capacity, and response-header
 policy work before activation. Custom tenant domains remain compatible but
 need later ownership, certificate, transfer, and browser-state rules.
