@@ -84,9 +84,15 @@ results, and audit records up to and beyond every global count, byte, inode,
 request-size, reason-size, rate, burst, and host-free-space boundary. They prove
 rejection occurs before staging or desired-state mutation, retries do not spend
 new capacity, hard links are counted once, and busy/rejected floods cannot fill
-audit or journald. Rotation tests verify hash chains and Restic evidence, reject
-unbacked segment removal, deny provisioner rotation and administrator-reserve
-use, and recover interrupted rotation without losing or duplicating evidence.
+audit or journald. Rotation tests prove an ordinary scheduled snapshot cannot
+authorize removal, while a restore-verified
+`lowerduckpond-audit-archive` snapshot is excluded from ordinary retention and
+is durably indexed before local deletion. They interrupt snapshot creation,
+verification, index commit, local removal, `forget`, `prune`, and restore;
+enumerate tagged descriptors to recover an unindexed attempt; reject any
+missing, ambiguous, retagged, or expiring snapshot; deny provisioner rotation
+and administrator-reserve use; and reconstruct the complete ordered audit chain
+without losing or duplicating evidence.
 Restart and clock-skew tests prove accepted-correlation timestamps reconstruct
 the rolling rate window and cannot reset or refund consumed admission.
 Free-space fixtures exercise both the absolute and percentage block/inode floors

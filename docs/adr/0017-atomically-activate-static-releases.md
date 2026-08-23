@@ -295,13 +295,32 @@ affected filesystem must retain the greater of 5 GiB or 10% of filesystem
 blocks as ordinarily available space and the greater of 100,000 or 10% of
 filesystem inodes as ordinarily available inodes; root-reserved blocks do not
 satisfy the floor. It refuses a new tenant, deployment, or correlation ID before
-mutation if any ceiling would be crossed. Audit is written
-in root-owned hash-chained segments of at most 8 MiB. A root-only maintenance
-operation may remove a closed local segment only after a verified Restic
-snapshot contains it, then retains its terminal hash and snapshot identity in
-the local chain index. The ordinary audit limit closes admission until that
-rotation succeeds; the provisioner cannot rotate, truncate, or consume the
-administrator reserve. Correlation records are not pruned in Milestone 3,
+mutation if any ceiling would be crossed. Audit is written in root-owned
+hash-chained segments of at most 8 MiB. An ordinary scheduled Restic snapshot
+does not authorize local segment removal because its normal retention policy
+eventually expires it. Before audit rotation is enabled, backup maintenance
+must preserve every root-created snapshot tagged
+`lowerduckpond-audit-archive` outside its daily, weekly, and monthly counts.
+
+For each closed segment, a root-only rotation operation creates such a snapshot
+containing the segment and a versioned rotation descriptor that binds its
+sequence, predecessor and terminal hashes, byte digest, repository scope, and
+root-generated rotation ID. It restores and verifies both files, then durably
+records the Restic snapshot ID, tag, repository scope, descriptor digest, and
+terminal hash in the local chain index before removing and syncing the local
+segment. If the process stops after snapshot creation but before index commit,
+startup reconciliation enumerates the protected tag and validates descriptors
+to recover or remove the duplicate attempt without losing chain position.
+
+Every backup-maintenance run verifies that each chain-index snapshot still
+exists under the protected tag before `forget` or `prune`, and restore discovers
+tagged descriptors as well as consulting the recovered local index. A missing,
+ambiguous, unverified, or ordinarily expiring archive snapshot makes backup
+health critical and closes rotation and ordinary admission before local
+evidence is removed. Milestone 3 retains these audit snapshots indefinitely;
+later expiration requires an explicit audited retention policy. The
+provisioner cannot rotate, truncate, retag, or consume the administrator
+reserve. Correlation records are not pruned in Milestone 3,
 preserving idempotency; reaching their cap closes new-ID admission until an
 explicit later migration expands the durable store.
 

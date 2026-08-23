@@ -128,6 +128,7 @@ record.
 | Concurrent or replayed jobs | Serialize publication, bind results to correlation IDs and request digests, and make retries idempotent. |
 | Oversized structured syntax exhausts the privileged parser before canonicalization | Read at most the raw ceiling plus one byte under a deadline before parsing, reject excess without inspecting correlation data, run the decoder under fixed process limits, and then enforce the smaller canonical request, result, and manifest ceilings. Apply the same path to retries. |
 | Valid operations indirectly exhaust root-owned state | Enforce host-wide tenant, release byte/inode, correlation record, audit, request/result size, reason, and admission-rate ceilings before staging. Preserve audit in bounded hash-chained segments rotated only after verified off-host backup, with an isolated root-administrator reserve. |
+| Ordinary backup retention expires rotated audit evidence | Remove a local segment only after a dedicated tagged audit snapshot is restore-verified and durably indexed. Exclude that tag from ordinary `forget`/`prune`, verify every referenced snapshot during maintenance, and reconstruct the chain from tagged descriptors during recovery. |
 | Nested locks deadlock or accumulate waiters | Acquire export, publication, and tenant-state only in that global order; never upgrade; return retryable busy before allocating work; revalidate archive source state after its unlocked construction phase; and never wait for a systemd job that reacquires publication while holding it. |
 | Delayed rollback undoes suspension | Recheck lifecycle state under the publication lock; while suspended, change only the remembered deployment and require explicit resume before publishing. |
 | Repeated suspended deployments evade release retention | Apply the same selected-release-plus-two-predecessors cleanup after active or suspended deploy and rollback commits and during reconciliation, while preserving export- and intent-pinned releases. |
@@ -218,7 +219,8 @@ Implementation and review must preserve these invariants:
     its aggregate byte, inode, and host-free-space bounds.
 24. A provisioner request cannot cause root-owned tenant, release, correlation,
     audit, request/result, reason, or rate limits to be exceeded; audit evidence
-    is never overwritten or rotated without verified off-host recovery evidence.
+    is never overwritten or rotated without restore-verified, durably indexed
+    off-host evidence protected from ordinary retention and prune.
 25. A tenant ID and its canonical origin are immutable and never reassigned.
     The backed-up platform namespace record pins the suffix, and each manifest
     stores an origin that must exactly match independent derivation from that

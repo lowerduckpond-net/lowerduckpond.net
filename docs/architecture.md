@@ -272,6 +272,9 @@ Primary backups should be application-aware rather than relying only on Droplet 
   lifecycle rules remove incomplete uploads and stale object versions without
   deleting current repository objects or tenant archive bundles still bound by
   authoritative tenant state by age.
+- Root-created audit-archive snapshots remain outside ordinary backup retention
+  until an explicit audit-retention transition; local audit rotation requires a
+  restore-verified snapshot and durable chain index.
 - DigitalOcean Droplet backups or snapshots provide a secondary whole-machine recovery option.
 - Restore tests run on a schedule and produce an auditable result.
 - Tenant export and disaster recovery use the same archive format where practical.

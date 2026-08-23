@@ -435,7 +435,9 @@ Implement idempotent commands or jobs for:
   the 16-KiB canonical request, result, and manifest ceilings for every retry.
 - Bound indirect root-owned growth to 25 tenants, 10 GiB/500,000 release inodes,
   10,000/64-MiB correlation records, 128 MiB of hash-chained ordinary audit, and
-  60 new IDs/hour; fail closed and rotate audit only after verified backup.
+  60 new IDs/hour; fail closed and rotate audit only after a restore-verified,
+  durably indexed `lowerduckpond-audit-archive` Restic snapshot is protected
+  from ordinary retention and prune.
 
 ### End-to-end tests
 
@@ -475,6 +477,9 @@ Implement idempotent commands or jobs for:
 - Recover the preceding publication after interrupted activation or reload
   failure.
 - Serialize activation with backup and reconcile a restored state snapshot.
+- Rotate a closed audit segment, age ordinary 7/5/12 snapshots through
+  forget/prune, and prove the protected tagged snapshot and complete audit chain
+  remain discoverable and restore-verifiable.
 - Overlap export capture with lifecycle mutations and release garbage
   collection and prove each bundle describes one complete generation.
 - Interrupt archive construction around every local-intent, remote-upload, and
