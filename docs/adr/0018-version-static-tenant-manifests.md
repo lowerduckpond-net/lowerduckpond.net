@@ -114,11 +114,13 @@ import cannot reclaim a deleted identity or browser origin; preserving those
 after platform-state loss requires restoring authoritative control-plane state
 from backup.
 
-Persist desired and observed state, deployment and archive records, and audit
-history in root-owned stores. The root activator validates and commits desired
-state, changes observed state, and appends audit events. The provisioner may
-read only the records required to construct or reconcile work and cannot write,
-replace, or remove authoritative state or audit history.
+Persist authorization jobs, desired and observed state, deployment and archive
+records, and audit history in root-owned stores. The root activator validates
+and commits desired state, changes observed state, and appends audit events only
+for the exact operation and expected source state bound by a root-owned job, or
+during autonomous root reconciliation. The provisioner receives only an opaque
+authorized job ID and bounded status; it cannot read, write, replace, or remove
+authorization or authoritative state, export payloads, or audit history.
 
 The initial platform ceilings are 100 MiB of extracted content and 5,000 total
 archive entries, counting both regular files and directories.

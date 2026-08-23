@@ -120,7 +120,8 @@ desired deployment. An older verified archive never authorizes deletion after
 restore, deployment, rename, or any other manifest change; the operator must
 archive the current generation. Delete refuses to remove desired state or live
 releases when any bound digest, identity, size, or object check differs. The
-provisioner's ordinary activation capability cannot bypass that prerequisite.
+provisioner's job-execution capability cannot bypass that prerequisite or
+originate the operation.
 
 There is one ordinary archive-free deletion transition: an `undeployed` tenant
 whose root-owned deployment, release, archive, and audit history proves that it
@@ -168,6 +169,18 @@ record. Until the journal is reconciled and the key is proven absent, the
 object remains charged against the hard 25-key, 25-version-or-marker, and
 3,000-MiB remote archive ceilings and further archive admission stays closed.
 
+Every externally requested operation in the ordinary matrix requires the
+root-owned authorization job defined by ADR 0020. The activator verifies its
+authenticated operator, operation, target, correlation and request digests,
+artifact binding or absence, and expected authoritative source-state digests
+before applying the state matrix. Authorization to archive never authorizes a
+later deletion: after archive commits, the trusted issuer must create a
+separate `delete` job bound to the resulting archived manifest, deployment, and
+exact archive record. A provisioner can retry an authorized job but cannot mint
+that second correlation, change the operation, or advance a job whose expected
+state drifted. Autonomous root reconciliation is the only matrix execution that
+does not originate from an external authorization job.
+
 The complete ordinary transition matrix is:
 
 | Operation | Allowed source | Result |
@@ -213,7 +226,9 @@ collection.
 Archive storage and audit records become prerequisites for ordinary deletion of
 any tenant that has ever been deployed. The separately authenticated emergency
 command is deliberately conspicuous and must be covered by tests and
-operational documentation.
+operational documentation. Archive evidence remains recoverability evidence,
+not caller authority; ordinary destructive transitions additionally require a
+distinct root-owned operator authorization.
 
 Bound archive retention is therefore controlled by the tenant lifecycle rather
 than by an uncoordinated object-age timer. Milestone 4 may remove a bound bundle

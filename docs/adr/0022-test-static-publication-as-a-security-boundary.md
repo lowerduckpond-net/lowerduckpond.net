@@ -15,8 +15,8 @@ would discover security and destructive-lifecycle failures too late.
 Deliver Milestone 3 through these reviewable layers:
 
 1. threat model, ADRs, schema, fixtures, and test matrix;
-2. manifest parsing, validation, slug and immutable-origin rules, and
-   desired/observed state;
+2. authenticated job issuance, manifest parsing, validation, slug and
+   immutable-origin rules, and desired/observed state;
 3. hostile archive validation and deterministic portable export/import;
 4. root-owned immutable release activation and generated Caddy routing;
 5. lifecycle commands, reconciliation, rollback, and audit records;
@@ -119,6 +119,48 @@ decoder process limits terminate adversarial inputs, canonical values still
 obey 16 KiB, and an established-correlation retry cannot bypass any raw or
 canonical limit. Rejection logs and results contain no submitted bytes and stay
 within their fixed bounds.
+
+Authorization tests exercise every operator command through the authenticated
+SSH issuer and then invoke the provisioner's only sudo entry point directly.
+The latter accepts a root-generated job ID only: raw requests, caller-selected
+paths, separators, noncanonical or non-UUIDv7 IDs, unknown IDs, and attempts to
+invoke the issuer or activator operation entry points fail without allocating a
+correlation, job, artifact, result, or audit payload. Requests cannot supply or
+spoof the authenticated SSH principal.
+
+The provisioner cannot list, read, create, hard-link, symlink, replace, cancel,
+or change the mode of authorization jobs and cannot read an export artifact or
+full result.
+
+Field-isolation fixtures alter the job version, job ID, operator, operation,
+target, correlation ID, canonical request or digest, artifact size or digest,
+explicit artifact absence, and each expected lifecycle, manifest, deployment,
+and archive-record binding independently. Every mismatch fails before staging
+or mutation. Tests issue a valid job, change target state before execution, and
+prove compare-and-swap failure requires a newly authenticated job. They replace
+artifact bytes before and after intake publication and prove the independently
+computed job digest and immutable activator snapshot detect both cases.
+
+Authorization durability tests terminate the SSH adapter around completed
+artifact sync, temporary-job sync, job rename, parent sync, queue handoff, claim,
+result commit, and delivery to the authenticated client. Recovery removes an
+artifact with no committed job and never authorizes a partial job. A synced job
+is the acceptance point: recovery requeues it if still pending or converges it
+if claimed, even when the queue handoff or client response was lost. Concurrent
+or repeated execution of one job produces one result. A second job with the
+same correlation and different binding fails, while an exact retry returns the
+established result without consuming capacity. Job envelopes, phases, and
+results are filled through the shared 10,000-record/64-MiB ceiling and cannot
+create a second unbounded store.
+
+Destructive-chain tests authorize and execute `archive`, then let a compromised
+provisioner substitute `delete`, reuse the archive job, invent a correlation,
+or submit a raw request. Every attempt fails and the bound archive remains. Only
+a separately authenticated `delete` job issued after archive, and bound to the
+resulting archived manifest, deployment, and exact archive record, can enter
+ordinary deletion. Equivalent tests cover deploy, rollback, suspend, resume,
+rename, export, import, restore, and externally requested reconcile; autonomous
+root reconciliation remains available without provisioner-created authority.
 
 Durability tests record filesystem operations and inject failure after every
 file sync, directory sync, rename, reload, restart-intent transition, systemd

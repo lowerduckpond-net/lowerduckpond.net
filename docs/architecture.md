@@ -191,14 +191,24 @@ The public web application should not run privileged container or filesystem ope
 
 - **Control plane:** authentication, signup, site metadata, user-visible status, approvals, renewal, cancellation, and audit history.
 - **Provisioner:** an unprivileged worker that consumes idempotent jobs,
-  validates tenant inputs, and requests exact operations from a narrow
-  root-owned activator on the assigned host.
+  validates tenant inputs, and asks a narrow root-owned activator to execute
+  exact already-authorized operations on the assigned host. It cannot create,
+  alter, or retarget a job.
 
 The single-host implementation may deploy both components together, but their
 permissions and interfaces should remain separate. Neither the public control
 plane nor the provisioner receives general sudo, arbitrary filesystem, or Caddy
 configuration access. That boundary becomes the natural per-host agent
 interface when the platform grows.
+
+The authenticated control plane is the future job authority. It creates an
+immutable envelope binding the actor, operation, tenant, correlation, request,
+artifact, and expected source state; the provisioner receives only its opaque
+job ID and bounded status. Milestone 3 uses the trusted administrative SSH
+adapter as the issuer of the same root-owned envelope. The worker sudo rule can
+execute an issued job but cannot invoke either issuer or submit raw lifecycle
+fields. Archive evidence proves recoverability, not authorization: archive and
+delete require separate actor-authorized jobs.
 
 Every provisioning operation should be idempotent and recorded with a correlation ID. Retrying `create site`, `suspend site`, or `archive site` must converge on the requested state rather than creating duplicate databases, credentials, containers, or routes.
 

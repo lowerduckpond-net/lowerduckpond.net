@@ -29,6 +29,9 @@ features require their own threat-model extensions before activation.
   canonical origin, slug, quotas, deployment, or lifecycle state.
 - A compromised provisioner cannot turn its narrow activation capability into
   arbitrary root, filesystem, process, or Caddy authority.
+- A compromised provisioner cannot originate, alter, retarget, or chain a
+  tenant mutation, export, archive, restore, or deletion; it may execute only
+  an immutable job issued through the authenticated operator boundary.
 - Only validated, quota-compliant regular files become publicly readable.
 - Caddy serves only a root-generated route pointing to the intended immutable
   release.
@@ -44,8 +47,9 @@ features require their own threat-model extensions before activation.
 - The Cloudflare DNS-edit token read by Caddy.
 - Caddy's root-owned configuration and Caddy-only admin socket.
 - Administrative SSH access and the root privilege boundary.
-- The pinned platform namespace record, tenant manifests, immutable releases,
-  canonical-origin and alias routes, archives, and audit history.
+- Root-owned authorization jobs, the pinned platform namespace record, tenant
+  manifests, immutable releases, canonical-origin and alias routes, archives,
+  and audit history.
 - Other tenants' content and future credentials.
 - Restic password, Spaces credentials, repository contents, and backup health
   evidence.
@@ -58,8 +62,8 @@ features require their own threat-model extensions before activation.
 | --- | --- |
 | Anonymous visitor | Untrusted; controls requests, hostnames, paths, and request volume. |
 | Archive author | Untrusted; controls every ZIP byte and filename. |
-| Unprivileged provisioner | Potentially compromised; may request valid tenant operations but must not choose host paths, commands, or Caddy syntax. |
-| Trusted-workstation client | Authenticated operator transport; trusted to request operations, not to bypass root validation. |
+| Unprivileged provisioner | Potentially compromised; may preflight and execute an already authorized root-owned job but cannot originate or alter an operation, choose host paths, or read tenant exports. |
+| Trusted-workstation client | Authenticated operator transport and Milestone 3 job issuer; trusted to authorize operations, not to bypass root validation. |
 | Root activator | Trusted computing base; narrowly implements validation, release, route, lock, and recovery contracts. |
 | Ansible Caddy transaction | Trusted host-configuration path; stages candidates and shares the publication lock, but is not callable through provisioner sudo. |
 | Caddy | Trusted edge process with read-only tenant content and no provisioner-writable configuration. |
@@ -72,17 +76,23 @@ and supply-chain risks.
 
 ## Trust boundaries and data flow
 
-1. The operator submits a strict manifest and ZIP through the restricted SSH
-   adapter into a fixed, non-public intake area.
-2. The unprivileged provisioner performs an advisory preflight and constructs a
-   structured request with a correlation ID.
-3. A fixed-buffer privileged reader enforces raw operation and manifest byte
-   ceilings plus a read deadline before any constrained structured parser or
-   correlation lookup. The root activator then claims the fixed intake
-   artifact, copies its bytes once into a newly created root-owned snapshot
-   while enforcing the upload limit and computing its digest, and closes the
-   intake descriptor. It verifies, revalidates, and extracts only that
-   non-provisioner-writable snapshot into a new root-owned temporary release.
+1. The operator submits a strict request, manifest, and optional ZIP through the
+   restricted SSH adapter into a fixed, non-public intake area. The adapter
+   derives the operator from the authenticated SSH boundary, enforces raw input
+   limits, validates the caller-declared artifact digest, and commits an
+   immutable root-owned job binding that operator, operation, target,
+   correlation, canonical request, artifact or absence, and expected source
+   state.
+2. The unprivileged provisioner may perform advisory preflight and submit only
+   the root-generated job ID to its fixed sudo entry point. It cannot invoke the
+   issuer, pass raw operation fields to the activator, inspect the job store, or
+   read an export result.
+3. The root activator opens and durably claims the authorization job, verifies
+   every binding and current expected state, then claims the fixed intake
+   artifact. It copies artifact bytes once into a newly created root-owned
+   snapshot while enforcing the upload limit and computing its digest, and
+   closes the intake descriptor. It verifies, revalidates, and extracts only
+   that non-caller-writable snapshot into a new root-owned temporary release.
 4. The activator normalizes and seals the release, generates a complete
    root-owned Caddy runtime generation containing a manifest-bound binary,
    environment, canonical tenant-content routes, platform-only slug-alias
@@ -128,9 +138,10 @@ record.
 | Ansible convergence selects stale tenant routes or automatic restart mixes Caddy inputs | Stage only host inputs before locking; under publication reread authoritative tenant state, construct and validate the final complete route-bearing generation, and then select it through phased root-owned intent. Before every start, the frozen bootstrap reconciles intent and pins one manifest-verified generation directory. Change the bootstrap only while Caddy is stopped and masked. |
 | Synchronous restart deadlocks, automatic retries lose fencing, or exhausted candidate retries block recovery | Persist and select a restart candidate under the lock, release it before queuing a non-blocking systemd job, and let pre-start, launcher, post-start, and rollback helpers acquire it independently. Pin three attempts per candidate or recovery target. Under the lock, durably bind each automatic retry's distinct invocation ID and attempt number only to the unchanged selected generation; reject stale callbacks. After durably selecting the prior generation and releasing the lock, reset the service failed/start-limit state before queuing recovery. Block later mutations on durable intent, and never wait for a lock-acquiring systemd hook while retaining the lock. |
 | Runtime generations exhaust disk or retain secrets indefinitely | Admit at most active, last-known-good, and intent candidate generations; enforce aggregate unique-inode byte/inode and host-free-space bounds; clean unreferenced staging after terminal states and startup; keep environment/config Caddy-only and backup/diagnostic-excluded. |
-| Concurrent or replayed jobs | Serialize publication, bind results to correlation IDs and request digests, and make retries idempotent. |
+| Concurrent or replayed jobs | Let only the authenticated issuer allocate a root-owned job and correlation. Bind operator, operation, target, canonical request, artifact, and expected state; durably claim before execution; serialize publication; and make an exact retry return one immutable result. Unknown IDs and changed bindings allocate nothing. |
+| Compromised provisioner chains valid archive and delete operations | Accept only a root-generated authorization-job ID through provisioner sudo. Archive and delete require distinct authenticated jobs and correlations; the latter can be issued only against and bind the resulting archived manifest, deployment, and exact archive record. Keep job issuance and emergency deletion outside provisioner authority. |
 | Oversized structured syntax exhausts the privileged parser before canonicalization | Read at most the raw ceiling plus one byte under a deadline before parsing, reject excess without inspecting correlation data, run the decoder under fixed process limits, and then enforce the smaller canonical request, result, and manifest ceilings. Apply the same path to retries. |
-| Valid operations indirectly exhaust root-owned state | Enforce host-wide tenant, release byte/inode, correlation record, audit, request/result size, reason, and admission-rate ceilings before staging. Preserve audit in bounded hash-chained segments rotated only after verified off-host backup, with an isolated root-administrator reserve. |
+| Valid operations indirectly exhaust root-owned state | Let only the authenticated issuer spend new job/correlation capacity. Enforce host-wide tenant, release byte/inode, shared authorization/correlation record, audit, request/result size, reason, and admission-rate ceilings before staging. Preserve audit in bounded hash-chained segments rotated only after verified off-host backup, with an isolated root-administrator reserve. |
 | Ordinary backup retention expires rotated audit evidence | Remove a local segment only after a dedicated tagged audit snapshot is restore-verified and durably indexed. Exclude that tag from ordinary `forget`/`prune`, verify every referenced snapshot during maintenance, and reconstruct the chain from tagged descriptors during recovery. |
 | Nested locks deadlock or accumulate waiters | Acquire export, publication, and tenant-state only in that global order; never upgrade; return retryable busy before allocating work; revalidate archive source state after its unlocked construction phase; and never wait for a systemd job that reacquires publication while holding it. |
 | Delayed rollback undoes suspension | Recheck lifecycle state under the publication lock; while suspended, change only the remembered deployment and require explicit resume before publishing. |
@@ -173,7 +184,9 @@ Implementation and review must preserve these invariants:
    schema validation.
 7. Credentials never enter tenant content, provisioner logs, results, exports,
    manifests, or audit payloads.
-8. The provisioner's capability cannot bypass archive evidence for deletion;
+8. The provisioner's capability cannot originate archive or deletion, convert
+   one authorized operation into another, or bypass archive evidence. Ordinary
+   archive and delete require separate expected-state-bound authorization jobs;
    emergency deletion requires the separately authenticated administrative
    entry point.
 9. Authoritative manifests, observed state, deployment and archive records, and
@@ -226,10 +239,12 @@ Implementation and review must preserve these invariants:
 23. Caddy runtime storage contains at most the active, immediate
     last-known-good, and current-intent candidate generations and remains within
     its aggregate byte, inode, and host-free-space bounds.
-24. A provisioner request cannot cause root-owned tenant, release, correlation,
-    audit, request/result, reason, or rate limits to be exceeded; audit evidence
-    is never overwritten or rotated without restore-verified, durably indexed
-    off-host evidence protected from ordinary retention and prune.
+24. A provisioner request cannot allocate a new job or correlation. Authorized
+    work cannot cause root-owned tenant, release, shared
+    authorization/correlation, audit, request/result, reason, or rate limits to
+    be exceeded; audit evidence is never overwritten or rotated without
+    restore-verified, durably indexed off-host evidence protected from ordinary
+    retention and prune.
 25. A tenant ID and its canonical origin are immutable and never reassigned.
     The backed-up platform namespace record pins the suffix, and each manifest
     stores an origin that must exactly match independent derivation from that
@@ -265,6 +280,12 @@ Implementation and review must preserve these invariants:
     selected-release-plus-two-predecessors cleanup. Reconciliation repeats
     interrupted cleanup, and no release pinned by an export or transaction
     intent is removed.
+32. Every externally requested tenant operation has an immutable root-owned
+    authorization job binding its SSH-authenticated operator, exact operation
+    and target, correlation and canonical request, artifact or absence, and
+    expected authoritative source state. The provisioner can execute that job
+    ID but cannot issue, inspect, alter, retarget, or chain jobs or read export
+    payloads. State drift fails closed before mutation.
 
 ## Residual risks
 
@@ -290,6 +311,10 @@ custom domains, public upload, PHP, or multi-host provisioning.
 
 - Each root-activator input and filesystem transition has a documented
   allowlist and negative tests.
+- Authorization tests prove only the authenticated issuer can allocate a job,
+  every job and expected-state binding is verified, archive authority cannot be
+  transformed into deletion authority, and the provisioner cannot read export
+  results.
 - Unit, property, concurrency, failure-injection, Molecule, Testinfra, restore,
   and reconciliation tests required by ADR 0022 pass.
 - A disposable-host exercise passes before production.

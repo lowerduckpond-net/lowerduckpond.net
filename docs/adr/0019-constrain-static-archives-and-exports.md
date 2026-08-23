@@ -161,9 +161,11 @@ visible until complete and verified. Exceeding any limit fails closed.
 
 Incomplete snapshots and outputs are removed on every terminal path and during
 startup reconciliation. A completed downloadable export remains for at most 24
-hours or until the trusted client acknowledges its verified download, whichever
-comes first; admission rejects another export while that slot is occupied.
-Retries with the same correlation ID return the established result. Archive
+hours or until the authenticated client matching its authorization-job operator
+acknowledges the verified download, whichever comes first. It is never readable
+through the provisioner; admission rejects another export while that slot is
+occupied. Retries with the same authorization job and correlation ID return the
+established result. Archive
 construction uses the same lock, spool, admission accounting, and cleanup. It
 captures the source manifest, its canonical digest, and the selected release
 under shared tenant-state. While still holding that lock, root derives the
@@ -177,9 +179,10 @@ Archive releases tenant-state to build and move the verified bundle into
 durable archive storage. Before making the first remote storage request, and
 while still holding the export lock, root creates and syncs a construction
 intent and its parent directory. The intent binds the correlation ID, a
-root-generated unique upload-attempt ID, tenant ID, exact source and proposed
-manifest digests, selected deployment and content digests, portable-bundle
-digest and size, and the exact new durable object identity. The object identity
+root-generated authorization-job ID and unique upload-attempt ID, authenticated
+operator, tenant ID, exact source and proposed manifest digests, selected
+deployment and content digests, portable-bundle digest and size, and the exact
+new durable object identity. The object identity
 begins as the bucket and root-generated unique key; before upload, root lists
 that exact key and requires it to have no current version, noncurrent version,
 or delete marker. It cannot be caller-selected or reuse an existing or
@@ -246,8 +249,9 @@ Restore, ordinary deletion, and any emergency deletion that will make an
 authoritative archive record unreferenced take the export lock before their
 publication and tenant-state transaction. Before changing authoritative state,
 root creates and syncs a retirement intent that binds the correlation ID,
-tenant ID, transition, exact preceding manifest and archive record, bucket,
-unique key, version ID, bundle digest, and size. The lifecycle transaction may
+authorization-job ID, authenticated operator, tenant ID, transition, exact
+preceding manifest and archive record, bucket, unique key, version ID, bundle
+digest, and size. The lifecycle transaction may
 then either preserve that exact archived state or durably commit the new state,
 result, and audit evidence that no longer bind the object. It never deletes the
 bundle before that choice is durable.

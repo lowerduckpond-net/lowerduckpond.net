@@ -235,23 +235,38 @@ intent, references, and state. It completes a transaction whose selected
 generation and targets are durable, or restores the durable prior generation;
 it never infers completion from observed state alone.
 
-The root activator accepts structured identifiers and an artifact from the
-fixed intake boundary. Its privileged transport reader never gives stdin, a
-pipe, socket, or file directly to a structured parser. It reads at most the
-configured raw ceiling plus one byte into a fixed bounded buffer under a
-15-second monotonic read deadline and requires EOF at or below the ceiling. An
-extra byte, timeout, invalid UTF-8, or incomplete document produces a fixed
-bounded error without parsing, correlation lookup, staging, or payload logging.
-A regular file size check is only an early rejection; the same bounded read
-remains authoritative.
+The root activator accepts from the provisioner only a root-generated
+authorization-job ID. The trusted SSH issuer's privileged transport reader
+never gives stdin, a pipe, socket, or file directly to a structured parser. It
+reads at most the configured raw ceiling plus one byte into a fixed bounded
+buffer under a 15-second monotonic read deadline and requires EOF at or below
+the ceiling. An extra byte, timeout, invalid UTF-8, or incomplete document
+produces a fixed bounded error without authorization, correlation lookup,
+staging, or payload logging. A regular file size check is only an early
+rejection; the same bounded read remains authoritative.
 
 Only a raw-size-compliant buffer enters the structured decoder. Run that
 decoder in a resource-limited helper, reject duplicate keys and unsupported
 syntax, canonicalize its result, and enforce the smaller canonical limit before
-dispatch. The helper receives no host path or credential and can return only a
-bounded canonical value or fixed error. Idempotent retries and root-only
-operations traverse the same byte gate; an established correlation ID never
-bypasses it.
+authorization. The helper receives no host path or credential and can return
+only a bounded canonical value or fixed error. The issuer commits that value
+and its digest, authenticated operator, exact operation and target, correlation
+ID, artifact binding, and expected source-state digests in the root-owned job.
+Idempotent retries and externally requested root-only operations traverse the
+same byte gate; an established correlation ID never bypasses it.
+
+The activator opens the named job as a root-owned, mode-`0600`, single-link
+regular file beneath the fixed job directory without following links. Before
+path derivation it requires the one canonical lowercase UUIDv7 grammar with an
+ASCII `fullmatch`. It accepts only the versioned allowlisted schema, verifies
+the canonical request and artifact bindings, and compares the
+job's expected lifecycle, manifest, deployment, and archive-record digests with
+current authoritative state before it admits or stages work. It then durably
+claims the pending job. A terminal retry returns its immutable result; a
+nonterminal retry reconciles its phase; a changed binding, state drift, unknown
+job ID, or provisioner-supplied raw request fails without mutation. The sudo
+rule exposes only this job-ID execution entry point and cannot invoke the
+root-only issuer.
 
 Artifact transfer has an earlier root-owned byte gate. The restricted SSH
 adapter serializes intake before reading, permits one in-progress or admitted
@@ -266,12 +281,12 @@ unknown artifact cannot be reconciled.
 The activator opens and claims the artifact without following links, then
 streams its bytes exactly once into an exclusively created, root-owned snapshot
 while enforcing the compressed-size limit and computing the digest. After
-syncing and closing the snapshot, the activator verifies the request digest and
-performs every security-critical parse, validation, and extraction against the
-snapshot. It never validates or extracts from the provisioner-writable inode,
-so an already-open provisioner file descriptor cannot change the privileged
-input. It does not accept arbitrary destination paths, commands, or Caddy
-directives, and it repeats every security-critical check even when the
+syncing and closing the snapshot, the activator verifies the job's artifact
+size and digest and the canonical request digest, then performs every
+security-critical parse, validation, and extraction against the snapshot. It
+never validates or extracts from an intake inode still controlled by the
+transport or caller. It does not accept arbitrary destination paths, commands,
+or Caddy directives, and it repeats every security-critical check even when the
 unprivileged provisioner already performed a preflight.
 
 The activator is also the only ordinary writer of the root-owned platform
@@ -281,8 +296,9 @@ write permission for those stores.
 Milestone 3 also removes the provisioner's ownership of the persistent home,
 intake, job, manifest, and audit directories installed by the Milestone 2 empty
 host baseline. The trusted SSH adapter creates root-owned intake artifacts and
-job records; the provisioner receives only the read access needed for advisory
-preflight and submits its structured request without making a writable copy.
+authorization jobs; the provisioner receives neither directory access nor
+tenant export results. It can perform advisory preflight in its private
+workspace and submit only a root-generated job ID for execution.
 
 The provisioner's only general-purpose writable filesystem is a private
 ephemeral workspace mounted in its service namespace. Its initial hard limits
@@ -294,14 +310,14 @@ most one snapshot for a serialized operation, removes it on every terminal
 path, cleans abandoned snapshots during reconciliation, and rejects work that
 would cross the configured host free-space reserve.
 
-Root-side admission also bounds growth that a compromised provisioner could
-indirectly request from the activator. The Milestone 3 host initially permits:
+Root-side admission also bounds growth from authorized work, bugs, and replayed
+execution. The Milestone 3 host initially permits:
 
 - at most 25 persisted tenants;
 - at most 10 GiB and 500,000 unique inodes across static releases and release
   staging, including the worst-case candidate before garbage collection;
-- at most 10,000 immutable correlation request/result records occupying at most
-  64 MiB; and
+- at most 10,000 immutable authorization/correlation request-result records,
+  including job envelopes and phases, occupying at most 64 MiB; and
 - at most 128 MiB of local ordinary audit segments, with a separate 8-MiB
   root-administrator reserve that the provisioner entry point cannot consume.
 
@@ -320,13 +336,14 @@ manifest ceiling. The initial structured-decoder helper limits are
 `LimitCPU=5`, `RuntimeMaxSec=15s`, and one CPU through `CPUQuota=100%`.
 
 Each operator reason is at most 512 UTF-8 bytes with control characters
-rejected. The root adapter admits at most 60 new provisioner correlation IDs per
-rolling hour with a burst of five; an idempotent retry of an established ID does
-not consume another slot. Raw-size, parser-limit, lock-busy, rate-limited, and
-capacity-rejected calls fail before staging and cannot force an
-attacker-controlled audit payload. Their aggregate counters and sanitized,
-rate-limited diagnostic events use the already bounded monitoring and journald
-stores.
+rejected. The authenticated job issuer admits at most 60 new correlation IDs
+per rolling hour with a burst of five; an idempotent retry of an established ID
+does not consume another slot. Provisioner calls with unknown or malformed job
+IDs cannot allocate a correlation or job record. Raw-size, parser-limit,
+lock-busy, rate-limited, and capacity-rejected calls fail before staging and
+cannot force an attacker-controlled audit payload. Their aggregate counters and
+sanitized, rate-limited diagnostic events use the already bounded monitoring
+and journald stores.
 
 The activator serializes storage-changing admission, counts actual unique
 inodes and allocated blocks, reserves worst-case staging and retention, and
@@ -396,11 +413,13 @@ and inode boundaries. Increasing either limit requires another host-capacity
 review; application cleanup is not the security boundary that prevents a
 compromised provisioner from filling the host filesystem.
 
-The global tenant, content, correlation, audit, and admission-rate ceilings mean
-a compromised provisioner can deliberately exhaust Milestone 3 service capacity
-but cannot turn valid root requests into unbounded host storage consumption.
-Capacity exhaustion is conspicuous, fails closed, and requires authenticated
-operator recovery rather than automatic evidence deletion.
+The global tenant, content, authorization/correlation, audit, and admission-rate
+ceilings keep authorized operations and implementation failures from becoming
+unbounded host storage consumption. A compromised provisioner can delay or
+replay existing jobs but cannot spend a new correlation ID or storage allowance
+without a root-owned authorization. Capacity exhaustion is conspicuous, fails
+closed, and requires authenticated operator recovery rather than automatic
+evidence deletion.
 
 ## Alternatives considered
 

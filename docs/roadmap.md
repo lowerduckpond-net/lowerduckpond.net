@@ -330,7 +330,7 @@ change when a public slug changes. Desired manifests are stored as canonical
 JSON, while observed activation state and immutable deployment records remain
 separate.
 
-### Provisioner behavior
+### Operator and provisioner behavior
 
 Implement idempotent commands or jobs for:
 
@@ -342,6 +342,13 @@ Implement idempotent commands or jobs for:
 - Remove the provisioner's persistent writable home and job directory; place
   its temporary work in a private service workspace hard-capped at 64 MiB and
   4,096 inodes while root owns intake, job records, and activation staging.
+- Make the trusted SSH adapter the Milestone 3 authorization issuer. Commit a
+  root-owned immutable job binding the SSH-authenticated operator, operation,
+  target, correlation and canonical request, artifact or absence, and expected
+  source state before allowing execution.
+- Expose only `execute-authorized-job <root-generated-job-id>` through the
+  provisioner sudo rule. Deny it access to the issuer, job and intake stores,
+  tenant exports, full results, and raw activator operation entry points.
 - Initialize and back up the root-owned platform namespace record only before
   tenant history exists; reject later configured suffix drift unless a future
   explicit origin-migration design authorizes it.
@@ -459,16 +466,18 @@ Implement idempotent commands or jobs for:
   length-delimited, type-tagged, path-sorted release tree; keep uploaded artifact
   and complete portable-bundle byte digests distinct.
 - Reconcile actual host state against all desired manifests.
-- Permit the provisioner to request validated state changes without granting it
-  write access to desired state, observed state, or audit history.
+- Permit the provisioner to preflight and execute an already authorized job
+  without granting authority to originate or alter state changes or access to
+  desired state, observed state, audit history, or export payloads.
 - Cap raw operation requests at 32 KiB and raw manifests at 64 KiB before any
   parser or correlation lookup, decode under fixed process limits, and retain
   the 16-KiB canonical request, result, and manifest ceilings for every retry.
 - Bound indirect root-owned growth to 25 tenants, 10 GiB/500,000 release inodes,
-  10,000/64-MiB correlation records, 128 MiB of hash-chained ordinary audit, and
-  60 new IDs/hour; fail closed and rotate audit only after a restore-verified,
-  durably indexed `lowerduckpond-audit-archive` Restic snapshot is protected
-  from ordinary retention and prune.
+  10,000/64-MiB shared authorization/correlation records, 128 MiB of
+  hash-chained ordinary audit, and 60 issuer-created IDs/hour; fail closed and
+  rotate audit only after a restore-verified, durably indexed
+  `lowerduckpond-audit-archive` Restic snapshot is protected from ordinary
+  retention and prune.
 
 ### End-to-end tests
 
@@ -485,6 +494,13 @@ Implement idempotent commands or jobs for:
 - Overflow, interrupt, stall, and race root-owned intake transfers and prove
   their streaming limits, single slot, free-space reserve, and cleanup prevent
   accumulated artifacts before activation.
+- Forge and alter every authorization-job field, replace its artifact, drift
+  target state, replay its correlation, and invoke the provisioner sudo entry
+  with raw operations or unknown IDs; prove only the exact root-owned job can
+  claim capacity or mutate state and the worker cannot read export results.
+- Execute an authorized archive, then prove its job, correlation, and evidence
+  cannot be transformed into deletion. Only a separately authenticated delete
+  job bound to the resulting archived state may remove the tenant.
 - Suspend and restore without data loss.
 - Export active, suspended, and archived tenants, import each bundle into a separately
   created undeployed tenant, and prove content round-trips while target
@@ -531,6 +547,9 @@ Implement idempotent commands or jobs for:
 ### Exit criteria
 
 An administrator can create, deploy, suspend, export, import, restore, and delete a static site without manually editing the host.
+Every externally requested operation executes from an immutable authenticated
+job; the provisioner cannot originate or transform lifecycle authority or read
+an export payload.
 
 ## 7. Milestone 4: control plane and lifecycle automation — planned
 
@@ -574,7 +593,13 @@ An administrator can create, deploy, suspend, export, import, restore, and delet
 
 ### Lifecycle scheduler
 
-The scheduler should calculate desired transitions and enqueue jobs; it should not directly delete files or databases. Notifications and grace periods are first-class records so retries cannot accidentally send repeated notices or skip required stages.
+The authenticated control plane should calculate desired transitions and issue
+immutable authorization envelopes; the scheduler enqueues their opaque job IDs
+and the provisioner executes them. Neither scheduler nor provisioner should
+directly delete files or databases or change a job's actor, operation, target,
+request, artifact, or expected source state. Notifications and grace periods
+are first-class records so retries cannot accidentally send repeated notices
+or skip required stages.
 
 Suggested configurable defaults for the pilot:
 
