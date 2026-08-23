@@ -430,9 +430,10 @@ Implement idempotent commands or jobs for:
   the host free-space reserve, and bounded acknowledgement/expiry cleanup.
 - Wrap portable exports in the versioned `lowerduckpond-export-v1/` envelope,
   with fixed metadata paths and all tenant-controlled files below `content/`.
-- Give restore a separate raw-envelope budget of 5,004 records, 1,056-byte
-  names, 34 components, and 106 MiB of member data, then strip the fixed prefix
-  and reapply the unchanged tenant-tree quotas so boundary-valid exports remain
+- Give restore a separate raw-envelope budget of 5,004 records, 1,056-byte file
+  names or 1,057-byte directory names including their marker, 34 components,
+  and 106 MiB of member data. Strip the marker and fixed prefix before
+  reapplying unchanged tenant-tree quotas so boundary-valid exports remain
   restorable.
 - Canonicalize every portable ZIP field and use stored entries so the same
   export snapshot has byte-identical output and a reproducible archive digest.

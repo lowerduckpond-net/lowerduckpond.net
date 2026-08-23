@@ -71,8 +71,10 @@ can be removed:
 
 - at most 5,004 central-directory records: `format.json`, `manifest.json`,
   `checksums.sha256`, the `content/` directory, and at most 5,000 tenant records;
-- at most 1,056 UTF-8 bytes and 34 components in a full member name, accounting
-  for the 32-byte `lowerduckpond-export-v1/content/` prefix;
+- at most 1,056 UTF-8 bytes in a full regular-file member name and 1,057 bytes in
+  a directory member whose final byte is its one permitted `/` marker,
+  accounting for the 32-byte `lowerduckpond-export-v1/content/` prefix; both
+  have at most 34 components after removing that marker;
 - the same 255-byte component and 8-MiB central-directory ceilings;
 - exactly 46 bytes for `format.json`, at most 16 KiB for `manifest.json`, and at
   most 5,495,158 bytes for `checksums.sha256`, derived from its two metadata
@@ -82,9 +84,10 @@ can be removed:
 
 The envelope root is implicit and is not an allowed central-directory record.
 The structural gate first normalizes and validates every full member name under
-those envelope-aware ceilings, permits only the four fixed records outside
-`content/`, and validates their bounded canonical forms. It then strips exactly
-`lowerduckpond-export-v1/content/` from descendant names and applies the
+those type-aware envelope ceilings, permits only the four fixed records outside
+`content/`, and validates their bounded canonical forms. It removes the one
+directory-marker byte before path-length and depth accounting, then strips
+exactly `lowerduckpond-export-v1/content/` from descendant names and applies the
 ordinary 1,024-byte, 32-component, 5,000-entry, 100-MiB, per-file, collision,
 and implicit-parent limits to the tenant subtree. Fixed envelope records and
 the implicit envelope root never consume tenant quota. Passing either layer
