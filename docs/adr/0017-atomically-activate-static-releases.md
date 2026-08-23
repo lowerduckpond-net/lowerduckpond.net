@@ -40,13 +40,17 @@ Every process that changes live Caddy inputs or advances a reload or restart
 uses the same global publication lock for each state transition. No process
 holds it while synchronously waiting for a systemd job whose `ExecStartPre`,
 launcher, or `ExecStartPost` must acquire it. Before tenant publication is
-enabled, refactor the Ansible Caddy role to render a complete candidate runtime
-generation outside live paths, combining its proposed base configuration,
-environment, and binary with the current validated tenant routes. Apply it
-through a root-owned host-configuration transaction under that lock. Ansible no
-longer writes an independently consumed live Caddy input or invokes an
-independent reload. The provisioner's sudo capability cannot invoke this
-broader host-configuration transaction.
+enabled, refactor the Ansible Caddy role to stage only its proposed base
+configuration, environment, and binary outside live paths. A root-owned
+host-configuration transaction then acquires the publication lock, reconciles
+earlier intent, rereads authoritative tenant desired and observed state, and
+derives the complete current route set. While still holding the lock it combines
+those routes with the staged host inputs, validates and durably installs the
+final complete candidate generation, and only then records intent and selects
+it. A candidate assembled from tenant routes before lock acquisition is never
+eligible for selection. Ansible no longer writes an independently consumed
+live Caddy input or invokes an independent reload. The provisioner's sudo
+capability cannot invoke this broader host-configuration transaction.
 
 Keep the systemd unit and a small generation launcher as a frozen root-owned
 bootstrap, not members selected independently with each runtime generation.
@@ -78,13 +82,15 @@ holding the publication lock because it does not traverse systemd's start
 hooks. A host transaction that changes the binary or environment always uses
 the restart state machine rather than reload.
 
-For a restart, the host transaction reconciles any earlier intent, stages and
-validates the candidate, and then durably records a root-owned restart intent.
-The intent binds the operation and correlation IDs, previous and candidate
-generation IDs and manifests, expected running inputs, prior observed state,
-and a compare-and-swap phase. Under the publication lock it selects and syncs
-the candidate active reference and advances intent to `restart-required`. It
-then releases the lock before idempotently queuing
+For a restart, the host transaction may stage host-only inputs before acquiring
+the publication lock. Under the lock it reconciles any earlier intent, captures
+and hashes the authoritative tenant route state, constructs and validates the
+final candidate, and durably records a root-owned restart intent. The intent
+binds the operation and correlation IDs, previous and candidate generation IDs
+and manifests, captured authoritative route-state digest, expected running
+inputs, prior observed state, and a compare-and-swap phase. Under that same lock
+acquisition it selects and syncs the candidate active reference and advances
+intent to `restart-required`. It then releases the lock before idempotently queuing
 `systemctl --no-block restart caddy`; a crash before or after queuing is
 indistinguishable and recovery may queue it again while the nonterminal intent
 remains authoritative.

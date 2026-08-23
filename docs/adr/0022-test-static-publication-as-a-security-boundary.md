@@ -42,14 +42,18 @@ rejects a caller-supplied ID, generates a UUIDv7, derives the canonical
 hostname without hyphens, and enforces its complete DNS length independently
 of the alias.
 
-An installed-host concurrency test pauses tenant activation while Ansible has a
-candidate Caddy base transaction ready to commit, then proves that only one
-transaction can select a complete runtime generation and own a reload or
-restart intent at a time. At every durability phase it kills Caddy to trigger
-automatic restart and proves the recovery gate and launcher select one
-manifest-verified generation, never a mixed binary, environment, base
-configuration, or tenant route set. It verifies that the resulting Caddy
-configuration and observed tenant state describe the same committed generation.
+An installed-host concurrency test pauses tenant activation while Ansible has
+host-only Caddy inputs staged but has not acquired publication. It commits
+deploy, suspension, rename, restoration, and deletion independently in that
+window, then proves the host transaction rereads authoritative state and builds
+and validates its final route-bearing generation only after it holds the lock.
+Only one transaction can select a complete runtime generation and own a reload
+or restart intent at a time. At every durability phase the test kills Caddy to
+trigger automatic restart and proves the recovery gate and launcher select one
+manifest-verified generation, never stale tenant routes or a mixed binary,
+environment, base configuration, or route set. The resulting Caddy
+configuration and observed tenant state must describe the same committed
+generation.
 
 Restart-handoff tests pause after intent creation, active-reference selection,
 non-blocking job submission, pre-start transition, launcher pinning,

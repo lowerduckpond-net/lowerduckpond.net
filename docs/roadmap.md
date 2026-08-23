@@ -385,11 +385,13 @@ Implement idempotent commands or jobs for:
   complete Caddy generations, intent, active references, state, audit, and
   rollback.
 - Refactor Ansible Caddy convergence to commit every mutable live Caddy input in
-  one runtime generation under the publication lock. Use durable phased intent
-  and a non-blocking systemd handoff for binary or environment restarts, with
-  post-start verification and rollback after independent lock acquisitions.
-  Freeze a small systemd bootstrap that reconciles intent and pins one
-  generation before every start.
+  one runtime generation under the publication lock. Stage only host inputs
+  beforehand; after locking, reread authoritative tenant state and construct
+  and validate the final route-bearing candidate so a stale route set cannot be
+  selected. Use durable phased intent and a non-blocking systemd handoff for
+  binary or environment restarts, with post-start verification and rollback
+  after independent lock acquisitions. Freeze a small systemd bootstrap that
+  reconciles intent and pins one generation before every start.
 - Retain only active, last-known-good, and current-intent Caddy generations;
   enforce a 256-MiB/4,096-inode aggregate cap, unique-inode accounting,
   free-space admission, and secret-safe cleanup.
