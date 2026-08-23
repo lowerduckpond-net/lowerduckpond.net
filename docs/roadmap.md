@@ -437,6 +437,9 @@ Implement idempotent commands or jobs for:
   it unreferenced; Milestone 4 owns retention expiry and scheduled deletion.
 - Persist and sync a construction intent containing the exact unique Spaces key
   before archive upload, then bind the returned version ID after verification.
+  Upload the at-most-120-MiB completed bundle with one known-length `PutObject`;
+  prohibit multipart and high-level transfer APIs so incomplete parts cannot
+  escape version and capacity accounting.
   Reconcile it with any lifecycle intent and authoritative archive record before
   admitting another archive; permanently purge and confirm absence of every
   unreferenced version and delete marker or keep them durably quarantined and
@@ -538,7 +541,9 @@ Implement idempotent commands or jobs for:
 - Interrupt archive construction around every local-intent, remote-upload, and
   lifecycle-commit boundary and prove recovery preserves a bound object or
   version-purges/quarantines the one discoverable unreferenced object before
-  retry, without treating a delete marker as reclaimed storage.
+  retry, without treating a delete marker as reclaimed storage. Assert the
+  archive writer issues only one bounded `PutObject` and leaves no incomplete
+  multipart upload at any interruption point.
 - Interrupt archive-retiring restore and deletion around every journal,
   lifecycle, audit, version-purge, confirmation, and cleanup-commit boundary;
   prove a bound version survives and a committed retired version cannot

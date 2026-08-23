@@ -187,9 +187,22 @@ begins as the bucket and root-generated unique key; before upload, root lists
 that exact key and requires it to have no current version, noncurrent version,
 or delete marker. It cannot be caller-selected or reuse an existing or
 previously bound key. The intent reaches durable `prepared` state before upload
-begins. After Spaces returns the new version ID, root revalidates that exact
-version's bytes and metadata and durably advances the intent to `uploaded` with
-the version ID. If the host dies between remote success and that phase update,
+begins.
+
+The archive writer sends the completed local bundle through exactly one
+known-length `PutObject` request to the Spaces regional endpoint. Its body size
+must equal the intent-bound size and cannot exceed 120 MiB. It does not use a
+high-level transfer manager, `CreateMultipartUpload`, `UploadPart`, or any SDK
+configuration that may cross a multipart threshold. An interrupted request
+therefore leaves either no object version or one complete discoverable version,
+never separately billable uploaded parts outside version accounting. The
+bucket's incomplete-multipart lifecycle rule remains defense in depth for
+non-platform clients; it is not part of archive correctness, reclamation, or
+capacity accounting.
+
+After Spaces returns the new version ID, root revalidates that exact version's
+bytes and metadata and durably advances the intent to `uploaded` with the
+version ID. If the host dies between remote success and that phase update,
 reconciliation lists the already-synced unique key to discover and classify all
 versions rather than assuming an unversioned delete removed the bytes.
 
@@ -386,5 +399,6 @@ need executable or privileged filesystem bits.
 - [0008: Support archive upload before Git deployment](0008-archive-upload-first.md)
 - [0016: Model static publication as an untrusted boundary](0016-model-static-publication-threats.md)
 - [0018: Version the static tenant manifest contract](0018-version-static-tenant-manifests.md)
+- [DigitalOcean Spaces limits](https://docs.digitalocean.com/products/spaces/details/limits/)
 - [DigitalOcean Spaces versioning](https://docs.digitalocean.com/products/spaces/how-to/enable-versioning/)
 - [RFC 8785: JSON Canonicalization Scheme](https://www.rfc-editor.org/rfc/rfc8785)

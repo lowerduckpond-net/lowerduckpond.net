@@ -211,6 +211,19 @@ filesystem block. Every terminal path and startup reconciliation removes the
 partial or abandoned inode before reopening admission; an unclassifiable inode
 must keep admission closed.
 
+Archive-upload tests instrument the S3-compatible client and fail if managed
+archive code calls `CreateMultipartUpload`, `UploadPart`,
+`CompleteMultipartUpload`, or a high-level transfer API. Bundles immediately
+below, at, and one byte above 120 MiB prove the writer uses one known-length
+`PutObject` only within the limit. Faults before request transmission, during
+body transmission, after remote commit but before response delivery, and before
+the local `uploaded` phase prove reconciliation sees either no version or one
+complete version and never clears the reserved charge prematurely. The
+installed-host exercise lists incomplete multipart uploads below `archives/`
+before and after these cases and requires none; changing the SDK or upload path
+must preserve that assertion rather than relying on the seven-day lifecycle
+abort rule.
+
 Path fixtures cover NFC-normalization and case-fold collisions, strict UTF-8 and
 ASCII flag behavior, 255/256-byte components, 1,024/1,025-byte paths, 32/33
 components, explicit and implicit directory accounting, file/directory
