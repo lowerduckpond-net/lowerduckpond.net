@@ -27,6 +27,30 @@ raw byte ceiling, bounded read, deadline, and constrained-decoder contract to
 every invocation, including retries. The client cannot use transport framing,
 discardable syntax, or an established ID to bypass those limits.
 
+The SSH adapter, rather than `scp`, SFTP, or shell redirection, owns artifact
+intake. Before reading artifact bytes it acquires the exclusive root-owned
+intake-admission lock, reconciles abandoned intake, and claims the host's one
+in-progress-or-admitted artifact slot. It streams bounded chunks into an
+exclusively created mode-`0600` regular temporary file beneath the fixed intake
+directory, without following links. A deploy ZIP may contain at most 100 MiB;
+an explicit restore may contain at most the 120-MiB portable-bundle ceiling; an
+operation that takes no artifact rejects one. The adapter reads at most the
+applicable ceiling plus one byte, requires EOF at or below the ceiling, and
+never writes the extra byte.
+
+Partial bytes count against an intake-wide allocation ceiling of the applicable
+artifact limit rounded up by one filesystem block. Admission and every write
+also preserve the configured host free-space reserve. A 30-second idle deadline
+and 15-minute total monotonic transfer deadline bound an abandoned live
+connection. Only after the complete file and intake directory are synced does
+an atomic rename make the artifact available to the activator. Disconnect,
+timeout, excess data, reserve failure, and every other terminal error remove
+the temporary artifact and sync the directory. Startup reconciliation removes
+an abandoned temporary or admitted artifact before accepting another; an
+artifact it cannot safely classify or remove closes admission. The intake lock
+and slot remain held through activator claim, so concurrent transfers and
+retries cannot accumulate files ahead of privileged validation.
+
 The `create` request supplies a slug and quotas but no tenant ID. The root
 activator generates that immutable ID and returns the resulting canonical
 manifest and UUID-derived tenant origin. Later operations identify the tenant

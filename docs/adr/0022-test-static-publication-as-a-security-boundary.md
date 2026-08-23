@@ -121,6 +121,16 @@ CRC, or sizes. Installed-host tests exhaust each process limit and verify failed
 staging cleanup, an audit result, no publication, and continued Caddy and backup
 service health.
 
+Intake tests stream deploy and restore artifacts immediately below, at, and one
+byte above their respective 100-MiB and 120-MiB limits. They disconnect and
+stall at every transfer phase, race a second transfer and an idempotent retry,
+exhaust the host free-space reserve, and terminate the adapter before and after
+file and directory sync. At no point may intake hold more than one artifact or
+allocated blocks beyond its operation-specific ceiling rounded by one
+filesystem block. Every terminal path and startup reconciliation removes the
+partial or abandoned inode before reopening admission; an unclassifiable inode
+must keep admission closed.
+
 Path fixtures cover NFC-normalization and case-fold collisions, strict UTF-8 and
 ASCII flag behavior, 255/256-byte components, 1,024/1,025-byte paths, 32/33
 components, explicit and implicit directory accounting, file/directory

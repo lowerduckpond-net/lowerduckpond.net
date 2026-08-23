@@ -346,6 +346,10 @@ Implement idempotent commands or jobs for:
   with both an absolute-end JSON Schema pattern and an independent root
   `fullmatch` before persisting a slug.
 - Stage and validate an uploaded archive.
+- Stream artifacts through one root-owned intake slot while enforcing the
+  100-MiB deploy or 120-MiB restore ceiling, aggregate allocated-space and host
+  free-space bounds, transfer deadlines, and terminal/startup cleanup before
+  any privileged parser runs.
 - Reject unsafe or ambiguous paths, links, special files, archive expansion,
   excessive entry counts, and quota violations.
 - Gate ZIP structure with bounded metadata reads, permit only stored and Deflate
@@ -428,6 +432,9 @@ Implement idempotent commands or jobs for:
 - Exhaust the provisioner's private workspace by bytes and by inodes and prove
   the limits cannot consume the host filesystem or leave persistent entries
   after a service restart.
+- Overflow, interrupt, stall, and race root-owned intake transfers and prove
+  their streaming limits, single slot, free-space reserve, and cleanup prevent
+  accumulated artifacts before activation.
 - Suspend and restore without data loss.
 - Delete a never-deployed reservation normally, then prove that deployed or
   ambiguous history cannot use the archive-free transition.

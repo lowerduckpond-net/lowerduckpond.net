@@ -136,6 +136,7 @@ record.
 | Backup or export captures incompatible generations | Backup uses a shared tenant-state lock; mutation uses it exclusively. Ordinary export captures its current manifest and immutable release into a root-owned snapshot while holding that shared lock. Archive separately snapshots the source manifest for compare-and-swap and the proposed archived manifest for the bundle. Construction consumes only that snapshot, and restored state reconciles before publication. |
 | Concurrent exports exhaust privileged storage | Serialize export and archive construction behind one root-owned host lock; enforce one snapshot, one unacknowledged result, aggregate spool byte/inode ceilings, an encoded-output ceiling, a host free-space reserve, and root-owned terminal, startup, acknowledgement, and expiry cleanup. |
 | Unsafe archive, restore, or deletion | Put the proposed archived manifest—not its active or suspended source—in the durable bundle and bind the archive record to that exact manifest, desired deployment, content, and stored object. Revalidate the source before archive commit and the archived evidence immediately before delete; restore as a new deployment. Permit ordinary archive-free deletion only when root-owned history proves the tenant was never deployed, and keep emergency deletion behind a distinct root-only operator command that the provisioner cannot invoke. |
+| Oversized, stalled, or abandoned intake transfer exhausts disk | Admit exactly one root-owned artifact, enforce the operation-specific byte ceiling plus aggregate allocation and host-free-space bounds while streaming, bound idle and total transfer time, publish only after sync, and clean every terminal or startup artifact before reopening admission. |
 | Intake artifact replacement or mutation through an existing descriptor | Open beneath the fixed intake directory without following links and claim the request. Stream the opened bytes exactly once into an exclusively created root-owned snapshot while enforcing the compressed-size limit and computing the digest; sync and close the snapshot, then verify the request digest and perform all parsing, validation, and extraction against that snapshot. Never return to the provisioner-writable inode. |
 
 ## Security invariants
@@ -222,6 +223,11 @@ Implementation and review must preserve these invariants:
     manifest byte ceilings and deadlines run before decoding or correlation
     lookup, constrained decoding precedes canonical-size enforcement, and
     retries receive no alternate path.
+27. Root-owned artifact intake contains at most one in-progress or admitted
+    regular file. The SSH adapter enforces the deploy or restore byte ceiling,
+    aggregate allocated-space ceiling, host free-space reserve, transfer
+    deadlines, durable publication, and terminal/startup cleanup while reading;
+    no artifact parser is required to bound intake growth after the fact.
 
 ## Residual risks
 

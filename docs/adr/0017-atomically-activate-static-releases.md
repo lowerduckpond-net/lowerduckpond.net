@@ -214,6 +214,16 @@ bounded canonical value or fixed error. Idempotent retries and root-only
 operations traverse the same byte gate; an established correlation ID never
 bypasses it.
 
+Artifact transfer has an earlier root-owned byte gate. The restricted SSH
+adapter serializes intake before reading, permits one in-progress or admitted
+regular artifact, streams no more than the operation-specific 100-MiB deploy or
+120-MiB restore ceiling, and checks the aggregate intake allocation and host
+free-space reserve during the write. It publishes the artifact within intake
+only after file and directory sync. Bounded idle and total deadlines, terminal
+cleanup, and startup reconciliation prevent partial or abandoned uploads from
+accumulating before the activator runs. Intake admission remains closed if an
+unknown artifact cannot be reconciled.
+
 The activator opens and claims the artifact without following links, then
 streams its bytes exactly once into an exclusively created, root-owned snapshot
 while enforcing the compressed-size limit and computing the digest. After

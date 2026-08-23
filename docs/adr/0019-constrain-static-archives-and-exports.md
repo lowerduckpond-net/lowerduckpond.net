@@ -51,14 +51,23 @@ compressed data regions must lie wholly before the central directory, neither
 overlap nor alias one another or metadata, and cover exactly the declared entry
 data. Checked arithmetic precedes every offset-plus-length operation.
 
-Apply these initial limits before and during root-side extraction:
+Apply these initial limits during root-owned intake and again before and during
+root-side extraction:
 
-- at most 100 MiB in the uploaded ZIP;
+- at most 100 MiB in an uploaded deployment ZIP;
+- at most 120 MiB in an uploaded v1 portable bundle presented to the explicit
+  restore path, whose content remains subject to the limits below;
 - at most 100 MiB of extracted regular-file content;
 - at most 5,000 extracted entries in total, counting both regular files and
   directories;
 - at most 25 MiB in one file; and
 - at most a 100:1 declared or observed expansion ratio.
+
+The restricted transport adapter enforces the applicable compressed-artifact
+ceiling plus the aggregate one-artifact intake and host-free-space bounds while
+streaming, before the activator or any ZIP parser can run. The activator repeats
+the applicable ceiling while copying the admitted artifact into its immutable
+snapshot.
 
 Normalize directories to mode `0755` and regular files to `0644`; discard
 executable, set-ID, and other archive-supplied permission semantics. Extract
