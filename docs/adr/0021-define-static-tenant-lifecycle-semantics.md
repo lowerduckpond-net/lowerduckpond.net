@@ -17,9 +17,15 @@ a reserved mutable slug, and no deployment or public route. The first
 successful deploy installs an immutable release and moves it to `active`;
 creation and deployment remain independently idempotent operations.
 
-Retain the active immutable release and its two immediately preceding releases.
-A successful activation triggers garbage collection only after the new route is
-serving and its state is durably recorded.
+Retain the selected deployment's immutable release and its two immediately
+preceding releases in tenant deployment chronology. Every successful deploy or
+rollback triggers garbage collection only after its lifecycle transaction is
+durably committed. For an active tenant that means the selected route is
+serving and desired and observed state agree. For a suspended tenant it means
+the remembered deployment is committed while desired and observed state still
+prove both routes absent. Cleanup takes exclusive tenant-state, preserves any
+release pinned by an export snapshot or transaction intent, and runs during
+startup reconciliation as well as after either kind of successful commit.
 
 Suspension removes both the canonical content route and platform slug alias and
 therefore returns the same generic response as an unknown hostname; it
@@ -157,9 +163,10 @@ matrix.
 
 Suspended sites do not disclose whether an alias or canonical hostname exists,
 and rollback remains cheap because releases are immutable. A suspended tenant
-can select its next release safely without becoming public. Retaining three
-releases uses bounded additional storage that must be included in disk
-monitoring and release garbage collection.
+can select its next release safely without becoming public. Applying the same
+three-release retention rule to active and remembered deployments keeps that
+storage bounded and must be included in disk monitoring and release garbage
+collection.
 
 Archive storage and audit records become prerequisites for ordinary deletion of
 any tenant that has ever been deployed. The separately authenticated emergency

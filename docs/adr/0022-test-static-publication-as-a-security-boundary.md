@@ -147,6 +147,11 @@ aliased regions, gaps, and every checked-arithmetic boundary.
 Lifecycle concurrency tests delay an active-state rollback until after
 suspension commits and prove that it can update only the remembered deployment,
 leaves both routes absent, and requires a later explicit `resume` to publish.
+They repeatedly deploy and roll back while suspended and prove each committed
+remembered deployment triggers the same three-release cleanup without
+publishing either route. Cleanup must preserve releases pinned by an export or
+intent, recover after interruption, and remove them once the pin clears without
+letting one tenant consume the host-wide release allowance.
 They also race two creates, and a create against a rename, for the same slug and
 prove that exactly one root-owned state transaction can commit the name.
 Table-driven tests cover every lifecycle operation against every absent,

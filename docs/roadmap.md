@@ -370,7 +370,9 @@ Implement idempotent commands or jobs for:
 - Revalidate and extract through the narrow root-owned activator.
 - Atomically activate one complete Caddy runtime generation whose manifest binds
   its binary, environment, full configuration, and immutable tenant releases.
-- Retain the active release and two preceding releases.
+- Retain the selected active or suspended remembered release and its two
+  preceding releases; run post-commit and reconciliation cleanup in both states
+  while preserving export- and intent-pinned releases.
 - Generate allowlisted canonical content routes and platform-only slug redirect
   routes without accepting Caddy text or a redirect target.
 - Enforce the exact bare-root, non-cached, no-referrer alias contract and omit
@@ -457,6 +459,9 @@ Implement idempotent commands or jobs for:
   while authoritative archived tenant state still binds it.
 - Delay a rollback across suspension and prove it cannot republish the tenant;
   only resume may leave the suspended state.
+- Repeatedly deploy and roll back while suspended and prove retention remains at
+  the selected release plus two predecessors without publishing a route or
+  deleting an export- or intent-pinned release.
 - Rename a slug while preserving the tenant identity.
 - Assign the released slug to another tenant and prove its alias points to a
   different canonical origin while no tenant bytes, path, query, cookie, or
