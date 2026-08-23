@@ -1,6 +1,6 @@
 # Lower Duck Pond Hosting: Project Vision and Architecture
 
-Status: proposed baseline for the initial public repository
+Status: accepted baseline through the Milestone 3 design decisions
 Primary domain: `lowerduckpond.net`
 First tenant: `lowerduckpond.com`
 
@@ -105,14 +105,28 @@ Ansible owns all durable system configuration after that point.
 
 Caddy is the only public web entry point. It:
 
-- Redirects HTTP to HTTPS.
+- Redirects HTTP to HTTPS, except that slug-alias requests first pass the alias
+  method/path/query allowlist: qualifying bare-root requests redirect directly
+  to the canonical HTTPS origin and all others receive the generic HTTP `404`
+  without forwarding a path or query.
 - Terminates TLS.
-- Serves static tenant directories directly.
+- Serves static tenant directories directly only from immutable canonical tenant
+  origins.
+- Redirects reusable platform-controlled slug aliases to canonical tenant
+  origins without serving or proxying tenant bytes from the alias; every alias
+  redirect and generic `404` explicitly uses `Cache-Control: no-store`.
 - Proxies approved dynamic tenants to loopback-only container ports or sockets.
 - Emits structured access logs tagged with the requested hostname and resolved tenant.
+- Omits raw path, query, cookie, authorization, and referrer values from slug
+  alias logs.
 - Serves the provider portal and `lowerduckpond.com` as distinct virtual hosts.
 
-The routing configuration is generated from tenant manifests. A bad tenant deployment must not be able to replace the entire Caddy configuration. The provisioner validates a candidate configuration before atomically installing and reloading it.
+The routing configuration is generated from tenant manifests. A bad tenant
+deployment must not be able to replace the entire Caddy configuration. A
+narrow root-owned activator revalidates an immutable release, generates and
+validates a complete allowlisted route-set generation, atomically selects it,
+and reloads Caddy. The unprivileged provisioner cannot submit Caddy text or
+write active routes.
 
 ### 5.4 Tenant runtime
 
@@ -121,10 +135,19 @@ The routing configuration is generated from tenant manifests. A bad tenant deplo
 A static tenant receives:
 
 - A unique immutable tenant ID and mutable public slug.
-- A content directory owned by the deployment service, not by the Caddy process.
-- Read-only access from Caddy.
+- An immutable UUID-derived canonical content origin and a reusable
+  `<slug>.lowerduckpond.net` platform alias.
+- Root-owned immutable releases that neither the provisioner nor Caddy can
+  modify after validation.
+- Read-only content access from Caddy through a root-generated route that names
+  one exact release.
 - File-count and storage quotas.
-- A generated route for `<slug>.lowerduckpond.net`.
+- Portable import into an already-created undeployed tenant; imported content
+  receives the target's existing identity, canonical origin, slug, and quotas
+  rather than reclaiming values embedded in the export.
+- A generated canonical route in a tenant namespace where each mutually
+  untrusted tenant is a distinct registrable domain according to supported
+  browsers.
 - No executable server-side code.
 
 Static sites are inexpensive enough to remain online even when lightly visited. Lifecycle decisions should therefore be based primarily on owner activity and explicit renewal, not page views.
@@ -167,9 +190,25 @@ The database can later move to DigitalOcean Managed Databases without changing t
 The public web application should not run privileged container or filesystem operations directly. Split it conceptually into:
 
 - **Control plane:** authentication, signup, site metadata, user-visible status, approvals, renewal, cancellation, and audit history.
-- **Provisioner:** a narrowly privileged worker that consumes idempotent jobs and applies tenant manifests to the correct host.
+- **Provisioner:** an unprivileged worker that consumes idempotent jobs,
+  validates tenant inputs, and asks a narrow root-owned activator to execute
+  exact already-authorized operations on the assigned host. It cannot create,
+  alter, or retarget a job.
 
-The single-host implementation may deploy both components together, but their permissions and interfaces should remain separate. That boundary becomes the natural per-host agent interface when the platform grows.
+The single-host implementation may deploy both components together, but their
+permissions and interfaces should remain separate. Neither the public control
+plane nor the provisioner receives general sudo, arbitrary filesystem, or Caddy
+configuration access. That boundary becomes the natural per-host agent
+interface when the platform grows.
+
+The authenticated control plane is the future job authority. It creates an
+immutable envelope binding the actor, operation, tenant, correlation, request,
+artifact, and expected source state; the provisioner receives only its opaque
+job ID and bounded status. Milestone 3 uses the trusted administrative SSH
+adapter as the issuer of the same root-owned envelope. The worker sudo rule can
+execute an issued job but cannot invoke either issuer or submit raw lifecycle
+fields. Archive evidence proves recoverability, not authorization: archive and
+delete require separate actor-authorized jobs.
 
 Every provisioning operation should be idempotent and recorded with a correlation ID. Retrying `create site`, `suspend site`, or `archive site` must converge on the requested state rather than creating duplicate databases, credentials, containers, or routes.
 
@@ -182,7 +221,33 @@ Cloudflare remains the authoritative DNS provider. OpenTofu manages records such
 - `*.lowerduckpond.net`
 - Administrative or status hostnames
 
-The wildcard record points to the DigitalOcean reserved IP. Caddy obtains and renews certificates for `lowerduckpond.net` and `*.lowerduckpond.net` through the ACME DNS-01 challenge using a narrowly scoped Cloudflare API token. Caddy requires a DNS provider module for this flow, so the project should build and pin its Caddy image rather than relying on an unversioned local binary.
+The existing wildcard record points to the DigitalOcean reserved IP. Caddy
+obtains and renews certificates for `lowerduckpond.net` and
+`*.lowerduckpond.net` through the ACME DNS-01 challenge using a narrowly scoped
+Cloudflare API token. Caddy requires a DNS provider module for this flow, so the
+project should build and pin its Caddy image rather than relying on an
+unversioned local binary.
+
+Do not publish tenant-controlled content beneath `lowerduckpond.net`: sibling
+subdomains can set parent-domain cookies that reach the platform and one
+another. A `<slug>.lowerduckpond.net` hostname is therefore only a
+platform-controlled, non-cached redirect from its bare root to the tenant's
+canonical origin. It never serves uploaded content or accepts a tenant-selected
+destination, and its slug may be assigned to another tenant after rename or
+deletion.
+
+Before Milestone 3 publication, provision an operator-owned tenant namespace
+where every `t-<tenant-uuid-without-hyphens>.<tenant-origin-suffix>` canonical
+hostname is a distinct registrable domain under the Public Suffix List behavior
+of supported browsers. This may use a project-controlled private suffix after
+browser recognition or another source of distinct registrable tenant domains.
+A separate shared registrable domain without that boundary protects the
+platform but does not isolate tenants from one another. Tenant IDs and their
+canonical origins are immutable and never reassigned. A backed-up root-owned
+platform record pins the tenant-origin suffix before the first tenant exists,
+and every canonical manifest records the complete derived origin; configuration
+drift or disagreement fails closed. Only friendly slug aliases are mutable and
+recyclable.
 
 `lowerduckpond.com` is configured as an ordinary independent tenant hostname and receives its own automatically managed certificate. Custom tenant domains can be considered later; they are not required for the initial service.
 
@@ -210,7 +275,9 @@ Recommended lifecycle behavior:
 - Dynamic containers can be stopped while retaining files and database contents.
 - Archival produces a portable tenant bundle containing site files, metadata, and an SQL dump when applicable.
 - Deletion occurs only after a documented retention period and successful archival attempt.
-- Owners can request an export without cancelling.
+- Owners can request an export without cancelling and can later import its
+  content into a separately created tenant. Portable import does not recover a
+  lost tenant identity or browser origin; full-platform backup restore does.
 
 Exact inactivity and retention intervals should be configuration, not code constants. A reasonable pilot policy is owner confirmation every 90 days, a multi-notice grace period, and at least 90 additional days of recoverable archive retention.
 
@@ -222,10 +289,19 @@ Primary backups should be application-aware rather than relying only on Droplet 
 - Database dumps run before the corresponding Restic snapshot.
 - Restic forget/prune expires backup generations according to policy; Spaces
   lifecycle rules remove incomplete uploads and stale object versions without
-  deleting current repository objects by age.
+  deleting current repository objects or tenant archive bundles still bound by
+  authoritative tenant state by age.
+- The tenant-archive prefix has a hard aggregate remote-object allowance.
+  Restore and deletion journal every bundle they unbind, permanently purge all
+  of its versions and markers after the authoritative transition commits, and
+  block new archives while cleanup is ambiguous or incomplete.
+- Root-created audit-archive snapshots remain outside ordinary backup retention
+  until an explicit audit-retention transition; local audit rotation requires a
+  restore-verified snapshot and durable chain index.
 - DigitalOcean Droplet backups or snapshots provide a secondary whole-machine recovery option.
 - Restore tests run on a schedule and produce an auditable result.
-- Tenant export and disaster recovery use the same archive format where practical.
+- Tenant export, portable import, and disaster recovery use the same archive
+  format where practical while retaining distinct identity authority.
 
 Recovery objectives can remain modest for a free hobby service, but they should be explicit. The initial target should favor correctness and recoverability over short recovery time.
 
@@ -317,7 +393,7 @@ Keeping the first customer separate prevents the platform from receiving undocum
 | One tenant exhausts the host | Per-container limits, per-tenant quotas, alerting, administrative suspension, bounded request sizes and timeouts |
 | Shared SQL leaks data | Separate database/user per tenant, least-privilege grants, no shared credentials, cross-tenant integration tests |
 | Signup automation attracts abuse | Verified identity, initial approval queue, rate limits, clear acceptable-use policy and fast suspension tooling |
-| Automated pruning destroys wanted content | Multi-stage suspension/archive/delete flow, repeated notices, configurable intervals, export and restore support |
+| Automated pruning destroys wanted content | Multi-stage suspension/archive/delete flow, repeated notices, configurable intervals, export, portable import, and authoritative restore support |
 | Infrastructure cannot be reproduced | OpenTofu, Ansible, pinned dependencies, tested restores, minimal manual console configuration |
 | Public source exposes production secrets | Secret scanning, ignored state, scoped tokens, encrypted secret delivery, sanitized operational examples |
 | A single Droplet fails | Encrypted off-host backups, application-aware dumps, host rebuild automation and restore drills |
@@ -328,6 +404,7 @@ Keeping the first customer separate prevents the platform from receiving undocum
 - [DigitalOcean provider resources](https://docs.digitalocean.com/reference/terraform/reference/resources/)
 - [Caddy automatic HTTPS](https://caddyserver.com/docs/automatic-https)
 - [Caddy wildcard certificate pattern](https://caddyserver.com/docs/caddyfile/patterns#wildcard-certificates)
+- [Public Suffix List](https://publicsuffix.org/)
 - [Podman Quadlet](https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html)
 - [Podman Quadlet basic usage](https://docs.podman.io/en/latest/markdown/podman-quadlet-basic-usage.7.html)
 - [OpenTofu state locking](https://opentofu.org/docs/language/state/locking/)

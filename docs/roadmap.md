@@ -2,6 +2,26 @@
 
 This roadmap turns the architecture in [`architecture.md`](architecture.md) into incremental, independently demonstrable releases. The ordering intentionally establishes static hosting, reproducible infrastructure, backups, and operational visibility before enabling untrusted PHP.
 
+## Progress
+
+Status as of 2026-08-22:
+
+| Milestone | Status | Outcome |
+| --- | --- | --- |
+| 0: Repository foundation | Complete | The public repository, development workflow, CI gates, application boundaries, and architecture decisions are established. |
+| 1: DigitalOcean foundation | Complete | OpenTofu manages the production network, Droplet, reserved IP, firewall, DNS, state, and durable backup storage; the guarded rebuild drill succeeded. |
+| 2: Reproducible host configuration | Complete | One trusted-workstation command converges production idempotently and passes host, HTTPS, backup, restore, and post-reboot acceptance checks. |
+| 3: Static tenant MVP | Current | Implement the accepted manifest, archive, privileged-activation, operator, lifecycle, and security-test contracts. |
+| 4: Control plane and lifecycle automation | Planned | Expose the static lifecycle through the FastAPI control plane with approvals, jobs, policy, and audit history. |
+| 5: Backup, observability, and operations | Planned | Complete platform-level recovery, central observability, alerting, and operator runbooks. Host backup and monitoring foundations arrived early in Milestone 2. |
+| 6: Dynamic PHP pilot | Planned | Introduce isolated PHP and tenant-scoped SQL only after the static platform and recovery path are proven. |
+| 7: Customer and community pilot | Planned | Deploy the city site through the ordinary tenant contract and onboard a small resident cohort. |
+
+“Complete” means the milestone's exit criterion has been demonstrated, not
+merely that its implementation was merged. “Current” identifies the active
+implementation target. Milestone 3's design is accepted; functional
+implementation has not started.
+
 ## 1. Proposed platform repository
 
 ```text
@@ -78,7 +98,7 @@ Operator-accepted defaults:
 - Require administrative approval during the pilot.
 - Keep Milestone 0 limited to repository foundations; define the tenant manifest in Milestone 3.
 
-## 3. Milestone 0: repository foundation
+## 3. Milestone 0: repository foundation — complete
 
 ### Deliverables
 
@@ -103,7 +123,13 @@ Operator-accepted defaults:
 
 A contributor can clone the repository, install documented prerequisites, run one validation command, and receive the same result as CI.
 
-## 4. Milestone 1: DigitalOcean foundation
+### Completion record
+
+[PR #1](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/1)
+delivered the repository foundation. The locked `just check` workflow and the
+required GitHub checks exercise the same validation entry points.
+
+## 4. Milestone 1: DigitalOcean foundation — complete
 
 ### OpenTofu resources
 
@@ -158,7 +184,18 @@ Until that verification exists:
 
 A CI-authorized apply can create a fresh Droplet and supporting resources without console intervention, and a destroy/recreate exercise retains the reserved address and off-host backup storage as designed.
 
-## 5. Milestone 2: reproducible host configuration
+### Completion record
+
+[PR #2](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/2)
+delivered the DigitalOcean and Cloudflare foundation. The guarded rebuild drill
+then proved that the Droplet could be replaced while retaining its reserved IP
+and off-host state and backup buckets. Follow-up
+[PR #3](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/3) and
+[PR #4](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/4)
+incorporated the drill and project-membership review findings into the durable
+plan policy.
+
+## 5. Milestone 2: reproducible host configuration — complete
 
 ### Ansible roles
 
@@ -170,8 +207,13 @@ Implement small composable roles rather than one monolithic playbook:
 - `podman`: rootless Podman prerequisites, subordinate IDs, lingering, storage, and networks.
 - `database`: database engine, durable storage, local-only administration, backup account, and tuning.
 - `backup`: database dumps, Restic, schedules, retention, and health reporting.
-- `monitoring`: exporters, collection, dashboards, and alerts.
-- `provisioner`: service account, directories, queue access, and restricted privileged operations.
+- `monitoring`: a loopback-only node exporter, local textfile metrics, scheduled
+  health checks, and journald reporting. Central collection, dashboards, and
+  routed alerts remain deferred to Milestone 5.
+- `provisioner`: an unprivileged non-login service account and private job,
+  manifest, and audit directories. It receives no queue integration, tenant
+  content ownership, Caddy access, sudo rule, or other privileged operation in
+  this milestone.
 
 Milestone 2 does not grant the provisioner a Caddy reload or route-publication
 capability. Milestone 3 introduces one privileged activation contract covering
@@ -214,60 +256,312 @@ A newly provisioned Droplet becomes a working empty hosting node after one
 operator command. That command performs a second converge with zero changes and
 runs host, HTTPS, backup, and disposable-restore acceptance checks.
 
-## 6. Milestone 3: static tenant MVP
+### Completion record
+
+[PR #5](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/5)
+delivered the host roles and production runner. Corrective
+[PR #6](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/6),
+[PR #7](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/7), and
+[PR #8](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/8)
+resolved standalone acceptance scope, removed misleading skipped-loop output,
+and added static verification of the installed systemd units.
+
+On 2026-08-22, production was cleanly rebooted and the operator reran `just
+configure-production` from the trusted workstation against current `main`.
+The second converge reported zero changes, and the host, HTTPS, encrypted
+backup, disposable-restore, service, timer, and rootless user-service checks
+all passed. This demonstrates the exit criterion and boot persistence on the
+real host.
+
+## 6. Milestone 3: static tenant MVP — current
+
+### Accepted implementation decisions
+
+Milestone 3 implementation is governed by the
+[static-publication threat model](threat-model/static-publication.md) and these
+accepted decisions, in dependency order:
+
+1. [Model static publication as an untrusted boundary](adr/0016-model-static-publication-threats.md).
+2. [Atomically activate immutable static releases](adr/0017-atomically-activate-static-releases.md).
+3. [Version the static tenant manifest contract](adr/0018-version-static-tenant-manifests.md).
+4. [Constrain static archives and exports](adr/0019-constrain-static-archives-and-exports.md).
+5. [Use a trusted-workstation static operator interface](adr/0020-use-a-trusted-workstation-static-operator-interface.md).
+6. [Define static tenant lifecycle semantics](adr/0021-define-static-tenant-lifecycle-semantics.md).
+7. [Separate reusable slugs from immutable tenant origins](adr/0023-separate-reusable-slugs-from-tenant-origins.md).
+8. [Test static publication as a security boundary](adr/0022-test-static-publication-as-a-security-boundary.md).
 
 ### Tenant manifest v1
 
-Define and version a machine-readable contract before building the portal. For example:
+Define and version a machine-readable contract before building the portal. The
+accepted v1alpha1 shape begins with:
 
 ```yaml
 apiVersion: hosting.lowerduckpond.net/v1alpha1
 kind: Site
 metadata:
-  id: 01JEXAMPLE0000000000000000
+  id: 0191e2c4-8f7a-7c3b-8d1e-5f62047a2100
   slug: duck-repair
+  canonicalOrigin: t-0191e2c48f7a7c3b8d1e5f62047a2100.example
 spec:
   runtime: static
-  domains:
-    - duck-repair.lowerduckpond.net
+  desiredState: active
+  desiredDeployment:
+    id: 0191e2ca-49f2-7608-8cf3-f80ab2cab151
+    archiveSha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
   quotas:
     storageMiB: 100
-    files: 5000
-  state: active
+    entries: 5000
 ```
 
-The stable tenant ID must not change when a public slug changes.
+The root activator generates the stable UUIDv7 tenant ID during `create`; a
+caller cannot select it. Tenant content is served at
+`t-<tenant-uuid-without-hyphens>.<tenant-origin-suffix>`, where the
+operator-owned namespace makes each canonical hostname a distinct registrable
+domain according to supported browsers. A reusable `<slug>.lowerduckpond.net`
+platform alias redirects only its bare root to that canonical origin and never
+serves tenant-controlled content. Arbitrary and custom domains are not accepted
+in this version. Selecting and provisioning the origin-isolated tenant
+namespace is required before the production canary. A versioned root-owned
+platform record pins its suffix before the first tenant is created, and each
+root-generated manifest stores the complete origin. Convergence and
+reconciliation fail closed unless configuration, the platform record, and the
+rederived manifest origin agree. The tenant ID and canonical origin do not
+change when a public slug changes. Desired manifests are stored as canonical
+JSON, while observed activation state and immutable deployment records remain
+separate.
 
-### Provisioner behavior
+### Operator and provisioner behavior
 
 Implement idempotent commands or jobs for:
 
-- Create tenant directory and metadata.
-- Validate slug and hostname uniqueness.
+- Create desired tenant state and root-owned immutable release storage.
+- Represent a newly created tenant as undeployed, without requiring a synthetic
+  deployment ID or archive digest.
+- Migrate authoritative manifest and audit storage from the empty Milestone 2
+  provisioner-owned directories to root ownership before accepting tenant data.
+- Remove the provisioner's persistent writable home and job directory; place
+  its temporary work in a private service workspace hard-capped at 64 MiB and
+  4,096 inodes while root owns intake, job records, and activation staging.
+- Make the trusted SSH adapter the Milestone 3 authorization issuer. Commit a
+  root-owned immutable job binding the SSH-authenticated operator, operation,
+  target, correlation and canonical request, artifact or absence, and expected
+  source state before allowing execution.
+- Expose only `execute-authorized-job <root-generated-job-id>` through the
+  provisioner sudo rule. Deny it access to the issuer, job and intake stores,
+  tenant exports, full results, and raw activator operation entry points.
+- Initialize and back up the root-owned platform namespace record only before
+  tenant history exists; reject later configured suffix drift unless a future
+  explicit origin-migration design authorizes it.
+- Generate immutable tenant IDs at the root boundary; persist and independently
+  rederive each canonical tenant hostname from the pinned namespace without
+  accepting a caller ID or domain.
+- Validate live slug uniqueness and both canonical and alias hostname lengths.
+- Reserve slugs inside the serialized root-owned state transaction so
+  concurrent creates or renames cannot commit the same alias.
+- Enforce a 1–63-byte ASCII DNS-label grammar and complete alias-hostname length
+  with both an absolute-end JSON Schema pattern and an independent root
+  `fullmatch` before persisting a slug.
 - Stage and validate an uploaded archive.
-- Reject unsafe paths, symlinks escaping the site root, excessive file counts, and quota violations.
-- Atomically activate a deployment.
-- Retain a bounded number of previous releases.
-- Generate the tenant's Caddy route.
-- Validate and reload Caddy.
-- Suspend, resume, export, archive, restore, and delete a site.
+- Stream artifacts through one root-owned intake slot while enforcing the
+  100-MiB deploy or 120-MiB import ceiling, aggregate allocated-space and host
+  free-space bounds, transfer deadlines, and terminal/startup cleanup before
+  any privileged parser runs.
+- Reject unsafe or ambiguous paths, links, special files, archive expansion,
+  excessive entry counts, and quota violations.
+- Gate ZIP structure with bounded metadata reads, permit only stored and Deflate
+  entries, match local and central headers, and run privileged parsing inside
+  fixed memory, swap, task, descriptor, CPU, and runtime limits.
+- Bound normalized path, component, depth, central-directory, extra-field, and
+  region layout; count each materialized directory once. Coalesce an exactly
+  matching explicit directory with its implicit parent, but reject duplicate
+  explicit records, type conflicts, and distinct spellings that collide after
+  normalization or case folding before extraction.
+- Revalidate and extract through the narrow root-owned activator.
+- Atomically activate one complete Caddy runtime generation whose manifest binds
+  its binary, environment, full configuration, and immutable tenant releases.
+- Retain the selected active or suspended remembered release and its two
+  preceding releases; run post-commit cleanup after deploy, rollback, and
+  restore and repeat it during reconciliation while preserving export- and
+  intent-pinned releases.
+- Generate allowlisted canonical content routes and platform-only slug redirect
+  routes without accepting Caddy text or a redirect target.
+- Enforce the exact bare-root, non-cached, no-referrer alias contract and omit
+  raw path, query, cookie, authorization, and referrer values from alias logs.
+  Apply `no-store` to every alias redirect and `404`. Apply the allowlist before
+  automatic HTTPS on both listeners, redirecting only a qualifying HTTP request
+  directly to the canonical HTTPS origin.
+- Validate, select, reload, and advance every restart or rollback phase under
+  one publication lock, while releasing it before any systemd job must
+  reacquire it.
+- Enforce the global export → publication → tenant-state lock order, reject
+  contended requests before staging, and revalidate two-phase archive capture
+  under exclusive state before commit.
+- Apply explicit file and parent-directory `fsync` barriers around releases,
+  complete Caddy generations, intent, active references, state, audit, and
+  rollback.
+- Refactor Ansible Caddy convergence to commit every mutable live Caddy input in
+  one runtime generation under the publication lock. Stage only host inputs
+  beforehand; after locking, reread authoritative tenant state and construct
+  and validate the final route-bearing candidate so a stale route set cannot be
+  selected. Use durable phased intent and a non-blocking systemd handoff for
+  binary or environment restarts, with post-start verification and rollback
+  after independent lock acquisitions. Before a recovery start, durably select
+  the prior generation, release publication, reset the exhausted systemd failed
+  and start-limit state, and then queue the start idempotently. Pin three
+  attempts per selected target and the rate-limit interval; durably bind each
+  automatic retry's new invocation ID and fence callbacks from prior attempts.
+  Freeze a small systemd bootstrap that reconciles intent and pins one
+  generation before every start. When no transaction intent exists, durably
+  create an ordinary-start intent for the manifest-verified active generation;
+  retry only that target and never infer rollback authority from service
+  startup.
+- Retain only active, last-known-good, and current-intent Caddy generations;
+  enforce a 256-MiB/4,096-inode aggregate cap, unique-inode accounting,
+  free-space admission, and secret-safe cleanup.
+- Suspend, resume, export, import, archive, restore, and delete a site.
+- Keep canonical tenant origins stable across rename and restore; release slugs
+  after committed rename or deletion without reassigning a tenant origin.
+- Enforce and table-test the complete lifecycle operation/state matrix; reject
+  every unlisted pair without desired or observed state changes.
+- Commit archive evidence, `desiredState: archived`, and both-route removal
+  through one write-ahead transaction that reconciles to the exact preceding
+  active-or-suspended state and route set or the complete archived generation.
+- Allow audited archive-free deletion of a never-deployed reservation only when
+  its complete root-owned history proves no deployment ever existed.
+- Capture each export's canonical manifest and immutable release into a
+  root-owned snapshot under the shared tenant-state lock before bundling it.
+- For archive, retain the active or suspended source manifest only for final
+  compare-and-swap and put the separately derived proposed archived manifest in
+  the durable bundle, with its digest bound by the archive record.
+- Before enabling archive operations, remove current-object age expiration from
+  the `archives/` storage prefix. Retain every bundle bound by authoritative
+  archived tenant state until a coordinated, audited deletion transition makes
+  it unreferenced; Milestone 4 owns retention expiry and scheduled deletion.
+- Persist and sync a construction intent containing the exact unique Spaces key
+  before archive upload, then bind the returned version ID after verification.
+  Upload the at-most-120-MiB completed bundle with one known-length `PutObject`;
+  prohibit multipart and high-level transfer APIs so incomplete parts cannot
+  escape version and capacity accounting.
+  Reconcile it with any lifecycle intent and authoritative archive record before
+  admitting another archive; permanently purge and confirm absence of every
+  unreferenced version and delete marker or keep them durably quarantined and
+  charged.
+- Before restore or deletion unbinds an archive, sync a retirement intent for
+  its exact key and version. Reconcile lifecycle state first, preserve any
+  still-bound version, and permanently purge a committed retired key before
+  clearing its charge or admitting another archive.
+- Limit the managed archive prefix to 25 unique keys, 25 total data versions or
+  delete markers, and 3,000 MiB across all data versions. Reserve one key, one
+  version, and 120 MiB before upload; charge bound, constructing, retiring,
+  quarantined, and unknown objects until exact version listing proves absence.
+- Serialize export and archive construction globally; enforce one snapshot,
+  one unacknowledged result, a 256-MiB/5,120-inode spool, a 120-MiB output cap,
+  the host free-space reserve, and bounded acknowledgement/expiry cleanup.
+- Wrap portable exports in the versioned `lowerduckpond-export-v1/` envelope,
+  with fixed metadata paths and all tenant-controlled files below `content/`.
+- Import a caller-held portable export only into an existing `undeployed` target.
+  Preserve the target's root-owned identity, canonical origin, slug, runtime,
+  and quotas; create a new deployment and treat every embedded source-manifest
+  field as untrusted provenance rather than target state.
+- Give portable import and restore a separate raw-envelope budget of 5,004
+  records, 1,056-byte file names or 1,057-byte directory names including their
+  marker, 34 components, and 106 MiB of member data. Strip the marker and fixed
+  prefix before reapplying unchanged tenant-tree quotas so boundary-valid
+  exports remain importable and bound archives remain restorable.
+- Canonicalize every portable ZIP field and use stored entries so the same
+  export snapshot has byte-identical output and a reproducible archive digest.
+- Store versioned SHA-256 evidence for canonical manifest bytes and a
+  length-delimited, type-tagged, path-sorted release tree; keep uploaded artifact
+  and complete portable-bundle byte digests distinct.
 - Reconcile actual host state against all desired manifests.
+- Permit the provisioner to preflight and execute an already authorized job
+  without granting authority to originate or alter state changes or access to
+  desired state, observed state, audit history, or export payloads.
+- Cap raw operation requests at 32 KiB and raw manifests at 64 KiB before any
+  parser or correlation lookup, decode under fixed process limits, and retain
+  the 16-KiB canonical request, result, and manifest ceilings for every retry.
+- Bound indirect root-owned growth to 25 tenants, 10 GiB/500,000 release inodes,
+  10,000/64-MiB shared authorization/correlation records, 128 MiB of
+  hash-chained ordinary audit, and 60 issuer-created IDs/hour; fail closed and
+  rotate audit only after a restore-verified, durably indexed
+  `lowerduckpond-audit-archive` Restic snapshot is protected from ordinary
+  retention and prune.
 
 ### End-to-end tests
 
+- Create an undeployed tenant and verify that it persists without a release or
+  public routes.
 - Provision a tenant and observe a valid HTTPS response.
 - Deploy a replacement and verify atomic cutover.
 - Roll back to the previous release.
 - Reject traversal paths and escaping symlinks.
+- Reject hostile links, special entries, collisions, and archive expansion.
+- Exhaust the provisioner's private workspace by bytes and by inodes and prove
+  the limits cannot consume the host filesystem or leave persistent entries
+  after a service restart.
+- Overflow, interrupt, stall, and race root-owned intake transfers and prove
+  their streaming limits, single slot, free-space reserve, and cleanup prevent
+  accumulated artifacts before activation.
+- Forge and alter every authorization-job field, replace its artifact, drift
+  target state, replay its correlation, and invoke the provisioner sudo entry
+  with raw operations or unknown IDs; prove only the exact root-owned job can
+  claim capacity or mutate state and the worker cannot read export results.
+- Execute an authorized archive, then prove its job, correlation, and evidence
+  cannot be transformed into deletion. Only a separately authenticated delete
+  job bound to the resulting archived state may remove the tenant.
 - Suspend and restore without data loss.
+- Export active, suspended, and archived tenants, import each bundle into a separately
+  created undeployed tenant, and prove content round-trips while target
+  identity, origin, slug, quotas, and a new deployment remain authoritative.
+- Delete a never-deployed reservation normally, then prove that deployed or
+  ambiguous history cannot use the archive-free transition.
+- Prove the production storage policy cannot expire a current archive bundle
+  while authoritative archived tenant state still binds it.
+- Delay a rollback across suspension and prove it cannot republish the tenant;
+  only resume may leave the suspended state.
+- Repeatedly deploy and roll back while suspended and prove retention remains at
+  the selected release plus two predecessors without publishing a route or
+  deleting an export- or intent-pinned release.
 - Rename a slug while preserving the tenant identity.
+- Assign the released slug to another tenant and prove its alias points to a
+  different canonical origin while no tenant bytes, path, query, cookie, or
+  service worker are exposed at the alias.
+- Change or remove the configured and persisted tenant-origin suffix across
+  convergence, startup, reconciliation, backup restore, and an empty-live-tenant
+  state; prove every mismatch fails closed and no canonical route changes.
 - Run the same provisioning job twice and prove convergence.
+- Race creates and rename against the same slug and prove exactly one operation
+  can commit it.
+- Recover the preceding publication after interrupted activation or reload
+  failure.
+- Serialize activation with backup and reconcile a restored state snapshot.
+- Rotate a closed audit segment, age ordinary 7/5/12 snapshots through
+  forget/prune, and prove the protected tagged snapshot and complete audit chain
+  remain discoverable and restore-verifiable.
+- Overlap export capture with lifecycle mutations and release garbage
+  collection and prove each bundle describes one complete generation.
+- Interrupt archive construction around every local-intent, remote-upload, and
+  lifecycle-commit boundary and prove recovery preserves a bound object or
+  version-purges/quarantines the one discoverable unreferenced object before
+  retry, without treating a delete marker as reclaimed storage. Assert the
+  archive writer issues only one bounded `PutObject` and leaves no incomplete
+  multipart upload at any interruption point.
+- Interrupt archive-retiring restore and deletion around every journal,
+  lifecycle, audit, version-purge, confirmation, and cleanup-commit boundary;
+  prove a bound version survives and a committed retired version cannot
+  accumulate or release its remote charge early.
+- Fill remote archive key, version/marker, and aggregate-byte accounting at and
+  beyond each limit, including unknown and noncurrent versions, then prove
+  reservation, restart, and repeated restore/re-archive cannot exceed it.
 
 ### Exit criteria
 
-An administrator can create, deploy, suspend, restore, export, and delete a static site without manually editing the host.
+An administrator can create, deploy, suspend, export, import, restore, and delete a static site without manually editing the host.
+Every externally requested operation executes from an immutable authenticated
+job; the provisioner cannot originate or transform lifecycle authority or read
+an export payload.
 
-## 7. Milestone 4: control plane and lifecycle automation
+## 7. Milestone 4: control plane and lifecycle automation — planned
 
 ### Minimum domain model
 
@@ -309,7 +603,13 @@ An administrator can create, deploy, suspend, restore, export, and delete a stat
 
 ### Lifecycle scheduler
 
-The scheduler should calculate desired transitions and enqueue jobs; it should not directly delete files or databases. Notifications and grace periods are first-class records so retries cannot accidentally send repeated notices or skip required stages.
+The authenticated control plane should calculate desired transitions and issue
+immutable authorization envelopes; the scheduler enqueues their opaque job IDs
+and the provisioner executes them. Neither scheduler nor provisioner should
+directly delete files or databases or change a job's actor, operation, target,
+request, artifact, or expected source state. Notifications and grace periods
+are first-class records so retries cannot accidentally send repeated notices
+or skip required stages.
 
 Suggested configurable defaults for the pilot:
 
@@ -323,7 +623,7 @@ Suggested configurable defaults for the pilot:
 
 The complete static-site lifecycle operates through the control plane, produces an audit history, and can recover cleanly from duplicated or interrupted jobs.
 
-## 8. Milestone 5: backup, observability, and operations
+## 8. Milestone 5: backup, observability, and operations — planned
 
 ### Backup implementation
 
@@ -370,7 +670,7 @@ The complete static-site lifecycle operates through the control plane, produces 
 
 An operator can detect a failed service, identify the affected tenant or subsystem, restore a test tenant from backup, and follow a documented recovery procedure.
 
-## 9. Milestone 6: dynamic PHP pilot
+## 9. Milestone 6: dynamic PHP pilot — planned
 
 Do not expose PHP publicly until the static platform and recovery path are working.
 
@@ -426,7 +726,7 @@ Run destructive isolation tests on an ephemeral test Droplet rather than the pro
 
 A small approved cohort can run PHP with tenant-scoped SQL, measured quotas, clean suspension/export behavior, and passing cross-tenant isolation tests.
 
-## 10. Milestone 7: first customer and community pilot
+## 10. Milestone 7: first customer and community pilot — planned
 
 Build `lowerduckpond.com` in its separate repository and deploy it through the ordinary tenant interface. It should exercise:
 
@@ -467,7 +767,8 @@ This project is unusually well suited to demonstrating quality architecture rath
 - **Unit tests:** lifecycle policy, slug rules, quota calculations, manifest generation, notification deduplication, and job convergence.
 - **Integration tests:** control plane, queue, provisioner, database allocation, Caddy generation, and backup adapter.
 - **Isolation tests:** hostile tenant attempts against filesystem, network, process, SQL, metadata, and resource boundaries.
-- **End-to-end tests:** signup through HTTPS deployment, renewal, suspension, export, restore, and cancellation.
+- **End-to-end tests:** signup through HTTPS deployment, renewal, suspension,
+  export, portable import, restore, and cancellation.
 - **Recovery tests:** recreate a host and restore one tenant and the platform control data.
 
 ### Ephemeral environment strategy
@@ -483,30 +784,22 @@ Provide a manually triggered or scheduled workflow that:
 
 Add a maximum-age cleanup job for tagged test resources so an interrupted CI run cannot leave them indefinitely billable.
 
-## 13. Suggested first three pull requests
+## 13. Delivered foundation pull requests
 
-### PR 1: repository skeleton and contracts
+The original three-pull-request implementation sketch evolved during review
+into eight focused pull requests:
 
-- Documentation, license, contribution and security files.
-- Tool pinning and common developer commands.
-- Minimal independently packaged control-plane and provisioner entry points.
-- CI for Markdown, schemas, secrets, OpenTofu, and Ansible.
+- [PR #1: repository skeleton and contracts](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/1)
+- [PR #2: single-host infrastructure](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/2)
+- [PR #3: rebuild-drill guardrails](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/3)
+- [PR #4: project-membership plan policy](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/4)
+- [PR #5: configured static host](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/5)
+- [PR #6: standalone production acceptance](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/6)
+- [PR #7: unambiguous backup convergence output](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/7)
+- [PR #8: static systemd unit verification](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/8)
 
-### PR 2: single-host infrastructure
-
-- DigitalOcean and Cloudflare OpenTofu modules.
-- Production environment inputs with secret-free examples.
-- Remote-state bootstrap documentation.
-- Plan assertions and deployment workflow with protected, serialized apply.
-
-### PR 3: configured static host
-
-- Minimal cloud-init.
-- Ansible roles for base, Caddy, static tenant directories, backup, and monitoring.
-- A fixture tenant served at a test subdomain.
-- Host acceptance and idempotence tests.
-
-After those three pull requests, the project has a reproducible foundation and a working vertical slice without yet accepting untrusted runtime code.
+Together they provide a reproducible foundation and a working empty-host
+vertical slice without yet accepting tenant content or untrusted runtime code.
 
 ## 14. Definition of initial public launch
 
@@ -515,7 +808,8 @@ The first public release is ready when:
 - Infrastructure and host configuration can rebuild the service from scratch.
 - Wildcard HTTPS renews automatically.
 - Signup and approval create a static tenant without manual server edits.
-- Deploy, rollback, suspend, export, archive, restore, and delete are idempotent.
+- Deploy, rollback, suspend, export, import, archive, restore, and delete are
+  idempotent.
 - Quotas and audit events are visible.
 - Encrypted off-host backups and a restore test are current.
 - `lowerduckpond.com` is deployed as an ordinary tenant.

@@ -119,6 +119,14 @@ The current retention policy keeps 7 daily, 5 weekly, and 12 monthly scheduled
 snapshots. A change to any of those counts invalidates the prior maintenance
 evidence and causes convergence to apply the new policy immediately.
 
+Milestone 3 audit rotation adds root-created snapshots tagged
+`lowerduckpond-audit-archive`. Those snapshots are not members of the ordinary
+7/5/12 retention sets and must be preserved by `forget` and `prune` until a
+later explicit audit-retention policy authorizes their removal. Rotation may
+delete a local audit segment only after restoring and verifying its protected
+snapshot and durably indexing that snapshot; backup maintenance and recovery
+must enumerate and verify the protected archive chain.
+
 The root-only backup environment is activated with one atomic rename and carries
 the repository, node name, retention policy, credentials, and separate backup
 and maintenance status fingerprints together. A scheduled job therefore sees

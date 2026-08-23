@@ -5,10 +5,11 @@ the `r/HaveWeMet` role-playing community. It is intended for small, handmade
 sites belonging to fictional residents, businesses, clubs, campaigns, and civic
 departments.
 
-The project is currently **pre-alpha**. Milestone 2 adds reproducible Ubuntu
-host configuration, an HTTPS readiness fixture, rootless Podman and MariaDB
-foundations, encrypted scheduled backups, and host acceptance tests. Tenant
-provisioning begins in Milestone 3.
+The project is currently **pre-alpha**. Milestones 0–2 are complete: the
+repository and DigitalOcean foundation are reproducible, and the production
+Ubuntu host passes idempotence, HTTPS, backup, restore, and reboot acceptance
+checks. Milestone 3, the static tenant MVP, is the current implementation
+target.
 
 ## Start here
 
@@ -28,6 +29,8 @@ reporting failure; rerun the command after reviewing those changes.
 - [`docs/roadmap.md`](docs/roadmap.md) defines the implementation milestones and
   exit criteria.
 - [`docs/adr/`](docs/adr/) records accepted architecture decisions.
+- [`docs/threat-model/`](docs/threat-model/) records attacker assumptions,
+  security invariants, and required security evidence.
 - `services/control-plane/` contains the public FastAPI application boundary.
 - `services/provisioner/` contains the separately executable provisioner
   boundary.
