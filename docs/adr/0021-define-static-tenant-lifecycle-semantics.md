@@ -18,14 +18,15 @@ successful deploy installs an immutable release and moves it to `active`;
 creation and deployment remain independently idempotent operations.
 
 Retain the selected deployment's immutable release and its two immediately
-preceding releases in tenant deployment chronology. Every successful deploy or
-rollback triggers garbage collection only after its lifecycle transaction is
-durably committed. For an active tenant that means the selected route is
-serving and desired and observed state agree. For a suspended tenant it means
-the remembered deployment is committed while desired and observed state still
-prove both routes absent. Cleanup takes exclusive tenant-state, preserves any
-release pinned by an export snapshot or transaction intent, and runs during
-startup reconciliation as well as after either kind of successful commit.
+preceding releases in tenant deployment chronology. Every successful deploy,
+rollback, or restore triggers garbage collection only after its lifecycle
+transaction is durably committed. For an active tenant that means the selected
+route is serving and desired and observed state agree. For a suspended tenant
+it means the remembered deployment is committed while desired and observed
+state still prove both routes absent. Cleanup takes exclusive tenant-state,
+preserves any release pinned by an export snapshot or transaction intent, and
+runs during startup reconciliation as well as after each kind of successful
+commit.
 
 Suspension removes both the canonical content route and platform slug alias and
 therefore returns the same generic response as an unknown hostname; it
@@ -78,7 +79,11 @@ creates a new deployment while preserving the tenant ID; it does not mutate a
 historical release. Before restore commits active state and makes that record
 unreferenced, it durably journals the exact object in the retirement protocol
 defined by ADR 0019 and retains the export lock until cleanup succeeds or
-archive admission is durably closed.
+archive admission is durably closed. After the restored active manifest,
+observed state, routes, and audit event commit, restore applies the same
+selected-release-plus-two-predecessors local garbage collection as deploy and
+rollback. Interrupted local cleanup is replayed by reconciliation and preserves
+every release still pinned by an export or intent.
 
 After the bundle is durable, archive acquires publication and exclusive
 tenant-state in the global order and proves the captured source manifest,

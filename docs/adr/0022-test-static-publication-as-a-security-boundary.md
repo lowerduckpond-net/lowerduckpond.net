@@ -183,6 +183,12 @@ remembered deployment triggers the same three-release cleanup without
 publishing either route. Cleanup must preserve releases pinned by an export or
 intent, recover after interruption, and remove them once the pin clears without
 letting one tenant consume the host-wide release allowance.
+They also repeat archive and restore beyond the retention window, interrupt
+cleanup after every removal and directory-sync boundary, and prove each
+successful restore retains only its selected release and two deployment
+predecessors. Export, lifecycle, and retirement pins survive; once cleared,
+startup reconciliation removes every superseded release without republishing a
+route or disturbing the restored deployment.
 They also race two creates, and a create against a rename, for the same slug and
 prove that exactly one root-owned state transaction can commit the name.
 Table-driven tests cover every lifecycle operation against every absent,

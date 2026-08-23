@@ -371,8 +371,9 @@ Implement idempotent commands or jobs for:
 - Atomically activate one complete Caddy runtime generation whose manifest binds
   its binary, environment, full configuration, and immutable tenant releases.
 - Retain the selected active or suspended remembered release and its two
-  preceding releases; run post-commit and reconciliation cleanup in both states
-  while preserving export- and intent-pinned releases.
+  preceding releases; run post-commit cleanup after deploy, rollback, and
+  restore and repeat it during reconciliation while preserving export- and
+  intent-pinned releases.
 - Generate allowlisted canonical content routes and platform-only slug redirect
   routes without accepting Caddy text or a redirect target.
 - Enforce the exact bare-root, non-cached, no-referrer alias contract and omit
