@@ -74,6 +74,30 @@ executable, set-ID, and other archive-supplied permission semantics. Extract
 only into a new root-owned non-public temporary directory and fail closed if
 actual bytes or entry counts diverge from preflight metadata.
 
+Every deployment and archive record represents release content with a
+`lowerduckpond-release-tree-v1` digest record containing `algorithm: sha256` and
+a 64-character lowercase hexadecimal value. Compute SHA-256 over this exact
+binary stream:
+
+1. ASCII `lowerduckpond-release-tree-v1` followed by one zero byte.
+2. The number of tree entries as one unsigned 32-bit big-endian integer.
+3. One record for every normalized non-root directory and regular file, sorted
+   by its normalized relative UTF-8 path bytes:
+   - a directory is byte `0x44`, the path-byte length as unsigned 32-bit
+     big-endian, then the path bytes;
+   - a regular file is byte `0x46`, the same length-prefixed path, its content
+     length as unsigned 64-bit big-endian, then exactly its content bytes.
+
+Paths use NFC and `/`, with no leading or trailing separator. Include every
+materialized parent and empty directory, regardless of whether it was explicit
+or implicit in the source ZIP. Do not include the root, modes, ownership,
+timestamps, inode numbers, ZIP metadata, or filesystem iteration order; modes
+and allowed types are already normalized. The SHA-256 of the exact admitted ZIP
+snapshot remains the separately named artifact digest. A portable-bundle digest
+is SHA-256 of its complete canonical ZIP bytes. Every producer and verifier
+stores the format and algorithm with the value and must continue using v1 for
+old evidence after an implementation upgrade.
+
 Run each privileged archive parse and extraction in a dedicated constrained
 service process whose limits are active before it reads ZIP metadata: initially
 `MemoryMax=256M`, `MemorySwapMax=0`, `TasksMax=32`, `LimitNOFILE=1024`,

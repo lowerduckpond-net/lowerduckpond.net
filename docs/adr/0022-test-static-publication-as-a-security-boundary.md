@@ -245,6 +245,14 @@ bytes from the same snapshot. The fixture parser also compares every fixed
 numeric local-header, central-directory, and end-record field rather than
 relying only on successful extraction.
 
+Digest fixtures assert every byte of the manifest-v1 and release-tree-v1 domain
+separators, big-endian lengths, type tags, entry count, normalized path order,
+and file content. They distinguish path/content concatenation collisions,
+include empty and implicit directories, vary creation order and discarded
+filesystem metadata, and cover zero and maximum lengths and counts. Golden
+values must survive process and activator upgrades; an unknown format or
+algorithm fails closed rather than being recomputed with current defaults.
+
 Lifecycle tests delete a never-deployed reservation through the ordinary
 audited path, then prove that any deployment record or ambiguous history makes
 the same archive-free operation fail closed without requiring or exposing the

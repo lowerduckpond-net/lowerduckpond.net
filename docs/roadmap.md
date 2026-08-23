@@ -432,6 +432,9 @@ Implement idempotent commands or jobs for:
   with fixed metadata paths and all tenant-controlled files below `content/`.
 - Canonicalize every portable ZIP field and use stored entries so the same
   export snapshot has byte-identical output and a reproducible archive digest.
+- Store versioned SHA-256 evidence for canonical manifest bytes and a
+  length-delimited, type-tagged, path-sorted release tree; keep uploaded artifact
+  and complete portable-bundle byte digests distinct.
 - Reconcile actual host state against all desired manifests.
 - Permit the provisioner to request validated state changes without granting it
   write access to desired state, observed state, or audit history.

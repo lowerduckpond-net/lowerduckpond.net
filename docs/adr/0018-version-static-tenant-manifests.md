@@ -22,6 +22,17 @@ common loaders silently retain one duplicate value. Reject unknown fields so
 misspellings do not silently weaken policy. The resulting canonical JSON must
 fit the 16-KiB manifest ceiling.
 
+Persisted canonical JSON uses RFC 8785 UTF-8 bytes without a byte-order mark and
+with exactly one trailing LF; the 16-KiB ceiling includes that LF. Every stored
+manifest digest is a versioned record with `format` equal to
+`lowerduckpond-manifest-v1`, `algorithm` equal to `sha256`, and a 64-character
+lowercase hexadecimal `value`. Its SHA-256 input is the ASCII domain separator
+`lowerduckpond-manifest-v1` followed by one zero byte, the canonical byte length
+as one unsigned 32-bit big-endian integer, and exactly those canonical bytes.
+Producers, compare-and-swap checks, archives, and restore verifiers use this
+same representation; a later format creates a new identifier rather than
+reinterpreting an existing digest.
+
 The root activator generates UUIDv7 values for immutable tenant and deployment
 IDs; a `create` caller cannot select a tenant ID. Restrict slugs to 1–63 ASCII
 bytes matching

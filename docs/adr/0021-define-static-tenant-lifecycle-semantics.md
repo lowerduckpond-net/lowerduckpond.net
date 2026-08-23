@@ -53,10 +53,12 @@ The snapshot retains the active or suspended source manifest separately for
 final compare-and-swap revalidation; the bundle's `manifest.json` is always the
 proposed archived manifest, not that source manifest.
 Its root-owned archive record binds the tenant ID, selected deployment ID and
-content digest, canonical archived-manifest digest, portable-bundle digest and
-size, and durable bucket, key, and Spaces version ID. Restore validates that
-exact version and creates a new deployment while preserving the tenant ID; it
-does not mutate a historical release.
+versioned `lowerduckpond-release-tree-v1` content digest, versioned
+`lowerduckpond-manifest-v1` canonical archived-manifest digest, exact-byte
+portable-bundle SHA-256 and size, and durable bucket, key, and Spaces version
+ID. Restore recomputes those representations from that exact version and
+creates a new deployment while preserving the tenant ID; it does not mutate a
+historical release.
 
 After the bundle is durable, archive acquires publication and exclusive
 tenant-state in the global order and proves the captured source manifest,

@@ -17,7 +17,9 @@ Install static releases below
 `/srv/lowerduckpond/sites/<tenant-id>/releases/<deployment-id>/`. The root
 activator revalidates and extracts the accepted archive into a new root-owned
 temporary release, normalizes its attributes, and makes the final release
-immutable to both the provisioner and Caddy. Caddy receives read-only access.
+immutable to both the provisioner and Caddy. It records the versioned canonical
+release-tree digest defined by ADR 0019; the admitted ZIP-byte SHA-256 remains a
+separate artifact digest. Caddy receives read-only access.
 
 Generate complete, immutable, root-owned Caddy runtime generations below
 `/etc/caddy/generations/<generation-id>/`. Each generation contains a manifest
