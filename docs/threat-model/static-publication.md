@@ -1,9 +1,9 @@
 # Static-publication threat model
 
 - Status: accepted Milestone 3 baseline
-- Date: 2026-08-22
+- Date: 2026-08-23
 - Related decisions: [ADR 0016](../adr/0016-model-static-publication-threats.md)
-  and [ADR 0023](../adr/0023-separate-reusable-slugs-from-tenant-origins.md)
+  through [ADR 0027](../adr/0027-gate-production-static-publication.md)
 
 ## Scope
 
@@ -51,8 +51,8 @@ features require their own threat-model extensions before activation.
   manifests, immutable releases, canonical-origin and alias routes, archives,
   and audit history.
 - Other tenants' content and future credentials.
-- Restic password, Spaces credentials, repository contents, and backup health
-  evidence.
+- Restic password, mutually isolated backup and archive Spaces credentials,
+  repository contents, archive versions, and backup health evidence.
 - Host availability, disk and inode capacity, and the integrity of Caddy and
   backup services.
 
@@ -63,7 +63,7 @@ features require their own threat-model extensions before activation.
 | Anonymous visitor | Untrusted; controls requests, hostnames, paths, and request volume. |
 | Archive author | Untrusted; controls every ZIP byte and filename. |
 | Unprivileged provisioner | Potentially compromised; may preflight and execute an already authorized root-owned job but cannot originate or alter an operation, choose host paths, or read tenant exports. |
-| Trusted-workstation client | Authenticated operator transport and Milestone 3 job issuer; trusted to authorize operations, not to bypass root validation. |
+| Trusted-workstation client and `ldp-operator` key | Authenticated, forced-command operator transport and Milestone 3 job issuer; trusted to authorize operations, not to bypass root validation. Separate from the `ldp-admin` host-administration identity. |
 | Root activator | Trusted computing base; narrowly implements validation, release, route, lock, and recovery contracts. |
 | Ansible Caddy transaction | Trusted host-configuration path; stages candidates and shares the publication lock, but is not callable through provisioner sudo. |
 | Caddy | Trusted edge process with read-only tenant content and no provisioner-writable configuration. |
@@ -131,7 +131,7 @@ record.
 | ZIP bomb, decoder allocation, oversized or overlapping metadata, deep paths, implicit-directory inflation, disk or inode exhaustion | Structurally gate end, directory, extra-field, offset, region, path-byte, component, and depth bounds before a decoder; count each materialized explicit or implicit directory once; allow only stored and Deflate deployment methods; require matching local and central headers; and constrain the privileged parser by memory, swap, task, descriptor, CPU, and runtime limits. Give portable import and restore a bounded raw-envelope allowance, then strip its fixed prefix and enforce the unchanged tenant-tree limits. Enforce compressed, expanded, per-file, total-entry, and ratio limits during streaming extraction and delete failed staging trees. Remove persistent provisioner-writable storage, hard-cap its private ephemeral workspace by aggregate bytes and inodes, bound root snapshots and cleanup, and preserve a host free-space reserve. |
 | Duplicate, Unicode, slash, backslash, case, or export-encoding ambiguity | Retain pre-normalization spelling and provenance. Coalesce only an exactly matching explicit directory and implied parent; reject duplicate explicit records, file/directory conflicts, and distinct spellings that collide after NFC normalization or case folding. Generate manifests canonically and define every portable ZIP byte: JSON, checksums, member order, stored encoding, timestamps, flags, modes, metadata, central directory, and archive digest. |
 | Duplicate YAML mapping keys | Reject duplicates during YAML composition, before schema validation or canonical JSON generation can discard the ambiguity. |
-| Platform or cross-tenant cookie poisoning | Serve tenant content only from immutable UUID-derived hostnames that are distinct registrable domains according to supported browser Public Suffix List behavior. Keep `lowerduckpond.net` responses platform-controlled and platform authentication cookies host-only. |
+| Platform or cross-tenant cookie poisoning | Seek Private PSL admission for `lowerduckpond.net` and gate publication on acceptance plus supported-browser tests proving its immediate children are distinct sites. If the small project is ineligible, declined, removed, or not propagated, require a replacement isolation ADR rather than falling back to ordinary siblings. Serve tenant content only from immutable UUID-derived children, reserve `secure` and `hosting`, keep apex and alias responses platform-controlled, and use only host-bound `__Host-` authentication cookies plus Origin/CSRF checks. |
 | Slug reassignment transfers persistent browser state | Treat the slug hostname only as a platform alias. Redirect its exact bare root without caching, referrer, cookie, path, query, tenant body, tenant header, or caller-selected target to the immutable tenant origin. Never reassign a tenant ID or canonical hostname; release only the slug mapping. |
 | Alias becomes a confused deputy, secret sink, or stale content URL | Generate its destination solely from root-owned tenant ID and suffix, redirect only active tenants, reject every non-root path, query, and unsupported method without forwarding, apply `Cache-Control: no-store` to every redirect and generic failure so lifecycle changes cannot leave a cached positive or negative result, discard sensitive alias request fields before logging, and test that uploaded bytes and service workers are unreachable at the alias. |
 | Mutation after validation | Root performs final extraction; active releases and complete Caddy generations are root-owned and immutable to Caddy and the provisioner. |
@@ -157,6 +157,8 @@ record.
 | Concurrent exports exhaust privileged storage | Serialize export and archive construction behind one root-owned host lock; enforce one snapshot, one unacknowledged result, aggregate spool byte/inode ceilings, an encoded-output ceiling, a host free-space reserve, and root-owned terminal, startup, acknowledgement, and expiry cleanup. |
 | Crash or abort during archive upload leaves an unaccounted version or incomplete multipart parts | Sync a construction intent containing a unique key before upload, send the bounded completed bundle through one known-length `PutObject` with multipart and high-level transfer APIs prohibited, and bind its returned version ID afterward. Reconcile any associated lifecycle intent. Preserve only an exactly bound version; otherwise permanently delete every version and marker for the key and confirm absence, or keep quarantine charged and archive admission closed. The lifecycle abort rule is defense in depth, not accounting. |
 | Repeated restore, re-archive, or deletion accumulates successfully retired bundles | Before a transition unbinds an archive, sync a retirement intent for its exact object and hold the global export lock. Reconcile lifecycle state before cleanup, never delete a still-bound version, and permanently purge and confirm every version and marker after committed unbinding. Charge bound, constructing, retiring, quarantined, and unknown objects against hard aggregate remote key, version/marker, and byte ceilings; failed cleanup closes archive admission. |
+| Archive operations or credentials damage platform backups | Put tenant archives in a separate versioned Space with a dedicated bucket-only credential and no age expiration. Keep the Restic and archive credentials mutually unable to access the other's bucket; expose the archive credential only to the root archive boundary. |
+| Partial Milestone 3 rollout publishes through an incomplete boundary | Default `static_publication_enabled` to false, reject all tenant jobs and tenant-bearing Caddy candidates while disabled, require the full disposable-host and production preflight gates, and record the explicit first enablement before the synthetic canary. |
 | Portable import reclaims a tenant identity or bypasses slug and quota policy | Permit import only into an existing `undeployed` target selected by root-owned tenant ID. Validate the bundle and source manifest as untrusted provenance, then under publication and exclusive tenant-state re-read current target state, recheck measured content against current quotas, and derive the active manifest only from current authoritative identity, origin, slug, runtime, quotas, and a new root-generated deployment. Require ordinary `create` to resolve slug allocation first; use full-platform backup restore, not import, to preserve a lost identity. |
 | Unsafe or implementation-dependent archive, restore, or deletion evidence | Put the proposed archived manifest—not its active or suspended source—in the durable bundle and bind the archive record to versioned canonical-manifest and length-delimited release-tree digests, the desired deployment, exact bundle bytes, and stored object version. Recompute the specified representations before archive commit and delete; restore as a new deployment. Permit ordinary archive-free deletion only when root-owned history proves the tenant was never deployed, and keep emergency deletion behind a distinct root-only operator command that the provisioner cannot invoke. |
 | Oversized, stalled, or abandoned intake transfer exhausts disk | Admit exactly one root-owned artifact, enforce the operation-specific byte ceiling plus aggregate allocation and host-free-space bounds while streaming, bound idle and total transfer time, publish only after sync, and clean every terminal or startup artifact before reopening admission. |
@@ -194,12 +196,14 @@ Implementation and review must preserve these invariants:
 9. Authoritative manifests, observed state, deployment and archive records, and
    audit history are root-owned and writable only through narrow validated or
    append-only operations.
-10. No tenant-controlled response is served from `lowerduckpond.net` or a
-    hostname sharing a registrable domain with the platform or another tenant.
-    A slug alias returns only the fixed root-generated redirect contract in ADR
-    0023 and holds no tenant or authentication state. Its HTTP listener applies
-    the alias allowlist before general HTTPS upgrades and never forwards a
-    rejected path or query.
+10. No tenant-controlled response is served from the exact
+    `lowerduckpond.net` apex, a reusable slug alias, or a hostname sharing a
+    registrable domain with the platform or another tenant. Supported-browser
+    tests must recognize the Private PSL boundary before publication. A slug
+    alias returns only the fixed root-generated redirect contract in ADR 0023
+    and holds no tenant or authentication state. Its HTTP listener applies the
+    alias allowlist before general HTTPS upgrades and never forwards a rejected
+    path or query.
 11. A rollback cannot transition a tenant out of `suspended`; only `resume` may
     restore its public routes.
 12. No active reference is durably selected before its immutable release and

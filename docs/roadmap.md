@@ -4,7 +4,7 @@ This roadmap turns the architecture in [`architecture.md`](architecture.md) into
 
 ## Progress
 
-Status as of 2026-08-22:
+Status as of 2026-08-23:
 
 | Milestone | Status | Outcome |
 | --- | --- | --- |
@@ -193,7 +193,9 @@ and off-host state and backup buckets. Follow-up
 [PR #3](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/3) and
 [PR #4](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/4)
 incorporated the drill and project-membership review findings into the durable
-plan policy.
+plan policy. Milestone 1 delivered one Space for the then-combined backup and
+archive design; ADR 0025 adds a separate archive Space in Milestone 3 and leaves
+the existing resource dedicated to Restic.
 
 ## 5. Milestone 2: reproducible host configuration — complete
 
@@ -289,6 +291,14 @@ accepted decisions, in dependency order:
 6. [Define static tenant lifecycle semantics](adr/0021-define-static-tenant-lifecycle-semantics.md).
 7. [Separate reusable slugs from immutable tenant origins](adr/0023-separate-reusable-slugs-from-tenant-origins.md).
 8. [Test static publication as a security boundary](adr/0022-test-static-publication-as-a-security-boundary.md).
+9. [Use lowerduckpond.net as the tenant public suffix](adr/0024-use-lowerduckpond-net-as-the-tenant-public-suffix.md).
+10. [Separate tenant archives from platform backups](adr/0025-separate-tenant-archives-from-platform-backups.md).
+11. [Separate static operation from host administration](adr/0026-separate-static-operation-from-host-administration.md).
+12. [Gate production static publication](adr/0027-gate-production-static-publication.md).
+
+The reviewable implementation sequence, file ownership, phase gates, rollout
+evidence, risks, and dangerous assumptions are maintained in the
+[Milestone 3 implementation plan](plans/milestone-3.md).
 
 ### Tenant manifest v1
 
@@ -301,7 +311,7 @@ kind: Site
 metadata:
   id: 0191e2c4-8f7a-7c3b-8d1e-5f62047a2100
   slug: duck-repair
-  canonicalOrigin: t-0191e2c48f7a7c3b8d1e5f62047a2100.example
+  canonicalOrigin: t-0191e2c48f7a7c3b8d1e5f62047a2100.lowerduckpond.net
 spec:
   runtime: static
   desiredState: active
@@ -315,20 +325,20 @@ spec:
 
 The root activator generates the stable UUIDv7 tenant ID during `create`; a
 caller cannot select it. Tenant content is served at
-`t-<tenant-uuid-without-hyphens>.<tenant-origin-suffix>`, where the
-operator-owned namespace makes each canonical hostname a distinct registrable
-domain according to supported browsers. A reusable `<slug>.lowerduckpond.net`
+`t-<tenant-uuid-without-hyphens>.lowerduckpond.net`; the accepted Private PSL
+entry makes each canonical hostname a distinct registrable domain according to
+supported browsers. A reusable `<slug>.lowerduckpond.net`
 platform alias redirects only its bare root to that canonical origin and never
 serves tenant-controlled content. Arbitrary and custom domains are not accepted
-in this version. Selecting and provisioning the origin-isolated tenant
-namespace is required before the production canary. A versioned root-owned
-platform record pins its suffix before the first tenant is created, and each
-root-generated manifest stores the complete origin. Convergence and
-reconciliation fail closed unless configuration, the platform record, and the
-rederived manifest origin agree. The tenant ID and canonical origin do not
-change when a public slug changes. Desired manifests are stored as canonical
-JSON, while observed activation state and immutable deployment records remain
-separate.
+in this version. Upstream PSL acceptance, supported-browser recognition, and
+wildcard ACME qualification are required before the production canary. A
+versioned root-owned platform record pins the suffix before the first tenant is
+created, and each root-generated manifest stores the complete origin.
+Convergence and reconciliation fail closed unless configuration, the platform
+record, and the rederived manifest origin agree. The tenant ID and canonical
+origin do not change when a public slug changes. Desired manifests are stored
+as canonical JSON, while observed activation state and immutable deployment
+records remain separate.
 
 ### Operator and provisioner behavior
 
@@ -342,7 +352,9 @@ Implement idempotent commands or jobs for:
 - Remove the provisioner's persistent writable home and job directory; place
   its temporary work in a private service workspace hard-capped at 64 MiB and
   4,096 inodes while root owns intake, job records, and activation staging.
-- Make the trusted SSH adapter the Milestone 3 authorization issuer. Commit a
+- Create a dedicated-key, forced-command `ldp-operator` SSH account for routine
+  lifecycle commands while retaining `ldp-admin` for Ansible and emergency host
+  administration. Make its adapter the Milestone 3 authorization issuer. Commit a
   root-owned immutable job binding the SSH-authenticated operator, operation,
   target, correlation and canonical request, artifact or absence, and expected
   source state before allowing execution.
@@ -433,8 +445,9 @@ Implement idempotent commands or jobs for:
 - For archive, retain the active or suspended source manifest only for final
   compare-and-swap and put the separately derived proposed archived manifest in
   the durable bundle, with its digest bound by the archive record.
-- Before enabling archive operations, remove current-object age expiration from
-  the `archives/` storage prefix. Retain every bundle bound by authoritative
+- Before enabling archive operations, provision a separate private, versioned
+  tenant-archive Space and dedicated credential. Configure no current or
+  noncurrent age expiration. Retain every bundle bound by authoritative
   archived tenant state until a coordinated, audited deletion transition makes
   it unreferenced; Milestone 4 owns retention expiry and scheduled deletion.
 - Persist and sync a construction intent containing the exact unique Spaces key
@@ -486,6 +499,11 @@ Implement idempotent commands or jobs for:
   rotate audit only after a restore-verified, durably indexed
   `lowerduckpond-audit-archive` Restic snapshot is protected from ordinary
   retention and prune.
+- Install all production components with `static_publication_enabled: false`.
+  While disabled, reject tenant jobs before allocation and reject tenant-bearing
+  Caddy candidates. Enable it only after the complete disposable-host suite and
+  production preflight pass, then exercise one synthetic tenant canary through
+  the ordinary audited lifecycle before onboarding a real tenant.
 
 ### End-to-end tests
 
@@ -556,10 +574,19 @@ Implement idempotent commands or jobs for:
 
 ### Exit criteria
 
-An administrator can create, deploy, suspend, export, import, restore, and delete a static site without manually editing the host.
+From the trusted workstation, an administrator can create, deploy, replace,
+roll back, suspend, resume, rename and reuse a slug, export, import into a
+separate tenant, archive, restore, delete, reconcile, back up, and
+disposable-restore a static site without manually editing the host. HTTPS and
+consistent publication survive a reboot.
+
 Every externally requested operation executes from an immutable authenticated
-job; the provisioner cannot originate or transform lifecycle authority or read
-an export payload.
+job issued through the dedicated forced-command operator boundary. The
+provisioner cannot originate or transform lifecycle authority, read
+authoritative tenant state, or read an export payload. The production canary
+passes only after the Private PSL browser boundary, isolated archive Space,
+Caddy/systemd recovery, hostile-archive, durability, backup, and audit gates are
+demonstrated with `static_publication_enabled` deliberately enabled.
 
 ## 7. Milestone 4: control plane and lifecycle automation — planned
 

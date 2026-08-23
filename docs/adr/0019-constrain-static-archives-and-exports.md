@@ -2,6 +2,7 @@
 
 - Status: accepted
 - Date: 2026-08-22
+- Storage placement amended by: [ADR 0025](0025-separate-tenant-archives-from-platform-backups.md)
 
 ## Context
 

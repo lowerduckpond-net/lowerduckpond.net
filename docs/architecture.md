@@ -84,7 +84,9 @@ The initial production environment consists of:
   the roughly 2-vCPU/4-GiB class before tenant onboarding.
 - One reserved IP so the origin address survives Droplet replacement.
 - One Cloud Firewall allowing public HTTP/HTTPS and tightly restricted administration.
-- One Spaces bucket for encrypted backups and archived tenant bundles.
+- One Spaces bucket and bucket-scoped credential for encrypted Restic backups.
+- One separate versioned Spaces bucket and credential for authoritative tenant
+  archive bundles.
 - Optional block storage if tenant content outgrows the root filesystem or hard per-tenant filesystem quotas become necessary.
 - DigitalOcean monitoring for external host-level alerting.
 
@@ -119,7 +121,9 @@ Caddy is the only public web entry point. It:
 - Emits structured access logs tagged with the requested hostname and resolved tenant.
 - Omits raw path, query, cookie, authorization, and referrer values from slug
   alias logs.
-- Serves the provider portal and `lowerduckpond.com` as distinct virtual hosts.
+- Serves the public platform website at `hosting.lowerduckpond.net`, reserves
+  `secure.lowerduckpond.net` for the future same-origin administration UI and
+  API, and serves `lowerduckpond.com` as a distinct virtual host.
 
 The routing configuration is generated from tenant manifests. A bad tenant
 deployment must not be able to replace the entire Caddy configuration. A
@@ -204,8 +208,10 @@ interface when the platform grows.
 The authenticated control plane is the future job authority. It creates an
 immutable envelope binding the actor, operation, tenant, correlation, request,
 artifact, and expected source state; the provisioner receives only its opaque
-job ID and bounded status. Milestone 3 uses the trusted administrative SSH
-adapter as the issuer of the same root-owned envelope. The worker sudo rule can
+job ID and bounded status. Milestone 3 uses a forced-command adapter on the
+dedicated `ldp-operator` SSH account as the issuer of the same root-owned
+envelope. The `ldp-admin` account remains reserved for Ansible and emergency
+host administration. The worker sudo rule can
 execute an issued job but cannot invoke either issuer or submit raw lifecycle
 fields. Archive evidence proves recoverability, not authorization: archive and
 delete require separate actor-authorized jobs.
@@ -228,26 +234,36 @@ Cloudflare API token. Caddy requires a DNS provider module for this flow, so the
 project should build and pin its Caddy image rather than relying on an
 unversioned local binary.
 
-Do not publish tenant-controlled content beneath `lowerduckpond.net`: sibling
-subdomains can set parent-domain cookies that reach the platform and one
-another. A `<slug>.lowerduckpond.net` hostname is therefore only a
-platform-controlled, non-cached redirect from its bare root to the tenant's
-canonical origin. It never serves uploaded content or accepts a tenant-selected
-destination, and its slug may be assigned to another tenant after rename or
-deletion.
+Seek admission of `lowerduckpond.net` to the Private section of the Public
+Suffix List so supported browsers treat every immediate child as a separate
+site. The current guidelines make this contingent: small or experimental
+projects are generally declined, and propagation has no service-level
+deadline. Before Milestone 3 publication, prove that stable Chromium, Firefox,
+and WebKit-derived browsers recognize the accepted boundary and that the
+existing Caddy ACME path still issues and renews the apex and wildcard
+certificates. If admission or propagation fails, a replacement isolation ADR
+is required. Until one complete design passes, `static_publication_enabled`
+remains false and no tenant state or route can be created in production.
 
-Before Milestone 3 publication, provision an operator-owned tenant namespace
-where every `t-<tenant-uuid-without-hyphens>.<tenant-origin-suffix>` canonical
-hostname is a distinct registrable domain under the Public Suffix List behavior
-of supported browsers. This may use a project-controlled private suffix after
-browser recognition or another source of distinct registrable tenant domains.
-A separate shared registrable domain without that boundary protects the
-platform but does not isolate tenants from one another. Tenant IDs and their
-canonical origins are immutable and never reassigned. A backed-up root-owned
-platform record pins the tenant-origin suffix before the first tenant exists,
-and every canonical manifest records the complete derived origin; configuration
-drift or disagreement fails closed. Only friendly slug aliases are mutable and
-recyclable.
+The apex is stateless and redirects to the public, unauthenticated platform
+website at `hosting.lowerduckpond.net`. Reserve `secure.lowerduckpond.net` for
+the future trusted administration UI and same-origin API. Its authentication
+will use host-only `__Host-` cookies plus Origin/CSRF checks and will never use a
+parent-domain cookie.
+
+Each immutable canonical tenant origin is
+`t-<tenant-uuid-without-hyphens>.lowerduckpond.net`. A
+`<slug>.lowerduckpond.net` hostname remains only a platform-controlled,
+non-cached redirect from its bare root to that canonical origin: serving
+content at a reusable slug would transfer browser storage and service-worker
+state when the slug is reassigned even with the PSL boundary. The alias never
+serves uploaded content or accepts a tenant-selected destination.
+
+Tenant IDs and canonical origins are immutable and never reassigned. A
+backed-up root-owned platform record pins `lowerduckpond.net` as the tenant
+origin suffix before the first tenant exists, and every canonical manifest
+records the complete derived origin; configuration drift or disagreement fails
+closed. Only friendly slug aliases are mutable and recyclable.
 
 `lowerduckpond.com` is configured as an ordinary independent tenant hostname and receives its own automatically managed certificate. Custom tenant domains can be considered later; they are not required for the initial service.
 
@@ -285,13 +301,17 @@ Exact inactivity and retention intervals should be configuration, not code const
 
 Primary backups should be application-aware rather than relying only on Droplet snapshots:
 
-- Restic encrypts tenant files, manifests, control-plane data, and SQL dumps into Spaces.
+- Restic encrypts tenant files, manifests, control-plane data, and SQL dumps
+  into the backup Space.
 - Database dumps run before the corresponding Restic snapshot.
-- Restic forget/prune expires backup generations according to policy; Spaces
-  lifecycle rules remove incomplete uploads and stale object versions without
-  deleting current repository objects or tenant archive bundles still bound by
-  authoritative tenant state by age.
-- The tenant-archive prefix has a hard aggregate remote-object allowance.
+- Restic forget/prune expires backup generations according to policy. The
+  backup Space's lifecycle rules remove incomplete uploads and stale object
+  versions without deleting current repository objects, and have no authority
+  over the tenant-archive Space.
+- The separate versioned tenant-archive Space has no age-based current or
+  noncurrent expiration. Its managed prefix has a hard aggregate remote-object
+  allowance and is accessed with a credential that cannot reach the Restic
+  Space.
   Restore and deletion journal every bundle they unbind, permanently purge all
   of its versions and markers after the authoritative transition commits, and
   block new archives while cleanup is ambiguous or incomplete.
@@ -328,7 +348,7 @@ Retention must balance abuse response with the privacy expectations of a small r
 ### Stage 1: one host
 
 - Caddy, control plane, provisioner, static content, PHP containers, and SQL run on one Droplet.
-- Spaces stores backups and archives.
+- Separate Spaces buckets and credentials store backups and tenant archives.
 - Vertical resize is the first capacity response.
 
 ### Stage 2: separate durable services

@@ -2,6 +2,7 @@
 
 - Status: accepted
 - Date: 2026-08-22
+- Namespace selected by: [ADR 0024](0024-use-lowerduckpond-net-as-the-tenant-public-suffix.md)
 
 ## Context
 
@@ -57,16 +58,18 @@ supported browsers or through another mechanism that assigns a distinct
 registrable domain per tenant. A separate shared registrable domain without a
 public-suffix boundary is not sufficient for cross-tenant isolation.
 
-Reserve `lowerduckpond.net` for platform-controlled responses, including the
-reusable slug aliases in ADR 0023. Those aliases return only a fixed non-cached
-redirect from an active tenant's bare alias root to its UUID-derived canonical
-origin. They never serve or proxy uploaded content, accept a tenant redirect
-target, forward paths or queries, set cookies, or register a service worker.
+Reserve the exact `lowerduckpond.net` apex and the reusable slug aliases in ADR
+0023 for platform-controlled responses. Those aliases return only a fixed
+non-cached redirect from an active tenant's bare alias root to its UUID-derived
+canonical origin. They never serve or proxy uploaded content, accept a tenant
+redirect target, forward paths or queries, set cookies, or register a service
+worker.
 
 Selecting, provisioning, and browser-testing that namespace is an external
-Milestone 3 prerequisite. The existing `*.lowerduckpond.net` DNS and certificate
-foundation is used only for platform-controlled slug aliases and must not be
-used for tenant-controlled content.
+Milestone 3 prerequisite. ADR 0024 selects `lowerduckpond.net` as the Private
+Public Suffix, so the existing wildcard DNS and certificate foundation can
+cover both platform-controlled aliases and immutable tenant origins only after
+the required browser and ACME qualification passes.
 
 After that prerequisite is verified and before the first tenant is created, an
 explicit root-owned initialization operation persists and syncs a versioned
@@ -168,8 +171,9 @@ illustrative ULID-shaped identifier in the original roadmap.
 ULID was rejected because Python 3.14 provides UUIDv7 directly. Caller-supplied
 hostnames were rejected because the operator-owned tenant namespace is the only
 approved Milestone 3 routing scope. Tenant-controlled subdomains directly below
-`lowerduckpond.net` were rejected because they share its cookie scope. Serving
-tenant content from a mutable slug hostname was rejected because safely
+`lowerduckpond.net` without the Private PSL boundary selected in ADR 0024 were
+rejected because they share its cookie scope. Serving tenant content from a
+mutable slug hostname was rejected because safely
 reprovisioning the slug would also transfer its browser origin. A separate
 shared registrable domain without a browser-recognized public-suffix boundary
 was rejected because tenants would still share cookies with one another.

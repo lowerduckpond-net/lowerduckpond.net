@@ -2,6 +2,7 @@
 
 - Status: accepted
 - Date: 2026-08-22
+- SSH identity selected by: [ADR 0026](0026-separate-static-operation-from-host-administration.md)
 
 ## Context
 
