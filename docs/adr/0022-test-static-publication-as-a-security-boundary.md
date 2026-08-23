@@ -281,6 +281,20 @@ the deleted canonical hostname is not routed or reassigned. Suspension and
 archive remove both route classes, while resume and restore republish both for
 the same tenant ID.
 
+Dual-domain browser tests serve hostile JavaScript from tenant A below
+`lowerduckpond.com` and a controlled fixture below `lowerduckpond.net`. They
+prove `.com` cannot create, replace, read, or receive the fixture's host-only
+`.net` cookie and that requests between the domains are cross-site. They also
+record the accepted limitation by proving A can create a
+`Domain=lowerduckpond.com` cookie visible at tenant B. Installed-host tests then
+prove Caddy removes `Cookie` before every static tenant handler, removes
+`Set-Cookie` from every tenant, alias, unknown-host, and `.com` apex response,
+never varies a route or body by those cookies, and never logs their values.
+Browser tests prove a correctly formed, case-sensitive `__Host-` cookie remains
+bound to its exact tenant host even when a sibling uses the same unprefixed or
+ordinary cookie names. Oversized or quota-exhausting cookie behavior is
+recorded as a per-browser residual risk, not misreported as isolation.
+
 Import identity tests export active, suspended, and archived tenant A fixtures,
 create an undeployed tenant B through the ordinary serialized slug-allocation
 path, and import each portable bundle into a fresh target. They prove every content path
@@ -418,11 +432,12 @@ publish either route for a suspended source; only a later explicit `resume` may
 do so.
 
 After CI and disposable-host acceptance pass, publish a reserved production
-canary in the approved origin-isolated tenant namespace. Verify browser
-registrable-domain behavior, the platform-only alias redirect, canonical HTTPS,
-rollback, suspension, restore, backup recovery, and idempotence, and remove all
-canary state through the same operator interface. Dynamic or destructive
-isolation tests remain off the production host.
+canary in the approved untrusted `.com` tenant namespace. Verify the `.com` to
+`.net` browser boundary, the documented sibling-cookie behavior and Caddy
+stripping, the platform-only alias redirect, canonical HTTPS, rollback,
+suspension, restore, backup recovery, and idempotence, and remove all canary
+state through the same operator interface. Dynamic or destructive isolation
+tests remain off the production host.
 
 ## Consequences
 
@@ -448,4 +463,5 @@ rejected because a disposable environment can exercise them safely.
 - [0016: Model static publication as an untrusted boundary](0016-model-static-publication-threats.md)
 - [0017: Atomically activate immutable static releases](0017-atomically-activate-static-releases.md)
 - [0023: Separate reusable slugs from immutable tenant origins](0023-separate-reusable-slugs-from-tenant-origins.md)
+- [0024: Separate trusted platform and untrusted tenant domains](0024-separate-platform-and-tenant-domains.md)
 - [Static-publication threat model](../threat-model/static-publication.md)

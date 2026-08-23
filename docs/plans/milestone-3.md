@@ -11,13 +11,16 @@ Milestone 3 implements the contracts accepted in ADRs 0016 through 0027. Four
 implementation defaults that were unresolved when the original design was
 accepted are now fixed:
 
-1. The project seeks to make `lowerduckpond.net` a Private Public Suffix,
-   contingent on upstream eligibility, acceptance, and browser propagation. The
-   apex redirects to the public website at `hosting.lowerduckpond.net`,
-   `secure.lowerduckpond.net` is reserved for the future trusted application,
-   reusable slug aliases remain platform-controlled, and tenant bytes are
-   served only from immutable
-   `t-<tenant-uuid-without-hyphens>.lowerduckpond.net` origins.
+1. `lowerduckpond.net` is the trusted platform domain and
+   `lowerduckpond.com` is the untrusted tenant domain. No PSL submission or
+   recognition is assumed. The `.net` apex may redirect to the public website
+   at `hosting.lowerduckpond.net`, `secure.lowerduckpond.net` is reserved for
+   the future trusted application, reusable `<slug>.lowerduckpond.com` aliases
+   remain platform-controlled, and tenant bytes are served only from immutable
+   `t-<tenant-uuid-without-hyphens>.lowerduckpond.com` origins. Caddy ignores
+   incoming cookies and removes outgoing `Set-Cookie` on all Milestone 3
+   `.com` routes; sibling browser-local cookie integrity is an accepted static
+   tier limitation.
 2. Tenant archives use a separate private, versioned production Space and a
    dedicated bucket-only key. They do not share the Restic bucket or key.
 3. Routine operations use a dedicated-key, forced-command `ldp-operator`
@@ -185,11 +188,15 @@ host behavior that the current Molecule suite does not reproduce.
 
 Deliver:
 
-- review the current Private PSL rules against the project's candid size and
-  maturity, verify the domain registration and maintenance commitments, prepare
-  domain-owner DNS authentication, and submit only an accurate request; add a
-  browser harness that reports pending recognition without weakening the
-  production gate;
+- verify ownership, registration auto-renewal, and authoritative Cloudflare
+  service for both domains; add a
+  browser harness proving `.com` content cannot set or receive `.net` cookies,
+  proving the two domains are cross-site, and recording that sibling `.com`
+  tenants can share a parent-domain cookie without misreporting that residual
+  behavior as isolation;
+- prove Caddy can remove `Cookie` before static tenant handling, remove
+  `Set-Cookie` from every `.com` route class, keep routing and bodies
+  cookie-independent, and omit cookie values from logs;
 - verify the production filesystem type and mount behavior, directory `fsync`,
   atomic same-filesystem rename, hard-link accounting, `O_NOFOLLOW`, and shared
   and exclusive `flock` semantics on a disposable Ubuntu 26.04 host;
@@ -207,10 +214,9 @@ Deliver:
   and low-level S3 libraries before privileged code imports them.
 
 Gate: every technical probe either passes on the production-equivalent stack or
-produces an accepted replacement design. The PSL step may remain externally
-pending while dark implementation continues, but an eligibility objection or
-rejection triggers a replacement namespace ADR and blocks production
-enablement. A warning or skipped technical probe is not a pass.
+produces an accepted replacement design. The dual-domain browser and Caddy
+cookie probes are mandatory; there is no external PSL step. A warning or
+skipped technical probe is not a pass.
 
 Rollback: probes use a disposable host and expendable object prefix; they
 create no tenant state and select no production Caddy input.
@@ -247,7 +253,8 @@ vectors, lifecycle tables, and deterministic error codes.
 
 Reject YAML duplicate keys during composition, unknown fields, type coercion,
 non-ASCII or noncanonical identifiers, and unsupported versions. Implement slug
-reservation for `hosting`, `secure`, `www`, and canonical-origin-shaped labels.
+reservation for `hosting`, `secure`, `www`, and canonical-origin-shaped labels
+within the `.com` tenant namespace.
 Generate UUIDs and origins only inside the root domain layer; contract code may
 validate but cannot authorize them.
 
@@ -360,6 +367,13 @@ state stays intact and `ldp-admin` remains usable.
 
 ### M3.7: replace mutable Caddy inputs with complete generations
 
+Extend the production OpenTofu stack with a second instance of the existing
+Cloudflare DNS module for the `lowerduckpond.com` apex and wildcard. Add a
+separately named non-secret `.com` zone-ID input and plan-policy assertions.
+Replace the infrastructure and Caddy Cloudflare tokens with values restricted
+to exactly the `.net` and `.com` zones and their already documented
+permissions; do not grant account-wide DNS access.
+
 Refactor the Caddy role and host-agent publication module together. One complete
 immutable generation binds the Caddy binary, environment, platform base config,
 generated tenant routes, and exact releases. The generator accepts only typed
@@ -379,13 +393,19 @@ stop and mask Caddy until the compatible launcher, unit, and recovery helpers
 are completely installed. Retain only active, preceding, and current-intent
 generations within 256 MiB and 4,096 unique inodes.
 
-The platform-only generation implements the apex redirect and public hosting
-fixture. With publication disabled it rejects every tenant route.
+The platform-only generation implements the `.net` apex redirect, public
+hosting fixture, reserved secure host, and the exact temporary, non-cached
+`.com` apex redirect and generic fallback from ADR 0024. Its `.com`
+wildcard rejects unknown hosts generically. Every `.com` route removes incoming
+`Cookie` before handling and outgoing `Set-Cookie` before response. With
+publication disabled it rejects every tenant canonical or alias route.
 
-Gate: run every Caddy/systemd, Ansible overlap, descriptor-pinning, generation
-retention, start-limit, failure-injection, and bootstrap-interruption case in
-ADR 0022. Reboot the disposable host and prove the selected platform-only
-generation returns.
+Gate: the reviewed OpenTofu plan and approved apply add only the intended
+`.com` records and inputs. Obtain and renew apex and wildcard certificates in
+both zones. Run every Caddy/systemd, cookie-policy, Ansible overlap,
+descriptor-pinning, generation-retention, start-limit, failure-injection, and
+bootstrap-interruption case in ADR 0022. Reboot the disposable host and prove
+the selected platform-only generation returns.
 
 Rollback: durably select and verify the preceding platform-only generation.
 Never restore the old mutable `Caddyfile` path once tenant-capable code exists.
@@ -489,9 +509,10 @@ with tool versions and digests.
 
 Before production enablement:
 
-- confirm the Private PSL entry is present in the current supported Chromium,
-  Firefox, and WebKit-derived browser data and pass live cookie/site tests;
-- rerun wildcard ACME issuance/renewal qualification;
+- pass live supported-browser tests proving the `.com`/`.net` boundary, the
+  known sibling `.com` cookie behavior, host-bound `__Host-` behavior, and the
+  Caddy request/response cookie policy;
+- rerun apex and wildcard ACME issuance/renewal qualification in both zones;
 - confirm the dedicated operator key used since M3.6 remains backed up and only
   its public half is installed;
 - verify the archive bucket begins with accounted zero objects and versions;
@@ -533,7 +554,7 @@ just acceptance-static-production
 
 `just check` runs every hermetic contract, unit, integration, schema, hostile
 fixture, Ansible, and static host test suitable for CI. Live Cloudflare, Spaces,
-DigitalOcean, reboot, and browser-propagation checks remain explicit acceptance
+DigitalOcean, reboot, and live browser-boundary checks remain explicit acceptance
 recipes with bounded credentials and sanitized reports; they may not silently
 skip when invoked.
 
@@ -546,7 +567,7 @@ failure-injection evidence.
 
 | Priority | Risk | Control or decision point |
 | --- | --- | --- |
-| Critical | The PSL maintainers generally decline small or experimental projects and warn that projects not serving thousands of users are quite likely to be declined; propagation also has no service-level deadline. | Be candid in M3.0, keep production dark, test actual supported browsers, and require a replacement ADR—likely using an existing provider-controlled suffix or separately registered tenant domains—if the request is ineligible, declined, removed, or too slow. |
+| Critical | Implementation or later documentation silently treats sibling `.com` tenants as cookie-isolated or places privileged state in that shared namespace. | Encode the `.net`/`.com` split and static cookie policy in schemas, route generators, browser tests, threat invariants, and the launch record. Require a new ADR before any authenticated, dynamic, or privileged `.com` application. |
 | Critical | Caddy, systemd, and Ansible cannot provide the descriptor-pinned, restart-safe transaction already specified. | Prove the mechanism in M3.0 before state code depends on it; stop for architecture review on any failed primitive. |
 | Critical | Incorrect sync or intent ordering publishes a mixed or non-durable generation after process or power loss. | Centralize durable primitives, record every barrier, inject failure at every boundary, and reconcile from evidence rather than in-memory phase. |
 | Critical | The privileged ZIP parser turns crafted metadata or decompression into root compromise or host exhaustion. | Structural gate first, narrow accepted methods, descriptor-relative extraction, systemd resource sandbox, hostile corpus, and no publication on failure. |
@@ -554,6 +575,7 @@ failure-injection evidence.
 | High | Spaces behavior differs from assumed S3 version and visibility semantics. | Test the exact DigitalOcean operations and interruption states; quarantine ambiguity and close archive admission rather than guess. |
 | High | Archive or backup credentials create a combined destructive blast radius. | Separate bucket-scoped keys, processes, environment files, health checks, and mutual-denial acceptance tests. |
 | High | Molecule passes while the real filesystem, sshd, systemd, Caddy, or object store fails. | Preserve hermetic CI but require disposable production-equivalent qualification and restore before enabling production. |
+| High | Dual-zone DNS, certificate, or route generation sends tenant bytes to `.net` or trusts cookies on `.com`. | Generate route classes from pinned suffixes, limit Cloudflare credentials to the two zones, qualify all four certificate names, and run hostile host/cookie matrices before enablement. |
 | High | The 1-vCPU/2-GiB host violates parser, Caddy, backup, or free-space reserves under concurrency. | Measure peak acceptance workload and plan the reversible 2-vCPU/4-GiB resize before the canary. |
 | High | Review fatigue hides cross-component gaps. | Keep PRs phase-scoped, require invariant traceability, avoid speculative refactors, and do not stack later phases on unresolved security review. |
 
@@ -561,48 +583,75 @@ failure-injection evidence.
 
 These are hypotheses, not design facts:
 
-1. Despite the documented small-project non-acceptance factors, the Private PSL
-   submission will be eligible, accepted, retained, and propagated to all
-   supported browsers on the Milestone 3 schedule.
-2. Private PSL inclusion will not disrupt the existing wildcard ACME issuance
-   and renewal path.
-3. The production and disposable filesystems implement the tested directory
+1. Supported browsers enforce the `.com`/`.net` registrable-domain boundary as
+   expected while allowing the documented sibling `.com` parent-cookie behavior.
+2. Caddy can apply request-cookie removal before every static tenant handler
+   and response-cookie removal after every `.com` route without an uncovered
+   handler, error, redirect, or logging path.
+3. The Cloudflare plugin can issue and renew both apex and wildcard
+   certificates in both zones using credentials restricted to exactly those
+   zones.
+4. The production and disposable filesystems implement the tested directory
    sync, rename, hard-link, descriptor, and locking behavior.
-4. Ubuntu 26.04's systemd, OpenSSH, and sudo versions support the exact restart,
+5. Ubuntu 26.04's systemd, OpenSSH, and sudo versions support the exact restart,
    forced-command, sandbox, invocation-ID, reset, and argument-matching
    contracts.
-5. DigitalOcean Spaces returns and exposes exact object versions consistently
+6. DigitalOcean Spaces returns and exposes exact object versions consistently
    enough for the proposed intent and quarantine algorithm.
-6. The systemd temporary-filesystem implementation enforces inode as well as
+7. The systemd temporary-filesystem implementation enforces inode as well as
    byte limits on the actual host.
-7. The selected parsing, canonicalization, schema, property-test, and S3
+8. The selected parsing, canonicalization, schema, property-test, and S3
    libraries support Python 3.14 and preserve the required strict semantics.
-8. The Milestone 2 provisioner-owned manifest and audit directories and the old
+9. The Milestone 2 provisioner-owned manifest and audit directories and the old
    backup `archives/` prefix still contain no tenant history or object versions.
-9. The expanded authoritative backup set can be captured under one shared lock
+10. The expanded authoritative backup set can be captured under one shared lock
    and restored without accidentally restoring Caddy secrets or transient data.
-10. The current Droplet has enough CPU, RAM, block, and inode headroom to run
+11. The current Droplet has enough CPU, RAM, block, and inode headroom to run
     failure-injection, backup, Caddy, and parser workloads concurrently.
-11. A dedicated SSH key and forced command provide a distinct operator identity
+12. A dedicated SSH key and forced command provide a distinct operator identity
     without leaving an alternate shell, forwarding, environment, or file-transfer
     path.
-12. The accepted documentation contains no contradictory lifecycle or recovery
+13. The accepted documentation contains no contradictory lifecycle or recovery
     rule that only becomes visible when executable state machines are written.
 
-M3.0 owns assumptions 1–7. M3.1 and M3.5 recheck assumption 8. M3.11 owns
-assumption 9. M3.12 owns assumptions 10 and 11. Every implementation phase
+M3.0 owns assumptions 1–8. M3.1 and M3.5 recheck assumption 9. M3.11 owns
+assumption 10. M3.12 owns assumptions 11 and 12. Every implementation phase
 table-tests its relevant transitions and may stop for an ADR amendment if
-assumption 12 fails; it may not patch around a contradictory boundary.
+assumption 13 fails; it may not patch around a contradictory boundary.
 
-## 9. Operator actions and external prerequisites
+## 9. Open questions and operator prerequisites
 
-No additional secret is required to begin M3.0–M3.4. Before the corresponding
-production phases, the operator owes:
+No unanswered product choice blocks M3.0. The following questions are
+deliberately deferred and must not be answered incidentally by Milestone 3
+code:
 
-1. provide the non-secret registration/contact material needed for the upstream
-   Private PSL submission, extend the domain registration if the current
-   submission rules require it, approve that external pull request, and publish
-   and retain the required `_psl.lowerduckpond.net` DNS TXT authentication;
+1. **Authenticated `.com` apex:** whether a future community-owned application,
+   such as a wiki, should occupy `lowerduckpond.com`. The Milestone 3 apex uses
+   only a temporary, non-cached platform redirect. A stateful replacement needs
+   its own cookie, CSRF, cookie-capacity, credential, and database threat model.
+2. **Public platform-site home:** `hosting.lowerduckpond.net` is the current
+   canonical default. Moving a stateless public site later is inexpensive, but
+   authenticated platform functions remain on `.net`.
+3. **Dynamic tenant origins:** PHP applications cannot inherit the static
+   tier's blanket cookie stripping. Milestone 6 must decide whether to constrain
+   tenant cookies, use custom or provider-isolated domains, or select another
+   boundary before enabling dynamic tenants.
+4. **Reference tenant:** Milestone 7 still needs the content, repository name,
+   and ordinary `.com` slug for a platform-owned demonstration site. The exact
+   `.com` apex is not that tenant by default.
+5. **Custom domains:** ownership proof, certificate authority, transfer,
+   canonical URLs, and browser-state migration remain a later feature; the
+   immutable tenant identity stays compatible with such a design.
+
+No additional secret is required to begin the hermetic parts of M3.0–M3.4.
+Before the corresponding production phases, the operator owes these numbered
+actions:
+
+1. provide the non-secret `lowerduckpond.com` Cloudflare zone ID as a GitHub
+   production environment variable, replace the OpenTofu Cloudflare token with
+   one granting DNS Edit only to the `.net` and `.com` zones, and replace the
+   non-expiring Caddy token with one granting Zone Read and DNS Edit only to
+   those same two zones; back up the Caddy token before convergence;
 2. choose the globally unique production archive bucket name, approve the
    OpenTofu plan/apply, and place its generated sensitive outputs only in the
    established production secret path;
@@ -629,6 +678,9 @@ report demonstrates that:
 - the provisioner could neither originate authority nor read tenant state or
   export bytes;
 - hostile and interrupted inputs never became public;
+- tenant content remained confined to `.com`, platform trust remained confined
+  to `.net`, and Caddy enforced the documented static cookie policy without
+  claiming sibling tenant cookie isolation;
 - lifecycle and slug reuse converged without transferring a tenant origin;
 - Caddy survived replacement, failed activation, restart, Ansible convergence,
   and reboot using only complete generations;

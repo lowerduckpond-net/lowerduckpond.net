@@ -15,7 +15,7 @@ Status as of 2026-08-23:
 | 4: Control plane and lifecycle automation | Planned | Expose the static lifecycle through the FastAPI control plane with approvals, jobs, policy, and audit history. |
 | 5: Backup, observability, and operations | Planned | Complete platform-level recovery, central observability, alerting, and operator runbooks. Host backup and monitoring foundations arrived early in Milestone 2. |
 | 6: Dynamic PHP pilot | Planned | Introduce isolated PHP and tenant-scoped SQL only after the static platform and recovery path are proven. |
-| 7: Customer and community pilot | Planned | Deploy the city site through the ordinary tenant contract and onboard a small resident cohort. |
+| 7: Reference tenant and community pilot | Planned | Deploy a platform-owned reference site through the ordinary `.com` tenant contract and onboard a small resident cohort. |
 
 “Complete” means the milestone's exit criterion has been demonstrated, not
 merely that its implementation was merged. “Current” identifies the active
@@ -69,7 +69,11 @@ implementation has not started.
 └── SECURITY.md
 ```
 
-The `lowerduckpond.com` city site should live in a separate repository and deploy through the same contract available to ordinary tenants.
+A platform-owned reference site should eventually live in a separate
+repository and deploy at an ordinary `.com` slug and immutable origin through
+the same contract available to residents. Its content, repository name, and
+slug remain a Milestone 7 product choice; the exact `lowerduckpond.com` apex is
+reserved as a stateless platform response during Milestone 3.
 
 ## 2. Decisions to record before implementation
 
@@ -291,7 +295,7 @@ accepted decisions, in dependency order:
 6. [Define static tenant lifecycle semantics](adr/0021-define-static-tenant-lifecycle-semantics.md).
 7. [Separate reusable slugs from immutable tenant origins](adr/0023-separate-reusable-slugs-from-tenant-origins.md).
 8. [Test static publication as a security boundary](adr/0022-test-static-publication-as-a-security-boundary.md).
-9. [Use lowerduckpond.net as the tenant public suffix](adr/0024-use-lowerduckpond-net-as-the-tenant-public-suffix.md).
+9. [Separate trusted platform and untrusted tenant domains](adr/0024-separate-platform-and-tenant-domains.md).
 10. [Separate tenant archives from platform backups](adr/0025-separate-tenant-archives-from-platform-backups.md).
 11. [Separate static operation from host administration](adr/0026-separate-static-operation-from-host-administration.md).
 12. [Gate production static publication](adr/0027-gate-production-static-publication.md).
@@ -311,7 +315,7 @@ kind: Site
 metadata:
   id: 0191e2c4-8f7a-7c3b-8d1e-5f62047a2100
   slug: duck-repair
-  canonicalOrigin: t-0191e2c48f7a7c3b8d1e5f62047a2100.lowerduckpond.net
+  canonicalOrigin: t-0191e2c48f7a7c3b8d1e5f62047a2100.lowerduckpond.com
 spec:
   runtime: static
   desiredState: active
@@ -325,15 +329,16 @@ spec:
 
 The root activator generates the stable UUIDv7 tenant ID during `create`; a
 caller cannot select it. Tenant content is served at
-`t-<tenant-uuid-without-hyphens>.lowerduckpond.net`; the accepted Private PSL
-entry makes each canonical hostname a distinct registrable domain according to
-supported browsers. A reusable `<slug>.lowerduckpond.net`
-platform alias redirects only its bare root to that canonical origin and never
-serves tenant-controlled content. Arbitrary and custom domains are not accepted
-in this version. Upstream PSL acceptance, supported-browser recognition, and
-wildcard ACME qualification are required before the production canary. A
-versioned root-owned platform record pins the suffix before the first tenant is
-created, and each root-generated manifest stores the complete origin.
+`t-<tenant-uuid-without-hyphens>.lowerduckpond.com`, separately registered from
+all trusted platform services on `lowerduckpond.net`. A reusable
+`<slug>.lowerduckpond.com` platform alias redirects only its bare root to that
+canonical origin and never serves tenant-controlled content. Arbitrary and
+custom domains are not accepted in this version. Dual-zone DNS, apex and
+wildcard ACME, browser-boundary, and Caddy cookie-policy qualification are
+required before the production canary; no PSL submission or recognition is
+assumed. A versioned root-owned platform record pins the suffix before the
+first tenant is created, and each root-generated manifest stores the complete
+origin.
 Convergence and reconciliation fail closed unless configuration, the platform
 record, and the rederived manifest origin agree. The tenant ID and canonical
 origin do not change when a public slug changes. Desired manifests are stored
@@ -402,6 +407,11 @@ Implement idempotent commands or jobs for:
   Apply `no-store` to every alias redirect and `404`. Apply the allowlist before
   automatic HTTPS on both listeners, redirecting only a qualifying HTTP request
   directly to the canonical HTTPS origin.
+- Keep all trusted services on `.net` and every static tenant route on `.com`.
+  Remove incoming `Cookie` before static tenant handling, remove outgoing
+  `Set-Cookie` from every `.com` route, and never vary routing or content by
+  cookie state. Browser tests must demonstrate both the `.com`/`.net` boundary
+  and the accepted sibling `.com` parent-cookie limitation.
 - Validate, select, reload, and advance every restart or rollback phase under
   one publication lock, while releasing it before any systemd job must
   reacquire it.
@@ -544,6 +554,9 @@ Implement idempotent commands or jobs for:
 - Assign the released slug to another tenant and prove its alias points to a
   different canonical origin while no tenant bytes, path, query, cookie, or
   service worker are exposed at the alias.
+- From a hostile `.com` tenant, prove `.net` platform cookies are unreachable;
+  record the expected sibling `.com` parent-cookie behavior; and prove Caddy
+  removes request and response cookies without changing a static route or body.
 - Change or remove the configured and persisted tenant-origin suffix across
   convergence, startup, reconciliation, backup restore, and an empty-live-tenant
   state; prove every mismatch fails closed and no canonical route changes.
@@ -584,9 +597,10 @@ Every externally requested operation executes from an immutable authenticated
 job issued through the dedicated forced-command operator boundary. The
 provisioner cannot originate or transform lifecycle authority, read
 authoritative tenant state, or read an export payload. The production canary
-passes only after the Private PSL browser boundary, isolated archive Space,
-Caddy/systemd recovery, hostile-archive, durability, backup, and audit gates are
-demonstrated with `static_publication_enabled` deliberately enabled.
+passes only after the dual-domain browser and Caddy cookie boundary, isolated
+archive Space, Caddy/systemd recovery, hostile-archive, durability, backup, and
+audit gates are demonstrated with `static_publication_enabled` deliberately
+enabled.
 
 ## 7. Milestone 4: control plane and lifecycle automation — planned
 
@@ -701,6 +715,16 @@ An operator can detect a failed service, identify the affected tenant or subsyst
 
 Do not expose PHP publicly until the static platform and recovery path are working.
 
+### Origin and cookie prerequisite
+
+Record a new architecture decision before implementing the public dynamic
+route. Arbitrary PHP applications need server-side cookies and therefore cannot
+inherit Milestone 3's blanket `.com` request/response cookie stripping. Decide
+whether the pilot constrains cookie behavior, assigns stronger isolated or
+custom domains, or adopts another boundary. Include sibling cookie injection,
+same-site CSRF, cookie-capacity denial of service, and framework parsing in the
+dynamic threat model.
+
 ### Runtime image
 
 Build and pin a minimal maintained image containing:
@@ -753,11 +777,14 @@ Run destructive isolation tests on an ephemeral test Droplet rather than the pro
 
 A small approved cohort can run PHP with tenant-scoped SQL, measured quotas, clean suspension/export behavior, and passing cross-tenant isolation tests.
 
-## 10. Milestone 7: first customer and community pilot — planned
+## 10. Milestone 7: reference tenant and community pilot — planned
 
-Build `lowerduckpond.com` in its separate repository and deploy it through the ordinary tenant interface. It should exercise:
+Build a platform-owned reference site in its separate repository and deploy it
+through an ordinary `.com` slug alias and UUID-derived canonical origin. Its
+content, repository name, and slug are open product questions; it must not gain
+an undocumented exception at the exact `.com` apex. It should exercise:
 
-- Independent domain verification and HTTPS.
+- Ordinary wildcard DNS and HTTPS in the tenant namespace.
 - Static assets and intentionally period-inappropriate styling.
 - Ordinary deployment, rollback, export, and restore.
 - No undocumented platform-side exceptions.
@@ -766,7 +793,8 @@ Then onboard a deliberately small set of residents. Track where the support burd
 
 ### Exit criteria
 
-The city site and several resident sites survive at least one complete renewal, backup, restore, and platform upgrade cycle.
+The reference site and several resident sites survive at least one complete
+renewal, backup, restore, and platform upgrade cycle.
 
 ## 11. Scaling triggers and responses
 
@@ -833,13 +861,14 @@ vertical slice without yet accepting tenant content or untrusted runtime code.
 The first public release is ready when:
 
 - Infrastructure and host configuration can rebuild the service from scratch.
-- Wildcard HTTPS renews automatically.
+- Apex and wildcard HTTPS renew automatically in both owned zones.
 - Signup and approval create a static tenant without manual server edits.
 - Deploy, rollback, suspend, export, import, archive, restore, and delete are
   idempotent.
 - Quotas and audit events are visible.
 - Encrypted off-host backups and a restore test are current.
-- `lowerduckpond.com` is deployed as an ordinary tenant.
+- A platform-owned reference site is deployed through an ordinary `.com` slug
+  and immutable tenant origin.
 - Operator runbooks cover the likely failure modes.
 - The acceptable-use, privacy, retention, and service-expectation policies are published.
 - The PHP tier remains disabled unless its isolation test suite and operational controls are complete.

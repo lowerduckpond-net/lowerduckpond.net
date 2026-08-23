@@ -1,0 +1,160 @@
+# 0024: Separate trusted platform and untrusted tenant domains
+
+- Status: accepted
+- Date: 2026-08-23
+
+## Context
+
+Lower Duck Pond Hosting needs authenticated platform services and
+tenant-controlled static sites. Browsers allow a child of a registrable domain
+to set a parent-domain cookie, so serving both trust classes below
+`lowerduckpond.net` would let tenant JavaScript influence cookies sent to the
+future control plane. Host-only `__Host-` cookies protect a correctly named
+session cookie from direct replacement, but sibling hosts remain same-site and
+`SameSite` is therefore not a CSRF boundary between them.
+
+Making the tenant namespace a Private Public Suffix would also isolate tenants
+from one another. Current admission guidance makes that unrealistic for a
+small community service that expects dozens rather than thousands of users.
+The design must not depend on applying for, receiving, retaining, or waiting
+for a Public Suffix List entry.
+
+The project owns both `lowerduckpond.net` and `lowerduckpond.com`. Using the
+second registrable domain for untrusted content creates a browser-enforced
+boundary around the platform without relying on an external registry change.
+It does not make sibling tenants below `.com` separate sites, so that remaining
+limitation must be explicit rather than described as solved.
+
+## Decision
+
+Use `lowerduckpond.net` only for platform-controlled services and
+`lowerduckpond.com` only for the tenant-content namespace during Milestone 3.
+The initial layout is:
+
+- an exact `GET` or `HEAD` for `/` without a query at `lowerduckpond.net`
+  receives a temporary `302` to `https://hosting.lowerduckpond.net/` with
+  `Cache-Control: no-store`; every other apex request receives the generic
+  platform `404`;
+- `hosting.lowerduckpond.net` is the public, unauthenticated platform website;
+- `secure.lowerduckpond.net` is reserved for the future authenticated UI and
+  same-origin API;
+- an exact `GET` or `HEAD` for `/` without a query at `lowerduckpond.com`
+  receives a temporary `302` to `https://hosting.lowerduckpond.net/` with
+  `Cache-Control: no-store`; every other request receives the generic stateless
+  platform `404`;
+- `<slug>.lowerduckpond.com` is the reusable platform-controlled alias from ADR
+  0023; and
+- `t-<tenant-uuid-without-hyphens>.lowerduckpond.com` is the immutable
+  tenant-controlled static-content origin.
+
+No tenant-controlled bytes are served from `.net`. No LDP account, operator,
+control-plane, or other privileged application trusts authentication state
+received on `.com`. The exact `.com` apex and every alias remain
+platform-controlled, but they are stateless in Milestone 3. The temporary
+non-cached apex redirect preserves the option to change that use later without
+making it part of the tenant contract. Whether a future
+community application such as a wiki should occupy the `.com` apex is not
+decided here; doing so requires a separate threat-model and architecture
+decision.
+
+Reserve `hosting`, `secure`, `www`, and every label matching the canonical
+`t-<32-lowercase-hex>` form from customer slug allocation. Keep the reserved
+set versioned and root-owned. Adding another platform hostname must fail if its
+label is allocated and requires an explicit migration rather than silently
+taking a tenant slug.
+
+Pin `lowerduckpond.com` as both the alias and tenant-origin suffix in the
+backed-up root-owned platform namespace record before creating the first
+tenant. Configuration, that record, every manifest, and independent origin
+derivation must agree. Changing either suffix after tenant history exists
+requires a separately designed origin migration.
+
+Treat every `.com` tenant host as untrusted and every `.com` tenant-to-tenant
+request as same-site but cross-origin. For Milestone 3 static routes, Caddy:
+
+- removes every `Cookie` request header before a tenant-content handler;
+- removes every `Set-Cookie` response header from tenant, alias, unknown-host,
+  and `.com` apex responses;
+- never varies tenant routing or static content by a cookie; and
+- never persists raw cookie or authorization values in access logs.
+
+These controls prevent the hosting service from consuming or emitting tenant
+cookies over HTTP. They cannot intercept JavaScript's browser-local
+`document.cookie` API. A tenant can therefore still create a
+`Domain=lowerduckpond.com` cookie that is visible to another `.com` tenant,
+consume shared browser cookie capacity, or cause client-side cookie-name
+confusion. That residual risk is accepted for ordinary static hosting because
+the platform trust boundary is on `.net`, static responses ignore cookies, and
+origins still isolate DOM access, local storage, IndexedDB, and service
+workers. Tenant applications must not treat an ordinary cookie as having
+sibling-domain integrity; client-side static code that needs a host-bound
+cookie name uses a case-sensitive `__Host-` name with `Secure` and `Path=/` and
+no `Domain`. Server-side tenant sessions remain outside Milestone 3.
+
+The future `.net` administration service uses a unique host-only `__Host-`
+session cookie with `Secure`, `HttpOnly`, and `Path=/`, exact-Origin and CSRF
+validation, no credentialed tenant CORS, and no state-changing safe-method
+routes. It does not accept a parent-domain cookie or rely on `SameSite` as its
+only request-forgery control.
+
+Provision and qualify both Cloudflare zones, their apex and wildcard DNS, and
+the apex and wildcard certificate paths before production publication. The
+OpenTofu and Caddy tokens are limited to the two project zones and only their
+required permissions. Actual stable-browser tests must prove that `.com`
+content cannot set or receive a `.net` cookie and that all `.com` HTTP cookie
+stripping behaves as configured. No PSL test or submission is a production
+gate.
+
+## Consequences
+
+The platform authentication boundary no longer depends on project popularity,
+PSL discretion, or browser-list propagation. A compromised or malicious tenant
+cannot poison `.net` platform cookies, and `.com` and `.net` are cross-site as
+well as cross-origin.
+
+Mutually untrusted `.com` tenants do not receive complete cookie-jar isolation.
+The remaining effects are confined to browsers that execute malicious tenant
+content and to the untrusted `.com` namespace; they do not grant access to
+another origin's DOM storage, LDP account state, host state, or database. Cookie
+capacity exhaustion can still log out or deny service to a future privileged
+application placed on `.com`, which is why Milestone 3 places none there.
+
+The project must manage a second Cloudflare zone, two more DNS records, another
+apex certificate, another wildcard certificate, and replacement infrastructure
+and Caddy tokens scoped to both zones. The `.com` suffix becomes authoritative
+tenant identity state and cannot later return to vanity/custom-domain use
+without an explicit origin migration.
+
+Dynamic tenants, authenticated tenant applications, and an authenticated
+`.com` apex cannot inherit the static-cookie decision automatically. Each must
+define how server-side cookies, CSRF, cookie capacity, and response-header
+policy work before activation. Custom tenant domains remain compatible but
+need later ownership, certificate, transfer, and browser-state rules.
+
+## Alternatives considered
+
+Private PSL admission was rejected as a launch dependency because the service
+is unlikely to meet the scale expected by current admission guidance. It may be
+reconsidered opportunistically later, but no contract or production gate may
+assume it happens.
+
+Keeping untrusted content below `.net` was rejected because it leaves every
+future platform endpoint adjacent to a related-domain attacker. A CSP sandbox
+without `allow-same-origin` would block tenant cookie and local-storage access,
+but it would also break ordinary static-site modules, fetch behavior, workers,
+storage, and other expected functionality. Disabling JavaScript has the same
+product-level incompatibility.
+
+Using `lowerduckpond.com` as one vanity custom domain while tenants remain on
+`.net` was rejected because the owned registrable domain is more valuable as a
+permanent platform/data-plane boundary. Treating the `.com` split as complete
+tenant-to-tenant isolation was also rejected because sibling tenants remain in
+one cookie domain without a public-suffix boundary.
+
+## References
+
+- [0018: Version the static tenant manifest contract](0018-version-static-tenant-manifests.md)
+- [0023: Separate reusable slugs from immutable tenant origins](0023-separate-reusable-slugs-from-tenant-origins.md)
+- [RFC 10025: Cookies: HTTP State Management Mechanism](https://auth48-transition.rfc-editor.org/authors/rfc10025.html)
+- [Fetch Metadata Request Headers](https://www.w3.org/TR/fetch-metadata/)
+- [HTML Standard: same-site](https://html.spec.whatwg.org/multipage/browsers.html#same-site)

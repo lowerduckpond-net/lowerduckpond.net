@@ -2,7 +2,7 @@
 
 - Status: accepted
 - Date: 2026-08-22
-- Namespace selected by: [ADR 0024](0024-use-lowerduckpond-net-as-the-tenant-public-suffix.md)
+- Namespace selected by: [ADR 0024](0024-separate-platform-and-tenant-domains.md)
 
 ## Context
 
@@ -44,21 +44,21 @@ Independently enforce the same grammar in the root validator with an ASCII
 `fullmatch` plus the encoded byte-length check; schema success alone is not the
 privileged boundary. Maintain a committed reserved-name list. Because the
 alphabet is ASCII, the byte and character counts are equal. Validate the
-complete `<slug>.lowerduckpond.net` alias length before persistence. Separately
+complete `<slug>.lowerduckpond.com` alias length before persistence. Separately
 validate the normalized tenant-origin suffix so the UUID-derived canonical
 hostname remains within the DNS limit. Derive both hostnames from root-owned
 state; do not accept an arbitrary domain or redirect target in this version.
 
-The tenant-origin namespace must isolate mutually untrusted tenants from
-`lowerduckpond.net` and from one another at the browser cookie boundary. Each
-canonical `t-<tenant-uuid-without-hyphens>.<tenant-origin-suffix>` hostname must
-therefore be a distinct registrable domain according to the browser Public
-Suffix List, either beneath a project-controlled private suffix recognized by
-supported browsers or through another mechanism that assigns a distinct
-registrable domain per tenant. A separate shared registrable domain without a
-public-suffix boundary is not sufficient for cross-tenant isolation.
+The tenant-origin namespace must isolate untrusted tenant content from every
+trusted platform service. ADR 0024 assigns the complete tenant namespace to
+`lowerduckpond.com` and keeps authenticated platform services on the separately
+registered `lowerduckpond.net` domain. Each canonical
+`t-<tenant-uuid-without-hyphens>.<tenant-origin-suffix>` hostname is a unique,
+immutable browser origin, but the canonical hosts remain siblings within one
+registrable `.com` domain. The manifest contract does not claim
+tenant-to-tenant cookie integrity that the browser does not provide.
 
-Reserve the exact `lowerduckpond.net` apex and the reusable slug aliases in ADR
+Reserve the exact `lowerduckpond.com` apex and the reusable slug aliases in ADR
 0023 for platform-controlled responses. Those aliases return only a fixed
 non-cached redirect from an active tenant's bare alias root to its UUID-derived
 canonical origin. They never serve or proxy uploaded content, accept a tenant
@@ -66,10 +66,11 @@ redirect target, forward paths or queries, set cookies, or register a service
 worker.
 
 Selecting, provisioning, and browser-testing that namespace is an external
-Milestone 3 prerequisite. ADR 0024 selects `lowerduckpond.net` as the Private
-Public Suffix, so the existing wildcard DNS and certificate foundation can
-cover both platform-controlled aliases and immutable tenant origins only after
-the required browser and ACME qualification passes.
+Milestone 3 prerequisite. ADR 0024 selects `lowerduckpond.com`, requires apex
+and wildcard DNS and certificates for that second zone, and specifies Caddy's
+static-route cookie stripping. Qualification proves that `.com` content cannot
+set or receive `.net` platform cookies and records, rather than conceals, the
+remaining sibling-tenant cookie behavior.
 
 After that prerequisite is verified and before the first tenant is created, an
 explicit root-owned initialization operation persists and syncs a versioned
@@ -148,10 +149,14 @@ operator transport. Canonical JSON makes hashing and comparison deterministic,
 while YAML remains approachable for an operator. Custom domains require a later
 schema version and ownership-verification design.
 
-The tenant-origin prerequisite adds DNS, certificate, Cloudflare credential,
-and possibly domain or public-suffix coordination before the production canary.
-It prevents tenant JavaScript from poisoning platform authentication cookies or
-the cookies of another tenant.
+The tenant-origin prerequisite adds a second DNS zone, apex and wildcard
+certificates, Cloudflare credential scope, and browser/Caddy qualification
+before the production canary. It prevents tenant JavaScript from poisoning
+platform authentication cookies. It deliberately does not claim that ordinary
+cookies are isolated between sibling `.com` tenants; static serving ignores
+them and client-side tenant code must use host-bound `__Host-` cookies when
+cookie-name integrity matters. Server-side tenant sessions remain outside this
+static contract.
 
 The explicit DNS-label bound means every persisted slug can be used as a
 platform alias later; creation cannot reserve a name that deployment must reject
@@ -171,12 +176,13 @@ illustrative ULID-shaped identifier in the original roadmap.
 ULID was rejected because Python 3.14 provides UUIDv7 directly. Caller-supplied
 hostnames were rejected because the operator-owned tenant namespace is the only
 approved Milestone 3 routing scope. Tenant-controlled subdomains directly below
-`lowerduckpond.net` without the Private PSL boundary selected in ADR 0024 were
-rejected because they share its cookie scope. Serving tenant content from a
+`lowerduckpond.net` were rejected because they would share a registrable domain
+with the trusted platform. Serving tenant content from a
 mutable slug hostname was rejected because safely
 reprovisioning the slug would also transfer its browser origin. A separate
-shared registrable domain without a browser-recognized public-suffix boundary
-was rejected because tenants would still share cookies with one another.
+`lowerduckpond.com` namespace was accepted despite shared sibling cookies
+because it creates the required platform boundary, static routes consume no
+cookies, and the residual tenant-to-tenant client risk is explicit in ADR 0024.
 Permissive schemas were rejected because ignored or misspelled security fields
 are unsafe at a privileged boundary. Combining initial creation and deployment
 was rejected because the accepted operator interface exposes them as separate
@@ -190,5 +196,5 @@ authorize identity, origin, slug, quota, or lifecycle changes.
 - [0008: Support archive upload before Git deployment](0008-archive-upload-first.md)
 - [0016: Model static publication as an untrusted boundary](0016-model-static-publication-threats.md)
 - [0023: Separate reusable slugs from immutable tenant origins](0023-separate-reusable-slugs-from-tenant-origins.md)
-- [Public Suffix List format and private domains](https://github.com/publicsuffix/list/wiki/Format)
-- [Public Suffix List submission guidelines](https://github.com/publicsuffix/list/wiki/Guidelines)
+- [0024: Separate trusted platform and untrusted tenant domains](0024-separate-platform-and-tenant-domains.md)
+- [RFC 10025: Cookies: HTTP State Management Mechanism](https://auth48-transition.rfc-editor.org/authors/rfc10025.html)

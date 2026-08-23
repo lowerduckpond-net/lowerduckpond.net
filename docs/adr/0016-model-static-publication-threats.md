@@ -25,11 +25,13 @@ the authenticated operator boundary.
 The platform never accepts caller-generated Caddy text, never serves a
 provisioner-writable tree, and never extracts an archive into a public content
 tree. Milestone 3 serves static content only at an immutable UUID-derived
-hostname in an operator-owned tenant namespace where each tenant is a distinct
-registrable domain according to supported browsers. Reusable slug hostnames
-beneath `lowerduckpond.net` remain platform-only aliases that can return only a
+hostname below the untrusted `lowerduckpond.com` tenant namespace. Reusable
+slug hostnames below `.com` remain platform-only aliases that can return only a
 fixed redirect to that canonical tenant origin; they never serve tenant bytes
-or headers. Custom domains and executable content stay outside this boundary.
+or headers. Trusted platform services remain on the separately registered
+`lowerduckpond.net` domain. The shared tenant cookie namespace and its bounded
+static-hosting residual risk are accepted in ADR 0024. Custom domains and
+executable content stay outside this boundary.
 
 The platform namespace record, desired manifests, observed state, deployment
 records, archive records, and audit history are root-owned. The provisioner may
@@ -83,4 +85,5 @@ delete requests is still destructive without operator authorization.
 - [0006: Separate the control plane and provisioner](0006-separate-control-plane-provisioner.md)
 - [0020: Use a trusted-workstation static operator interface](0020-use-a-trusted-workstation-static-operator-interface.md)
 - [0023: Separate reusable slugs from immutable tenant origins](0023-separate-reusable-slugs-from-tenant-origins.md)
+- [0024: Separate trusted platform and untrusted tenant domains](0024-separate-platform-and-tenant-domains.md)
 - [Static-publication threat model](../threat-model/static-publication.md)

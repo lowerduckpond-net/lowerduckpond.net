@@ -39,7 +39,8 @@ procedures for an existing tenant.
 Enable production only after the complete disposable-host suite passes and a
 production preflight records all of these facts:
 
-1. the ADR 0024 PSL and supported-browser qualification passes;
+1. the ADR 0024 dual-domain DNS, TLS, supported-browser, and Caddy cookie-policy
+   qualification passes;
 2. the dedicated archive Space, credential isolation, version operations, and
    empty-accounting baseline pass;
 3. the dedicated operator forced-command and denial tests pass;
@@ -57,9 +58,10 @@ reconciliation, and post-reboot HTTPS. Remove it only through the ordinary
 audited lifecycle. No real tenant is onboarded until the canary report passes.
 
 Record the first successful enablement in root-owned platform state, including
-the configuration version, pinned origin suffix, and acceptance-evidence
-digest. Reconciliation requires that launch record once tenant history exists;
-it cannot infer launch authority merely from a configuration boolean.
+the configuration version, trusted platform domain, pinned alias and origin
+suffixes, cookie-policy version, and acceptance-evidence digest.
+Reconciliation requires that launch record once tenant history exists; it
+cannot infer launch authority merely from a configuration boolean.
 
 ## Consequences
 
@@ -92,6 +94,6 @@ configuration mistake would become an unaudited bulk lifecycle transition.
 
 - [0017: Atomically activate immutable static releases](0017-atomically-activate-static-releases.md)
 - [0022: Test static publication as a security boundary](0022-test-static-publication-as-a-security-boundary.md)
-- [0024: Use lowerduckpond.net as the tenant public suffix](0024-use-lowerduckpond-net-as-the-tenant-public-suffix.md)
+- [0024: Separate trusted platform and untrusted tenant domains](0024-separate-platform-and-tenant-domains.md)
 - [0025: Separate tenant archives from platform backups](0025-separate-tenant-archives-from-platform-backups.md)
 - [0026: Separate static operation from host administration](0026-separate-static-operation-from-host-administration.md)

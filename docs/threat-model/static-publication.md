@@ -21,8 +21,10 @@ features require their own threat-model extensions before activation.
 
 - Tenant content cannot read or modify host secrets, host configuration, Caddy
   administration, another tenant, or backup credentials.
-- Tenant JavaScript cannot set parent-domain cookies that reach the platform or
-  another tenant.
+- Tenant JavaScript cannot set cookies that reach the trusted `.net` platform,
+  and no Milestone 3 `.com` route consumes incoming cookies or emits
+  `Set-Cookie`. Cross-tenant browser-local `.com` cookie integrity is not a
+  security objective.
 - Reassigning a human-readable slug cannot transfer a browser origin, service
   worker, cookie, or tenant-controlled storage to the next tenant.
 - Importing a portable bundle cannot claim its embedded tenant identity,
@@ -47,6 +49,7 @@ features require their own threat-model extensions before activation.
 - The Cloudflare DNS-edit token read by Caddy.
 - Caddy's root-owned configuration and Caddy-only admin socket.
 - Administrative SSH access and the root privilege boundary.
+- The separately registered `.net` platform and `.com` tenant namespaces.
 - Root-owned authorization jobs, the pinned platform namespace record, tenant
   manifests, immutable releases, canonical-origin and alias routes, archives,
   and audit history.
@@ -131,7 +134,8 @@ record.
 | ZIP bomb, decoder allocation, oversized or overlapping metadata, deep paths, implicit-directory inflation, disk or inode exhaustion | Structurally gate end, directory, extra-field, offset, region, path-byte, component, and depth bounds before a decoder; count each materialized explicit or implicit directory once; allow only stored and Deflate deployment methods; require matching local and central headers; and constrain the privileged parser by memory, swap, task, descriptor, CPU, and runtime limits. Give portable import and restore a bounded raw-envelope allowance, then strip its fixed prefix and enforce the unchanged tenant-tree limits. Enforce compressed, expanded, per-file, total-entry, and ratio limits during streaming extraction and delete failed staging trees. Remove persistent provisioner-writable storage, hard-cap its private ephemeral workspace by aggregate bytes and inodes, bound root snapshots and cleanup, and preserve a host free-space reserve. |
 | Duplicate, Unicode, slash, backslash, case, or export-encoding ambiguity | Retain pre-normalization spelling and provenance. Coalesce only an exactly matching explicit directory and implied parent; reject duplicate explicit records, file/directory conflicts, and distinct spellings that collide after NFC normalization or case folding. Generate manifests canonically and define every portable ZIP byte: JSON, checksums, member order, stored encoding, timestamps, flags, modes, metadata, central directory, and archive digest. |
 | Duplicate YAML mapping keys | Reject duplicates during YAML composition, before schema validation or canonical JSON generation can discard the ambiguity. |
-| Platform or cross-tenant cookie poisoning | Seek Private PSL admission for `lowerduckpond.net` and gate publication on acceptance plus supported-browser tests proving its immediate children are distinct sites. If the small project is ineligible, declined, removed, or not propagated, require a replacement isolation ADR rather than falling back to ordinary siblings. Serve tenant content only from immutable UUID-derived children, reserve `secure` and `hosting`, keep apex and alias responses platform-controlled, and use only host-bound `__Host-` authentication cookies plus Origin/CSRF checks. |
+| Tenant content poisons platform authentication cookies or exploits same-site request handling | Keep every tenant-controlled origin on `lowerduckpond.com` and every trusted application on `lowerduckpond.net`. Use only unique host-bound `__Host-` platform session cookies, exact-Origin and CSRF validation, no credentialed tenant CORS, and no state-changing safe-method routes. Browser tests prove `.com` cannot set or receive `.net` cookies and that the two registrable domains are cross-site. |
+| One `.com` tenant injects parent-domain cookies visible to another tenant | Treat the complete `.com` namespace as untrusted. Remove incoming `Cookie` before every static tenant handler, remove outgoing `Set-Cookie` on all Milestone 3 `.com` responses, never vary routing or static bytes by cookies, and omit their values from logs. Test and document that JavaScript can still create `Domain=lowerduckpond.com` cookies, confuse ordinary client-side cookie names, consume shared cookie capacity, or trigger a per-browser oversized-header failure. Require host-bound `__Host-` names where a tenant needs cookie-name integrity and a new ADR before any dynamic, authenticated, or privileged `.com` application. |
 | Slug reassignment transfers persistent browser state | Treat the slug hostname only as a platform alias. Redirect its exact bare root without caching, referrer, cookie, path, query, tenant body, tenant header, or caller-selected target to the immutable tenant origin. Never reassign a tenant ID or canonical hostname; release only the slug mapping. |
 | Alias becomes a confused deputy, secret sink, or stale content URL | Generate its destination solely from root-owned tenant ID and suffix, redirect only active tenants, reject every non-root path, query, and unsupported method without forwarding, apply `Cache-Control: no-store` to every redirect and generic failure so lifecycle changes cannot leave a cached positive or negative result, discard sensitive alias request fields before logging, and test that uploaded bytes and service workers are unreachable at the alias. |
 | Mutation after validation | Root performs final extraction; active releases and complete Caddy generations are root-owned and immutable to Caddy and the provisioner. |
@@ -196,12 +200,13 @@ Implementation and review must preserve these invariants:
 9. Authoritative manifests, observed state, deployment and archive records, and
    audit history are root-owned and writable only through narrow validated or
    append-only operations.
-10. No tenant-controlled response is served from the exact
-    `lowerduckpond.net` apex, a reusable slug alias, or a hostname sharing a
-    registrable domain with the platform or another tenant. Supported-browser
-    tests must recognize the Private PSL boundary before publication. A slug
-    alias returns only the fixed root-generated redirect contract in ADR 0023
-    and holds no tenant or authentication state. Its HTTP listener applies the
+10. No tenant-controlled response is served from any `lowerduckpond.net` host,
+    the exact `lowerduckpond.com` apex, or a reusable slug alias. Tenant bytes
+    are served only from immutable UUID-derived `.com` origins. Every
+    Milestone 3 `.com` response strips `Set-Cookie`, every static tenant handler
+    receives no `Cookie`, and no route depends on cookie state. A slug alias
+    returns only the fixed root-generated redirect contract in ADR 0023 and
+    holds no tenant or authentication state. Its HTTP listener applies the
     alias allowlist before general HTTPS upgrades and never forwards a rejected
     path or query.
 11. A rollback cannot transition a tenant out of `suspended`; only `resume` may
@@ -308,6 +313,12 @@ Implementation and review must preserve these invariants:
   filesystem can cross the intended boundary.
 - Static JavaScript can harm or mislead site visitors even though it does not
   execute on the host; content policy and browser protections remain necessary.
+- Tenant JavaScript can create parent-domain `.com` cookies visible to sibling
+  tenants, consume shared browser cookie capacity, and cause client-side
+  cookie-name confusion or per-browser request failure. Caddy ignores and
+  strips HTTP cookies for the static tier, and the separate `.net` domain keeps
+  this residual risk outside platform authentication, but tenant cookie jars
+  are not mutually isolated.
 - Limits reduce but do not eliminate availability impact from expensive valid
   content or high request volume.
 - A stale or non-conforming cache can retain an obsolete alias redirect or
@@ -319,8 +330,9 @@ Implementation and review must preserve these invariants:
 - A trusted administrator can intentionally override deletion safeguards or
   directly modify the host.
 
-These risks are accepted for the static pilot and must be revisited before
-custom domains, public upload, PHP, or multi-host provisioning.
+These risks are accepted for the static pilot and must be revisited before an
+authenticated `.com` apex, custom domains, public upload, PHP, or multi-host
+provisioning.
 
 ## Review and acceptance gates
 
@@ -333,6 +345,9 @@ custom domains, public upload, PHP, or multi-host provisioning.
 - Unit, property, concurrency, failure-injection, Molecule, Testinfra, restore,
   and reconciliation tests required by ADR 0022 pass.
 - A disposable-host exercise passes before production.
+- Browser and installed-host evidence proves the `.com`/`.net` boundary and
+  Caddy cookie policy while also recording the accepted sibling `.com` cookie
+  behavior.
 - A reserved production canary completes deploy, HTTPS, rollback, suspension,
   restore, backup recovery, reconciliation, and cleanup from the trusted
   workstation.
