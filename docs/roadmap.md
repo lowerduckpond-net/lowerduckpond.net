@@ -301,6 +301,7 @@ kind: Site
 metadata:
   id: 0191e2c4-8f7a-7c3b-8d1e-5f62047a2100
   slug: duck-repair
+  canonicalOrigin: t-0191e2c48f7a7c3b8d1e5f62047a2100.example
 spec:
   runtime: static
   desiredState: active
@@ -320,10 +321,14 @@ domain according to supported browsers. A reusable `<slug>.lowerduckpond.net`
 platform alias redirects only its bare root to that canonical origin and never
 serves tenant-controlled content. Arbitrary and custom domains are not accepted
 in this version. Selecting and provisioning the origin-isolated tenant
-namespace is required before the production canary. The tenant ID and canonical
-origin do not change when a public slug changes. Desired manifests are stored
-as canonical JSON, while observed activation state and immutable deployment
-records remain separate.
+namespace is required before the production canary. A versioned root-owned
+platform record pins its suffix before the first tenant is created, and each
+root-generated manifest stores the complete origin. Convergence and
+reconciliation fail closed unless configuration, the platform record, and the
+rederived manifest origin agree. The tenant ID and canonical origin do not
+change when a public slug changes. Desired manifests are stored as canonical
+JSON, while observed activation state and immutable deployment records remain
+separate.
 
 ### Provisioner behavior
 
@@ -337,8 +342,12 @@ Implement idempotent commands or jobs for:
 - Remove the provisioner's persistent writable home and job directory; place
   its temporary work in a private service workspace hard-capped at 64 MiB and
   4,096 inodes while root owns intake, job records, and activation staging.
-- Generate immutable tenant IDs at the root boundary; derive and validate the
-  canonical tenant hostname without accepting a caller ID or domain.
+- Initialize and back up the root-owned platform namespace record only before
+  tenant history exists; reject later configured suffix drift unless a future
+  explicit origin-migration design authorizes it.
+- Generate immutable tenant IDs at the root boundary; persist and independently
+  rederive each canonical tenant hostname from the pinned namespace without
+  accepting a caller ID or domain.
 - Validate live slug uniqueness and both canonical and alias hostname lengths.
 - Reserve slugs inside the serialized root-owned state transaction so
   concurrent creates or renames cannot commit the same alias.
@@ -450,6 +459,9 @@ Implement idempotent commands or jobs for:
 - Assign the released slug to another tenant and prove its alias points to a
   different canonical origin while no tenant bytes, path, query, cookie, or
   service worker are exposed at the alias.
+- Change or remove the configured and persisted tenant-origin suffix across
+  convergence, startup, reconciliation, backup restore, and an empty-live-tenant
+  state; prove every mismatch fails closed and no canonical route changes.
 - Run the same provisioning job twice and prove convergence.
 - Race creates and rename against the same slug and prove exactly one operation
   can commit it.

@@ -33,10 +33,9 @@ Independently enforce the same grammar in the root validator with an ASCII
 privileged boundary. Maintain a committed reserved-name list. Because the
 alphabet is ASCII, the byte and character counts are equal. Validate the
 complete `<slug>.lowerduckpond.net` alias length before persistence. Separately
-validate the configured tenant-origin suffix so the UUID-derived canonical
+validate the normalized tenant-origin suffix so the UUID-derived canonical
 hostname remains within the DNS limit. Derive both hostnames from root-owned
-state and configuration; do not accept an arbitrary domain or redirect target
-in this version.
+state; do not accept an arbitrary domain or redirect target in this version.
 
 The tenant-origin namespace must isolate mutually untrusted tenants from
 `lowerduckpond.net` and from one another at the browser cookie boundary. Each
@@ -58,10 +57,32 @@ Milestone 3 prerequisite. The existing `*.lowerduckpond.net` DNS and certificate
 foundation is used only for platform-controlled slug aliases and must not be
 used for tenant-controlled content.
 
-The desired manifest records the tenant ID, slug, `runtime: static`, desired
-lifecycle state, and quotas. The `create` request supplies the desired slug and
-quotas but omits `metadata.id`; its root-owned result and persisted canonical
-manifest contain the generated tenant ID. `create` persists that manifest with
+After that prerequisite is verified and before the first tenant is created, an
+explicit root-owned initialization operation persists and syncs a versioned
+platform namespace record containing the normalized tenant-origin suffix. It
+may initialize only when desired state, deployment and archive records, tenant
+audit history, and deletion tombstones are all empty. Once any tenant identity
+has been created, the record and suffix are immutable even after every tenant
+is deleted. The record is authoritative control-plane state covered by backup
+and disaster recovery, not a value that Ansible may replace from current
+configuration.
+
+Host convergence, startup, and reconciliation require the configured suffix to
+exactly match the platform namespace record before changing a Caddy generation.
+A missing record alongside tenant history, a configuration mismatch, or an
+invalid record fails closed without removing old origins or publishing new
+ones. Changing the suffix requires a separately designed origin-migration
+operation that preserves or deliberately retires browser origins; Milestone 3
+provides no such operation.
+
+The desired manifest records the tenant ID, complete canonical origin, slug,
+`runtime: static`, desired lifecycle state, and quotas. The `create` request
+supplies the desired slug and quotas but omits both `metadata.id` and
+`metadata.canonicalOrigin`; its root-owned result and persisted canonical
+manifest contain the generated tenant ID and the origin derived from that ID
+and the pinned suffix. Every later validation and reconciliation recomputes the
+origin from the tenant ID and platform namespace record and requires an exact
+match with `metadata.canonicalOrigin`. `create` persists that manifest with
 `desiredState: undeployed` and no `desiredDeployment`. The deployment reference,
 containing a deployment UUIDv7 and archive SHA-256, becomes required when the
 state changes to `active`, `suspended`, or `archived`. An immutable deployment
@@ -87,8 +108,9 @@ only through an audited operation and retains a tombstone audit event rather
 than representing ordinary mutable state as `deleted`.
 
 Schema-version changes require explicit migration code and fixtures. A stable
-tenant ID and its derived canonical origin do not change when the slug or active
-deployment changes, and a deleted tenant ID is never assigned to a new tenant.
+tenant ID and its persisted, independently rederived canonical origin do not
+change when the slug or active deployment changes, and a deleted tenant ID is
+never assigned to a new tenant.
 
 ## Consequences
 
@@ -109,7 +131,9 @@ origins, rename and deletion may release them for deterministic reprovisioning
 without transferring browser storage between tenants.
 
 Desired and observed state require separate root-owned storage and
-reconciliation logic.
+reconciliation logic. The platform namespace record is an additional
+authoritative backup and recovery input; losing or changing it cannot be
+treated as ordinary configuration convergence.
 UUIDv7 avoids another identifier dependency on Python 3.14 but changes the
 illustrative ULID-shaped identifier in the original roadmap.
 

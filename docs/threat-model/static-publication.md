@@ -41,8 +41,8 @@ features require their own threat-model extensions before activation.
 - The Cloudflare DNS-edit token read by Caddy.
 - Caddy's root-owned configuration and Caddy-only admin socket.
 - Administrative SSH access and the root privilege boundary.
-- Tenant manifests, immutable releases, canonical-origin and alias routes,
-  archives, and audit history.
+- The pinned platform namespace record, tenant manifests, immutable releases,
+  canonical-origin and alias routes, archives, and audit history.
 - Other tenants' content and future credentials.
 - Restic password, Spaces credentials, repository contents, and backup health
   evidence.
@@ -84,7 +84,8 @@ and supply-chain risks.
    root-owned Caddy runtime generation containing a manifest-bound binary,
    environment, canonical tenant-content routes, platform-only slug-alias
    routes, and base configuration, and validates the generation with its own
-   inputs.
+   inputs. Every canonical origin must match both its manifest and independent
+   derivation from the pinned platform namespace record.
 5. Under the publication lock, the activator records intent and atomically
    selects the candidate runtime generation. Configuration-only changes reload
    and commit synchronously. Binary or environment changes persist a phased
@@ -133,6 +134,7 @@ record.
 | Manifest or audit tampering | Keep desired and observed state and append-only audit operations root-owned; allow the provisioner no direct write, replacement, truncation, or deletion authority. |
 | Crash or power loss between filesystem, route, reload, restart handoff, and state changes | Durably sync generation targets and parents before intent, sync intent before selecting and syncing the active reference, persist every restart phase before releasing its lock, sync desired/observed state and audit before clearing intent, and reconcile from durable evidence. |
 | Cross-tenant read or overwrite | Derive all paths from validated UUIDs, prohibit caller paths, use root ownership, and test hostile operations across two tenants. |
+| Configured origin-suffix drift abandons or reassigns browser origins | Pin the normalized suffix in backed-up root-owned platform state before the first tenant, persist each complete derived origin in its manifest, and require configuration, platform state, tenant ID, and manifest origin to agree before route mutation. A change requires an explicit future origin-migration design. |
 | Backup or export captures incompatible generations | Backup uses a shared tenant-state lock; mutation uses it exclusively. Ordinary export captures its current manifest and immutable release into a root-owned snapshot while holding that shared lock. Archive separately snapshots the source manifest for compare-and-swap and the proposed archived manifest for the bundle. Construction consumes only that snapshot, and restored state reconciles before publication. |
 | Concurrent exports exhaust privileged storage | Serialize export and archive construction behind one root-owned host lock; enforce one snapshot, one unacknowledged result, aggregate spool byte/inode ceilings, an encoded-output ceiling, a host free-space reserve, and root-owned terminal, startup, acknowledgement, and expiry cleanup. |
 | Crash after durable archive upload leaves unbounded remote orphans | Sync a construction intent containing a unique object identity before upload, reconcile any associated lifecycle intent first, and preserve the object only when authoritative state binds it. Otherwise delete it or durably quarantine its identity before reopening serialized archive admission. |
@@ -217,9 +219,11 @@ Implementation and review must preserve these invariants:
     audit, request/result, reason, or rate limits to be exceeded; audit evidence
     is never overwritten or rotated without verified off-host recovery evidence.
 25. A tenant ID and its canonical origin are immutable and never reassigned.
-    Rename and deletion may release only the platform-controlled slug alias;
-    allocation consults live desired state rather than historical effort or
-    browser cleanup.
+    The backed-up platform namespace record pins the suffix, and each manifest
+    stores an origin that must exactly match independent derivation from that
+    record and ID. Configuration drift fails closed. Rename and deletion may
+    release only the platform-controlled slug alias; allocation consults live
+    desired state rather than historical effort or browser cleanup.
 26. No structured parser reads an unbounded transport. Raw operation and
     manifest byte ceilings and deadlines run before decoding or correlation
     lookup, constrained decoding precedes canonical-size enforcement, and

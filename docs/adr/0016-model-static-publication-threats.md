@@ -29,13 +29,14 @@ beneath `lowerduckpond.net` remain platform-only aliases that can return only a
 fixed redirect to that canonical tenant origin; they never serve tenant bytes
 or headers. Custom domains and executable content stay outside this boundary.
 
-Desired manifests, observed state, deployment records, archive records, and
-audit history are root-owned. The provisioner may receive narrowly scoped read
-access where reconciliation requires it, but all state changes and audit
-appends pass through validated root-owned operations. Milestone 3 migrates the
-empty provisioner-owned manifest and audit directories created by the
-Milestone 2 host baseline before accepting tenant state. It also removes the
-provisioner's persistent writable home and job directory. The worker receives
+The platform namespace record, desired manifests, observed state, deployment
+records, archive records, and audit history are root-owned. The provisioner may
+receive narrowly scoped read access where reconciliation requires it, but all
+state changes and audit appends pass through validated root-owned operations.
+Milestone 3 migrates the empty provisioner-owned manifest and audit directories
+created by the Milestone 2 host baseline before accepting tenant state. It also
+removes the provisioner's persistent writable home and job directory. The
+worker receives
 a hard byte- and inode-capped private ephemeral workspace; root owns intake,
 job records, and activation staging.
 

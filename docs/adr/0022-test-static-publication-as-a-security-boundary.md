@@ -159,6 +159,15 @@ the deleted canonical hostname is not routed or reassigned. Suspension and
 archive remove both route classes, while resume and restore republish both for
 the same tenant ID.
 
+Namespace tests initialize the root-owned platform record only with completely
+empty tenant state and history, then create a tenant and prove the suffix cannot
+be reinitialized even after ordinary deletion. They alter configured suffix,
+persisted suffix, and `metadata.canonicalOrigin` independently across Ansible
+convergence, activator startup, reconciliation, export/restore, and disaster
+recovery. A missing record alongside tenant history and every disagreement must
+fail closed before selecting a new Caddy generation; restoring the matching
+record must reproduce the exact preceding canonical origin.
+
 Alias tests prove only an exact `GET` or `HEAD` for a current active slug's bare
 root receives the fixed `302`; it includes `Cache-Control: no-store` and
 `Referrer-Policy: no-referrer`, sets no cookie, and derives its destination only

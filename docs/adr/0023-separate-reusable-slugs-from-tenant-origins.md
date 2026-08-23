@@ -26,8 +26,11 @@ Give every tenant two distinct public identifiers:
   `t-<tenant-uuid-without-hyphens>.<tenant-origin-suffix>`. The root activator
   generates the immutable UUIDv7 tenant ID during `create`; a caller cannot
   choose or replace it. Tenant-controlled content and headers are served only
-  from this hostname. The configured tenant-origin suffix must make every such
-  hostname a distinct registrable domain according to supported browsers.
+  from this hostname. The root-owned platform namespace record pins the
+  tenant-origin suffix, and the canonical manifest stores the complete derived
+  origin. They must match on every mutation and reconciliation. The pinned
+  suffix must make every such hostname a distinct registrable domain according
+  to supported browsers.
 - The **slug alias** is `<slug>.lowerduckpond.net`. It is a reusable,
   platform-controlled navigation handle, not a tenant origin. No uploaded
   bytes, tenant headers, tenant redirect target, or tenant JavaScript are ever
@@ -47,11 +50,13 @@ status, and timing; they discard raw paths, queries, `Cookie`, `Authorization`,
 and `Referer` before persistence.
 
 The redirect generator accepts only the root-owned slug-to-tenant mapping and
-derives the destination from the stored tenant ID and configured suffix. DNS
-aliases, reverse-proxying tenant bytes through the slug hostname, arbitrary
-redirect destinations, and path or query forwarding are prohibited because
-they would preserve the recyclable hostname as a security or data-transfer
-boundary.
+uses the manifest origin after independently rederiving it from the stored
+tenant ID and pinned platform namespace. Configuration drift, a missing
+namespace record, or disagreement with the manifest fails closed before route
+generation. DNS aliases, reverse-proxying tenant bytes through the slug
+hostname, arbitrary redirect destinations, and path or query forwarding are
+prohibited because they would preserve the recyclable hostname as a security
+or data-transfer boundary.
 
 One complete Caddy runtime generation contains both route classes:
 
@@ -74,7 +79,8 @@ Tenant IDs and canonical hostnames are never reassigned. The deletion audit
 tombstone records the retired tenant ID for evidence, but it does not reserve
 the tenant's former slugs. A restore of the same archived tenant preserves its
 tenant ID and canonical origin; importing content as a new tenant creates a
-new identity and origin.
+new identity and origin. The pinned suffix cannot change merely because no live
+tenant remains; an origin migration requires a separate future design.
 
 The friendly alias is not a permanent content URL. Operators and the later
 portal may display it for discovery, while exports and status records retain

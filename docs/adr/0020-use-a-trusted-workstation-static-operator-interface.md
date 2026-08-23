@@ -53,9 +53,9 @@ retries cannot accumulate files ahead of privileged validation.
 
 The `create` request supplies a slug and quotas but no tenant ID. The root
 activator generates that immutable ID and returns the resulting canonical
-manifest and UUID-derived tenant origin. Later operations identify the tenant
-by that ID; a slug is a mutable alias and is never accepted as proof of tenant
-identity or authority.
+manifest and UUID-derived tenant origin from the pinned platform namespace.
+Later operations identify the tenant by that ID; a slug is a mutable alias and
+is never accepted as proof of tenant identity or authority.
 
 Keep manifest validation, archive validation, lifecycle orchestration, and
 privileged activation behind transport-independent Python interfaces. The SSH

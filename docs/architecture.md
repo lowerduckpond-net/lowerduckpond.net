@@ -226,8 +226,11 @@ of supported browsers. This may use a project-controlled private suffix after
 browser recognition or another source of distinct registrable tenant domains.
 A separate shared registrable domain without that boundary protects the
 platform but does not isolate tenants from one another. Tenant IDs and their
-canonical origins are immutable and never reassigned; only their friendly slug
-aliases are mutable and recyclable.
+canonical origins are immutable and never reassigned. A backed-up root-owned
+platform record pins the tenant-origin suffix before the first tenant exists,
+and every canonical manifest records the complete derived origin; configuration
+drift or disagreement fails closed. Only friendly slug aliases are mutable and
+recyclable.
 
 `lowerduckpond.com` is configured as an ordinary independent tenant hostname and receives its own automatically managed certificate. Custom tenant domains can be considered later; they are not required for the initial service.
 

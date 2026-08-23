@@ -235,9 +235,10 @@ input. It does not accept arbitrary destination paths, commands, or Caddy
 directives, and it repeats every security-critical check even when the
 unprivileged provisioner already performed a preflight.
 
-The activator is also the only ordinary writer of root-owned desired manifests,
-observed state, deployment and archive records, and append-only audit events.
-The provisioner never receives directory write permission for those stores.
+The activator is also the only ordinary writer of the root-owned platform
+namespace record, desired manifests, observed state, deployment and archive
+records, and append-only audit events. The provisioner never receives directory
+write permission for those stores.
 Milestone 3 also removes the provisioner's ownership of the persistent home,
 intake, job, manifest, and audit directories installed by the Milestone 2 empty
 host baseline. The trusted SSH adapter creates root-owned intake artifacts and
