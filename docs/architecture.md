@@ -142,6 +142,9 @@ A static tenant receives:
 - Read-only content access from Caddy through a root-generated route that names
   one exact release.
 - File-count and storage quotas.
+- Portable import into an already-created undeployed tenant; imported content
+  receives the target's existing identity, canonical origin, slug, and quotas
+  rather than reclaiming values embedded in the export.
 - A generated canonical route in a tenant namespace where each mutually
   untrusted tenant is a distinct registrable domain according to supported
   browsers.
@@ -262,7 +265,9 @@ Recommended lifecycle behavior:
 - Dynamic containers can be stopped while retaining files and database contents.
 - Archival produces a portable tenant bundle containing site files, metadata, and an SQL dump when applicable.
 - Deletion occurs only after a documented retention period and successful archival attempt.
-- Owners can request an export without cancelling.
+- Owners can request an export without cancelling and can later import its
+  content into a separately created tenant. Portable import does not recover a
+  lost tenant identity or browser origin; full-platform backup restore does.
 
 Exact inactivity and retention intervals should be configuration, not code constants. A reasonable pilot policy is owner confirmation every 90 days, a multi-notice grace period, and at least 90 additional days of recoverable archive retention.
 
@@ -285,7 +290,8 @@ Primary backups should be application-aware rather than relying only on Droplet 
   restore-verified snapshot and durable chain index.
 - DigitalOcean Droplet backups or snapshots provide a secondary whole-machine recovery option.
 - Restore tests run on a schedule and produce an auditable result.
-- Tenant export and disaster recovery use the same archive format where practical.
+- Tenant export, portable import, and disaster recovery use the same archive
+  format where practical while retaining distinct identity authority.
 
 Recovery objectives can remain modest for a free hobby service, but they should be explicit. The initial target should favor correctness and recoverability over short recovery time.
 
@@ -377,7 +383,7 @@ Keeping the first customer separate prevents the platform from receiving undocum
 | One tenant exhausts the host | Per-container limits, per-tenant quotas, alerting, administrative suspension, bounded request sizes and timeouts |
 | Shared SQL leaks data | Separate database/user per tenant, least-privilege grants, no shared credentials, cross-tenant integration tests |
 | Signup automation attracts abuse | Verified identity, initial approval queue, rate limits, clear acceptable-use policy and fast suspension tooling |
-| Automated pruning destroys wanted content | Multi-stage suspension/archive/delete flow, repeated notices, configurable intervals, export and restore support |
+| Automated pruning destroys wanted content | Multi-stage suspension/archive/delete flow, repeated notices, configurable intervals, export, portable import, and authoritative restore support |
 | Infrastructure cannot be reproduced | OpenTofu, Ansible, pinned dependencies, tested restores, minimal manual console configuration |
 | Public source exposes production secrets | Secret scanning, ignored state, scoped tokens, encrypted secret delivery, sanitized operational examples |
 | A single Droplet fails | Encrypted off-host backups, application-aware dumps, host rebuild automation and restore drills |

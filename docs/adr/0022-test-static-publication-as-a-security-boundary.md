@@ -17,7 +17,7 @@ Deliver Milestone 3 through these reviewable layers:
 1. threat model, ADRs, schema, fixtures, and test matrix;
 2. manifest parsing, validation, slug and immutable-origin rules, and
    desired/observed state;
-3. hostile archive validation and deterministic portable export;
+3. hostile archive validation and deterministic portable export/import;
 4. root-owned immutable release activation and generated Caddy routing;
 5. lifecycle commands, reconciliation, rollback, and audit records;
 6. backup locking and restored-state reconciliation; and
@@ -124,9 +124,10 @@ Hostile fixtures must cover traversal, absolute and ambiguous paths, links,
 special entries, duplicate and case-colliding names, expansion and quota abuse,
 arbitrary route input, cross-tenant reads, interrupted activation, failed Caddy
 reload, concurrent deployment, repeated correlation IDs, and restore followed
-by reconciliation. Tests must also prove that the provisioner cannot invoke or
-simulate the operator-authenticated emergency deletion path, modify manifests
-or observed state, or truncate, replace, or remove audit evidence.
+by reconciliation. The same fixtures cover import followed by reconciliation.
+Tests must also prove that the provisioner cannot invoke or simulate the
+operator-authenticated emergency deletion path, modify manifests or observed
+state, or truncate, replace, or remove audit evidence.
 
 Archive-parser fixtures include stored and Deflate success; BZIP2, LZMA with an
 oversized dictionary request, Deflate64, unknown methods, malformed end and
@@ -136,7 +137,7 @@ CRC, or sizes. Installed-host tests exhaust each process limit and verify failed
 staging cleanup, an audit result, no publication, and continued Caddy and backup
 service health.
 
-Intake tests stream deploy and restore artifacts immediately below, at, and one
+Intake tests stream deploy and import artifacts immediately below, at, and one
 byte above their respective 100-MiB and 120-MiB limits. They disconnect and
 stall at every transfer phase, race a second transfer and an idempotent retry,
 exhaust the host free-space reserve, and terminate the adapter before and after
@@ -155,10 +156,11 @@ directories at and over 8 MiB, comments, bounded allowlisted timestamp extras,
 unknown/oversized/malformed extras, ZIP64, record-count mismatch, overlapping or
 aliased regions, gaps, and every checked-arithmetic boundary.
 
-Portable-restore fixtures separately exercise regular-file envelope names at
-1,056/1,057 bytes, directory names including their marker at 1,057/1,058 bytes,
-depths 34/35, central-directory record counts 5,004/5,005, and raw member data
-at 106 MiB and one byte over. Canonical round trips with 1,024-byte,
+Portable-artifact fixtures for import and restore separately exercise
+regular-file envelope names at 1,056/1,057 bytes, directory names including
+their marker at 1,057/1,058 bytes, depths 34/35, central-directory record counts
+5,004/5,005, and raw member data at 106 MiB and one byte over. Canonical round
+trips with 1,024-byte,
 32-component tenant file and directory paths—including the directory's added
 marker—and another with 5,000 tenant entries must pass the raw gate and then the
 unchanged tenant validator. Fixed metadata or the implicit envelope root cannot
@@ -189,14 +191,31 @@ the deleted canonical hostname is not routed or reassigned. Suspension and
 archive remove both route classes, while resume and restore republish both for
 the same tenant ID.
 
+Import identity tests export active, suspended, and archived tenant A fixtures,
+create an undeployed tenant B through the ordinary serialized slug-allocation
+path, and import each portable bundle into a fresh target. They prove every content path
+and byte round-trips while the target retains its own tenant ID, canonical
+origin, slug, runtime, and quotas and receives a new deployment ID. Alter each
+embedded source identity, origin, slug, quota, deployment, and lifecycle field
+independently and prove none can become target state. Import to an absent, active, suspended, or
+archived target fails without publication; an exact correlation-and-bundle
+retry converges, while a new correlation after activation fails. A separate
+fixture releases A's slug, reserves it normally for B, imports the bundle, and
+proves the reused alias points only to B's distinct canonical origin.
+Concurrency fixtures pause import after validation, then rename the undeployed
+target or change its quotas. Commit must re-read current target state, publish
+only its current alias if the measured content still fits, and otherwise fail
+without a release or route; it never applies embedded or stale target policy.
+
 Namespace tests initialize the root-owned platform record only with completely
 empty tenant state and history, then create a tenant and prove the suffix cannot
 be reinitialized even after ordinary deletion. They alter configured suffix,
 persisted suffix, and `metadata.canonicalOrigin` independently across Ansible
-convergence, activator startup, reconciliation, export/restore, and disaster
-recovery. A missing record alongside tenant history and every disagreement must
-fail closed before selecting a new Caddy generation; restoring the matching
-record must reproduce the exact preceding canonical origin.
+convergence, activator startup, reconciliation, export/import/restore, and
+disaster recovery. A missing record alongside tenant history and every
+disagreement must fail closed before selecting a new Caddy generation;
+restoring the matching record must reproduce the exact preceding canonical
+origin.
 
 Alias tests prove only an exact `GET` or `HEAD` for a current active slug's bare
 root receives the fixed `302`; it includes `Cache-Control: no-store` and
@@ -265,7 +284,8 @@ absence of leaked waiters, and archive rejection if its source generation
 changes between snapshot and exclusive commit.
 
 Export fixtures give tenant content each reserved metadata basename and prove
-that round-trip restore preserves it below `content/`. Negative fixtures cover
+that round-trip import preserves it below `content/` for ordinary and archived
+exports. Negative fixtures cover
 metadata outside the versioned envelope, duplicate metadata, unknown envelope
 entries, checksum mismatch, and using an export as an ordinary deployment ZIP.
 Golden ordinary-export and archive fixtures assert the complete ZIP bytes,

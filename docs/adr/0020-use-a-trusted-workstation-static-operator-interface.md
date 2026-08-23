@@ -14,7 +14,7 @@ and couple tenant operations to a transport that will soon be replaced.
 
 Provide a trusted-workstation CLI, exposed through documented `just` recipes,
 for `create`, `deploy`, `rollback`, `suspend`, `resume`, `rename`, `export`,
-`archive`, `restore`, `delete`, and `reconcile`.
+`import`, `archive`, `restore`, `delete`, and `reconcile`.
 
 The client connects through the existing restricted administrative SSH path and
 transfers structured operation requests, manifests, and archives into a
@@ -33,10 +33,11 @@ intake-admission lock, reconciles abandoned intake, and claims the host's one
 in-progress-or-admitted artifact slot. It streams bounded chunks into an
 exclusively created mode-`0600` regular temporary file beneath the fixed intake
 directory, without following links. A deploy ZIP may contain at most 100 MiB;
-an explicit restore may contain at most the 120-MiB portable-bundle ceiling; an
-operation that takes no artifact rejects one. The adapter reads at most the
-applicable ceiling plus one byte, requires EOF at or below the ceiling, and
-never writes the extra byte.
+an import may contain at most the 120-MiB portable-bundle ceiling; restore reads
+its exact bound remote object and accepts no uploaded artifact. An operation
+that takes no artifact rejects one. The adapter reads at most the applicable
+ceiling plus one byte, requires EOF at or below the ceiling, and never writes
+the extra byte.
 
 Partial bytes count against an intake-wide allocation ceiling of the applicable
 artifact limit rounded up by one filesystem block. Admission and every write
@@ -56,6 +57,14 @@ activator generates that immutable ID and returns the resulting canonical
 manifest and UUID-derived tenant origin from the pinned platform namespace.
 Later operations identify the tenant by that ID; a slug is a mutable alias and
 is never accepted as proof of tenant identity or authority.
+
+`import` identifies an already-created `undeployed` target by tenant ID and
+uploads a caller-held portable export. It is authenticated like `deploy`, but the
+host derives the target slug, quotas, identity, canonical origin, and candidate
+manifest exclusively from current root-owned state. The bundle supplies only
+validated content and provenance. The separate `restore` command remains
+available only for an `archived` tenant and consumes its exact authoritative
+remote object version without accepting caller bytes.
 
 Keep manifest validation, archive validation, lifecycle orchestration, and
 privileged activation behind transport-independent Python interfaces. The SSH

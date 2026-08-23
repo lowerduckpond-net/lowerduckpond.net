@@ -356,7 +356,7 @@ Implement idempotent commands or jobs for:
   `fullmatch` before persisting a slug.
 - Stage and validate an uploaded archive.
 - Stream artifacts through one root-owned intake slot while enforcing the
-  100-MiB deploy or 120-MiB restore ceiling, aggregate allocated-space and host
+  100-MiB deploy or 120-MiB import ceiling, aggregate allocated-space and host
   free-space bounds, transfer deadlines, and terminal/startup cleanup before
   any privileged parser runs.
 - Reject unsafe or ambiguous paths, links, special files, archive expansion,
@@ -403,7 +403,7 @@ Implement idempotent commands or jobs for:
 - Retain only active, last-known-good, and current-intent Caddy generations;
   enforce a 256-MiB/4,096-inode aggregate cap, unique-inode accounting,
   free-space admission, and secret-safe cleanup.
-- Suspend, resume, export, archive, restore, and delete a site.
+- Suspend, resume, export, import, archive, restore, and delete a site.
 - Keep canonical tenant origins stable across rename and restore; release slugs
   after committed rename or deletion without reassigning a tenant origin.
 - Enforce and table-test the complete lifecycle operation/state matrix; reject
@@ -441,11 +441,15 @@ Implement idempotent commands or jobs for:
   the host free-space reserve, and bounded acknowledgement/expiry cleanup.
 - Wrap portable exports in the versioned `lowerduckpond-export-v1/` envelope,
   with fixed metadata paths and all tenant-controlled files below `content/`.
-- Give restore a separate raw-envelope budget of 5,004 records, 1,056-byte file
-  names or 1,057-byte directory names including their marker, 34 components,
-  and 106 MiB of member data. Strip the marker and fixed prefix before
-  reapplying unchanged tenant-tree quotas so boundary-valid exports remain
-  restorable.
+- Import a caller-held portable export only into an existing `undeployed` target.
+  Preserve the target's root-owned identity, canonical origin, slug, runtime,
+  and quotas; create a new deployment and treat every embedded source-manifest
+  field as untrusted provenance rather than target state.
+- Give portable import and restore a separate raw-envelope budget of 5,004
+  records, 1,056-byte file names or 1,057-byte directory names including their
+  marker, 34 components, and 106 MiB of member data. Strip the marker and fixed
+  prefix before reapplying unchanged tenant-tree quotas so boundary-valid
+  exports remain importable and bound archives remain restorable.
 - Canonicalize every portable ZIP field and use stored entries so the same
   export snapshot has byte-identical output and a reproducible archive digest.
 - Store versioned SHA-256 evidence for canonical manifest bytes and a
@@ -479,6 +483,9 @@ Implement idempotent commands or jobs for:
   their streaming limits, single slot, free-space reserve, and cleanup prevent
   accumulated artifacts before activation.
 - Suspend and restore without data loss.
+- Export active, suspended, and archived tenants, import each bundle into a separately
+  created undeployed tenant, and prove content round-trips while target
+  identity, origin, slug, quotas, and a new deployment remain authoritative.
 - Delete a never-deployed reservation normally, then prove that deployed or
   ambiguous history cannot use the archive-free transition.
 - Prove the production storage policy cannot expire a current archive bundle
@@ -520,7 +527,7 @@ Implement idempotent commands or jobs for:
 
 ### Exit criteria
 
-An administrator can create, deploy, suspend, restore, export, and delete a static site without manually editing the host.
+An administrator can create, deploy, suspend, export, import, restore, and delete a static site without manually editing the host.
 
 ## 7. Milestone 4: control plane and lifecycle automation — planned
 
@@ -722,7 +729,8 @@ This project is unusually well suited to demonstrating quality architecture rath
 - **Unit tests:** lifecycle policy, slug rules, quota calculations, manifest generation, notification deduplication, and job convergence.
 - **Integration tests:** control plane, queue, provisioner, database allocation, Caddy generation, and backup adapter.
 - **Isolation tests:** hostile tenant attempts against filesystem, network, process, SQL, metadata, and resource boundaries.
-- **End-to-end tests:** signup through HTTPS deployment, renewal, suspension, export, restore, and cancellation.
+- **End-to-end tests:** signup through HTTPS deployment, renewal, suspension,
+  export, portable import, restore, and cancellation.
 - **Recovery tests:** recreate a host and restore one tenant and the platform control data.
 
 ### Ephemeral environment strategy
@@ -762,7 +770,8 @@ The first public release is ready when:
 - Infrastructure and host configuration can rebuild the service from scratch.
 - Wildcard HTTPS renews automatically.
 - Signup and approval create a static tenant without manual server edits.
-- Deploy, rollback, suspend, export, archive, restore, and delete are idempotent.
+- Deploy, rollback, suspend, export, import, archive, restore, and delete are
+  idempotent.
 - Quotas and audit events are visible.
 - Encrypted off-host backups and a restore test are current.
 - `lowerduckpond.com` is deployed as an ordinary tenant.

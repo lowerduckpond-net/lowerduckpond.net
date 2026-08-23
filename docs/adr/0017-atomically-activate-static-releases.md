@@ -236,7 +236,7 @@ bypasses it.
 Artifact transfer has an earlier root-owned byte gate. The restricted SSH
 adapter serializes intake before reading, permits one in-progress or admitted
 regular artifact, streams no more than the operation-specific 100-MiB deploy or
-120-MiB restore ceiling, and checks the aggregate intake allocation and host
+120-MiB import ceiling, and checks the aggregate intake allocation and host
 free-space reserve during the write. It publishes the artifact within intake
 only after file and directory sync. Bounded idle and total deadlines, terminal
 cleanup, and startup reconciliation prevent partial or abandoned uploads from

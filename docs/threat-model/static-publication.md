@@ -9,8 +9,9 @@
 
 This model covers the Milestone 3 path from a static tenant manifest and ZIP
 archive on the trusted operator workstation through intake, validation,
-immutable release installation, Caddy route activation, lifecycle operations,
-backup, restore, and reconciliation on the single production host.
+portable import, immutable release installation, Caddy route activation,
+lifecycle operations, backup, restore, and reconciliation on the single
+production host.
 
 It excludes the Milestone 4 public control plane, custom domains, PHP, tenant
 containers, tenant SQL, and arbitrary executable server-side content. Those
@@ -24,6 +25,8 @@ features require their own threat-model extensions before activation.
   another tenant.
 - Reassigning a human-readable slug cannot transfer a browser origin, service
   worker, cookie, or tenant-controlled storage to the next tenant.
+- Importing a portable bundle cannot claim its embedded tenant identity,
+  canonical origin, slug, quotas, deployment, or lifecycle state.
 - A compromised provisioner cannot turn its narrow activation capability into
   arbitrary root, filesystem, process, or Caddy authority.
 - Only validated, quota-compliant regular files become publicly readable.
@@ -113,7 +116,7 @@ record.
 | --- | --- |
 | Path traversal or absolute extraction | Normalize and validate every path twice; extract through directory-relative, no-follow operations; hostile fixtures must fail. |
 | Symlink, hard-link, device, FIFO, socket, or permission abuse | Accept only regular files/directories; normalize modes; inspect ZIP metadata and actual created objects. |
-| ZIP bomb, decoder allocation, oversized or overlapping metadata, deep paths, implicit-directory inflation, disk or inode exhaustion | Structurally gate end, directory, extra-field, offset, region, path-byte, component, and depth bounds before a decoder; count explicit and implicit directories; allow only stored and Deflate deployment methods; require matching local and central headers; and constrain the privileged parser by memory, swap, task, descriptor, CPU, and runtime limits. Give portable restore a bounded raw-envelope allowance, then strip its fixed prefix and enforce the unchanged tenant-tree limits. Enforce compressed, expanded, per-file, total-entry, and ratio limits during streaming extraction and delete failed staging trees. Remove persistent provisioner-writable storage, hard-cap its private ephemeral workspace by aggregate bytes and inodes, bound root snapshots and cleanup, and preserve a host free-space reserve. |
+| ZIP bomb, decoder allocation, oversized or overlapping metadata, deep paths, implicit-directory inflation, disk or inode exhaustion | Structurally gate end, directory, extra-field, offset, region, path-byte, component, and depth bounds before a decoder; count explicit and implicit directories; allow only stored and Deflate deployment methods; require matching local and central headers; and constrain the privileged parser by memory, swap, task, descriptor, CPU, and runtime limits. Give portable import and restore a bounded raw-envelope allowance, then strip its fixed prefix and enforce the unchanged tenant-tree limits. Enforce compressed, expanded, per-file, total-entry, and ratio limits during streaming extraction and delete failed staging trees. Remove persistent provisioner-writable storage, hard-cap its private ephemeral workspace by aggregate bytes and inodes, bound root snapshots and cleanup, and preserve a host free-space reserve. |
 | Duplicate, Unicode, slash, backslash, case, or export-encoding ambiguity | Normalize first and reject ambiguity and collisions. Generate manifests canonically and define every portable ZIP byte: JSON, checksums, member order, stored encoding, timestamps, flags, modes, metadata, central directory, and archive digest. |
 | Duplicate YAML mapping keys | Reject duplicates during YAML composition, before schema validation or canonical JSON generation can discard the ambiguity. |
 | Platform or cross-tenant cookie poisoning | Serve tenant content only from immutable UUID-derived hostnames that are distinct registrable domains according to supported browser Public Suffix List behavior. Keep `lowerduckpond.net` responses platform-controlled and platform authentication cookies host-only. |
@@ -141,6 +144,7 @@ record.
 | Concurrent exports exhaust privileged storage | Serialize export and archive construction behind one root-owned host lock; enforce one snapshot, one unacknowledged result, aggregate spool byte/inode ceilings, an encoded-output ceiling, a host free-space reserve, and root-owned terminal, startup, acknowledgement, and expiry cleanup. |
 | Crash or abort after versioned archive upload leaves billable remote bytes | Sync a construction intent containing a unique key before upload and its returned version ID afterward, then reconcile any associated lifecycle intent. Preserve only an exactly bound version; otherwise permanently delete every version and marker for the key and confirm absence, or keep quarantine charged and archive admission closed. |
 | Repeated restore, re-archive, or deletion accumulates successfully retired bundles | Before a transition unbinds an archive, sync a retirement intent for its exact object and hold the global export lock. Reconcile lifecycle state before cleanup, never delete a still-bound version, and permanently purge and confirm every version and marker after committed unbinding. Charge bound, constructing, retiring, quarantined, and unknown objects against hard aggregate remote key, version/marker, and byte ceilings; failed cleanup closes archive admission. |
+| Portable import reclaims a tenant identity or bypasses slug and quota policy | Permit import only into an existing `undeployed` target selected by root-owned tenant ID. Validate the bundle and source manifest as untrusted provenance, then under publication and exclusive tenant-state re-read current target state, recheck measured content against current quotas, and derive the active manifest only from current authoritative identity, origin, slug, runtime, quotas, and a new root-generated deployment. Require ordinary `create` to resolve slug allocation first; use full-platform backup restore, not import, to preserve a lost identity. |
 | Unsafe or implementation-dependent archive, restore, or deletion evidence | Put the proposed archived manifest—not its active or suspended source—in the durable bundle and bind the archive record to versioned canonical-manifest and length-delimited release-tree digests, the desired deployment, exact bundle bytes, and stored object version. Recompute the specified representations before archive commit and delete; restore as a new deployment. Permit ordinary archive-free deletion only when root-owned history proves the tenant was never deployed, and keep emergency deletion behind a distinct root-only operator command that the provisioner cannot invoke. |
 | Oversized, stalled, or abandoned intake transfer exhausts disk | Admit exactly one root-owned artifact, enforce the operation-specific byte ceiling plus aggregate allocation and host-free-space bounds while streaming, bound idle and total transfer time, publish only after sync, and clean every terminal or startup artifact before reopening admission. |
 | Intake artifact replacement or mutation through an existing descriptor | Open beneath the fixed intake directory without following links and claim the request. Stream the opened bytes exactly once into an exclusively created root-owned snapshot while enforcing the compressed-size limit and computing the digest; sync and close the snapshot, then verify the request digest and perform all parsing, validation, and extraction against that snapshot. Never return to the provisioner-writable inode. |
@@ -235,7 +239,7 @@ Implementation and review must preserve these invariants:
     lookup, constrained decoding precedes canonical-size enforcement, and
     retries receive no alternate path.
 27. Root-owned artifact intake contains at most one in-progress or admitted
-    regular file. The SSH adapter enforces the deploy or restore byte ceiling,
+    regular file. The SSH adapter enforces the deploy or import byte ceiling,
     aggregate allocated-space ceiling, host free-space reserve, transfer
     deadlines, durable publication, and terminal/startup cleanup while reading;
     no artifact parser is required to bound intake growth after the fact.
@@ -250,6 +254,11 @@ Implementation and review must preserve these invariants:
     key before clearing its charge. The managed prefix cannot exceed 25 unique
     keys, 25 total data versions or delete markers, or 3,000 MiB across data
     versions; a pending upload reserves one key, version, and 120 MiB.
+30. Portable import is allowed only for an existing `undeployed` target and
+    creates a new deployment from validated content. No embedded source field
+    can replace the target's root-owned ID, canonical origin, slug, runtime,
+    quotas, or lifecycle intent; `create` owns slug conflict resolution and
+    full-platform restore owns recovery of an existing identity.
 
 ## Residual risks
 

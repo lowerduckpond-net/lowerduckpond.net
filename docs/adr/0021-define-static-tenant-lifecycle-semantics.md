@@ -5,10 +5,10 @@
 
 ## Context
 
-Create, deployment, rollback, suspension, archival, restoration, and deletion
-must have stable meanings before they are automated. Ambiguous destructive
-operations or retries could lose content, publish the wrong release, or produce
-state that the Milestone 4 scheduler cannot safely adopt.
+Create, deployment, import, rollback, suspension, archival, restoration, and
+deletion must have stable meanings before they are automated. Ambiguous
+destructive operations or retries could lose content, publish the wrong
+release, or produce state that the Milestone 4 scheduler cannot safely adopt.
 
 ## Decision
 
@@ -43,6 +43,23 @@ route or leave `suspended`. Rollback is invalid for `undeployed` or `archived`
 tenants. Consequently, a delayed rollback queued before suspension cannot
 republish the tenant, and only an explicit `resume` can leave the suspended
 state. Export produces a portable bundle without changing lifecycle state.
+
+Import is a deployment operation distinct from authoritative archive restore.
+It is allowed only for an existing `undeployed` target selected by its immutable
+tenant ID. Root validates an uploaded v1 portable export and its embedded
+`active`, `suspended`, or `archived` source manifest, then validates the content
+against the target's current quotas. The bundle manifest is untrusted
+provenance: its tenant ID, origin, slug, quotas, deployment, and lifecycle state
+cannot modify the target. Root creates a new immutable deployment and derives
+the candidate manifest under publication and exclusive tenant-state from the
+target's then-current ID, canonical origin, slug, runtime, and quotas, changing
+only the deployment reference and state to `active`. It rechecks the computed
+content measurements against those current quotas before commit. The ordinary
+publication transaction therefore either leaves the current `undeployed`
+target intact or commits that complete active deployment and both current
+routes; a concurrent rename or policy change cannot select a stale alias or
+quota. A retry of the same correlation ID and bundle digest returns the
+established result; a new import request after activation fails closed.
 
 Archive derives the proposed canonical `archived` manifest from the current
 manifest and selected deployment, creates and verifies a portable bundle for
@@ -160,6 +177,7 @@ The complete ordinary transition matrix is:
 | `rename` | `undeployed`, `active`, `suspended` | Changes the reusable alias without changing tenant ID, canonical origin, or lifecycle state; only `active` receives a replacement alias route, and the old slug is released after commit. |
 | `export` | `active`, `suspended` | Snapshots the selected deployment without changing state. |
 | `export` | `archived` | Revalidates and returns the bound durable bundle without changing state. |
+| `import` | `undeployed` | Validates a caller-held portable export as untrusted content and provenance, creates a new deployment for the existing target identity, publishes both target routes, and becomes `active`. |
 | `archive` | `active`, `suspended` | Captures and verifies the selected deployment, removes both routes, and becomes `archived`. |
 | `archive` | `archived` | Revalidates the existing bound durable bundle and remains `archived`. |
 | `restore` | `archived` | Validates the bound bundle as a new deployment and becomes `active`. |
@@ -171,6 +189,10 @@ observed state. In particular, archived tenants cannot deploy, roll back,
 suspend, resume, or rename; they must restore first, preventing a manifest
 change from silently detaching the archive evidence. Undeployed tenants cannot
 export, archive, roll back, suspend, or resume because no deployment exists.
+Absent tenants cannot import: `create` must first establish the new identity,
+available slug, canonical origin, and quotas. Active, suspended, and archived
+tenants cannot import under a new correlation ID; ordinary deploy, resume, or
+restore remains the explicit operation for those states.
 The separately authenticated emergency deletion remains outside this ordinary
 matrix.
 
@@ -212,6 +234,13 @@ Published slugs are also reusable after a committed rename or deletion because
 they never served tenant-controlled content. Browser state remains bound to the
 old tenant's UUID-derived canonical origin, which is not reassigned.
 
+Any portable export can round-trip its complete content into a newly created
+tenant without becoming identity-restoration authority. Reusing the old slug is
+possible only if a normal serialized `create` has successfully reserved it;
+the imported tenant still receives a new UUID-derived canonical origin. Full
+platform backup recovery, not portable import, preserves an existing tenant ID
+and origin after authoritative-state loss.
+
 ## Alternatives considered
 
 A branded suspension page was rejected because it reveals tenant status and
@@ -223,7 +252,11 @@ invoke accidentally for a tenant that has ever been deployed. Requiring an
 archive for a provably never-deployed reservation was rejected because it adds
 no recoverable content. Requiring an archive during `create` was rejected
 because it would collapse two accepted operator operations and prevent
-reserving a slug before its first deployment.
+reserving a slug before its first deployment. Overloading archive `restore` for
+caller-supplied exports was rejected because restore's authority comes from the
+exact remote version already bound by archived tenant state. Importing directly
+from `absent` was rejected because identity, slug allocation, origin derivation,
+and quotas belong to the separately idempotent `create` transaction.
 
 ## References
 

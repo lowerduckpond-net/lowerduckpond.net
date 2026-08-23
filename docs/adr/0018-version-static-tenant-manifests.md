@@ -101,6 +101,19 @@ record carries its creation time and correlation ID. Keep observed activation
 status, including the active release, separate from desired state so
 reconciliation can detect and repair drift.
 
+An `import` request identifies an existing `undeployed` target by its root-owned
+tenant ID and supplies a portable bundle, not a replacement desired manifest.
+The activator validates the bundle and its embedded source manifest as
+untrusted provenance, validates the content against the target's current
+quotas, and creates a new deployment record that binds the source bundle and
+content digests. It derives the candidate target manifest only from the current
+undeployed manifest plus the root-generated deployment reference and `active`
+state. The embedded source tenant ID, canonical origin, slug, quotas,
+deployment ID, and lifecycle state never overwrite target state. Therefore an
+import cannot reclaim a deleted identity or browser origin; preserving those
+after platform-state loss requires restoring authoritative control-plane state
+from backup.
+
 Persist desired and observed state, deployment and archive records, and audit
 history in root-owned stores. The root activator validates and commits desired
 state, changes observed state, and appends audit events. The provisioner may
@@ -161,7 +174,9 @@ was rejected because tenants would still share cookies with one another.
 Permissive schemas were rejected because ignored or misspelled security fields
 are unsafe at a privileged boundary. Combining initial creation and deployment
 was rejected because the accepted operator interface exposes them as separate
-idempotent operations.
+idempotent operations. Treating a portable bundle's embedded manifest as
+desired target state was rejected because a caller-controlled artifact cannot
+authorize identity, origin, slug, quota, or lifecycle changes.
 
 ## References
 

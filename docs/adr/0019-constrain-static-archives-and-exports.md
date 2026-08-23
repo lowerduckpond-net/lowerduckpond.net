@@ -56,7 +56,7 @@ root-side extraction:
 
 - at most 100 MiB in an uploaded deployment ZIP;
 - at most 120 MiB in an uploaded v1 portable bundle presented to the explicit
-  restore path, whose content remains subject to the limits below;
+  import path, whose content remains subject to the limits below;
 - at most 100 MiB of extracted regular-file content;
 - at most 5,000 extracted entries in total, counting both regular files and
   directories;
@@ -285,15 +285,21 @@ manifest, never the active or suspended source manifest retained for
 compare-and-swap. `checksums.sha256` lists those two files and every regular
 file below `content/` in normalized bytewise path order. Tenant files always
 appear below `content/`; they can therefore use any otherwise valid path
-without colliding with envelope metadata. Restore rejects entries outside the
-single envelope root, unknown or duplicate metadata, missing required entries,
-and checksum or canonicalization failures before it passes the `content/`
-subtree through the ordinary deployment validator.
+without colliding with envelope metadata. Restore and import reject entries
+outside the single envelope root, unknown or duplicate metadata, missing
+required entries, and checksum or canonicalization failures before passing the
+`content/` subtree through the ordinary deployment validator. Restore accepts
+only the exact durable version bound by authoritative archived state. Import
+accepts an uploaded v1 portable bundle only for an existing `undeployed`
+target and treats its embedded manifest as provenance rather than target state.
+The source may be an ordinary `active` or `suspended` export or a downloaded
+`archived` export; in every case import creates a new target deployment.
 
 Deployment uploads remain the flat, root-`index.html` ZIP format; a portable
-export is not accepted as a deployment archive without the explicit restore
-path. Export does not change site state. Archive and restore use this versioned
-portable bundle; a later Git integration must produce the same validated
+export is not accepted by the ordinary deployment path. The explicit import
+path consumes a caller-held portable bundle, while authoritative restore reads
+the exact remote version bound by the archived source tenant. Export does not
+change site state. A later Git integration must produce the same validated
 internal deployment artifact.
 
 The v1 bundle has one canonical byte representation. Serialize `format.json`
