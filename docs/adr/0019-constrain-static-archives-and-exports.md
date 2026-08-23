@@ -126,41 +126,54 @@ intent and its parent directory. The intent binds the correlation ID, a
 root-generated unique upload-attempt ID, tenant ID, exact source and proposed
 manifest digests, selected deployment and content digests, portable-bundle
 digest and size, and the exact new durable object identity. The object identity
-cannot be caller-selected or overwrite an existing or previously bound object.
-The intent reaches durable `prepared` state before upload begins and durable
-`uploaded` state after the remote object has been independently revalidated;
-recovery needs only its already-synced object identity even if the host dies
-between remote upload success and the phase update.
+begins as the bucket and root-generated unique key; before upload, root lists
+that exact key and requires it to have no current version, noncurrent version,
+or delete marker. It cannot be caller-selected or reuse an existing or
+previously bound key. The intent reaches durable `prepared` state before upload
+begins. After Spaces returns the new version ID, root revalidates that exact
+version's bytes and metadata and durably advances the intent to `uploaded` with
+the version ID. If the host dies between remote success and that phase update,
+reconciliation lists the already-synced unique key to discover and classify all
+versions rather than assuming an unversioned delete removed the bytes.
 
 Archive then—without releasing the export lock—acquires publication followed by
 exclusive tenant-state. It revalidates the exact source manifest, deployment,
 and release digests before committing that already bundled proposed archived
 manifest and its archive record. The archive record binds the proposed
 archived-manifest digest, selected deployment and content digests,
-portable-bundle digest and size, and durable object identity. The bundle alone
-grants no deletion authority before this transaction commits the record.
+portable-bundle digest and size, and the bucket, key, and exact Spaces version
+ID. Revalidation, export, restore, and deletion address that version rather than
+the mutable current-key view. The bundle alone grants no deletion authority
+before this transaction commits the record.
 
 Startup and pre-archive reconciliation acquire the export lock and resolve any
 construction intent before admitting another archive. A matching lifecycle
 intent is reconciled first. If authoritative state then contains the exact
 bound archive record, recovery revalidates the durable object and clears the
 construction intent only after the lifecycle transaction is durably complete.
-Otherwise it deletes the named unreferenced object if present, or durably moves
-that identity into the quarantine ledger before clearing construction intent
-when deletion fails. Missing objects and failures before upload become an
-audited failed result. An unresolved construction intent or nonempty quarantine
-ledger closes archive admission, so process exit cannot turn the serialized
-upload boundary into unbounded remote-object growth.
+Otherwise it uses version-aware deletion to purge every data version and delete
+marker for the exact unique key, repeatedly lists that key, and clears
+construction intent only after Spaces confirms that no version remains. An
+ordinary unversioned `DELETE`, creation of a delete marker, or eventual
+noncurrent-version expiration is not successful cleanup. If discovery is
+ambiguous or any purge or confirmation fails, root durably records the key and
+all known version IDs and markers in the quarantine ledger before changing the
+intent. Missing objects and failures before upload become an audited failed
+result. An unresolved construction intent or nonempty quarantine ledger keeps
+archive admission charged and closed, so process exit or bucket versioning
+cannot turn the serialized upload boundary into unbounded remote-object growth.
+All version listing and version-specific deletion use the Spaces regional
+endpoint and filter the prefix result to exact key equality.
 
 If any source changed, archive records an aborted result and retains no
-authorizing archive record; it never applies a stale snapshot. It immediately
-removes the unreferenced durable object, or records it in a root-owned
-quarantine ledger for bounded retry and garbage collection if object deletion
-fails, following the same durable construction-intent ordering. Quarantined
-objects grant no restore or deletion authority; archive
-admission remains closed while the quarantine ledger is nonempty, so repeated
-aborts cannot grow it without bound. The provisioner cannot create files
-directly in the spool or bypass these limits.
+authorizing archive record; it never applies a stale snapshot. It follows the
+same version-aware purge and construction-intent ordering, and records every
+unconfirmed version or marker in the root-owned quarantine ledger for bounded
+retry and garbage collection. Quarantined objects grant no restore or deletion
+authority; archive admission remains closed and its remote capacity remains
+charged while the ledger is nonempty, so repeated aborts cannot grow retained
+versions without bound. The provisioner cannot create files directly in the
+spool or bypass these limits.
 
 Produce a portable ZIP export with this fixed versioned envelope:
 
@@ -270,4 +283,5 @@ need executable or privileged filesystem bits.
 - [0008: Support archive upload before Git deployment](0008-archive-upload-first.md)
 - [0016: Model static publication as an untrusted boundary](0016-model-static-publication-threats.md)
 - [0018: Version the static tenant manifest contract](0018-version-static-tenant-manifests.md)
+- [DigitalOcean Spaces versioning](https://docs.digitalocean.com/products/spaces/how-to/enable-versioning/)
 - [RFC 8785: JSON Canonicalization Scheme](https://www.rfc-editor.org/rfc/rfc8785)

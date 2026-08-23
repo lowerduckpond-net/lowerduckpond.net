@@ -139,7 +139,7 @@ record.
 | Configured origin-suffix drift abandons or reassigns browser origins | Pin the normalized suffix in backed-up root-owned platform state before the first tenant, persist each complete derived origin in its manifest, and require configuration, platform state, tenant ID, and manifest origin to agree before route mutation. A change requires an explicit future origin-migration design. |
 | Backup or export captures incompatible generations | Backup uses a shared tenant-state lock; mutation uses it exclusively. Ordinary export captures its current manifest and immutable release into a root-owned snapshot while holding that shared lock. Archive separately snapshots the source manifest for compare-and-swap and the proposed archived manifest for the bundle. Construction consumes only that snapshot, and restored state reconciles before publication. |
 | Concurrent exports exhaust privileged storage | Serialize export and archive construction behind one root-owned host lock; enforce one snapshot, one unacknowledged result, aggregate spool byte/inode ceilings, an encoded-output ceiling, a host free-space reserve, and root-owned terminal, startup, acknowledgement, and expiry cleanup. |
-| Crash after durable archive upload leaves unbounded remote orphans | Sync a construction intent containing a unique object identity before upload, reconcile any associated lifecycle intent first, and preserve the object only when authoritative state binds it. Otherwise delete it or durably quarantine its identity before reopening serialized archive admission. |
+| Crash or abort after versioned archive upload leaves billable remote bytes | Sync a construction intent containing a unique key before upload and its returned version ID afterward, then reconcile any associated lifecycle intent. Preserve only an exactly bound version; otherwise permanently delete every version and marker for the key and confirm absence, or keep quarantine charged and archive admission closed. |
 | Unsafe archive, restore, or deletion | Put the proposed archived manifest—not its active or suspended source—in the durable bundle and bind the archive record to that exact manifest, desired deployment, content, and stored object. Revalidate the source before archive commit and the archived evidence immediately before delete; restore as a new deployment. Permit ordinary archive-free deletion only when root-owned history proves the tenant was never deployed, and keep emergency deletion behind a distinct root-only operator command that the provisioner cannot invoke. |
 | Oversized, stalled, or abandoned intake transfer exhausts disk | Admit exactly one root-owned artifact, enforce the operation-specific byte ceiling plus aggregate allocation and host-free-space bounds while streaming, bound idle and total transfer time, publish only after sync, and clean every terminal or startup artifact before reopening admission. |
 | Intake artifact replacement or mutation through an existing descriptor | Open beneath the fixed intake directory without following links and claim the request. Stream the opened bytes exactly once into an exclusively created root-owned snapshot while enforcing the compressed-size limit and computing the digest; sync and close the snapshot, then verify the request digest and perform all parsing, validation, and extraction against that snapshot. Never return to the provisioner-writable inode. |
@@ -237,9 +237,10 @@ Implementation and review must preserve these invariants:
     deadlines, durable publication, and terminal/startup cleanup while reading;
     no artifact parser is required to bound intake growth after the fact.
 28. Every durable archive upload has a locally synced construction intent that
-    already names its unique object. Recovery resolves a related lifecycle
-    intent, then either proves authoritative archive state binds that object or
-    deletes/quarantines it before admitting another archive.
+    already names its unique key and later binds its exact version ID. Recovery
+    resolves a related lifecycle intent, then either proves authoritative
+    archive state binds that version or purges all versions and markers for the
+    key; unconfirmed cleanup remains quarantined, charged, and admission-blocking.
 
 ## Residual risks
 

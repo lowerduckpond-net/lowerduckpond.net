@@ -212,11 +212,14 @@ Remote archive failure injection terminates construction before and after
 construction-intent sync, during upload, after remote success but before the
 `uploaded` phase, after that phase, and across lifecycle-intent reconciliation
 and authoritative archive-record commit. Recovery must discover the exact
-object identity from durable local state, preserve it only when the reconciled
-authoritative record binds it, and otherwise delete it or journal it in
-quarantine before clearing construction intent. A remaining intent or
-quarantine entry must reject another archive, and repeated crashes or retries
-must never create more than one unclassified remote object.
+unique key from durable local state, recover the returned version ID or list the
+key when that phase was not synced, and preserve a version only when the
+reconciled authoritative record binds its bucket, key, and version ID.
+Versioning fixtures require cleanup to permanently delete every data version
+and delete marker and confirm an empty version listing; an unversioned delete
+that only creates a marker must leave construction or quarantine charged and
+archive admission closed. Repeated source-change aborts, crashes, and retries
+must never retain more than the one classified object under cleanup.
 
 Lock-schedule tests exercise every permitted pair and triple of export,
 publication, and tenant-state acquisition, including backup, archive, Ansible,

@@ -54,9 +54,9 @@ final compare-and-swap revalidation; the bundle's `manifest.json` is always the
 proposed archived manifest, not that source manifest.
 Its root-owned archive record binds the tenant ID, selected deployment ID and
 content digest, canonical archived-manifest digest, portable-bundle digest and
-size, and durable object identity. Restore validates that bundle and creates a
-new deployment while preserving the tenant ID; it does not mutate a historical
-release.
+size, and durable bucket, key, and Spaces version ID. Restore validates that
+exact version and creates a new deployment while preserving the tenant ID; it
+does not mutate a historical release.
 
 After the bundle is durable, archive acquires publication and exclusive
 tenant-state in the global order and proves the captured source manifest,
@@ -129,7 +129,10 @@ remove the existing current-object expiration from the `archives/` storage
 prefix before enabling archive operations. Storage lifecycle rules may still
 abort incomplete uploads and expire unreferenced or superseded objects, but
 must not independently delete a bundle that live tenant state requires for
-export, restore, or ordinary deletion.
+export, restore, or ordinary deletion. Version-aware cleanup permanently purges
+every version and delete marker of an unreferenced unique key and confirms none
+remain; lifecycle expiration is only a backstop and does not reclaim charged
+capacity or reopen archive admission.
 
 The complete ordinary transition matrix is:
 
