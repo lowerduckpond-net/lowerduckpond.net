@@ -155,6 +155,15 @@ directories at and over 8 MiB, comments, bounded allowlisted timestamp extras,
 unknown/oversized/malformed extras, ZIP64, record-count mismatch, overlapping or
 aliased regions, gaps, and every checked-arithmetic boundary.
 
+Portable-restore fixtures separately exercise full envelope names at
+1,056/1,057 bytes, depths 34/35, central-directory record counts 5,004/5,005,
+and raw member data at 106 MiB and one byte over. A canonical round trip with a
+1,024-byte, 32-component tenant path and another with 5,000 tenant entries must
+pass the raw gate and then the unchanged tenant validator. Fixed metadata or the
+implicit envelope root cannot consume tenant quota, while a fifth envelope
+record, metadata over its own bound, or a tenant subtree over any ordinary
+limit must fail before extraction.
+
 Lifecycle concurrency tests delay an active-state rollback until after
 suspension commits and prove that it can update only the remembered deployment,
 leaves both routes absent, and requires a later explicit `resume` to publish.

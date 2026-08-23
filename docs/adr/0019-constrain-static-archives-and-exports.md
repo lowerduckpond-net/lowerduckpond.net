@@ -63,6 +63,33 @@ root-side extraction:
 - at most 25 MiB in one file; and
 - at most a 100:1 declared or observed expansion ratio.
 
+The 1,024-byte path, 32-component depth, 5,000-entry count, and 100-MiB
+expanded-content ceilings describe the tenant tree after normalization. A flat
+deployment ZIP applies them directly at the structural gate. A v1 portable
+bundle instead has these separate raw-envelope ceilings before its fixed prefix
+can be removed:
+
+- at most 5,004 central-directory records: `format.json`, `manifest.json`,
+  `checksums.sha256`, the `content/` directory, and at most 5,000 tenant records;
+- at most 1,056 UTF-8 bytes and 34 components in a full member name, accounting
+  for the 32-byte `lowerduckpond-export-v1/content/` prefix;
+- the same 255-byte component and 8-MiB central-directory ceilings;
+- exactly 46 bytes for `format.json`, at most 16 KiB for `manifest.json`, and at
+  most 5,495,158 bytes for `checksums.sha256`, derived from its two metadata
+  lines and 5,000 maximum-length tenant-file lines; and
+- at most 106 MiB of declared and observed regular-file member data before
+  extraction, covering the 100-MiB tenant ceiling plus bounded metadata.
+
+The envelope root is implicit and is not an allowed central-directory record.
+The structural gate first normalizes and validates every full member name under
+those envelope-aware ceilings, permits only the four fixed records outside
+`content/`, and validates their bounded canonical forms. It then strips exactly
+`lowerduckpond-export-v1/content/` from descendant names and applies the
+ordinary 1,024-byte, 32-component, 5,000-entry, 100-MiB, per-file, collision,
+and implicit-parent limits to the tenant subtree. Fixed envelope records and
+the implicit envelope root never consume tenant quota. Passing either layer
+cannot compensate for failing the other.
+
 The restricted transport adapter enforces the applicable compressed-artifact
 ceiling plus the aggregate one-artifact intake and host-free-space bounds while
 streaming, before the activator or any ZIP parser can run. The activator repeats
@@ -270,7 +297,9 @@ that rely on Unix links or executable bits are deliberately unsupported.
 
 Stored portable bundles trade network and archive-storage size for reproducible
 bytes independent of zlib versions. The 100-MiB content and 120-MiB encoded
-output ceilings include the bounded path and ZIP-header overhead.
+output ceilings coexist with the separate 106-MiB raw member-data ceiling; the
+fixed envelope allowance ensures every tenant tree at the ordinary path, depth,
+entry, and content boundaries remains representable and restorable.
 
 The limits are platform policy and therefore belong in the schema and tests,
 not scattered constants. Raising them requires reviewing disk, backup, and
