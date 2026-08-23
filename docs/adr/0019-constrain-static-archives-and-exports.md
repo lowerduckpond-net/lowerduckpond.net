@@ -25,8 +25,17 @@ component to 255 UTF-8 bytes, each relative path to 1,024 UTF-8 bytes, and depth
 to 32 components. Reject `.` and `..`, NUL, leading separators, trailing or
 repeated separators except the single directory marker, and any change from
 backslash interpretation. Count every distinct implicit parent directory toward
-the entry ceiling and reject file/directory or explicit/implicit collisions
-after NFC and case folding.
+the entry ceiling. An explicit directory record and a parent implied by one or
+more descendants represent one materialized directory and consume one entry
+only when their decoded component sequences are exactly equal after separator
+validation and removal of the explicit directory marker but before NFC
+normalization. The same exact implicit parent from multiple descendants also
+coalesces and counts once. Still reject duplicate explicit directory records,
+any path used as both file and directory, and any distinct pre-NFC spelling
+whose NFC-normalized or case-folded path collides with another explicit or
+implicit entry. Preserve original spelling and provenance until these checks
+complete; normalization cannot erase evidence needed to distinguish an exact
+merge from an ambiguous collision.
 
 Allow only method `0` (stored) and method `8` (Deflate) in deployment ZIPs.
 Reject BZIP2, LZMA, Deflate64, vendor methods, and unknown methods before

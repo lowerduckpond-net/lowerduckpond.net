@@ -372,8 +372,10 @@ Implement idempotent commands or jobs for:
   entries, match local and central headers, and run privileged parsing inside
   fixed memory, swap, task, descriptor, CPU, and runtime limits.
 - Bound normalized path, component, depth, central-directory, extra-field, and
-  region layout; count implicit parents and reject all post-normalization
-  collisions before extraction.
+  region layout; count each materialized directory once. Coalesce an exactly
+  matching explicit directory with its implicit parent, but reject duplicate
+  explicit records, type conflicts, and distinct spellings that collide after
+  normalization or case folding before extraction.
 - Revalidate and extract through the narrow root-owned activator.
 - Atomically activate one complete Caddy runtime generation whose manifest binds
   its binary, environment, full configuration, and immutable tenant releases.

@@ -227,7 +227,11 @@ abort rule.
 Path fixtures cover NFC-normalization and case-fold collisions, strict UTF-8 and
 ASCII flag behavior, 255/256-byte components, 1,024/1,025-byte paths, 32/33
 components, explicit and implicit directory accounting, file/directory
-collisions, and all separator and dot-component forms. Structural fixtures
+collisions, and all separator and dot-component forms. They prove an exactly
+spelled explicit directory plus one or many descendants' identical implicit
+parent coalesces and consumes one entry, while a duplicate explicit record or
+an explicit/implicit pair with distinct pre-NFC spelling that collides after NFC
+or case folding fails. Structural fixtures
 cover multiple or misplaced end records, prepended/trailing bytes, central
 directories at and over 8 MiB, comments, bounded allowlisted timestamp extras,
 unknown/oversized/malformed extras, ZIP64, record-count mismatch, overlapping or
@@ -240,7 +244,10 @@ their marker at 1,057/1,058 bytes, depths 34/35, central-directory record counts
 trips with 1,024-byte,
 32-component tenant file and directory paths—including the directory's added
 marker—and another with 5,000 tenant entries must pass the raw gate and then the
-unchanged tenant validator. Fixed metadata or the implicit envelope root cannot
+unchanged tenant validator. Every canonical bundle's explicitly emitted
+directory records must coalesce with its descendants' exact implicit parents
+and round-trip without changing the counted tenant tree. Fixed metadata or the
+implicit envelope root cannot
 consume tenant quota, while a fifth envelope record, metadata over its own
 bound, or a tenant subtree over any ordinary limit must fail before extraction.
 
