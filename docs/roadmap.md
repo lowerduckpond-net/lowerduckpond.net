@@ -395,6 +395,10 @@ Implement idempotent commands or jobs for:
 - For archive, retain the active or suspended source manifest only for final
   compare-and-swap and put the separately derived proposed archived manifest in
   the durable bundle, with its digest bound by the archive record.
+- Before enabling archive operations, remove current-object age expiration from
+  the `archives/` storage prefix. Retain every bundle bound by authoritative
+  archived tenant state until a coordinated, audited deletion transition makes
+  it unreferenced; Milestone 4 owns retention expiry and scheduled deletion.
 - Serialize export and archive construction globally; enforce one snapshot,
   one unacknowledged result, a 256-MiB/5,120-inode spool, a 120-MiB output cap,
   the host free-space reserve, and bounded acknowledgement/expiry cleanup.
@@ -427,6 +431,8 @@ Implement idempotent commands or jobs for:
 - Suspend and restore without data loss.
 - Delete a never-deployed reservation normally, then prove that deployed or
   ambiguous history cannot use the archive-free transition.
+- Prove the production storage policy cannot expire a current archive bundle
+  while authoritative archived tenant state still binds it.
 - Delay a rollback across suspension and prove it cannot republish the tenant;
   only resume may leave the suspended state.
 - Rename a slug while preserving the tenant identity.

@@ -267,7 +267,8 @@ Primary backups should be application-aware rather than relying only on Droplet 
 - Database dumps run before the corresponding Restic snapshot.
 - Restic forget/prune expires backup generations according to policy; Spaces
   lifecycle rules remove incomplete uploads and stale object versions without
-  deleting current repository objects by age.
+  deleting current repository objects or tenant archive bundles still bound by
+  authoritative tenant state by age.
 - DigitalOcean Droplet backups or snapshots provide a secondary whole-machine recovery option.
 - Restore tests run on a schedule and produce an auditable result.
 - Tenant export and disaster recovery use the same archive format where practical.

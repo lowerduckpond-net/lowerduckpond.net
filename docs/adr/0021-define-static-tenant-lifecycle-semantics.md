@@ -116,7 +116,14 @@ this path.
 Every transition is idempotent and appends an audit event. Retrying the same
 correlation ID and request returns the established result. Automated notices,
 grace periods, retention expiry, and scheduled deletion remain Milestone 4
-policy rather than Milestone 3 host behavior.
+policy rather than Milestone 3 host behavior. Until that coordinated policy is
+implemented, every durable object bound by an authoritative archived tenant
+record is retained without current-object age expiration. Milestone 3 must
+remove the existing current-object expiration from the `archives/` storage
+prefix before enabling archive operations. Storage lifecycle rules may still
+abort incomplete uploads and expire unreferenced or superseded objects, but
+must not independently delete a bundle that live tenant state requires for
+export, restore, or ordinary deletion.
 
 The complete ordinary transition matrix is:
 
@@ -158,6 +165,12 @@ Archive storage and audit records become prerequisites for ordinary deletion of
 any tenant that has ever been deployed. The separately authenticated emergency
 command is deliberately conspicuous and must be covered by tests and
 operational documentation.
+
+Bound archive retention is therefore controlled by the tenant lifecycle rather
+than by an uncoordinated object-age timer. Milestone 4 may remove a bound bundle
+only as part of a scheduled, audited tenant-deletion transition; a storage
+lifecycle rule may provide later cleanup for objects that authoritative state
+already proves are unreferenced.
 
 Archive evidence is generation-specific rather than a permanent tenant flag.
 Any later manifest or deployment generation needs a newly verified archive
