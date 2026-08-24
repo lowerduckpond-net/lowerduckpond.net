@@ -30,6 +30,11 @@ def build_parser() -> argparse.ArgumentParser:
     verify_session.add_argument("--session", required=True, type=Path)
     verify_session.add_argument("--source-revision", required=True)
 
+    verify_convergence = subparsers.add_parser(
+        "verify-convergence", help="verify host convergence from stdin"
+    )
+    verify_convergence.add_argument("--session", required=True, type=Path)
+
     session_value = subparsers.add_parser("session-value", help="read one validated session value")
     session_value.add_argument("--session", required=True, type=Path)
     session_value.add_argument(
@@ -78,7 +83,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
-    if arguments.command in {"begin-session", "verify-session", "session-value"}:
+    if arguments.command in {
+        "begin-session",
+        "verify-session",
+        "verify-convergence",
+        "session-value",
+    }:
         return _handle_session_command(arguments)
     if arguments.command == "libraries":
         from lowerduckpond_m3_qualification.libraries import run_library_checks
@@ -176,6 +186,8 @@ def _handle_session_command(arguments: argparse.Namespace) -> int:
                     identity=json.load(sys.stdin),
                     source_revision=arguments.source_revision,
                 )
+            elif arguments.command == "verify-convergence":
+                session.verify_convergence_marker(sys.stdin.read())
             else:
                 print(getattr(session, arguments.field))
     except OSError, ValueError, json.JSONDecodeError:

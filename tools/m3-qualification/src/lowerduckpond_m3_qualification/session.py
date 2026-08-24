@@ -81,6 +81,11 @@ class QualificationSession:
         if observed != expected:
             raise UnsafeSessionError("qualification Droplet identity changed")
 
+    def verify_convergence_marker(self, raw: str) -> None:
+        """Require the exact marker written after successful host convergence."""
+        if raw != f"{self.run_id} {self.source_revision}\n":
+            raise UnsafeSessionError("qualification host convergence is stale or incomplete")
+
     def to_json(self) -> str:
         return json.dumps(asdict(self), indent=2, sort_keys=True) + "\n"
 

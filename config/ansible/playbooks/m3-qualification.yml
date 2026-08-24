@@ -8,6 +8,7 @@
   vars:
     caddy_domain: m3-qualification.lowerduckpond.net
     caddy_tls_mode: internal
+    m3_qualification_convergence_marker: /var/lib/lowerduckpond-m3/converged-session
     caddy_cloudflare_api_token: >-
       {{ lookup('ansible.builtin.env', 'M3_QUALIFICATION_CLOUDFLARE_API_TOKEN') }}
   pre_tasks:
@@ -27,6 +28,10 @@
           - m3_expected_droplet_id is match('^[0-9]+$')
           - m3_qualification_metadata_id.content | trim == m3_expected_droplet_id
           - ansible_host == m3_expected_ipv4
+          - >-
+            m3_expected_run_id is
+            match('^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$')
+          - m3_expected_source_revision is match('^[0-9a-f]{40}$')
         fail_msg: Refusing to configure a host not bound to the M3.0 OpenTofu session.
 
     - name: Gather facts after qualification identity verification
@@ -48,7 +53,23 @@
           to the lowerduckpond.net and lowerduckpond.com zones.
         quiet: true
       no_log: true
+
+    - name: Invalidate any prior qualification convergence
+      ansible.builtin.file:
+        path: "{{ m3_qualification_convergence_marker }}"
+        state: absent
   roles:
     - role: base
     - role: caddy
     - role: m3_qualification
+  post_tasks:
+    - name: Flush every handler before attesting convergence
+      ansible.builtin.meta: flush_handlers
+
+    - name: Attest successful qualification convergence
+      ansible.builtin.copy:
+        content: "{{ m3_expected_run_id }} {{ m3_expected_source_revision }}\n"
+        dest: "{{ m3_qualification_convergence_marker }}"
+        owner: root
+        group: root
+        mode: "0400"

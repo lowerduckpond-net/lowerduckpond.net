@@ -96,7 +96,11 @@ they bind a clean Git revision to the OpenTofu output and independently require
 the connected host's DigitalOcean metadata ID to match before Ansible gathers
 facts or changes the host. `begin` also creates a UUIDv7 run ID and removes all
 prior fragments. Every fragment records that run ID and source revision, and
-assembly rejects fragments from another run or revision.
+assembly rejects fragments from another run or revision. Qualification actions
+are serialized on the workstation. Configuration invalidates any prior host
+attestation before mutation and records the run and revision only after every
+role and handler succeeds; host-dependent probes and assembly require that
+exact root-owned attestation.
 
 ## Configure and run the gate
 

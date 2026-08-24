@@ -57,6 +57,24 @@ def test_session_rejects_changed_source_revision() -> None:
 
 
 @pytest.mark.parametrize(
+    "invalid_marker",
+    [
+        f"0198d17f-6f4a-7000-8000-000000000002 {SOURCE_REVISION}\n",
+        f"{RUN_ID} {'b' * 40}\n",
+        f"{RUN_ID} {SOURCE_REVISION}",
+    ],
+)
+def test_session_requires_exact_convergence_marker(invalid_marker: str) -> None:
+    session = QualificationSession.create(
+        identity=identity(), source_revision=SOURCE_REVISION, run_id=RUN_ID
+    )
+
+    session.verify_convergence_marker(f"{RUN_ID} {SOURCE_REVISION}\n")
+    with pytest.raises(UnsafeSessionError):
+        session.verify_convergence_marker(invalid_marker)
+
+
+@pytest.mark.parametrize(
     "invalid_identity",
     [
         {"droplet_id": "42", "droplet_urn": "do:droplet:41", "ipv4_address": "8.8.8.8"},
