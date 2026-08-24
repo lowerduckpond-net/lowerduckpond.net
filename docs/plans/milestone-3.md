@@ -496,8 +496,10 @@ target state. After validation under the required locks, root derives the
 from the portable bundle or a nonexistent undeployed-target deployment.
 
 Gate: round-trip active and suspended source states, race capture against every
-lifecycle mutation and release cleanup, fill byte/inode/result limits, interrupt
-every snapshot and delivery phase, and prove byte-identical repeat exports.
+available core mutation—deploy, rollback, suspension, resume, rename, and
+reconciliation—and against release cleanup. Fill byte/inode/result limits,
+interrupt every snapshot and delivery phase, and prove byte-identical repeat
+exports. Archive, restore, and deletion snapshot races remain gated on M3.10.
 
 Rollback: expire unacknowledged spool artifacts through root reconciliation;
 authoritative tenants and releases remain unchanged.
@@ -521,10 +523,11 @@ job. Emergency deletion remains root-only and outside provisioner sudo.
 Gate: fake-client protocol assertions plus real expendable-prefix tests cover
 every interruption before, during, and after remote commit; lost responses;
 unknown versions; delete markers; quota ceilings; repeated restore/rearchive;
-and mutual credential denial. Run the restoration and deletion Caddy/systemd
-and Ansible overlap cases deferred from M3.8. Export the exact bound version
-from archived state and round-trip it through import into a fresh undeployed
-tenant. Managed code must make no multipart or high-level transfer call.
+and mutual credential denial. Run the archive, restore, and deletion snapshot
+races deferred from M3.9 and the restoration and deletion Caddy/systemd and
+Ansible overlap cases deferred from M3.8. Export the exact bound version from
+archived state and round-trip it through import into a fresh undeployed tenant.
+Managed code must make no multipart or high-level transfer call.
 
 Rollback: preserve a still-bound version. An ambiguous object stays quarantined
 and charged with archive admission closed until reconciliation proves its exact
