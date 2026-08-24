@@ -30,6 +30,7 @@ class QualificationRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("Access-Control-Allow-Origin", PLATFORM_ORIGIN)
+        self.send_header("Access-Control-Allow-Credentials", "true")
         self.send_header("Access-Control-Expose-Headers", "X-M3-Sec-Fetch-Site")
         self.send_header("Vary", "Origin")
         self.send_header("X-M3-Upstream-Saw-State", str(state_received).lower())

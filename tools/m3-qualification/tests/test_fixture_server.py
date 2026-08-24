@@ -4,7 +4,10 @@ import http.client
 import threading
 from http.server import ThreadingHTTPServer
 
-from lowerduckpond_m3_qualification.fixture_server import QualificationRequestHandler
+from lowerduckpond_m3_qualification.fixture_server import (
+    PLATFORM_ORIGIN,
+    QualificationRequestHandler,
+)
 
 OK_STATUS = 200
 
@@ -28,6 +31,8 @@ def test_fixture_reports_state_without_echoing_it() -> None:
         thread.join()
 
     assert response.status == OK_STATUS
+    assert response.getheader("Access-Control-Allow-Origin") == PLATFORM_ORIGIN
+    assert response.getheader("Access-Control-Allow-Credentials") == "true"
     assert response.getheader("X-M3-Upstream-Saw-State") == "true"
     assert response.getheader("X-M3-Sec-Fetch-Site") == "cross-site"
     assert response.getheader("Set-Cookie") is not None
