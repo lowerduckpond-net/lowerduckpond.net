@@ -262,12 +262,13 @@ apex returns a generic stateless `404` with `Cache-Control: no-store`. In
 Milestone 7 a root-owned designation will bind the municipal reference role to
 one ordinary active tenant's immutable ID. An exact query-free `GET` or `HEAD`
 for `/` at the apex will then temporarily redirect without caching to that
-tenant's current authoritative slug alias. If the designation is absent or
-inactive, or for any other apex request, it continues to return the generic
-stateless `404`. Every exact-apex response is non-cacheable so designation,
-suspension, and resumption take effect without a stale fallback. Deriving the
-destination from the tenant ID prevents a later slug reassignment from
-retargeting the apex. Each immutable
+tenant's immutable UUID-derived canonical origin, never through its reusable
+slug alias. If the designation is absent or inactive, or for any other apex
+request, it continues to return the generic stateless `404`. Every exact-apex
+response is non-cacheable so designation, suspension, and resumption take
+effect without a stale fallback. Deriving the destination directly from the
+tenant ID prevents a previously issued redirect from reaching a replacement
+tenant if the friendly slug is reassigned before navigation. Each immutable
 canonical tenant origin is
 `t-<tenant-uuid-without-hyphens>.lowerduckpond.com`. A
 `<slug>.lowerduckpond.com` hostname remains only a platform-controlled,
@@ -440,8 +441,9 @@ Keeping reference content separate prevents the platform from receiving
 undocumented special cases and creates a genuine end-to-end example. The
 repository name, slug, and content are deferred until the community-pilot
 milestone. The exact `lowerduckpond.com` apex is not an ordinary tenant; its
-documented root-owned route only redirects to the designated tenant's current
-slug while that tenant is active.
+documented root-owned route only redirects to the designated tenant's immutable
+canonical origin while that tenant is active. Its ordinary friendly slug
+remains independently reusable.
 
 ## 13. Principal risks and mitigations
 

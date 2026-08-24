@@ -17,11 +17,13 @@ Provide a trusted-workstation CLI, exposed through documented `just` recipes,
 for `create`, `deploy`, `rollback`, `suspend`, `resume`, `rename`, `export`,
 `import`, `archive`, `restore`, `delete`, and `reconcile`.
 
-The client connects through the existing restricted administrative SSH path and
-transfers one structured operation request and, only for `deploy` or `import`,
-one operation-specific ZIP artifact into a dedicated non-public intake
-boundary. The versioned protocol has no standalone manifest frame and rejects
-an artifact for every other operation. It never edits live host files.
+The client connects as `ldp-operator` through the dedicated-key,
+forced-command SSH path from ADR 0026 and transfers one structured operation
+request and, only for `deploy` or `import`, one operation-specific ZIP artifact
+into a dedicated non-public intake boundary. Routine operations never use the
+`ldp-admin` account or its key. The versioned protocol has no standalone
+manifest frame and rejects an artifact for every other operation. It never
+edits live host files.
 Host-side commands accept structured inputs, return machine-readable results,
 and require a caller-supplied UUIDv7 correlation ID. The restricted SSH adapter
 derives the operator principal from the authenticated SSH boundary, never from
@@ -177,3 +179,4 @@ origin, deployment, and lifecycle values out of caller authority.
 - [0006: Separate the control plane and provisioner](0006-separate-control-plane-provisioner.md)
 - [0017: Atomically activate immutable static releases](0017-atomically-activate-static-releases.md)
 - [0023: Separate reusable slugs from immutable tenant origins](0023-separate-reusable-slugs-from-tenant-origins.md)
+- [0026: Separate static operation from host administration](0026-separate-static-operation-from-host-administration.md)

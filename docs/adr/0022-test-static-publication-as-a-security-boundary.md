@@ -15,7 +15,7 @@ would discover security and destructive-lifecycle failures too late.
 Deliver Milestone 3 through these reviewable layers:
 
 1. threat model, ADRs, schema, fixtures, and test matrix;
-2. authenticated job issuance, root-only manifest generation and validation,
+2. authenticated job issuance, root-domain manifest generation and validation,
    slug and immutable-origin rules, and desired/observed state;
 3. hostile archive validation and deterministic portable export/import;
 4. root-owned immutable release activation and generated Caddy routing;
@@ -30,6 +30,14 @@ for concurrent operations and failure injection at every publication commit
 step. Use Molecule and Testinfra to exercise actual Unix identities,
 permissions, immutable releases, the privileged helper, Caddy validation and
 reload, backup overlap, restore, and reboot-relevant service configuration.
+
+The contract layer includes a minimal root-domain package so its canonical
+manifest vectors come from the real producer rather than a test substitute.
+Its UUIDv7 generator receives injected clock and entropy sources, and its pure
+constructor accepts no caller-selected identity or origin. Tests prove the
+package performs no persistence, lifecycle transition, or authorization. Later
+host-agent and installed-host layers prove only the privileged boundary can use
+its output to write authoritative state.
 
 While static publication is disabled, real-SSH installed-host tests prove the
 forced-command restrictions and rejection of every external tenant request
@@ -55,13 +63,14 @@ rejects a caller-supplied ID, generates a UUIDv7, derives the canonical
 hostname without hyphens, and enforces its complete DNS length independently
 of the alias.
 
-After lifecycle handlers exist and publication is enabled only on the
-disposable host, an installed-host concurrency test pauses tenant activation
-while Ansible has host-only Caddy inputs staged but has not acquired
-publication. It commits
-deploy, suspension, rename, restoration, and deletion independently in that
-window, then proves the host transaction rereads authoritative state and builds
-and validates its final route-bearing generation only after it holds the lock.
+As lifecycle handlers arrive and publication is enabled only on the disposable
+host, an installed-host concurrency test pauses tenant activation while Ansible
+has host-only Caddy inputs staged but has not acquired publication. The core
+lifecycle phase commits deploy, rollback, suspension, resume, rename, and
+reconciliation independently in that window. The archive phase extends the
+same fixture with restoration and deletion. Every case proves the host
+transaction rereads authoritative state and builds and validates its final
+route-bearing generation only after it holds the lock.
 Only one transaction can select a complete runtime generation and own a reload
 or restart intent at a time. At every durability phase the test kills Caddy to
 trigger automatic restart and proves the recovery gate and launcher select one
@@ -361,6 +370,16 @@ tenant-controlled state at a slug alias and that alias reassignment exposes no
 state from the preceding canonical origin. Logging tests send sensitive path,
 query, cookie, authorization, and referrer values to aliases and prove none
 persist in access logs or diagnostics.
+
+Municipal-apex tests bind the designation only to an immutable tenant ID and
+prove the exact query-free root request for an active designated tenant
+redirects directly to its UUID-derived canonical HTTPS origin, never its
+reusable slug. After the apex response is issued but before following its
+`Location`, rename the municipal tenant and assign its former slug to another
+tenant. Following the already issued location must still reach the designated
+immutable origin or a generic unavailable response, never the replacement
+tenant. Every other apex request and every absent or inactive designation
+returns the generic non-cacheable fallback.
 Export concurrency tests overlap snapshot capture with deploy, rollback,
 rename, suspension, and garbage collection. Every resulting bundle must contain
 a canonical manifest and immutable release from the same generation, and the

@@ -267,20 +267,27 @@ YAML create-spec parser rejects duplicate keys and unknown fields before
 constructing the request; no YAML parser is present on the host. Implement slug
 reservation for `hosting`, `secure`, `www`, and canonical-origin-shaped labels
 within the `.com` tenant namespace.
-Generate UUIDs and origins only inside the root domain layer; contract code may
-validate but cannot authorize them.
+Add a minimal root-domain package, separate from the contract package. It owns
+UUIDv7 tenant-ID generation and a pure constructor that derives canonical
+origins from the pinned namespace and constructs canonical manifests from
+validated caller choices plus exact authoritative inputs. Apart from injected
+clock and entropy sources for UUIDv7 generation, it performs no I/O; it performs
+no persistence, lifecycle transition, or authorization. Contract code may
+validate identity fields but cannot generate or authorize them.
 
 Gate: unit and property tests prove client/host round trips, canonical byte
 agreement, rejection of a standalone manifest frame, all lifecycle table
-entries and default denials, request/result size limits, root-only manifest
-generation, origin derivation, hostname length, and mutation-free rejection.
+entries and default denials, request/result size limits, root-domain manifest
+generation, rejection of caller-selected identity or origin, origin derivation,
+hostname length, and mutation-free rejection.
 
-Rollback: contract packages are unused by production and the publication flag
-remains false.
+Rollback: the contract and root-domain packages are unused by production and
+the publication flag remains false.
 
 ### M3.3: implement the durable state kernel
 
-Create the host-agent package and its root-only state repository. Implement
+Create the host-agent package around the root-domain constructor and add its
+root-only state repository. Implement
 directory-relative no-follow opens, exclusive creation, atomic replacement,
 file and parent-directory sync, immutable-record writes, compare-and-swap
 digests, shared/exclusive locks, capacity admission, release-tree digests,
@@ -429,8 +436,8 @@ Ansible overlap, descriptor-pinning, generation-retention, start-limit,
 failure-injection, and bootstrap-interruption cases in ADR 0022. Publication
 remains disabled, every tenant-bearing generation fails closed, and the
 lifecycle-integrated Caddy/systemd and Ansible overlap cases remain gated on
-M3.8. Reboot the disposable host and prove the selected platform-only
-generation returns.
+M3.8 and M3.10 as their handlers arrive. Reboot the disposable host and prove
+the selected platform-only generation returns.
 
 Rollback: durably select and verify the preceding platform-only generation.
 Never restore the old mutable `Caddyfile` path once tenant-capable code exists.
@@ -455,9 +462,10 @@ retention, delayed rollback, idempotency, cross-tenant access, Caddy failure,
 process termination, reboot, and reconcile tests pass on the disposable host.
 Repeat the successful installed-host issuance, expected-state-drift,
 artifact-replacement, replay, disconnect, lost-handoff, and lost-result cases
-deferred from M3.6, and run the lifecycle-integrated Caddy/systemd and Ansible
-overlap matrix deferred from M3.7. These tests run with publication enabled
-only in that disposable environment.
+deferred from M3.6. Run the core-lifecycle Caddy/systemd and Ansible overlap
+cases deferred from M3.7 for deploy, rollback, suspension, resume, rename, and
+reconciliation; restoration and deletion remain gated on M3.10. These tests run
+with publication enabled only in that disposable environment.
 
 Rollback: reconcile to the preceding complete generation and state. Failed
 operations keep evidence and never require manual file editing.
@@ -501,9 +509,10 @@ job. Emergency deletion remains root-only and outside provisioner sudo.
 Gate: fake-client protocol assertions plus real expendable-prefix tests cover
 every interruption before, during, and after remote commit; lost responses;
 unknown versions; delete markers; quota ceilings; repeated restore/rearchive;
-and mutual credential denial. Export the exact bound version from archived
-state and round-trip it through import into a fresh undeployed tenant. Managed
-code must make no multipart or high-level transfer call.
+and mutual credential denial. Run the restoration and deletion Caddy/systemd
+and Ansible overlap cases deferred from M3.8. Export the exact bound version
+from archived state and round-trip it through import into a fresh undeployed
+tenant. Managed code must make no multipart or high-level transfer call.
 
 Rollback: preserve a still-bound version. An ambiguous object stays quarantined
 and charged with archive admission closed until reconciliation proves its exact

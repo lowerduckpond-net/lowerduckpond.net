@@ -53,15 +53,17 @@ platform-controlled and stateless. Milestone 7 designates one ordinary active
 tenant as the municipal reference tenant by immutable tenant ID. After that
 designation, an exact `GET` or `HEAD` for `/` without a query at the `.com`
 apex receives a temporary `302` with `Cache-Control: no-store` to that tenant's
-current authoritative `<slug>.lowerduckpond.com` alias. The apex returns the
-generic stateless `404` if no tenant is designated or the designated tenant is
-not active, and for every other request. Every response from the exact apex,
-including these fallbacks, carries `Cache-Control: no-store`. Resolving the
-destination from the immutable tenant ID, rather than storing a slug as the
-designation, prevents a released and reassigned slug from silently changing the
-municipal destination. The municipal tenant otherwise uses the same manifest,
-immutable origin, deployment, lifecycle, and slug-reuse contract as every
-resident tenant.
+immutable `t-<tenant-uuid-without-hyphens>.lowerduckpond.com` canonical origin,
+derived directly from the designated ID and pinned namespace. It never redirects
+through the reusable slug alias. The apex returns the generic stateless `404` if
+no tenant is designated or the designated tenant is not active, and for every
+other request. Every response from the exact apex, including these fallbacks,
+carries `Cache-Control: no-store`. A response already issued to an immutable
+origin cannot be retargeted if the municipal tenant is renamed and its former
+slug is assigned to someone else before the browser follows the redirect. The
+municipal tenant otherwise uses the same manifest, friendly slug, immutable
+origin, deployment, lifecycle, and slug-reuse contract as every resident
+tenant.
 
 Reserve `hosting`, `secure`, `www`, and every label matching the canonical
 `t-<32-lowercase-hex>` form from customer slug allocation. Keep the reserved

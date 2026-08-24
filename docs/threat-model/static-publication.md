@@ -158,6 +158,7 @@ record.
 | Manifest or audit tampering | Keep desired and observed state and append-only audit operations root-owned; allow the provisioner no direct write, replacement, truncation, or deletion authority. |
 | Crash or power loss between filesystem, route, reload, restart handoff, and state changes | Durably sync generation targets and parents before intent, sync intent before selecting and syncing the active reference, persist every restart phase before releasing its lock, sync desired/observed state and audit before clearing intent, and reconcile from durable evidence. |
 | Cross-tenant read or overwrite | Derive all paths from validated UUIDs, prohibit caller paths, use root ownership, and test hostile operations across two tenants. |
+| An in-flight municipal apex redirect follows a reassigned slug to another tenant | Bind the designation to the municipal tenant's immutable ID and derive `Location` directly as its UUID-based canonical origin. Never route the apex through a reusable slug; test reassignment after response issuance and before navigation. |
 | Configured origin-suffix drift abandons or reassigns browser origins | Pin the normalized suffix in backed-up root-owned platform state before the first tenant, persist each complete derived origin in its manifest, and require configuration, platform state, tenant ID, and manifest origin to agree before route mutation. A change requires an explicit future origin-migration design. |
 | Backup or export captures incompatible generations | Backup uses a shared tenant-state lock; mutation uses it exclusively. Ordinary export captures its current manifest and immutable release into a root-owned snapshot while holding that shared lock. Archive separately snapshots the source manifest for compare-and-swap and the proposed archived manifest for the bundle. Construction consumes only that snapshot, and restored state reconciles before publication. |
 | Concurrent exports exhaust privileged storage | Serialize export and archive construction behind one root-owned host lock; enforce one snapshot, one unacknowledged result, aggregate spool byte/inode ceilings, an encoded-output ceiling, a host free-space reserve, and root-owned terminal, startup, acknowledgement, and expiry cleanup. |
@@ -212,9 +213,11 @@ Implementation and review must preserve these invariants:
     receives no `Cookie`, every exact `.com` apex response carries
     `Cache-Control: no-store`, and no route depends on cookie state. A slug
     alias returns only the fixed root-generated redirect contract in ADR 0023
-    and holds no tenant or authentication state. Its HTTP listener applies the
-    alias allowlist before general HTTPS upgrades and never forwards a rejected
-    path or query.
+    and holds no tenant or authentication state. The alias HTTP listener applies
+    the allowlist before general HTTPS upgrades and never forwards a rejected
+    path or query. The future municipal apex
+    redirect derives the designated tenant's immutable origin directly from its
+    root-owned ID and never traverses that reusable alias.
 11. A rollback cannot transition a tenant out of `suspended`; only `resume` may
     restore its public routes.
 12. No active reference is durably selected before its immutable release and

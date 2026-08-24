@@ -74,8 +74,8 @@ repository and deploy at an ordinary `.com` slug and immutable origin through
 the same contract available to residents. Its content, repository name, and
 slug remain a Milestone 7 product choice. The exact `lowerduckpond.com` apex is
 a non-cacheable stateless platform `404` during Milestone 3 and will then
-redirect without caching to the designated municipal tenant's current slug
-while that tenant is active.
+redirect without caching directly to the designated municipal tenant's
+immutable canonical origin while that tenant is active.
 
 ## 2. Decisions to record before implementation
 
@@ -795,15 +795,17 @@ through an ordinary `.com` slug alias and UUID-derived canonical origin. Its
 content, repository name, and slug are open product questions. Designate its
 immutable tenant ID in root-owned state as the municipal target for the exact
 `.com` apex. The apex remains stateless and redirects only a query-free `GET`
-or `HEAD` for `/` to the active tenant's current authoritative slug; it never
-serves tenant content directly, and every redirect or fallback response carries
-`Cache-Control: no-store`. The reference tenant should exercise:
+or `HEAD` for `/` directly to the active tenant's UUID-derived immutable origin,
+never through its reusable slug; it never serves tenant content directly, and
+every redirect or fallback response carries `Cache-Control: no-store`. The
+reference tenant should exercise:
 
 - Ordinary wildcard DNS and HTTPS in the tenant namespace.
 - Static assets and intentionally period-inappropriate styling.
 - Ordinary deployment, rollback, export, and restore.
-- Rename, suspension, restoration, and slug reassignment without allowing the
-  apex to follow a former slug to another tenant.
+- Rename, suspension, restoration, and slug reassignment, including reassigning
+  a former slug after the apex response is issued and proving the immutable
+  destination cannot reach the replacement tenant.
 - No platform-side exception beyond the documented root-owned apex
   designation and redirect.
 
