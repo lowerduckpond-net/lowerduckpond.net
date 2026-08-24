@@ -359,9 +359,9 @@ PHP, or multi-host provisioning.
   behavior.
 - A reserved production source canary and separately imported target complete
   HTTPS, backup recovery, reconciliation, and reboot checks. The source
-  completes rollback, suspension, restore, rearchive, and ordinary deletion;
-  the imported target completes archive and ordinary deletion. Both route sets
-  and all bound archive objects are absent afterward while audit evidence
-  remains.
+  completes rollback, suspension, archive, restore, rearchive, and ordinary
+  deletion; the imported target completes archive and ordinary deletion. Both
+  route sets and all bound archive objects are absent afterward while audit
+  evidence remains.
 - Sanitized evidence is recorded without credentials, production backup
   metadata, or tenant content.

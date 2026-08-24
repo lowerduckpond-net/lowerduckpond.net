@@ -371,15 +371,6 @@ state from the preceding canonical origin. Logging tests send sensitive path,
 query, cookie, authorization, and referrer values to aliases and prove none
 persist in access logs or diagnostics.
 
-Municipal-apex tests bind the designation only to an immutable tenant ID and
-prove the exact query-free root request for an active designated tenant
-redirects directly to its UUID-derived canonical HTTPS origin, never its
-reusable slug. After the apex response is issued but before following its
-`Location`, rename the municipal tenant and assign its former slug to another
-tenant. Following the already issued location must still reach the designated
-immutable origin or a generic unavailable response, never the replacement
-tenant. Every other apex request and every absent or inactive designation
-returns the generic non-cacheable fallback.
 Export concurrency tests overlap snapshot capture with deploy, rollback,
 rename, suspension, and garbage collection. Every resulting bundle must contain
 a canonical manifest and immutable release from the same generation, and the
@@ -478,11 +469,11 @@ its export into a separately created undeployed target. Verify the `.com` to
 `.net` browser boundary, the documented sibling-cookie behavior and Caddy
 stripping, the platform-only alias redirect, canonical HTTPS, rollback,
 suspension, backup recovery, reboot, and idempotence for the resulting two
-tenants. Restore, rearchive, and ordinarily delete the source; separately
-archive and ordinarily delete the imported target. Prove both route classes
-are absent for both tenants and every bound archive object is retired while
-audit evidence remains. Dynamic or destructive isolation tests remain off the
-production host.
+tenants. Archive, restore, rearchive, and ordinarily delete the source;
+separately archive and ordinarily delete the imported target. Prove both route
+classes are absent for both tenants and every bound archive object is retired
+while audit evidence remains. Dynamic or destructive isolation tests remain
+off the production host.
 
 ## Consequences
 

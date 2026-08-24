@@ -65,6 +65,14 @@ municipal tenant otherwise uses the same manifest, friendly slug, immutable
 origin, deployment, lifecycle, and slug-reuse contract as every resident
 tenant.
 
+Milestone 7 acceptance must issue the apex response, then rename the municipal
+tenant and assign its former slug to another tenant before following the saved
+`Location`. Navigation must still reach the designated immutable origin or a
+generic unavailable response, never the replacement tenant. It must also prove
+every nonqualifying apex request and every absent or inactive designation
+returns the generic non-cacheable fallback. These tests are not part of the
+Milestone 3 gate, which retains the apex `404`.
+
 Reserve `hosting`, `secure`, `www`, and every label matching the canonical
 `t-<32-lowercase-hex>` form from customer slug allocation. Keep the reserved
 set versioned and root-owned. Adding another platform hostname must fail if its

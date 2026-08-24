@@ -522,8 +522,9 @@ Implement idempotent commands or jobs for:
 - Install all production components with `static_publication_enabled: false`.
   While disabled, reject tenant jobs before allocation and reject tenant-bearing
   Caddy candidates. Enable it only after the complete disposable-host suite and
-  production preflight pass, then exercise one synthetic tenant canary through
-  the ordinary audited lifecycle before onboarding a real tenant.
+  production preflight pass, then exercise a synthetic two-tenant canary
+  scenario through both ordinary audited lifecycles before onboarding a real
+  tenant.
 
 ### End-to-end tests
 

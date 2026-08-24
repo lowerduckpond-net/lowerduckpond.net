@@ -51,9 +51,13 @@ clients/
     ├── src/lowerduckpond_operator/
     └── tests/
 packages/
-└── static-contracts/
+├── static-contracts/
+│   ├── pyproject.toml
+│   ├── src/lowerduckpond_static_contracts/
+│   └── tests/
+└── static-domain/
     ├── pyproject.toml
-    ├── src/lowerduckpond_static_contracts/
+    ├── src/lowerduckpond_static_domain/
     └── tests/
 services/
 ├── host-agent/
@@ -79,6 +83,12 @@ config/ansible/roles/
 canonical JSON, typed protocol values, digest representations, and result/error
 codes that the client and host must agree on. It contains no filesystem,
 privilege, lifecycle, or authorization behavior.
+
+`static_domain` owns UUIDv7 tenant-ID generation and the pure canonical-origin
+and manifest constructor. It accepts injected clock and entropy sources but has
+no persistence, lifecycle-transition, authorization, or other I/O behavior.
+Only the host-agent uses its output to write authoritative state; the operator
+and provisioner do not import it.
 
 `host-agent` is the privileged trusted computing base. It owns authoritative
 state, validation, archive parsing, extraction, publication, lifecycle,
@@ -480,8 +490,10 @@ integration lands with archive support in M3.10.
 
 Import accepts a caller-held bundle only into an existing undeployed tenant,
 creates a new deployment, and preserves only content and provenance. The target
-ID, canonical origin, slug, runtime, quotas, lifecycle, and deployment remain
-derived from current root-owned target state.
+ID, canonical origin, slug, runtime, and quotas come from current root-owned
+target state. After validation under the required locks, root derives the
+`active` lifecycle and generates the new deployment ID; neither value comes
+from the portable bundle or a nonexistent undeployed-target deployment.
 
 Gate: round-trip active and suspended source states, race capture against every
 lifecycle mutation and release cleanup, fill byte/inode/result limits, interrupt
@@ -726,7 +738,7 @@ report demonstrates that:
 - the separate archive Space retained or permanently removed the exact intended
   versions without touching Restic;
 - backup and disposable restore reconstructed authoritative state, releases,
-  audit, and publication consistently; and
+  audit, and publication consistently;
 - both the source and separately imported canary tenants were removed through
   their ordinary audited lifecycles, with routes absent and archive objects
   retired; and

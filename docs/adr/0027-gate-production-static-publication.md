@@ -55,12 +55,12 @@ through the ordinary operator interface. The canary must exercise create,
 deploy, replace, rollback, suspend, resume, rename and slug reuse, export,
 and import into a separately created undeployed target. Exercise both the
 source and active imported target through backup, restored-state reconciliation,
-post-reboot HTTPS, and route verification. Restore, rearchive with evidence
-bound to the restored generation, and ordinarily delete the source; separately
-archive and ordinarily delete the imported target. Confirm both tenants' route
-classes are absent and every bound archive object is retired while audit
-evidence remains. No real tenant is onboarded until the two-tenant canary report
-passes.
+post-reboot HTTPS, and route verification. Archive, restore, rearchive with
+evidence bound to the restored generation, and ordinarily delete the source;
+separately archive and ordinarily delete the imported target. Confirm both
+tenants' route classes are absent and every bound archive object is retired
+while audit evidence remains. No real tenant is onboarded until the two-tenant
+canary report passes.
 
 Record the first successful enablement in root-owned platform state, including
 the configuration version, trusted platform domain, pinned alias and origin
