@@ -14,14 +14,25 @@ paths as application state.
 ## Decision
 
 Commit a strict JSON Schema for `hosting.lowerduckpond.net/v1alpha1` static site
-manifests. Accept safe YAML as the human-authored representation and persist a
-canonical JSON form. Before YAML composition, the root transport enforces the
-64-KiB raw manifest ceiling and decode deadline in ADR 0017; no YAML parser sees
-an unbounded stream. The parser rejects duplicate mapping keys before schema
-validation or canonicalization; a safe loader alone is not sufficient because
-common loaders silently retain one duplicate value. Reject unknown fields so
-misspellings do not silently weaken policy. The resulting canonical JSON must
-fit the 16-KiB manifest ceiling.
+manifests and persist them as canonical JSON. A desired manifest is
+authoritative root-owned state, not a caller-supplied document: root constructs
+it from one validated operation request plus the exact authoritative source
+state, and every mutation changes only the fields that operation authorizes.
+The SSH protocol has no manifest frame and no operation accepts a replacement
+desired manifest. Reject unknown fields, duplicate JSON object member names,
+type coercion, and unsupported versions whenever persisted, restored, or
+bundle-embedded manifest bytes are decoded. Every resulting canonical manifest
+must fit the 16-KiB ceiling.
+
+For operator convenience, the trusted-workstation client may accept a local
+safe-YAML `create` specification containing only the caller-controlled slug and
+quotas. It reads at most 64 KiB plus one detection byte before composition,
+rejects duplicate mapping keys and unknown fields, and translates the validated
+values into the strict versioned `create` request. The YAML bytes are never
+transmitted, persisted as desired state, or treated as authorization, and no
+host component imports a YAML parser. A client-side check is usability and
+defense in depth; the host independently applies the request schema and every
+root-owned derivation even when a caller bypasses the supported client.
 
 Persisted canonical JSON uses RFC 8785 UTF-8 bytes without a byte-order mark and
 with exactly one trailing LF; the 16-KiB ceiling includes that LF. Every stored
@@ -146,8 +157,9 @@ never assigned to a new tenant.
 
 Milestone 4 can store or enqueue the same contract without importing the
 operator transport. Canonical JSON makes hashing and comparison deterministic,
-while YAML remains approachable for an operator. Custom domains require a later
-schema version and ownership-verification design.
+while an optional local YAML create specification remains approachable without
+making YAML or a whole desired manifest part of the privileged protocol. Custom
+domains require a later schema version and ownership-verification design.
 
 The tenant-origin prerequisite adds a second DNS zone, apex and wildcard
 certificates, Cloudflare credential scope, and browser/Caddy qualification
@@ -189,6 +201,12 @@ was rejected because the accepted operator interface exposes them as separate
 idempotent operations. Treating a portable bundle's embedded manifest as
 desired target state was rejected because a caller-controlled artifact cannot
 authorize identity, origin, slug, quota, or lifecycle changes.
+Transporting a standalone desired manifest was rejected because the specific
+operation requests already express every permitted caller choice, while a whole
+document duplicates those fields and invites ambiguity over root-owned
+identity, origin, deployment, and lifecycle values. A future declarative update
+requires its own versioned request schema containing only fields that operation
+may change.
 
 ## References
 

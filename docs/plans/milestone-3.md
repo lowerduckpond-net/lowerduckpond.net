@@ -18,9 +18,9 @@ accepted are now fixed:
    for the future trusted application. Reusable `<slug>.lowerduckpond.com`
    aliases remain platform-controlled, and tenant bytes are served only from
    immutable `t-<tenant-uuid-without-hyphens>.lowerduckpond.com` origins. The
-   `.com` apex is a stateless `404` until Milestone 7 designates an ordinary
-   municipal tenant by immutable ID. Caddy ignores incoming cookies and removes
-   outgoing `Set-Cookie` on all Milestone 3 `.com` routes; sibling
+   `.com` apex is a stateless, non-cacheable `404` until Milestone 7 designates
+   an ordinary municipal tenant by immutable ID. Caddy ignores incoming cookies
+   and removes outgoing `Set-Cookie` on all Milestone 3 `.com` routes; sibling
    browser-local cookie integrity is an accepted static-tier limitation.
 2. Tenant archives use a separate private, versioned production Space and a
    dedicated bucket-only key. They do not share the Restic bucket or key.
@@ -119,8 +119,8 @@ code; no request supplies a path component.
 ├── exports/                  # bounded authenticated-delivery spool
 ├── audit/                    # hash-chained segments and protected index
 └── locks/                    # export, publication, tenant-state, intake
-/srv/lowerduckpond/tenants/<uuid>/releases/<deployment-uuid>/
-/var/lib/lowerduckpond/caddy/
+/srv/lowerduckpond/sites/<uuid>/releases/<deployment-uuid>/
+/etc/caddy/
 ├── generations/<generation-uuid>/
 ├── active
 └── intents/
@@ -149,11 +149,14 @@ than trusting client serialization. The response uses the same versioned
 framing for a bounded canonical result and an optional authenticated export
 payload.
 
-The raw request is limited to 32 KiB plus one detection byte and the optional
-raw manifest to 64 KiB plus one. The canonical request, manifest, and result
-remain limited to 16 KiB. Deploy and import streams retain their 100-MiB and
-120-MiB ceilings, idle deadline, total deadline, single-slot allocation, and
-host free-space reserve from ADR 0020.
+There is no manifest frame. No operation accepts a caller-supplied desired
+manifest: root derives every candidate manifest from the validated request and
+authoritative source state, while import treats the source manifest inside its
+portable bundle only as provenance. The raw request is limited to 32 KiB plus
+one detection byte; canonical requests, results, and root-generated desired
+manifests remain limited to 16 KiB. Deploy and import streams retain their
+100-MiB and 120-MiB ceilings, idle deadline, total deadline, single-slot
+allocation, and host free-space reserve from ADR 0020.
 
 Every successful issuer call creates one immutable authorization job containing
 at least:
@@ -208,19 +211,18 @@ Deliver:
   argument and rejects separators, additional arguments, and lookalikes;
 - prove a private systemd temporary filesystem enforces both 64 MiB and 4,096
   inodes;
-- exercise Spaces `PutObject`, returned version IDs, immediate
-  `ListObjectVersions`, exact-version reads and deletes, delete markers, and
-  absence confirmation against an expendable prefix; and
-- qualify Python 3.14 support and lock the schema, YAML, RFC 8785, property-test,
-  and low-level S3 libraries before privileged code imports them.
+- qualify Python 3.14 support and lock the schema, RFC 8785, property-test, and
+  low-level S3 libraries before privileged code imports them; separately lock
+  the safe-YAML library used only by the trusted-workstation client's optional
+  local `create` specification.
 
 Gate: every technical probe either passes on the production-equivalent stack or
 produces an accepted replacement design. The dual-domain browser and Caddy
 cookie probes are mandatory; there is no external PSL step. A warning or
 skipped technical probe is not a pass.
 
-Rollback: probes use a disposable host and expendable object prefix; they
-create no tenant state and select no production Caddy input.
+Rollback: probes use a disposable host, create no tenant state, and select no
+production Caddy input.
 
 ### M3.1: provision isolated archive storage
 
@@ -238,11 +240,17 @@ Restic variables.
 
 Gate: plan policy permits only the expected additive bucket/key/project changes
 and lifecycle correction. After approved apply, acceptance proves mutual access
-denial between the backup and archive credentials and an empty archive-accounting
-baseline.
+denial between the backup and archive credentials. Using only the dedicated
+archive credential and an expendable unique prefix, it exercises one
+known-length `PutObject`, the returned version ID, immediate
+`ListObjectVersions`, exact-version reads and deletes, delete markers, and
+version-aware absence confirmation. The probe must permanently purge its test
+versions and markers and establish an empty archive-accounting baseline.
 
-Rollback: retain the empty bucket and revoke its key if necessary. Do not
-destroy versioned durable storage as an application rollback.
+Rollback: retain the isolated bucket and revoke its key if necessary. If a
+failed probe leaves an ambiguous version or marker, preserve and account for it
+until version-aware cleanup proves absence. Do not destroy versioned durable
+storage as an application rollback.
 
 ### M3.2: establish contracts and the test spine
 
@@ -252,16 +260,20 @@ jobs, intents, audit entries, and results. Commit accepted and hostile golden
 fixtures, RFC 8785 canonical bytes, versioned SHA-256 vectors, UUIDv7 and slug
 vectors, lifecycle tables, and deterministic error codes.
 
-Reject YAML duplicate keys during composition, unknown fields, type coercion,
-non-ASCII or noncanonical identifiers, and unsupported versions. Implement slug
+The host request decoder rejects duplicate object member names before schema
+validation, and every contract rejects unknown fields, type coercion, non-ASCII
+or noncanonical identifiers, and unsupported versions. The optional client-side
+YAML create-spec parser rejects duplicate keys and unknown fields before
+constructing the request; no YAML parser is present on the host. Implement slug
 reservation for `hosting`, `secure`, `www`, and canonical-origin-shaped labels
 within the `.com` tenant namespace.
 Generate UUIDs and origins only inside the root domain layer; contract code may
 validate but cannot authorize them.
 
 Gate: unit and property tests prove client/host round trips, canonical byte
-agreement, all lifecycle table entries and default denials, request/result size
-limits, origin derivation, hostname length, and mutation-free rejection.
+agreement, rejection of a standalone manifest frame, all lifecycle table
+entries and default denials, request/result size limits, root-only manifest
+generation, origin derivation, hostname length, and mutation-free rejection.
 
 Rollback: contract packages are unused by production and the publication flag
 remains false.
@@ -360,8 +372,9 @@ versioned not-implemented result without state mutation until their phases land.
 
 Gate: use a real SSH daemon in the installed-host suite. Prove shell, command,
 PTY, forwarding, SFTP/SCP, environment, path, raw-operation, unknown-ID,
-field-forgery, expected-state-drift, artifact-replacement, replay, disconnect,
-lost-handoff, and lost-result attempts fail as ADR 0022 requires.
+standalone-manifest, field-forgery, expected-state-drift, artifact-replacement,
+replay, disconnect, lost-handoff, and lost-result attempts fail as ADR 0022
+requires.
 
 Rollback: revoke the operator key or remove the forced-command account. Root
 state stays intact and `ldp-admin` remains usable.
@@ -397,11 +410,12 @@ generations within 256 MiB and 4,096 unique inodes.
 The platform-only generation serves the public platform fixture directly at
 the `.net` apex, permanently redirects equivalent `hosting` and `www` requests
 to that canonical site, reserves the secure host, and returns the generic
-stateless `404` from the exact `.com` apex. Its `.com` wildcard rejects unknown
-hosts generically. Every `.com` route removes incoming `Cookie` before handling
-and outgoing `Set-Cookie` before response. With publication disabled it rejects
-every tenant canonical or alias route. The municipal apex designation and
-redirect are deferred to Milestone 7 and are not an M3 route exception.
+stateless `404` with `Cache-Control: no-store` from the exact `.com` apex. Its
+`.com` wildcard rejects unknown hosts generically. Every `.com` route removes
+incoming `Cookie` before handling and outgoing `Set-Cookie` before response.
+With publication disabled it rejects every tenant canonical or alias route.
+The municipal apex designation and redirect are deferred to Milestone 7 and
+are not an M3 route exception.
 
 Gate: the reviewed OpenTofu plan and approved apply add only the intended
 `.com` records and inputs. Obtain and renew apex and wildcard certificates in
@@ -449,7 +463,7 @@ creates a new deployment, and preserves only content and provenance. The target
 ID, canonical origin, slug, runtime, quotas, lifecycle, and deployment remain
 derived from current root-owned target state.
 
-Gate: round-trip all permitted source states, race capture against every
+Gate: round-trip active and suspended source states, race capture against every
 lifecycle mutation and release cleanup, fill byte/inode/result limits, interrupt
 every snapshot and delivery phase, and prove byte-identical repeat exports.
 
@@ -475,8 +489,9 @@ job. Emergency deletion remains root-only and outside provisioner sudo.
 Gate: fake-client protocol assertions plus real expendable-prefix tests cover
 every interruption before, during, and after remote commit; lost responses;
 unknown versions; delete markers; quota ceilings; repeated restore/rearchive;
-and mutual credential denial. Managed code must make no multipart or high-level
-transfer call.
+and mutual credential denial. Export the exact bound version from archived
+state and round-trip it through import into a fresh undeployed tenant. Managed
+code must make no multipart or high-level transfer call.
 
 Rollback: preserve a still-bound version. An ambiguous object stays quarantined
 and charged with archive admission closed until reconciliation proves its exact
@@ -526,10 +541,10 @@ Before production enablement:
 Change only the reviewed production variable to
 `static_publication_enabled: true`, converge twice, and verify the durable launch
 record. Run one synthetic canary through create, deploy, replace, rollback,
-suspend, resume, rename, slug reuse, export, import, archive, restore, delete,
-backup, disposable restore, reconciliation, and reboot. Verify HTTPS, route
-absence after deletion, archive cleanup, audit continuity, and no manual host
-edits.
+suspend, resume, rename, slug reuse, export, import, archive, restore, rearchive,
+delete, backup, disposable restore, reconciliation, and reboot. Verify HTTPS,
+route absence after deletion, archive cleanup, audit continuity, and no manual
+host edits.
 
 Gate: the sanitized canary report maps every ADR 0022 invariant to passing
 evidence. Only then mark Milestone 3 complete and permit Milestone 4 work to
@@ -617,10 +632,12 @@ These are hypotheses, not design facts:
 13. The accepted documentation contains no contradictory lifecycle or recovery
     rule that only becomes visible when executable state machines are written.
 
-M3.0 owns assumptions 1–8. M3.1 and M3.5 recheck assumption 9. M3.11 owns
-assumption 10. M3.12 owns assumptions 11 and 12. Every implementation phase
-table-tests its relevant transitions and may stop for an ADR amendment if
-assumption 13 fails; it may not patch around a contradictory boundary.
+M3.0 owns assumptions 1–5, 7, and 8. M3.1 owns assumption 6 and first checks
+assumption 9; M3.5 rechecks assumption 9 before migrating the empty host
+directories. M3.11 owns assumption 10. M3.12 owns assumptions 11 and 12. Every
+implementation phase table-tests its relevant transitions and may stop for an
+ADR amendment if assumption 13 fails; it may not patch around a contradictory
+boundary.
 
 ## 9. Open questions and operator prerequisites
 

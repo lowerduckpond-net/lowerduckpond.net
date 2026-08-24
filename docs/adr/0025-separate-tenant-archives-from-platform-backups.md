@@ -2,6 +2,7 @@
 
 - Status: accepted
 - Date: 2026-08-23
+- Amends archive placement and expiration in: [ADR 0021](0021-define-static-tenant-lifecycle-semantics.md)
 
 ## Context
 

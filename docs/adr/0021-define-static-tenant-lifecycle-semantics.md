@@ -2,6 +2,7 @@
 
 - Status: accepted
 - Date: 2026-08-22
+- Archive storage amended by: [ADR 0025](0025-separate-tenant-archives-from-platform-backups.md)
 
 ## Context
 
@@ -155,19 +156,20 @@ correlation ID and request returns the established result. Automated notices,
 grace periods, retention expiry, and scheduled deletion remain Milestone 4
 policy rather than Milestone 3 host behavior. Until that coordinated policy is
 implemented, every durable object bound by an authoritative archived tenant
-record is retained without current-object age expiration. Milestone 3 must
-remove the existing current-object expiration from the `archives/` storage
-prefix before enabling archive operations. Storage lifecycle rules may still
-abort incomplete uploads and expire unreferenced or superseded objects, but
-must not independently delete a bundle that live tenant state requires for
-export, restore, or ordinary deletion. Version-aware cleanup permanently purges
-every version and delete marker of an unreferenced unique key and confirms none
-remain; lifecycle expiration is only a backstop and does not reclaim charged
-capacity or reopen archive admission. Restore, ordinary deletion, and an
-emergency deletion of archived state journal that cleanup before unbinding the
-record. Until the journal is reconciled and the key is proven absent, the
-object remains charged against the hard 25-key, 25-version-or-marker, and
-3,000-MiB remote archive ceilings and further archive admission stays closed.
+record is retained in ADR 0025's dedicated archive Space without current-object
+or noncurrent-version age expiration. Before enabling archive operations,
+Milestone 3 provisions that Space and removes the obsolete `archives/`
+lifecycle rule from the backup Space only after a version-aware preflight finds
+no object or version there. The archive Space may abort incomplete multipart
+uploads as defense in depth but never expires stored archive objects or
+versions. Explicit version-aware cleanup permanently purges every version and
+delete marker of an unreferenced unique key and confirms none remain; a storage
+lifecycle rule is not a cleanup backstop and cannot reclaim charged capacity or
+reopen archive admission. Restore, ordinary deletion, and an emergency deletion
+of archived state journal that cleanup before unbinding the record. Until the
+journal is reconciled and the key is proven absent, the object remains charged
+against the hard 25-key, 25-version-or-marker, and 3,000-MiB remote archive
+ceilings and further archive admission stays closed.
 
 Every externally requested operation in the ordinary matrix requires the
 root-owned authorization job defined by ADR 0020. The activator verifies its

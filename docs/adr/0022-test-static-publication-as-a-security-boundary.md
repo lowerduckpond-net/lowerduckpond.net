@@ -15,8 +15,8 @@ would discover security and destructive-lifecycle failures too late.
 Deliver Milestone 3 through these reviewable layers:
 
 1. threat model, ADRs, schema, fixtures, and test matrix;
-2. authenticated job issuance, manifest parsing, validation, slug and
-   immutable-origin rules, and desired/observed state;
+2. authenticated job issuance, root-only manifest generation and validation,
+   slug and immutable-origin rules, and desired/observed state;
 3. hostile archive validation and deterministic portable export/import;
 4. root-owned immutable release activation and generated Caddy routing;
 5. lifecycle commands, reconciliation, rollback, and audit records;
@@ -31,10 +31,15 @@ step. Use Molecule and Testinfra to exercise actual Unix identities,
 permissions, immutable releases, the privileged helper, Caddy validation and
 reload, backup overlap, restore, and reboot-relevant service configuration.
 
-Manifest fixtures include duplicate YAML keys for lifecycle, deployment, and
-quota fields and prove rejection occurs before schema validation and canonical
-JSON generation. Slug fixtures cover 1- and 63-byte valid labels, reject empty
-and 64-byte labels, and verify the complete alias-hostname limit. They also
+Client create-spec fixtures include duplicate YAML slug or quota keys and prove
+local rejection occurs before request construction. The corresponding host
+suite bypasses the supported client, submits duplicate structured-request
+member names, and proves rejection occurs before schema validation, correlation
+lookup, or canonicalization. It also proves no operation accepts a standalone
+manifest frame and that root-generated, restored, and bundle-embedded manifest
+bytes pass strict JSON validation and the canonical 16-KiB limit. Slug fixtures
+cover 1- and 63-byte valid labels, reject empty and 64-byte labels, and verify
+the complete alias-hostname limit. They also
 append LF, CR, CRLF, NUL, spaces, non-ASCII, and other control characters and
 prove both schema validation and the independent root ASCII `fullmatch` reject
 them before uniqueness or persistence. Tenant-ID fixtures prove `create`
@@ -125,14 +130,14 @@ the rolling rate window and cannot reset or refund consumed admission.
 Free-space fixtures exercise both the absolute and percentage block/inode floors
 and prove root-reserved blocks are excluded from admission capacity.
 
-Raw-input tests stream requests at 32 KiB and 32 KiB plus one, manifests at
-64 KiB and 64 KiB plus one, delayed or missing EOF, invalid UTF-8, enormous
-discardable whitespace, deep nesting, and oversized scalar syntax. They prove
-the byte gate and deadline run before parser entry and correlation lookup, the
-decoder process limits terminate adversarial inputs, canonical values still
-obey 16 KiB, and an established-correlation retry cannot bypass any raw or
-canonical limit. Rejection logs and results contain no submitted bytes and stay
-within their fixed bounds.
+Raw-input tests stream requests at 32 KiB and 32 KiB plus one, an invented
+manifest frame, delayed or missing EOF, invalid UTF-8, enormous discardable
+whitespace, deep nesting, and oversized scalar syntax. They prove the byte gate
+and deadline run before parser entry and correlation lookup, the decoder process
+limits terminate adversarial inputs, canonical requests and results still obey
+16 KiB, and an established-correlation retry cannot bypass any raw or canonical
+limit. Rejection logs and results contain no submitted bytes and stay within
+their fixed bounds.
 
 Authorization tests exercise every operator command through the authenticated
 SSH issuer and then invoke the provisioner's only sudo entry point directly.
@@ -289,6 +294,7 @@ record the accepted limitation by proving A can create a
 `Domain=lowerduckpond.com` cookie visible at tenant B. Installed-host tests then
 prove Caddy removes `Cookie` before every static tenant handler, removes
 `Set-Cookie` from every tenant, alias, unknown-host, and `.com` apex response,
+sets `Cache-Control: no-store` on every `.com` apex redirect and fallback,
 never varies a route or body by those cookies, and never logs their values.
 Browser tests prove a correctly formed, case-sensitive `__Host-` cookie remains
 bound to its exact tenant host even when a sibling uses the same unprefixed or
@@ -435,9 +441,9 @@ After CI and disposable-host acceptance pass, publish a reserved production
 canary in the approved untrusted `.com` tenant namespace. Verify the `.com` to
 `.net` browser boundary, the documented sibling-cookie behavior and Caddy
 stripping, the platform-only alias redirect, canonical HTTPS, rollback,
-suspension, restore, backup recovery, and idempotence, and remove all canary
-state through the same operator interface. Dynamic or destructive isolation
-tests remain off the production host.
+suspension, restore, rearchive, ordinary deletion, backup recovery, and
+idempotence, and remove all canary state through the same operator interface.
+Dynamic or destructive isolation tests remain off the production host.
 
 ## Consequences
 

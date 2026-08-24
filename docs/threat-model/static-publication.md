@@ -7,11 +7,11 @@
 
 ## Scope
 
-This model covers the Milestone 3 path from a static tenant manifest and ZIP
-archive on the trusted operator workstation through intake, validation,
-portable import, immutable release installation, Caddy route activation,
-lifecycle operations, backup, restore, and reconciliation on the single
-production host.
+This model covers the Milestone 3 path from a strict operation request and an
+operation-specific optional ZIP artifact on the trusted operator workstation
+through intake, validation, portable import, immutable release installation,
+Caddy route activation, lifecycle operations, backup, restore, and
+reconciliation on the single production host.
 
 It excludes the Milestone 4 public control plane, custom domains, PHP, tenant
 containers, tenant SQL, and arbitrary executable server-side content. Those
@@ -79,13 +79,15 @@ and supply-chain risks.
 
 ## Trust boundaries and data flow
 
-1. The operator submits a strict request, manifest, and optional ZIP through the
-   restricted SSH adapter into a fixed, non-public intake area. The adapter
+1. The operator submits one strict request and, only for deploy or import, one
+   optional ZIP through the restricted SSH adapter into a fixed, non-public
+   intake area. The protocol rejects a standalone manifest frame. The adapter
    derives the operator from the authenticated SSH boundary, enforces raw input
    limits, validates the caller-declared artifact digest, and commits an
    immutable root-owned job binding that operator, operation, target,
    correlation, canonical request, artifact or absence, and expected source
-   state.
+   state. Root derives the candidate desired manifest from that request and
+   authoritative source state.
 2. The unprivileged provisioner may perform advisory preflight and submit only
    the root-generated job ID to its fixed sudo entry point. It cannot invoke the
    issuer, pass raw operation fields to the activator, inspect the job store, or
@@ -133,7 +135,7 @@ record.
 | Symlink, hard-link, device, FIFO, socket, or permission abuse | Accept only regular files/directories; normalize modes; inspect ZIP metadata and actual created objects. |
 | ZIP bomb, decoder allocation, oversized or overlapping metadata, deep paths, implicit-directory inflation, disk or inode exhaustion | Structurally gate end, directory, extra-field, offset, region, path-byte, component, and depth bounds before a decoder; count each materialized explicit or implicit directory once; allow only stored and Deflate deployment methods; require matching local and central headers; and constrain the privileged parser by memory, swap, task, descriptor, CPU, and runtime limits. Give portable import and restore a bounded raw-envelope allowance, then strip its fixed prefix and enforce the unchanged tenant-tree limits. Enforce compressed, expanded, per-file, total-entry, and ratio limits during streaming extraction and delete failed staging trees. Remove persistent provisioner-writable storage, hard-cap its private ephemeral workspace by aggregate bytes and inodes, bound root snapshots and cleanup, and preserve a host free-space reserve. |
 | Duplicate, Unicode, slash, backslash, case, or export-encoding ambiguity | Retain pre-normalization spelling and provenance. Coalesce only an exactly matching explicit directory and implied parent; reject duplicate explicit records, file/directory conflicts, and distinct spellings that collide after NFC normalization or case folding. Generate manifests canonically and define every portable ZIP byte: JSON, checksums, member order, stored encoding, timestamps, flags, modes, metadata, central directory, and archive digest. |
-| Duplicate YAML mapping keys | Reject duplicates during YAML composition, before schema validation or canonical JSON generation can discard the ambiguity. |
+| Ambiguous structured input or duplicate local YAML keys | Reject duplicate object member names in the host request decoder before schema validation. If the supported client reads an optional local YAML create specification, bound it before composition, reject duplicate keys and unknown fields locally, and transmit only the strict request. Never install a host YAML parser or accept a standalone desired manifest. |
 | Tenant content poisons platform authentication cookies or exploits same-site request handling | Keep every tenant-controlled origin on `lowerduckpond.com` and every trusted application on `lowerduckpond.net`. Use only unique host-bound `__Host-` platform session cookies, exact-Origin and CSRF validation, no credentialed tenant CORS, and no state-changing safe-method routes. Browser tests prove `.com` cannot set or receive `.net` cookies and that the two registrable domains are cross-site. |
 | One `.com` tenant injects parent-domain cookies visible to another tenant | Treat the complete `.com` namespace as untrusted. Remove incoming `Cookie` before every static tenant handler, remove outgoing `Set-Cookie` on all Milestone 3 `.com` responses, never vary routing or static bytes by cookies, and omit their values from logs. Test and document that JavaScript can still create `Domain=lowerduckpond.com` cookies, confuse ordinary client-side cookie names, consume shared cookie capacity, or trigger a per-browser oversized-header failure. Require host-bound `__Host-` names where a tenant needs cookie-name integrity and a new ADR before any dynamic, authenticated, or privileged `.com` application. |
 | Slug reassignment transfers persistent browser state | Treat the slug hostname only as a platform alias. Redirect its exact bare root without caching, referrer, cookie, path, query, tenant body, tenant header, or caller-selected target to the immutable tenant origin. Never reassign a tenant ID or canonical hostname; release only the slug mapping. |
@@ -146,7 +148,7 @@ record.
 | Runtime generations exhaust disk or retain secrets indefinitely | Admit at most active, last-known-good, and intent candidate generations; enforce aggregate unique-inode byte/inode and host-free-space bounds; clean unreferenced staging after terminal states and startup; keep environment/config Caddy-only and backup/diagnostic-excluded. |
 | Concurrent or replayed jobs | Let only the authenticated issuer allocate a root-owned job and correlation. Bind operator, operation, target, canonical request, artifact, and expected state; durably claim before execution; serialize publication; and make an exact retry return one immutable result. Unknown IDs and changed bindings allocate nothing. |
 | Compromised provisioner chains valid archive and delete operations | Accept only a root-generated authorization-job ID through provisioner sudo. Archive and delete require distinct authenticated jobs and correlations; the latter can be issued only against and bind the resulting archived manifest, deployment, and exact archive record. Keep job issuance and emergency deletion outside provisioner authority. |
-| Oversized structured syntax exhausts the privileged parser before canonicalization | Read at most the raw ceiling plus one byte under a deadline before parsing, reject excess without inspecting correlation data, run the decoder under fixed process limits, and then enforce the smaller canonical request, result, and manifest ceilings. Apply the same path to retries. |
+| Oversized structured syntax exhausts the privileged parser before canonicalization | Read at most the raw request ceiling plus one byte under a deadline before parsing, reject excess without inspecting correlation data, run the decoder under fixed process limits, and then enforce the smaller canonical request and result ceilings. Independently bound each root-generated manifest. Apply the same path to retries. |
 | Valid operations indirectly exhaust root-owned state | Let only the authenticated issuer spend new job/correlation capacity. Enforce host-wide tenant, release byte/inode, shared authorization/correlation record, audit, request/result size, reason, and admission-rate ceilings before staging. Preserve audit in bounded hash-chained segments rotated only after verified off-host backup, with an isolated root-administrator reserve. |
 | Ordinary backup retention expires rotated audit evidence | Remove a local segment only after a dedicated tagged audit snapshot is restore-verified and durably indexed. Exclude that tag from ordinary `forget`/`prune`, verify every referenced snapshot during maintenance, and reconstruct the chain from tagged descriptors during recovery. |
 | Nested locks deadlock or accumulate waiters | Acquire export, publication, and tenant-state only in that global order; never upgrade; return retryable busy before allocating work; revalidate archive source state after its unlocked construction phase; and never wait for a systemd job that reacquires publication while holding it. |
@@ -188,8 +190,11 @@ Implementation and review must preserve these invariants:
 5. Desired state, observed state, releases, and audit events are recoverable and
    reconciliation never publishes unvalidated content.
 6. Unknown manifest fields, unsupported archive semantics, and unrecognized
-   lifecycle transitions fail closed; duplicate YAML keys are rejected before
-   schema validation.
+   lifecycle transitions fail closed. The host rejects duplicate members in a
+   structured request before schema validation, accepts no standalone desired
+   manifest, and constructs authoritative manifests only inside the root
+   boundary. Optional local YAML duplicate keys fail in the client before
+   request construction.
 7. Credentials never enter tenant content, provisioner logs, results, exports,
    manifests, or audit payloads.
 8. The provisioner's capability cannot originate archive or deletion, convert
@@ -204,9 +209,10 @@ Implementation and review must preserve these invariants:
     the exact `lowerduckpond.com` apex, or a reusable slug alias. Tenant bytes
     are served only from immutable UUID-derived `.com` origins. Every
     Milestone 3 `.com` response strips `Set-Cookie`, every static tenant handler
-    receives no `Cookie`, and no route depends on cookie state. A slug alias
-    returns only the fixed root-generated redirect contract in ADR 0023 and
-    holds no tenant or authentication state. Its HTTP listener applies the
+    receives no `Cookie`, every exact `.com` apex response carries
+    `Cache-Control: no-store`, and no route depends on cookie state. A slug
+    alias returns only the fixed root-generated redirect contract in ADR 0023
+    and holds no tenant or authentication state. Its HTTP listener applies the
     alias allowlist before general HTTPS upgrades and never forwards a rejected
     path or query.
 11. A rollback cannot transition a tenant out of `suspended`; only `resume` may
@@ -349,7 +355,7 @@ PHP, or multi-host provisioning.
   Caddy cookie policy while also recording the accepted sibling `.com` cookie
   behavior.
 - A reserved production canary completes deploy, HTTPS, rollback, suspension,
-  restore, backup recovery, reconciliation, and cleanup from the trusted
-  workstation.
+  restore, rearchive, ordinary deletion, backup recovery, reconciliation, and
+  cleanup from the trusted workstation.
 - Sanitized evidence is recorded without credentials, production backup
   metadata, or tenant content.

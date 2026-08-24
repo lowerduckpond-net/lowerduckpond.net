@@ -40,7 +40,7 @@ The initial layout is:
 - `secure.lowerduckpond.net` is reserved for the future authenticated UI and
   same-origin API;
 - the exact `lowerduckpond.com` apex returns the generic stateless platform
-  `404` during Milestone 3;
+  `404` with `Cache-Control: no-store` during Milestone 3;
 - `<slug>.lowerduckpond.com` is the reusable platform-controlled alias from ADR
   0023; and
 - `t-<tenant-uuid-without-hyphens>.lowerduckpond.com` is the immutable
@@ -55,11 +55,13 @@ designation, an exact `GET` or `HEAD` for `/` without a query at the `.com`
 apex receives a temporary `302` with `Cache-Control: no-store` to that tenant's
 current authoritative `<slug>.lowerduckpond.com` alias. The apex returns the
 generic stateless `404` if no tenant is designated or the designated tenant is
-not active, and for every other request. Resolving the destination from the
-immutable tenant ID, rather than storing a slug as the designation, prevents a
-released and reassigned slug from silently changing the municipal destination.
-The municipal tenant otherwise uses the same manifest, immutable origin,
-deployment, lifecycle, and slug-reuse contract as every resident tenant.
+not active, and for every other request. Every response from the exact apex,
+including these fallbacks, carries `Cache-Control: no-store`. Resolving the
+destination from the immutable tenant ID, rather than storing a slug as the
+designation, prevents a released and reassigned slug from silently changing the
+municipal destination. The municipal tenant otherwise uses the same manifest,
+immutable origin, deployment, lifecycle, and slug-reuse contract as every
+resident tenant.
 
 Reserve `hosting`, `secure`, `www`, and every label matching the canonical
 `t-<32-lowercase-hex>` form from customer slug allocation. Keep the reserved

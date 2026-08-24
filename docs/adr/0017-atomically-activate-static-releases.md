@@ -355,9 +355,11 @@ that same allowance; successful retirement is not treated as free capacity
 until a version-aware listing proves the key absent.
 
 A raw structured operation request is at most 32 KiB before decoding; its
-canonical request and result are each at most 16 KiB. A raw YAML manifest is at
-most 64 KiB before composition and remains subject to the same 16-KiB canonical
-manifest ceiling. The initial structured-decoder helper limits are
+canonical request and result are each at most 16 KiB. A canonical desired
+manifest is also at most 16 KiB, but root constructs it from the validated
+operation and authoritative source state; no raw desired manifest enters the
+transport or privileged decoder. The initial structured-request decoder helper
+limits are
 `MemoryMax=64M`, `MemorySwapMax=0`, `TasksMax=8`, `LimitNOFILE=64`,
 `LimitCPU=5`, `RuntimeMaxSec=15s`, and one CPU through `CPUQuota=100%`.
 

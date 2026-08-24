@@ -73,8 +73,9 @@ A platform-owned reference site should eventually live in a separate
 repository and deploy at an ordinary `.com` slug and immutable origin through
 the same contract available to residents. Its content, repository name, and
 slug remain a Milestone 7 product choice. The exact `lowerduckpond.com` apex is
-a stateless platform `404` during Milestone 3 and will then redirect to the
-designated municipal tenant's current slug while that tenant is active.
+a non-cacheable stateless platform `404` during Milestone 3 and will then
+redirect without caching to the designated municipal tenant's current slug
+while that tenant is active.
 
 ## 2. Decisions to record before implementation
 
@@ -308,7 +309,8 @@ evidence, risks, and dangerous assumptions are maintained in the
 ### Tenant manifest v1
 
 Define and version a machine-readable contract before building the portal. The
-accepted v1alpha1 shape begins with:
+accepted v1alpha1 shape begins with the following readable illustration of
+root-generated state; this YAML rendering is not a host input or upload format:
 
 ```yaml
 apiVersion: hosting.lowerduckpond.net/v1alpha1
@@ -344,7 +346,12 @@ Convergence and reconciliation fail closed unless configuration, the platform
 record, and the rederived manifest origin agree. The tenant ID and canonical
 origin do not change when a public slug changes. Desired manifests are stored
 as canonical JSON, while observed activation state and immutable deployment
-records remain separate.
+records remain separate. The host accepts no standalone desired manifest:
+operation-specific requests carry only authorized caller choices, and root
+derives each candidate manifest from the request plus authoritative source
+state. The trusted client may translate a bounded local YAML create
+specification into the strict request, but YAML never crosses the privileged
+transport boundary.
 
 ### Operator and provisioner behavior
 
@@ -501,9 +508,11 @@ Implement idempotent commands or jobs for:
 - Permit the provisioner to preflight and execute an already authorized job
   without granting authority to originate or alter state changes or access to
   desired state, observed state, audit history, or export payloads.
-- Cap raw operation requests at 32 KiB and raw manifests at 64 KiB before any
-  parser or correlation lookup, decode under fixed process limits, and retain
-  the 16-KiB canonical request, result, and manifest ceilings for every retry.
+- Cap raw operation requests at 32 KiB before any host parser or correlation
+  lookup, decode under fixed process limits, reject any standalone manifest
+  frame, and retain the 16-KiB canonical request, result, and root-generated
+  manifest ceilings for every retry. A local YAML create specification is a
+  bounded client convenience, not a host input or authorization document.
 - Bound indirect root-owned growth to 25 tenants, 10 GiB/500,000 release inodes,
   10,000/64-MiB shared authorization/correlation records, 128 MiB of
   hash-chained ordinary audit, and 60 issuer-created IDs/hour; fail closed and
@@ -590,9 +599,9 @@ Implement idempotent commands or jobs for:
 
 From the trusted workstation, an administrator can create, deploy, replace,
 roll back, suspend, resume, rename and reuse a slug, export, import into a
-separate tenant, archive, restore, delete, reconcile, back up, and
-disposable-restore a static site without manually editing the host. HTTPS and
-consistent publication survive a reboot.
+separate tenant, archive, restore, rearchive with current evidence, delete,
+reconcile, back up, and disposable-restore a static site without manually
+editing the host. HTTPS and consistent publication survive a reboot.
 
 Every externally requested operation executes from an immutable authenticated
 job issued through the dedicated forced-command operator boundary. The
@@ -786,7 +795,8 @@ content, repository name, and slug are open product questions. Designate its
 immutable tenant ID in root-owned state as the municipal target for the exact
 `.com` apex. The apex remains stateless and redirects only a query-free `GET`
 or `HEAD` for `/` to the active tenant's current authoritative slug; it never
-serves tenant content directly. The reference tenant should exercise:
+serves tenant content directly, and every redirect or fallback response carries
+`Cache-Control: no-store`. The reference tenant should exercise:
 
 - Ordinary wildcard DNS and HTTPS in the tenant namespace.
 - Static assets and intentionally period-inappropriate styling.

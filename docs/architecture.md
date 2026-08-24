@@ -258,12 +258,14 @@ same-origin API. Authentication there uses a unique host-only `__Host-` cookie
 plus exact-Origin and CSRF checks and never uses a parent-domain cookie.
 
 `lowerduckpond.com` is the untrusted tenant namespace. In Milestone 3 its exact
-apex returns a generic stateless `404`. In Milestone 7 a root-owned designation
-will bind the municipal reference role to one ordinary active tenant's
-immutable ID. An exact query-free `GET` or `HEAD` for `/` at the apex will then
-temporarily redirect without caching to that tenant's current authoritative
-slug alias. If the designation is absent or inactive, or for any other apex
-request, it continues to return the generic stateless `404`. Deriving the
+apex returns a generic stateless `404` with `Cache-Control: no-store`. In
+Milestone 7 a root-owned designation will bind the municipal reference role to
+one ordinary active tenant's immutable ID. An exact query-free `GET` or `HEAD`
+for `/` at the apex will then temporarily redirect without caching to that
+tenant's current authoritative slug alias. If the designation is absent or
+inactive, or for any other apex request, it continues to return the generic
+stateless `404`. Every exact-apex response is non-cacheable so designation,
+suspension, and resumption take effect without a stale fallback. Deriving the
 destination from the tenant ID prevents a later slug reassignment from
 retargeting the apex. Each immutable
 canonical tenant origin is
