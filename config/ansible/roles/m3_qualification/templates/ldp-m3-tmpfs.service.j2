@@ -1,0 +1,12 @@
+[Unit]
+Description=Lower Duck Pond private tmpfs qualification fixture
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/lowerduckpond/m3-qualification-tmpfs
+PrivateTmp=true
+TemporaryFileSystem=/var/lib/lowerduckpond-m3-tmpfs:rw,size=64M,nr_inodes=4096,mode=0700
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths={{ m3_qualification_runtime_root }}
+NoNewPrivileges=true

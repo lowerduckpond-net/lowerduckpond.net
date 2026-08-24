@@ -1,6 +1,7 @@
 # OpenTofu infrastructure
 
-Milestone 1 provides three reusable modules and two operational roots:
+Milestone 1 provides three reusable modules and two operational roots. M3.0
+adds a third, explicitly disposable root:
 
 - `bootstrap-state/` creates the private, versioned Spaces state bucket and its
   bucket-scoped backend key. It intentionally retains local state under
@@ -8,6 +9,10 @@ Milestone 1 provides three reusable modules and two operational roots:
 - `environments/production/` creates the NYC1 network, small development
   Droplet, retained reserved address, firewall, backup storage, scoped runtime
   key, and Cloudflare records.
+- `environments/qualification/` temporarily creates only the production-
+  equivalent M3.0 host, firewall, project assignment, and four test records. It
+  has a separate encrypted state key and must be destroyed after the no-skip
+  gate runs.
 - `modules/` contains the host, Spaces, and DNS resource boundaries.
 
 Production state uses the Spaces S3-compatible backend and OpenTofu client-side
@@ -19,3 +24,5 @@ Never commit state, saved plans, backend credentials, provider tokens, or real
 variable files. Follow
 [`docs/operations/infrastructure.md`](../../docs/operations/infrastructure.md)
 for the controlled workflow.
+The M3.0 exception is separately bounded in
+[`docs/operations/m3-qualification.md`](../../docs/operations/m3-qualification.md).

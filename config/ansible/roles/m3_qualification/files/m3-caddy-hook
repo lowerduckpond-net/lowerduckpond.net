@@ -1,0 +1,12 @@
+#!/bin/bash
+set -euo pipefail
+
+if [[ $# -ne 1 ]] || [[ ! "$1" =~ ^(start-pre|start-post|reload-pre|reload-post)$ ]]; then
+  exit 64
+fi
+
+umask 077
+temporary="/run/lowerduckpond-m3-qualification/caddy-$1-invocation.tmp"
+destination="/run/lowerduckpond-m3-qualification/caddy-$1-invocation"
+printf '%s\n' "${INVOCATION_ID:?}" > "$temporary"
+mv -- "$temporary" "$destination"

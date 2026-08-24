@@ -1,0 +1,48 @@
+#!/usr/bin/python3
+"""Prove systemd's private tmpfs size and inode ceilings."""
+
+from __future__ import annotations
+
+import errno
+import json
+import os
+from pathlib import Path
+
+ROOT = Path("/var/lib/lowerduckpond-m3-tmpfs")
+RESULT = Path("/run/lowerduckpond-m3-qualification/tmpfs-result.json")
+LIMIT_MIB = 64
+INODE_LIMIT = 4096
+
+
+def space_is_enforced() -> bool:
+    path = ROOT / "space"
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        try:
+            os.posix_fallocate(descriptor, 0, (LIMIT_MIB + 1) * 1024 * 1024)
+        except OSError as error:
+            return error.errno == errno.ENOSPC
+        return False
+    finally:
+        os.close(descriptor)
+        path.unlink(missing_ok=True)
+
+
+def inodes_are_enforced() -> bool:
+    created = 0
+    try:
+        for created in range(INODE_LIMIT + 1):
+            (ROOT / f"inode-{created}").touch(mode=0o600, exist_ok=False)
+    except OSError as error:
+        return error.errno == errno.ENOSPC and created < INODE_LIMIT
+    return False
+
+
+result = {
+    "space_enforced": space_is_enforced(),
+    "inodes_enforced": inodes_are_enforced(),
+}
+temporary = RESULT.with_suffix(".tmp")
+temporary.write_text(json.dumps(result, sort_keys=True), encoding="utf-8")
+temporary.replace(RESULT)
+raise SystemExit(0 if all(result.values()) else 1)

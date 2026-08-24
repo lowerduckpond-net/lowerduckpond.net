@@ -1,0 +1,13 @@
+{
+  "domains": {
+    "lowerduckpond.com": {
+      "auto_renew_enabled": true,
+      "registrant_controlled": true
+    },
+    "lowerduckpond.net": {
+      "auto_renew_enabled": true,
+      "registrant_controlled": true
+    }
+  },
+  "schema": "lowerduckpond.m3-domain-attestation/v1"
+}

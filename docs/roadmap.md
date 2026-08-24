@@ -4,7 +4,7 @@ This roadmap turns the architecture in [`architecture.md`](architecture.md) into
 
 ## Progress
 
-Status as of 2026-08-23:
+Status as of 2026-08-24:
 
 | Milestone | Status | Outcome |
 | --- | --- | --- |
@@ -20,7 +20,8 @@ Status as of 2026-08-23:
 “Complete” means the milestone's exit criterion has been demonstrated, not
 merely that its implementation was merged. “Current” identifies the active
 implementation target. Milestone 3's design is accepted; functional
-implementation has not started.
+implementation began with M3.0. Production remains disabled and no phase is
+complete until its documented live gate passes.
 
 ## 1. Proposed platform repository
 

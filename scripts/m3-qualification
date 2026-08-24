@@ -1,0 +1,187 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+readonly evidence_root=${M3_QUALIFICATION_EVIDENCE_DIR:-"${repository_root}/.artifacts/m3-qualification"}
+readonly qualification_package=/opt/lowerduckpond/m3-qualification
+readonly qualification_root="${repository_root}/infra/opentofu/environments/qualification"
+readonly remote_convergence_marker=/var/lib/lowerduckpond-m3/converged-session
+readonly remote_report=/run/lowerduckpond-m3-qualification/host-report.json
+readonly session_path="${evidence_root}/session.json"
+readonly operation_lock="${evidence_root}/operation.lock"
+
+usage() {
+    echo "usage: scripts/m3-qualification {begin|libraries|configure|host|domains ATTESTATION|browser|assemble}" >&2
+    exit 64
+}
+
+require_clean_revision() {
+    if [[ -n $(git -C "$repository_root" status --porcelain --untracked-files=normal) ]]; then
+        echo "qualification requires a clean Git revision" >&2
+        exit 65
+    fi
+}
+
+current_revision() {
+    git -C "$repository_root" rev-parse HEAD
+}
+
+verify_session() {
+    require_clean_revision
+    tofu -chdir="$qualification_root" output -json qualification_identity | \
+        uv run ldp-m3-qualify verify-session \
+            --session "$session_path" \
+            --source-revision "$(current_revision)"
+}
+
+session_value() {
+    uv run ldp-m3-qualify session-value --session "$session_path" --field "$1"
+}
+
+load_report_session() {
+    verify_session
+    qualification_run_id=$(session_value run_id)
+    qualification_source_revision=$(session_value source_revision)
+}
+
+verify_remote_convergence() {
+    host=$(session_value ipv4_address)
+    if ! ssh -o BatchMode=yes "ldp-admin@$host" sudo cat -- "$remote_convergence_marker" | \
+        uv run ldp-m3-qualify verify-convergence --session "$session_path"; then
+        echo "qualification host has not converged for this run and revision" >&2
+        return 65
+    fi
+}
+
+cd "$repository_root"
+mkdir -p -- "$evidence_root"
+exec 9>>"$operation_lock"
+chmod 0600 "$operation_lock"
+if ! flock --exclusive --nonblock 9; then
+    echo "another qualification action is already running" >&2
+    exit 75
+fi
+if [[ $# -lt 1 ]]; then
+    usage
+fi
+
+action=$1
+shift
+case "$action" in
+    begin)
+        [[ $# -eq 0 ]] || usage
+        require_clean_revision
+        rm -f -- \
+            "$session_path" \
+            "$evidence_root/libraries.json" \
+            "$evidence_root/host.json" \
+            "$evidence_root/domains.json" \
+            "$evidence_root/browser.json" \
+            "$evidence_root/m3-qualification.json"
+        tofu -chdir="$qualification_root" output -json qualification_identity | \
+            uv run ldp-m3-qualify begin-session \
+                --source-revision "$(current_revision)" \
+                --output "$session_path"
+        ;;
+    libraries)
+        [[ $# -eq 0 ]] || usage
+        load_report_session
+        rm -f -- "$evidence_root/libraries.json"
+        uv run ldp-m3-qualify libraries \
+            --run-id "$qualification_run_id" \
+            --source-revision "$qualification_source_revision" \
+            --output "$evidence_root/libraries.json"
+        ;;
+    configure)
+        [[ $# -eq 0 ]] || usage
+        verify_session
+        host=$(session_value ipv4_address)
+        droplet_id=$(session_value droplet_id)
+        run_id=$(session_value run_id)
+        source_revision=$(session_value source_revision)
+        inventory=$(mktemp)
+        cleanup() {
+            find "$inventory" -delete
+        }
+        trap cleanup EXIT
+        chmod 0600 "$inventory"
+        printf '%s\n' \
+            '---' \
+            'all:' \
+            '  children:' \
+            '    qualification_nodes:' \
+            '      hosts:' \
+            '        m3_qualification:' \
+            "          ansible_host: \"$host\"" \
+            "          m3_expected_ipv4: \"$host\"" \
+            "          m3_expected_droplet_id: \"$droplet_id\"" \
+            "          m3_expected_run_id: \"$run_id\"" \
+            "          m3_expected_source_revision: \"$source_revision\"" \
+            '          ansible_user: ldp-admin' > "$inventory"
+        ANSIBLE_CONFIG="$repository_root/config/ansible/ansible.cfg" uv run ansible-playbook \
+            --inventory "$inventory" "$repository_root/config/ansible/playbooks/m3-qualification.yml"
+        ;;
+    host)
+        [[ $# -eq 0 ]] || usage
+        load_report_session
+        verify_remote_convergence
+        rm -f -- "$evidence_root/host.json"
+        ssh -o BatchMode=yes "ldp-admin@$host" sudo rm -f -- "$remote_report"
+        set +e
+        ssh -o BatchMode=yes "ldp-admin@$host" \
+            sudo env "PYTHONPATH=$qualification_package" /usr/bin/python3 \
+            -m lowerduckpond_m3_qualification host \
+            --run-id "$qualification_run_id" \
+            --source-revision "$qualification_source_revision" \
+            --work-root /var/lib/lowerduckpond-m3 \
+            --output "$remote_report"
+        remote_status=$?
+        set -e
+        ssh -o BatchMode=yes "ldp-admin@$host" sudo cat "$remote_report" \
+            > "$evidence_root/host.json"
+        exit "$remote_status"
+        ;;
+    domains)
+        [[ $# -eq 1 ]] || usage
+        load_report_session
+        : "${M3_QUALIFICATION_NET_ZONE_ID:?}"
+        : "${M3_QUALIFICATION_COM_ZONE_ID:?}"
+        rm -f -- "$evidence_root/domains.json"
+        uv run ldp-m3-qualify domains \
+            --run-id "$qualification_run_id" \
+            --source-revision "$qualification_source_revision" \
+            --attestation "$1" \
+            --net-zone-id "$M3_QUALIFICATION_NET_ZONE_ID" \
+            --com-zone-id "$M3_QUALIFICATION_COM_ZONE_ID" \
+            --output "$evidence_root/domains.json"
+        ;;
+    browser)
+        [[ $# -eq 0 ]] || usage
+        load_report_session
+        verify_remote_convergence
+        rm -f -- "$evidence_root/browser.json"
+        uv run ldp-m3-qualify browser \
+            --run-id "$qualification_run_id" \
+            --source-revision "$qualification_source_revision" \
+            --platform-origin https://m3-qualification.lowerduckpond.net \
+            --tenant-alias-origin https://m3-a.lowerduckpond.com \
+            --tenant-immutable-origin https://t-0198d17f6f4a70008000000000000001.lowerduckpond.com \
+            --tenant-unknown-origin https://m3-unknown.lowerduckpond.com \
+            --output "$evidence_root/browser.json"
+        ;;
+    assemble)
+        [[ $# -eq 0 ]] || usage
+        load_report_session
+        verify_remote_convergence
+        rm -f -- "$evidence_root/m3-qualification.json"
+        uv run ldp-m3-qualify assemble --require-m3 \
+            --fragment "$evidence_root/libraries.json" \
+            --fragment "$evidence_root/host.json" \
+            --fragment "$evidence_root/domains.json" \
+            --fragment "$evidence_root/browser.json" \
+            --output "$evidence_root/m3-qualification.json"
+        ;;
+    *)
+        usage
+        ;;
+esac

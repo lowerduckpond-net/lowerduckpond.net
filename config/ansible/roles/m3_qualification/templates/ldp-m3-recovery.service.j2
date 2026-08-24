@@ -1,0 +1,16 @@
+[Unit]
+Description=Lower Duck Pond bounded recovery qualification fixture
+StartLimitIntervalSec=5s
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/test -e {{ m3_qualification_runtime_root }}/recovery-allowed
+ExecStart=/usr/bin/true
+RemainAfterExit=yes
+Restart=on-failure
+RestartSec=100ms
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+NoNewPrivileges=true
