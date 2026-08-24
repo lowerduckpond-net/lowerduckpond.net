@@ -64,6 +64,7 @@ FIXED_STRING_EVIDENCE: Final = {
 FIXED_INTEGER_EVIDENCE: Final = {
     "accepted": frozenset({1}),
     "bounded_attempts": frozenset({3}),
+    "certificate_paths": frozenset({4}),
     "engines": frozenset({3}),
     "examples": frozenset({100}),
     "inodes": frozenset({4096}),

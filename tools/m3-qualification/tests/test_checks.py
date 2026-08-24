@@ -5,7 +5,7 @@ from lowerduckpond_m3_qualification.checks import (
     M3_REQUIRED_CHECK_IDS,
 )
 
-M3_CHECK_COUNT = 36
+M3_CHECK_COUNT = 37
 
 
 def test_m3_gate_has_one_exact_no_skip_check_set() -> None:

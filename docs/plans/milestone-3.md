@@ -199,7 +199,7 @@ deferred. Production remains dark through phases 0–11.
 
 Implementation status: the hermetic, disposable-host, domain, Caddy, and
 three-engine browser probes are implemented. M3.0 is not complete until an
-explicitly authorized live run produces one passing 36-check sanitized report
+explicitly authorized live run produces one passing 37-check sanitized report
 and the disposable resources are confirmed destroyed.
 
 Add executable qualification probes and a sanitized report before depending on

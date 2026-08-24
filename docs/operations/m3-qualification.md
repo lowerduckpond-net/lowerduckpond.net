@@ -7,7 +7,7 @@ configuration, tenant state, or either domain apex record. The exact
 `lowerduckpond.com` apex route is exercised locally on the disposable host with
 an HTTPS address override.
 
-The gate has 36 named checks and no skip or warning result. Its report format
+The gate has 37 named checks and no skip or warning result. Its report format
 can contain only fixed check identifiers, pass/fail status, bounded versions and
 counts, booleans, filesystem type, and fixed error codes. It cannot serialize
 command output, exceptions, request or response headers, cookies, logs,
@@ -15,8 +15,9 @@ credentials, or nested arbitrary evidence.
 
 ## Authorization boundary
 
-Repository validation and `just m3-qualification libraries` are hermetic and
-may run anywhere. Do not plan, apply, configure, probe, or destroy the live
+Repository validation and its direct library probe are hermetic and may run
+anywhere. The operator-facing `just m3-qualification` commands are bound to a
+live session. Do not plan, apply, configure, probe, or destroy the live
 qualification stack until the operator explicitly authorizes that live run.
 
 Run the live sequence only from the trusted administrative workstation that
@@ -44,6 +45,9 @@ The temporary dual-zone Cloudflare token is used by OpenTofu to create and
 remove four A records, by the domain preflight to inspect both zones, and by
 Caddy to complete DNS-01 issuance on the disposable host. Revoke it after the
 host and records are destroyed. It is distinct from the production Caddy token.
+The fixture obtains and verifies both the apex and wildcard certificate path
+for each domain through direct-address TLS connections; this does not repoint
+either apex DNS record to the disposable host.
 
 Copy
 [`domain-attestation.example.json`](../../tests/static-publication/qualification/fixtures/domain-attestation.example.json)
@@ -114,7 +118,7 @@ once. This changes only the trusted workstation:
 uv run playwright install --with-deps chromium firefox webkit
 ```
 
-Run all four report fragments, then require the exact 36-check union:
+Run all four report fragments, then require the exact 37-check union:
 
 ```bash
 just m3-qualification libraries

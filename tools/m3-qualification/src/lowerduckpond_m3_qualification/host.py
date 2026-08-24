@@ -6,6 +6,7 @@ import json
 import pwd
 import re
 import socket
+import ssl
 import stat
 import subprocess
 import time
@@ -32,6 +33,12 @@ ROUTE_HOSTS: Final = (
     "t-0198d17f6f4a70008000000000000001.lowerduckpond.com",
     "m3-unknown.lowerduckpond.com",
 )
+CERTIFICATE_PROBES: Final = (
+    ("lowerduckpond.net", "lowerduckpond.net"),
+    ("m3-qualification.lowerduckpond.net", "*.lowerduckpond.net"),
+    ("lowerduckpond.com", "lowerduckpond.com"),
+    ("m3-a.lowerduckpond.com", "*.lowerduckpond.com"),
+)
 UUID_REJECTION_ARGUMENTS: Final = (
     (VALID_UUIDV7.upper(),),
     ("0198d17f-6f4a-4000-8000-000000000001",),
@@ -46,6 +53,8 @@ POLL_DELAY_SECONDS: Final = 0.1
 CADDY_RUNTIME_MODE: Final = 0o700
 MAXIMUM_HANDOFF_MILLISECONDS: Final = 1000
 MINIMUM_HTTP_STATUS_FIELDS: Final = 2
+DNS_NAME_FIELDS: Final = 2
+TLS_TIMEOUT_SECONDS: Final = 5.0
 
 
 def run_host_checks(*, work_root: Path) -> tuple[CheckResult, ...]:
@@ -58,6 +67,7 @@ def run_host_checks(*, work_root: Path) -> tuple[CheckResult, ...]:
         _run("m3.0.host.caddy-admin", _check_caddy_admin),
         _run("m3.0.host.caddy-hooks", _check_caddy_hooks),
         _run("m3.0.host.caddy-routes", _check_caddy_routes),
+        _run("m3.0.host.caddy-certificates", _check_caddy_certificates),
         _run("m3.0.host.caddy-log-safety", _check_caddy_log_safety),
         _run("m3.0.host.systemd-recovery", _check_systemd_recovery),
     ]
@@ -289,6 +299,35 @@ def _headers_are_stateless(headers: Mapping[str, str]) -> bool:
         and not headers.get("x-m3-incoming-state", "")
         and headers.get("cache-control") == "no-store"
     )
+
+
+def _check_caddy_certificates() -> dict[str, EvidenceValue]:
+    address = _route_addresses()
+    for server_name, required_dns_name in CERTIFICATE_PROBES:
+        if required_dns_name not in _certificate_dns_names(address, server_name):
+            raise RuntimeError
+    return {"certificate_paths": len(CERTIFICATE_PROBES)}
+
+
+def _certificate_dns_names(address: str, server_name: str) -> frozenset[str]:
+    context = ssl.create_default_context()
+    with (
+        socket.create_connection((address, 443), timeout=TLS_TIMEOUT_SECONDS) as connection,
+        context.wrap_socket(connection, server_hostname=server_name) as secured,
+    ):
+        certificate = secured.getpeercert()
+    if certificate is None:
+        raise RuntimeError
+    names: set[str] = set()
+    for entry in certificate.get("subjectAltName", ()):
+        if (
+            isinstance(entry, tuple)
+            and len(entry) == DNS_NAME_FIELDS
+            and entry[0] == "DNS"
+            and isinstance(entry[1], str)
+        ):
+            names.add(entry[1])
+    return frozenset(names)
 
 
 def _check_caddy_log_safety() -> dict[str, EvidenceValue]:

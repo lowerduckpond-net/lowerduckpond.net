@@ -28,6 +28,7 @@ FILESYSTEM_CHECK_IDS: Final = frozenset(
 HOST_CHECK_IDS: Final = frozenset(
     {
         "m3.0.host.caddy-admin",
+        "m3.0.host.caddy-certificates",
         "m3.0.host.caddy-descriptor",
         "m3.0.host.caddy-hooks",
         "m3.0.host.caddy-log-safety",
@@ -73,6 +74,7 @@ EVIDENCE_KEYS_BY_CHECK: Final = {
     "m3.0.host.tmpfs-limits": frozenset({"inodes", "private", "size_mib"}),
     "m3.0.host.caddy-descriptor": frozenset({"generation_pinned"}),
     "m3.0.host.caddy-admin": frozenset({"access_limited", "tcp_disabled", "unix_socket"}),
+    "m3.0.host.caddy-certificates": frozenset({"certificate_paths"}),
     "m3.0.host.caddy-hooks": frozenset({"bounded_attempts", "invocation_hooks", "reload_pinned"}),
     "m3.0.host.caddy-routes": frozenset({"independent_body", "route_classes"}),
     "m3.0.host.caddy-log-safety": frozenset({"structured", "values_omitted"}),
