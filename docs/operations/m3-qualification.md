@@ -153,5 +153,8 @@ Cloudflare token.
 
 If creation or configuration fails partway through, use the same destroy
 sequence. The destroy policy deliberately accepts any created subset of the
-seven allowlisted resources while still rejecting a non-delete action or any
-unrelated resource.
+seven allowlisted resources while still rejecting a non-delete action, an
+unrelated resource, or an allowlisted state address whose destructive-side
+identity no longer matches the disposable name and type. When the Droplet and
+dependent resources coexist, the policy also requires the firewall, project
+membership, and DNS addresses to remain bound to that exact Droplet.
