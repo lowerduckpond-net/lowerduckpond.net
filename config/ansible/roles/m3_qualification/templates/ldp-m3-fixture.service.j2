@@ -1,0 +1,21 @@
+[Unit]
+Description=Lower Duck Pond hostile loopback qualification fixture
+After=network.target
+
+[Service]
+Type=simple
+User=ldp-qualification
+Group=ldp-qualification
+Environment=PYTHONPATH={{ m3_qualification_install_root }}
+ExecStart=/usr/bin/python3 -m lowerduckpond_m3_qualification.fixture_server
+Restart=on-failure
+RestartSec=250ms
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+NoNewPrivileges=true
+RestrictAddressFamilies=AF_INET AF_UNIX
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

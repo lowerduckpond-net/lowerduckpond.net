@@ -20,7 +20,7 @@ format: _sync
     tofu fmt -recursive infra/opentofu
 
 # Run every validation required by CI.
-check: check-pre-commit check-links check-python check-opentofu check-ansible check-actions check-secrets
+check: check-pre-commit check-links check-python check-m3-qualification check-opentofu check-ansible check-actions check-secrets
 
 # Run file hygiene, Markdown, Python, secret, and OpenTofu format hooks.
 check-pre-commit: _sync
@@ -37,6 +37,16 @@ check-python: _sync
     uv run mypy
     uv run pytest
 
+# Exercise the hermetic portion of the exact, no-skip M3.0 gate.
+check-m3-qualification: _sync
+    evidence_dir="$(mktemp -d)"; trap 'find "$evidence_dir" -depth -delete' EXIT; M3_QUALIFICATION_EVIDENCE_DIR="$evidence_dir" scripts/m3-qualification libraries
+    bash -n scripts/m3-qualification config/ansible/roles/m3_qualification/files/m3-caddy-hook
+    uv run python -m py_compile scripts/assert_m3_qualification_plan.py config/ansible/roles/m3_qualification/files/m3-caddy-generation config/ansible/roles/m3_qualification/files/m3-qualification-tmpfs config/ansible/roles/m3_qualification/files/m3-qualification-uuid
+
+# Run one trusted-workstation M3.0 action (see the operations guide).
+m3-qualification action *arguments: _sync
+    scripts/m3-qualification "{{ action }}" {{ arguments }}
+
 # Format, validate, lint, and security-scan every OpenTofu root and module.
 check-opentofu:
     tofu fmt -check -recursive infra/opentofu
@@ -52,6 +62,7 @@ check-ansible: _sync
     ANSIBLE_CONFIG=config/ansible/ansible.cfg uv run ansible-lint config/ansible
     ANSIBLE_CONFIG=config/ansible/ansible.cfg uv run ansible-playbook --inventory config/ansible/inventories/development/hosts.yml --syntax-check config/ansible/playbooks/site.yml
     ANSIBLE_CONFIG=config/ansible/ansible.cfg uv run ansible-playbook --inventory config/ansible/inventories/development/hosts.yml --syntax-check config/ansible/playbooks/acceptance.yml
+    M3_QUALIFICATION_CLOUDFLARE_API_TOKEN=syntax-only-placeholder-token ANSIBLE_CONFIG=config/ansible/ansible.cfg uv run ansible-playbook --inventory config/ansible/inventories/development/hosts.yml --syntax-check config/ansible/playbooks/m3-qualification.yml
     cd config/ansible && ANSIBLE_CONFIG="$(pwd)/ansible.cfg" uv run molecule test --scenario-name default
 
 # Converge production twice and run host acceptance and restore checks.

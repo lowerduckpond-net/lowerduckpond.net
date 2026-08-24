@@ -1,0 +1,14 @@
+---
+- name: Reload systemd for M3 qualification
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+- name: Restart M3 qualification fixture
+  ansible.builtin.systemd_service:
+    name: ldp-m3-fixture.service
+    state: restarted
+
+- name: Restart qualification Caddy
+  ansible.builtin.systemd_service:
+    name: caddy.service
+    state: restarted

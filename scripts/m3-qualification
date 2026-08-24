@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly evidence_root=${M3_QUALIFICATION_EVIDENCE_DIR:-.artifacts/m3-qualification}
+readonly qualification_package=/opt/lowerduckpond/m3-qualification
+readonly remote_report=/run/lowerduckpond-m3-qualification/host-report.json
+
+usage() {
+    echo "usage: scripts/m3-qualification {libraries|configure HOST|host HOST|domains ATTESTATION|browser|assemble}" >&2
+    exit 64
+}
+
+require_ipv4() {
+    if [[ $# -ne 1 ]]; then
+        usage
+    fi
+    uv run python - "$1" <<'PY'
+import ipaddress
+import sys
+
+address = ipaddress.ip_address(sys.argv[1])
+if address.version != 4 or not address.is_global:
+    raise SystemExit(64)
+PY
+}
+
+mkdir -p -- "$evidence_root"
+if [[ $# -lt 1 ]]; then
+    usage
+fi
+
+action=$1
+shift
+case "$action" in
+    libraries)
+        [[ $# -eq 0 ]] || usage
+        rm -f -- "$evidence_root/libraries.json"
+        uv run ldp-m3-qualify libraries --output "$evidence_root/libraries.json"
+        ;;
+    configure)
+        require_ipv4 "$@"
+        host=$1
+        inventory=$(mktemp)
+        cleanup() {
+            find "$inventory" -delete
+        }
+        trap cleanup EXIT
+        chmod 0600 "$inventory"
+        printf '%s\n' \
+            '---' \
+            'all:' \
+            '  children:' \
+            '    qualification_nodes:' \
+            '      hosts:' \
+            '        m3_qualification:' \
+            "          ansible_host: $host" \
+            '          ansible_user: ldp-admin' > "$inventory"
+        ANSIBLE_CONFIG=config/ansible/ansible.cfg uv run ansible-playbook \
+            --inventory "$inventory" config/ansible/playbooks/m3-qualification.yml
+        ;;
+    host)
+        require_ipv4 "$@"
+        host=$1
+        rm -f -- "$evidence_root/host.json"
+        ssh -o BatchMode=yes "ldp-admin@$host" sudo rm -f -- "$remote_report"
+        set +e
+        ssh -o BatchMode=yes "ldp-admin@$host" \
+            sudo env "PYTHONPATH=$qualification_package" /usr/bin/python3 \
+            -m lowerduckpond_m3_qualification host \
+            --work-root /var/lib/lowerduckpond-m3 \
+            --output "$remote_report"
+        remote_status=$?
+        set -e
+        ssh -o BatchMode=yes "ldp-admin@$host" sudo cat "$remote_report" \
+            > "$evidence_root/host.json"
+        exit "$remote_status"
+        ;;
+    domains)
+        [[ $# -eq 1 ]] || usage
+        : "${M3_QUALIFICATION_NET_ZONE_ID:?}"
+        : "${M3_QUALIFICATION_COM_ZONE_ID:?}"
+        rm -f -- "$evidence_root/domains.json"
+        uv run ldp-m3-qualify domains \
+            --attestation "$1" \
+            --net-zone-id "$M3_QUALIFICATION_NET_ZONE_ID" \
+            --com-zone-id "$M3_QUALIFICATION_COM_ZONE_ID" \
+            --output "$evidence_root/domains.json"
+        ;;
+    browser)
+        [[ $# -eq 0 ]] || usage
+        rm -f -- "$evidence_root/browser.json"
+        uv run ldp-m3-qualify browser \
+            --platform-origin https://m3-qualification.lowerduckpond.net \
+            --tenant-alias-origin https://m3-a.lowerduckpond.com \
+            --tenant-immutable-origin https://t-0198d17f6f4a70008000000000000001.lowerduckpond.com \
+            --tenant-unknown-origin https://m3-unknown.lowerduckpond.com \
+            --output "$evidence_root/browser.json"
+        ;;
+    assemble)
+        [[ $# -eq 0 ]] || usage
+        rm -f -- "$evidence_root/m3-qualification.json"
+        uv run ldp-m3-qualify assemble --require-m3 \
+            --fragment "$evidence_root/libraries.json" \
+            --fragment "$evidence_root/host.json" \
+            --fragment "$evidence_root/domains.json" \
+            --fragment "$evidence_root/browser.json" \
+            --output "$evidence_root/m3-qualification.json"
+        ;;
+    *)
+        usage
+        ;;
+esac

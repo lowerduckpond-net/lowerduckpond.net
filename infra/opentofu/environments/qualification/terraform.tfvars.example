@@ -1,0 +1,7 @@
+digitalocean_project_id       = "00000000-0000-0000-0000-000000000000"
+admin_ssh_key_fingerprint     = "00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00"
+admin_ssh_public_key          = "ssh-ed25519 AAAA replace-with-the-backed-up-administrative-public-key"
+admin_source_cidrs            = ["192.0.2.1/32"]
+lowerduckpond_net_zone_id     = "00000000000000000000000000000000"
+lowerduckpond_com_zone_id     = "00000000000000000000000000000000"
+state_encryption_passphrase   = "replace-with-a-high-entropy-value"

@@ -1,0 +1,19 @@
+#!/usr/bin/python3
+"""Defense-in-depth parser behind the exact sudo command rule."""
+
+from __future__ import annotations
+
+import os
+import re
+import sys
+
+UUIDV7 = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+REQUIRED_ARGUMENT_COUNT = 2
+
+if (
+    os.geteuid() != 0
+    or len(sys.argv) != REQUIRED_ARGUMENT_COUNT
+    or UUIDV7.fullmatch(sys.argv[1]) is None
+):
+    raise SystemExit(64)
+raise SystemExit(0)

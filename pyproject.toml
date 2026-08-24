@@ -26,6 +26,7 @@ package = false
 members = [
   "services/control-plane",
   "services/provisioner",
+  "tools/m3-qualification",
 ]
 
 [tool.pytest.ini_options]
@@ -35,6 +36,7 @@ testpaths = [
   "services/control-plane/tests",
   "services/provisioner/tests",
   "tests/infrastructure",
+  "tools/m3-qualification/tests",
 ]
 
 [tool.ruff]
@@ -65,6 +67,7 @@ select = [
 
 [tool.ruff.lint.per-file-ignores]
 "**/tests/**" = ["S101"]
+"tools/m3-qualification/src/lowerduckpond_m3_qualification/cli.py" = ["PLC0415"]
 
 [tool.mypy]
 python_version = "3.14"
@@ -75,4 +78,6 @@ files = [
   "services/control-plane/tests",
   "services/provisioner/src",
   "services/provisioner/tests",
+  "tools/m3-qualification/src",
+  "tools/m3-qualification/tests",
 ]

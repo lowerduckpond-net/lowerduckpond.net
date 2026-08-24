@@ -13,3 +13,10 @@ verifying the host key as described in
 Production credentials are read from the process environment. Production
 inventory contains only the stable public name and administrative username;
 credentials and administrative CIDRs must not be committed.
+
+M3.0 adds a separate `m3-qualification.yml` playbook and
+`m3_qualification` role. They are for the explicitly authorized disposable
+Ubuntu host only; they replace that host's fixture Caddy service with the
+descriptor-pinned dual-domain prototype and must never target production. Use
+the exact trusted-workstation sequence in
+[`docs/operations/m3-qualification.md`](../../docs/operations/m3-qualification.md).

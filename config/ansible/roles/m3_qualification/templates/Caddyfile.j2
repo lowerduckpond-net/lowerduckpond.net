@@ -1,0 +1,82 @@
+{
+	admin unix//run/caddy/admin.sock
+}
+
+m3-qualification.lowerduckpond.net {
+	tls {
+		dns cloudflare {$CLOUDFLARE_API_TOKEN}
+	}
+	log {
+		output file {{ m3_qualification_log_path }}
+		format filter {
+			request>headers delete
+			wrap json
+		}
+	}
+	route {
+		@set_platform path /set-platform-state
+		handle @set_platform {
+			header Set-Cookie "__Host-ldp_m3_platform=qualified; Path=/; Secure; HttpOnly; SameSite=Lax"
+			respond "qualified\n" 200
+		}
+		root * {{ m3_qualification_static_root }}
+		file_server
+	}
+}
+
+lowerduckpond.com, m3-a.lowerduckpond.com, t-0198d17f6f4a70008000000000000001.lowerduckpond.com, m3-unknown.lowerduckpond.com {
+	tls {
+		dns cloudflare {$CLOUDFLARE_API_TOKEN}
+	}
+	log {
+		output file {{ m3_qualification_log_path }}
+		format filter {
+			request>headers delete
+			wrap json
+		}
+	}
+	route {
+		request_header -Cookie
+		header {
+			-Set-Cookie
+			Cache-Control "no-store"
+			X-M3-Incoming-State "{http.request.header.Cookie}"
+		}
+		@apex host lowerduckpond.com
+		@alias_root {
+			host m3-a.lowerduckpond.com
+			method GET HEAD
+			path /
+		}
+		@alias host m3-a.lowerduckpond.com
+		@canonical host t-0198d17f6f4a70008000000000000001.lowerduckpond.com
+		handle @apex {
+			header +Set-Cookie "ldp_m3_route=must-be-removed; Domain=lowerduckpond.com; Path=/; Secure"
+			respond "No Lower Duck Pond site has been provisioned for this name.\n" 404
+		}
+		handle @alias_root {
+			header +Set-Cookie "ldp_m3_route=must-be-removed; Domain=lowerduckpond.com; Path=/; Secure"
+			redir https://t-0198d17f6f4a70008000000000000001.lowerduckpond.com/ 302
+		}
+		handle @alias {
+			header +Set-Cookie "ldp_m3_route=must-be-removed; Domain=lowerduckpond.com; Path=/; Secure"
+			respond "No Lower Duck Pond site has been provisioned for this name.\n" 404
+		}
+		handle @canonical {
+			header +Set-Cookie "ldp_m3_route=must-be-removed; Domain=lowerduckpond.com; Path=/; Secure"
+			@probe path /probe
+			handle @probe {
+				reverse_proxy 127.0.0.1:18080 {
+					header_up -Cookie
+					header_down -Set-Cookie
+				}
+			}
+			root * {{ m3_qualification_static_root }}
+			file_server
+		}
+		handle {
+			header +Set-Cookie "ldp_m3_route=must-be-removed; Domain=lowerduckpond.com; Path=/; Secure"
+			respond "No Lower Duck Pond site has been provisioned for this name.\n" 404
+		}
+	}
+}

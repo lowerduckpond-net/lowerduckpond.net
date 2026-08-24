@@ -1,0 +1,20 @@
+[project]
+name = "lowerduckpond-m3-qualification"
+version = "0.0.0"
+description = "Executable Milestone 3 platform qualification probes"
+requires-python = ">=3.14,<3.15"
+dependencies = [
+  "botocore>=1.43.70,<1.44",
+  "hypothesis>=6.165.5,<7",
+  "jsonschema>=4.26.0,<5",
+  "playwright==1.62.0",
+  "rfc8785==0.1.4",
+  "ruamel-yaml>=0.19.1,<0.20",
+]
+
+[project.scripts]
+ldp-m3-qualify = "lowerduckpond_m3_qualification.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13"]
+build-backend = "uv_build"

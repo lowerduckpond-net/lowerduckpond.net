@@ -1,0 +1,59 @@
+#!/usr/bin/python3
+"""Start or reload Caddy from an open generation directory descriptor."""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+ACTIVE = "/etc/caddy/qualification/active"
+ADMIN = "unix//run/caddy/admin.sock"
+CADDY = "/usr/local/bin/caddy"
+RUNTIME = Path("/run/lowerduckpond-m3-qualification")
+REQUIRED_ARGUMENT_COUNT = 2
+
+
+def open_generation() -> tuple[int, str]:
+    descriptor = os.open(ACTIVE, os.O_RDONLY | os.O_DIRECTORY)
+    os.set_inheritable(descriptor, True)
+    target = str(Path(f"/proc/self/fd/{descriptor}").readlink())
+    return descriptor, target
+
+
+def record(name: str, value: str) -> None:
+    path = RUNTIME / name
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(f"{value}\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+def main() -> int:
+    if len(sys.argv) != REQUIRED_ARGUMENT_COUNT or sys.argv[1] not in {"run", "reload"}:
+        return 64
+    descriptor, target = open_generation()
+    config = f"/proc/self/fd/{descriptor}/Caddyfile"
+    if sys.argv[1] == "run":
+        record("caddy-start-generation", target)
+        os.execve(  # noqa: S606 - executable and complete argument vector are fixed constants.
+            CADDY,
+            (CADDY, "run", "--config", config, "--adapter", "caddyfile"),
+            os.environ,
+        )
+    record("caddy-reload-generation", target)
+    common = ("--config", config, "--adapter", "caddyfile")
+    subprocess.run(  # noqa: S603 - executable and arguments are fixed constants.
+        (CADDY, "validate", *common), check=True, pass_fds=(descriptor,)
+    )
+    subprocess.run(  # noqa: S603 - executable and arguments are fixed constants.
+        (CADDY, "reload", "--address", ADMIN, *common, "--force"),
+        check=True,
+        pass_fds=(descriptor,),
+    )
+    os.close(descriptor)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

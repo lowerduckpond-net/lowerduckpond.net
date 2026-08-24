@@ -1,0 +1,33 @@
+---
+- name: Configure the disposable Milestone 3 qualification host
+  hosts: qualification_nodes
+  become: true
+  gather_facts: true
+  vars_files:
+    - ../../../platform/versions.yml
+  vars:
+    caddy_domain: m3-qualification.lowerduckpond.net
+    caddy_tls_mode: internal
+    caddy_cloudflare_api_token: >-
+      {{ lookup('ansible.builtin.env', 'M3_QUALIFICATION_CLOUDFLARE_API_TOKEN') }}
+  pre_tasks:
+    - name: Require the production-equivalent Ubuntu release
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.distribution == platform_versions.host_os_distribution
+          - ansible_facts.distribution_version == platform_versions.host_os_release
+        fail_msg: M3.0 qualification requires a real Ubuntu 26.04 host.
+
+    - name: Require the temporary dual-zone Caddy token
+      ansible.builtin.assert:
+        that:
+          - caddy_cloudflare_api_token | length >= 20
+        fail_msg: >-
+          Export M3_QUALIFICATION_CLOUDFLARE_API_TOKEN with DNS edit access limited
+          to the lowerduckpond.net and lowerduckpond.com zones.
+        quiet: true
+      no_log: true
+  roles:
+    - role: base
+    - role: caddy
+    - role: m3_qualification

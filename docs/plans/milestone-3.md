@@ -1,7 +1,7 @@
 # Milestone 3 implementation plan
 
-- Status: proposed for implementation
-- Updated: 2026-08-23
+- Status: implementation in progress; M3.0 live gate pending
+- Updated: 2026-08-24
 - Outcome: deliver the complete static-tenant lifecycle through the trusted
   workstation without enabling the Milestone 4 public control plane
 
@@ -196,6 +196,11 @@ further. A PR must deliver one complete proof obligation; unrelated cleanup is
 deferred. Production remains dark through phases 0–11.
 
 ### M3.0: qualify dangerous platform assumptions
+
+Implementation status: the hermetic, disposable-host, domain, Caddy, and
+three-engine browser probes are implemented. M3.0 is not complete until an
+explicitly authorized live run produces one passing 36-check sanitized report
+and the disposable resources are confirmed destroyed.
 
 Add executable qualification probes and a sanitized report before depending on
 host behavior that the current Molecule suite does not reproduce.

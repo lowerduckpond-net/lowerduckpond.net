@@ -1,0 +1,134 @@
+---
+- name: Create the qualification system account
+  ansible.builtin.user:
+    name: ldp-qualification
+    system: true
+    create_home: false
+    shell: /usr/sbin/nologin
+
+- name: Create root-owned qualification directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - path: "{{ m3_qualification_install_root }}"
+      owner: root
+      group: root
+      mode: "0755"
+    - path: "{{ m3_qualification_state_root }}"
+      owner: root
+      group: root
+      mode: "0700"
+    - path: /etc/caddy/qualification
+      owner: root
+      group: caddy
+      mode: "0750"
+    - path: "{{ m3_qualification_generation_root }}"
+      owner: root
+      group: caddy
+      mode: "0750"
+    - path: "{{ m3_qualification_generation_root }}/{{ m3_qualification_generation }}"
+      owner: root
+      group: caddy
+      mode: "0750"
+    - path: "{{ m3_qualification_static_root }}"
+      owner: root
+      group: caddy
+      mode: "0750"
+
+- name: Install the qualification Python package source
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../../tools/m3-qualification/src/lowerduckpond_m3_qualification/"
+    dest: "{{ m3_qualification_install_root }}/lowerduckpond_m3_qualification/"
+    owner: root
+    group: root
+    mode: preserve
+  notify: Restart M3 qualification fixture
+
+- name: Install qualification executable helpers
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/usr/local/libexec/lowerduckpond/{{ item }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - m3-caddy-generation
+    - m3-caddy-hook
+    - m3-qualification-tmpfs
+    - m3-qualification-uuid
+  notify: Restart qualification Caddy
+
+- name: Install the exact qualification sudo rule
+  ansible.builtin.template:
+    src: sudoers.j2
+    dest: /etc/sudoers.d/lowerduckpond-m3-qualification
+    owner: root
+    group: root
+    mode: "0440"
+    validate: /usr/sbin/visudo --check --file=%s
+
+- name: Install the cookie-independent static fixture
+  ansible.builtin.copy:
+    content: "lowerduckpond-m3-cookie-independent-body\n"
+    dest: "{{ m3_qualification_static_root }}/static"
+    owner: root
+    group: caddy
+    mode: "0640"
+
+- name: Install the qualification Caddy generation
+  ansible.builtin.template:
+    src: Caddyfile.j2
+    dest: >-
+      {{ m3_qualification_generation_root }}/{{ m3_qualification_generation }}/Caddyfile
+    owner: root
+    group: caddy
+    mode: "0640"
+    validate: /usr/local/libexec/lowerduckpond/caddy-validate %s
+  no_log: true
+  notify: Restart qualification Caddy
+
+- name: Select the qualification Caddy generation
+  ansible.builtin.file:
+    path: "{{ m3_qualification_active_path }}"
+    src: "{{ m3_qualification_generation_root }}/{{ m3_qualification_generation }}"
+    state: link
+    owner: root
+    group: caddy
+    force: true
+  notify: Restart qualification Caddy
+
+- name: Install qualification systemd units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - caddy.service
+    - ldp-m3-fixture.service
+    - ldp-m3-recovery.service
+    - ldp-m3-tmpfs.service
+  notify:
+    - Reload systemd for M3 qualification
+    - Restart M3 qualification fixture
+    - Restart qualification Caddy
+
+- name: Flush qualification handlers
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start the hostile loopback fixture
+  ansible.builtin.systemd_service:
+    name: ldp-m3-fixture.service
+    enabled: true
+    state: started
+
+- name: Enable and start qualification Caddy
+  ansible.builtin.systemd_service:
+    name: caddy.service
+    enabled: true
+    state: started

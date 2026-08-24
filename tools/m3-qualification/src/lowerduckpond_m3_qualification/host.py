@@ -1,0 +1,422 @@
+"""Privileged production-equivalent host qualification probes."""
+
+from __future__ import annotations
+
+import json
+import pwd
+import re
+import socket
+import stat
+import subprocess
+import time
+from collections.abc import Callable, Mapping, Sequence
+from http import HTTPStatus
+from pathlib import Path
+from typing import Final
+
+from lowerduckpond_m3_qualification.filesystem import run_filesystem_checks
+from lowerduckpond_m3_qualification.report import CheckResult, EvidenceValue
+
+HOST_OS_RELEASE: Final = "26.04"
+QUALIFICATION_ROOT: Final = Path("/run/lowerduckpond-m3-qualification")
+CADDY_GENERATION_ROOT: Final = Path("/etc/caddy/qualification/generations")
+CADDY_LOG_PATH: Final = Path("/var/log/caddy/m3-qualification.json")
+CADDY_ADMIN_SOCKET: Final = Path("/run/caddy/admin.sock")
+UUID_COMMAND: Final = Path("/usr/local/libexec/lowerduckpond/m3-qualification-uuid")
+VALID_UUIDV7: Final = "0198d17f-6f4a-7000-8000-000000000001"
+CANARY_VALUE: Final = "ldp-m3-canary-not-sensitive"
+LOG_PROOF_PATH: Final = "/m3-log-proof"
+ROUTE_HOSTS: Final = (
+    "lowerduckpond.com",
+    "m3-a.lowerduckpond.com",
+    "t-0198d17f6f4a70008000000000000001.lowerduckpond.com",
+    "m3-unknown.lowerduckpond.com",
+)
+UUID_REJECTION_ARGUMENTS: Final = (
+    (VALID_UUIDV7.upper(),),
+    ("0198d17f-6f4a-4000-8000-000000000001",),
+    (f"{VALID_UUIDV7};id",),
+    (f"{VALID_UUIDV7}/suffix",),
+    (VALID_UUIDV7, "additional"),
+    (VALID_UUIDV7.replace("-", "_"),),
+    (f"{VALID_UUIDV7}\nlookalike",),
+)
+POLL_ATTEMPTS: Final = 100
+POLL_DELAY_SECONDS: Final = 0.1
+CADDY_RUNTIME_MODE: Final = 0o700
+MAXIMUM_HANDOFF_MILLISECONDS: Final = 1000
+MINIMUM_HTTP_STATUS_FIELDS: Final = 2
+
+
+def run_host_checks(*, work_root: Path) -> tuple[CheckResult, ...]:
+    """Run all checks that require the disposable Ubuntu host."""
+    checks: list[CheckResult] = [
+        _run("m3.0.host.ubuntu", _check_ubuntu),
+        _run("m3.0.host.sudo-uuid", _check_sudo_uuid),
+        _run("m3.0.host.tmpfs-limits", _check_tmpfs_limits),
+        _run("m3.0.host.caddy-descriptor", _check_caddy_descriptor),
+        _run("m3.0.host.caddy-admin", _check_caddy_admin),
+        _run("m3.0.host.caddy-hooks", _check_caddy_hooks),
+        _run("m3.0.host.caddy-routes", _check_caddy_routes),
+        _run("m3.0.host.caddy-log-safety", _check_caddy_log_safety),
+        _run("m3.0.host.systemd-recovery", _check_systemd_recovery),
+    ]
+    checks.extend(run_filesystem_checks(work_root=work_root, expected_filesystem="ext4"))
+    return tuple(checks)
+
+
+def _run(check_id: str, operation: Callable[[], Mapping[str, EvidenceValue]]) -> CheckResult:
+    try:
+        evidence = operation()
+    except Exception:  # Reports intentionally exclude host paths and command output.
+        return CheckResult(
+            check_id=check_id,
+            status="failed",
+            evidence={},
+            error_code="probe_failed",
+        )
+    return CheckResult(check_id=check_id, status="passed", evidence=evidence)
+
+
+def _check_ubuntu() -> dict[str, EvidenceValue]:
+    values = _parse_key_values(Path("/etc/os-release").read_text(encoding="utf-8"))
+    if values.get("ID") != "ubuntu" or values.get("VERSION_ID") != HOST_OS_RELEASE:
+        raise RuntimeError
+    return {"distribution": "ubuntu", "release": HOST_OS_RELEASE}
+
+
+def _check_sudo_uuid() -> dict[str, EvidenceValue]:
+    command = ("runuser", "--user", "ldp-qualification", "--", "sudo", "-n", str(UUID_COMMAND))
+    if _quiet_run((*command, VALID_UUIDV7)).returncode != 0:
+        raise RuntimeError
+    for arguments in UUID_REJECTION_ARGUMENTS:
+        if _quiet_run((*command, *arguments)).returncode == 0:
+            raise RuntimeError
+    return {"accepted": 1, "rejected": len(UUID_REJECTION_ARGUMENTS)}
+
+
+def _check_tmpfs_limits() -> dict[str, EvidenceValue]:
+    result_path = QUALIFICATION_ROOT / "tmpfs-result.json"
+    result_path.unlink(missing_ok=True)
+    _checked_run(("systemctl", "start", "ldp-m3-tmpfs.service"))
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    if result != {"inodes_enforced": True, "space_enforced": True}:
+        raise RuntimeError
+    properties = _systemd_properties("ldp-m3-tmpfs.service", ("PrivateTmp", "TemporaryFileSystem"))
+    if properties.get("PrivateTmp") != "yes":
+        raise RuntimeError
+    if "/var/lib/lowerduckpond-m3-tmpfs" not in properties.get("TemporaryFileSystem", ""):
+        raise RuntimeError
+    return {"inodes": 4096, "private": True, "size_mib": 64}
+
+
+def _check_caddy_descriptor() -> dict[str, EvidenceValue]:
+    properties = _systemd_properties("caddy.service", ("MainPID",))
+    process_id = int(properties["MainPID"])
+    if process_id <= 1:
+        raise RuntimeError
+    descriptor_targets: list[Path] = []
+    for descriptor in Path(f"/proc/{process_id}/fd").iterdir():
+        try:
+            target = descriptor.resolve(strict=True)
+        except OSError:
+            continue
+        if target.is_dir():
+            descriptor_targets.append(target)
+    if not any(target.is_relative_to(CADDY_GENERATION_ROOT) for target in descriptor_targets):
+        raise RuntimeError
+    start_generation = (
+        (QUALIFICATION_ROOT / "caddy-start-generation").read_text(encoding="utf-8").strip()
+    )
+    if not Path(start_generation).is_relative_to(CADDY_GENERATION_ROOT):
+        raise RuntimeError
+    return {"generation_pinned": True}
+
+
+def _check_caddy_admin() -> dict[str, EvidenceValue]:
+    if not CADDY_ADMIN_SOCKET.is_socket():
+        raise RuntimeError
+    runtime_stat = CADDY_ADMIN_SOCKET.parent.stat()
+    caddy_user = pwd.getpwnam("caddy")
+    if (
+        runtime_stat.st_uid != caddy_user.pw_uid
+        or stat.S_IMODE(runtime_stat.st_mode) != CADDY_RUNTIME_MODE
+    ):
+        raise RuntimeError
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as connection:
+        connection.settimeout(0.25)
+        if connection.connect_ex(("127.0.0.1", 2019)) == 0:
+            raise RuntimeError
+    _checked_run(
+        (
+            "curl",
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--unix-socket",
+            str(CADDY_ADMIN_SOCKET),
+            "http://localhost/config/",
+        )
+    )
+    denied = _quiet_run(
+        (
+            "runuser",
+            "--user",
+            "ldp-qualification",
+            "--",
+            "curl",
+            "--fail",
+            "--silent",
+            "--unix-socket",
+            str(CADDY_ADMIN_SOCKET),
+            "http://localhost/config/",
+        )
+    )
+    if denied.returncode == 0:
+        raise RuntimeError
+    return {"access_limited": True, "tcp_disabled": True, "unix_socket": True}
+
+
+def _check_caddy_hooks() -> dict[str, EvidenceValue]:
+    invocation = _systemd_properties("caddy.service", ("InvocationID",))["InvocationID"]
+    if not re.fullmatch(r"[0-9a-f]{32}", invocation):
+        raise RuntimeError
+    for phase in ("start-pre", "start-post"):
+        recorded = (
+            (QUALIFICATION_ROOT / f"caddy-{phase}-invocation").read_text(encoding="utf-8").strip()
+        )
+        if recorded != invocation:
+            raise RuntimeError
+    _checked_run(("systemctl", "reload", "caddy.service"))
+    for phase in ("reload-pre", "reload-post"):
+        recorded = (
+            (QUALIFICATION_ROOT / f"caddy-{phase}-invocation").read_text(encoding="utf-8").strip()
+        )
+        if recorded != invocation:
+            raise RuntimeError
+    reload_generation = (
+        (QUALIFICATION_ROOT / "caddy-reload-generation").read_text(encoding="utf-8").strip()
+    )
+    if not Path(reload_generation).is_relative_to(CADDY_GENERATION_ROOT):
+        raise RuntimeError
+    properties = _systemd_properties(
+        "caddy.service", ("Restart", "StartLimitBurst", "StartLimitIntervalUSec")
+    )
+    if properties.get("Restart") != "on-failure" or properties.get("StartLimitBurst") != "3":
+        raise RuntimeError
+    if properties.get("StartLimitIntervalUSec") in {None, "0"}:
+        raise RuntimeError
+    return {"bounded_attempts": 3, "invocation_hooks": True, "reload_pinned": True}
+
+
+def _check_caddy_routes() -> dict[str, EvidenceValue]:
+    addresses = _route_addresses()
+    apex_status, apex_headers, apex_body = _curl_route(
+        addresses, ROUTE_HOSTS[0], "/", include_state=True
+    )
+    apex_clear_status, apex_clear_headers, apex_clear_body = _curl_route(
+        addresses, ROUTE_HOSTS[0], "/", include_state=False
+    )
+    if (
+        apex_status != HTTPStatus.NOT_FOUND
+        or apex_clear_status != HTTPStatus.NOT_FOUND
+        or apex_body != apex_clear_body
+        or not _headers_are_stateless(apex_headers)
+        or not _headers_are_stateless(apex_clear_headers)
+    ):
+        raise RuntimeError
+
+    alias_status, alias_headers, alias_body = _curl_route(
+        addresses, ROUTE_HOSTS[1], "/", include_state=True
+    )
+    alias_clear_status, alias_clear_headers, alias_clear_body = _curl_route(
+        addresses, ROUTE_HOSTS[1], "/", include_state=False
+    )
+    expected_location = f"https://{ROUTE_HOSTS[2]}/"
+    if (
+        alias_status != HTTPStatus.FOUND
+        or alias_clear_status != HTTPStatus.FOUND
+        or alias_body != alias_clear_body
+        or alias_headers.get("location") != expected_location
+        or alias_clear_headers.get("location") != expected_location
+        or not _headers_are_stateless(alias_headers)
+        or not _headers_are_stateless(alias_clear_headers)
+    ):
+        raise RuntimeError
+
+    canonical_status, canonical_headers, canonical_body = _curl_route(
+        addresses, ROUTE_HOSTS[2], "/probe", include_state=True
+    )
+    canonical_clear_status, canonical_clear_headers, canonical_clear_body = _curl_route(
+        addresses, ROUTE_HOSTS[2], "/probe", include_state=False
+    )
+    if (
+        canonical_status != HTTPStatus.OK
+        or canonical_clear_status != HTTPStatus.OK
+        or canonical_body != canonical_clear_body
+        or canonical_headers.get("x-m3-upstream-saw-state") != "false"
+        or canonical_clear_headers.get("x-m3-upstream-saw-state") != "false"
+        or not _headers_are_stateless(canonical_headers)
+        or not _headers_are_stateless(canonical_clear_headers)
+    ):
+        raise RuntimeError
+    static_status, static_headers, _ = _curl_route(
+        addresses, ROUTE_HOSTS[2], "/static", include_state=True
+    )
+    if static_status != HTTPStatus.OK or not _headers_are_stateless(static_headers):
+        raise RuntimeError
+
+    unknown_status, unknown_headers, unknown_body = _curl_route(
+        addresses, ROUTE_HOSTS[3], "/", include_state=True
+    )
+    unknown_clear_status, unknown_clear_headers, unknown_clear_body = _curl_route(
+        addresses, ROUTE_HOSTS[3], "/", include_state=False
+    )
+    if (
+        unknown_status != HTTPStatus.NOT_FOUND
+        or unknown_clear_status != HTTPStatus.NOT_FOUND
+        or unknown_body != unknown_clear_body
+        or not _headers_are_stateless(unknown_headers)
+        or not _headers_are_stateless(unknown_clear_headers)
+    ):
+        raise RuntimeError
+    return {"independent_body": True, "route_classes": len(ROUTE_HOSTS)}
+
+
+def _headers_are_stateless(headers: Mapping[str, str]) -> bool:
+    return (
+        "set-cookie" not in headers
+        and not headers.get("x-m3-incoming-state", "")
+        and headers.get("cache-control") == "no-store"
+    )
+
+
+def _check_caddy_log_safety() -> dict[str, EvidenceValue]:
+    status, headers, _ = _curl_route(
+        _route_addresses(), ROUTE_HOSTS[3], LOG_PROOF_PATH, include_state=True
+    )
+    if status != HTTPStatus.NOT_FOUND or not _headers_are_stateless(headers):
+        raise RuntimeError
+    for _ in range(POLL_ATTEMPTS):
+        log_bytes = CADDY_LOG_PATH.read_bytes()
+        if CANARY_VALUE.encode() in log_bytes or b'"Cookie"' in log_bytes:
+            raise RuntimeError
+        proof_observed = False
+        for line in log_bytes.splitlines():
+            if not line:
+                continue
+            entry = json.loads(line)
+            request = entry.get("request", {}) if isinstance(entry, dict) else {}
+            if isinstance(request, dict) and request.get("uri") == LOG_PROOF_PATH:
+                proof_observed = True
+        if proof_observed:
+            return {"structured": True, "values_omitted": True}
+        time.sleep(POLL_DELAY_SECONDS)
+    raise RuntimeError
+
+
+def _check_systemd_recovery() -> dict[str, EvidenceValue]:
+    success_marker = QUALIFICATION_ROOT / "recovery-allowed"
+    success_marker.unlink(missing_ok=True)
+    _quiet_run(("systemctl", "stop", "ldp-m3-recovery.service"))
+    _checked_run(("systemctl", "reset-failed", "ldp-m3-recovery.service"))
+    started_at = time.monotonic()
+    _checked_run(("systemctl", "--no-block", "start", "ldp-m3-recovery.service"))
+    handoff_milliseconds = int((time.monotonic() - started_at) * 1000)
+    if handoff_milliseconds >= MAXIMUM_HANDOFF_MILLISECONDS:
+        raise RuntimeError
+    _poll_systemd_state("ldp-m3-recovery.service", "failed")
+    failed_properties = _systemd_properties(
+        "ldp-m3-recovery.service", ("NRestarts", "StartLimitBurst")
+    )
+    if int(failed_properties["NRestarts"]) >= int(failed_properties["StartLimitBurst"]):
+        raise RuntimeError
+
+    success_marker.touch(mode=0o600)
+    _checked_run(("systemctl", "reset-failed", "ldp-m3-recovery.service"))
+    _checked_run(("systemctl", "--no-block", "start", "ldp-m3-recovery.service"))
+    _poll_systemd_state("ldp-m3-recovery.service", "active")
+    return {"nonblocking": True, "reset_recovered": True, "handoff_ms": handoff_milliseconds}
+
+
+def _route_addresses() -> str:
+    addresses = socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
+    for address in addresses:
+        candidate = str(address[4][0])
+        if not candidate.startswith("127."):
+            return candidate
+    return "127.0.0.1"
+
+
+def _curl_route(
+    address: str, host: str, path: str, *, include_state: bool
+) -> tuple[int, dict[str, str], bytes]:
+    command = [
+        "curl",
+        "--silent",
+        "--show-error",
+        "--dump-header",
+        "-",
+        "--noproxy",
+        "*",
+        "--resolve",
+        f"{host}:443:{address}",
+    ]
+    if include_state:
+        command.extend(("--header", f"Cookie: ldp_m3_parent={CANARY_VALUE}"))
+    command.append(f"https://{host}{path}")
+    completed = subprocess.run(command, check=True, capture_output=True)  # noqa: S603
+    header_bytes, separator, body = completed.stdout.partition(b"\r\n\r\n")
+    if not separator:
+        raise RuntimeError
+    header_lines = header_bytes.split(b"\r\n")
+    status_fields = header_lines[0].split()
+    if len(status_fields) < MINIMUM_HTTP_STATUS_FIELDS:
+        raise RuntimeError
+    status = int(status_fields[1])
+    headers: dict[str, str] = {}
+    for line in header_lines[1:]:
+        key, marker, value = line.partition(b":")
+        if marker:
+            headers[key.decode("ascii").lower()] = value.decode("ascii").strip()
+    return status, headers, body
+
+
+def _poll_systemd_state(unit: str, expected: str) -> None:
+    for _ in range(POLL_ATTEMPTS):
+        state = _systemd_properties(unit, ("ActiveState",)).get("ActiveState")
+        if state == expected:
+            return
+        time.sleep(POLL_DELAY_SECONDS)
+    raise RuntimeError
+
+
+def _systemd_properties(unit: str, names: Sequence[str]) -> dict[str, str]:
+    command = ["systemctl", "show", unit]
+    for name in names:
+        command.extend(("--property", name))
+    completed = subprocess.run(  # noqa: S603
+        command, check=True, capture_output=True, text=True
+    )
+    return _parse_key_values(completed.stdout)
+
+
+def _parse_key_values(raw: str) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for line in raw.splitlines():
+        key, separator, value = line.partition("=")
+        if separator:
+            values[key] = value.strip('"')
+    return values
+
+
+def _checked_run(command: Sequence[str]) -> None:
+    subprocess.run(  # noqa: S603
+        command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
+
+
+def _quiet_run(command: Sequence[str]) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(  # noqa: S603
+        command, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
