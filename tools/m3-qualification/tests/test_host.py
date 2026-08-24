@@ -6,6 +6,8 @@ from pathlib import Path
 import pytest
 from lowerduckpond_m3_qualification import host
 
+RUN_ID = "0198d17f-6f4a-7000-8000-000000000001"
+
 
 def test_certificate_check_requires_each_apex_and_wildcard_path(
     monkeypatch: pytest.MonkeyPatch,
@@ -54,3 +56,14 @@ def test_log_check_ignores_entries_before_the_current_probe(
     monkeypatch.setattr(host, "_curl_route", append_safe_proof)
 
     assert host._check_caddy_log_safety() == {"structured": True, "values_omitted": True}
+
+
+def test_generation_path_requires_one_uuid_keyed_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    generation_root = tmp_path / "generations"
+    monkeypatch.setattr(host, "CADDY_GENERATION_ROOT", generation_root)
+
+    assert host._is_generation_path(generation_root / RUN_ID)
+    assert not host._is_generation_path(generation_root / "m3-qualification")
+    assert not host._is_generation_path(generation_root / RUN_ID / "nested")

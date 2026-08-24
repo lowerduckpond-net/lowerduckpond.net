@@ -130,7 +130,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         report = _create_report(
             arguments,
             environment="ubuntu-26.04-disposable",
-            checks=run_host_checks(work_root=arguments.work_root),
+            checks=run_host_checks(
+                work_root=arguments.work_root,
+                expected_generation=arguments.run_id,
+            ),
         )
     elif arguments.command == "domains":
         from lowerduckpond_m3_qualification.domains import run_domain_checks

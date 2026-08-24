@@ -2,7 +2,7 @@
 m3_qualification_install_root: /opt/lowerduckpond/m3-qualification
 m3_qualification_runtime_root: /run/lowerduckpond-m3-qualification
 m3_qualification_state_root: /var/lib/lowerduckpond-m3
-m3_qualification_generation: m3-qualification
+m3_qualification_generation: "{{ m3_expected_run_id }}"
 m3_qualification_generation_root: /etc/caddy/qualification/generations
 m3_qualification_active_path: /etc/caddy/qualification/active
 m3_qualification_static_root: /srv/lowerduckpond-m3

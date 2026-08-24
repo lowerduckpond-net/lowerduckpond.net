@@ -100,7 +100,9 @@ assembly rejects fragments from another run or revision. Qualification actions
 are serialized on the workstation. Configuration invalidates any prior host
 attestation before mutation and records the run and revision only after every
 role and handler succeeds; host-dependent probes and assembly require that
-exact root-owned attestation.
+exact root-owned attestation. Each run creates a UUID-keyed, write-once Caddy
+generation, removes its directory write permission before selection, and
+refuses to replace different content at that generation path.
 
 ## Configure and run the gate
 

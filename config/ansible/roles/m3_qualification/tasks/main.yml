@@ -30,14 +30,39 @@
       owner: root
       group: caddy
       mode: "0750"
-    - path: "{{ m3_qualification_generation_root }}/{{ m3_qualification_generation }}"
-      owner: root
-      group: caddy
-      mode: "0750"
     - path: "{{ m3_qualification_static_root }}"
       owner: root
       group: caddy
       mode: "0750"
+
+- name: Inspect the run-specific Caddy generation directory
+  ansible.builtin.stat:
+    path: "{{ m3_qualification_generation_root }}/{{ m3_qualification_generation }}"
+    follow: false
+  register: m3_qualification_generation_directory
+
+- name: Require a safe existing run-specific generation directory
+  ansible.builtin.assert:
+    that:
+      - >-
+        not m3_qualification_generation_directory.stat.exists or
+        (
+          m3_qualification_generation_directory.stat.isdir and
+          not m3_qualification_generation_directory.stat.islnk and
+          m3_qualification_generation_directory.stat.pw_name == 'root' and
+          m3_qualification_generation_directory.stat.gr_name == 'caddy' and
+          m3_qualification_generation_directory.stat.mode in ['0750', '0550']
+        )
+    fail_msg: The run-specific qualification generation directory is unsafe.
+
+- name: Create the new run-specific Caddy generation directory
+  ansible.builtin.file:
+    path: "{{ m3_qualification_generation_root }}/{{ m3_qualification_generation }}"
+    state: directory
+    owner: root
+    group: caddy
+    mode: "0750"
+  when: not m3_qualification_generation_directory.stat.exists
 
 - name: Install the qualification Python package source
   ansible.builtin.copy:
@@ -86,10 +111,36 @@
       {{ m3_qualification_generation_root }}/{{ m3_qualification_generation }}/Caddyfile
     owner: root
     group: caddy
-    mode: "0640"
+    mode: "0440"
+    force: false
     validate: /usr/local/libexec/lowerduckpond/caddy-validate %s
   no_log: true
   notify: Restart qualification Caddy
+
+- name: Read the installed qualification Caddy generation
+  ansible.builtin.stat:
+    path: >-
+      {{ m3_qualification_generation_root }}/{{ m3_qualification_generation }}/Caddyfile
+    checksum_algorithm: sha256
+  register: m3_qualification_installed_caddy
+
+- name: Require the write-once Caddy generation to match this run
+  ansible.builtin.assert:
+    that:
+      - >-
+        m3_qualification_installed_caddy.stat.checksum ==
+        (lookup('ansible.builtin.template', 'Caddyfile.j2') | hash('sha256'))
+    fail_msg: Refusing to replace an existing qualification Caddy generation.
+    quiet: true
+  no_log: true
+
+- name: Remove write permission from the complete Caddy generation
+  ansible.builtin.file:
+    path: "{{ m3_qualification_generation_root }}/{{ m3_qualification_generation }}"
+    state: directory
+    owner: root
+    group: caddy
+    mode: "0550"
 
 - name: Select the qualification Caddy generation
   ansible.builtin.file:

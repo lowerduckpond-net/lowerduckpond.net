@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import grp
 import json
 import os
 import pwd
@@ -22,6 +23,7 @@ from lowerduckpond_m3_qualification.report import CheckResult, EvidenceValue
 HOST_OS_RELEASE: Final = "26.04"
 QUALIFICATION_ROOT: Final = Path("/run/lowerduckpond-m3-qualification")
 CADDY_GENERATION_ROOT: Final = Path("/etc/caddy/qualification/generations")
+CADDY_ACTIVE_PATH: Final = Path("/etc/caddy/qualification/active")
 CADDY_LOG_PATH: Final = Path("/var/log/caddy/m3-qualification.json")
 CADDY_ADMIN_SOCKET: Final = Path("/run/caddy/admin.sock")
 UUID_COMMAND: Final = Path("/usr/local/libexec/lowerduckpond/m3-qualification-uuid")
@@ -57,17 +59,26 @@ MINIMUM_HTTP_STATUS_FIELDS: Final = 2
 DNS_NAME_FIELDS: Final = 2
 TLS_TIMEOUT_SECONDS: Final = 5.0
 ROUTE_CLASS_COUNT: Final = 5
+GENERATION_DIRECTORY_MODE: Final = 0o550
+GENERATION_FILE_MODE: Final = 0o440
+ROOT_UID: Final = 0
+UUIDV7_PATTERN: Final = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+)
 
 
-def run_host_checks(*, work_root: Path) -> tuple[CheckResult, ...]:
+def run_host_checks(*, work_root: Path, expected_generation: str) -> tuple[CheckResult, ...]:
     """Run all checks that require the disposable Ubuntu host."""
     checks: list[CheckResult] = [
         _run("m3.0.host.ubuntu", _check_ubuntu),
         _run("m3.0.host.sudo-uuid", _check_sudo_uuid),
         _run("m3.0.host.tmpfs-limits", _check_tmpfs_limits),
-        _run("m3.0.host.caddy-descriptor", _check_caddy_descriptor),
+        _run(
+            "m3.0.host.caddy-descriptor",
+            lambda: _check_caddy_descriptor(expected_generation),
+        ),
         _run("m3.0.host.caddy-admin", _check_caddy_admin),
-        _run("m3.0.host.caddy-hooks", _check_caddy_hooks),
+        _run("m3.0.host.caddy-hooks", lambda: _check_caddy_hooks(expected_generation)),
         _run("m3.0.host.caddy-routes", _check_caddy_routes),
         _run("m3.0.host.caddy-certificates", _check_caddy_certificates),
         _run("m3.0.host.caddy-log-safety", _check_caddy_log_safety),
@@ -122,7 +133,7 @@ def _check_tmpfs_limits() -> dict[str, EvidenceValue]:
     return {"inodes": 4096, "private": True, "size_mib": 64}
 
 
-def _check_caddy_descriptor() -> dict[str, EvidenceValue]:
+def _check_caddy_descriptor(expected_generation: str) -> dict[str, EvidenceValue]:
     properties = _systemd_properties("caddy.service", ("MainPID",))
     process_id = int(properties["MainPID"])
     if process_id <= 1:
@@ -135,12 +146,22 @@ def _check_caddy_descriptor() -> dict[str, EvidenceValue]:
             continue
         if target.is_dir():
             descriptor_targets.append(target)
-    if not any(target.is_relative_to(CADDY_GENERATION_ROOT) for target in descriptor_targets):
+    start_generation = _recorded_generation("caddy-start-generation", expected_generation)
+    if start_generation not in descriptor_targets:
         raise RuntimeError
-    start_generation = (
-        (QUALIFICATION_ROOT / "caddy-start-generation").read_text(encoding="utf-8").strip()
-    )
-    if not Path(start_generation).is_relative_to(CADDY_GENERATION_ROOT):
+    if CADDY_ACTIVE_PATH.resolve(strict=True) != start_generation:
+        raise RuntimeError
+    generation_stat = start_generation.stat()
+    caddyfile_stat = (start_generation / "Caddyfile").stat()
+    caddy_group = grp.getgrnam("caddy")
+    if (
+        generation_stat.st_uid != ROOT_UID
+        or generation_stat.st_gid != caddy_group.gr_gid
+        or stat.S_IMODE(generation_stat.st_mode) != GENERATION_DIRECTORY_MODE
+        or caddyfile_stat.st_uid != ROOT_UID
+        or caddyfile_stat.st_gid != caddy_group.gr_gid
+        or stat.S_IMODE(caddyfile_stat.st_mode) != GENERATION_FILE_MODE
+    ):
         raise RuntimeError
     return {"generation_pinned": True}
 
@@ -189,7 +210,7 @@ def _check_caddy_admin() -> dict[str, EvidenceValue]:
     return {"access_limited": True, "tcp_disabled": True, "unix_socket": True}
 
 
-def _check_caddy_hooks() -> dict[str, EvidenceValue]:
+def _check_caddy_hooks(expected_generation: str) -> dict[str, EvidenceValue]:
     invocation = _systemd_properties("caddy.service", ("InvocationID",))["InvocationID"]
     if not re.fullmatch(r"[0-9a-f]{32}", invocation):
         raise RuntimeError
@@ -206,10 +227,8 @@ def _check_caddy_hooks() -> dict[str, EvidenceValue]:
         )
         if recorded != invocation:
             raise RuntimeError
-    reload_generation = (
-        (QUALIFICATION_ROOT / "caddy-reload-generation").read_text(encoding="utf-8").strip()
-    )
-    if not Path(reload_generation).is_relative_to(CADDY_GENERATION_ROOT):
+    reload_generation = _recorded_generation("caddy-reload-generation", expected_generation)
+    if reload_generation != _recorded_generation("caddy-start-generation", expected_generation):
         raise RuntimeError
     properties = _systemd_properties(
         "caddy.service", ("Restart", "StartLimitBurst", "StartLimitIntervalUSec")
@@ -316,6 +335,17 @@ def _headers_are_stateless(headers: Mapping[str, str]) -> bool:
         and not headers.get("x-m3-incoming-state", "")
         and headers.get("cache-control") == "no-store"
     )
+
+
+def _recorded_generation(name: str, expected_generation: str) -> Path:
+    generation = Path((QUALIFICATION_ROOT / name).read_text(encoding="utf-8").strip())
+    if not _is_generation_path(generation) or generation.name != expected_generation:
+        raise RuntimeError
+    return generation
+
+
+def _is_generation_path(path: Path) -> bool:
+    return path.parent == CADDY_GENERATION_ROOT and UUIDV7_PATTERN.fullmatch(path.name) is not None
 
 
 def _check_caddy_certificates() -> dict[str, EvidenceValue]:
