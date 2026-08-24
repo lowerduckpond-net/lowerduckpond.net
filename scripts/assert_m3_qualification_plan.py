@@ -32,6 +32,50 @@ QUALIFICATION_NAME: Final = "lowerduckpond-m3-qualification"
 QUALIFICATION_REGION: Final = "nyc1"
 QUALIFICATION_IMAGE: Final = "ubuntu-26-04-x64"
 QUALIFICATION_SIZE: Final = "s-1vcpu-2gb"
+WORLD_CIDRS: Final = frozenset({"0.0.0.0/0", "::/0"})
+INBOUND_ALTERNATE_SOURCES: Final = (
+    "source_droplet_ids",
+    "source_kubernetes_ids",
+    "source_load_balancer_uids",
+    "source_tags",
+)
+OUTBOUND_ALTERNATE_DESTINATIONS: Final = (
+    "destination_droplet_ids",
+    "destination_kubernetes_ids",
+    "destination_load_balancer_uids",
+    "destination_tags",
+)
+EXPECTED_INBOUND_PORTS: Final = frozenset({"22", "80", "443"})
+EXPECTED_OUTBOUND_RULES: Final = frozenset(
+    {
+        ("icmp", "0"),
+        ("tcp", "53"),
+        ("udp", "53"),
+        ("udp", "123"),
+        ("tcp", "80"),
+        ("tcp", "443"),
+    }
+)
+EXPECTED_CREATE_REFERENCES: Final = {
+    "digitalocean_firewall.qualification": {
+        "droplet_ids": (
+            "digitalocean_droplet.qualification.id",
+            "digitalocean_droplet.qualification",
+        )
+    },
+    "digitalocean_project_resources.qualification": {
+        "resources": (
+            "digitalocean_droplet.qualification.urn",
+            "digitalocean_droplet.qualification",
+        )
+    },
+    "cloudflare_dns_record.qualification": {
+        "content": (
+            "digitalocean_droplet.qualification.ipv4_address",
+            "digitalocean_droplet.qualification",
+        )
+    },
+}
 
 
 class QualificationPlanError(RuntimeError):
@@ -71,13 +115,17 @@ def assert_plan(plan: Mapping[str, Any], *, destroy: bool) -> None:
     unexpected = observed.keys() - EXPECTED_RESOURCES.keys()
     errors.extend(f"unexpected qualification resource: {address}" for address in sorted(unexpected))
 
-    _check_resource_attributes(observed, destroy=destroy, errors=errors)
+    _check_resource_attributes(plan, observed, destroy=destroy, errors=errors)
     if errors:
         raise QualificationPlanError("\n".join(errors))
 
 
 def _check_resource_attributes(
-    resources: Mapping[str, Mapping[str, Any]], *, destroy: bool, errors: list[str]
+    plan: Mapping[str, Any],
+    resources: Mapping[str, Mapping[str, Any]],
+    *,
+    destroy: bool,
+    errors: list[str],
 ) -> None:
     value_side = _before if destroy else _after
     droplet_resource = resources.get("digitalocean_droplet.qualification")
@@ -105,6 +153,8 @@ def _check_resource_attributes(
     firewall = value_side(firewall_resource) if firewall_resource is not None else {}
     if firewall_resource is not None and firewall.get("name") != QUALIFICATION_NAME:
         errors.append("qualification firewall name crossed the fixed boundary")
+    if firewall_resource is not None and not destroy:
+        _check_firewall_rules(firewall, errors)
 
     for name in DNS_NAMES:
         address = f'cloudflare_dns_record.qualification["{name}"]'
@@ -122,6 +172,114 @@ def _check_resource_attributes(
 
     if destroy:
         _check_destroy_bindings(resources, droplet, firewall, errors)
+    else:
+        _check_create_bindings(plan, errors)
+
+
+def _check_firewall_rules(firewall: Mapping[str, Any], errors: list[str]) -> None:
+    if firewall.get("tags") not in (None, [], ()):
+        errors.append("qualification firewall must not target Droplets by tag")
+    _check_inbound_rules(firewall.get("inbound_rule"), errors)
+    _check_outbound_rules(firewall.get("outbound_rule"), errors)
+
+
+def _check_inbound_rules(value: object, errors: list[str]) -> None:
+    if not isinstance(value, list) or len(value) != len(EXPECTED_INBOUND_PORTS):
+        errors.append("qualification firewall must have exactly three inbound rules")
+        return
+    observed_ports: list[str] = []
+    for rule in value:
+        if not isinstance(rule, dict):
+            errors.append("qualification firewall contains a malformed inbound rule")
+            continue
+        protocol = rule.get("protocol")
+        port = str(rule.get("port_range", ""))
+        sources = _string_set(rule.get("source_addresses"))
+        if any(rule.get(field) for field in INBOUND_ALTERNATE_SOURCES):
+            errors.append("qualification firewall inbound rules must use only address sources")
+        if protocol != "tcp" or port not in EXPECTED_INBOUND_PORTS or sources is None:
+            errors.append("qualification firewall contains an unexpected inbound rule")
+            continue
+        observed_ports.append(port)
+        if port == "22" and (not sources or not _are_restricted_networks(sources)):
+            errors.append("qualification SSH must use a restricted address allowlist")
+        elif port != "22" and sources != WORLD_CIDRS:
+            errors.append(f"qualification TCP {port} must use the exact public address set")
+    if (
+        len(observed_ports) != len(EXPECTED_INBOUND_PORTS)
+        or set(observed_ports) != EXPECTED_INBOUND_PORTS
+    ):
+        errors.append("qualification firewall inbound ports must be exactly 22, 80, and 443")
+
+
+def _check_outbound_rules(value: object, errors: list[str]) -> None:
+    observed_outbound: list[tuple[str, str]] = []
+    if not isinstance(value, list) or len(value) != len(EXPECTED_OUTBOUND_RULES):
+        errors.append("qualification firewall must have exactly six outbound rules")
+        return
+    for rule in value:
+        if not isinstance(rule, dict):
+            errors.append("qualification firewall contains a malformed outbound rule")
+            continue
+        protocol = str(rule.get("protocol", ""))
+        port = str(rule.get("port_range") or "0")
+        destinations = _string_set(rule.get("destination_addresses"))
+        if any(rule.get(field) for field in OUTBOUND_ALTERNATE_DESTINATIONS):
+            errors.append(
+                "qualification firewall outbound rules must use only address destinations"
+            )
+        if destinations != WORLD_CIDRS:
+            errors.append("qualification firewall egress must use the exact public address set")
+        observed_outbound.append((protocol, port))
+    if (
+        len(observed_outbound) != len(set(observed_outbound))
+        or set(observed_outbound) != EXPECTED_OUTBOUND_RULES
+    ):
+        errors.append("qualification firewall outbound protocols and ports are not exact")
+
+
+def _check_create_bindings(plan: Mapping[str, Any], errors: list[str]) -> None:
+    configuration = plan.get("configuration")
+    root_module = configuration.get("root_module") if isinstance(configuration, dict) else None
+    configured = root_module.get("resources", []) if isinstance(root_module, dict) else []
+    if not isinstance(configured, list):
+        configured = []
+    for address, fields in EXPECTED_CREATE_REFERENCES.items():
+        resource = next(
+            (
+                item
+                for item in configured
+                if isinstance(item, dict) and item.get("address") == address
+            ),
+            None,
+        )
+        if resource is None:
+            errors.append(f"qualification configuration is missing {address}")
+            continue
+        expressions = resource.get("expressions", {})
+        for field, expected in fields.items():
+            expression = expressions.get(field, {}) if isinstance(expressions, dict) else {}
+            references = expression.get("references", []) if isinstance(expression, dict) else []
+            if not isinstance(references, list) or tuple(references) != expected:
+                errors.append(f"{address}.{field} is not bound only to the disposable Droplet")
+
+
+def _string_set(value: object) -> frozenset[str] | None:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        return None
+    return frozenset(value)
+
+
+def _are_restricted_networks(values: frozenset[str]) -> bool:
+    try:
+        networks = tuple(ipaddress.ip_network(value, strict=False) for value in values)
+    except ValueError:
+        return False
+    ipv4_networks = [network for network in networks if isinstance(network, ipaddress.IPv4Network)]
+    ipv6_networks = [network for network in networks if isinstance(network, ipaddress.IPv6Network)]
+    return not any(
+        network.prefixlen == 0 for network in ipaddress.collapse_addresses(ipv4_networks)
+    ) and not any(network.prefixlen == 0 for network in ipaddress.collapse_addresses(ipv6_networks))
 
 
 def _check_destroy_bindings(

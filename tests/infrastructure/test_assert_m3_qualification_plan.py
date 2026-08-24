@@ -39,7 +39,40 @@ def _valid_plan(*, destroy: bool = False) -> dict[str, Any]:
         elif address == "digitalocean_firewall.qualification":
             attributes = {
                 "droplet_ids": [droplet_id],
+                "inbound_rule": [
+                    {
+                        "protocol": "tcp",
+                        "port_range": "22",
+                        "source_addresses": ["192.0.2.10/32"],
+                    },
+                    {
+                        "protocol": "tcp",
+                        "port_range": "80",
+                        "source_addresses": ["0.0.0.0/0", "::/0"],
+                    },
+                    {
+                        "protocol": "tcp",
+                        "port_range": "443",
+                        "source_addresses": ["0.0.0.0/0", "::/0"],
+                    },
+                ],
                 "name": "lowerduckpond-m3-qualification",
+                "outbound_rule": [
+                    {
+                        "protocol": protocol,
+                        "port_range": port,
+                        "destination_addresses": ["0.0.0.0/0", "::/0"],
+                    }
+                    for protocol, port in (
+                        ("icmp", "0"),
+                        ("tcp", "53"),
+                        ("udp", "53"),
+                        ("udp", "123"),
+                        ("tcp", "80"),
+                        ("tcp", "443"),
+                    )
+                ],
+                "tags": [],
             }
         elif address == "digitalocean_project_resources.qualification":
             attributes = {"resources": [droplet_urn]}
@@ -63,7 +96,48 @@ def _valid_plan(*, destroy: bool = False) -> dict[str, Any]:
                 },
             }
         )
-    return {"resource_changes": resources}
+    return {
+        "resource_changes": resources,
+        "configuration": {
+            "root_module": {
+                "resources": [
+                    {
+                        "address": "digitalocean_firewall.qualification",
+                        "expressions": {
+                            "droplet_ids": {
+                                "references": [
+                                    "digitalocean_droplet.qualification.id",
+                                    "digitalocean_droplet.qualification",
+                                ]
+                            }
+                        },
+                    },
+                    {
+                        "address": "digitalocean_project_resources.qualification",
+                        "expressions": {
+                            "resources": {
+                                "references": [
+                                    "digitalocean_droplet.qualification.urn",
+                                    "digitalocean_droplet.qualification",
+                                ]
+                            }
+                        },
+                    },
+                    {
+                        "address": "cloudflare_dns_record.qualification",
+                        "expressions": {
+                            "content": {
+                                "references": [
+                                    "digitalocean_droplet.qualification.ipv4_address",
+                                    "digitalocean_droplet.qualification",
+                                ]
+                            }
+                        },
+                    },
+                ]
+            }
+        },
+    }
 
 
 def test_create_plan_accepts_only_exact_disposable_boundary() -> None:
@@ -161,3 +235,65 @@ def test_destroy_rejects_an_orphaned_firewall_with_unproven_targets() -> None:
 
     with pytest.raises(QualificationPlanError):
         assert_plan(plan, destroy=True)
+
+
+@pytest.mark.parametrize(
+    ("address", "field"),
+    [
+        ("digitalocean_firewall.qualification", "droplet_ids"),
+        ("digitalocean_project_resources.qualification", "resources"),
+        ("cloudflare_dns_record.qualification", "content"),
+    ],
+)
+def test_create_rejects_non_disposable_configuration_bindings(address: str, field: str) -> None:
+    plan = _valid_plan()
+    resource = next(
+        item
+        for item in plan["configuration"]["root_module"]["resources"]
+        if item["address"] == address
+    )
+    resource["expressions"][field]["references"] = ["digitalocean_droplet.production.id"]
+
+    with pytest.raises(QualificationPlanError, match="not bound only"):
+        assert_plan(plan, destroy=False)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "world_ssh",
+        "split_world_ssh",
+        "extra_inbound",
+        "missing_egress",
+        "tag_target",
+        "alternate_ssh_source",
+    ],
+)
+def test_create_rejects_non_exact_firewall_rules(mutation: str) -> None:
+    plan = _valid_plan()
+    firewall = next(
+        item
+        for item in plan["resource_changes"]
+        if item["address"] == "digitalocean_firewall.qualification"
+    )["change"]["after"]
+    if mutation == "world_ssh":
+        firewall["inbound_rule"][0]["source_addresses"] = ["0.0.0.0/0"]
+    elif mutation == "split_world_ssh":
+        firewall["inbound_rule"][0]["source_addresses"] = ["0.0.0.0/1", "128.0.0.0/1"]
+    elif mutation == "extra_inbound":
+        firewall["inbound_rule"].append(
+            {
+                "protocol": "tcp",
+                "port_range": "5432",
+                "source_addresses": ["0.0.0.0/0", "::/0"],
+            }
+        )
+    elif mutation == "missing_egress":
+        firewall["outbound_rule"].pop()
+    elif mutation == "tag_target":
+        firewall["tags"] = ["production"]
+    else:
+        firewall["inbound_rule"][0]["source_tags"] = ["production"]
+
+    with pytest.raises(QualificationPlanError):
+        assert_plan(plan, destroy=False)
