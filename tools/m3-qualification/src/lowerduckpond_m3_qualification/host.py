@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import pwd
 import re
 import socket
@@ -347,13 +348,24 @@ def _certificate_dns_names(address: str, server_name: str) -> frozenset[str]:
 
 
 def _check_caddy_log_safety() -> dict[str, EvidenceValue]:
+    initial_log = CADDY_LOG_PATH.stat()
+    initial_identity = (initial_log.st_dev, initial_log.st_ino)
+    initial_size = initial_log.st_size
     status, headers, _ = _curl_route(
         _route_addresses(), ROUTE_HOSTS[3], LOG_PROOF_PATH, include_state=True
     )
     if status != HTTPStatus.NOT_FOUND or not _headers_are_stateless(headers):
         raise RuntimeError
     for _ in range(POLL_ATTEMPTS):
-        log_bytes = CADDY_LOG_PATH.read_bytes()
+        with CADDY_LOG_PATH.open("rb") as log_file:
+            current_log = os.fstat(log_file.fileno())
+            if (
+                current_log.st_dev,
+                current_log.st_ino,
+            ) != initial_identity or current_log.st_size < initial_size:
+                raise RuntimeError
+            log_file.seek(initial_size)
+            log_bytes = log_file.read()
         if CANARY_VALUE.encode() in log_bytes or b'"Cookie"' in log_bytes:
             raise RuntimeError
         proof_observed = False
