@@ -607,10 +607,11 @@ Every externally requested operation executes from an immutable authenticated
 job issued through the dedicated forced-command operator boundary. The
 provisioner cannot originate or transform lifecycle authority, read
 authoritative tenant state, or read an export payload. The production canary
-passes only after the dual-domain browser and Caddy cookie boundary, isolated
-archive Space, Caddy/systemd recovery, hostile-archive, durability, backup, and
-audit gates are demonstrated with `static_publication_enabled` deliberately
-enabled.
+uses a source and separately imported target and passes only after both are
+removed through their ordinary audited lifecycles. The dual-domain browser and
+Caddy cookie boundary, isolated archive Space, Caddy/systemd recovery,
+hostile-archive, durability, backup, and audit gates are demonstrated with
+`static_publication_enabled` deliberately enabled.
 
 ## 7. Milestone 4: control plane and lifecycle automation — planned
 

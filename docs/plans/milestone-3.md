@@ -371,10 +371,15 @@ nor operator can list state. All lifecycle handlers remain disabled or return a
 versioned not-implemented result without state mutation until their phases land.
 
 Gate: use a real SSH daemon in the installed-host suite. Prove shell, command,
-PTY, forwarding, SFTP/SCP, environment, path, raw-operation, unknown-ID,
-standalone-manifest, field-forgery, expected-state-drift, artifact-replacement,
-replay, disconnect, lost-handoff, and lost-result attempts fail as ADR 0022
-requires.
+PTY, forwarding, SFTP/SCP, environment, and path restrictions, and prove that
+raw-operation, unknown-ID, standalone-manifest, and every externally requested
+tenant job fail before artifact acceptance or job allocation while publication
+is disabled. Separately exercise immutable issuance, field isolation,
+expected-state drift, artifact replacement, replay, disconnect, lost handoff,
+and lost result through the unit and process suites using mutation-free test
+state. Do not add a production-visible test override. Repeat the successful
+installed-host job-lifecycle cases in M3.8 after the disposable host alone has
+publication enabled and real lifecycle handlers.
 
 Rollback: revoke the operator key or remove the forced-command account. Root
 state stays intact and `ldp-admin` remains usable.
@@ -419,10 +424,13 @@ are not an M3 route exception.
 
 Gate: the reviewed OpenTofu plan and approved apply add only the intended
 `.com` records and inputs. Obtain and renew apex and wildcard certificates in
-both zones. Run every Caddy/systemd, cookie-policy, Ansible overlap,
-descriptor-pinning, generation-retention, start-limit, failure-injection, and
-bootstrap-interruption case in ADR 0022. Reboot the disposable host and prove
-the selected platform-only generation returns.
+both zones. Run the platform-only Caddy/systemd, cookie-policy, host-input
+Ansible overlap, descriptor-pinning, generation-retention, start-limit,
+failure-injection, and bootstrap-interruption cases in ADR 0022. Publication
+remains disabled, every tenant-bearing generation fails closed, and the
+lifecycle-integrated Caddy/systemd and Ansible overlap cases remain gated on
+M3.8. Reboot the disposable host and prove the selected platform-only
+generation returns.
 
 Rollback: durably select and verify the preceding platform-only generation.
 Never restore the old mutable `Caddyfile` path once tenant-capable code exists.
@@ -445,7 +453,11 @@ and fails closed on namespace, manifest, or observed-state disagreement.
 Gate: lifecycle table, concurrency, same-slug create/rename, slug reuse,
 retention, delayed rollback, idempotency, cross-tenant access, Caddy failure,
 process termination, reboot, and reconcile tests pass on the disposable host.
-The tests run with publication enabled only in that disposable environment.
+Repeat the successful installed-host issuance, expected-state-drift,
+artifact-replacement, replay, disconnect, lost-handoff, and lost-result cases
+deferred from M3.6, and run the lifecycle-integrated Caddy/systemd and Ansible
+overlap matrix deferred from M3.7. These tests run with publication enabled
+only in that disposable environment.
 
 Rollback: reconcile to the preceding complete generation and state. Failed
 operations keep evidence and never require manual file editing.
@@ -540,11 +552,15 @@ Before production enablement:
 
 Change only the reviewed production variable to
 `static_publication_enabled: true`, converge twice, and verify the durable launch
-record. Run one synthetic canary through create, deploy, replace, rollback,
-suspend, resume, rename, slug reuse, export, import, archive, restore, rearchive,
-delete, backup, disposable restore, reconciliation, and reboot. Verify HTTPS,
-route absence after deletion, archive cleanup, audit continuity, and no manual
-host edits.
+record. Run a synthetic source tenant through create, deploy, replace, rollback,
+suspend, resume, rename, slug reuse, and export. Create a separate undeployed
+target through the ordinary slug-allocation path, import the source bundle, and
+verify that the active target retains only its own identity and policy. Exercise
+both tenants through backup, disposable restore, reconciliation, reboot, and
+HTTPS. Archive, restore, rearchive, and ordinarily delete the source; separately
+archive and ordinarily delete the imported target. Verify both route classes
+are absent for both tenants, every bound archive object has been retired, audit
+continuity is preserved, and no manual host edits occurred.
 
 Gate: the sanitized canary report maps every ADR 0022 invariant to passing
 evidence. Only then mark Milestone 3 complete and permit Milestone 4 work to
@@ -702,6 +718,9 @@ report demonstrates that:
   versions without touching Restic;
 - backup and disposable restore reconstructed authoritative state, releases,
   audit, and publication consistently; and
+- both the source and separately imported canary tenants were removed through
+  their ordinary audited lifecycles, with routes absent and archive objects
+  retired; and
 - production remained manually unedited throughout the drill.
 
 The existing roadmap exit criterion is then satisfied through evidence, not

@@ -31,6 +31,14 @@ step. Use Molecule and Testinfra to exercise actual Unix identities,
 permissions, immutable releases, the privileged helper, Caddy validation and
 reload, backup overlap, restore, and reboot-relevant service configuration.
 
+While static publication is disabled, real-SSH installed-host tests prove the
+forced-command restrictions and rejection of every external tenant request
+before artifact acceptance or job allocation. Unit and process suites exercise
+successful immutable issuance, handoff, recovery, and result delivery against
+mutation-free test state; no production-visible override bypasses the gate.
+Repeat the successful installed-host job-lifecycle cases only after the
+disposable host has publication enabled and the lifecycle handlers exist.
+
 Client create-spec fixtures include duplicate YAML slug or quota keys and prove
 local rejection occurs before request construction. The corresponding host
 suite bypasses the supported client, submits duplicate structured-request
@@ -47,8 +55,10 @@ rejects a caller-supplied ID, generates a UUIDv7, derives the canonical
 hostname without hyphens, and enforces its complete DNS length independently
 of the alias.
 
-An installed-host concurrency test pauses tenant activation while Ansible has
-host-only Caddy inputs staged but has not acquired publication. It commits
+After lifecycle handlers exist and publication is enabled only on the
+disposable host, an installed-host concurrency test pauses tenant activation
+while Ansible has host-only Caddy inputs staged but has not acquired
+publication. It commits
 deploy, suspension, rename, restoration, and deletion independently in that
 window, then proves the host transaction rereads authoritative state and builds
 and validates its final route-bearing generation only after it holds the lock.
@@ -59,6 +69,12 @@ manifest-verified generation, never stale tenant routes or a mixed binary,
 environment, base configuration, or route set. The resulting Caddy
 configuration and observed tenant state must describe the same committed
 generation.
+
+Before that lifecycle-integrated test is available, the platform-only layer
+tests generation construction, selection, restart and recovery, descriptor
+pinning, retention, failure injection, bootstrap interruption, and Ansible
+overlap using host-only inputs. It keeps publication disabled and proves every
+tenant-bearing generation fails closed rather than claiming lifecycle coverage.
 
 Restart-handoff tests pause after intent creation, active-reference selection,
 non-blocking job submission, pre-start transition, launcher pinning,
@@ -438,12 +454,16 @@ publish either route for a suspended source; only a later explicit `resume` may
 do so.
 
 After CI and disposable-host acceptance pass, publish a reserved production
-canary in the approved untrusted `.com` tenant namespace. Verify the `.com` to
+source canary in the approved untrusted `.com` tenant namespace, then import
+its export into a separately created undeployed target. Verify the `.com` to
 `.net` browser boundary, the documented sibling-cookie behavior and Caddy
 stripping, the platform-only alias redirect, canonical HTTPS, rollback,
-suspension, restore, rearchive, ordinary deletion, backup recovery, and
-idempotence, and remove all canary state through the same operator interface.
-Dynamic or destructive isolation tests remain off the production host.
+suspension, backup recovery, reboot, and idempotence for the resulting two
+tenants. Restore, rearchive, and ordinarily delete the source; separately
+archive and ordinarily delete the imported target. Prove both route classes
+are absent for both tenants and every bound archive object is retired while
+audit evidence remains. Dynamic or destructive isolation tests remain off the
+production host.
 
 ## Consequences
 

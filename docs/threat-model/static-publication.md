@@ -354,8 +354,11 @@ PHP, or multi-host provisioning.
 - Browser and installed-host evidence proves the `.com`/`.net` boundary and
   Caddy cookie policy while also recording the accepted sibling `.com` cookie
   behavior.
-- A reserved production canary completes deploy, HTTPS, rollback, suspension,
-  restore, rearchive, ordinary deletion, backup recovery, reconciliation, and
-  cleanup from the trusted workstation.
+- A reserved production source canary and separately imported target complete
+  HTTPS, backup recovery, reconciliation, and reboot checks. The source
+  completes rollback, suspension, restore, rearchive, and ordinary deletion;
+  the imported target completes archive and ordinary deletion. Both route sets
+  and all bound archive objects are absent afterward while audit evidence
+  remains.
 - Sanitized evidence is recorded without credentials, production backup
   metadata, or tenant content.
