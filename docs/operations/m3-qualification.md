@@ -150,3 +150,8 @@ either zone. Remove the ignored variable, backend, and plan files from the
 trusted workstation; retain the encrypted empty remote state and the
 sanitized qualification report. Finally revoke the temporary dual-zone
 Cloudflare token.
+
+If creation or configuration fails partway through, use the same destroy
+sequence. The destroy policy deliberately accepts any created subset of the
+seven allowlisted resources while still rejecting a non-delete action or any
+unrelated resource.

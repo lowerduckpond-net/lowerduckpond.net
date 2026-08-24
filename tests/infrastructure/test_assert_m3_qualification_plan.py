@@ -55,6 +55,13 @@ def test_destroy_plan_accepts_only_exact_disposable_boundary() -> None:
     assert_plan(_valid_plan(destroy=True), destroy=True)
 
 
+def test_destroy_plan_accepts_a_partial_apply_subset() -> None:
+    plan = _valid_plan(destroy=True)
+    plan["resource_changes"] = plan["resource_changes"][:2]
+
+    assert_plan(plan, destroy=True)
+
+
 @pytest.mark.parametrize(
     ("mutation", "destroy"),
     [

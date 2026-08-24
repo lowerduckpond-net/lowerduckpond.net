@@ -59,8 +59,9 @@ def assert_plan(plan: Mapping[str, Any], *, destroy: bool) -> None:
         if actions != required_actions:
             errors.append(f"{address} must have only {required_actions[0]} action")
 
-    missing = EXPECTED_RESOURCES.keys() - observed.keys()
-    errors.extend(f"missing qualification resource: {address}" for address in sorted(missing))
+    if not destroy:
+        missing = EXPECTED_RESOURCES.keys() - observed.keys()
+        errors.extend(f"missing qualification resource: {address}" for address in sorted(missing))
     unexpected = observed.keys() - EXPECTED_RESOURCES.keys()
     errors.extend(f"unexpected qualification resource: {address}" for address in sorted(unexpected))
 
@@ -124,7 +125,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (json.JSONDecodeError, QualificationPlanError) as error:
         print(f"M3.0 qualification plan rejected: {error}", file=sys.stderr)
         return 1
-    print("M3.0 qualification plan matches the exact disposable boundary.")
+    print("M3.0 qualification plan stays within the exact disposable boundary.")
     return 0
 
 
