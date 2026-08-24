@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -18,6 +20,20 @@ from lowerduckpond_m3_qualification.report import (
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    begin_session = subparsers.add_parser("begin-session", help="bind a new live run to stdin")
+    begin_session.add_argument("--source-revision", required=True)
+    begin_session.add_argument("--output", required=True, type=Path)
+
+    verify_session = subparsers.add_parser("verify-session", help="verify a live run against stdin")
+    verify_session.add_argument("--session", required=True, type=Path)
+    verify_session.add_argument("--source-revision", required=True)
+
+    session_value = subparsers.add_parser("session-value", help="read one validated session value")
+    session_value.add_argument("--session", required=True, type=Path)
+    session_value.add_argument(
+        "--field", required=True, choices=("droplet_id", "droplet_urn", "ipv4_address")
+    )
 
     libraries = subparsers.add_parser("libraries", help="qualify pinned Python libraries")
     libraries.add_argument("--output", required=True, type=Path)
@@ -54,6 +70,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
+    if arguments.command in {"begin-session", "verify-session", "session-value"}:
+        return _handle_session_command(arguments)
     if arguments.command == "libraries":
         from lowerduckpond_m3_qualification.libraries import run_library_checks
 
@@ -127,3 +145,27 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
     report.write(arguments.output)
     return 0 if report.passed else 1
+
+
+def _handle_session_command(arguments: argparse.Namespace) -> int:
+    from lowerduckpond_m3_qualification.session import QualificationSession
+
+    try:
+        if arguments.command == "begin-session":
+            session = QualificationSession.create(
+                identity=json.load(sys.stdin),
+                source_revision=arguments.source_revision,
+            )
+            session.write(arguments.output)
+        else:
+            session = QualificationSession.read(arguments.session)
+            if arguments.command == "verify-session":
+                session.verify(
+                    identity=json.load(sys.stdin),
+                    source_revision=arguments.source_revision,
+                )
+            else:
+                print(getattr(session, arguments.field))
+    except OSError, ValueError, json.JSONDecodeError:
+        return 2
+    return 0

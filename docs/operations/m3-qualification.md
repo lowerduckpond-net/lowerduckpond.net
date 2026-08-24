@@ -87,7 +87,10 @@ production resource action.
 Read the address with `tofu output -raw ipv4_address`. Before Ansible first
 connects, verify the new host key through an independent DigitalOcean console
 path and record it in the trusted workstation's `known_hosts` by making one
-ordinary SSH connection.
+ordinary SSH connection. The qualification commands do not accept an address;
+they bind a clean Git revision to the OpenTofu output and independently require
+the connected host's DigitalOcean metadata ID to match before Ansible gathers
+facts or changes the host.
 
 ## Configure and run the gate
 
@@ -98,7 +101,8 @@ under both names needed by OpenTofu and the qualification tools:
 export M3_QUALIFICATION_CLOUDFLARE_API_TOKEN="$CLOUDFLARE_API_TOKEN"
 export M3_QUALIFICATION_NET_ZONE_ID='lowerduckpond-net-zone-id'
 export M3_QUALIFICATION_COM_ZONE_ID='lowerduckpond-com-zone-id'
-just m3-qualification configure 'disposable-ipv4-address'
+just m3-qualification begin
+just m3-qualification configure
 ```
 
 Install Playwright's pinned browser engines and their workstation dependencies
@@ -113,7 +117,7 @@ Run all four report fragments, then require the exact 36-check union:
 ```bash
 just m3-qualification libraries
 just m3-qualification domains '/outside/repository/domain-attestation.json'
-just m3-qualification host 'disposable-ipv4-address'
+just m3-qualification host
 just m3-qualification browser
 just m3-qualification assemble
 ```

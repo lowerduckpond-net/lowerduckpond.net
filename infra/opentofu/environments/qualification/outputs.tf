@@ -3,6 +3,15 @@ output "ipv4_address" {
   value       = digitalocean_droplet.qualification.ipv4_address
 }
 
+output "qualification_identity" {
+  description = "Exact disposable identity consumed by the trusted-workstation session guard."
+  value = {
+    droplet_id   = tostring(digitalocean_droplet.qualification.id)
+    droplet_urn  = digitalocean_droplet.qualification.urn
+    ipv4_address = digitalocean_droplet.qualification.ipv4_address
+  }
+}
+
 output "browser_origins" {
   description = "Exact live origins accepted by the mandatory browser harness."
   value = {

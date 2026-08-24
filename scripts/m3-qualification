@@ -1,29 +1,42 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly evidence_root=${M3_QUALIFICATION_EVIDENCE_DIR:-.artifacts/m3-qualification}
+readonly repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+readonly evidence_root=${M3_QUALIFICATION_EVIDENCE_DIR:-"${repository_root}/.artifacts/m3-qualification"}
 readonly qualification_package=/opt/lowerduckpond/m3-qualification
+readonly qualification_root="${repository_root}/infra/opentofu/environments/qualification"
 readonly remote_report=/run/lowerduckpond-m3-qualification/host-report.json
+readonly session_path="${evidence_root}/session.json"
 
 usage() {
-    echo "usage: scripts/m3-qualification {libraries|configure HOST|host HOST|domains ATTESTATION|browser|assemble}" >&2
+    echo "usage: scripts/m3-qualification {begin|libraries|configure|host|domains ATTESTATION|browser|assemble}" >&2
     exit 64
 }
 
-require_ipv4() {
-    if [[ $# -ne 1 ]]; then
-        usage
+require_clean_revision() {
+    if [[ -n $(git -C "$repository_root" status --porcelain --untracked-files=normal) ]]; then
+        echo "qualification requires a clean Git revision" >&2
+        exit 65
     fi
-    uv run python - "$1" <<'PY'
-import ipaddress
-import sys
-
-address = ipaddress.ip_address(sys.argv[1])
-if address.version != 4 or not address.is_global:
-    raise SystemExit(64)
-PY
 }
 
+current_revision() {
+    git -C "$repository_root" rev-parse HEAD
+}
+
+verify_session() {
+    require_clean_revision
+    tofu -chdir="$qualification_root" output -json qualification_identity | \
+        uv run ldp-m3-qualify verify-session \
+            --session "$session_path" \
+            --source-revision "$(current_revision)"
+}
+
+session_value() {
+    uv run ldp-m3-qualify session-value --session "$session_path" --field "$1"
+}
+
+cd "$repository_root"
 mkdir -p -- "$evidence_root"
 if [[ $# -lt 1 ]]; then
     usage
@@ -32,14 +45,31 @@ fi
 action=$1
 shift
 case "$action" in
+    begin)
+        [[ $# -eq 0 ]] || usage
+        require_clean_revision
+        rm -f -- \
+            "$session_path" \
+            "$evidence_root/libraries.json" \
+            "$evidence_root/host.json" \
+            "$evidence_root/domains.json" \
+            "$evidence_root/browser.json" \
+            "$evidence_root/m3-qualification.json"
+        tofu -chdir="$qualification_root" output -json qualification_identity | \
+            uv run ldp-m3-qualify begin-session \
+                --source-revision "$(current_revision)" \
+                --output "$session_path"
+        ;;
     libraries)
         [[ $# -eq 0 ]] || usage
         rm -f -- "$evidence_root/libraries.json"
         uv run ldp-m3-qualify libraries --output "$evidence_root/libraries.json"
         ;;
     configure)
-        require_ipv4 "$@"
-        host=$1
+        [[ $# -eq 0 ]] || usage
+        verify_session
+        host=$(session_value ipv4_address)
+        droplet_id=$(session_value droplet_id)
         inventory=$(mktemp)
         cleanup() {
             find "$inventory" -delete
@@ -53,14 +83,17 @@ case "$action" in
             '    qualification_nodes:' \
             '      hosts:' \
             '        m3_qualification:' \
-            "          ansible_host: $host" \
+            "          ansible_host: \"$host\"" \
+            "          m3_expected_ipv4: \"$host\"" \
+            "          m3_expected_droplet_id: \"$droplet_id\"" \
             '          ansible_user: ldp-admin' > "$inventory"
-        ANSIBLE_CONFIG=config/ansible/ansible.cfg uv run ansible-playbook \
-            --inventory "$inventory" config/ansible/playbooks/m3-qualification.yml
+        ANSIBLE_CONFIG="$repository_root/config/ansible/ansible.cfg" uv run ansible-playbook \
+            --inventory "$inventory" "$repository_root/config/ansible/playbooks/m3-qualification.yml"
         ;;
     host)
-        require_ipv4 "$@"
-        host=$1
+        [[ $# -eq 0 ]] || usage
+        verify_session
+        host=$(session_value ipv4_address)
         rm -f -- "$evidence_root/host.json"
         ssh -o BatchMode=yes "ldp-admin@$host" sudo rm -f -- "$remote_report"
         set +e
