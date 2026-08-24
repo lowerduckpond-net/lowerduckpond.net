@@ -30,6 +30,7 @@ CANONICAL_ORIGIN: Final = "https://t-0198d17f6f4a70008000000000000001.lowerduckp
 PARENT_TENANT_DOMAIN: Final = "lowerduckpond.com"
 PLATFORM_DOMAIN: Final = "lowerduckpond.net"
 CANARY_VALUE: Final = "ldp-m3-canary-not-sensitive"
+FILTERED_ROUTE_COUNT: Final = 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,6 +202,19 @@ async def _check_caddy_filter(
     ):
         raise RuntimeError
 
+    alias_non_root_response = await context.request.get(
+        f"{origins.tenant_alias}/static", max_redirects=0
+    )
+    alias_non_root_headers = alias_non_root_response.headers
+    alias_non_root_body = await alias_non_root_response.body()
+    if (
+        alias_non_root_response.status != HTTPStatus.NOT_FOUND
+        or alias_non_root_headers.get("cache-control") != "no-store"
+        or alias_non_root_headers.get("x-m3-incoming-state", "")
+        or "set-cookie" in alias_non_root_headers
+    ):
+        raise RuntimeError
+
     canonical_response = await page.goto(
         f"{origins.tenant_immutable}/probe", wait_until="networkidle"
     )
@@ -245,6 +259,20 @@ async def _check_caddy_filter(
         raise RuntimeError
 
     await context.clear_cookies()
+    alias_non_root_clear_response = await context.request.get(
+        f"{origins.tenant_alias}/static", max_redirects=0
+    )
+    alias_non_root_clear_headers = alias_non_root_clear_response.headers
+    if (
+        alias_non_root_clear_response.status != HTTPStatus.NOT_FOUND
+        or alias_non_root_clear_headers.get("cache-control") != "no-store"
+        or alias_non_root_clear_headers.get("x-m3-incoming-state", "")
+        or "set-cookie" in alias_non_root_clear_headers
+        or hashlib.sha256(await alias_non_root_clear_response.body()).digest()
+        != hashlib.sha256(alias_non_root_body).digest()
+    ):
+        raise RuntimeError
+
     state_free_response = await page.goto(
         f"{origins.tenant_immutable}/probe", wait_until="networkidle"
     )
@@ -254,7 +282,7 @@ async def _check_caddy_filter(
         != hashlib.sha256(canonical_body).digest()
     ):
         raise RuntimeError
-    return {"independent_body": True, "routes_checked": len(origins.tenant_origins)}
+    return {"independent_body": True, "routes_checked": FILTERED_ROUTE_COUNT}
 
 
 async def _check_sibling_parent_residual(

@@ -55,6 +55,7 @@ MAXIMUM_HANDOFF_MILLISECONDS: Final = 1000
 MINIMUM_HTTP_STATUS_FIELDS: Final = 2
 DNS_NAME_FIELDS: Final = 2
 TLS_TIMEOUT_SECONDS: Final = 5.0
+ROUTE_CLASS_COUNT: Final = 5
 
 
 def run_host_checks(*, work_root: Path) -> tuple[CheckResult, ...]:
@@ -254,6 +255,21 @@ def _check_caddy_routes() -> dict[str, EvidenceValue]:
     ):
         raise RuntimeError
 
+    alias_non_root_status, alias_non_root_headers, alias_non_root_body = _curl_route(
+        addresses, ROUTE_HOSTS[1], "/static", include_state=True
+    )
+    alias_non_root_clear_status, alias_non_root_clear_headers, alias_non_root_clear_body = (
+        _curl_route(addresses, ROUTE_HOSTS[1], "/static", include_state=False)
+    )
+    if (
+        alias_non_root_status != HTTPStatus.NOT_FOUND
+        or alias_non_root_clear_status != HTTPStatus.NOT_FOUND
+        or alias_non_root_body != alias_non_root_clear_body
+        or not _headers_are_stateless(alias_non_root_headers)
+        or not _headers_are_stateless(alias_non_root_clear_headers)
+    ):
+        raise RuntimeError
+
     canonical_status, canonical_headers, canonical_body = _curl_route(
         addresses, ROUTE_HOSTS[2], "/probe", include_state=True
     )
@@ -290,7 +306,7 @@ def _check_caddy_routes() -> dict[str, EvidenceValue]:
         or not _headers_are_stateless(unknown_clear_headers)
     ):
         raise RuntimeError
-    return {"independent_body": True, "route_classes": len(ROUTE_HOSTS)}
+    return {"independent_body": True, "route_classes": ROUTE_CLASS_COUNT}
 
 
 def _headers_are_stateless(headers: Mapping[str, str]) -> bool:
