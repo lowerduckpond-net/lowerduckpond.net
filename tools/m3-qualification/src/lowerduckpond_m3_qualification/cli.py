@@ -11,6 +11,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from lowerduckpond_m3_qualification.report import (
+    CheckResult,
     QualificationReport,
     UnsafeReportError,
     combine_reports,
@@ -32,18 +33,23 @@ def build_parser() -> argparse.ArgumentParser:
     session_value = subparsers.add_parser("session-value", help="read one validated session value")
     session_value.add_argument("--session", required=True, type=Path)
     session_value.add_argument(
-        "--field", required=True, choices=("droplet_id", "droplet_urn", "ipv4_address")
+        "--field",
+        required=True,
+        choices=("run_id", "source_revision", "droplet_id", "droplet_urn", "ipv4_address"),
     )
 
     libraries = subparsers.add_parser("libraries", help="qualify pinned Python libraries")
+    _add_run_arguments(libraries)
     libraries.add_argument("--output", required=True, type=Path)
 
     filesystem = subparsers.add_parser("filesystem", help="qualify real filesystem behavior")
+    _add_run_arguments(filesystem)
     filesystem.add_argument("--work-root", required=True, type=Path)
     filesystem.add_argument("--expected-filesystem", default="ext4")
     filesystem.add_argument("--output", required=True, type=Path)
 
     browser = subparsers.add_parser("browser", help="run mandatory live browser checks")
+    _add_run_arguments(browser)
     browser.add_argument("--platform-origin", required=True)
     browser.add_argument("--tenant-alias-origin", required=True)
     browser.add_argument("--tenant-immutable-origin", required=True)
@@ -51,10 +57,12 @@ def build_parser() -> argparse.ArgumentParser:
     browser.add_argument("--output", required=True, type=Path)
 
     host = subparsers.add_parser("host", help="run privileged disposable-host checks")
+    _add_run_arguments(host)
     host.add_argument("--work-root", default=Path("/var/lib/lowerduckpond-m3"), type=Path)
     host.add_argument("--output", required=True, type=Path)
 
     domains = subparsers.add_parser("domains", help="qualify domain control and delegation")
+    _add_run_arguments(domains)
     domains.add_argument("--attestation", required=True, type=Path)
     domains.add_argument("--net-zone-id", required=True)
     domains.add_argument("--com-zone-id", required=True)
@@ -75,11 +83,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     if arguments.command == "libraries":
         from lowerduckpond_m3_qualification.libraries import run_library_checks
 
-        report = QualificationReport.create(environment="hermetic-ci", checks=run_library_checks())
+        report = _create_report(arguments, environment="hermetic-ci", checks=run_library_checks())
     elif arguments.command == "filesystem":
         from lowerduckpond_m3_qualification.filesystem import run_filesystem_checks
 
-        report = QualificationReport.create(
+        report = _create_report(
+            arguments,
             environment="ubuntu-26.04-disposable",
             checks=run_filesystem_checks(
                 work_root=arguments.work_root,
@@ -98,7 +107,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         except ValueError:
             return 2
-        report = QualificationReport.create(
+        report = _create_report(
+            arguments,
             environment="live-dual-domain",
             checks=asyncio.run(run_browser_checks(origins)),
         )
@@ -107,14 +117,16 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         if not hasattr(arguments, "work_root"):
             return 2
-        report = QualificationReport.create(
+        report = _create_report(
+            arguments,
             environment="ubuntu-26.04-disposable",
             checks=run_host_checks(work_root=arguments.work_root),
         )
     elif arguments.command == "domains":
         from lowerduckpond_m3_qualification.domains import run_domain_checks
 
-        report = QualificationReport.create(
+        report = _create_report(
+            arguments,
             environment="operator-and-cloudflare",
             checks=run_domain_checks(
                 attestation_path=arguments.attestation,
@@ -169,3 +181,22 @@ def _handle_session_command(arguments: argparse.Namespace) -> int:
     except OSError, ValueError, json.JSONDecodeError:
         return 2
     return 0
+
+
+def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--run-id", required=True)
+    parser.add_argument("--source-revision", required=True)
+
+
+def _create_report(
+    arguments: argparse.Namespace,
+    *,
+    environment: str,
+    checks: Sequence[CheckResult],
+) -> QualificationReport:
+    return QualificationReport.create(
+        run_id=arguments.run_id,
+        source_revision=arguments.source_revision,
+        environment=environment,
+        checks=checks,
+    )

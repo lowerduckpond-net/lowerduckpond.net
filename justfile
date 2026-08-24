@@ -39,7 +39,7 @@ check-python: _sync
 
 # Exercise the hermetic portion of the exact, no-skip M3.0 gate.
 check-m3-qualification: _sync
-    evidence_dir="$(mktemp -d)"; trap 'find "$evidence_dir" -depth -delete' EXIT; M3_QUALIFICATION_EVIDENCE_DIR="$evidence_dir" scripts/m3-qualification libraries
+    evidence_dir="$(mktemp -d)"; trap 'find "$evidence_dir" -depth -delete' EXIT; uv run ldp-m3-qualify libraries --run-id 0198d17f-6f4a-7000-8000-000000000001 --source-revision 0000000000000000000000000000000000000000 --output "$evidence_dir/libraries.json"
     bash -n scripts/m3-qualification config/ansible/roles/m3_qualification/files/m3-caddy-hook
     uv run python -m py_compile scripts/assert_m3_qualification_plan.py config/ansible/roles/m3_qualification/files/m3-caddy-generation config/ansible/roles/m3_qualification/files/m3-qualification-tmpfs config/ansible/roles/m3_qualification/files/m3-qualification-uuid
 

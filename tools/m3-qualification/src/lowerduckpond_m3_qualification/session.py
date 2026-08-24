@@ -43,9 +43,9 @@ class QualificationSession:
         cls, *, identity: object, source_revision: str, run_id: str | None = None
     ) -> QualificationSession:
         normalized = _normalize_identity(identity)
-        _validate_source_revision(source_revision)
+        validate_source_revision(source_revision)
         selected_run_id = run_id or str(uuid.uuid7())
-        _validate_run_id(selected_run_id)
+        validate_run_id(selected_run_id)
         return cls(
             schema=SESSION_SCHEMA,
             run_id=selected_run_id,
@@ -74,7 +74,7 @@ class QualificationSession:
 
     def verify(self, *, identity: object, source_revision: str) -> None:
         expected = _normalize_identity(identity)
-        _validate_source_revision(source_revision)
+        validate_source_revision(source_revision)
         if source_revision != self.source_revision:
             raise UnsafeSessionError("qualification source revision changed")
         observed = {key: getattr(self, key) for key in IDENTITY_FIELDS}
@@ -128,12 +128,14 @@ def _normalize_identity(value: object) -> dict[str, str]:
     }
 
 
-def _validate_source_revision(value: str) -> None:
+def validate_source_revision(value: str) -> None:
+    """Require the canonical committed revision representation used by the gate."""
     if not SOURCE_REVISION_PATTERN.fullmatch(value):
         raise UnsafeSessionError("source revision is not a lowercase SHA-1 object ID")
 
 
-def _validate_run_id(value: str) -> None:
+def validate_run_id(value: str) -> None:
+    """Require a canonical UUIDv7 qualification run identifier."""
     try:
         parsed = uuid.UUID(value)
     except ValueError as error:

@@ -13,8 +13,13 @@ from pathlib import Path
 from typing import Final, Literal
 
 from lowerduckpond_m3_qualification.checks import EVIDENCE_KEYS_BY_CHECK
+from lowerduckpond_m3_qualification.session import (
+    UnsafeSessionError,
+    validate_run_id,
+    validate_source_revision,
+)
 
-REPORT_SCHEMA_VERSION: Final = "lowerduckpond.m3-qualification/v1"
+REPORT_SCHEMA_VERSION: Final = "lowerduckpond.m3-qualification/v2"
 MAX_EVIDENCE_FIELDS: Final = 12
 MAXIMUM_HANDOFF_MILLISECONDS: Final = 1000
 MINIMUM_NAMESERVERS: Final = 2
@@ -107,6 +112,8 @@ class QualificationReport:
     """A complete report fragment or assembled M3.0 report."""
 
     report_schema: str
+    run_id: str
+    source_revision: str
     generated_at: str
     environment: str
     checks: tuple[CheckResult, ...]
@@ -115,10 +122,17 @@ class QualificationReport:
     def create(
         cls,
         *,
+        run_id: str,
+        source_revision: str,
         environment: str,
         checks: Iterable[CheckResult],
         now: datetime | None = None,
     ) -> QualificationReport:
+        try:
+            validate_run_id(run_id)
+            validate_source_revision(source_revision)
+        except UnsafeSessionError as error:
+            raise UnsafeReportError("report run identity is not recognized") from error
         if environment not in REPORT_ENVIRONMENTS:
             raise UnsafeReportError("environment is not a safe report label")
         ordered = tuple(sorted(checks, key=lambda item: item.check_id))
@@ -128,6 +142,8 @@ class QualificationReport:
         generated_at = (now or datetime.now(UTC)).astimezone(UTC).isoformat().replace("+00:00", "Z")
         return cls(
             report_schema=REPORT_SCHEMA_VERSION,
+            run_id=run_id,
+            source_revision=source_revision,
             generated_at=generated_at,
             environment=environment,
             checks=ordered,
@@ -138,6 +154,8 @@ class QualificationReport:
         value = json.loads(raw)
         if not isinstance(value, dict) or set(value) != {
             "report_schema",
+            "run_id",
+            "source_revision",
             "generated_at",
             "environment",
             "checks",
@@ -169,7 +187,12 @@ class QualificationReport:
                     error_code=_require_optional_string(item["error_code"]),
                 )
             )
-        report = cls.create(environment=_require_string(value["environment"]), checks=checks)
+        report = cls.create(
+            run_id=_require_string(value["run_id"]),
+            source_revision=_require_string(value["source_revision"]),
+            environment=_require_string(value["environment"]),
+            checks=checks,
+        )
         if value["report_schema"] != REPORT_SCHEMA_VERSION:
             raise UnsafeReportError("report schema is not supported")
         generated_at = _require_string(value["generated_at"])
@@ -181,6 +204,8 @@ class QualificationReport:
             raise UnsafeReportError("report timestamp must include a timezone")
         return cls(
             report_schema=REPORT_SCHEMA_VERSION,
+            run_id=report.run_id,
+            source_revision=report.source_revision,
             generated_at=generated_at,
             environment=report.environment,
             checks=report.checks,
@@ -221,6 +246,10 @@ def combine_reports(
     reports_tuple = tuple(reports)
     if not reports_tuple:
         raise UnsafeReportError("at least one report fragment is required")
+    run_ids = {report.run_id for report in reports_tuple}
+    source_revisions = {report.source_revision for report in reports_tuple}
+    if len(run_ids) != 1 or len(source_revisions) != 1:
+        raise UnsafeReportError("report fragments do not belong to one qualification run")
     checks = tuple(check for report in reports_tuple for check in report.checks)
     identifiers = [check.check_id for check in checks]
     if len(identifiers) != len(set(identifiers)):
@@ -229,7 +258,12 @@ def combine_reports(
     unexpected = set(identifiers).difference(required_check_ids)
     if missing or unexpected:
         raise UnsafeReportError("report fragments do not contain the exact required check set")
-    return QualificationReport.create(environment="production-equivalent", checks=checks)
+    return QualificationReport.create(
+        run_id=next(iter(run_ids)),
+        source_revision=next(iter(source_revisions)),
+        environment="production-equivalent",
+        checks=checks,
+    )
 
 
 def _validate_check_id(check_id: str) -> None:

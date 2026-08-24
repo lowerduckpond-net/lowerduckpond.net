@@ -90,7 +90,9 @@ path and record it in the trusted workstation's `known_hosts` by making one
 ordinary SSH connection. The qualification commands do not accept an address;
 they bind a clean Git revision to the OpenTofu output and independently require
 the connected host's DigitalOcean metadata ID to match before Ansible gathers
-facts or changes the host.
+facts or changes the host. `begin` also creates a UUIDv7 run ID and removes all
+prior fragments. Every fragment records that run ID and source revision, and
+assembly rejects fragments from another run or revision.
 
 ## Configure and run the gate
 
