@@ -2,6 +2,7 @@
 
 - Status: accepted
 - Date: 2026-08-22
+- Namespace selected by: [ADR 0024](0024-separate-platform-and-tenant-domains.md)
 
 ## Context
 
@@ -13,14 +14,25 @@ paths as application state.
 ## Decision
 
 Commit a strict JSON Schema for `hosting.lowerduckpond.net/v1alpha1` static site
-manifests. Accept safe YAML as the human-authored representation and persist a
-canonical JSON form. Before YAML composition, the root transport enforces the
-64-KiB raw manifest ceiling and decode deadline in ADR 0017; no YAML parser sees
-an unbounded stream. The parser rejects duplicate mapping keys before schema
-validation or canonicalization; a safe loader alone is not sufficient because
-common loaders silently retain one duplicate value. Reject unknown fields so
-misspellings do not silently weaken policy. The resulting canonical JSON must
-fit the 16-KiB manifest ceiling.
+manifests and persist them as canonical JSON. A desired manifest is
+authoritative root-owned state, not a caller-supplied document: root constructs
+it from one validated operation request plus the exact authoritative source
+state, and every mutation changes only the fields that operation authorizes.
+The SSH protocol has no manifest frame and no operation accepts a replacement
+desired manifest. Reject unknown fields, duplicate JSON object member names,
+type coercion, and unsupported versions whenever persisted, restored, or
+bundle-embedded manifest bytes are decoded. Every resulting canonical manifest
+must fit the 16-KiB ceiling.
+
+For operator convenience, the trusted-workstation client may accept a local
+safe-YAML `create` specification containing only the caller-controlled slug and
+quotas. It reads at most 64 KiB plus one detection byte before composition,
+rejects duplicate mapping keys and unknown fields, and translates the validated
+values into the strict versioned `create` request. The YAML bytes are never
+transmitted, persisted as desired state, or treated as authorization, and no
+host component imports a YAML parser. A client-side check is usability and
+defense in depth; the host independently applies the request schema and every
+root-owned derivation even when a caller bypasses the supported client.
 
 Persisted canonical JSON uses RFC 8785 UTF-8 bytes without a byte-order mark and
 with exactly one trailing LF; the 16-KiB ceiling includes that LF. Every stored
@@ -43,30 +55,33 @@ Independently enforce the same grammar in the root validator with an ASCII
 `fullmatch` plus the encoded byte-length check; schema success alone is not the
 privileged boundary. Maintain a committed reserved-name list. Because the
 alphabet is ASCII, the byte and character counts are equal. Validate the
-complete `<slug>.lowerduckpond.net` alias length before persistence. Separately
+complete `<slug>.lowerduckpond.com` alias length before persistence. Separately
 validate the normalized tenant-origin suffix so the UUID-derived canonical
 hostname remains within the DNS limit. Derive both hostnames from root-owned
 state; do not accept an arbitrary domain or redirect target in this version.
 
-The tenant-origin namespace must isolate mutually untrusted tenants from
-`lowerduckpond.net` and from one another at the browser cookie boundary. Each
-canonical `t-<tenant-uuid-without-hyphens>.<tenant-origin-suffix>` hostname must
-therefore be a distinct registrable domain according to the browser Public
-Suffix List, either beneath a project-controlled private suffix recognized by
-supported browsers or through another mechanism that assigns a distinct
-registrable domain per tenant. A separate shared registrable domain without a
-public-suffix boundary is not sufficient for cross-tenant isolation.
+The tenant-origin namespace must isolate untrusted tenant content from every
+trusted platform service. ADR 0024 assigns the complete tenant namespace to
+`lowerduckpond.com` and keeps authenticated platform services on the separately
+registered `lowerduckpond.net` domain. Each canonical
+`t-<tenant-uuid-without-hyphens>.<tenant-origin-suffix>` hostname is a unique,
+immutable browser origin, but the canonical hosts remain siblings within one
+registrable `.com` domain. The manifest contract does not claim
+tenant-to-tenant cookie integrity that the browser does not provide.
 
-Reserve `lowerduckpond.net` for platform-controlled responses, including the
-reusable slug aliases in ADR 0023. Those aliases return only a fixed non-cached
-redirect from an active tenant's bare alias root to its UUID-derived canonical
-origin. They never serve or proxy uploaded content, accept a tenant redirect
-target, forward paths or queries, set cookies, or register a service worker.
+Reserve the exact `lowerduckpond.com` apex and the reusable slug aliases in ADR
+0023 for platform-controlled responses. Those aliases return only a fixed
+non-cached redirect from an active tenant's bare alias root to its UUID-derived
+canonical origin. They never serve or proxy uploaded content, accept a tenant
+redirect target, forward paths or queries, set cookies, or register a service
+worker.
 
 Selecting, provisioning, and browser-testing that namespace is an external
-Milestone 3 prerequisite. The existing `*.lowerduckpond.net` DNS and certificate
-foundation is used only for platform-controlled slug aliases and must not be
-used for tenant-controlled content.
+Milestone 3 prerequisite. ADR 0024 selects `lowerduckpond.com`, requires apex
+and wildcard DNS and certificates for that second zone, and specifies Caddy's
+static-route cookie stripping. Qualification proves that `.com` content cannot
+set or receive `.net` platform cookies and records, rather than conceals, the
+remaining sibling-tenant cookie behavior.
 
 After that prerequisite is verified and before the first tenant is created, an
 explicit root-owned initialization operation persists and syncs a versioned
@@ -142,13 +157,18 @@ never assigned to a new tenant.
 
 Milestone 4 can store or enqueue the same contract without importing the
 operator transport. Canonical JSON makes hashing and comparison deterministic,
-while YAML remains approachable for an operator. Custom domains require a later
-schema version and ownership-verification design.
+while an optional local YAML create specification remains approachable without
+making YAML or a whole desired manifest part of the privileged protocol. Custom
+domains require a later schema version and ownership-verification design.
 
-The tenant-origin prerequisite adds DNS, certificate, Cloudflare credential,
-and possibly domain or public-suffix coordination before the production canary.
-It prevents tenant JavaScript from poisoning platform authentication cookies or
-the cookies of another tenant.
+The tenant-origin prerequisite adds a second DNS zone, apex and wildcard
+certificates, Cloudflare credential scope, and browser/Caddy qualification
+before the production canary. It prevents tenant JavaScript from poisoning
+platform authentication cookies. It deliberately does not claim that ordinary
+cookies are isolated between sibling `.com` tenants; static serving ignores
+them and client-side tenant code must use host-bound `__Host-` cookies when
+cookie-name integrity matters. Server-side tenant sessions remain outside this
+static contract.
 
 The explicit DNS-label bound means every persisted slug can be used as a
 platform alias later; creation cannot reserve a name that deployment must reject
@@ -168,17 +188,25 @@ illustrative ULID-shaped identifier in the original roadmap.
 ULID was rejected because Python 3.14 provides UUIDv7 directly. Caller-supplied
 hostnames were rejected because the operator-owned tenant namespace is the only
 approved Milestone 3 routing scope. Tenant-controlled subdomains directly below
-`lowerduckpond.net` were rejected because they share its cookie scope. Serving
-tenant content from a mutable slug hostname was rejected because safely
+`lowerduckpond.net` were rejected because they would share a registrable domain
+with the trusted platform. Serving tenant content from a
+mutable slug hostname was rejected because safely
 reprovisioning the slug would also transfer its browser origin. A separate
-shared registrable domain without a browser-recognized public-suffix boundary
-was rejected because tenants would still share cookies with one another.
+`lowerduckpond.com` namespace was accepted despite shared sibling cookies
+because it creates the required platform boundary, static routes consume no
+cookies, and the residual tenant-to-tenant client risk is explicit in ADR 0024.
 Permissive schemas were rejected because ignored or misspelled security fields
 are unsafe at a privileged boundary. Combining initial creation and deployment
 was rejected because the accepted operator interface exposes them as separate
 idempotent operations. Treating a portable bundle's embedded manifest as
 desired target state was rejected because a caller-controlled artifact cannot
 authorize identity, origin, slug, quota, or lifecycle changes.
+Transporting a standalone desired manifest was rejected because the specific
+operation requests already express every permitted caller choice, while a whole
+document duplicates those fields and invites ambiguity over root-owned
+identity, origin, deployment, and lifecycle values. A future declarative update
+requires its own versioned request schema containing only fields that operation
+may change.
 
 ## References
 
@@ -186,5 +214,5 @@ authorize identity, origin, slug, quota, or lifecycle changes.
 - [0008: Support archive upload before Git deployment](0008-archive-upload-first.md)
 - [0016: Model static publication as an untrusted boundary](0016-model-static-publication-threats.md)
 - [0023: Separate reusable slugs from immutable tenant origins](0023-separate-reusable-slugs-from-tenant-origins.md)
-- [Public Suffix List format and private domains](https://github.com/publicsuffix/list/wiki/Format)
-- [Public Suffix List submission guidelines](https://github.com/publicsuffix/list/wiki/Guidelines)
+- [0024: Separate trusted platform and untrusted tenant domains](0024-separate-platform-and-tenant-domains.md)
+- [RFC 10025: Cookies: HTTP State Management Mechanism](https://auth48-transition.rfc-editor.org/authors/rfc10025.html)

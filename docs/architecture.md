@@ -1,14 +1,14 @@
 # Lower Duck Pond Hosting: Project Vision and Architecture
 
 Status: accepted baseline through the Milestone 3 design decisions
-Primary domain: `lowerduckpond.net`
-First tenant: `lowerduckpond.com`
+Trusted platform domain: `lowerduckpond.net`
+Untrusted tenant domain: `lowerduckpond.com`
 
 ## 1. Project summary
 
 Lower Duck Pond Hosting is a free, community-scale web host for participants in the [`r/HaveWeMet`](https://www.reddit.com/r/HaveWeMet/) role-playing community. It exists so residents of the fictional town of Lower Duck Pond can publish sites for imaginary businesses, civic departments, campaigns, clubs, events, personal pages, and other in-universe projects.
 
-The intended spirit is closer to GeoCities than to a general-purpose cloud platform: personal, handmade, eccentric, and small. The first tenant, `lowerduckpond.com`, will be the town's official website—an aggressively dated municipal site whose idea of modern design stopped somewhere around the late 1980s or early 1990s.
+The intended spirit is closer to GeoCities than to a general-purpose cloud platform: personal, handmade, eccentric, and small. A platform-owned reference tenant may eventually present the town's official website—an aggressively dated municipal site whose idea of modern design stopped somewhere around the late 1980s or early 1990s—but its content, slug, and repository are not Milestone 3 architecture.
 
 This is also a portfolio and educational project. Infrastructure, platform code, documentation, tests, and operational practices should be public by default. Credentials, production state, private user data, abuse reports, and backup contents must remain private.
 
@@ -16,7 +16,8 @@ This is also a portfolio and educational project. Infrastructure, platform code,
 
 - Provision the DigitalOcean infrastructure from code.
 - Automate signup, approval, provisioning, suspension, cancellation, archival, restoration, and eventual pruning.
-- Provide authentic HTTPS for `lowerduckpond.net` and `*.lowerduckpond.net`.
+- Provide authentic HTTPS for the apex and wildcard names in both the trusted
+  `.net` platform zone and untrusted `.com` tenant zone.
 - Make static hosting the safe, inexpensive default.
 - Offer PHP and SQL as an explicitly higher-risk dynamic tier.
 - Isolate dynamic tenants so one site cannot casually consume or inspect another site's resources.
@@ -65,8 +66,9 @@ Public repositories should include example variable files, schemas, workflows, p
 
 ```mermaid
 flowchart TD
-    Internet["Residents and visitors"] --> CF["Cloudflare DNS"]
+    Internet["Residents and visitors"] --> CF["Cloudflare .net and .com DNS"]
     CF --> Caddy["Caddy edge and TLS"]
+    Caddy --> Platform["Trusted platform on .net"]
     Caddy --> Static["Static tenant content"]
     Caddy --> PHP["Isolated PHP tenants"]
     Control["Control plane and provisioner"] --> Static
@@ -84,7 +86,9 @@ The initial production environment consists of:
   the roughly 2-vCPU/4-GiB class before tenant onboarding.
 - One reserved IP so the origin address survives Droplet replacement.
 - One Cloud Firewall allowing public HTTP/HTTPS and tightly restricted administration.
-- One Spaces bucket for encrypted backups and archived tenant bundles.
+- One Spaces bucket and bucket-scoped credential for encrypted Restic backups.
+- One separate versioned Spaces bucket and credential for authoritative tenant
+  archive bundles.
 - Optional block storage if tenant content outgrows the root filesystem or hard per-tenant filesystem quotas become necessary.
 - DigitalOcean monitoring for external host-level alerting.
 
@@ -119,7 +123,14 @@ Caddy is the only public web entry point. It:
 - Emits structured access logs tagged with the requested hostname and resolved tenant.
 - Omits raw path, query, cookie, authorization, and referrer values from slug
   alias logs.
-- Serves the provider portal and `lowerduckpond.com` as distinct virtual hosts.
+- Serves the public platform website directly at `lowerduckpond.net`, redirects
+  `hosting.lowerduckpond.net` and `www.lowerduckpond.net` to that canonical
+  site, reserves `secure.lowerduckpond.net` for the future same-origin
+  administration UI and API, and serves no tenant-controlled bytes from
+  `.net`.
+- Serves aliases and immutable tenant origins only below `lowerduckpond.com`;
+  strips incoming `Cookie` and outgoing `Set-Cookie` on every Milestone 3
+  `.com` route; and never varies static routing or content by cookies.
 
 The routing configuration is generated from tenant manifests. A bad tenant
 deployment must not be able to replace the entire Caddy configuration. A
@@ -136,7 +147,7 @@ A static tenant receives:
 
 - A unique immutable tenant ID and mutable public slug.
 - An immutable UUID-derived canonical content origin and a reusable
-  `<slug>.lowerduckpond.net` platform alias.
+  `<slug>.lowerduckpond.com` platform alias.
 - Root-owned immutable releases that neither the provisioner nor Caddy can
   modify after validation.
 - Read-only content access from Caddy through a root-generated route that names
@@ -145,10 +156,16 @@ A static tenant receives:
 - Portable import into an already-created undeployed tenant; imported content
   receives the target's existing identity, canonical origin, slug, and quotas
   rather than reclaiming values embedded in the export.
-- A generated canonical route in a tenant namespace where each mutually
-  untrusted tenant is a distinct registrable domain according to supported
-  browsers.
+- A generated canonical route on a unique immutable origin below the untrusted
+  `.com` tenant namespace, separately registered from every trusted platform
+  service.
 - No executable server-side code.
+
+Tenant origins are distinct origins but not distinct registrable sites.
+Browser-local parent-domain cookies can therefore cross between `.com`
+siblings even though Caddy consumes and emits none. This accepted static-tier
+limitation cannot reach `.net` platform authentication; authenticated tenant
+applications and dynamic hosting require a later decision before activation.
 
 Static sites are inexpensive enough to remain online even when lightly visited. Lifecycle decisions should therefore be based primarily on owner activity and explicit renewal, not page views.
 
@@ -169,6 +186,9 @@ Each PHP tenant receives a separately managed rootless Podman container, prefera
 - No access to the DigitalOcean metadata endpoint.
 
 Containerization reduces the blast radius, but user-supplied PHP remains user-supplied code execution. Dynamic hosting therefore requires more conservative quotas and faster suspension controls than static hosting.
+Because arbitrary dynamic applications may need server-side cookies, the PHP
+pilot must also replace or explicitly extend the static `.com` cookie policy;
+it cannot inherit Caddy's blanket request/response cookie stripping.
 
 ### 5.5 SQL service
 
@@ -204,8 +224,10 @@ interface when the platform grows.
 The authenticated control plane is the future job authority. It creates an
 immutable envelope binding the actor, operation, tenant, correlation, request,
 artifact, and expected source state; the provisioner receives only its opaque
-job ID and bounded status. Milestone 3 uses the trusted administrative SSH
-adapter as the issuer of the same root-owned envelope. The worker sudo rule can
+job ID and bounded status. Milestone 3 uses a forced-command adapter on the
+dedicated `ldp-operator` SSH account as the issuer of the same root-owned
+envelope. The `ldp-admin` account remains reserved for Ansible and emergency
+host administration. The worker sudo rule can
 execute an issued job but cannot invoke either issuer or submit raw lifecycle
 fields. Archive evidence proves recoverability, not authorization: archive and
 delete require separate actor-authorized jobs.
@@ -214,42 +236,66 @@ Every provisioning operation should be idempotent and recorded with a correlatio
 
 ## 6. DNS and HTTPS
 
-Cloudflare remains the authoritative DNS provider. OpenTofu manages records such as:
+Cloudflare remains authoritative for both owned zones. OpenTofu manages the
+apex and wildcard records for `lowerduckpond.net` and `lowerduckpond.com`, all
+pointing to the DigitalOcean reserved IP while Caddy remains the only public
+origin.
 
-- `lowerduckpond.net`
-- `www.lowerduckpond.net`
-- `*.lowerduckpond.net`
-- Administrative or status hostnames
+Caddy obtains and renews apex and wildcard certificates for both zones through
+ACME DNS-01 using a non-expiring Cloudflare token restricted to only those two
+zones with Zone Read and DNS Edit. The separate OpenTofu token receives DNS
+Edit only for the same two zones. Caddy requires its DNS provider module for
+this flow, so the project builds and pins its Caddy image rather than relying
+on an unversioned local binary.
 
-The existing wildcard record points to the DigitalOcean reserved IP. Caddy
-obtains and renews certificates for `lowerduckpond.net` and
-`*.lowerduckpond.net` through the ACME DNS-01 challenge using a narrowly scoped
-Cloudflare API token. Caddy requires a DNS provider module for this flow, so the
-project should build and pin its Caddy image rather than relying on an
-unversioned local binary.
+`lowerduckpond.net` is the trusted platform domain and the canonical public,
+unauthenticated platform website. The site is platform-owned and served
+directly rather than provisioned as a tenant. `hosting.lowerduckpond.net` and
+`www.lowerduckpond.net` permanently redirect equivalent paths and queries to
+the HTTPS apex.
+`secure.lowerduckpond.net` is reserved for the future administration UI and
+same-origin API. Authentication there uses a unique host-only `__Host-` cookie
+plus exact-Origin and CSRF checks and never uses a parent-domain cookie.
 
-Do not publish tenant-controlled content beneath `lowerduckpond.net`: sibling
-subdomains can set parent-domain cookies that reach the platform and one
-another. A `<slug>.lowerduckpond.net` hostname is therefore only a
-platform-controlled, non-cached redirect from its bare root to the tenant's
-canonical origin. It never serves uploaded content or accepts a tenant-selected
-destination, and its slug may be assigned to another tenant after rename or
-deletion.
+`lowerduckpond.com` is the untrusted tenant namespace. In Milestone 3 its exact
+apex returns a generic stateless `404` with `Cache-Control: no-store`. In
+Milestone 7 a root-owned designation will bind the municipal reference role to
+one ordinary active tenant's immutable ID. An exact query-free `GET` or `HEAD`
+for `/` at the apex will then temporarily redirect without caching to that
+tenant's immutable UUID-derived canonical origin, never through its reusable
+slug alias. If the designation is absent or inactive, or for any other apex
+request, it continues to return the generic stateless `404`. Every exact-apex
+response is non-cacheable so designation, suspension, and resumption take
+effect without a stale fallback. Deriving the destination directly from the
+tenant ID prevents a previously issued redirect from reaching a replacement
+tenant if the friendly slug is reassigned before navigation. Each immutable
+canonical tenant origin is
+`t-<tenant-uuid-without-hyphens>.lowerduckpond.com`. A
+`<slug>.lowerduckpond.com` hostname remains only a platform-controlled,
+non-cached redirect from its bare root to that canonical origin: serving
+content at a reusable slug would transfer origin-scoped browser storage and
+service-worker state when the slug is reassigned. The alias never serves
+uploaded content or accepts a tenant-selected destination.
 
-Before Milestone 3 publication, provision an operator-owned tenant namespace
-where every `t-<tenant-uuid-without-hyphens>.<tenant-origin-suffix>` canonical
-hostname is a distinct registrable domain under the Public Suffix List behavior
-of supported browsers. This may use a project-controlled private suffix after
-browser recognition or another source of distinct registrable tenant domains.
-A separate shared registrable domain without that boundary protects the
-platform but does not isolate tenants from one another. Tenant IDs and their
-canonical origins are immutable and never reassigned. A backed-up root-owned
-platform record pins the tenant-origin suffix before the first tenant exists,
-and every canonical manifest records the complete derived origin; configuration
-drift or disagreement fails closed. Only friendly slug aliases are mutable and
+The design does not pursue or depend on Private Public Suffix admission.
+Tenants are isolated from `.net` platform cookies, but `.com` siblings share a
+parent cookie scope and remain same-site. Caddy strips `Cookie` before static
+tenant handling and strips `Set-Cookie` from every Milestone 3 `.com` response.
+Browser JavaScript can still create a parent `.com` cookie, so cross-tenant
+cookie-name confusion and per-browser cookie-capacity exhaustion remain
+documented residual risks. Static responses ignore that state; applications
+requiring server-side authentication need a later architecture decision.
+
+Tenant IDs and canonical origins are immutable and never reassigned. A
+backed-up root-owned platform record pins `lowerduckpond.com` as both the alias
+and tenant-origin suffix before the first tenant exists, and every canonical
+manifest records the complete derived origin; configuration drift or
+disagreement fails closed. Only friendly slug aliases are mutable and
 recyclable.
 
-`lowerduckpond.com` is configured as an ordinary independent tenant hostname and receives its own automatically managed certificate. Custom tenant domains can be considered later; they are not required for the initial service.
+Custom tenant domains can be considered later; they are not required for the
+initial service. The `.com` apex remains a stateless platform route and never
+serves tenant bytes, including after the municipal redirect is enabled.
 
 ## 7. Tenant lifecycle
 
@@ -285,13 +331,17 @@ Exact inactivity and retention intervals should be configuration, not code const
 
 Primary backups should be application-aware rather than relying only on Droplet snapshots:
 
-- Restic encrypts tenant files, manifests, control-plane data, and SQL dumps into Spaces.
+- Restic encrypts tenant files, manifests, control-plane data, and SQL dumps
+  into the backup Space.
 - Database dumps run before the corresponding Restic snapshot.
-- Restic forget/prune expires backup generations according to policy; Spaces
-  lifecycle rules remove incomplete uploads and stale object versions without
-  deleting current repository objects or tenant archive bundles still bound by
-  authoritative tenant state by age.
-- The tenant-archive prefix has a hard aggregate remote-object allowance.
+- Restic forget/prune expires backup generations according to policy. The
+  backup Space's lifecycle rules remove incomplete uploads and stale object
+  versions without deleting current repository objects, and have no authority
+  over the tenant-archive Space.
+- The separate versioned tenant-archive Space has no age-based current or
+  noncurrent expiration. Its managed prefix has a hard aggregate remote-object
+  allowance and is accessed with a credential that cannot reach the Restic
+  Space.
   Restore and deletion journal every bundle they unbind, permanently purge all
   of its versions and markers after the authoritative transition commits, and
   block new archives while cleanup is ambiguous or incomplete.
@@ -328,7 +378,7 @@ Retention must balance abuse response with the privacy expectations of a small r
 ### Stage 1: one host
 
 - Caddy, control plane, provisioner, static content, PHP containers, and SQL run on one Droplet.
-- Spaces stores backups and archives.
+- Separate Spaces buckets and credentials store backups and tenant archives.
 - Vertical resize is the first capacity response.
 
 ### Stage 2: separate durable services
@@ -378,12 +428,22 @@ Use repository secret scanning and pre-commit checks from the beginning. Product
 
 ## 12. Repository boundary
 
-Use at least two repositories:
+Use at least two repositories once a platform-owned reference tenant exists:
 
-1. **Hosting platform repository:** infrastructure, host configuration, control plane, provisioner, tests, documentation, and operational tooling.
-2. **`lowerduckpond.com` repository:** the fictional city website's content and assets, deployed through the same tenant-facing mechanism offered to residents.
+1. **Hosting platform repository:** infrastructure, host configuration, control
+   plane, provisioner, the public `lowerduckpond.net` website, tests,
+   documentation, and operational tooling.
+2. **Reference tenant repository:** fictional city or other demonstration
+   content, deployed at an ordinary `.com` slug and immutable origin through
+   exactly the same tenant-facing mechanism offered to residents.
 
-Keeping the first customer separate prevents the platform from receiving undocumented special cases and creates a genuine end-to-end example for other residents.
+Keeping reference content separate prevents the platform from receiving
+undocumented special cases and creates a genuine end-to-end example. The
+repository name, slug, and content are deferred until the community-pilot
+milestone. The exact `lowerduckpond.com` apex is not an ordinary tenant; its
+documented root-owned route only redirects to the designated tenant's immutable
+canonical origin while that tenant is active. Its ordinary friendly slug
+remains independently reusable.
 
 ## 13. Principal risks and mitigations
 
@@ -396,6 +456,8 @@ Keeping the first customer separate prevents the platform from receiving undocum
 | Automated pruning destroys wanted content | Multi-stage suspension/archive/delete flow, repeated notices, configurable intervals, export, portable import, and authoritative restore support |
 | Infrastructure cannot be reproduced | OpenTofu, Ansible, pinned dependencies, tested restores, minimal manual console configuration |
 | Public source exposes production secrets | Secret scanning, ignored state, scoped tokens, encrypted secret delivery, sanitized operational examples |
+| Tenant content affects platform browser state | Keep every trusted service on `lowerduckpond.net`, every untrusted tenant origin on `lowerduckpond.com`, and use host-only `__Host-` platform cookies with exact-Origin and CSRF checks |
+| One static tenant injects parent `.com` cookies into another tenant's browser state | Ignore incoming cookies and strip outgoing `Set-Cookie` on static `.com` routes, preserve unique immutable origins, document the residual client-side cookie limitation, and require a new decision before authenticated or dynamic `.com` applications |
 | A single Droplet fails | Encrypted off-host backups, application-aware dumps, host rebuild automation and restore drills |
 
 ## 14. Reference documentation
@@ -404,7 +466,7 @@ Keeping the first customer separate prevents the platform from receiving undocum
 - [DigitalOcean provider resources](https://docs.digitalocean.com/reference/terraform/reference/resources/)
 - [Caddy automatic HTTPS](https://caddyserver.com/docs/automatic-https)
 - [Caddy wildcard certificate pattern](https://caddyserver.com/docs/caddyfile/patterns#wildcard-certificates)
-- [Public Suffix List](https://publicsuffix.org/)
+- [RFC 10025: Cookies: HTTP State Management Mechanism](https://auth48-transition.rfc-editor.org/authors/rfc10025.html)
 - [Podman Quadlet](https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html)
 - [Podman Quadlet basic usage](https://docs.podman.io/en/latest/markdown/podman-quadlet-basic-usage.7.html)
 - [OpenTofu state locking](https://opentofu.org/docs/language/state/locking/)

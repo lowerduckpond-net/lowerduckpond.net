@@ -13,7 +13,8 @@ The GitHub workflow serializes every operation with the
 - Development Droplet size: `s-1vcpu-2gb`
 - Initial tenant Droplet target: `s-2vcpu-4gb-amd`
 - Host image: `ubuntu-26-04-x64`
-- DNS zone: `lowerduckpond.net`
+- Trusted platform DNS zone: `lowerduckpond.net`
+- Untrusted tenant DNS zone: `lowerduckpond.com` (added in Milestone 3)
 
 The Droplet sets `resize_disk = false`. Starting with the smaller root disk and
 resizing only CPU and memory keeps the development size available as a later
@@ -57,10 +58,13 @@ The workflow needs three distinct DigitalOcean credential roles:
    The bootstrap root creates this pair.
 
 `CLOUDFLARE_API_TOKEN` should be an account-owned token with Zone DNS Edit for
-only the `lowerduckpond.net` zone. The zone ID is supplied separately, so the
-token does not need Zone Read. The production stack creates a separate Spaces
-key limited to read/write operations on the backup bucket; later Ansible work
-will deliver that key to the host.
+only the `lowerduckpond.net` and `lowerduckpond.com` zones. Their zone IDs are
+supplied separately, so the token does not need Zone Read. The `.com` scope and
+zone ID become required when the Milestone 3 tenant-namespace infrastructure
+lands; until then the existing `.net`-only token remains valid for the current
+stack. The production stack creates a separate Spaces key limited to read/write
+operations on the backup bucket; later Ansible work will deliver that key to
+the host.
 
 This OpenTofu token is distinct from the Caddy runtime token documented in
 [`host-configuration.md`](host-configuration.md). Caddy needs both Zone Read
@@ -133,7 +137,9 @@ a personal network address under the game domain solely for firewall access.
 Configure these environment variables:
 
 - `BACKUP_BUCKET_NAME`, using a second globally unique name
-- `CLOUDFLARE_ZONE_ID`
+- `CLOUDFLARE_ZONE_ID`, the trusted `lowerduckpond.net` zone
+- `CLOUDFLARE_TENANT_ZONE_ID`, the untrusted `lowerduckpond.com` zone, required
+  when the Milestone 3 tenant namespace lands
 - `DIGITALOCEAN_PROJECT_ID`
 - `OPENTOFU_STATE_BUCKET`
 - `SPACES_REGION`, set to `nyc3`

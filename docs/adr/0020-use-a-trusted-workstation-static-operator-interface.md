@@ -2,6 +2,7 @@
 
 - Status: accepted
 - Date: 2026-08-22
+- SSH identity selected by: [ADR 0026](0026-separate-static-operation-from-host-administration.md)
 
 ## Context
 
@@ -16,15 +17,19 @@ Provide a trusted-workstation CLI, exposed through documented `just` recipes,
 for `create`, `deploy`, `rollback`, `suspend`, `resume`, `rename`, `export`,
 `import`, `archive`, `restore`, `delete`, and `reconcile`.
 
-The client connects through the existing restricted administrative SSH path and
-transfers structured operation requests, manifests, and archives into a
-dedicated non-public intake boundary. It never edits live host files. Host-side
-commands accept structured inputs, return machine-readable results, and require
-a caller-supplied UUIDv7 correlation ID. The restricted SSH adapter derives the
-operator principal from the authenticated SSH boundary, never from a request
-field. Before any parser, authorization, or correlation lookup, it applies ADR
-0017's raw byte ceiling, bounded read, deadline, and constrained-decoder
-contract to every invocation, including retries. The client cannot use
+The client connects as `ldp-operator` through the dedicated-key,
+forced-command SSH path from ADR 0026 and transfers one structured operation
+request and, only for `deploy` or `import`, one operation-specific ZIP artifact
+into a dedicated non-public intake boundary. Routine operations never use the
+`ldp-admin` account or its key. The versioned protocol has no standalone
+manifest frame and rejects an artifact for every other operation. It never
+edits live host files.
+Host-side commands accept structured inputs, return machine-readable results,
+and require a caller-supplied UUIDv7 correlation ID. The restricted SSH adapter
+derives the operator principal from the authenticated SSH boundary, never from
+a request field. Before any parser, authorization, or correlation lookup, it
+applies ADR 0017's raw byte ceiling, bounded read, deadline, and constrained
+decoder contract to every invocation, including retries. The client cannot use
 transport framing, discardable syntax, or an established ID to bypass those
 limits.
 
@@ -111,6 +116,12 @@ manifest and UUID-derived tenant origin from the pinned platform namespace.
 Later operations identify the tenant by that ID; a slug is a mutable alias and
 is never accepted as proof of tenant identity or authority.
 
+The supported client may translate a bounded local safe-YAML `create`
+specification into that request after rejecting duplicate keys and unknown
+fields. It sends only the structured request. YAML is not a host input, and a
+full desired manifest is never accepted as operation authority. Root constructs
+each new manifest from the validated operation and current authoritative state.
+
 `import` identifies an already-created `undeployed` target by tenant ID and
 uploads a caller-held portable export. It is authenticated like `deploy`, but the
 host derives the target slug, quotas, identity, canonical origin, and candidate
@@ -157,6 +168,10 @@ idempotence or audit requirements. Allowing the provisioner to construct raw
 activator requests was rejected because syntax and archive evidence do not
 authorize an operation; a compromised worker could otherwise archive and then
 delete a tenant through two individually valid transitions.
+Adding a standalone manifest frame was rejected because no lifecycle operation
+accepts wholesale desired-state replacement. Operation-specific requests avoid
+conflicting copies of caller-controlled fields and keep root-generated identity,
+origin, deployment, and lifecycle values out of caller authority.
 
 ## References
 
@@ -164,3 +179,4 @@ delete a tenant through two individually valid transitions.
 - [0006: Separate the control plane and provisioner](0006-separate-control-plane-provisioner.md)
 - [0017: Atomically activate immutable static releases](0017-atomically-activate-static-releases.md)
 - [0023: Separate reusable slugs from immutable tenant origins](0023-separate-reusable-slugs-from-tenant-origins.md)
+- [0026: Separate static operation from host administration](0026-separate-static-operation-from-host-administration.md)

@@ -15,7 +15,9 @@ paste them into chat:
   before the run.
 - `ADMIN_SOURCE_CIDRS_JSON`: the same JSON CIDR list used by OpenTofu.
 - `CADDY_CLOUDFLARE_API_TOKEN`: the dedicated, non-expiring account-owned
-  token restricted to `lowerduckpond.net` with only Zone Read and DNS Edit.
+  token restricted to `lowerduckpond.net` and `lowerduckpond.com` with only
+  Zone Read and DNS Edit. The current `.net`-only token must be replaced before
+  Milestone 3 configures the tenant zone.
 - `RESTIC_PASSWORD`: a new high-entropy value of at least 32 characters,
   backed up separately from DigitalOcean. Restic cannot recover repository
   data without it.

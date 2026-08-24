@@ -15,8 +15,8 @@ would discover security and destructive-lifecycle failures too late.
 Deliver Milestone 3 through these reviewable layers:
 
 1. threat model, ADRs, schema, fixtures, and test matrix;
-2. authenticated job issuance, manifest parsing, validation, slug and
-   immutable-origin rules, and desired/observed state;
+2. authenticated job issuance, root-domain manifest generation and validation,
+   slug and immutable-origin rules, and desired/observed state;
 3. hostile archive validation and deterministic portable export/import;
 4. root-owned immutable release activation and generated Caddy routing;
 5. lifecycle commands, reconciliation, rollback, and audit records;
@@ -31,10 +31,31 @@ step. Use Molecule and Testinfra to exercise actual Unix identities,
 permissions, immutable releases, the privileged helper, Caddy validation and
 reload, backup overlap, restore, and reboot-relevant service configuration.
 
-Manifest fixtures include duplicate YAML keys for lifecycle, deployment, and
-quota fields and prove rejection occurs before schema validation and canonical
-JSON generation. Slug fixtures cover 1- and 63-byte valid labels, reject empty
-and 64-byte labels, and verify the complete alias-hostname limit. They also
+The contract layer includes a minimal root-domain package so its canonical
+manifest vectors come from the real producer rather than a test substitute.
+Its UUIDv7 generator receives injected clock and entropy sources, and its pure
+constructor accepts no caller-selected identity or origin. Tests prove the
+package performs no persistence, lifecycle transition, or authorization. Later
+host-agent and installed-host layers prove only the privileged boundary can use
+its output to write authoritative state.
+
+While static publication is disabled, real-SSH installed-host tests prove the
+forced-command restrictions and rejection of every external tenant request
+before artifact acceptance or job allocation. Unit and process suites exercise
+successful immutable issuance, handoff, recovery, and result delivery against
+mutation-free test state; no production-visible override bypasses the gate.
+Repeat the successful installed-host job-lifecycle cases only after the
+disposable host has publication enabled and the lifecycle handlers exist.
+
+Client create-spec fixtures include duplicate YAML slug or quota keys and prove
+local rejection occurs before request construction. The corresponding host
+suite bypasses the supported client, submits duplicate structured-request
+member names, and proves rejection occurs before schema validation, correlation
+lookup, or canonicalization. It also proves no operation accepts a standalone
+manifest frame and that root-generated, restored, and bundle-embedded manifest
+bytes pass strict JSON validation and the canonical 16-KiB limit. Slug fixtures
+cover 1- and 63-byte valid labels, reject empty and 64-byte labels, and verify
+the complete alias-hostname limit. They also
 append LF, CR, CRLF, NUL, spaces, non-ASCII, and other control characters and
 prove both schema validation and the independent root ASCII `fullmatch` reject
 them before uniqueness or persistence. Tenant-ID fixtures prove `create`
@@ -42,11 +63,14 @@ rejects a caller-supplied ID, generates a UUIDv7, derives the canonical
 hostname without hyphens, and enforces its complete DNS length independently
 of the alias.
 
-An installed-host concurrency test pauses tenant activation while Ansible has
-host-only Caddy inputs staged but has not acquired publication. It commits
-deploy, suspension, rename, restoration, and deletion independently in that
-window, then proves the host transaction rereads authoritative state and builds
-and validates its final route-bearing generation only after it holds the lock.
+As lifecycle handlers arrive and publication is enabled only on the disposable
+host, an installed-host concurrency test pauses tenant activation while Ansible
+has host-only Caddy inputs staged but has not acquired publication. The core
+lifecycle phase commits deploy, rollback, suspension, resume, rename, and
+reconciliation independently in that window. The archive phase extends the
+same fixture with restoration and deletion. Every case proves the host
+transaction rereads authoritative state and builds and validates its final
+route-bearing generation only after it holds the lock.
 Only one transaction can select a complete runtime generation and own a reload
 or restart intent at a time. At every durability phase the test kills Caddy to
 trigger automatic restart and proves the recovery gate and launcher select one
@@ -54,6 +78,12 @@ manifest-verified generation, never stale tenant routes or a mixed binary,
 environment, base configuration, or route set. The resulting Caddy
 configuration and observed tenant state must describe the same committed
 generation.
+
+Before that lifecycle-integrated test is available, the platform-only layer
+tests generation construction, selection, restart and recovery, descriptor
+pinning, retention, failure injection, bootstrap interruption, and Ansible
+overlap using host-only inputs. It keeps publication disabled and proves every
+tenant-bearing generation fails closed rather than claiming lifecycle coverage.
 
 Restart-handoff tests pause after intent creation, active-reference selection,
 non-blocking job submission, pre-start transition, launcher pinning,
@@ -125,14 +155,14 @@ the rolling rate window and cannot reset or refund consumed admission.
 Free-space fixtures exercise both the absolute and percentage block/inode floors
 and prove root-reserved blocks are excluded from admission capacity.
 
-Raw-input tests stream requests at 32 KiB and 32 KiB plus one, manifests at
-64 KiB and 64 KiB plus one, delayed or missing EOF, invalid UTF-8, enormous
-discardable whitespace, deep nesting, and oversized scalar syntax. They prove
-the byte gate and deadline run before parser entry and correlation lookup, the
-decoder process limits terminate adversarial inputs, canonical values still
-obey 16 KiB, and an established-correlation retry cannot bypass any raw or
-canonical limit. Rejection logs and results contain no submitted bytes and stay
-within their fixed bounds.
+Raw-input tests stream requests at 32 KiB and 32 KiB plus one, an invented
+manifest frame, delayed or missing EOF, invalid UTF-8, enormous discardable
+whitespace, deep nesting, and oversized scalar syntax. They prove the byte gate
+and deadline run before parser entry and correlation lookup, the decoder process
+limits terminate adversarial inputs, canonical requests and results still obey
+16 KiB, and an established-correlation retry cannot bypass any raw or canonical
+limit. Rejection logs and results contain no submitted bytes and stay within
+their fixed bounds.
 
 Authorization tests exercise every operator command through the authenticated
 SSH issuer and then invoke the provisioner's only sudo entry point directly.
@@ -281,6 +311,21 @@ the deleted canonical hostname is not routed or reassigned. Suspension and
 archive remove both route classes, while resume and restore republish both for
 the same tenant ID.
 
+Dual-domain browser tests serve hostile JavaScript from tenant A below
+`lowerduckpond.com` and a controlled fixture below `lowerduckpond.net`. They
+prove `.com` cannot create, replace, read, or receive the fixture's host-only
+`.net` cookie and that requests between the domains are cross-site. They also
+record the accepted limitation by proving A can create a
+`Domain=lowerduckpond.com` cookie visible at tenant B. Installed-host tests then
+prove Caddy removes `Cookie` before every static tenant handler, removes
+`Set-Cookie` from every tenant, alias, unknown-host, and `.com` apex response,
+sets `Cache-Control: no-store` on every `.com` apex redirect and fallback,
+never varies a route or body by those cookies, and never logs their values.
+Browser tests prove a correctly formed, case-sensitive `__Host-` cookie remains
+bound to its exact tenant host even when a sibling uses the same unprefixed or
+ordinary cookie names. Oversized or quota-exhausting cookie behavior is
+recorded as a per-browser residual risk, not misreported as isolation.
+
 Import identity tests export active, suspended, and archived tenant A fixtures,
 create an undeployed tenant B through the ordinary serialized slug-allocation
 path, and import each portable bundle into a fresh target. They prove every content path
@@ -325,6 +370,7 @@ tenant-controlled state at a slug alias and that alias reassignment exposes no
 state from the preceding canonical origin. Logging tests send sensitive path,
 query, cookie, authorization, and referrer values to aliases and prove none
 persist in access logs or diagnostics.
+
 Export concurrency tests overlap snapshot capture with deploy, rollback,
 rename, suspension, and garbage collection. Every resulting bundle must contain
 a canonical manifest and immutable release from the same generation, and the
@@ -418,11 +464,16 @@ publish either route for a suspended source; only a later explicit `resume` may
 do so.
 
 After CI and disposable-host acceptance pass, publish a reserved production
-canary in the approved origin-isolated tenant namespace. Verify browser
-registrable-domain behavior, the platform-only alias redirect, canonical HTTPS,
-rollback, suspension, restore, backup recovery, and idempotence, and remove all
-canary state through the same operator interface. Dynamic or destructive
-isolation tests remain off the production host.
+source canary in the approved untrusted `.com` tenant namespace, then import
+its export into a separately created undeployed target. Verify the `.com` to
+`.net` browser boundary, the documented sibling-cookie behavior and Caddy
+stripping, the platform-only alias redirect, canonical HTTPS, rollback,
+suspension, backup recovery, reboot, and idempotence for the resulting two
+tenants. Archive, restore, rearchive, and ordinarily delete the source;
+separately archive and ordinarily delete the imported target. Prove both route
+classes are absent for both tenants and every bound archive object is retired
+while audit evidence remains. Dynamic or destructive isolation tests remain
+off the production host.
 
 ## Consequences
 
@@ -448,4 +499,5 @@ rejected because a disposable environment can exercise them safely.
 - [0016: Model static publication as an untrusted boundary](0016-model-static-publication-threats.md)
 - [0017: Atomically activate immutable static releases](0017-atomically-activate-static-releases.md)
 - [0023: Separate reusable slugs from immutable tenant origins](0023-separate-reusable-slugs-from-tenant-origins.md)
+- [0024: Separate trusted platform and untrusted tenant domains](0024-separate-platform-and-tenant-domains.md)
 - [Static-publication threat model](../threat-model/static-publication.md)

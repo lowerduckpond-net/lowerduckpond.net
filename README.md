@@ -42,8 +42,10 @@ reporting failure; rerun the command after reviewing those changes.
   describes protected host convergence, backup recovery checks, and runtime
   credential boundaries.
 
-The fictional city site at `lowerduckpond.com` will live in a separate
-repository and use the same tenant interface as every other site.
+Trusted platform services use `lowerduckpond.net`; untrusted tenant aliases and
+immutable content origins use `lowerduckpond.com`. A future platform-owned
+reference site will live in a separate repository and use the same ordinary
+tenant interface as resident sites.
 
 ## Contributing and security
 

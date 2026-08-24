@@ -29,9 +29,9 @@ Give every tenant two distinct public identifiers:
   from this hostname. The root-owned platform namespace record pins the
   tenant-origin suffix, and the canonical manifest stores the complete derived
   origin. They must match on every mutation and reconciliation. The pinned
-  suffix must make every such hostname a distinct registrable domain according
-  to supported browsers.
-- The **slug alias** is `<slug>.lowerduckpond.net`. It is a reusable,
+  suffix must be the untrusted tenant domain selected by ADR 0024 and must
+  remain separate from the trusted platform domain.
+- The **slug alias** is `<slug>.lowerduckpond.com`. It is a reusable,
   platform-controlled navigation handle, not a tenant origin. No uploaded
   bytes, tenant headers, tenant redirect target, or tenant JavaScript are ever
   served from it.
@@ -57,11 +57,12 @@ inactive and prevents a negative response from surviving later deployment,
 resume, restore, rename, or slug reassignment.
 
 The alias service does not register service workers or hold authentication
-state. Platform authentication cookies remain host-only and sensitive ones use
-the `__Host-` prefix, so they are not sent to sibling slug aliases. Alias access
-logs retain only a sanitized hostname, method class, status, and timing; they
-discard raw paths, queries, `Cookie`, `Authorization`, and `Referer` before
-persistence.
+state. Platform authentication remains on the separately registered
+`lowerduckpond.net` domain, so its cookies cannot be sent to `.com` aliases.
+Every `.com` alias response removes `Set-Cookie`, and Caddy removes incoming
+`Cookie` before handling it. Alias access logs retain only a sanitized
+hostname, method class, status, and timing; they discard raw paths, queries,
+`Cookie`, `Authorization`, and `Referer` before persistence.
 
 The redirect generator accepts only the root-owned slug-to-tenant mapping and
 uses the manifest origin after independently rederiving it from the stored
@@ -113,18 +114,24 @@ origins, so consuming one does not deny another tenant a desirable name.
 
 Visitors see the canonical hostname after following a friendly alias. Deep
 links use the canonical hostname because the alias intentionally redirects
-only its bare root. Search, bookmarks, and browser storage attach to the stable
-tenant identity rather than its mutable display name.
+only its bare root. Search, bookmarks, and origin-scoped browser storage attach
+to the stable tenant identity rather than its mutable display name.
 
 The Caddy route model and tests become slightly broader because every active
 tenant has a canonical content route and a platform alias route. In return,
 rename no longer changes the content origin, and slug reuse no longer requires
-an origin tombstone registry, browser cleanup ceremony, or subjective operator
-exception.
+an origin tombstone registry, origin-state cleanup ceremony, or subjective
+operator exception.
 
 The UUID-based hostname is an identifier rather than a secret. Knowing it does
 not grant access or authority. Custom domains remain a later feature with a
 separate ownership-transfer and browser-state policy.
+
+Canonical UUID hosts are separate browser origins, so a released slug cannot
+transfer DOM storage or service-worker control to its next tenant. They remain
+sibling sites within `lowerduckpond.com`, however, and do not receive complete
+cookie-jar integrity from this decision. ADR 0024 confines that limitation to
+the untrusted static namespace and keeps platform authentication on `.net`.
 
 ## Alternatives considered
 
@@ -149,6 +156,7 @@ policy surface.
 - [0017: Atomically activate immutable static releases](0017-atomically-activate-static-releases.md)
 - [0018: Version the static tenant manifest contract](0018-version-static-tenant-manifests.md)
 - [0021: Define static tenant lifecycle semantics](0021-define-static-tenant-lifecycle-semantics.md)
+- [0024: Separate trusted platform and untrusted tenant domains](0024-separate-platform-and-tenant-domains.md)
 - [Service Workers](https://w3c.github.io/ServiceWorker/)
 - [Clear Site Data](https://w3c.github.io/webappsec-clear-site-data/)
 - [Storage Standard](https://storage.spec.whatwg.org/)
