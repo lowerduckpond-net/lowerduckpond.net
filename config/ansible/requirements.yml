@@ -1,5 +1,9 @@
 ---
 collections:
+  - name: https://github.com/ansible-collections/ansible.posix.git
+    type: git
+    # Immutable commit behind the ansible.posix 2.2.2 release tag.
+    version: e98d9a0756458be1ac710988498000973889075c
   - name: https://github.com/ansible-collections/community.docker.git
     type: git
     # Immutable commit behind the community.docker 5.2.2 release tag.
