@@ -17,6 +17,8 @@ credentials and administrative CIDRs must not be committed.
 M3.0 adds a separate `m3-qualification.yml` playbook and
 `m3_qualification` role. They are for the explicitly authorized disposable
 Ubuntu host only; they replace that host's fixture Caddy service with the
-descriptor-pinned dual-domain prototype and must never target production. Use
-the exact trusted-workstation sequence in
+descriptor-pinned dual-domain prototype and must never target production. The
+runner supplies its state-bound identity to a committed qualification
+inventory, whose local preflight rejects a missing or additional target before
+the remote play begins. Use the exact trusted-workstation sequence in
 [`docs/operations/m3-qualification.md`](../../docs/operations/m3-qualification.md).

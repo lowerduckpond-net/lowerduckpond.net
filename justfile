@@ -62,7 +62,7 @@ check-ansible: _sync
     ANSIBLE_CONFIG=config/ansible/ansible.cfg uv run ansible-lint config/ansible
     ANSIBLE_CONFIG=config/ansible/ansible.cfg uv run ansible-playbook --inventory config/ansible/inventories/development/hosts.yml --syntax-check config/ansible/playbooks/site.yml
     ANSIBLE_CONFIG=config/ansible/ansible.cfg uv run ansible-playbook --inventory config/ansible/inventories/development/hosts.yml --syntax-check config/ansible/playbooks/acceptance.yml
-    M3_QUALIFICATION_CLOUDFLARE_API_TOKEN=syntax-only-placeholder-token ANSIBLE_CONFIG=config/ansible/ansible.cfg uv run ansible-playbook --inventory config/ansible/inventories/development/hosts.yml --syntax-check config/ansible/playbooks/m3-qualification.yml
+    M3_QUALIFICATION_EXPECTED_IPV4=192.0.2.1 M3_QUALIFICATION_EXPECTED_DROPLET_ID=123456789 M3_QUALIFICATION_EXPECTED_RUN_ID=0198d17f-6f4a-7000-8000-000000000001 M3_QUALIFICATION_EXPECTED_SOURCE_REVISION=0000000000000000000000000000000000000000 M3_QUALIFICATION_CLOUDFLARE_API_TOKEN=syntax-only-placeholder-token ANSIBLE_CONFIG=config/ansible/ansible.cfg uv run ansible-playbook --inventory config/ansible/inventories/qualification/hosts.yml --syntax-check config/ansible/playbooks/m3-qualification.yml
     cd config/ansible && ANSIBLE_CONFIG="$(pwd)/ansible.cfg" uv run molecule test --scenario-name default
 
 # Converge production twice and run host acceptance and restore checks.

@@ -45,6 +45,11 @@ The temporary dual-zone Cloudflare token is used by OpenTofu to create and
 remove four A records, by the domain preflight to inspect both zones, and by
 Caddy to complete DNS-01 issuance on the disposable host. Revoke it after the
 host and records are destroyed. It is distinct from the production Caddy token.
+User-owned and account-owned API tokens are both supported. Cloudflare's
+`/user/tokens/verify` endpoint rejects an otherwise valid `cfat_` account token;
+verify that token through `/accounts/<account-id>/tokens/verify` instead. Before
+the first plan, use the token to list at most one DNS record by each zone ID and
+require HTTP 200 from both calls without printing the response bodies.
 The fixture obtains and verifies both the apex and wildcard certificate path
 for each domain through direct-address TLS connections; this does not repoint
 either apex DNS record to the disposable host.
@@ -90,19 +95,29 @@ production resource action.
 
 Read the address with `tofu output -raw ipv4_address`. Before Ansible first
 connects, verify the new host key through an independent DigitalOcean console
-path and record it in the trusted workstation's `known_hosts` by making one
-ordinary SSH connection. The qualification commands do not accept an address;
-they bind a clean Git revision to the OpenTofu output and independently require
-the connected host's DigitalOcean metadata ID to match before Ansible gathers
-facts or changes the host. `begin` also creates a UUIDv7 run ID and removes all
-prior fragments. Every fragment records that run ID and source revision, and
-assembly rejects fragments from another run or revision. Qualification actions
-are serialized on the workstation. Configuration invalidates any prior host
-attestation before mutation and records the run and revision only after every
-role and handler succeeds; host-dependent probes and assembly require that
-exact root-owned attestation. Each run creates a UUID-keyed, write-once Caddy
-generation, removes its directory write permission before selection, and
-refuses to replace different content at that generation path.
+path. The network-based Droplet Console is expected to be blocked by the exact
+administrative SSH allowlist. If the out-of-band Recovery Console requires a
+password, reset the disposable host's root password, read the fingerprint with
+`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`, then run `passwd -l root`
+and require `passwd -S root` to report `L` before leaving the console. Record
+the matching key in the trusted workstation's `known_hosts` by making one
+ordinary `ldp-admin` SSH connection.
+
+The qualification commands do not accept an address; they bind a clean Git
+revision to the OpenTofu output and independently require the connected host's
+DigitalOcean metadata ID to match before Ansible gathers facts or changes the
+host. The runner passes that identity only to a committed qualification
+inventory, and a localhost preflight fails unless Ansible resolves exactly the
+expected `m3_qualification` target. `begin` also creates a UUIDv7 run ID and
+removes all prior fragments. Every fragment records that run ID and source
+revision, and assembly rejects fragments from another run or revision.
+Qualification actions are serialized on the workstation. Configuration
+invalidates any prior host attestation before mutation and records the run and
+revision only after every role and handler succeeds; host-dependent probes and
+assembly require that exact root-owned attestation. Each run creates a
+UUID-keyed, write-once Caddy generation, removes its directory write permission
+before selection, and refuses to replace different content at that generation
+path.
 
 ## Configure and run the gate
 

@@ -5,6 +5,7 @@ readonly repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 readonly evidence_root=${M3_QUALIFICATION_EVIDENCE_DIR:-"${repository_root}/.artifacts/m3-qualification"}
 readonly qualification_package=/opt/lowerduckpond/m3-qualification
 readonly qualification_root="${repository_root}/infra/opentofu/environments/qualification"
+readonly qualification_inventory="${repository_root}/config/ansible/inventories/qualification/hosts.yml"
 readonly remote_convergence_marker=/var/lib/lowerduckpond-m3/converged-session
 readonly remote_report=/run/lowerduckpond-m3-qualification/host-report.json
 readonly session_path="${evidence_root}/session.json"
@@ -99,27 +100,14 @@ case "$action" in
         droplet_id=$(session_value droplet_id)
         run_id=$(session_value run_id)
         source_revision=$(session_value source_revision)
-        inventory=$(mktemp)
-        cleanup() {
-            find "$inventory" -delete
-        }
-        trap cleanup EXIT
-        chmod 0600 "$inventory"
-        printf '%s\n' \
-            '---' \
-            'all:' \
-            '  children:' \
-            '    qualification_nodes:' \
-            '      hosts:' \
-            '        m3_qualification:' \
-            "          ansible_host: \"$host\"" \
-            "          m3_expected_ipv4: \"$host\"" \
-            "          m3_expected_droplet_id: \"$droplet_id\"" \
-            "          m3_expected_run_id: \"$run_id\"" \
-            "          m3_expected_source_revision: \"$source_revision\"" \
-            '          ansible_user: ldp-admin' > "$inventory"
-        ANSIBLE_CONFIG="$repository_root/config/ansible/ansible.cfg" uv run ansible-playbook \
-            --inventory "$inventory" "$repository_root/config/ansible/playbooks/m3-qualification.yml"
+        M3_QUALIFICATION_EXPECTED_IPV4="$host" \
+            M3_QUALIFICATION_EXPECTED_DROPLET_ID="$droplet_id" \
+            M3_QUALIFICATION_EXPECTED_RUN_ID="$run_id" \
+            M3_QUALIFICATION_EXPECTED_SOURCE_REVISION="$source_revision" \
+            ANSIBLE_CONFIG="$repository_root/config/ansible/ansible.cfg" \
+            uv run ansible-playbook \
+                --inventory "$qualification_inventory" \
+                "$repository_root/config/ansible/playbooks/m3-qualification.yml"
         ;;
     host)
         [[ $# -eq 0 ]] || usage
