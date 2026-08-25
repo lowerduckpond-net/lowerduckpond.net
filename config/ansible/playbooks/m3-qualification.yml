@@ -1,4 +1,41 @@
 ---
+- name: Require the exact Milestone 3 qualification inventory
+  hosts: localhost
+  connection: local
+  become: false
+  gather_facts: false
+  tasks:
+    - name: Require exactly one state-bound qualification target
+      ansible.builtin.assert:
+        that:
+          - groups['qualification_nodes'] | default([]) == ['m3_qualification']
+          - >-
+            hostvars['m3_qualification'].ansible_host ==
+            lookup('ansible.builtin.env', 'M3_QUALIFICATION_EXPECTED_IPV4')
+          - >-
+            hostvars['m3_qualification'].m3_expected_ipv4 ==
+            lookup('ansible.builtin.env', 'M3_QUALIFICATION_EXPECTED_IPV4')
+          - >-
+            hostvars['m3_qualification'].m3_expected_droplet_id ==
+            lookup('ansible.builtin.env', 'M3_QUALIFICATION_EXPECTED_DROPLET_ID')
+          - >-
+            hostvars['m3_qualification'].m3_expected_run_id ==
+            lookup('ansible.builtin.env', 'M3_QUALIFICATION_EXPECTED_RUN_ID')
+          - >-
+            hostvars['m3_qualification'].m3_expected_source_revision ==
+            lookup('ansible.builtin.env', 'M3_QUALIFICATION_EXPECTED_SOURCE_REVISION')
+        fail_msg: >-
+          Refusing to configure without the exact state-bound M3.0 qualification target.
+        quiet: true
+      tags:
+        - m3_qualification_inventory_preflight
+
+    - name: Attest the exact qualification inventory
+      ansible.builtin.set_fact:
+        m3_qualification_inventory_preflight_passed: true
+      tags:
+        - m3_qualification_inventory_preflight
+
 - name: Configure the disposable Milestone 3 qualification host
   hosts: qualification_nodes
   become: true
@@ -12,6 +49,19 @@
     caddy_cloudflare_api_token: >-
       {{ lookup('ansible.builtin.env', 'M3_QUALIFICATION_CLOUDFLARE_API_TOKEN') }}
   pre_tasks:
+    - name: Require successful controller inventory preflight
+      ansible.builtin.assert:
+        that:
+          - >-
+            hostvars['localhost'].m3_qualification_inventory_preflight_passed |
+            default(false) | bool
+        fail_msg: >-
+          Refusing remote access without a successful M3.0 inventory preflight.
+        quiet: true
+      tags:
+        - always
+        - m3_qualification_remote_preflight_gate
+
     - name: Read the connected Droplet identity from DigitalOcean metadata
       ansible.builtin.uri:
         url: http://169.254.169.254/metadata/v1/id
