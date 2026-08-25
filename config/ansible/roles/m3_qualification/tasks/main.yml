@@ -1,10 +1,6 @@
 ---
-- name: Create the qualification system account
-  ansible.builtin.user:
-    name: ldp-qualification
-    system: true
-    create_home: false
-    shell: /usr/sbin/nologin
+- name: Install the qualification sudo boundary
+  ansible.builtin.import_tasks: sudo.yml
 
 - name: Create root-owned qualification directories
   ansible.builtin.file:
@@ -84,17 +80,7 @@
     - m3-caddy-generation
     - m3-caddy-hook
     - m3-qualification-tmpfs
-    - m3-qualification-uuid
   notify: Restart qualification Caddy
-
-- name: Install the exact qualification sudo rule
-  ansible.builtin.template:
-    src: sudoers.j2
-    dest: /etc/sudoers.d/lowerduckpond-m3-qualification
-    owner: root
-    group: root
-    mode: "0440"
-    validate: /usr/sbin/visudo --check --file=%s
 
 - name: Install the cookie-independent static fixture
   ansible.builtin.copy:

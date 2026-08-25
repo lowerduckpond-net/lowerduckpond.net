@@ -1,5 +1,5 @@
-#!/usr/bin/python3
-"""Defense-in-depth parser behind the exact sudo command rule."""
+#!/usr/bin/python3 -I
+"""Strict argument parser behind the fixed-executable sudo rule."""
 
 from __future__ import annotations
 

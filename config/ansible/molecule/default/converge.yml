@@ -4,3 +4,13 @@
 
 - name: Run the standalone host acceptance playbook
   ansible.builtin.import_playbook: ../../playbooks/acceptance.yml
+
+- name: Install the isolated Milestone 3 qualification sudo boundary
+  hosts: hosting_nodes
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Include the qualification sudo tasks
+      ansible.builtin.include_role:
+        name: m3_qualification
+        tasks_from: sudo.yml

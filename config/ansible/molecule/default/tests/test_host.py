@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import shlex
+
 from testinfra.host import Host
 
 BACKUP_ENVIRONMENT_MODE = 0o600
@@ -36,6 +38,20 @@ SYSTEMD_SYSTEM_UNIT_PATHS = (
 )
 SYSTEMD_USER_UNIT_PATH = (
     "/var/lib/lowerduckpond/runtime/.config/systemd/user/lowerduckpond-podman-ready.service"
+)
+QUALIFICATION_UUID_COMMAND = "/usr/local/libexec/lowerduckpond/m3-qualification-uuid"
+QUALIFICATION_UUID_COMMAND_MODE = 0o755
+QUALIFICATION_SUDOERS_MODE = 0o440
+VALID_UUIDV7 = "0198d17f-6f4a-7000-8000-000000000001"
+UUID_REJECTION_ARGUMENTS = (
+    (VALID_UUIDV7.upper(),),
+    ("0198d17f-6f4a-4000-8000-000000000001",),
+    (f"{VALID_UUIDV7};id",),
+    (f"{VALID_UUIDV7}/suffix",),
+    (VALID_UUIDV7, "additional"),
+    (VALID_UUIDV7.replace("-", "_"),),
+    (f"{VALID_UUIDV7}\nlookalike",),
+    (),
 )
 
 
@@ -88,6 +104,40 @@ def test_distribution_packages_are_within_supported_bounds(host: Host) -> None:
             f"/usr/local/libexec/lowerduckpond/assert-package-version {package} {minimum} {maximum}"
         )
         assert result.rc == 0
+
+
+def test_qualification_sudo_boundary_uses_the_root_owned_parser(host: Host) -> None:
+    account = host.user("ldp-qualification")
+    assert account.exists
+    assert account.shell == "/usr/sbin/nologin"
+
+    parser = host.file(QUALIFICATION_UUID_COMMAND)
+    assert parser.is_file
+    assert parser.user == "root"
+    assert parser.group == "root"
+    assert parser.mode == QUALIFICATION_UUID_COMMAND_MODE
+    assert parser.content_string.startswith("#!/usr/bin/python3 -I\n")
+
+    sudoers = host.file("/etc/sudoers.d/lowerduckpond-m3-qualification")
+    assert sudoers.is_file
+    assert sudoers.user == "root"
+    assert sudoers.group == "root"
+    assert sudoers.mode == QUALIFICATION_SUDOERS_MODE
+    assert sudoers.content_string == (
+        f"ldp-qualification ALL=(root) NOPASSWD: {QUALIFICATION_UUID_COMMAND}\n"
+    )
+
+    command = ("runuser", "--user", "ldp-qualification", "--", "sudo", "-n")
+
+    valid = host.run(shlex.join((*command, QUALIFICATION_UUID_COMMAND, VALID_UUIDV7)))
+    assert valid.rc == 0
+
+    for arguments in UUID_REJECTION_ARGUMENTS:
+        rejected = host.run(shlex.join((*command, QUALIFICATION_UUID_COMMAND, *arguments)))
+        assert rejected.rc != 0
+
+    other_command = host.run(shlex.join((*command, "/usr/bin/true")))
+    assert other_command.rc != 0
 
 
 def test_only_expected_ports_listen_publicly(host: Host) -> None:

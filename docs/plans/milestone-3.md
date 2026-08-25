@@ -182,12 +182,12 @@ at least:
 
 The job's synced parent-directory rename is the acceptance point. A templated
 systemd job service runs as `ldp-provisioner` with only that UUID instance. Its
-only privilege is the sudo-regex-matched
-`execute-authorized-job <canonical-uuidv7>` command. The root executor opens and
-verifies the job without following links, durably claims it, independently
-revalidates all bindings, and commits one immutable result. A lost handoff or
-SSH response is recovered by correlation and job reconciliation, never by
-reconstructing authority from an artifact.
+only privilege is the fixed sudo-selected `execute-authorized-job` executable;
+that isolated root-owned parser accepts exactly one canonical UUIDv7 argument.
+The root executor opens and verifies the job without following links, durably
+claims it, independently revalidates all bindings, and commits one immutable
+result. A lost handoff or SSH response is recovered by correlation and job
+reconciliation, never by reconstructing authority from an artifact.
 
 ## 5. Delivery sequence
 
@@ -222,8 +222,10 @@ Deliver:
 - prototype descriptor-pinned Caddy start and reload, its Unix admin socket,
   systemd pre/post hooks, invocation IDs, bounded restart attempts,
   `reset-failed`, and non-blocking recovery handoff;
-- prove the installed sudo version can match exactly one canonical UUIDv7
-  argument and rejects separators, additional arguments, and lookalikes;
+- prove the installed sudo version selects only one fixed root-owned executable
+  and rejects other commands; prove that executable's isolated parser accepts
+  exactly one canonical UUIDv7 argument and rejects separators, additional
+  arguments, and lookalikes;
 - prove a private systemd temporary filesystem enforces both 64 MiB and 4,096
   inodes;
 - qualify Python 3.14 support and lock the schema, RFC 8785, property-test, and
@@ -388,8 +390,9 @@ result retrieval, exact correlation retry, startup reconciliation, and
 authenticated export delivery plumbing.
 
 The installed provisioner command accepts only one job UUID. The sudo rule
-accepts only `execute-authorized-job <canonical-uuidv7>`. Neither the provisioner
-nor operator can list state. All lifecycle handlers remain disabled or return a
+selects only the fixed `execute-authorized-job` executable, and that root-owned
+parser accepts only one canonical UUIDv7 argument. Neither the provisioner nor
+operator can list state. All lifecycle handlers remain disabled or return a
 versioned not-implemented result without state mutation until their phases land.
 
 Gate: use a real SSH daemon in the installed-host suite. Prove shell, command,
@@ -657,8 +660,9 @@ These are hypotheses, not design facts:
 4. The production and disposable filesystems implement the tested directory
    sync, rename, hard-link, descriptor, and locking behavior.
 5. Ubuntu 26.04's systemd, OpenSSH, and sudo versions support the exact restart,
-   forced-command, sandbox, invocation-ID, reset, and argument-matching
-   contracts.
+   forced-command, sandbox, invocation-ID, reset, and fixed-executable
+   contracts. `sudo-rs` argument matching is explicitly not assumed; the
+   isolated root-owned executable owns that grammar.
 6. DigitalOcean Spaces returns and exposes exact object versions consistently
    enough for the proposed intent and quarantine algorithm.
 7. The systemd temporary-filesystem implementation enforces inode as well as
