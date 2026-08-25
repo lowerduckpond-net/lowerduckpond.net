@@ -45,6 +45,31 @@ EXPECTED_RESOURCES: Final = {
 AOP_RESOURCES: Final = frozenset(
     f'cloudflare_authenticated_origin_pulls.qualification["{name}"]' for name in DNS_NAMES
 )
+# Exact top-level computed schema for cloudflare_authenticated_origin_pulls in
+# the pinned Cloudflare provider. A config change invalidates every one of these
+# values except the provider-derived hostname and ID until the apply refreshes them.
+AOP_COMPUTED_ATTRIBUTES: Final = frozenset(
+    {
+        "cert_id",
+        "cert_status",
+        "cert_updated_at",
+        "cert_uploaded_on",
+        "certificate",
+        "created_at",
+        "enabled",
+        "expires_on",
+        "hostname",
+        "id",
+        "issuer",
+        "private_key",
+        "serial_number",
+        "signature",
+        "status",
+        "updated_at",
+    }
+)
+AOP_TRANSITION_UNKNOWN_ATTRIBUTES: Final = AOP_COMPUTED_ATTRIBUTES - {"hostname", "id"}
+AOP_TRANSITION_ATTRIBUTES: Final = AOP_COMPUTED_ATTRIBUTES | {"config", "zone_id"}
 NON_MUTATING_ACTIONS: Final = {("no-op",), ("read",)}
 QUALIFICATION_NAME: Final = "lowerduckpond-m3-qualification"
 QUALIFICATION_REGION: Final = "nyc1"
@@ -192,11 +217,28 @@ def _check_aop_transition_shape(
 ) -> None:
     before = _before(resource)
     after = _after(resource)
-    if {key: value for key, value in before.items() if key != "config"} != {
-        key: value for key, value in after.items() if key != "config"
-    }:
-        errors.append(f"qualification AOP transition changed more than config: {hostname}")
+    if set(before) != AOP_TRANSITION_ATTRIBUTES or set(after) != AOP_TRANSITION_ATTRIBUTES:
+        errors.append(f"qualification AOP transition attribute shape drifted: {hostname}")
         return
+    if before.get("zone_id") != after.get("zone_id"):
+        errors.append(f"qualification AOP transition changed zone_id: {hostname}")
+
+    after_unknown = _after_unknown_attributes(resource)
+    if after_unknown != AOP_TRANSITION_UNKNOWN_ATTRIBUTES:
+        errors.append(f"qualification AOP computed unknown set drifted: {hostname}")
+    errors.extend(
+        f"qualification AOP computed attribute did not become unknown: {hostname} {attribute}"
+        for attribute in sorted(AOP_TRANSITION_UNKNOWN_ATTRIBUTES)
+        if after.get(attribute) is not None
+    )
+    errors.extend(
+        f"qualification AOP stable computed attribute changed: {hostname} {attribute}"
+        for attribute in sorted(AOP_COMPUTED_ATTRIBUTES - AOP_TRANSITION_UNKNOWN_ATTRIBUTES)
+        if before.get(attribute) != after.get(attribute)
+    )
+    if before.get("private_key") is not None or after.get("private_key") is not None:
+        errors.append(f"qualification AOP transition exposed private key material: {hostname}")
+
     before_config = before.get("config")
     after_config = after.get("config")
     if (
@@ -212,6 +254,35 @@ def _check_aop_transition_shape(
     after_item = {key: value for key, value in after_config[0].items() if key != "cert_id"}
     if before_item != after_item:
         errors.append(f"qualification AOP transition changed more than cert_id: {hostname}")
+    if (
+        before.get("cert_id") != before_config[0].get("cert_id")
+        or before.get("enabled") != before_config[0].get("enabled")
+        or before.get("hostname") != hostname
+        or before.get("id") != hostname
+        or after.get("hostname") != hostname
+        or after.get("id") != hostname
+    ):
+        errors.append(f"qualification AOP computed identity is inconsistent: {hostname}")
+
+
+def _after_unknown_attributes(resource: Mapping[str, Any]) -> frozenset[str]:
+    change = resource.get("change")
+    if not isinstance(change, dict):
+        return frozenset()
+    after_unknown = change.get("after_unknown")
+    if not isinstance(after_unknown, dict):
+        return frozenset()
+    return frozenset(key for key, value in after_unknown.items() if _contains_unknown(value))
+
+
+def _contains_unknown(value: object) -> bool:
+    if value is True:
+        return True
+    if isinstance(value, dict):
+        return any(_contains_unknown(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_unknown(item) for item in value)
+    return False
 
 
 def _check_aop_resource(

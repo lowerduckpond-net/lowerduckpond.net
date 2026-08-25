@@ -6,7 +6,9 @@ from typing import Any
 import pytest
 
 from scripts.assert_m3_qualification_plan import (
+    AOP_COMPUTED_ATTRIBUTES,
     AOP_RESOURCES,
+    AOP_TRANSITION_UNKNOWN_ATTRIBUTES,
     DNS_NAMES,
     EXPECTED_RESOURCES,
     REVIEWED_CLOUDFLARE_CIDRS,
@@ -265,8 +267,33 @@ def _valid_transition(target: str) -> dict[str, Any]:
         zone_key = _zone_key(name)
 
         def attributes(
-            generation: str, *, bound_zone_key: str = zone_key, bound_name: str = name
+            generation: str,
+            *,
+            computed_unknown: bool = False,
+            bound_zone_key: str = zone_key,
+            bound_name: str = name,
         ) -> dict[str, Any]:
+            computed: dict[str, Any] = {
+                "cert_id": identifiers[generation][bound_zone_key],
+                "cert_status": "active",
+                "cert_updated_at": "2026-08-25T00:00:00Z",
+                "cert_uploaded_on": "2026-08-25T00:00:00Z",
+                "certificate": "public-certificate",
+                "created_at": "2026-08-25T00:00:00Z",
+                "enabled": True,
+                "expires_on": "2026-09-24T00:00:00Z",
+                "hostname": bound_name,
+                "id": bound_name,
+                "issuer": "Lower Duck Pond qualification CA",
+                "private_key": None,
+                "serial_number": "01",
+                "signature": "SHA256-RSA",
+                "status": "active",
+                "updated_at": "2026-08-25T00:00:00Z",
+            }
+            assert set(computed) == AOP_COMPUTED_ATTRIBUTES
+            if computed_unknown:
+                computed.update(dict.fromkeys(AOP_TRANSITION_UNKNOWN_ATTRIBUTES))
             return {
                 "zone_id": ZONE_IDS[bound_zone_key],
                 "config": [
@@ -276,6 +303,7 @@ def _valid_transition(target: str) -> dict[str, Any]:
                         "hostname": bound_name,
                     }
                 ],
+                **computed,
             }
 
         resources.append(
@@ -285,7 +313,11 @@ def _valid_transition(target: str) -> dict[str, Any]:
                 "change": {
                     "actions": ["update"],
                     "before": attributes(source),
-                    "after": attributes(target),
+                    "after": attributes(target, computed_unknown=True),
+                    "after_unknown": {
+                        **dict.fromkeys(AOP_TRANSITION_UNKNOWN_ATTRIBUTES, True),
+                        "config": [{}],
+                    },
                 },
             }
         )
@@ -323,7 +355,34 @@ def test_aop_transition_rejects_an_extra_field_change() -> None:
     plan = _valid_transition("replacement")
     plan["resource_changes"][0]["change"]["after"]["deployment_status"] = "pending"
 
-    with pytest.raises(QualificationPlanError, match="more than config"):
+    with pytest.raises(QualificationPlanError, match="attribute shape drifted"):
+        assert_plan(plan, destroy=False, transition="replacement")
+
+
+def test_aop_transition_rejects_a_known_computed_change() -> None:
+    plan = _valid_transition("replacement")
+    resource = plan["resource_changes"][0]
+    resource["change"]["after"]["status"] = "active"
+
+    with pytest.raises(QualificationPlanError, match="did not become unknown"):
+        assert_plan(plan, destroy=False, transition="replacement")
+
+
+def test_aop_transition_rejects_an_unknown_configured_attribute() -> None:
+    plan = _valid_transition("replacement")
+    resource = plan["resource_changes"][0]
+    resource["change"]["after_unknown"]["zone_id"] = True
+
+    with pytest.raises(QualificationPlanError, match="computed unknown set drifted"):
+        assert_plan(plan, destroy=False, transition="replacement")
+
+
+def test_aop_transition_rejects_private_key_material() -> None:
+    plan = _valid_transition("replacement")
+    resource = plan["resource_changes"][0]
+    resource["change"]["before"]["private_key"] = "must-not-enter-state"
+
+    with pytest.raises(QualificationPlanError, match="exposed private key material"):
         assert_plan(plan, destroy=False, transition="replacement")
 
 
