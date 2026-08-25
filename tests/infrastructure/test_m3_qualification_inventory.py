@@ -22,7 +22,9 @@ QUALIFICATION_ENVIRONMENT = {
 }
 
 
-def _run_playbook(inventory: Path, *, tags: str | None = None) -> subprocess.CompletedProcess[str]:
+def _run_playbook(
+    inventory: Path, *, tags: str | None = None, skip_tags: str | None = None
+) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
     environment.update(QUALIFICATION_ENVIRONMENT)
     ansible_playbook = shutil.which("ansible-playbook")
@@ -30,6 +32,8 @@ def _run_playbook(inventory: Path, *, tags: str | None = None) -> subprocess.Com
     command = [ansible_playbook, "--inventory", str(inventory)]
     if tags is not None:
         command.extend(("--tags", tags))
+    if skip_tags is not None:
+        command.extend(("--skip-tags", skip_tags))
     command.append(str(PLAYBOOK))
     return subprocess.run(  # noqa: S603 -- the resolved executable and every argument are fixed.
         command,
@@ -57,6 +61,15 @@ def test_qualification_playbook_rejects_an_inventory_without_its_target() -> Non
     assert "Refusing to configure without the exact state-bound M3.0 qualification target" in (
         result.stdout + result.stderr
     )
+
+
+def test_skipping_controller_preflight_still_blocks_remote_access() -> None:
+    result = _run_playbook(QUALIFICATION_INVENTORY, skip_tags=PREFLIGHT_TAG)
+    output = result.stdout + result.stderr
+
+    assert result.returncode != 0
+    assert "Refusing remote access without a successful M3.0 inventory preflight" in output
+    assert "Read the connected Droplet identity from DigitalOcean metadata" not in output
 
 
 def test_failed_preflight_blocks_every_remote_target(tmp_path: Path) -> None:

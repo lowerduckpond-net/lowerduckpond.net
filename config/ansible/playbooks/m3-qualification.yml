@@ -59,7 +59,7 @@
           Refusing remote access without a successful M3.0 inventory preflight.
         quiet: true
       tags:
-        - m3_qualification_inventory_preflight
+        - always
         - m3_qualification_remote_preflight_gate
 
     - name: Read the connected Droplet identity from DigitalOcean metadata
