@@ -41,13 +41,16 @@ production preflight records all of these facts:
 
 1. the ADR 0024 dual-domain DNS, TLS, supported-browser, and Caddy cookie-policy
    qualification passes;
-2. the dedicated archive Space, credential isolation, version operations, and
+2. the ADR 0028 proxy, Full (strict), account-specific Authenticated Origin
+   Pull, Cloudflare-only ingress, forwarding-header authenticity, explicit
+   cache-bypass, and direct-origin-denial qualification passes;
+3. the dedicated archive Space, credential isolation, version operations, and
    empty-accounting baseline pass;
-3. the dedicated operator forced-command and denial tests pass;
-4. filesystem durability, systemd/Caddy descriptor pinning, archive parser,
+4. the dedicated operator forced-command and denial tests pass;
+5. filesystem durability, systemd/Caddy descriptor pinning, archive parser,
    lifecycle, backup overlap, restore, and reconciliation tests pass;
-5. production capacity and free-space reserves pass; and
-6. the rollback procedure can restore the preceding platform-only generation
+6. production capacity and free-space reserves pass; and
+7. the rollback procedure can restore the preceding platform-only generation
    without altering authoritative tenant state.
 
 After the reviewed enablement converge, run one synthetic production canary
@@ -64,7 +67,8 @@ canary report passes.
 
 Record the first successful enablement in root-owned platform state, including
 the configuration version, trusted platform domain, pinned alias and origin
-suffixes, cookie-policy version, and acceptance-evidence digest.
+suffixes, cookie-policy version, edge-policy version, reviewed Cloudflare
+network-set digest, and acceptance-evidence digest.
 Reconciliation requires that launch record once tenant history exists; it
 cannot infer launch authority merely from a configuration boolean.
 
@@ -102,3 +106,4 @@ configuration mistake would become an unaudited bulk lifecycle transition.
 - [0024: Separate trusted platform and untrusted tenant domains](0024-separate-platform-and-tenant-domains.md)
 - [0025: Separate tenant archives from platform backups](0025-separate-tenant-archives-from-platform-backups.md)
 - [0026: Separate static operation from host administration](0026-separate-static-operation-from-host-administration.md)
+- [0028: Use Cloudflare as the public web edge](0028-use-cloudflare-as-the-public-web-edge.md)

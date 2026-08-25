@@ -1,17 +1,18 @@
 # Static-publication threat model
 
 - Status: accepted Milestone 3 baseline
-- Date: 2026-08-23
+- Updated: 2026-08-25
 - Related decisions: [ADR 0016](../adr/0016-model-static-publication-threats.md)
-  through [ADR 0027](../adr/0027-gate-production-static-publication.md)
+  through [ADR 0028](../adr/0028-use-cloudflare-as-the-public-web-edge.md)
 
 ## Scope
 
 This model covers the Milestone 3 path from a strict operation request and an
 operation-specific optional ZIP artifact on the trusted operator workstation
-through intake, validation, portable import, immutable release installation,
-Caddy route activation, lifecycle operations, backup, restore, and
-reconciliation on the single production host.
+through Cloudflare's public edge and the authenticated Caddy origin, intake,
+validation, portable import, immutable release installation, route activation,
+lifecycle operations, backup, restore, and reconciliation on the single
+production host.
 
 It excludes the Milestone 4 public control plane, custom domains, PHP, tenant
 containers, tenant SQL, and arbitrary executable server-side content. Those
@@ -22,9 +23,15 @@ features require their own threat-model extensions before activation.
 - Tenant content cannot read or modify host secrets, host configuration, Caddy
   administration, another tenant, or backup credentials.
 - Tenant JavaScript cannot set cookies that reach the trusted `.net` platform,
-  and no Milestone 3 `.com` route consumes incoming cookies or emits
-  `Set-Cookie`. Cross-tenant browser-local `.com` cookie integrity is not a
+  no Milestone 3 `.com` origin route consumes incoming cookies, and no
+  tenant-controlled `Set-Cookie` reaches Cloudflare or a visitor. A
+  Cloudflare-managed security cookie is not tenant state or LDP
+  authentication. Cross-tenant browser-local `.com` cookie integrity is not a
   security objective.
+- Public HTTP traffic reaches the origin only through Cloudflare's reviewed
+  networks; HTTPS additionally authenticates the project-specific origin pull,
+  and spoofed forwarding headers cannot become trusted visitor identity.
+- Cloudflare does not cache any Milestone 3 platform or tenant response.
 - Reassigning a human-readable slug cannot transfer a browser origin, service
   worker, cookie, or tenant-controlled storage to the next tenant.
 - Importing a portable bundle cannot claim its embedded tenant identity,
@@ -46,7 +53,8 @@ features require their own threat-model extensions before activation.
 
 ## Assets
 
-- The Cloudflare DNS-edit token read by Caddy.
+- The Cloudflare DNS-edit token read by Caddy, the separately scoped OpenTofu
+  edge token, origin-pull CA and leaf material, and managed edge configuration.
 - Caddy's root-owned configuration and Caddy-only admin socket.
 - Administrative SSH access and the root privilege boundary.
 - The separately registered `.net` platform and `.com` tenant namespaces.
@@ -69,7 +77,8 @@ features require their own threat-model extensions before activation.
 | Trusted-workstation client and `ldp-operator` key | Authenticated, forced-command operator transport and Milestone 3 job issuer; trusted to authorize operations, not to bypass root validation. Separate from the `ldp-admin` host-administration identity. |
 | Root activator | Trusted computing base; narrowly implements validation, release, route, lock, and recovery contracts. |
 | Ansible Caddy transaction | Trusted host-configuration path; stages candidates and shares the publication lock, but is not callable through provisioner sudo. |
-| Caddy | Trusted edge process with read-only tenant content and no provisioner-writable configuration. |
+| Cloudflare | Trusted public edge for DNS, visitor TLS, DDoS handling, cache bypass, and authenticated origin pulls; not tenant, lifecycle, or platform-authentication authority. |
+| Caddy | Trusted authenticated origin with read-only tenant content and no provisioner-writable configuration. |
 | Backup service | Trusted root service holding repository credentials; synchronized with tenant-state mutation. |
 | Operating system and pinned dependencies | Trusted platform boundary, maintained through the reviewed host baseline. |
 
@@ -79,7 +88,13 @@ and supply-chain risks.
 
 ## Trust boundaries and data flow
 
-1. The operator submits one strict request and, only for deploy or import, one
+1. A visitor resolves a proxied public hostname and reaches Cloudflare.
+   Cloudflare terminates visitor TLS, applies DDoS controls and explicit cache
+   bypass, then forwards HTTP or Full (strict) HTTPS to the allowlisted origin.
+   HTTPS presents the project-specific origin-pull certificate. Caddy rejects
+   unknown hosts and trusts forwarded visitor identity only on that admitted,
+   authenticated path.
+2. The operator submits one strict request and, only for deploy or import, one
    optional ZIP through the restricted SSH adapter into a fixed, non-public
    intake area. The protocol rejects a standalone manifest frame. The adapter
    derives the operator from the authenticated SSH boundary, enforces raw input
@@ -88,33 +103,33 @@ and supply-chain risks.
    correlation, canonical request, artifact or absence, and expected source
    state. Root derives the candidate desired manifest from that request and
    authoritative source state.
-2. The unprivileged provisioner may perform advisory preflight and submit only
+3. The unprivileged provisioner may perform advisory preflight and submit only
    the root-generated job ID to its fixed sudo entry point. It cannot invoke the
    issuer, pass raw operation fields to the activator, inspect the job store, or
    read an export result.
-3. The root activator opens and durably claims the authorization job, verifies
+4. The root activator opens and durably claims the authorization job, verifies
    every binding and current expected state, then claims the fixed intake
    artifact. It copies artifact bytes once into a newly created root-owned
    snapshot while enforcing the upload limit and computing its digest, and
    closes the intake descriptor. It verifies, revalidates, and extracts only
    that non-caller-writable snapshot into a new root-owned temporary release.
-4. The activator normalizes and seals the release, generates a complete
+5. The activator normalizes and seals the release, generates a complete
    root-owned Caddy runtime generation containing a manifest-bound binary,
    environment, canonical tenant-content routes, platform-only slug-alias
    routes, and base configuration, and validates the generation with its own
    inputs. Every canonical origin must match both its manifest and independent
    derivation from the pinned platform namespace record.
-5. Under the publication lock, the activator records intent and atomically
+6. Under the publication lock, the activator records intent and atomically
    selects the candidate runtime generation. Configuration-only changes reload
    and commit synchronously. Binary or environment changes persist a phased
    restart intent, release the lock, and queue a non-blocking systemd restart;
    pre-start and post-start helpers separately acquire the lock to pin, verify,
    and commit the generation. Failure uses the same handoff to restore the
    preceding complete generation.
-6. Backup holds a shared tenant-state lock while reading content, manifests,
+7. Backup holds a shared tenant-state lock while reading content, manifests,
    and audit state. Restore writes outside live paths and reconciliation applies
    the same activation contract.
-7. Ansible stages a complete Caddy runtime generation outside live paths and
+8. Ansible stages a complete Caddy runtime generation outside live paths and
    uses a root-owned transaction under the global publication lock to select it
    and persist restart intent, then releases the lock before handing the restart
    to systemd. A frozen systemd bootstrap reconciles intent and pins one
@@ -137,7 +152,12 @@ record.
 | Duplicate, Unicode, slash, backslash, case, or export-encoding ambiguity | Retain pre-normalization spelling and provenance. Coalesce only an exactly matching explicit directory and implied parent; reject duplicate explicit records, file/directory conflicts, and distinct spellings that collide after NFC normalization or case folding. Generate manifests canonically and define every portable ZIP byte: JSON, checksums, member order, stored encoding, timestamps, flags, modes, metadata, central directory, and archive digest. |
 | Ambiguous structured input or duplicate local YAML keys | Reject duplicate object member names in the host request decoder before schema validation. If the supported client reads an optional local YAML create specification, bound it before composition, reject duplicate keys and unknown fields locally, and transmit only the strict request. Never install a host YAML parser or accept a standalone desired manifest. |
 | Tenant content poisons platform authentication cookies or exploits same-site request handling | Keep every tenant-controlled origin on `lowerduckpond.com` and every trusted application on `lowerduckpond.net`. Use only unique host-bound `__Host-` platform session cookies, exact-Origin and CSRF validation, no credentialed tenant CORS, and no state-changing safe-method routes. Browser tests prove `.com` cannot set or receive `.net` cookies and that the two registrable domains are cross-site. |
-| One `.com` tenant injects parent-domain cookies visible to another tenant | Treat the complete `.com` namespace as untrusted. Remove incoming `Cookie` before every static tenant handler, remove outgoing `Set-Cookie` on all Milestone 3 `.com` responses, never vary routing or static bytes by cookies, and omit their values from logs. Test and document that JavaScript can still create `Domain=lowerduckpond.com` cookies, confuse ordinary client-side cookie names, consume shared cookie capacity, or trigger a per-browser oversized-header failure. Require host-bound `__Host-` names where a tenant needs cookie-name integrity and a new ADR before any dynamic, authenticated, or privileged `.com` application. |
+| One `.com` tenant injects parent-domain cookies visible to another tenant | Treat the complete `.com` namespace as untrusted. Remove incoming `Cookie` before every static tenant handler, remove tenant-controlled outgoing `Set-Cookie` before responses reach Cloudflare, never vary routing or static bytes by cookies, and omit their values from logs. Treat any Cloudflare-managed security cookie as edge infrastructure rather than tenant or LDP authentication state. Test and document that JavaScript can still create `Domain=lowerduckpond.com` cookies, confuse ordinary client-side cookie names, consume shared cookie capacity, or trigger a per-browser oversized-header failure. Require host-bound `__Host-` names where a tenant needs cookie-name integrity and a new ADR before any dynamic, authenticated, or privileged `.com` application. |
+| A visitor bypasses Cloudflare and attacks the known reserved origin address | Proxy every public web hostname, admit origin ports only from a reviewed snapshot of Cloudflare networks, require project-specific origin-pull authentication on HTTPS, keep administrative SSH on its separate CIDR, and prove direct HTTP/HTTPS denial from an ordinary source. |
+| A request spoofs Cloudflare forwarding headers or comes through another Cloudflare customer | Reject unknown hosts, trust forwarded visitor identity only from the pinned networks and authenticated HTTPS origin pull, and treat unauthenticated port 80 as a redirect-or-reject surface that serves no tenant bytes. |
+| Cloudflare caches a prior deployment, suspended tenant, released slug, redirect, error, or cookie-dependent response | Install explicit edge cache-bypass rules for both zones throughout Milestone 3, retain origin `no-store` on every alias, apex, unknown-host, and error response, and repeat requests through the real edge while changing lifecycle-shaped fixtures. Cache eligibility requires a later lifecycle-aware ADR and purge/recovery tests. |
+| Cloudflare transforms tenant headers or emits security cookies | Prove tenant-controlled `Set-Cookie` is absent before the edge, classify Cloudflare-owned cookies separately, forbid LDP authentication from trusting them, and exercise edge responses in every supported browser rather than inferring browser behavior from direct-origin tests. |
+| Origin-pull material expires, leaks, or rotates incompletely | Keep the CA private key offline, expose only replaceable leaves to Cloudflare, install only the CA certificate at the origin, overlap leaves during rotation, alert before expiry, and test both rejection and rollback order. |
 | Slug reassignment transfers persistent browser state | Treat the slug hostname only as a platform alias. Redirect its exact bare root without caching, referrer, cookie, path, query, tenant body, tenant header, or caller-selected target to the immutable tenant origin. Never reassign a tenant ID or canonical hostname; release only the slug mapping. |
 | Alias becomes a confused deputy, secret sink, or stale content URL | Generate its destination solely from root-owned tenant ID and suffix, redirect only active tenants, reject every non-root path, query, and unsupported method without forwarding, apply `Cache-Control: no-store` to every redirect and generic failure so lifecycle changes cannot leave a cached positive or negative result, discard sensitive alias request fields before logging, and test that uploaded bytes and service workers are unreachable at the alias. |
 | Mutation after validation | Root performs final extraction; active releases and complete Caddy generations are root-owned and immutable to Caddy and the provisioner. |
@@ -208,9 +228,9 @@ Implementation and review must preserve these invariants:
    append-only operations.
 10. No tenant-controlled response is served from any `lowerduckpond.net` host,
     the exact `lowerduckpond.com` apex, or a reusable slug alias. Tenant bytes
-    are served only from immutable UUID-derived `.com` origins. Every
-    Milestone 3 `.com` response strips `Set-Cookie`, every static tenant handler
-    receives no `Cookie`, every exact `.com` apex response carries
+    are served only from immutable UUID-derived `.com` origins. Every Milestone
+    3 `.com` response from Caddy strips tenant-controlled `Set-Cookie`, every
+    static tenant handler receives no `Cookie`, every exact `.com` apex response carries
     `Cache-Control: no-store`, and no route depends on cookie state. A slug
     alias returns only the fixed root-generated redirect contract in ADR 0023
     and holds no tenant or authentication state. The alias HTTP listener applies
@@ -315,11 +335,33 @@ Implementation and review must preserve these invariants:
     expected authoritative source state. The provisioner can execute that job
     ID but cannot issue, inspect, alter, retarget, or chain jobs or read export
     payloads. State drift fails closed before mutation.
+33. Every public apex and wildcard web record is proxied. The DigitalOcean and
+    host firewalls admit web ingress only from the reviewed Cloudflare network
+    snapshot; HTTPS also requires the project-specific origin-pull client
+    certificate. A range rotation admits and verifies the new superset at both
+    firewalls before either removes a retired range. Administrative SSH retains
+    its independent CIDR boundary.
+34. Caddy trusts forwarded visitor identity only on the admitted,
+    authenticated Cloudflare path. Port 80 serves only allowlisted redirects or
+    generic rejection and no tenant bytes. Unknown hosts never select a
+    platform or tenant route.
+35. Cloudflare cache is explicitly bypassed for both zones throughout
+    Milestone 3. Origin `no-store` remains mandatory for the `.com` apex,
+    reusable aliases, unknown hosts, errors, and the trusted administration
+    application. No cache-purge credential exists in the runtime boundary.
+36. Origin-pull CA private material never reaches the host, repository,
+    provisioner, Caddy environment, OpenTofu configuration, plan, state, or
+    platform backup. An expiring operator credential uploads and later retires
+    only a replaceable leaf from the trusted workstation; its local private key
+    is discarded after upload verification. OpenTofu receives the non-secret
+    certificate ID and Caddy receives only the CA certificate. Rotation overlaps
+    leaves, and qualification tears down every disposable per-hostname
+    association and certificate before revoking the operator credential.
 
 ## Residual risks
 
-- A vulnerability in the root activator, Caddy, Python ZIP parser, kernel, or
-  filesystem can cross the intended boundary.
+- A vulnerability in Cloudflare configuration, the root activator, Caddy,
+  Python ZIP parser, kernel, or filesystem can cross the intended boundary.
 - Static JavaScript can harm or mislead site visitors even though it does not
   execute on the host; content policy and browser protections remain necessary.
 - Tenant JavaScript can create parent-domain `.com` cookies visible to sibling
@@ -330,11 +372,13 @@ Implementation and review must preserve these invariants:
   are not mutually isolated.
 - Limits reduce but do not eliminate availability impact from expensive valid
   content or high request volume.
-- A stale or non-conforming cache can retain an obsolete alias redirect or
-  negative response. The uniform `no-store` and non-forwarding alias contract
-  reduce this usability risk; an obsolete redirect reaches only the preceding
-  tenant's separate canonical origin and cannot transfer control of the new
-  tenant's origin.
+- A Cloudflare or browser defect can disregard cache bypass or `no-store` and
+  retain an obsolete response. Edge repetition tests and the non-forwarding
+  alias contract reduce this risk; CDN caching stays disabled until a separate
+  lifecycle-aware design is accepted.
+- Cloudflare is an additional availability and request-semantics dependency.
+  Emergency DNS-only rollback restores direct service but intentionally loses
+  edge DDoS protection until the proxy boundary is repaired.
 - The single host remains one availability and blast-radius boundary.
 - A trusted administrator can intentionally override deletion safeguards or
   directly modify the host.
@@ -354,9 +398,10 @@ PHP, or multi-host provisioning.
 - Unit, property, concurrency, failure-injection, Molecule, Testinfra, restore,
   and reconciliation tests required by ADR 0022 pass.
 - A disposable-host exercise passes before production.
-- Browser and installed-host evidence proves the `.com`/`.net` boundary and
-  Caddy cookie policy while also recording the accepted sibling `.com` cookie
-  behavior.
+- Browser, edge, and installed-host evidence proves the `.com`/`.net` boundary,
+  Caddy cookie policy, Cloudflare cache bypass, Full (strict) and origin-pull
+  authentication, direct-origin denial, forwarding-header authenticity, and
+  the accepted sibling `.com` cookie behavior.
 - A reserved production source canary and separately imported target complete
   HTTPS, backup recovery, reconciliation, and reboot checks. The source
   completes rollback, suspension, archive, restore, rearchive, and ordinary

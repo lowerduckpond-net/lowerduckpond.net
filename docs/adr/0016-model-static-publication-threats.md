@@ -5,8 +5,9 @@
 
 ## Context
 
-Milestone 3 accepts tenant-controlled archives and turns them into public Caddy
-routes. Review of the retired Milestone 2 route publisher demonstrated that a
+Milestone 3 accepts tenant-controlled archives and turns them into routes
+served through Cloudflare's public edge and the authenticated Caddy origin.
+Review of the retired Milestone 2 route publisher demonstrated that a
 syntactically valid Caddy fragment could disclose Caddy's Cloudflare token or
 expose local services, and that a provisioner-controlled symlink could make
 Caddy serve host files. Treating archive validation or the provisioner account
@@ -67,7 +68,8 @@ evidence.
 
 Publication requires explicit security tests for archive traversal, links,
 resource exhaustion, route injection, races, interrupted activation, backup
-overlap, and cross-tenant access.
+overlap, cross-tenant access, direct-origin bypass, forwarded-header forgery,
+and stale or cross-tenant edge caching.
 
 ## Alternatives considered
 
@@ -81,7 +83,7 @@ delete requests is still destructive without operator authorization.
 
 ## References
 
-- [0003: Use Caddy and Cloudflare DNS-01](0003-caddy-cloudflare-dns.md)
+- [0028: Use Cloudflare as the public web edge](0028-use-cloudflare-as-the-public-web-edge.md)
 - [0006: Separate the control plane and provisioner](0006-separate-control-plane-provisioner.md)
 - [0020: Use a trusted-workstation static operator interface](0020-use-a-trusted-workstation-static-operator-interface.md)
 - [0023: Separate reusable slugs from immutable tenant origins](0023-separate-reusable-slugs-from-tenant-origins.md)

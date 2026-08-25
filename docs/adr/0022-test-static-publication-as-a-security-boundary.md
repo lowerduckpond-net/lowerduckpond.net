@@ -5,10 +5,11 @@
 
 ## Context
 
-Milestone 3 combines parser, filesystem, privilege, routing, concurrency, and
-recovery behavior. Unit tests alone cannot demonstrate the installed ownership,
-Caddy, systemd, backup, or host-reboot boundaries, while production-only testing
-would discover security and destructive-lifecycle failures too late.
+Milestone 3 combines parser, filesystem, privilege, edge, routing,
+concurrency, and recovery behavior. Unit tests alone cannot demonstrate the
+installed ownership, Cloudflare, Caddy, systemd, backup, or host-reboot
+boundaries, while production-only testing would discover security and
+destructive-lifecycle failures too late.
 
 ## Decision
 
@@ -21,8 +22,8 @@ Deliver Milestone 3 through these reviewable layers:
 4. root-owned immutable release activation and generated Caddy routing;
 5. lifecycle commands, reconciliation, rollback, and audit records;
 6. backup locking and restored-state reconciliation; and
-7. disposable host integration followed by a production canary acceptance
-   drill.
+7. disposable Cloudflare-edge and host integration followed by a production
+   canary acceptance drill.
 
 Use unit and property-based tests for schemas, normalization, archive limits,
 state transitions, idempotency, and route generation. Use process-level tests
@@ -312,19 +313,38 @@ archive remove both route classes, while resume and restore republish both for
 the same tenant ID.
 
 Dual-domain browser tests serve hostile JavaScript from tenant A below
-`lowerduckpond.com` and a controlled fixture below `lowerduckpond.net`. They
+`lowerduckpond.com` and a controlled fixture below `lowerduckpond.net` through
+Cloudflare's public edge and the authenticated Caddy origin. They
 prove `.com` cannot create, replace, read, or receive the fixture's host-only
 `.net` cookie and that requests between the domains are cross-site. They also
 record the accepted limitation by proving A can create a
 `Domain=lowerduckpond.com` cookie visible at tenant B. Installed-host tests then
-prove Caddy removes `Cookie` before every static tenant handler, removes
-`Set-Cookie` from every tenant, alias, unknown-host, and `.com` apex response,
+prove Caddy removes `Cookie` before every static tenant handler, removes every
+tenant-controlled `Set-Cookie` before the response reaches Cloudflare for every
+tenant, alias, unknown-host, and `.com` apex response,
 sets `Cache-Control: no-store` on every `.com` apex redirect and fallback,
 never varies a route or body by those cookies, and never logs their values.
 Browser tests prove a correctly formed, case-sensitive `__Host-` cookie remains
 bound to its exact tenant host even when a sibling uses the same unprefixed or
 ordinary cookie names. Oversized or quota-exhausting cookie behavior is
 recorded as a per-browser residual risk, not misreported as isolation.
+
+Cloudflare may add its own documented security cookies after the origin
+response. Tests distinguish those provider-controlled values from tenant
+output, and Lower Duck Pond never treats them as application authentication or
+authorization.
+
+Live edge tests prove both public zones use proxied DNS, Full (strict) origin
+TLS, account-specific Authenticated Origin Pulls, and explicit cache bypass.
+The installed origin must reject direct HTTPS, any client certificate not
+issued by the project CA, spoofed forwarding headers, and traffic from outside
+the reviewed Cloudflare network set. Port 80 admits only that network
+set and can only redirect or reject; it never returns tenant bytes. Repeated
+edge requests prove no route, redirect, error, platform response, or tenant
+body is served from cache in Milestone 3, while method, path, query, host, and
+alias semantics remain unchanged. Tests separately identify the public edge
+certificate and the Caddy origin certificate so one cannot substitute for the
+other.
 
 Import identity tests export active, suspended, and archived tenant A fixtures,
 create an undeployed tenant B through the ordinary serialized slug-allocation
@@ -463,11 +483,13 @@ manifest and absent routes. In particular, no failure or recovery path may
 publish either route for a suspended source; only a later explicit `resume` may
 do so.
 
-After CI and disposable-host acceptance pass, publish a reserved production
-source canary in the approved untrusted `.com` tenant namespace, then import
+After CI and disposable edge-and-host acceptance pass, publish a reserved
+production source canary in the approved untrusted `.com` tenant namespace, then import
 its export into a separately created undeployed target. Verify the `.com` to
 `.net` browser boundary, the documented sibling-cookie behavior and Caddy
-stripping, the platform-only alias redirect, canonical HTTPS, rollback,
+stripping, Cloudflare cache bypass, authenticated-origin enforcement,
+forwarded-header authenticity, the platform-only alias redirect, canonical
+HTTPS, rollback,
 suspension, backup recovery, reboot, and idempotence for the resulting two
 tenants. Archive, restore, rearchive, and ordinarily delete the source;
 separately archive and ordinarily delete the imported target. Prove both route
@@ -490,9 +512,13 @@ tenant content, credentials, or backup metadata.
 
 One end-to-end implementation pull request was rejected because privilege and
 state-model problems would be difficult to isolate. Unit tests without an
-installed-host scenario were rejected because ownership, Caddy, and systemd are
-material boundaries. Running destructive hostile tests on production was
-rejected because a disposable environment can exercise them safely.
+installed-edge and installed-host scenario were rejected because Cloudflare
+configuration, ownership, Caddy, and systemd are material boundaries. Running
+destructive hostile tests on production was rejected because a disposable
+environment can exercise them safely. Treating the current direct-origin
+qualification as public-traffic evidence was rejected because it cannot
+demonstrate proxy, cache, client-certificate, source-network, or
+forwarding-header behavior.
 
 ## References
 
@@ -500,4 +526,5 @@ rejected because a disposable environment can exercise them safely.
 - [0017: Atomically activate immutable static releases](0017-atomically-activate-static-releases.md)
 - [0023: Separate reusable slugs from immutable tenant origins](0023-separate-reusable-slugs-from-tenant-origins.md)
 - [0024: Separate trusted platform and untrusted tenant domains](0024-separate-platform-and-tenant-domains.md)
+- [0028: Use Cloudflare as the public web edge](0028-use-cloudflare-as-the-public-web-edge.md)
 - [Static-publication threat model](../threat-model/static-publication.md)

@@ -18,6 +18,8 @@ This is also a portfolio and educational project. Infrastructure, platform code,
 - Automate signup, approval, provisioning, suspension, cancellation, archival, restoration, and eventual pruning.
 - Provide authentic HTTPS for the apex and wildcard names in both the trusted
   `.net` platform zone and untrusted `.com` tenant zone.
+- Put public web traffic through a reviewed DDoS-protecting edge while keeping
+  the application origin independently authenticated and encrypted.
 - Make static hosting the safe, inexpensive default.
 - Offer PHP and SQL as an explicitly higher-risk dynamic tier.
 - Isolate dynamic tenants so one site cannot casually consume or inspect another site's resources.
@@ -66,8 +68,8 @@ Public repositories should include example variable files, schemas, workflows, p
 
 ```mermaid
 flowchart TD
-    Internet["Residents and visitors"] --> CF["Cloudflare .net and .com DNS"]
-    CF --> Caddy["Caddy edge and TLS"]
+    Internet["Residents and visitors"] --> CF["Cloudflare DNS, TLS, and DDoS edge"]
+    CF --> Caddy["Authenticated Caddy origin"]
     Caddy --> Platform["Trusted platform on .net"]
     Caddy --> Static["Static tenant content"]
     Caddy --> PHP["Isolated PHP tenants"]
@@ -85,7 +87,8 @@ The initial production environment consists of:
 - One Basic Droplet, beginning at 1 vCPU/2 GiB during development and moving to
   the roughly 2-vCPU/4-GiB class before tenant onboarding.
 - One reserved IP so the origin address survives Droplet replacement.
-- One Cloud Firewall allowing public HTTP/HTTPS and tightly restricted administration.
+- One Cloud Firewall allowing HTTP/HTTPS only from Cloudflare's reviewed proxy
+  networks and tightly restricted administration.
 - One Spaces bucket and bucket-scoped credential for encrypted Restic backups.
 - One separate versioned Spaces bucket and credential for authoritative tenant
   archive bundles.
@@ -105,15 +108,29 @@ Use a current Ubuntu LTS or Debian stable image. First-boot cloud-init should do
 
 Ansible owns all durable system configuration after that point.
 
-### 5.3 Edge and routing
+### 5.3 Edge, origin, and routing
 
-Caddy is the only public web entry point. It:
+Cloudflare is the public web entry point for both owned zones. It:
+
+- returns proxied anycast addresses rather than the reserved origin address;
+- terminates visitor TLS with apex and first-level wildcard edge certificates;
+- applies its DDoS controls before a request reaches the small origin;
+- bypasses cache for every route during Milestone 3; and
+- forwards HTTP and Full (strict) HTTPS to Caddy without becoming tenant or
+  lifecycle authority.
+
+Caddy is the authenticated application origin. The DigitalOcean and host
+firewalls admit its web ports only from reviewed Cloudflare networks. HTTPS
+also requires an account-specific Authenticated Origin Pulls client
+certificate, and Caddy trusts forwarded visitor identity only across that
+authenticated boundary. Caddy:
 
 - Redirects HTTP to HTTPS, except that slug-alias requests first pass the alias
   method/path/query allowlist: qualifying bare-root requests redirect directly
   to the canonical HTTPS origin and all others receive the generic HTTP `404`
   without forwarding a path or query.
-- Terminates TLS.
+- Terminates and validates the Cloudflare-to-origin TLS connection with its
+  independently renewed ACME certificate.
 - Serves static tenant directories directly only from immutable canonical tenant
   origins.
 - Redirects reusable platform-controlled slug aliases to canonical tenant
@@ -131,6 +148,12 @@ Caddy is the only public web entry point. It:
 - Serves aliases and immutable tenant origins only below `lowerduckpond.com`;
   strips incoming `Cookie` and outgoing `Set-Cookie` on every Milestone 3
   `.com` route; and never varies static routing or content by cookies.
+
+Cloudflare may issue its own security cookies, but no tenant controls them and
+no LDP application treats them as authentication. Tenant-controlled
+`Set-Cookie` is removed before the response reaches Cloudflare. Port 80 relies
+on the Cloudflare source allowlist and can serve only the documented redirect
+or rejection contracts; HTTPS adds origin-pull client authentication.
 
 The routing configuration is generated from tenant manifests. A bad tenant
 deployment must not be able to replace the entire Caddy configuration. A
@@ -236,17 +259,39 @@ Every provisioning operation should be idempotent and recorded with a correlatio
 
 ## 6. DNS and HTTPS
 
-Cloudflare remains authoritative for both owned zones. OpenTofu manages the
-apex and wildcard records for `lowerduckpond.net` and `lowerduckpond.com`, all
-pointing to the DigitalOcean reserved IP while Caddy remains the only public
-origin.
+Cloudflare is authoritative DNS and the public HTTP edge for both owned zones.
+OpenTofu manages proxied apex and wildcard records for `lowerduckpond.net` and
+`lowerduckpond.com`; DNS-only records are limited to explicitly documented
+non-HTTP uses. The currently deployed DNS-only `.net` records are a
+transitional Milestone 2 state and must change only through ADR 0028's reviewed,
+phased rollout—not a console toggle.
 
-Caddy obtains and renews apex and wildcard certificates for both zones through
-ACME DNS-01 using a non-expiring Cloudflare token restricted to only those two
-zones with Zone Read and DNS Edit. The separate OpenTofu token receives DNS
-Edit only for the same two zones. Caddy requires its DNS provider module for
-this flow, so the project builds and pins its Caddy image rather than relying
-on an unversioned local binary.
+Visitors terminate TLS at Cloudflare. Cloudflare then connects to Caddy using
+Full (strict), validates Caddy's independent origin certificate, and presents a
+project-issued origin-pull client certificate. The DigitalOcean and host
+firewalls allow web ingress only from a reviewed snapshot of Cloudflare's
+published networks. Caddy rejects unknown hosts and trusts forwarded visitor
+addresses only from that authenticated path. Administrative SSH continues to
+use the reserved address and administrative CIDR directly.
+
+Caddy obtains and renews apex and wildcard origin certificates for both zones
+through ACME DNS-01 using a non-expiring Cloudflare token restricted to only
+those two zones with Zone Read and DNS Edit. A separate OpenTofu edge token
+receives only the two-zone DNS, SSL-setting, origin-pull association, and
+ruleset permissions needed for managed edge resources. A separate expiring
+operator credential uploads replaceable origin-pull leaf material from the
+trusted workstation; only its non-secret certificate ID enters OpenTofu, and
+no CA or leaf private key enters configuration, plan, or state. A future
+cache-purge credential is a distinct purge-only capability and does not exist
+until lifecycle-aware caching is approved. Caddy requires its DNS provider
+module for ACME, so the project builds and pins its Caddy image rather than
+relying on an unversioned local binary.
+
+Milestone 3 explicitly bypasses Cloudflare cache for both zones. CDN caching is
+a later Milestone 5 feature with separately reviewed cache keys, browser and
+edge TTLs, stale behavior, purge authorization, lifecycle recovery, and tests.
+The `.com` apex, reusable aliases, unknown hosts, errors, and
+`secure.lowerduckpond.net` remain permanently uncacheable.
 
 `lowerduckpond.net` is the trusted platform domain and the canonical public,
 unauthenticated platform website. The site is platform-owned and served
@@ -279,9 +324,11 @@ uploaded content or accepts a tenant-selected destination.
 
 The design does not pursue or depend on Private Public Suffix admission.
 Tenants are isolated from `.net` platform cookies, but `.com` siblings share a
-parent cookie scope and remain same-site. Caddy strips `Cookie` before static
-tenant handling and strips `Set-Cookie` from every Milestone 3 `.com` response.
-Browser JavaScript can still create a parent `.com` cookie, so cross-tenant
+parent cookie scope and remain same-site. The Caddy origin strips `Cookie`
+before static tenant handling and strips tenant-controlled `Set-Cookie` from
+every Milestone 3 `.com` response before it reaches Cloudflare. A
+Cloudflare-managed security cookie is never LDP authentication. Browser
+JavaScript can still create a parent `.com` cookie, so cross-tenant
 cookie-name confusion and per-browser cookie-capacity exhaustion remain
 documented residual risks. Static responses ignore that state; applications
 requiring server-side authentication need a later architecture decision.
@@ -363,6 +410,8 @@ Capture at least:
 
 - Host CPU, memory, disk, inode, network, and load metrics.
 - Caddy request rate, response status, latency, bytes, and hostname.
+- Cloudflare edge reachability, mitigation events, cache status, origin errors,
+  and the age and drift status of the pinned proxy-network allowlist.
 - Per-container CPU, memory, process, restart, and network usage.
 - Per-tenant stored bytes, file count, database size, and active connections.
 - Provisioning queue depth, duration, failure reason, and retry count.
@@ -458,6 +507,9 @@ remains independently reusable.
 | Public source exposes production secrets | Secret scanning, ignored state, scoped tokens, encrypted secret delivery, sanitized operational examples |
 | Tenant content affects platform browser state | Keep every trusted service on `lowerduckpond.net`, every untrusted tenant origin on `lowerduckpond.com`, and use host-only `__Host-` platform cookies with exact-Origin and CSRF checks |
 | One static tenant injects parent `.com` cookies into another tenant's browser state | Ignore incoming cookies and strip outgoing `Set-Cookie` on static `.com` routes, preserve unique immutable origins, document the residual client-side cookie limitation, and require a new decision before authenticated or dynamic `.com` applications |
+| Attackers bypass Cloudflare or spoof its forwarding headers | Proxy every public web hostname, restrict both firewalls to reviewed Cloudflare networks, require account-specific origin pulls on HTTPS, reject unknown hosts, and trust forwarded identity only on the authenticated origin path |
+| Cloudflare caches obsolete tenant or lifecycle responses | Bypass edge cache throughout Milestone 3, preserve `no-store` on aliases and failures, and require lifecycle-aware purge and recovery design before enabling CDN caching |
+| Cloudflare or its edge configuration fails | Monitor edge and origin separately, retain a reviewed recovery-order rollback to DNS-only service, and treat loss of DDoS protection during that rollback as an explicit incident risk |
 | A single Droplet fails | Encrypted off-host backups, application-aware dumps, host rebuild automation and restore drills |
 
 ## 14. Reference documentation
@@ -466,6 +518,9 @@ remains independently reusable.
 - [DigitalOcean provider resources](https://docs.digitalocean.com/reference/terraform/reference/resources/)
 - [Caddy automatic HTTPS](https://caddyserver.com/docs/automatic-https)
 - [Caddy wildcard certificate pattern](https://caddyserver.com/docs/caddyfile/patterns#wildcard-certificates)
+- [Cloudflare proxy status](https://developers.cloudflare.com/dns/proxy-status/)
+- [Cloudflare Full (strict) mode](https://developers.cloudflare.com/ssl/origin-configuration/ssl-modes/full-strict/)
+- [Cloudflare Authenticated Origin Pulls](https://developers.cloudflare.com/ssl/origin-configuration/authenticated-origin-pull/)
 - [RFC 10025: Cookies: HTTP State Management Mechanism](https://auth48-transition.rfc-editor.org/authors/rfc10025.html)
 - [Podman Quadlet](https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html)
 - [Podman Quadlet basic usage](https://docs.podman.io/en/latest/markdown/podman-quadlet-basic-usage.7.html)
