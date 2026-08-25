@@ -440,6 +440,9 @@ Implement idempotent commands or jobs for:
   application permanently uncacheable. Defer tenant content cache keys, TTLs,
   purge ordering, stale behavior, and a separate purge-only credential to
   Milestone 5.
+- Disable optional Cloudflare body rewriting and script injection, require
+  `Cache-Control: no-transform`, block the provider-reserved `/cdn-cgi/`
+  namespace, and reject its colliding first path component from tenant archives.
 - Validate, select, reload, and advance every restart or rollback phase under
   one publication lock, while releasing it before any systemd job must
   reacquire it.

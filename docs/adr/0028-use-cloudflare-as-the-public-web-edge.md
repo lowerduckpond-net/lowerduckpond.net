@@ -91,6 +91,15 @@ least 60 days remaining. Qualification leaves and their upload credentials are
 valid for at most seven days. A missed rotation closes public HTTPS rather than
 falling back to the global shared certificate.
 
+Rotate a project CA before it has less than one full production-leaf lifetime
+remaining. Generate and back up the replacement CA independently, install a
+combined old-and-new CA trust bundle at Caddy, upload and associate new leaves
+signed only by the replacement CA, and verify every edge hostname. Only then
+retire the old Cloudflare leaves and associations; remove the old CA from Caddy
+in a later convergence after proving Cloudflare no longer presents it. Each
+phase preserves the preceding leaf and trust anchor as its rollback. No leaf
+may expire after the CA that issued it.
+
 Keep Cloudflare credentials separated by capability:
 
 - Caddy's non-expiring token retains only the two-zone read and DNS-edit scope
@@ -102,6 +111,28 @@ Keep Cloudflare credentials separated by capability:
   leaf, then is revoked after qualification teardown or production rotation; and
 - a future runtime cache-purge token, if approved, receives only cache-purge
   authority and is never combined with any credential above.
+
+Preserve origin representations during Milestone 3. OpenTofu disables every
+optional Cloudflare feature that can rewrite a response body or inject a
+script, including Email Address Obfuscation, Rocket Loader, Cloudflare Fonts,
+Automatic HTTPS Rewrites, Zaraz, and Real User Monitoring. It must keep any
+later equivalent feature off until an architecture review adds it to the
+managed allowlist. Caddy sends `Cache-Control: no-transform` on platform and
+tenant responses. Qualification compares origin and edge status, security and
+redirect headers, and bodies, and proves that Cloudflare injected no script or
+markup. A provider security block or challenge may replace an origin response
+as an explicit availability/security event; it is not tenant content and may
+not be cached as one.
+
+Reserve Cloudflare's `/cdn-cgi/` path namespace. A managed zone WAF rule blocks
+`/cdn-cgi` and every descendant on public platform, alias, and tenant hostnames;
+the archive validator rejects `cdn-cgi` as a normalized, ASCII-case-insensitive
+first path component so a tenant cannot publish unreachable or provider-owned
+URLs. Because Cloudflare owns this endpoint and the Free plan cannot customize
+its block response, that provider block is an explicit exception to Caddy's
+generic `404` contract and must never reach Caddy. M3.0 must prove the WAF rule
+preempts Cloudflare's diagnostic endpoints; if it cannot, the edge design
+requires review rather than silently accepting `/cdn-cgi/trace`.
 
 Cloudflare caching is fail-closed during Milestone 3. Explicit edge rules bypass
 cache for the entire `.com` namespace and `secure.lowerduckpond.net`, while
@@ -127,11 +158,19 @@ gate. Use proxied disposable hostnames, Full (strict), a disposable
 per-hostname origin-pull certificate, Cloudflare-only web ingress, and the real
 supported browsers. Prove edge and origin certificates separately, direct
 origin bypass, forwarding-header authenticity, cookie and response-header
-behavior, cache bypass across repeated requests and lifecycle-shaped status
-changes, strict unknown-host handling, and complete teardown. The exact `.com`
+behavior, response-body fidelity, `/cdn-cgi/` denial, cache bypass across
+repeated requests and lifecycle-shaped status changes, strict unknown-host
+handling, and complete teardown. The exact `.com`
 apex remains locally exercised on the disposable host until its reviewed
 production cutover; M3.12 repeats the full edge suite against both production
 apexes and wildcards before publication is enabled.
+
+The current Cloudflare AOP documentation lists the feature on every plan tier
+and describes uploaded certificates for both zone-level and per-hostname
+configuration. Qualification must still call the intended account APIs before
+provisioning and fail with a fixed unsupported-entitlement result if the actual
+free account cannot create those resources; it may not fall back to the global
+certificate shared across Cloudflare accounts.
 
 Roll production out in fail-open-for-recovery order, without a manual orange
 cloud toggle:
@@ -204,3 +243,7 @@ privileged state transition and failure mode, not a performance toggle.
 - [Cloudflare origin protection](https://developers.cloudflare.com/fundamentals/security/protect-your-origin-server/)
 - [Cloudflare cache behavior](https://developers.cloudflare.com/cache/concepts/default-cache-behavior/)
 - [Cloudflare cache purging](https://developers.cloudflare.com/cache/how-to/purge-cache/)
+- [Cloudflare Email Address Obfuscation](https://developers.cloudflare.com/waf/tools/scrape-shield/email-address-obfuscation/)
+- [Cloudflare configuration-rule settings](https://developers.cloudflare.com/rules/configuration-rules/settings/)
+- [Cloudflare `/cdn-cgi/` endpoint](https://developers.cloudflare.com/fundamentals/reference/cdn-cgi-endpoint/)
+- [Cloudflare WAF custom rules](https://developers.cloudflare.com/waf/custom-rules/)

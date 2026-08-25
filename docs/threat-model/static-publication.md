@@ -32,6 +32,9 @@ features require their own threat-model extensions before activation.
   networks; HTTPS additionally authenticates the project-specific origin pull,
   and spoofed forwarding headers cannot become trusted visitor identity.
 - Cloudflare does not cache any Milestone 3 platform or tenant response.
+- Cloudflare does not rewrite or inject into an accepted Milestone 3 origin
+  representation, and its reserved `/cdn-cgi/` namespace cannot collide with a
+  tenant release or bypass alias rejection behavior.
 - Reassigning a human-readable slug cannot transfer a browser origin, service
   worker, cookie, or tenant-controlled storage to the next tenant.
 - Importing a portable bundle cannot claim its embedded tenant identity,
@@ -157,7 +160,9 @@ record.
 | A request spoofs Cloudflare forwarding headers or comes through another Cloudflare customer | Reject unknown hosts, trust forwarded visitor identity only from the pinned networks and authenticated HTTPS origin pull, and treat unauthenticated port 80 as a redirect-or-reject surface that serves no tenant bytes. |
 | Cloudflare caches a prior deployment, suspended tenant, released slug, redirect, error, or cookie-dependent response | Install explicit edge cache-bypass rules for both zones throughout Milestone 3, retain origin `no-store` on every alias, apex, unknown-host, and error response, and repeat requests through the real edge while changing lifecycle-shaped fixtures. Cache eligibility requires a later lifecycle-aware ADR and purge/recovery tests. |
 | Cloudflare transforms tenant headers or emits security cookies | Prove tenant-controlled `Set-Cookie` is absent before the edge, classify Cloudflare-owned cookies separately, forbid LDP authentication from trusting them, and exercise edge responses in every supported browser rather than inferring browser behavior from direct-origin tests. |
-| Origin-pull material expires, leaks, or rotates incompletely | Keep the CA private key offline, expose only replaceable leaves to Cloudflare, install only the CA certificate at the origin, overlap leaves during rotation, alert before expiry, and test both rejection and rollback order. |
+| Cloudflare rewrites an accepted HTML body or injects a provider script | Disable every optional body-transforming feature in managed edge policy, emit `Cache-Control: no-transform`, compare origin and edge representations in qualification, and treat a security block or challenge as a provider availability response rather than tenant content. |
+| Cloudflare serves a provider endpoint from `/cdn-cgi/` or hides a tenant file under that prefix | Block the complete reserved namespace at the zone WAF, reject `cdn-cgi` as a case-insensitive normalized first tenant path component, record the provider denial as the sole alias-path exception, and prove the request never reaches Caddy. |
+| Origin-pull material expires, leaks, or rotates incompletely | Keep CA private keys offline, expose only replaceable leaves to Cloudflare, overlap old and replacement CA trust before moving edge leaves, retire the old CA only after every association changes, alert before expiry, and test rejection and rollback at every phase. |
 | Slug reassignment transfers persistent browser state | Treat the slug hostname only as a platform alias. Redirect its exact bare root without caching, referrer, cookie, path, query, tenant body, tenant header, or caller-selected target to the immutable tenant origin. Never reassign a tenant ID or canonical hostname; release only the slug mapping. |
 | Alias becomes a confused deputy, secret sink, or stale content URL | Generate its destination solely from root-owned tenant ID and suffix, redirect only active tenants, reject every non-root path, query, and unsupported method without forwarding, apply `Cache-Control: no-store` to every redirect and generic failure so lifecycle changes cannot leave a cached positive or negative result, discard sensitive alias request fields before logging, and test that uploaded bytes and service workers are unreachable at the alias. |
 | Mutation after validation | Root performs final extraction; active releases and complete Caddy generations are root-owned and immutable to Caddy and the provisioner. |
@@ -354,9 +359,15 @@ Implementation and review must preserve these invariants:
     platform backup. An expiring operator credential uploads and later retires
     only a replaceable leaf from the trusted workstation; its local private key
     is discarded after upload verification. OpenTofu receives the non-secret
-    certificate ID and Caddy receives only the CA certificate. Rotation overlaps
-    leaves, and qualification tears down every disposable per-hostname
-    association and certificate before revoking the operator credential.
+    certificate ID and Caddy receives only CA certificates. Rotation first
+    installs an old-and-new trust bundle, then changes every leaf association,
+    and removes the old CA only after verification. Qualification tears down
+    every disposable per-hostname association and certificate before revoking
+    the operator credential.
+37. Managed edge configuration disables optional body rewriting and script
+    injection, and Caddy emits `Cache-Control: no-transform`. The zone WAF
+    blocks `/cdn-cgi` and its descendants before they reach Caddy; archive,
+    import, and restore reject that normalized first component.
 
 ## Residual risks
 

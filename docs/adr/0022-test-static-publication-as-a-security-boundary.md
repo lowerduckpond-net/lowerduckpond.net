@@ -267,6 +267,8 @@ cover multiple or misplaced end records, prepended/trailing bytes, central
 directories at and over 8 MiB, comments, bounded allowlisted timestamp extras,
 unknown/oversized/malformed extras, ZIP64, record-count mismatch, overlapping or
 aliased regions, gaps, and every checked-arithmetic boundary.
+Deployment, import, and restore fixtures also reject `cdn-cgi` as the
+case-insensitive normalized first tenant component before release construction.
 
 Portable-artifact fixtures for import and restore separately exercise
 regular-file envelope names at 1,056/1,057 bytes, directory names including
@@ -344,7 +346,17 @@ edge requests prove no route, redirect, error, platform response, or tenant
 body is served from cache in Milestone 3, while method, path, query, host, and
 alias semantics remain unchanged. Tests separately identify the public edge
 certificate and the Caddy origin certificate so one cannot substitute for the
-other.
+other. A disposable rollover test installs both old and replacement origin-pull
+CA certificates, moves the edge to the replacement leaf, proves both rollback
+and forward paths, then removes the old CA and proves its leaf is rejected.
+Origin-versus-edge fixtures include email addresses, strict CSP, scripts,
+fonts, insecure-looking URLs, and analytics-shaped markup; they require
+`no-transform`, disabled optional transformations, and byte-identical bodies
+without injected provider markup. A separate provider-security fixture may
+return a Cloudflare block or challenge but cannot be mistaken for tenant
+content or cached. Requests to `/cdn-cgi`, `/cdn-cgi/trace`, descendants, case
+variants, and encoded lookalikes prove the managed WAF blocks the reserved
+namespace before Caddy and exposes no diagnostic body.
 
 Import identity tests export active, suspended, and archived tenant A fixtures,
 create an undeployed tenant B through the ordinary serialized slug-allocation
@@ -390,6 +402,9 @@ tenant-controlled state at a slug alias and that alias reassignment exposes no
 state from the preceding canonical origin. Logging tests send sensitive path,
 query, cookie, authorization, and referrer values to aliases and prove none
 persist in access logs or diagnostics.
+The Cloudflare-owned `/cdn-cgi/` namespace is the sole exception to the Caddy
+alias `404` body: edge tests require the managed provider denial and prove the
+request never selects an alias or tenant route.
 
 Export concurrency tests overlap snapshot capture with deploy, rollback,
 rename, suspension, and garbage collection. Every resulting bundle must contain

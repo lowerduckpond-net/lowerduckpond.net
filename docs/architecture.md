@@ -115,7 +115,9 @@ Cloudflare is the public web entry point for both owned zones. It:
 - returns proxied anycast addresses rather than the reserved origin address;
 - terminates visitor TLS with apex and first-level wildcard edge certificates;
 - applies its DDoS controls before a request reaches the small origin;
-- bypasses cache for every route during Milestone 3; and
+- bypasses cache for every route during Milestone 3;
+- disables optional body rewriting and blocks the provider-reserved
+  `/cdn-cgi/` namespace; and
 - forwards HTTP and Full (strict) HTTPS to Caddy without becoming tenant or
   lifecycle authority.
 
@@ -286,6 +288,17 @@ cache-purge credential is a distinct purge-only capability and does not exist
 until lifecycle-aware caching is approved. Caddy requires its DNS provider
 module for ACME, so the project builds and pins its Caddy image rather than
 relying on an unversioned local binary.
+
+Origin-pull CA rotation uses a dual-trust interval: Caddy first trusts both the
+old and replacement CA, Cloudflare then moves both zones to leaves from the
+replacement, and only a later verified convergence removes the old CA. A leaf
+never outlives its issuer.
+
+OpenTofu also disables Cloudflare response-body rewriting and script injection,
+while Caddy emits `Cache-Control: no-transform`. The edge blocks `/cdn-cgi/`
+before a provider diagnostic can answer, and static archive admission reserves
+the matching first path component. Provider security blocks and challenges are
+explicit availability events rather than tenant representations.
 
 Milestone 3 explicitly bypasses Cloudflare cache for both zones. CDN caching is
 a later Milestone 5 feature with separately reviewed cache keys, browser and
