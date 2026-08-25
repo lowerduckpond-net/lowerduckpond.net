@@ -293,7 +293,8 @@ def _valid_transition(target: str) -> dict[str, Any]:
             }
             assert set(computed) == AOP_COMPUTED_ATTRIBUTES
             if computed_unknown:
-                computed.update(dict.fromkeys(AOP_TRANSITION_UNKNOWN_ATTRIBUTES))
+                for attribute in AOP_TRANSITION_UNKNOWN_ATTRIBUTES:
+                    computed.pop(attribute)
             return {
                 "zone_id": ZONE_IDS[bound_zone_key],
                 "config": [
@@ -364,7 +365,16 @@ def test_aop_transition_rejects_a_known_computed_change() -> None:
     resource = plan["resource_changes"][0]
     resource["change"]["after"]["status"] = "active"
 
-    with pytest.raises(QualificationPlanError, match="did not become unknown"):
+    with pytest.raises(QualificationPlanError, match="attribute shape drifted"):
+        assert_plan(plan, destroy=False, transition="replacement")
+
+
+def test_aop_transition_rejects_a_null_computed_after_placeholder() -> None:
+    plan = _valid_transition("replacement")
+    resource = plan["resource_changes"][0]
+    resource["change"]["after"]["status"] = None
+
+    with pytest.raises(QualificationPlanError, match="attribute shape drifted"):
         assert_plan(plan, destroy=False, transition="replacement")
 
 
