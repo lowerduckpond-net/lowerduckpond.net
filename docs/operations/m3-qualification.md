@@ -226,6 +226,7 @@ Create and inspect an encrypted saved plan:
 
 ```bash
 cd infra/opentofu/environments/qualification
+set -o pipefail
 tofu plan -out=m3-qualification.tfplan
 tofu show -json m3-qualification.tfplan | \
   ../../../../scripts/assert_m3_qualification_plan.py
@@ -240,9 +241,15 @@ select the primary IDs, and every ruleset expression names only the disposable
 hostnames. Then apply the saved plan:
 
 ```bash
+tofu show -json m3-qualification.tfplan | \
+  ../../../../scripts/assert_m3_qualification_plan.py &&
 tofu apply m3-qualification.tfplan
 tofu state list
 ```
+
+The policy is intentionally run again in the same `&&` chain as the apply. A
+failed validation must make the shell skip `tofu apply`, even when its earlier
+output was overlooked during human review.
 
 Verify the new Droplet host key through DigitalOcean's out-of-band Recovery
 Console before accepting it over SSH. If the console requires a temporary root
@@ -272,10 +279,13 @@ first transition:
 ```bash
 # Set origin_pull_generation = "replacement" in terraform.tfvars.
 cd infra/opentofu/environments/qualification
+set -o pipefail
 tofu plan -out=m3-aop-replacement.tfplan
 tofu show -json m3-aop-replacement.tfplan | \
   ../../../../scripts/assert_m3_qualification_plan.py --transition replacement
 tofu show m3-aop-replacement.tfplan
+tofu show -json m3-aop-replacement.tfplan | \
+  ../../../../scripts/assert_m3_qualification_plan.py --transition replacement &&
 tofu apply m3-aop-replacement.tfplan
 cd ../../../..
 just m3-qualification edge replacement
@@ -325,10 +335,13 @@ Destroy from a saved, reviewed plan even when provisioning or a probe fails:
 
 ```bash
 cd infra/opentofu/environments/qualification
+set -o pipefail
 tofu plan -destroy -out=m3-qualification-destroy.tfplan
 tofu show -json m3-qualification-destroy.tfplan | \
   ../../../../scripts/assert_m3_qualification_plan.py --destroy
 tofu show m3-qualification-destroy.tfplan
+tofu show -json m3-qualification-destroy.tfplan | \
+  ../../../../scripts/assert_m3_qualification_plan.py --destroy &&
 tofu apply m3-qualification-destroy.tfplan
 tofu state list
 ```
