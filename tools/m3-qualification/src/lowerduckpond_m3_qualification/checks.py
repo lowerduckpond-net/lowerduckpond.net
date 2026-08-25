@@ -47,12 +47,34 @@ BROWSER_CHECK_IDS: Final = frozenset(
     for engine in ("chromium", "firefox", "webkit")
     for suffix in ("caddy-filter", "cross-site", "domain-boundary", "sibling-parent-residual")
 )
+EDGE_CHECK_IDS: Final = frozenset(
+    {
+        "m3.0.edge.aop-primary",
+        "m3.0.edge.aop-replacement",
+        "m3.0.edge.aop-rollback",
+        "m3.0.edge.aop-forward",
+        "m3.0.edge.aop-retired-primary",
+        "m3.0.edge.aop-final",
+        "m3.0.edge.zone-policy",
+        "m3.0.edge.proxied-dns",
+        "m3.0.edge.certificates",
+        "m3.0.edge.direct-origin",
+        "m3.0.edge.forwarded-address",
+        "m3.0.edge.cache-bypass",
+        "m3.0.edge.representation-fidelity",
+        "m3.0.edge.reserved-path",
+        "m3.0.edge.unknown-host",
+        "m3.0.edge.http-policy",
+        "m3.0.edge.origin-unavailable",
+    }
+)
 M3_REQUIRED_CHECK_IDS: Final = frozenset().union(
     LIBRARY_CHECK_IDS,
     FILESYSTEM_CHECK_IDS,
     HOST_CHECK_IDS,
     DOMAIN_CHECK_IDS,
     BROWSER_CHECK_IDS,
+    EDGE_CHECK_IDS,
 )
 
 EVIDENCE_KEYS_BY_CHECK: Final = {
@@ -103,4 +125,22 @@ EVIDENCE_KEYS_BY_CHECK: Final = {
         f"m3.0.browser.{engine}.sibling-parent-residual": frozenset({"engine", "residual_observed"})
         for engine in ("chromium", "firefox", "webkit")
     },
+    **{
+        f"m3.0.edge.aop-{stage}": frozenset({"associations_exact", "edge_reachable"})
+        for stage in ("primary", "replacement", "rollback", "forward", "final")
+    },
+    "m3.0.edge.aop-retired-primary": frozenset({"both_zones_checked", "old_leaf_rejected"}),
+    "m3.0.edge.zone-policy": frozenset({"always_online_disabled", "full_strict"}),
+    "m3.0.edge.proxied-dns": frozenset({"origin_hidden", "proxy_addresses"}),
+    "m3.0.edge.certificates": frozenset({"distinct_certificates", "public_edge_valid"}),
+    "m3.0.edge.direct-origin": frozenset({"http_denied", "https_denied"}),
+    "m3.0.edge.forwarded-address": frozenset({"authentic_address", "spoof_overwritten"}),
+    "m3.0.edge.cache-bypass": frozenset({"classes_bypassed", "repeat_bypassed"}),
+    "m3.0.edge.representation-fidelity": frozenset({"representations_equal", "transforms_absent"}),
+    "m3.0.edge.reserved-path": frozenset({"origin_preempted", "provider_namespace_blocked"}),
+    "m3.0.edge.unknown-host": frozenset({"generic_failure", "origin_reached"}),
+    "m3.0.edge.http-policy": frozenset({"redirect_only"}),
+    "m3.0.edge.origin-unavailable": frozenset(
+        {"provider_error_observed", "recovered", "representations_absent"}
+    ),
 }

@@ -12,8 +12,18 @@ readonly session_path="${evidence_root}/session.json"
 readonly operation_lock="${evidence_root}/operation.lock"
 
 usage() {
-    echo "usage: scripts/m3-qualification {begin|libraries|configure|host|domains ATTESTATION|browser|assemble}" >&2
+    echo "usage: scripts/m3-qualification {preflight|begin|libraries|configure TRUST|edge STAGE|host TRUST|domains ATTESTATION|browser|assemble}" >&2
     exit 64
+}
+
+create_certificate_ids_file() {
+    certificate_ids_path=$(mktemp "${TMPDIR:-/tmp}/ldp-m3-certificate-ids.XXXXXXXX")
+    chmod 0600 "$certificate_ids_path"
+    trap 'rm -f -- "$certificate_ids_path"' EXIT
+    tofu -chdir="$qualification_root" console \
+        <<< 'jsonencode(var.origin_pull_certificate_ids)' | \
+        jq --raw-output . > "$certificate_ids_path"
+    uv run python -m json.tool "$certificate_ids_path" >/dev/null
 }
 
 require_clean_revision() {
@@ -46,9 +56,12 @@ load_report_session() {
 }
 
 verify_remote_convergence() {
+    trust_stage=$1
     host=$(session_value ipv4_address)
     if ! ssh -o BatchMode=yes "ldp-admin@$host" sudo cat -- "$remote_convergence_marker" | \
-        uv run ldp-m3-qualify verify-convergence --session "$session_path"; then
+        uv run ldp-m3-qualify verify-convergence \
+            --session "$session_path" \
+            --trust-stage "$trust_stage"; then
         echo "qualification host has not converged for this run and revision" >&2
         return 65
     fi
@@ -69,6 +82,22 @@ fi
 action=$1
 shift
 case "$action" in
+    preflight)
+        [[ $# -eq 0 ]] || usage
+        require_clean_revision
+        : "${M3_QUALIFICATION_NET_ZONE_ID:?}"
+        : "${M3_QUALIFICATION_COM_ZONE_ID:?}"
+        : "${M3_QUALIFICATION_CLOUDFLARE_API_TOKEN:?}"
+        : "${M3_QUALIFICATION_PRIMARY_CA_PATH:?}"
+        : "${M3_QUALIFICATION_REPLACEMENT_CA_PATH:?}"
+        create_certificate_ids_file
+        uv run ldp-m3-qualify edge-preflight \
+            --certificate-ids "$certificate_ids_path" \
+            --net-zone-id "$M3_QUALIFICATION_NET_ZONE_ID" \
+            --com-zone-id "$M3_QUALIFICATION_COM_ZONE_ID" \
+            --primary-ca "$M3_QUALIFICATION_PRIMARY_CA_PATH" \
+            --replacement-ca "$M3_QUALIFICATION_REPLACEMENT_CA_PATH"
+        ;;
     begin)
         [[ $# -eq 0 ]] || usage
         require_clean_revision
@@ -78,6 +107,12 @@ case "$action" in
             "$evidence_root/host.json" \
             "$evidence_root/domains.json" \
             "$evidence_root/browser.json" \
+            "$evidence_root/edge-primary.json" \
+            "$evidence_root/edge-replacement.json" \
+            "$evidence_root/edge-rollback.json" \
+            "$evidence_root/edge-forward.json" \
+            "$evidence_root/edge-retired-primary.json" \
+            "$evidence_root/edge-final.json" \
             "$evidence_root/m3-qualification.json"
         tofu -chdir="$qualification_root" output -json qualification_identity | \
             uv run ldp-m3-qualify begin-session \
@@ -94,25 +129,32 @@ case "$action" in
             --output "$evidence_root/libraries.json"
         ;;
     configure)
-        [[ $# -eq 0 ]] || usage
+        [[ $# -eq 1 && $1 =~ ^(dual|replacement)$ ]] || usage
+        trust_stage=$1
         verify_session
         host=$(session_value ipv4_address)
         droplet_id=$(session_value droplet_id)
         run_id=$(session_value run_id)
         source_revision=$(session_value source_revision)
+        admin_source_cidrs=$(tofu -chdir="$qualification_root" output -json admin_source_cidrs)
+        : "${M3_QUALIFICATION_PRIMARY_CA_PATH:?}"
+        : "${M3_QUALIFICATION_REPLACEMENT_CA_PATH:?}"
         M3_QUALIFICATION_EXPECTED_IPV4="$host" \
             M3_QUALIFICATION_EXPECTED_DROPLET_ID="$droplet_id" \
             M3_QUALIFICATION_EXPECTED_RUN_ID="$run_id" \
             M3_QUALIFICATION_EXPECTED_SOURCE_REVISION="$source_revision" \
+            M3_QUALIFICATION_EXPECTED_ADMIN_SOURCE_CIDRS_JSON="$admin_source_cidrs" \
+            M3_QUALIFICATION_ORIGIN_PULL_TRUST="$trust_stage" \
             ANSIBLE_CONFIG="$repository_root/config/ansible/ansible.cfg" \
             uv run ansible-playbook \
                 --inventory "$qualification_inventory" \
                 "$repository_root/config/ansible/playbooks/m3-qualification.yml"
         ;;
     host)
-        [[ $# -eq 0 ]] || usage
+        [[ $# -eq 1 && $1 =~ ^(dual|replacement)$ ]] || usage
+        trust_stage=$1
         load_report_session
-        verify_remote_convergence
+        verify_remote_convergence "$trust_stage"
         rm -f -- "$evidence_root/host.json"
         ssh -o BatchMode=yes "ldp-admin@$host" sudo rm -f -- "$remote_report"
         set +e
@@ -121,6 +163,7 @@ case "$action" in
             -m lowerduckpond_m3_qualification host \
             --run-id "$qualification_run_id" \
             --source-revision "$qualification_source_revision" \
+            --trust-stage "$trust_stage" \
             --work-root /var/lib/lowerduckpond-m3 \
             --output "$remote_report"
         remote_status=$?
@@ -128,6 +171,47 @@ case "$action" in
         ssh -o BatchMode=yes "ldp-admin@$host" sudo cat "$remote_report" \
             > "$evidence_root/host.json"
         exit "$remote_status"
+        ;;
+    edge)
+        [[ $# -eq 1 && $1 =~ ^(primary|replacement|rollback|forward|retired-primary|final)$ ]] || usage
+        edge_stage=$1
+        load_report_session
+        : "${M3_QUALIFICATION_NET_ZONE_ID:?}"
+        : "${M3_QUALIFICATION_COM_ZONE_ID:?}"
+        : "${M3_QUALIFICATION_CLOUDFLARE_API_TOKEN:?}"
+        case "$edge_stage" in
+            primary|rollback|retired-primary)
+                expected_generation=primary
+                ;;
+            replacement|forward|final)
+                expected_generation=replacement
+                ;;
+        esac
+        case "$edge_stage" in
+            primary|replacement|rollback|forward)
+                trust_stage=dual
+                ;;
+            retired-primary|final)
+                trust_stage=replacement
+                ;;
+        esac
+        selected_generation=$(tofu -chdir="$qualification_root" output -raw origin_pull_generation)
+        if [[ "$selected_generation" != "$expected_generation" ]]; then
+            echo "qualification state selects $selected_generation, not $expected_generation" >&2
+            exit 65
+        fi
+        verify_remote_convergence "$trust_stage"
+        create_certificate_ids_file
+        rm -f -- "$evidence_root/edge-$edge_stage.json"
+        uv run ldp-m3-qualify edge \
+            --run-id "$qualification_run_id" \
+            --source-revision "$qualification_source_revision" \
+            --stage "$edge_stage" \
+            --origin-ipv4 "$host" \
+            --certificate-ids "$certificate_ids_path" \
+            --net-zone-id "$M3_QUALIFICATION_NET_ZONE_ID" \
+            --com-zone-id "$M3_QUALIFICATION_COM_ZONE_ID" \
+            --output "$evidence_root/edge-$edge_stage.json"
         ;;
     domains)
         [[ $# -eq 1 ]] || usage
@@ -146,7 +230,7 @@ case "$action" in
     browser)
         [[ $# -eq 0 ]] || usage
         load_report_session
-        verify_remote_convergence
+        verify_remote_convergence replacement
         rm -f -- "$evidence_root/browser.json"
         uv run ldp-m3-qualify browser \
             --run-id "$qualification_run_id" \
@@ -160,13 +244,19 @@ case "$action" in
     assemble)
         [[ $# -eq 0 ]] || usage
         load_report_session
-        verify_remote_convergence
+        verify_remote_convergence replacement
         rm -f -- "$evidence_root/m3-qualification.json"
         uv run ldp-m3-qualify assemble --require-m3 \
             --fragment "$evidence_root/libraries.json" \
             --fragment "$evidence_root/host.json" \
             --fragment "$evidence_root/domains.json" \
             --fragment "$evidence_root/browser.json" \
+            --fragment "$evidence_root/edge-primary.json" \
+            --fragment "$evidence_root/edge-replacement.json" \
+            --fragment "$evidence_root/edge-rollback.json" \
+            --fragment "$evidence_root/edge-forward.json" \
+            --fragment "$evidence_root/edge-retired-primary.json" \
+            --fragment "$evidence_root/edge-final.json" \
             --output "$evidence_root/m3-qualification.json"
         ;;
     *)

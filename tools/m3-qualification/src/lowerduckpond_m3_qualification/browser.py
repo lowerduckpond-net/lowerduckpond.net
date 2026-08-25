@@ -196,7 +196,7 @@ async def _check_caddy_filter(
     if (
         alias_response.status != HTTPStatus.FOUND
         or alias_headers.get("location") != f"{CANONICAL_ORIGIN}/"
-        or alias_headers.get("cache-control") != "no-store"
+        or alias_headers.get("cache-control") != "no-store, no-transform"
         or alias_headers.get("x-m3-incoming-state", "")
         or "set-cookie" in alias_headers
     ):
@@ -209,7 +209,7 @@ async def _check_caddy_filter(
     alias_non_root_body = await alias_non_root_response.body()
     if (
         alias_non_root_response.status != HTTPStatus.NOT_FOUND
-        or alias_non_root_headers.get("cache-control") != "no-store"
+        or alias_non_root_headers.get("cache-control") != "no-store, no-transform"
         or alias_non_root_headers.get("x-m3-incoming-state", "")
         or "set-cookie" in alias_non_root_headers
     ):
@@ -252,7 +252,7 @@ async def _check_caddy_filter(
     unknown_headers = await unknown_response.all_headers()
     if (
         unknown_response.status != HTTPStatus.NOT_FOUND
-        or unknown_headers.get("cache-control") != "no-store"
+        or unknown_headers.get("cache-control") != "no-store, no-transform"
         or unknown_headers.get("x-m3-incoming-state", "")
         or "set-cookie" in unknown_headers
     ):
@@ -265,7 +265,7 @@ async def _check_caddy_filter(
     alias_non_root_clear_headers = alias_non_root_clear_response.headers
     if (
         alias_non_root_clear_response.status != HTTPStatus.NOT_FOUND
-        or alias_non_root_clear_headers.get("cache-control") != "no-store"
+        or alias_non_root_clear_headers.get("cache-control") != "no-store, no-transform"
         or alias_non_root_clear_headers.get("x-m3-incoming-state", "")
         or "set-cookie" in alias_non_root_clear_headers
         or hashlib.sha256(await alias_non_root_clear_response.body()).digest()

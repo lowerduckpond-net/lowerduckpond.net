@@ -8,7 +8,6 @@ import os
 import pwd
 import re
 import socket
-import ssl
 import stat
 import subprocess
 import time
@@ -57,14 +56,14 @@ POLL_DELAY_SECONDS: Final = 0.1
 CADDY_RUNTIME_MODE: Final = 0o700
 MAXIMUM_HANDOFF_MILLISECONDS: Final = 1000
 MINIMUM_HTTP_STATUS_FIELDS: Final = 2
-DNS_NAME_FIELDS: Final = 2
 TLS_TIMEOUT_SECONDS: Final = 5.0
 ROUTE_CLASS_COUNT: Final = 5
 GENERATION_DIRECTORY_MODE: Final = 0o550
 GENERATION_FILE_MODE: Final = 0o440
 ROOT_UID: Final = 0
-UUIDV7_PATTERN: Final = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+GENERATION_PATTERN: Final = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
+    r"-(?:dual|replacement)$"
 )
 
 
@@ -245,12 +244,9 @@ def _check_caddy_hooks(expected_generation: str) -> dict[str, EvidenceValue]:
 
 
 def _check_caddy_routes() -> dict[str, EvidenceValue]:
-    addresses = _route_addresses()
-    apex_status, apex_headers, apex_body = _curl_route(
-        addresses, ROUTE_HOSTS[0], "/", include_state=True
-    )
+    apex_status, apex_headers, apex_body = _curl_route(ROUTE_HOSTS[0], "/", include_state=True)
     apex_clear_status, apex_clear_headers, apex_clear_body = _curl_route(
-        addresses, ROUTE_HOSTS[0], "/", include_state=False
+        ROUTE_HOSTS[0], "/", include_state=False
     )
     if (
         apex_status != HTTPStatus.NOT_FOUND
@@ -261,11 +257,9 @@ def _check_caddy_routes() -> dict[str, EvidenceValue]:
     ):
         raise RuntimeError
 
-    alias_status, alias_headers, alias_body = _curl_route(
-        addresses, ROUTE_HOSTS[1], "/", include_state=True
-    )
+    alias_status, alias_headers, alias_body = _curl_route(ROUTE_HOSTS[1], "/", include_state=True)
     alias_clear_status, alias_clear_headers, alias_clear_body = _curl_route(
-        addresses, ROUTE_HOSTS[1], "/", include_state=False
+        ROUTE_HOSTS[1], "/", include_state=False
     )
     expected_location = f"https://{ROUTE_HOSTS[2]}/"
     if (
@@ -280,10 +274,10 @@ def _check_caddy_routes() -> dict[str, EvidenceValue]:
         raise RuntimeError
 
     alias_non_root_status, alias_non_root_headers, alias_non_root_body = _curl_route(
-        addresses, ROUTE_HOSTS[1], "/static", include_state=True
+        ROUTE_HOSTS[1], "/static", include_state=True
     )
     alias_non_root_clear_status, alias_non_root_clear_headers, alias_non_root_clear_body = (
-        _curl_route(addresses, ROUTE_HOSTS[1], "/static", include_state=False)
+        _curl_route(ROUTE_HOSTS[1], "/static", include_state=False)
     )
     if (
         alias_non_root_status != HTTPStatus.NOT_FOUND
@@ -295,10 +289,10 @@ def _check_caddy_routes() -> dict[str, EvidenceValue]:
         raise RuntimeError
 
     canonical_status, canonical_headers, canonical_body = _curl_route(
-        addresses, ROUTE_HOSTS[2], "/probe", include_state=True
+        ROUTE_HOSTS[2], "/probe", include_state=True
     )
     canonical_clear_status, canonical_clear_headers, canonical_clear_body = _curl_route(
-        addresses, ROUTE_HOSTS[2], "/probe", include_state=False
+        ROUTE_HOSTS[2], "/probe", include_state=False
     )
     if (
         canonical_status != HTTPStatus.OK
@@ -310,17 +304,15 @@ def _check_caddy_routes() -> dict[str, EvidenceValue]:
         or not _headers_are_stateless(canonical_clear_headers)
     ):
         raise RuntimeError
-    static_status, static_headers, _ = _curl_route(
-        addresses, ROUTE_HOSTS[2], "/static", include_state=True
-    )
+    static_status, static_headers, _ = _curl_route(ROUTE_HOSTS[2], "/static", include_state=True)
     if static_status != HTTPStatus.OK or not _headers_are_stateless(static_headers):
         raise RuntimeError
 
     unknown_status, unknown_headers, unknown_body = _curl_route(
-        addresses, ROUTE_HOSTS[3], "/", include_state=True
+        ROUTE_HOSTS[3], "/", include_state=True
     )
     unknown_clear_status, unknown_clear_headers, unknown_clear_body = _curl_route(
-        addresses, ROUTE_HOSTS[3], "/", include_state=False
+        ROUTE_HOSTS[3], "/", include_state=False
     )
     if (
         unknown_status != HTTPStatus.NOT_FOUND
@@ -337,7 +329,7 @@ def _headers_are_stateless(headers: Mapping[str, str]) -> bool:
     return (
         "set-cookie" not in headers
         and not headers.get("x-m3-incoming-state", "")
-        and headers.get("cache-control") == "no-store"
+        and headers.get("cache-control") == "no-store, no-transform"
     )
 
 
@@ -349,7 +341,9 @@ def _recorded_generation(name: str, expected_generation: str) -> Path:
 
 
 def _is_generation_path(path: Path) -> bool:
-    return path.parent == CADDY_GENERATION_ROOT and UUIDV7_PATTERN.fullmatch(path.name) is not None
+    return (
+        path.parent == CADDY_GENERATION_ROOT and GENERATION_PATTERN.fullmatch(path.name) is not None
+    )
 
 
 def _check_caddy_certificates() -> dict[str, EvidenceValue]:
@@ -361,33 +355,44 @@ def _check_caddy_certificates() -> dict[str, EvidenceValue]:
 
 
 def _certificate_dns_names(address: str, server_name: str) -> frozenset[str]:
-    context = ssl.create_default_context()
-    with (
-        socket.create_connection((address, 443), timeout=TLS_TIMEOUT_SECONDS) as connection,
-        context.wrap_socket(connection, server_hostname=server_name) as secured,
-    ):
-        certificate = secured.getpeercert()
-    if certificate is None:
+    handshake = subprocess.run(  # noqa: S603
+        (
+            "/usr/bin/openssl",
+            "s_client",
+            "-connect",
+            f"{address}:443",
+            "-servername",
+            server_name,
+            "-showcerts",
+            "-verify_return_error",
+        ),
+        input=b"",
+        capture_output=True,
+        check=False,
+        timeout=TLS_TIMEOUT_SECONDS,
+    )
+    match = re.search(
+        rb"-----BEGIN CERTIFICATE-----\r?\n.+?-----END CERTIFICATE-----\r?\n?",
+        handshake.stdout,
+        re.DOTALL,
+    )
+    if match is None:
         raise RuntimeError
-    names: set[str] = set()
-    for entry in certificate.get("subjectAltName", ()):
-        if (
-            isinstance(entry, tuple)
-            and len(entry) == DNS_NAME_FIELDS
-            and entry[0] == "DNS"
-            and isinstance(entry[1], str)
-        ):
-            names.add(entry[1])
-    return frozenset(names)
+    decoded = subprocess.run(
+        ("/usr/bin/openssl", "x509", "-noout", "-ext", "subjectAltName"),
+        input=match.group(0),
+        capture_output=True,
+        check=True,
+        text=False,
+    ).stdout.decode("ascii")
+    return frozenset(re.findall(r"DNS:([^,\s]+)", decoded))
 
 
 def _check_caddy_log_safety() -> dict[str, EvidenceValue]:
     initial_log = CADDY_LOG_PATH.stat()
     initial_identity = (initial_log.st_dev, initial_log.st_ino)
     initial_size = initial_log.st_size
-    status, headers, _ = _curl_route(
-        _route_addresses(), ROUTE_HOSTS[3], LOG_PROOF_PATH, include_state=True
-    )
+    status, headers, _ = _curl_route(ROUTE_HOSTS[3], LOG_PROOF_PATH, include_state=True)
     if status != HTTPStatus.NOT_FOUND or not _headers_are_stateless(headers):
         raise RuntimeError
     for _ in range(POLL_ATTEMPTS):
@@ -449,9 +454,7 @@ def _route_addresses() -> str:
     return "127.0.0.1"
 
 
-def _curl_route(
-    address: str, host: str, path: str, *, include_state: bool
-) -> tuple[int, dict[str, str], bytes]:
+def _curl_route(host: str, path: str, *, include_state: bool) -> tuple[int, dict[str, str], bytes]:
     command = [
         "curl",
         "--silent",
@@ -460,12 +463,12 @@ def _curl_route(
         "-",
         "--noproxy",
         "*",
-        "--resolve",
-        f"{host}:443:{address}",
+        "--header",
+        f"Host: {host}",
     ]
     if include_state:
         command.extend(("--header", f"Cookie: ldp_m3_parent={CANARY_VALUE}"))
-    command.append(f"https://{host}{path}")
+    command.append(f"http://127.0.0.1:18081{path}")
     completed = subprocess.run(command, check=True, capture_output=True)  # noqa: S603
     header_bytes, separator, body = completed.stdout.partition(b"\r\n\r\n")
     if not separator:

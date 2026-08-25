@@ -48,6 +48,7 @@ REPORT_ENVIRONMENTS: Final = frozenset(
     {
         "hermetic-ci",
         "live-dual-domain",
+        "live-cloudflare-edge",
         "operator-and-cloudflare",
         "production-equivalent",
         "ubuntu-26.04-disposable",
