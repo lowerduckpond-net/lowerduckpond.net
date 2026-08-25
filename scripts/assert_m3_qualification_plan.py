@@ -70,6 +70,12 @@ AOP_COMPUTED_ATTRIBUTES: Final = frozenset(
 )
 AOP_TRANSITION_UNKNOWN_ATTRIBUTES: Final = AOP_COMPUTED_ATTRIBUTES - {"hostname", "id"}
 AOP_TRANSITION_ATTRIBUTES: Final = AOP_COMPUTED_ATTRIBUTES | {"config", "zone_id"}
+# OpenTofu's plan JSON omits computed values from ``after`` when the provider
+# cannot know them until apply. Their unknown status is represented separately
+# and exactly by ``after_unknown``.
+AOP_TRANSITION_AFTER_ATTRIBUTES: Final = (
+    AOP_TRANSITION_ATTRIBUTES - AOP_TRANSITION_UNKNOWN_ATTRIBUTES
+)
 NON_MUTATING_ACTIONS: Final = {("no-op",), ("read",)}
 QUALIFICATION_NAME: Final = "lowerduckpond-m3-qualification"
 QUALIFICATION_REGION: Final = "nyc1"
@@ -217,7 +223,7 @@ def _check_aop_transition_shape(
 ) -> None:
     before = _before(resource)
     after = _after(resource)
-    if set(before) != AOP_TRANSITION_ATTRIBUTES or set(after) != AOP_TRANSITION_ATTRIBUTES:
+    if set(before) != AOP_TRANSITION_ATTRIBUTES or set(after) != AOP_TRANSITION_AFTER_ATTRIBUTES:
         errors.append(f"qualification AOP transition attribute shape drifted: {hostname}")
         return
     if before.get("zone_id") != after.get("zone_id"):
@@ -226,11 +232,6 @@ def _check_aop_transition_shape(
     after_unknown = _after_unknown_attributes(resource)
     if after_unknown != AOP_TRANSITION_UNKNOWN_ATTRIBUTES:
         errors.append(f"qualification AOP computed unknown set drifted: {hostname}")
-    errors.extend(
-        f"qualification AOP computed attribute did not become unknown: {hostname} {attribute}"
-        for attribute in sorted(AOP_TRANSITION_UNKNOWN_ATTRIBUTES)
-        if after.get(attribute) is not None
-    )
     errors.extend(
         f"qualification AOP stable computed attribute changed: {hostname} {attribute}"
         for attribute in sorted(AOP_COMPUTED_ATTRIBUTES - AOP_TRANSITION_UNKNOWN_ATTRIBUTES)
