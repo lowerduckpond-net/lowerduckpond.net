@@ -33,9 +33,14 @@ install -o root -g caddy -m 0440 \
 install -d -o caddy -g caddy -m 0700 \
     "${validation_root}/data" "${validation_root}/tmp"
 
+caller_cloudflare_api_token=${CLOUDFLARE_API_TOKEN-}
+caller_cloudflare_api_token_is_set=${CLOUDFLARE_API_TOKEN+x}
 set -a
 # shellcheck disable=SC1091
 source /etc/caddy/environment
+if [[ -n "${caller_cloudflare_api_token_is_set}" ]]; then
+    CLOUDFLARE_API_TOKEN=${caller_cloudflare_api_token}
+fi
 if [[ -n "${candidate_routes_glob}" ]]; then
     CADDY_ROUTES_GLOB=${candidate_routes_glob}
 fi

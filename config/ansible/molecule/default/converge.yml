@@ -15,6 +15,7 @@
     cloudflare_ipv6_cidrs:
       - 2001:db8::/32
     m3_qualification_log_path: /tmp/lowerduckpond-m3-qualification-repair.json
+    m3_qualification_molecule_cloudflare_token: "{{ '0' * 40 }}"
     m3_qualification_validator_log_path: /tmp/lowerduckpond-m3-qualification.json
     m3_qualification_origin_pull_ca_paths:
       - /tmp/lowerduckpond-m3-origin-pull-ca.pem
@@ -89,4 +90,6 @@
         argv:
           - /usr/local/libexec/lowerduckpond/caddy-validate
           - /tmp/lowerduckpond-m3-Caddyfile
+      environment:
+        CLOUDFLARE_API_TOKEN: "{{ m3_qualification_molecule_cloudflare_token }}"
       changed_when: false
