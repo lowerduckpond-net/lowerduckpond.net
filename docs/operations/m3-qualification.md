@@ -62,10 +62,14 @@ identity or registrar-account data.
 Create two separate temporary Cloudflare API tokens:
 
 1. An **M3 edge token** limited to both owned zones and only Zone Read, DNS
-   Write, Zone Settings Read, Rulesets Write, and SSL and Certificates Write.
-   OpenTofu uses it for disposable DNS, rules, and per-hostname associations;
-   Caddy uses it for DNS-01; the qualification client uses it read-only. Keep
-   its lifetime bounded to the drill.
+   Write, Zone Settings Read, Cache Settings Write, Config Settings Write,
+   Zone WAF Write, and SSL and Certificates Write. The three phase-specific
+   write grants cover only the cache-bypass, transform-disable, and
+   `/cdn-cgi` block rulesets respectively; do not substitute the broader
+   Account Rulesets Write permission. OpenTofu uses the token for disposable
+   DNS, rules, and per-hostname associations; Caddy uses it for DNS-01; the
+   qualification client uses it read-only. Keep its lifetime bounded to the
+   drill.
 2. An **M3 certificate-upload token** valid for at most seven days, limited to
    both zones, with only Zone Read and SSL and Certificates Write. Use it only
    from the trusted workstation to upload and later delete the four leaf
