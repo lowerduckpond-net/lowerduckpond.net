@@ -14,8 +14,8 @@
       - 192.0.2.0/24
     cloudflare_ipv6_cidrs:
       - 2001:db8::/32
-    m3_qualification_log_path: /tmp/lowerduckpond-m3-qualification.json
-    m3_qualification_molecule_cloudflare_token: "{{ '0' * 40 }}"
+    m3_qualification_log_path: /tmp/lowerduckpond-m3-qualification-repair.json
+    m3_qualification_validator_log_path: /tmp/lowerduckpond-m3-qualification.json
     m3_qualification_origin_pull_ca_paths:
       - /tmp/lowerduckpond-m3-origin-pull-ca.pem
     m3_qualification_static_root: /tmp/lowerduckpond-m3-static
@@ -48,6 +48,26 @@
           - "1"
         creates: /tmp/lowerduckpond-m3-origin-pull-ca.pem
 
+    - name: Inspect the qualification validation log fixture
+      ansible.builtin.stat:
+        path: "{{ m3_qualification_log_path }}"
+        follow: false
+      register: m3_qualification_validation_log_fixture
+
+    - name: Reproduce a root-validator-created qualification log
+      ansible.builtin.copy:
+        content: ""
+        dest: "{{ m3_qualification_log_path }}"
+        owner: root
+        group: root
+        mode: "0600"
+      when: not m3_qualification_validation_log_fixture.stat.exists
+
+    - name: Apply the qualification log ownership contract
+      ansible.builtin.include_role:
+        name: m3_qualification
+        tasks_from: log.yml
+
     - name: Render the qualification Caddy configuration
       ansible.builtin.template:
         src: "{{ playbook_dir }}/../../roles/m3_qualification/templates/Caddyfile.j2"
@@ -55,16 +75,18 @@
         owner: root
         group: root
         mode: "0600"
+      vars:
+        m3_qualification_log_path: "{{ m3_qualification_validator_log_path }}"
 
-    - name: Validate the qualification Caddy configuration  # noqa command-instead-of-module
+    - name: Remove the prior service-identity validation log
+      ansible.builtin.file:
+        path: "{{ m3_qualification_validator_log_path }}"
+        state: absent
+      changed_when: false
+
+    - name: Validate the qualification Caddy configuration as the service identity
       ansible.builtin.command:
         argv:
-          - /usr/local/bin/caddy
-          - validate
-          - --config
+          - /usr/local/libexec/lowerduckpond/caddy-validate
           - /tmp/lowerduckpond-m3-Caddyfile
-          - --adapter
-          - caddyfile
-      environment:
-        CLOUDFLARE_API_TOKEN: "{{ m3_qualification_molecule_cloudflare_token }}"
       changed_when: false

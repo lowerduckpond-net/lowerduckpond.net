@@ -41,6 +41,9 @@ SYSTEMD_USER_UNIT_PATH = (
 )
 QUALIFICATION_UUID_COMMAND = "/usr/local/libexec/lowerduckpond/m3-qualification-uuid"
 QUALIFICATION_UUID_COMMAND_MODE = 0o755
+QUALIFICATION_LOG_MODE = 0o600
+QUALIFICATION_LOG_PATH = "/tmp/lowerduckpond-m3-qualification.json"  # noqa: S108
+QUALIFICATION_REPAIRED_LOG_PATH = "/tmp/lowerduckpond-m3-qualification-repair.json"  # noqa: S108
 QUALIFICATION_SUDOERS_MODE = 0o440
 VALID_UUIDV7 = "0198d17f-6f4a-7000-8000-000000000001"
 UUID_REJECTION_ARGUMENTS = (
@@ -470,6 +473,13 @@ def test_monitoring_is_local_and_healthy(host: Host) -> None:
     assert not health_script.contains(BACKUP_SCOPE_PATH)
     caddy_validator = host.file("/usr/local/libexec/lowerduckpond/caddy-validate")
     assert caddy_validator.contains("lowerduckpond-caddy-validate")
+    for qualification_log_path in (QUALIFICATION_LOG_PATH, QUALIFICATION_REPAIRED_LOG_PATH):
+        qualification_log = host.file(qualification_log_path)
+        assert qualification_log.exists
+        assert qualification_log.is_file
+        assert qualification_log.user == "caddy"
+        assert qualification_log.group == "caddy"
+        assert qualification_log.mode == QUALIFICATION_LOG_MODE
     scheduled_health = host.run("systemctl start lowerduckpond-health.service")
     health_journal = host.run(
         "journalctl --unit lowerduckpond-health.service --no-pager --lines 50"

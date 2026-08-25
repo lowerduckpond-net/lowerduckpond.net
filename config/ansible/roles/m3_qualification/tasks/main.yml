@@ -215,6 +215,9 @@
   when: item.item.enabled | bool
   no_log: true
 
+- name: Provision the qualification Caddy log
+  ansible.builtin.import_tasks: log.yml
+
 - name: Install the qualification Caddy generation
   ansible.builtin.template:
     src: Caddyfile.j2

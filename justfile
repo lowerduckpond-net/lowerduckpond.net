@@ -61,6 +61,7 @@ check-opentofu:
 check-ansible: _sync
     bash -n scripts/configure-production
     bash -n scripts/check-production-inventory
+    bash -n config/ansible/roles/caddy/files/caddy-validate
     scripts/check-production-inventory
     uv run ansible-galaxy collection install --requirements-file config/ansible/requirements.yml
     ANSIBLE_CONFIG=config/ansible/ansible.cfg uv run ansible-lint config/ansible

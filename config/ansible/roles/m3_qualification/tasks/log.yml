@@ -1,0 +1,39 @@
+---
+- name: Inspect the qualification Caddy log
+  ansible.builtin.stat:
+    path: "{{ m3_qualification_log_path }}"
+    follow: false
+  register: m3_qualification_log
+
+- name: Require a safe qualification Caddy log
+  ansible.builtin.assert:
+    that:
+      - >-
+        not m3_qualification_log.stat.exists or
+        (
+          m3_qualification_log.stat.isreg and
+          not m3_qualification_log.stat.islnk and
+          m3_qualification_log.stat.mode == '0600' and
+          (
+            (
+              m3_qualification_log.stat.pw_name == 'caddy' and
+              m3_qualification_log.stat.gr_name == 'caddy'
+            ) or
+            (
+              m3_qualification_log.stat.pw_name == 'root' and
+              m3_qualification_log.stat.gr_name == 'root'
+            )
+          )
+        )
+    fail_msg: Refusing to replace an unsafe qualification Caddy log.
+
+- name: Provision the qualification Caddy log for the service identity
+  ansible.builtin.file:
+    path: "{{ m3_qualification_log_path }}"
+    state: touch
+    owner: caddy
+    group: caddy
+    mode: "0600"
+    follow: false
+    access_time: preserve
+    modification_time: preserve
