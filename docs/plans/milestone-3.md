@@ -227,7 +227,9 @@ Deliver:
 - provision the four disposable hostnames as proxied records, identify both the
   Cloudflare edge certificate and Caddy origin certificate, and prove Full
   (strict) validation, account-specific Authenticated Origin Pulls, and
-  Cloudflare-only ingress over the reviewed provider network set;
+  Cloudflare-only ingress over the reviewed provider network set; issue the
+  disposable origin-pull leaf for 30 days immediately before upload and reject
+  or reissue it locally if fewer than 14 full days remain;
 - prove a direct connection, any client certificate not issued by the project
   CA, and spoofed forwarding headers cannot reach tenant or platform content;
   trust the forwarded visitor address only on the authenticated edge path;
@@ -765,9 +767,10 @@ These are hypotheses, not design facts:
 6. The OpenTofu provider can manage the required proxy, SSL, origin-pull, and
    cache-bypass resources with narrowly scoped two-zone credentials; its API
    model does not require an unaccepted account-wide grant.
-7. Cloudflare accepts the project-CA leaves, seven-day qualification lifetime,
-   one-year production lifetime, per-hostname and zone-level association, and
-   overlap required by the rotation contract.
+7. Cloudflare accepts the project-CA leaves, a 30-day qualification lifetime
+   with at least 14 full days remaining at upload, a one-year production
+   lifetime, per-hostname and zone-level association, and the overlap required
+   by the rotation contract.
 8. The production and disposable filesystems implement the tested directory
    sync, rename, hard-link, descriptor, and locking behavior.
 9. Ubuntu 26.04's systemd, OpenSSH, and sudo versions support the exact restart,
@@ -835,12 +838,13 @@ actions:
 4. before the revised M3.0 live gate, create and back up the project
    origin-pull CA only on the trusted workstation, authorize the short-lived
    disposable DigitalOcean host and Cloudflare records, and use a separate
-   expiring upload token to install a short-lived per-hostname leaf at
-   Cloudflare; provide only the public CA certificate and non-secret uploaded
-   certificate ID to the qualification tooling, discard the local leaf key
-   after upload verification, then use the still-expiring token to remove the
-   leaf during complete teardown before revoking it; repeat the reviewed
-   rotation procedure for production zone-level leaves before M3.12; and
+   upload token valid for at most seven days to install a 30-day per-hostname
+   leaf immediately after issuance and only while at least 14 full days remain;
+   provide only the public CA certificate and non-secret uploaded certificate
+   ID to the qualification tooling, discard the local leaf key after upload
+   verification, then use the still-expiring token to remove the leaf during
+   complete teardown before revoking it; repeat the reviewed rotation procedure
+   for production zone-level leaves before M3.12; and
 5. approve the reversible production CPU/RAM resize if M3.12 measurements do
    not prove the current host has sufficient reserve.
 

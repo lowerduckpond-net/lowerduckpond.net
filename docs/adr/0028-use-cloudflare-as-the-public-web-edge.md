@@ -87,8 +87,10 @@ qualification uses short-lived per-hostname certificates so teardown can
 remove every association without changing an apex or another production
 hostname. The project CA is valid for at most five years and backed up with its
 passphrase. Production leaves are valid for at most one year and rotate with at
-least 60 days remaining. Qualification leaves and their upload credentials are
-valid for at most seven days. A missed rotation closes public HTTPS rather than
+least 60 days remaining. Issue each qualification leaf for 30 days immediately
+before upload, and upload it only while at least 14 full days remain; otherwise
+discard and reissue it locally. Its certificate-lifecycle credential is valid
+for at most seven days. A missed rotation closes public HTTPS rather than
 falling back to the global shared certificate.
 
 Rotate a project CA before it has less than one full production-leaf lifetime
