@@ -63,7 +63,7 @@ check-ansible: _sync
     bash -n scripts/check-production-inventory
     bash -n config/ansible/roles/caddy/files/caddy-validate
     scripts/check-production-inventory
-    uv run ansible-galaxy collection install --requirements-file config/ansible/requirements.yml
+    uv run ansible-galaxy collection install --no-cache --requirements-file config/ansible/requirements.yml
     ANSIBLE_CONFIG=config/ansible/ansible.cfg uv run ansible-lint config/ansible
     ANSIBLE_CONFIG=config/ansible/ansible.cfg uv run ansible-playbook --inventory config/ansible/inventories/development/hosts.yml --syntax-check config/ansible/playbooks/site.yml
     ANSIBLE_CONFIG=config/ansible/ansible.cfg uv run ansible-playbook --inventory config/ansible/inventories/development/hosts.yml --syntax-check config/ansible/playbooks/acceptance.yml
