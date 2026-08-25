@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 EXPECTED_TAGS = {
     "environment:production",
@@ -58,7 +58,7 @@ REBUILD_DRILL_REQUIRED_FIELD_CHANGES = {
     "module.host.digitalocean_firewall.host": {"droplet_ids"},
     "digitalocean_project_resources.host": {"resources"},
 }
-EXPECTED_CONFIGURATION_REFERENCES = {
+EXPECTED_CONFIGURATION_REFERENCES: Final[dict[str, dict[str, tuple[str, ...]]]] = {
     "module.host.digitalocean_reserved_ip_assignment.host": {
         "droplet_id": (
             "digitalocean_droplet.host.id",

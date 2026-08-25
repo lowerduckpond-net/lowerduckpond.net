@@ -4,4 +4,15 @@ admin_ssh_public_key          = "ssh-ed25519 AAAA replace-with-the-backed-up-adm
 admin_source_cidrs            = ["192.0.2.1/32"]
 lowerduckpond_net_zone_id     = "00000000000000000000000000000000"
 lowerduckpond_com_zone_id     = "00000000000000000000000000000000"
+origin_pull_certificate_ids = {
+  primary = {
+    lowerduckpond_net = "11111111111111111111111111111111"
+    lowerduckpond_com = "22222222222222222222222222222222"
+  }
+  replacement = {
+    lowerduckpond_net = "33333333333333333333333333333333"
+    lowerduckpond_com = "44444444444444444444444444444444"
+  }
+}
+origin_pull_generation         = "primary"
 state_encryption_passphrase   = "replace-with-a-high-entropy-value"

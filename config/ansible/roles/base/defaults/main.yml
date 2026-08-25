@@ -10,6 +10,7 @@ base_packages:
   - jq
   - locales
   - openssh-server
+  - openssl
   - python3-apt
   - sudo
   - unattended-upgrades

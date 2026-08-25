@@ -9,8 +9,62 @@
   hosts: hosting_nodes
   become: true
   gather_facts: false
+  vars:
+    cloudflare_ipv4_cidrs:
+      - 192.0.2.0/24
+    cloudflare_ipv6_cidrs:
+      - 2001:db8::/32
+    m3_qualification_log_path: /tmp/lowerduckpond-m3-qualification.json
+    m3_qualification_molecule_cloudflare_token: "{{ '0' * 40 }}"
+    m3_qualification_origin_pull_ca_paths:
+      - /tmp/lowerduckpond-m3-origin-pull-ca.pem
+    m3_qualification_static_root: /tmp/lowerduckpond-m3-static
   tasks:
     - name: Include the qualification sudo tasks
       ansible.builtin.include_role:
         name: m3_qualification
         tasks_from: sudo.yml
+
+    - name: Create a disposable origin-pull CA for Caddy validation  # noqa command-instead-of-module
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/openssl
+          - req
+          - -x509
+          - -newkey
+          - rsa:2048
+          - -nodes
+          - -keyout
+          - /tmp/lowerduckpond-m3-origin-pull-ca-key.pem
+          - -out
+          - /tmp/lowerduckpond-m3-origin-pull-ca.pem
+          - -subj
+          - /CN=Lower Duck Pond Molecule origin-pull CA
+          - -addext
+          - basicConstraints=critical,CA:TRUE
+          - -addext
+          - keyUsage=critical,keyCertSign,cRLSign
+          - -days
+          - "1"
+        creates: /tmp/lowerduckpond-m3-origin-pull-ca.pem
+
+    - name: Render the qualification Caddy configuration
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../roles/m3_qualification/templates/Caddyfile.j2"
+        dest: /tmp/lowerduckpond-m3-Caddyfile
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Validate the qualification Caddy configuration  # noqa command-instead-of-module
+      ansible.builtin.command:
+        argv:
+          - /usr/local/bin/caddy
+          - validate
+          - --config
+          - /tmp/lowerduckpond-m3-Caddyfile
+          - --adapter
+          - caddyfile
+      environment:
+        CLOUDFLARE_API_TOKEN: "{{ m3_qualification_molecule_cloudflare_token }}"
+      changed_when: false

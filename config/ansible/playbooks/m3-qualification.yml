@@ -24,6 +24,10 @@
           - >-
             hostvars['m3_qualification'].m3_expected_source_revision ==
             lookup('ansible.builtin.env', 'M3_QUALIFICATION_EXPECTED_SOURCE_REVISION')
+          - >-
+            hostvars['m3_qualification'].m3_expected_admin_source_cidrs ==
+            (lookup('ansible.builtin.env',
+                    'M3_QUALIFICATION_EXPECTED_ADMIN_SOURCE_CIDRS_JSON') | from_json)
         fail_msg: >-
           Refusing to configure without the exact state-bound M3.0 qualification target.
         quiet: true
@@ -42,12 +46,22 @@
   gather_facts: false
   vars_files:
     - ../../../platform/versions.yml
+    - ../../../platform/cloudflare-networks.json
   vars:
     caddy_domain: m3-qualification.lowerduckpond.net
     caddy_tls_mode: internal
+    firewall_admin_source_cidrs: "{{ m3_expected_admin_source_cidrs }}"
+    firewall_web_source_cidrs: >-
+      {{ cloudflare_ipv4_cidrs + cloudflare_ipv6_cidrs }}
     m3_qualification_convergence_marker: /var/lib/lowerduckpond-m3/converged-session
     caddy_cloudflare_api_token: >-
       {{ lookup('ansible.builtin.env', 'M3_QUALIFICATION_CLOUDFLARE_API_TOKEN') }}
+    m3_qualification_origin_pull_trust: >-
+      {{ lookup('ansible.builtin.env', 'M3_QUALIFICATION_ORIGIN_PULL_TRUST') }}
+    m3_qualification_origin_pull_primary_ca_path: >-
+      {{ lookup('ansible.builtin.env', 'M3_QUALIFICATION_PRIMARY_CA_PATH') }}
+    m3_qualification_origin_pull_replacement_ca_path: >-
+      {{ lookup('ansible.builtin.env', 'M3_QUALIFICATION_REPLACEMENT_CA_PATH') }}
   pre_tasks:
     - name: Require successful controller inventory preflight
       ansible.builtin.assert:
@@ -82,6 +96,9 @@
             m3_expected_run_id is
             match('^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$')
           - m3_expected_source_revision is match('^[0-9a-f]{40}$')
+          - m3_expected_admin_source_cidrs | length > 0
+          - "'0.0.0.0/0' not in m3_expected_admin_source_cidrs"
+          - "'::/0' not in m3_expected_admin_source_cidrs"
         fail_msg: Refusing to configure a host not bound to the M3.0 OpenTofu session.
 
     - name: Gather facts after qualification identity verification
@@ -104,12 +121,23 @@
         quiet: true
       no_log: true
 
+    - name: Require an exact origin-pull trust stage and controller CA inputs
+      ansible.builtin.assert:
+        that:
+          - m3_qualification_origin_pull_trust in ['dual', 'replacement']
+          - m3_qualification_origin_pull_primary_ca_path | length > 0
+          - m3_qualification_origin_pull_replacement_ca_path | length > 0
+        fail_msg: >-
+          Export both public project-CA paths and select the dual or replacement trust stage.
+        quiet: true
+
     - name: Invalidate any prior qualification convergence
       ansible.builtin.file:
         path: "{{ m3_qualification_convergence_marker }}"
         state: absent
   roles:
     - role: base
+    - role: firewall
     - role: caddy
     - role: m3_qualification
   post_tasks:
@@ -118,7 +146,9 @@
 
     - name: Attest successful qualification convergence
       ansible.builtin.copy:
-        content: "{{ m3_expected_run_id }} {{ m3_expected_source_revision }}\n"
+        content: >-
+          {{ m3_expected_run_id }} {{ m3_expected_source_revision }}
+          {{ m3_qualification_origin_pull_trust }}{{ '\n' }}
         dest: "{{ m3_qualification_convergence_marker }}"
         owner: root
         group: root

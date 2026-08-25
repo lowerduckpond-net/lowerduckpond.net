@@ -1,10 +1,19 @@
 {
 	admin unix//run/caddy/admin.sock
+	servers {
+		trusted_proxies static {{ (cloudflare_ipv4_cidrs + cloudflare_ipv6_cidrs) | join(' ') }}
+		client_ip_headers CF-Connecting-IP
+		strict_sni_host on
+	}
 }
 
 lowerduckpond.net, *.lowerduckpond.net {
 	tls {
 		dns cloudflare {$CLOUDFLARE_API_TOKEN}
+		client_auth {
+			mode require_and_verify
+			trust_pool file {{ m3_qualification_origin_pull_ca_paths | join(' ') }}
+		}
 	}
 	log {
 		output file {{ m3_qualification_log_path }}
@@ -14,19 +23,35 @@ lowerduckpond.net, *.lowerduckpond.net {
 		}
 	}
 	route {
-		@set_platform path /set-platform-state
-		handle @set_platform {
-			header Set-Cookie "__Host-ldp_m3_platform=qualified; Path=/; Secure; HttpOnly; SameSite=Lax"
-			respond "qualified\n" 200
+		@platform host lowerduckpond.net m3-qualification.lowerduckpond.net
+		handle @platform {
+			header {
+				Cache-Control "no-transform"
+				X-M3-Origin-Reached "true"
+				X-M3-Observed-Client-IP "{client_ip}"
+			}
+			@set_platform path /set-platform-state
+			handle @set_platform {
+				header Set-Cookie "__Host-ldp_m3_platform=qualified; Path=/; Secure; HttpOnly; SameSite=Lax"
+				respond "qualified\n" 200
+			}
+			root * {{ m3_qualification_static_root }}
+			file_server
 		}
-		root * {{ m3_qualification_static_root }}
-		file_server
+		handle {
+			header Cache-Control "no-store, no-transform"
+			respond "No Lower Duck Pond site has been provisioned for this name.\n" 404
+		}
 	}
 }
 
 lowerduckpond.com, *.lowerduckpond.com {
 	tls {
 		dns cloudflare {$CLOUDFLARE_API_TOKEN}
+		client_auth {
+			mode require_and_verify
+			trust_pool file {{ m3_qualification_origin_pull_ca_paths | join(' ') }}
+		}
 	}
 	log {
 		output file {{ m3_qualification_log_path }}
@@ -39,7 +64,69 @@ lowerduckpond.com, *.lowerduckpond.com {
 		request_header -Cookie
 		header {
 			-Set-Cookie
-			Cache-Control "no-store"
+			Cache-Control "no-store, no-transform"
+			X-M3-Incoming-State "{http.request.header.Cookie}"
+			X-M3-Origin-Reached "true"
+			X-M3-Observed-Client-IP "{client_ip}"
+		}
+		@apex host lowerduckpond.com
+		@alias_root {
+			host m3-a.lowerduckpond.com
+			method GET HEAD
+			path /
+		}
+		@alias host m3-a.lowerduckpond.com
+		@canonical host t-0198d17f6f4a70008000000000000001.lowerduckpond.com
+		handle @apex {
+			header +Set-Cookie "ldp_m3_route=must-be-removed; Domain=lowerduckpond.com; Path=/; Secure"
+			respond "No Lower Duck Pond site has been provisioned for this name.\n" 404
+		}
+		handle @alias_root {
+			header +Set-Cookie "ldp_m3_route=must-be-removed; Domain=lowerduckpond.com; Path=/; Secure"
+			redir https://t-0198d17f6f4a70008000000000000001.lowerduckpond.com/ 302
+		}
+		handle @alias {
+			header +Set-Cookie "ldp_m3_route=must-be-removed; Domain=lowerduckpond.com; Path=/; Secure"
+			respond "No Lower Duck Pond site has been provisioned for this name.\n" 404
+		}
+		handle @canonical {
+			header +Set-Cookie "ldp_m3_route=must-be-removed; Domain=lowerduckpond.com; Path=/; Secure"
+			@probe path /probe
+			handle @probe {
+				reverse_proxy 127.0.0.1:18080 {
+					header_up -Cookie
+					header_down -Set-Cookie
+				}
+			}
+			root * {{ m3_qualification_static_root }}
+			file_server
+		}
+		handle {
+			header +Set-Cookie "ldp_m3_route=must-be-removed; Domain=lowerduckpond.com; Path=/; Secure"
+			respond "No Lower Duck Pond site has been provisioned for this name.\n" 404
+		}
+	}
+}
+
+# Component probes use the same route contracts without creating a public mTLS bypass.
+http://127.0.0.1:18081 {
+	bind 127.0.0.1
+	route {
+		@platform host lowerduckpond.net m3-qualification.lowerduckpond.net
+		handle @platform {
+			header Cache-Control "no-transform"
+			@set_platform path /set-platform-state
+			handle @set_platform {
+				header Set-Cookie "__Host-ldp_m3_platform=qualified; Path=/; Secure; HttpOnly; SameSite=Lax"
+				respond "qualified\n" 200
+			}
+			root * {{ m3_qualification_static_root }}
+			file_server
+		}
+		request_header -Cookie
+		header {
+			-Set-Cookie
+			Cache-Control "no-store, no-transform"
 			X-M3-Incoming-State "{http.request.header.Cookie}"
 		}
 		@apex host lowerduckpond.com

@@ -6,11 +6,105 @@ from typing import Any
 import pytest
 
 from scripts.assert_m3_qualification_plan import (
+    AOP_RESOURCES,
     DNS_NAMES,
     EXPECTED_RESOURCES,
+    REVIEWED_CLOUDFLARE_CIDRS,
+    ZONE_HOSTNAMES,
     QualificationPlanError,
     assert_plan,
 )
+
+PRIMARY_IDS = {
+    "lowerduckpond_net": "11111111-1111-4111-8111-111111111111",
+    "lowerduckpond_com": "22222222-2222-4222-8222-222222222222",
+}
+REPLACEMENT_IDS = {
+    "lowerduckpond_net": "33333333-3333-4333-8333-333333333333",
+    "lowerduckpond_com": "44444444-4444-4444-8444-444444444444",
+}
+ZONE_IDS = {
+    "lowerduckpond_net": "a" * 32,
+    "lowerduckpond_com": "b" * 32,
+}
+
+
+def _zone_key(hostname: str) -> str:
+    return "lowerduckpond_net" if hostname.endswith(".lowerduckpond.net") else "lowerduckpond_com"
+
+
+def _host_expression(zone_key: str) -> str:
+    names = " ".join(f'"{hostname}"' for hostname in ZONE_HOSTNAMES[zone_key])
+    return f"http.host in {{{names}}}"
+
+
+def _ruleset_attributes(policy: str, zone_key: str) -> dict[str, Any]:
+    names = {
+        "cache_bypass": "Lower Duck Pond M3.0 qualification cache bypass",
+        "cdn_cgi_block": "Lower Duck Pond M3.0 qualification reserved path",
+        "transform_disable": "Lower Duck Pond M3.0 qualification transform policy",
+    }
+    phases = {
+        "cache_bypass": "http_request_cache_settings",
+        "cdn_cgi_block": "http_request_firewall_custom",
+        "transform_disable": "http_config_settings",
+    }
+    actions = {
+        "cache_bypass": "set_cache_settings",
+        "cdn_cgi_block": "block",
+        "transform_disable": "set_config",
+    }
+    descriptions = {
+        "cache_bypass": "Never cache a Milestone 3 qualification response",
+        "cdn_cgi_block": "Block Cloudflare's reserved path before it reaches Caddy",
+        "transform_disable": "Preserve origin representations for qualification",
+    }
+    expression = _host_expression(zone_key)
+    if policy == "cdn_cgi_block":
+        expression = (
+            f'({expression}) and (lower(http.request.uri.path) eq "/cdn-cgi" '
+            'or starts_with(lower(http.request.uri.path), "/cdn-cgi/"))'
+        )
+    parameters: dict[str, Any] = {}
+    if policy == "cache_bypass":
+        parameters = {"cache": False}
+    elif policy == "transform_disable":
+        parameters = {
+            "automatic_https_rewrites": False,
+            "disable_rum": True,
+            "disable_zaraz": True,
+            "email_obfuscation": False,
+            "fonts": False,
+            "rocket_loader": False,
+        }
+    return {
+        "description": "Disposable qualification hostnames only; remove during complete teardown",
+        "kind": "zone",
+        "name": names[policy],
+        "phase": phases[policy],
+        "rules": [
+            {
+                "action": actions[policy],
+                "action_parameters": parameters,
+                "description": descriptions[policy],
+                "enabled": True,
+                "expression": expression,
+                "ref": f"lowerduckpond_m3_qualification_{policy}",
+            }
+        ],
+        "zone_id": ZONE_IDS[zone_key],
+    }
+
+
+def _variables(generation: str = "primary") -> dict[str, Any]:
+    return {
+        "lowerduckpond_net_zone_id": {"value": ZONE_IDS["lowerduckpond_net"]},
+        "lowerduckpond_com_zone_id": {"value": ZONE_IDS["lowerduckpond_com"]},
+        "origin_pull_generation": {"value": generation},
+        "origin_pull_certificate_ids": {
+            "value": {"primary": PRIMARY_IDS, "replacement": REPLACEMENT_IDS}
+        },
+    }
 
 
 def _valid_plan(*, destroy: bool = False) -> dict[str, Any]:
@@ -48,12 +142,12 @@ def _valid_plan(*, destroy: bool = False) -> dict[str, Any]:
                     {
                         "protocol": "tcp",
                         "port_range": "80",
-                        "source_addresses": ["0.0.0.0/0", "::/0"],
+                        "source_addresses": sorted(REVIEWED_CLOUDFLARE_CIDRS),
                     },
                     {
                         "protocol": "tcp",
                         "port_range": "443",
-                        "source_addresses": ["0.0.0.0/0", "::/0"],
+                        "source_addresses": sorted(REVIEWED_CLOUDFLARE_CIDRS),
                     },
                 ],
                 "name": "lowerduckpond-m3-qualification",
@@ -81,10 +175,31 @@ def _valid_plan(*, destroy: bool = False) -> dict[str, Any]:
             attributes = {
                 "content": droplet_ip,
                 "name": name,
-                "proxied": False,
-                "ttl": 60,
+                "proxied": True,
+                "ttl": 1,
                 "type": "A",
             }
+        elif resource_type == "cloudflare_authenticated_origin_pulls":
+            name = next(name for name in DNS_NAMES if f'["{name}"]' in address)
+            zone_key = _zone_key(name)
+            attributes = {
+                "zone_id": ZONE_IDS[zone_key],
+                "config": [
+                    {
+                        "cert_id": PRIMARY_IDS[zone_key],
+                        "enabled": True,
+                        "hostname": name,
+                    }
+                ],
+            }
+        elif resource_type == "cloudflare_ruleset":
+            policy = next(
+                policy
+                for policy in ("cache_bypass", "cdn_cgi_block", "transform_disable")
+                if f"qualification_{policy}" in address
+            )
+            zone_key = next(zone for zone in ZONE_HOSTNAMES if f'["{zone}"]' in address)
+            attributes = _ruleset_attributes(policy, zone_key)
         resources.append(
             {
                 "address": address,
@@ -97,6 +212,7 @@ def _valid_plan(*, destroy: bool = False) -> dict[str, Any]:
             }
         )
     return {
+        "variables": _variables(),
         "resource_changes": resources,
         "configuration": {
             "root_module": {
@@ -140,12 +256,75 @@ def _valid_plan(*, destroy: bool = False) -> dict[str, Any]:
     }
 
 
+def _valid_transition(target: str) -> dict[str, Any]:
+    source = "replacement" if target == "primary" else "primary"
+    identifiers = {"primary": PRIMARY_IDS, "replacement": REPLACEMENT_IDS}
+    resources: list[dict[str, Any]] = []
+    for address in sorted(AOP_RESOURCES):
+        name = next(name for name in DNS_NAMES if f'["{name}"]' in address)
+        zone_key = _zone_key(name)
+
+        def attributes(
+            generation: str, *, bound_zone_key: str = zone_key, bound_name: str = name
+        ) -> dict[str, Any]:
+            return {
+                "zone_id": ZONE_IDS[bound_zone_key],
+                "config": [
+                    {
+                        "cert_id": identifiers[generation][bound_zone_key],
+                        "enabled": True,
+                        "hostname": bound_name,
+                    }
+                ],
+            }
+
+        resources.append(
+            {
+                "address": address,
+                "type": "cloudflare_authenticated_origin_pulls",
+                "change": {
+                    "actions": ["update"],
+                    "before": attributes(source),
+                    "after": attributes(target),
+                },
+            }
+        )
+    return {"variables": _variables(target), "resource_changes": resources}
+
+
 def test_create_plan_accepts_only_exact_disposable_boundary() -> None:
     assert_plan(_valid_plan(), destroy=False)
 
 
 def test_destroy_plan_accepts_only_exact_disposable_boundary() -> None:
     assert_plan(_valid_plan(destroy=True), destroy=True)
+
+
+def test_aop_transition_accepts_only_four_association_updates() -> None:
+    assert_plan(_valid_transition("replacement"), destroy=False, transition="replacement")
+    assert_plan(_valid_transition("primary"), destroy=False, transition="primary")
+
+
+def test_aop_transition_rejects_an_unrelated_mutation() -> None:
+    plan = _valid_transition("replacement")
+    plan["resource_changes"].append(
+        {
+            "address": 'cloudflare_dns_record.qualification["m3-a.lowerduckpond.com"]',
+            "type": "cloudflare_dns_record",
+            "change": {"actions": ["update"], "before": {}, "after": {}},
+        }
+    )
+
+    with pytest.raises(QualificationPlanError, match="unexpected AOP transition"):
+        assert_plan(plan, destroy=False, transition="replacement")
+
+
+def test_aop_transition_rejects_an_extra_field_change() -> None:
+    plan = _valid_transition("replacement")
+    plan["resource_changes"][0]["change"]["after"]["deployment_status"] = "pending"
+
+    with pytest.raises(QualificationPlanError, match="more than config"):
+        assert_plan(plan, destroy=False, transition="replacement")
 
 
 def test_destroy_plan_accepts_a_partial_apply_subset() -> None:
@@ -200,7 +379,7 @@ def test_plan_rejects_boundary_changes(mutation: str, destroy: bool) -> None:
         changes[0]["change"]["actions"] = ["delete", "create"]
     elif mutation == "wrong_dns":
         dns = next(item for item in changes if item["type"] == "cloudflare_dns_record")
-        dns["change"]["after"]["proxied"] = True
+        dns["change"]["after"]["proxied"] = False
     elif mutation == "create_during_destroy":
         changes[0]["change"]["actions"] = ["create"]
     elif mutation == "destroy_apex":
@@ -267,6 +446,7 @@ def test_create_rejects_non_disposable_configuration_bindings(address: str, fiel
         "missing_egress",
         "tag_target",
         "alternate_ssh_source",
+        "world_web",
     ],
 )
 def test_create_rejects_non_exact_firewall_rules(mutation: str) -> None:
@@ -292,8 +472,25 @@ def test_create_rejects_non_exact_firewall_rules(mutation: str) -> None:
         firewall["outbound_rule"].pop()
     elif mutation == "tag_target":
         firewall["tags"] = ["production"]
-    else:
+    elif mutation == "alternate_ssh_source":
         firewall["inbound_rule"][0]["source_tags"] = ["production"]
+    else:
+        firewall["inbound_rule"][1]["source_addresses"] = ["0.0.0.0/0", "::/0"]
+
+    with pytest.raises(QualificationPlanError):
+        assert_plan(plan, destroy=False)
+
+
+@pytest.mark.parametrize(
+    "resource_type", ["cloudflare_authenticated_origin_pulls", "cloudflare_ruleset"]
+)
+def test_create_rejects_overbroad_edge_policy(resource_type: str) -> None:
+    plan = _valid_plan()
+    resource = next(item for item in plan["resource_changes"] if item["type"] == resource_type)
+    if resource_type == "cloudflare_authenticated_origin_pulls":
+        resource["change"]["after"]["config"][0]["hostname"] = "lowerduckpond.com"
+    else:
+        resource["change"]["after"]["rules"][0]["expression"] = "true"
 
     with pytest.raises(QualificationPlanError):
         assert_plan(plan, destroy=False)
