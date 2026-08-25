@@ -21,3 +21,19 @@ output "browser_origins" {
     tenant_unknown   = "https://m3-unknown.lowerduckpond.com"
   }
 }
+
+output "admin_source_cidrs" {
+  description = "Exact state-bound SSH sources passed to the qualification host firewall."
+  value       = sort(tolist(var.admin_source_cidrs))
+  sensitive   = true
+}
+
+output "origin_pull_generation" {
+  description = "AOP certificate generation selected in the current disposable state."
+  value       = var.origin_pull_generation
+}
+
+output "cloudflare_proxy_cidrs" {
+  description = "Reviewed Cloudflare network snapshot applied to the disposable cloud firewall."
+  value       = local.cloudflare_proxy_cidrs
+}

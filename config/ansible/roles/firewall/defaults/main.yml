@@ -1,3 +1,6 @@
 ---
 firewall_admin_source_cidrs: []
+firewall_web_source_cidrs:
+  - 0.0.0.0/0
+  - ::/0
 firewall_enable_service: true

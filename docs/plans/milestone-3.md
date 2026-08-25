@@ -1,6 +1,6 @@
 # Milestone 3 implementation plan
 
-- Status: implementation in progress; M3.0 edge redesign pending
+- Status: implementation in progress; revised M3.0 edge gate under review
 - Updated: 2026-08-25
 - Outcome: deliver the complete static-tenant lifecycle through the trusted
   workstation without enabling the Milestone 4 public control plane
@@ -204,15 +204,14 @@ deferred. Production remains dark through phases 0–11.
 
 ### M3.0: qualify dangerous platform assumptions
 
-Implementation status: the hermetic, disposable-host, domain, Caddy, and
-three-engine browser probes for the earlier direct-origin design are
-implemented. They remain useful component diagnostics but cannot satisfy M3.0
-after ADR 0028. The qualification stack and report must first add the public
-Cloudflare edge, authenticated-origin, cache-bypass, Always Online denial, and
-origin-denial obligations below. Do not begin another live run until that
+Implementation status: the revised exact-resource stack and 54-check gate are
+implemented for review. They retain the hermetic, disposable-host, domain,
+Caddy, and three-engine browser probes and add the public Cloudflare edge,
+authenticated-origin rollover, cache-bypass, Always Online denial, and
+origin-denial obligations below. Do not begin the live run until that
 implementation is reviewed and merged. M3.0 is complete only after an
-explicitly authorized live run passes the revised exact-check report and the
-disposable resources are confirmed destroyed.
+explicitly authorized live run passes the exact report and the disposable
+resources and uploaded leaves are confirmed destroyed.
 
 Add executable qualification probes and a sanitized report before depending on
 host behavior that the current Molecule suite does not reproduce.

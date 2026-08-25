@@ -90,6 +90,131 @@
     group: caddy
     mode: "0640"
 
+- name: Install the response-fidelity fixture
+  ansible.builtin.copy:
+    content: |-
+      <!doctype html>
+      <meta charset="utf-8">
+      <title>Lower Duck Pond M3 fidelity fixture</title>
+      <p>edge-fidelity@example.invalid</p>
+      <a href="http://example.invalid/plain-http">plain HTTP marker</a>
+      <script type="application/json">{"provider_injection":false}</script>
+      <style>@font-face { font-family: M3Fixture; src: url('/fixture.woff2'); }</style>
+    dest: "{{ m3_qualification_static_root }}/fidelity"
+    owner: root
+    group: caddy
+    mode: "0640"
+
+- name: Install write-once origin-pull CA trust files
+  ansible.builtin.copy:
+    content: "{{ lookup('ansible.builtin.file', item.source) | trim }}\n"
+    dest: >-
+      {{ m3_qualification_generation_root }}/{{ m3_qualification_generation }}/{{ item.name }}
+    owner: root
+    group: caddy
+    mode: "0440"
+    force: false
+  loop:
+    - name: origin-pull-primary-ca.pem
+      source: "{{ m3_qualification_origin_pull_primary_ca_path }}"
+      enabled: "{{ m3_qualification_origin_pull_trust == 'dual' }}"
+    - name: origin-pull-replacement-ca.pem
+      source: "{{ m3_qualification_origin_pull_replacement_ca_path }}"
+      enabled: true
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.enabled | bool
+  no_log: true
+
+- name: Validate the installed origin-pull CA certificates
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/openssl
+      - x509
+      - -in
+      - "{{ item }}"
+      - -noout
+      - -checkend
+      - "2678400"
+  loop: "{{ m3_qualification_origin_pull_ca_paths }}"
+  loop_control:
+    label: "{{ item | basename }}"
+  changed_when: false
+
+- name: Read the installed origin-pull CA constraints
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/openssl
+      - x509
+      - -in
+      - "{{ item }}"
+      - -noout
+      - -text
+  loop: "{{ m3_qualification_origin_pull_ca_paths }}"
+  loop_control:
+    label: "{{ item | basename }}"
+  register: m3_qualification_origin_pull_ca_constraints
+  changed_when: false
+  no_log: true
+
+- name: Require CA signing constraints on installed origin-pull trust
+  ansible.builtin.assert:
+    that:
+      - "'CA:TRUE' in item.stdout"
+      - "'Certificate Sign' in item.stdout"
+    fail_msg: An origin-pull trust input is not a CA-signing certificate.
+    quiet: true
+  loop: "{{ m3_qualification_origin_pull_ca_constraints.results }}"
+  loop_control:
+    label: "{{ item.item | basename }}"
+  no_log: true
+
+- name: Verify each installed origin-pull CA as its own trust anchor
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/openssl
+      - verify
+      - -CAfile
+      - "{{ item }}"
+      - "{{ item }}"
+  loop: "{{ m3_qualification_origin_pull_ca_paths }}"
+  loop_control:
+    label: "{{ item | basename }}"
+  changed_when: false
+
+- name: Read the installed origin-pull CA certificate checksums
+  ansible.builtin.stat:
+    path: >-
+      {{ m3_qualification_generation_root }}/{{ m3_qualification_generation }}/{{ item.name }}
+    checksum_algorithm: sha256
+  loop:
+    - name: origin-pull-primary-ca.pem
+      source: "{{ m3_qualification_origin_pull_primary_ca_path }}"
+      enabled: "{{ m3_qualification_origin_pull_trust == 'dual' }}"
+    - name: origin-pull-replacement-ca.pem
+      source: "{{ m3_qualification_origin_pull_replacement_ca_path }}"
+      enabled: true
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.enabled | bool
+  register: m3_qualification_installed_origin_pull_ca_files
+  no_log: true
+
+- name: Require write-once origin-pull CA files to match this run
+  ansible.builtin.assert:
+    that:
+      - >-
+        item.stat.checksum ==
+        (((lookup('ansible.builtin.file', item.item.source) | trim) ~ '\n') |
+         hash('sha256'))
+    fail_msg: Refusing to replace origin-pull trust in an existing qualification generation.
+    quiet: true
+  loop: "{{ m3_qualification_installed_origin_pull_ca_files.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  when: item.item.enabled | bool
+  no_log: true
+
 - name: Install the qualification Caddy generation
   ansible.builtin.template:
     src: Caddyfile.j2

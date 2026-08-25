@@ -2,8 +2,16 @@
 m3_qualification_install_root: /opt/lowerduckpond/m3-qualification
 m3_qualification_runtime_root: /run/lowerduckpond-m3-qualification
 m3_qualification_state_root: /var/lib/lowerduckpond-m3
-m3_qualification_generation: "{{ m3_expected_run_id }}"
+m3_qualification_origin_pull_trust: dual
+m3_qualification_generation: >-
+  {{ m3_expected_run_id }}-{{ m3_qualification_origin_pull_trust }}
 m3_qualification_generation_root: /etc/caddy/qualification/generations
 m3_qualification_active_path: /etc/caddy/qualification/active
 m3_qualification_static_root: /srv/lowerduckpond-m3
 m3_qualification_log_path: /var/log/caddy/m3-qualification.json
+m3_qualification_origin_pull_ca_paths: >-
+  {{ ([m3_qualification_generation_root ~ '/' ~ m3_qualification_generation ~
+       '/origin-pull-primary-ca.pem']
+      if m3_qualification_origin_pull_trust == 'dual' else [])
+     + [m3_qualification_generation_root ~ '/' ~ m3_qualification_generation ~
+        '/origin-pull-replacement-ca.pem'] }}

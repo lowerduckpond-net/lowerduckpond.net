@@ -81,9 +81,11 @@ class QualificationSession:
         if observed != expected:
             raise UnsafeSessionError("qualification Droplet identity changed")
 
-    def verify_convergence_marker(self, raw: str) -> None:
+    def verify_convergence_marker(self, raw: str, *, trust_stage: str) -> None:
         """Require the exact marker written after successful host convergence."""
-        if raw != f"{self.run_id} {self.source_revision}\n":
+        if trust_stage not in {"dual", "replacement"}:
+            raise UnsafeSessionError("origin-pull trust stage is not recognized")
+        if raw != f"{self.run_id} {self.source_revision} {trust_stage}\n":
             raise UnsafeSessionError("qualification host convergence is stale or incomplete")
 
     def to_json(self) -> str:

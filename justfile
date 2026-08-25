@@ -20,7 +20,7 @@ format: _sync
     tofu fmt -recursive infra/opentofu
 
 # Run every validation required by CI.
-check: check-pre-commit check-links check-python check-m3-qualification check-opentofu check-ansible check-actions check-secrets
+check: check-pre-commit check-links check-python check-m3-qualification check-cloudflare-networks check-opentofu check-ansible check-actions check-secrets
 
 # Run file hygiene, Markdown, Python, secret, and OpenTofu format hooks.
 check-pre-commit: _sync
@@ -43,6 +43,10 @@ check-m3-qualification: _sync
     bash -n scripts/m3-qualification config/ansible/roles/m3_qualification/files/m3-caddy-hook
     uv run python -m py_compile scripts/assert_m3_qualification_plan.py config/ansible/roles/m3_qualification/files/m3-caddy-generation config/ansible/roles/m3_qualification/files/m3-qualification-tmpfs config/ansible/roles/m3_qualification/files/m3-qualification-uuid
 
+# Compare the committed firewall allowlist with Cloudflare's published proxy ranges.
+check-cloudflare-networks: _sync
+    uv run python scripts/check_cloudflare_networks.py
+
 # Run one trusted-workstation M3.0 action (see the operations guide).
 m3-qualification action *arguments: _sync
     scripts/m3-qualification "{{ action }}" {{ arguments }}
@@ -50,7 +54,7 @@ m3-qualification action *arguments: _sync
 # Format, validate, lint, and security-scan every OpenTofu root and module.
 check-opentofu:
     tofu fmt -check -recursive infra/opentofu
-    validation_dir="$(mktemp -d)"; trap 'find "$validation_dir" -depth -delete' EXIT; git ls-files --cached --others --exclude-standard -z -- infra/opentofu | tar --null -cf - -T - | tar -xf - -C "$validation_dir"; for root in "$validation_dir"/infra/opentofu/bootstrap-state "$validation_dir"/infra/opentofu/environments/*; do TF_VAR_state_encryption_passphrase=ci-only-example-passphrase-0000000000 tofu -chdir="$root" init -backend=false -input=false; TF_VAR_state_encryption_passphrase=ci-only-example-passphrase-0000000000 tofu -chdir="$root" validate; tflint --chdir="$root" --config="$(pwd)/.tflint.hcl"; done
+    validation_dir="$(mktemp -d)"; trap 'find "$validation_dir" -depth -delete' EXIT; git ls-files --cached --others --exclude-standard -z -- infra/opentofu platform/cloudflare-networks.json | tar --null -cf - -T - | tar -xf - -C "$validation_dir"; for root in "$validation_dir"/infra/opentofu/bootstrap-state "$validation_dir"/infra/opentofu/environments/*; do TF_VAR_state_encryption_passphrase=ci-only-example-passphrase-0000000000 tofu -chdir="$root" init -backend=false -input=false; TF_VAR_state_encryption_passphrase=ci-only-example-passphrase-0000000000 tofu -chdir="$root" validate; tflint --chdir="$root" --config="$(pwd)/.tflint.hcl"; done
     trivy config --exit-code 1 --severity HIGH,CRITICAL infra/opentofu
 
 # Lint, syntax-check, and acceptance-test the Ansible configuration.
@@ -62,7 +66,7 @@ check-ansible: _sync
     ANSIBLE_CONFIG=config/ansible/ansible.cfg uv run ansible-lint config/ansible
     ANSIBLE_CONFIG=config/ansible/ansible.cfg uv run ansible-playbook --inventory config/ansible/inventories/development/hosts.yml --syntax-check config/ansible/playbooks/site.yml
     ANSIBLE_CONFIG=config/ansible/ansible.cfg uv run ansible-playbook --inventory config/ansible/inventories/development/hosts.yml --syntax-check config/ansible/playbooks/acceptance.yml
-    M3_QUALIFICATION_EXPECTED_IPV4=192.0.2.1 M3_QUALIFICATION_EXPECTED_DROPLET_ID=123456789 M3_QUALIFICATION_EXPECTED_RUN_ID=0198d17f-6f4a-7000-8000-000000000001 M3_QUALIFICATION_EXPECTED_SOURCE_REVISION=0000000000000000000000000000000000000000 M3_QUALIFICATION_CLOUDFLARE_API_TOKEN=syntax-only-placeholder-token ANSIBLE_CONFIG=config/ansible/ansible.cfg uv run ansible-playbook --inventory config/ansible/inventories/qualification/hosts.yml --syntax-check config/ansible/playbooks/m3-qualification.yml
+    M3_QUALIFICATION_EXPECTED_IPV4=192.0.2.1 M3_QUALIFICATION_EXPECTED_DROPLET_ID=123456789 M3_QUALIFICATION_EXPECTED_RUN_ID=0198d17f-6f4a-7000-8000-000000000001 M3_QUALIFICATION_EXPECTED_SOURCE_REVISION=0000000000000000000000000000000000000000 M3_QUALIFICATION_EXPECTED_ADMIN_SOURCE_CIDRS_JSON='["192.0.2.1/32"]' M3_QUALIFICATION_CLOUDFLARE_API_TOKEN=syntax-only-placeholder-token M3_QUALIFICATION_ORIGIN_PULL_TRUST=dual M3_QUALIFICATION_PRIMARY_CA_PATH=/tmp/primary-ca.pem M3_QUALIFICATION_REPLACEMENT_CA_PATH=/tmp/replacement-ca.pem ANSIBLE_CONFIG=config/ansible/ansible.cfg uv run ansible-playbook --inventory config/ansible/inventories/qualification/hosts.yml --syntax-check config/ansible/playbooks/m3-qualification.yml
     cd config/ansible && ANSIBLE_CONFIG="$(pwd)/ansible.cfg" uv run molecule test --scenario-name default
 
 # Converge production twice and run host acceptance and restore checks.

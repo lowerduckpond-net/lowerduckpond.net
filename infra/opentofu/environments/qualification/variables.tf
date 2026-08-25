@@ -77,6 +77,40 @@ variable "lowerduckpond_com_zone_id" {
   }
 }
 
+variable "origin_pull_certificate_ids" {
+  description = "Non-secret uploaded per-hostname AOP certificate IDs for both rollover generations and zones."
+  type = object({
+    primary = object({
+      lowerduckpond_net = string
+      lowerduckpond_com = string
+    })
+    replacement = object({
+      lowerduckpond_net = string
+      lowerduckpond_com = string
+    })
+  })
+
+  validation {
+    condition = alltrue(flatten([
+      for generation in [var.origin_pull_certificate_ids.primary, var.origin_pull_certificate_ids.replacement] : [
+        for certificate_id in values(generation) : can(regex("^(?:[0-9a-f]{32}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$", certificate_id))
+      ]
+    ]))
+    error_message = "Every origin-pull certificate ID must use Cloudflare's lowercase 32-hex or UUID form."
+  }
+}
+
+variable "origin_pull_generation" {
+  description = "Uploaded AOP leaf generation selected for every disposable hostname."
+  type        = string
+  default     = "primary"
+
+  validation {
+    condition     = contains(["primary", "replacement"], var.origin_pull_generation)
+    error_message = "origin_pull_generation must be primary or replacement."
+  }
+}
+
 variable "digitalocean_region" {
   description = "DigitalOcean region for the disposable qualification host."
   type        = string

@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import json
 import os
+import subprocess
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -18,7 +19,7 @@ from lowerduckpond_m3_qualification.report import (
 )
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -34,6 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
         "verify-convergence", help="verify host convergence from stdin"
     )
     verify_convergence.add_argument("--session", required=True, type=Path)
+    verify_convergence.add_argument("--trust-stage", required=True, choices=("dual", "replacement"))
 
     session_value = subparsers.add_parser("session-value", help="read one validated session value")
     session_value.add_argument("--session", required=True, type=Path)
@@ -64,6 +66,7 @@ def build_parser() -> argparse.ArgumentParser:
     host = subparsers.add_parser("host", help="run privileged disposable-host checks")
     _add_run_arguments(host)
     host.add_argument("--work-root", default=Path("/var/lib/lowerduckpond-m3"), type=Path)
+    host.add_argument("--trust-stage", required=True, choices=("dual", "replacement"))
     host.add_argument("--output", required=True, type=Path)
 
     domains = subparsers.add_parser("domains", help="qualify domain control and delegation")
@@ -73,6 +76,28 @@ def build_parser() -> argparse.ArgumentParser:
     domains.add_argument("--com-zone-id", required=True)
     domains.add_argument("--output", required=True, type=Path)
 
+    edge_preflight = subparsers.add_parser(
+        "edge-preflight", help="qualify Cloudflare account capabilities before provisioning"
+    )
+    edge_preflight.add_argument("--certificate-ids", required=True, type=Path)
+    edge_preflight.add_argument("--net-zone-id", required=True)
+    edge_preflight.add_argument("--com-zone-id", required=True)
+    edge_preflight.add_argument("--primary-ca", required=True, type=Path)
+    edge_preflight.add_argument("--replacement-ca", required=True, type=Path)
+
+    edge = subparsers.add_parser("edge", help="run one reviewed Cloudflare edge stage")
+    _add_run_arguments(edge)
+    edge.add_argument(
+        "--stage",
+        required=True,
+        choices=("primary", "replacement", "rollback", "forward", "retired-primary", "final"),
+    )
+    edge.add_argument("--origin-ipv4", required=True)
+    edge.add_argument("--certificate-ids", required=True, type=Path)
+    edge.add_argument("--net-zone-id", required=True)
+    edge.add_argument("--com-zone-id", required=True)
+    edge.add_argument("--output", required=True, type=Path)
+
     assemble = subparsers.add_parser("assemble", help="assemble exact report fragments")
     assemble.add_argument("--fragment", action="append", required=True, type=Path)
     assemble.add_argument("--required-check", action="append")
@@ -81,8 +106,33 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:  # noqa: PLR0911,PLR0912
     arguments = build_parser().parse_args(argv)
+    if arguments.command == "edge-preflight":
+        from lowerduckpond_m3_qualification.edge import (
+            EdgeQualificationError,
+            load_certificate_ids,
+            run_preflight,
+        )
+
+        try:
+            run_preflight(
+                zone_ids={
+                    "lowerduckpond_net": arguments.net_zone_id,
+                    "lowerduckpond_com": arguments.com_zone_id,
+                },
+                certificate_ids=load_certificate_ids(arguments.certificate_ids),
+                ca_paths={
+                    "primary": arguments.primary_ca,
+                    "replacement": arguments.replacement_ca,
+                },
+                api_token=os.environ.get("M3_QUALIFICATION_CLOUDFLARE_API_TOKEN", ""),
+            )
+        except OSError, ValueError, EdgeQualificationError:
+            print("M3.0 edge preflight failed closed.", file=sys.stderr)
+            return 1
+        print("M3.0 edge preflight passed without changing Cloudflare state.")
+        return 0
     if arguments.command in {
         "begin-session",
         "verify-session",
@@ -132,7 +182,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             environment="ubuntu-26.04-disposable",
             checks=run_host_checks(
                 work_root=arguments.work_root,
-                expected_generation=arguments.run_id,
+                expected_generation=f"{arguments.run_id}-{arguments.trust_stage}",
             ),
         )
     elif arguments.command == "domains":
@@ -149,6 +199,45 @@ def main(argv: Sequence[str] | None = None) -> int:
                 },
                 api_token=os.environ.get("M3_QUALIFICATION_CLOUDFLARE_API_TOKEN", ""),
             ),
+        )
+    elif arguments.command == "edge":
+        from lowerduckpond_m3_qualification.edge import (
+            FINAL_EDGE_SUFFIXES,
+            EdgeInputs,
+            EdgeQualificationError,
+            load_certificate_ids,
+            run_rollover_stage,
+        )
+
+        try:
+            edge_inputs = EdgeInputs(
+                origin_ipv4=arguments.origin_ipv4,
+                zone_ids={
+                    "lowerduckpond_net": arguments.net_zone_id,
+                    "lowerduckpond_com": arguments.com_zone_id,
+                },
+                certificate_ids=load_certificate_ids(arguments.certificate_ids),
+                api_token=os.environ.get("M3_QUALIFICATION_CLOUDFLARE_API_TOKEN", ""),
+                ssh_target=f"ldp-admin@{arguments.origin_ipv4}",
+            )
+            checks = run_rollover_stage(edge_inputs, stage=arguments.stage)
+        except OSError, ValueError, EdgeQualificationError, subprocess.SubprocessError:
+            identifiers = [f"m3.0.edge.aop-{arguments.stage}"]
+            if arguments.stage == "final":
+                identifiers.extend(f"m3.0.edge.{suffix}" for suffix in FINAL_EDGE_SUFFIXES)
+            checks = tuple(
+                CheckResult(
+                    check_id=check_id,
+                    status="failed",
+                    evidence={},
+                    error_code="probe_failed",
+                )
+                for check_id in identifiers
+            )
+        report = _create_report(
+            arguments,
+            environment="live-cloudflare-edge",
+            checks=checks,
         )
     else:
         from lowerduckpond_m3_qualification.checks import M3_REQUIRED_CHECK_IDS
@@ -190,7 +279,9 @@ def _handle_session_command(arguments: argparse.Namespace) -> int:
                     source_revision=arguments.source_revision,
                 )
             elif arguments.command == "verify-convergence":
-                session.verify_convergence_marker(sys.stdin.read())
+                session.verify_convergence_marker(
+                    sys.stdin.read(), trust_stage=arguments.trust_stage
+                )
             else:
                 print(getattr(session, arguments.field))
     except OSError, ValueError, json.JSONDecodeError:
