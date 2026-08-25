@@ -50,6 +50,7 @@
       - 2001:db8::/32
     m3_qualification_log_path: /tmp/lowerduckpond-m3-qualification-repair.json
     m3_qualification_molecule_cloudflare_token: "{{ '0' * 40 }}"
+    m3_qualification_install_root: /opt/lowerduckpond/m3-qualification
     m3_qualification_package_source_root: /tmp/lowerduckpond-m3-controller-source
     m3_qualification_validator_log_path: /tmp/lowerduckpond-m3-qualification.json
     m3_qualification_origin_pull_ca_paths:
