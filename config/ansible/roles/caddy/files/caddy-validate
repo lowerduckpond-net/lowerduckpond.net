@@ -5,28 +5,57 @@ if (( $# < 1 || $# > 2 )); then
     echo "usage: caddy-validate Caddyfile [routes-glob]" >&2
     exit 2
 fi
+if (( EUID != 0 )); then
+    echo "caddy-validate must start as root before dropping to the caddy account" >&2
+    exit 77
+fi
 
 configuration=$1
 candidate_routes_glob=${2:-}
-temporary_data_directory=
+if [[ ! -f "${configuration}" || -L "${configuration}" ]]; then
+    echo "caddy-validate requires a regular, non-symlink configuration" >&2
+    exit 66
+fi
+validation_root=
 cleanup() {
-    if [[ -n "${temporary_data_directory}" ]]; then
-        find "${temporary_data_directory}" -depth -delete
+    if [[ -n "${validation_root}" ]]; then
+        find "${validation_root}" -depth -delete
     fi
 }
 trap cleanup EXIT
 
+validation_root=$(mktemp -d \
+    "${TMPDIR:-/tmp}/lowerduckpond-caddy-validate.XXXXXXXX")
+chown root:caddy "${validation_root}"
+chmod 0750 "${validation_root}"
+install -o root -g caddy -m 0440 \
+    "${configuration}" "${validation_root}/Caddyfile"
+install -d -o caddy -g caddy -m 0700 \
+    "${validation_root}/data" "${validation_root}/tmp"
+
+caller_cloudflare_api_token=${CLOUDFLARE_API_TOKEN-}
+caller_cloudflare_api_token_is_set=${CLOUDFLARE_API_TOKEN+x}
 set -a
 # shellcheck disable=SC1091
 source /etc/caddy/environment
+if [[ -n "${caller_cloudflare_api_token_is_set}" ]]; then
+    CLOUDFLARE_API_TOKEN=${caller_cloudflare_api_token}
+fi
 if [[ -n "${candidate_routes_glob}" ]]; then
     CADDY_ROUTES_GLOB=${candidate_routes_glob}
 fi
-if [[ -z "${XDG_DATA_HOME:-}" ]]; then
-    temporary_data_directory=$(mktemp -d \
-        "${TMPDIR:-/tmp}/lowerduckpond-caddy-validate.XXXXXXXX")
-    XDG_DATA_HOME=${temporary_data_directory}
-fi
-XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-/etc/caddy}
+HOME=/var/lib/caddy
+LOGNAME=caddy
+TMPDIR=${validation_root}/tmp
+USER=caddy
+XDG_CONFIG_HOME=/etc/caddy
+XDG_DATA_HOME=${validation_root}/data
 set +a
-/usr/local/bin/caddy validate --config "${configuration}" --adapter caddyfile
+/usr/bin/setpriv \
+    --reuid=caddy \
+    --regid=caddy \
+    --init-groups \
+    --no-new-privs \
+    /usr/local/bin/caddy validate \
+    --config "${validation_root}/Caddyfile" \
+    --adapter caddyfile

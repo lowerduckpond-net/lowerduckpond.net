@@ -4,6 +4,7 @@
     name:
       - git
       - golang-go
+      - util-linux
     state: present
 
 - name: Create the Caddy system group
