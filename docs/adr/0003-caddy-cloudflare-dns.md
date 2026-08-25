@@ -1,6 +1,6 @@
 # 0003: Use Caddy and Cloudflare DNS-01
 
-- Status: accepted
+- Status: superseded by [ADR 0028](0028-use-cloudflare-as-the-public-web-edge.md)
 - Date: 2026-08-20
 
 ## Context
@@ -18,6 +18,10 @@ module, and use a narrowly scoped token for ACME DNS-01 validation.
 Caddy configuration must be generated, validated, atomically installed, and
 reloaded. The custom build and plugin are supply-chain inputs that require
 explicit versioning.
+
+ADR 0028 retains Caddy and DNS-01 for the origin certificate but replaces the
+direct public-edge decision with Cloudflare proxying and an authenticated Caddy
+origin.
 
 ## Alternatives considered
 

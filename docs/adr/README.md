@@ -8,7 +8,7 @@ Accepted decisions:
 
 - [0001: Use OpenTofu](0001-use-opentofu.md)
 - [0002: Use Ansible for durable host configuration](0002-use-ansible.md)
-- [0003: Use Caddy and Cloudflare DNS-01](0003-caddy-cloudflare-dns.md)
+- [0003: Use Caddy and Cloudflare DNS-01 (superseded)](0003-caddy-cloudflare-dns.md)
 - [0004: Make static hosting the default](0004-static-first.md)
 - [0005: Isolate dynamic workloads with rootless Podman](0005-rootless-podman-quadlet.md)
 - [0006: Separate the control plane and provisioner](0006-separate-control-plane-provisioner.md)
@@ -33,3 +33,4 @@ Accepted decisions:
 - [0025: Separate tenant archives from platform backups](0025-separate-tenant-archives-from-platform-backups.md)
 - [0026: Separate static operation from host administration](0026-separate-static-operation-from-host-administration.md)
 - [0027: Gate production static publication](0027-gate-production-static-publication.md)
+- [0028: Use Cloudflare as the public web edge](0028-use-cloudflare-as-the-public-web-edge.md)

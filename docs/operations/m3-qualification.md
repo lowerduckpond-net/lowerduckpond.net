@@ -1,17 +1,27 @@
 # Milestone 3 platform qualification
 
-M3.0 is a destructive-safe, production-equivalent experiment. It creates one
-disposable NYC1 Droplet, one firewall, a project assignment, and four temporary
-DNS records. It never changes the production Droplet, reserved address, Caddy
-configuration, tenant state, or either domain apex record. The exact
-`lowerduckpond.com` apex route is exercised locally on the disposable host with
-an HTTPS address override.
+> **Status: blocked pending [ADR 0028](../adr/0028-use-cloudflare-as-the-public-web-edge.md)
+> implementation. Do not start a new live
+> qualification session from this runbook.** The current tooling creates
+> DNS-only records and tests Caddy as the public endpoint. Its 37 checks remain
+> useful component diagnostics, but they cannot qualify Cloudflare proxying,
+> cache bypass, Full (strict), Authenticated Origin Pulls, Cloudflare-only
+> ingress, forwarding-header authenticity, or direct-origin denial. A follow-up
+> implementation PR must revise the exact resource boundary, credential scopes,
+> checks, and commands before another live run can satisfy M3.0. If an older run
+> left resources behind, use only the mandatory teardown procedure below.
 
-The gate has 37 named checks and no skip or warning result. Its report format
-can contain only fixed check identifiers, pass/fail status, bounded versions and
-counts, booleans, filesystem type, and fixed error codes. It cannot serialize
-command output, exceptions, request or response headers, cookies, logs,
-credentials, or nested arbitrary evidence.
+The current direct-origin experiment creates one disposable NYC1 Droplet, one
+firewall, a project assignment, and four temporary DNS records. It never
+changes the production Droplet, reserved address, Caddy configuration, tenant
+state, or either domain apex record. The exact `lowerduckpond.com` apex route is
+exercised locally on the disposable host with an HTTPS address override.
+
+The current direct-origin gate has 37 named checks and no skip or warning
+result. Its report format can contain only fixed check identifiers, pass/fail
+status, bounded versions and counts, booleans, filesystem type, and fixed error
+codes. It cannot serialize command output, exceptions, request or response
+headers, cookies, logs, credentials, or nested arbitrary evidence.
 
 ## Authorization boundary
 
@@ -60,7 +70,7 @@ outside the repository, re-check both registrations at the registrar, and
 leave each boolean true only if the assertion is currently accurate. The file
 contains no identity or registrar account data.
 
-## Provision the disposable stack
+## Current direct-origin provisioning sequence — do not launch
 
 From the repository on the trusted workstation, initialize the dedicated
 qualification root with its own remote-state key:
@@ -119,7 +129,7 @@ UUID-keyed, write-once Caddy generation, removes its directory write permission
 before selection, and refuses to replace different content at that generation
 path.
 
-## Configure and run the gate
+## Current direct-origin gate sequence — do not launch
 
 Return to the repository root. Keep the temporary Cloudflare token exported
 under both names needed by OpenTofu and the qualification tools:

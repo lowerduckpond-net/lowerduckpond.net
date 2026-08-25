@@ -38,6 +38,12 @@ implicit entry. Preserve original spelling and provenance until these checks
 complete; normalization cannot erase evidence needed to distinguish an exact
 merge from an ambiguous collision.
 
+Reject `cdn-cgi` as a normalized, ASCII-case-insensitive first tenant path
+component. Cloudflare reserves `/cdn-cgi/` on every proxied hostname, so
+accepting that subtree would create files that cannot be served under their
+manifested URL. Apply the same rejection after removing the portable-bundle
+envelope prefix and before import or restore can construct a release.
+
 Allow only method `0` (stored) and method `8` (Deflate) in deployment ZIPs.
 Reject BZIP2, LZMA, Deflate64, vendor methods, and unknown methods before
 initializing any entry decoder. A bounded structural reader examines the end

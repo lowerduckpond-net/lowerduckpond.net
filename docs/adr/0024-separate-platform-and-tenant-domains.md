@@ -86,7 +86,8 @@ derivation must agree. Changing either suffix after tenant history exists
 requires a separately designed origin migration.
 
 Treat every `.com` tenant host as untrusted and every `.com` tenant-to-tenant
-request as same-site but cross-origin. For Milestone 3 static routes, Caddy:
+request as same-site but cross-origin. For Milestone 3 static routes, Caddy at
+the authenticated origin:
 
 - removes every `Cookie` request header before a tenant-content handler;
 - removes every `Set-Cookie` response header from tenant, alias, unknown-host,
@@ -94,9 +95,12 @@ request as same-site but cross-origin. For Milestone 3 static routes, Caddy:
 - never varies tenant routing or static content by a cookie; and
 - never persists raw cookie or authorization values in access logs.
 
-These controls prevent the hosting service from consuming or emitting tenant
-cookies over HTTP. They cannot intercept JavaScript's browser-local
-`document.cookie` API. A tenant can therefore still create a
+These controls prevent tenant-controlled HTTP responses from emitting cookies
+and prevent the origin from consuming them. Cloudflare may independently issue
+a Cloudflare-managed security cookie at the public edge; no tenant controls its
+value and no LDP application treats it as authentication. These controls also
+cannot intercept JavaScript's browser-local `document.cookie` API. A tenant can
+therefore still create a
 `Domain=lowerduckpond.com` cookie that is visible to another `.com` tenant,
 consume shared browser cookie capacity, or cause client-side cookie-name
 confusion. That residual risk is accepted for ordinary static hosting because
@@ -113,13 +117,14 @@ validation, no credentialed tenant CORS, and no state-changing safe-method
 routes. It does not accept a parent-domain cookie or rely on `SameSite` as its
 only request-forgery control.
 
-Provision and qualify both Cloudflare zones, their apex and wildcard DNS, and
-the apex and wildcard certificate paths before production publication. The
-OpenTofu and Caddy tokens are limited to the two project zones and only their
-required permissions. Actual stable-browser tests must prove that `.com`
-content cannot set or receive a `.net` cookie and that all `.com` HTTP cookie
-stripping behaves as configured. No PSL test or submission is a production
-gate.
+Provision and qualify both Cloudflare zones, their proxied apex and wildcard
+DNS, edge and origin certificate paths, cache-bypass rules, and authenticated
+Caddy origin before production publication. The OpenTofu and Caddy tokens are
+limited to the two project zones and only their separate required permissions.
+Actual stable-browser tests must prove that `.com` content cannot set or
+receive a `.net` cookie, that tenant-controlled `Set-Cookie` cannot cross the
+origin and edge, and that all `.com` origin cookie stripping behaves as
+configured. No PSL test or submission is a production gate.
 
 ## Consequences
 
@@ -140,6 +145,11 @@ apex certificate, another wildcard certificate, and replacement infrastructure
 and Caddy tokens scoped to both zones. The `.com` suffix becomes authoritative
 tenant identity state and cannot later return to vanity/custom-domain use
 without an explicit origin migration.
+
+Cloudflare is a shared infrastructure edge for both zones, not a shared browser
+trust domain. ADR 0028 requires independent edge configuration, cache bypass,
+origin authentication, and tests for each zone; it does not permit `.com`
+cookies or tenant state to authenticate a `.net` service.
 
 Dynamic tenants and authenticated tenant applications below `.com` cannot
 inherit the static-cookie decision automatically. Each must
@@ -171,6 +181,7 @@ one cookie domain without a public-suffix boundary.
 
 - [0018: Version the static tenant manifest contract](0018-version-static-tenant-manifests.md)
 - [0023: Separate reusable slugs from immutable tenant origins](0023-separate-reusable-slugs-from-tenant-origins.md)
+- [0028: Use Cloudflare as the public web edge](0028-use-cloudflare-as-the-public-web-edge.md)
 - [RFC 10025: Cookies: HTTP State Management Mechanism](https://auth48-transition.rfc-editor.org/authors/rfc10025.html)
 - [Fetch Metadata Request Headers](https://www.w3.org/TR/fetch-metadata/)
 - [HTML Standard: same-site](https://html.spec.whatwg.org/multipage/browsers.html#same-site)

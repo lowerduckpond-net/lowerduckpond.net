@@ -4,14 +4,14 @@ This roadmap turns the architecture in [`architecture.md`](architecture.md) into
 
 ## Progress
 
-Status as of 2026-08-24:
+Status as of 2026-08-25:
 
 | Milestone | Status | Outcome |
 | --- | --- | --- |
 | 0: Repository foundation | Complete | The public repository, development workflow, CI gates, application boundaries, and architecture decisions are established. |
 | 1: DigitalOcean foundation | Complete | OpenTofu manages the production network, Droplet, reserved IP, firewall, DNS, state, and durable backup storage; the guarded rebuild drill succeeded. |
 | 2: Reproducible host configuration | Complete | One trusted-workstation command converges production idempotently and passes host, HTTPS, backup, restore, and post-reboot acceptance checks. |
-| 3: Static tenant MVP | Current | Implement the accepted manifest, archive, privileged-activation, operator, lifecycle, and security-test contracts. |
+| 3: Static tenant MVP | Current | Implement the accepted Cloudflare-edge, manifest, archive, privileged-activation, operator, lifecycle, and security-test contracts. |
 | 4: Control plane and lifecycle automation | Planned | Expose the static lifecycle through the FastAPI control plane with approvals, jobs, policy, and audit history. |
 | 5: Backup, observability, and operations | Planned | Complete platform-level recovery, central observability, alerting, and operator runbooks. Host backup and monitoring foundations arrived early in Milestone 2. |
 | 6: Dynamic PHP pilot | Planned | Introduce isolated PHP and tenant-scoped SQL only after the static platform and recovery path are proven. |
@@ -164,6 +164,12 @@ The firewall should expose only:
 
 Keep host-level nftables policy under Ansible as a second boundary.
 
+This records the completed Milestone 1 direct-origin baseline. ADR 0028
+supersedes its public-web posture: Milestone 3 will restrict ports 80 and 443 to
+reviewed Cloudflare proxy networks and add account-specific origin
+authentication before the proxy becomes the production path. SSH retains the
+independent administrative CIDR allowlist.
+
 ### State bootstrap
 
 Create remote state separately from the production stack. DigitalOcean Spaces
@@ -302,6 +308,7 @@ accepted decisions, in dependency order:
 10. [Separate tenant archives from platform backups](adr/0025-separate-tenant-archives-from-platform-backups.md).
 11. [Separate static operation from host administration](adr/0026-separate-static-operation-from-host-administration.md).
 12. [Gate production static publication](adr/0027-gate-production-static-publication.md).
+13. [Use Cloudflare as the public web edge](adr/0028-use-cloudflare-as-the-public-web-edge.md).
 
 The reviewable implementation sequence, file ownership, phase gates, rollout
 evidence, risks, and dangerous assumptions are maintained in the
@@ -337,12 +344,14 @@ caller cannot select it. Tenant content is served at
 all trusted platform services on `lowerduckpond.net`. A reusable
 `<slug>.lowerduckpond.com` platform alias redirects only its bare root to that
 canonical origin and never serves tenant-controlled content. Arbitrary and
-custom domains are not accepted in this version. Dual-zone DNS, apex and
-wildcard ACME, browser-boundary, and Caddy cookie-policy qualification are
-required before the production canary; no PSL submission or recognition is
-assumed. A versioned root-owned platform record pins the suffix before the
-first tenant is created, and each root-generated manifest stores the complete
-origin.
+custom domains are not accepted in this version. Dual-zone proxied DNS, edge
+and origin certificates, Full (strict), account-specific origin pulls,
+Cloudflare-only ingress, cache bypass, Always Online denial, browser-boundary,
+and Caddy cookie-policy qualification are required before the production
+canary; no PSL submission or recognition is assumed. A versioned root-owned
+platform record pins the suffix
+before the first tenant is created, and each root-generated manifest stores the
+complete origin.
 Convergence and reconciliation fail closed unless configuration, the platform
 record, and the rederived manifest origin agree. The tenant ID and canonical
 origin do not change when a public slug changes. Desired manifests are stored
@@ -421,6 +430,22 @@ Implement idempotent commands or jobs for:
   `Set-Cookie` from every `.com` route, and never vary routing or content by
   cookie state. Browser tests must demonstrate both the `.com`/`.net` boundary
   and the accepted sibling `.com` parent-cookie limitation.
+- Put public HTTP/HTTPS for both domains through managed proxied Cloudflare
+  records while retaining Caddy as the only application origin. Require Full
+  (strict), account-specific Authenticated Origin Pulls, reviewed
+  Cloudflare-only web ingress, and authentic forwarded addresses; deny direct
+  origin access and never treat Cloudflare-managed cookies as application
+  authority.
+- Explicitly bypass Cloudflare cache for every Milestone 3 response. Keep
+  aliases, the `.com` apex, unknown hosts, errors, and the future secure
+  application permanently uncacheable. Defer tenant content cache keys, TTLs,
+  purge ordering, stale behavior, and a separate purge-only credential to
+  Milestone 5.
+- Manage Always Online as disabled for both zones and prove a disposable origin
+  outage cannot serve stale cache or Internet Archive content.
+- Disable optional Cloudflare body rewriting and script injection, require
+  `Cache-Control: no-transform`, block the provider-reserved `/cdn-cgi/`
+  namespace, and reject its colliding first path component from tenant archives.
 - Validate, select, reload, and advance every restart or rollback phase under
   one publication lock, while releasing it before any systemd job must
   reacquire it.
@@ -611,9 +636,10 @@ provisioner cannot originate or transform lifecycle authority, read
 authoritative tenant state, or read an export payload. The production canary
 uses a source and separately imported target and passes only after both are
 removed through their ordinary audited lifecycles. The dual-domain browser and
-Caddy cookie boundary, isolated archive Space, Caddy/systemd recovery,
-hostile-archive, durability, backup, and audit gates are demonstrated with
-`static_publication_enabled` deliberately enabled.
+Caddy cookie boundary, Cloudflare proxy, cache-bypass and Always Online policy,
+authenticated-origin and direct-origin-denial boundary, isolated archive
+Space, Caddy/systemd recovery, hostile-archive, durability, backup, and audit
+gates are demonstrated with `static_publication_enabled` deliberately enabled.
 
 ## 7. Milestone 4: control plane and lifecycle automation — planned
 
@@ -697,6 +723,24 @@ The complete static-site lifecycle operates through the control plane, produces 
 - Alertmanager routing to the project operator.
 - Structured Caddy and application logs with bounded retention.
 - CrowdSec integration for edge and authentication logs.
+
+### Cloudflare cache lifecycle
+
+- Keep the Milestone 3 two-zone cache bypass until this phase's threat-model
+  amendment and acceptance tests pass.
+- Keep Always Online disabled unless a distinct lifecycle decision approves its
+  stale-cache and Internet Archive behavior; enabling ordinary CDN caching does
+  not implicitly approve it.
+- Define exact eligible route classes, cache keys, browser and edge TTLs, stale
+  serving behavior, and cross-tenant denial; aliases, the `.com` apex, unknown
+  hosts, errors, and the trusted administration application remain ineligible.
+- Bind deploy, rollback, suspend, resume, rename, archive, restore, delete, and
+  slug reuse to purge ordering and failure recovery so an operation cannot be
+  reported complete while obsolete bytes remain eligible at the edge.
+- Use a distinct purge-only runtime credential and prove that Caddy's ACME token
+  and OpenTofu's edge token cannot purge cached tenant content.
+- Exercise cache fill, purge, timeout, lost response, provider outage, and
+  emergency DNS-only rollback before enabling caching in production.
 
 ### Initial service-level indicators
 
