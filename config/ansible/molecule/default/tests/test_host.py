@@ -44,6 +44,8 @@ QUALIFICATION_UUID_COMMAND = "/usr/local/libexec/lowerduckpond/m3-qualification-
 QUALIFICATION_UUID_COMMAND_MODE = 0o755
 QUALIFICATION_LOG_MODE = 0o600
 QUALIFICATION_LOG_PATH = "/tmp/lowerduckpond-m3-qualification.json"  # noqa: S108
+QUALIFICATION_MARKER = "/tmp/lowerduckpond-m3-converged-session"  # noqa: S108
+QUALIFICATION_MARKER_MODE = 0o400
 QUALIFICATION_PACKAGE_DIRECTORY_MODE = 0o755
 QUALIFICATION_PACKAGE_FILE_MODE = 0o644
 QUALIFICATION_PACKAGE_ROOT = "/opt/lowerduckpond/m3-qualification/lowerduckpond_m3_qualification"
@@ -183,6 +185,15 @@ def test_qualification_fixture_ignores_restrictive_controller_modes(host: Host) 
     response = host.run("curl --fail --silent http://127.0.0.1:18080/probe")
     assert response.rc == 0
     assert response.stdout == "lowerduckpond-m3-cookie-independent-body\n"
+
+
+def test_qualification_convergence_marker_is_byte_exact(host: Host) -> None:
+    marker = host.file(QUALIFICATION_MARKER)
+    assert marker.is_file
+    assert marker.user == "root"
+    assert marker.group == "root"
+    assert marker.mode == QUALIFICATION_MARKER_MODE
+    assert marker.content_string == f"{VALID_UUIDV7} {'0' * 40} dual\n"
 
 
 def test_only_expected_ports_listen_publicly(host: Host) -> None:

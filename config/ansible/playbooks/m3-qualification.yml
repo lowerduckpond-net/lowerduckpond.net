@@ -145,11 +145,6 @@
       ansible.builtin.meta: flush_handlers
 
     - name: Attest successful qualification convergence
-      ansible.builtin.copy:
-        content: >-
-          {{ m3_expected_run_id }} {{ m3_expected_source_revision }}
-          {{ m3_qualification_origin_pull_trust }}{{ '\n' }}
-        dest: "{{ m3_qualification_convergence_marker }}"
-        owner: root
-        group: root
-        mode: "0400"
+      ansible.builtin.include_role:
+        name: m3_qualification
+        tasks_from: convergence.yml

@@ -50,6 +50,9 @@
       - 2001:db8::/32
     m3_qualification_log_path: /tmp/lowerduckpond-m3-qualification-repair.json
     m3_qualification_molecule_cloudflare_token: "{{ '0' * 40 }}"
+    m3_qualification_convergence_marker: /tmp/lowerduckpond-m3-converged-session
+    m3_expected_run_id: "0198d17f-6f4a-7000-8000-000000000001"
+    m3_expected_source_revision: "{{ '0' * 40 }}"
     m3_qualification_install_root: /opt/lowerduckpond/m3-qualification
     m3_qualification_package_source_root: /tmp/lowerduckpond-m3-controller-source
     m3_qualification_validator_log_path: /tmp/lowerduckpond-m3-qualification.json
@@ -84,6 +87,11 @@
         name: ldp-m3-fixture.service
         enabled: true
         state: started
+
+    - name: Exercise the qualification convergence marker task
+      ansible.builtin.include_role:
+        name: m3_qualification
+        tasks_from: convergence.yml
 
     - name: Create a disposable origin-pull CA for Caddy validation  # noqa command-instead-of-module
       ansible.builtin.command:
