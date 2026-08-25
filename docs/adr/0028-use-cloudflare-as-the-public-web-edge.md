@@ -106,9 +106,9 @@ Keep Cloudflare credentials separated by capability:
 
 - Caddy's non-expiring token retains only the two-zone read and DNS-edit scope
   required for ACME;
-- the OpenTofu edge token receives only the two-zone DNS, SSL-setting,
-  origin-pull association, and ruleset permissions required by managed edge
-  resources, but never receives an origin-pull private key;
+- the OpenTofu edge token receives only the two-zone DNS, zone-setting,
+  SSL-setting, origin-pull association, and ruleset permissions required by
+  managed edge resources, but never receives an origin-pull private key;
 - a temporary operator credential uploads and later retires each origin-pull
   leaf, then is revoked after qualification teardown or production rotation; and
 - a future runtime cache-purge token, if approved, receives only cache-purge
@@ -141,6 +141,9 @@ cache for the entire `.com` namespace and `secure.lowerduckpond.net`, while
 Caddy retains `no-store` on aliases, the `.com` apex, unknown hosts, errors, and
 other lifecycle-sensitive responses. The public `.net` site also begins with
 cache bypass so edge adoption and cache adoption remain separate changes.
+OpenTofu explicitly manages Always Online as disabled for both zones; an origin
+outage must produce a provider error rather than stale cache or Internet Archive
+content under a live platform or tenant URL.
 Cloudflare may emit its own security cookies, but no tenant response
 `Set-Cookie` may reach the edge, no LDP application trusts a Cloudflare cookie
 as authentication, and Caddy continues to remove all request cookies before
@@ -153,7 +156,9 @@ deploy, rollback, suspend, resume, rename, archive, restore, delete, and slug
 reuse. Reusable aliases, the `.com` apex, unknown hosts, errors, and the trusted
 administration application remain permanently uncacheable. A cache failure may
 delay or deny an operation but may not silently report a lifecycle transition
-complete while obsolete tenant bytes remain eligible at the edge.
+complete while obsolete tenant bytes remain eligible at the edge. Always Online
+remains disabled unless a later lifecycle-aware decision explicitly approves
+and tests its stale-serving and external-archive behavior.
 
 M3.0 must qualify the actual edge before another live result can satisfy its
 gate. Use proxied disposable hostnames, Full (strict), a disposable
@@ -162,7 +167,13 @@ supported browsers. Prove edge and origin certificates separately, direct
 origin bypass, forwarding-header authenticity, cookie and response-header
 behavior, response-body fidelity, `/cdn-cgi/` denial, cache bypass across
 repeated requests and lifecycle-shaped status changes, strict unknown-host
-handling, and complete teardown. The exact `.com`
+handling, and complete teardown. A read-only preflight must observe Always
+Online disabled on both zones before provisioning. Qualification then makes
+only the disposable origin unavailable and proves that Cloudflare serves no
+tenant, platform, stale, or archived representation and returns a documented
+origin-unavailable `520`–`527` status. If either zone setting is enabled, the
+run stops for a separate reviewed settings change; M3.0 may not mutate this
+zone-wide production state. The exact `.com`
 apex remains locally exercised on the disposable host until its reviewed
 production cutover; M3.12 repeats the full edge suite against both production
 apexes and wildcards before publication is enabled.
@@ -179,8 +190,9 @@ cloud toggle:
 
 1. install and validate the origin-pull CA and Caddy configuration without yet
    requiring a client certificate;
-2. configure Full (strict), edge cache bypass, account-specific origin pulls,
-   and proxied records through reviewed OpenTofu;
+2. configure Full (strict), edge cache bypass, Always Online disabled,
+   account-specific origin pulls, and proxied records through reviewed
+   OpenTofu;
 3. verify edge and origin paths, then require the client certificate and narrow
    both firewalls to Cloudflare networks; and
 4. retain an explicit rollback that first reopens the origin and relaxes client
@@ -245,6 +257,7 @@ privileged state transition and failure mode, not a performance toggle.
 - [Cloudflare origin protection](https://developers.cloudflare.com/fundamentals/security/protect-your-origin-server/)
 - [Cloudflare cache behavior](https://developers.cloudflare.com/cache/concepts/default-cache-behavior/)
 - [Cloudflare cache purging](https://developers.cloudflare.com/cache/how-to/purge-cache/)
+- [Cloudflare Always Online](https://developers.cloudflare.com/cache/how-to/always-online/)
 - [Cloudflare Email Address Obfuscation](https://developers.cloudflare.com/waf/tools/scrape-shield/email-address-obfuscation/)
 - [Cloudflare configuration-rule settings](https://developers.cloudflare.com/rules/configuration-rules/settings/)
 - [Cloudflare `/cdn-cgi/` endpoint](https://developers.cloudflare.com/fundamentals/reference/cdn-cgi-endpoint/)

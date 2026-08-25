@@ -31,7 +31,9 @@ features require their own threat-model extensions before activation.
 - Public HTTP traffic reaches the origin only through Cloudflare's reviewed
   networks; HTTPS additionally authenticates the project-specific origin pull,
   and spoofed forwarding headers cannot become trusted visitor identity.
-- Cloudflare does not cache any Milestone 3 platform or tenant response.
+- Cloudflare does not cache any Milestone 3 platform or tenant response, and
+  Always Online cannot republish a stale or externally archived representation
+  while the origin is unavailable.
 - Cloudflare does not rewrite or inject into an accepted Milestone 3 origin
   representation, and its reserved `/cdn-cgi/` namespace cannot collide with a
   tenant release or bypass alias rejection behavior.
@@ -158,7 +160,7 @@ record.
 | One `.com` tenant injects parent-domain cookies visible to another tenant | Treat the complete `.com` namespace as untrusted. Remove incoming `Cookie` before every static tenant handler, remove tenant-controlled outgoing `Set-Cookie` before responses reach Cloudflare, never vary routing or static bytes by cookies, and omit their values from logs. Treat any Cloudflare-managed security cookie as edge infrastructure rather than tenant or LDP authentication state. Test and document that JavaScript can still create `Domain=lowerduckpond.com` cookies, confuse ordinary client-side cookie names, consume shared cookie capacity, or trigger a per-browser oversized-header failure. Require host-bound `__Host-` names where a tenant needs cookie-name integrity and a new ADR before any dynamic, authenticated, or privileged `.com` application. |
 | A visitor bypasses Cloudflare and attacks the known reserved origin address | Proxy every public web hostname, admit origin ports only from a reviewed snapshot of Cloudflare networks, require project-specific origin-pull authentication on HTTPS, keep administrative SSH on its separate CIDR, and prove direct HTTP/HTTPS denial from an ordinary source. |
 | A request spoofs Cloudflare forwarding headers or comes through another Cloudflare customer | Reject unknown hosts, trust forwarded visitor identity only from the pinned networks and authenticated HTTPS origin pull, and treat unauthenticated port 80 as a redirect-or-reject surface that serves no tenant bytes. |
-| Cloudflare caches a prior deployment, suspended tenant, released slug, redirect, error, or cookie-dependent response | Install explicit edge cache-bypass rules for both zones throughout Milestone 3, retain origin `no-store` on every alias, apex, unknown-host, and error response, and repeat requests through the real edge while changing lifecycle-shaped fixtures. Cache eligibility requires a later lifecycle-aware ADR and purge/recovery tests. |
+| Cloudflare serves a prior deployment, suspended tenant, released slug, redirect, error, or cookie-dependent response | Install explicit edge cache-bypass rules and manage Always Online as disabled for both zones throughout Milestone 3; retain origin `no-store` on every alias, apex, unknown-host, and error response; repeat requests through the real edge while changing lifecycle-shaped fixtures; and prove origin unavailability returns no stale or Internet Archive representation. Cache or stale-serving eligibility requires a later lifecycle-aware ADR and purge/recovery tests. |
 | Cloudflare transforms tenant headers or emits security cookies | Prove tenant-controlled `Set-Cookie` is absent before the edge, classify Cloudflare-owned cookies separately, forbid LDP authentication from trusting them, and exercise edge responses in every supported browser rather than inferring browser behavior from direct-origin tests. |
 | Cloudflare rewrites an accepted HTML body or injects a provider script | Disable every optional body-transforming feature in managed edge policy, emit `Cache-Control: no-transform`, compare origin and edge representations in qualification, and treat a security block or challenge as a provider availability response rather than tenant content. |
 | Cloudflare serves a provider endpoint from `/cdn-cgi/` or hides a tenant file under that prefix | Block the complete reserved namespace at the zone WAF, reject `cdn-cgi` as a case-insensitive normalized first tenant path component, record the provider denial as the sole alias-path exception, and prove the request never reaches Caddy. |
@@ -353,7 +355,9 @@ Implementation and review must preserve these invariants:
 35. Cloudflare cache is explicitly bypassed for both zones throughout
     Milestone 3. Origin `no-store` remains mandatory for the `.com` apex,
     reusable aliases, unknown hosts, errors, and the trusted administration
-    application. No cache-purge credential exists in the runtime boundary.
+    application. OpenTofu manages Always Online as disabled; an unavailable
+    disposable origin serves no stale-cache or Internet Archive representation.
+    No cache-purge credential exists in the runtime boundary.
 36. Origin-pull CA private material never reaches the host, repository,
     provisioner, Caddy environment, OpenTofu configuration, plan, state, or
     platform backup. An expiring operator credential uploads and later retires
@@ -383,9 +387,10 @@ Implementation and review must preserve these invariants:
   are not mutually isolated.
 - Limits reduce but do not eliminate availability impact from expensive valid
   content or high request volume.
-- A Cloudflare or browser defect can disregard cache bypass or `no-store` and
-  retain an obsolete response. Edge repetition tests and the non-forwarding
-  alias contract reduce this risk; CDN caching stays disabled until a separate
+- A Cloudflare or browser defect can disregard cache bypass, disabled Always
+  Online, or `no-store` and retain an obsolete response. Edge repetition and
+  origin-unavailability tests plus the non-forwarding alias contract reduce
+  this risk; CDN caching and stale serving stay disabled until a separate
   lifecycle-aware design is accepted.
 - Cloudflare is an additional availability and request-semantics dependency.
   Emergency DNS-only rollback restores direct service but intentionally loses
@@ -410,9 +415,10 @@ PHP, or multi-host provisioning.
   and reconciliation tests required by ADR 0022 pass.
 - A disposable-host exercise passes before production.
 - Browser, edge, and installed-host evidence proves the `.com`/`.net` boundary,
-  Caddy cookie policy, Cloudflare cache bypass, Full (strict) and origin-pull
-  authentication, direct-origin denial, forwarding-header authenticity, and
-  the accepted sibling `.com` cookie behavior.
+  Caddy cookie policy, Cloudflare cache bypass, Always Online disabled and no
+  representation during disposable origin unavailability, Full (strict) and
+  origin-pull authentication, direct-origin denial, forwarding-header
+  authenticity, and the accepted sibling `.com` cookie behavior.
 - A reserved production source canary and separately imported target complete
   HTTPS, backup recovery, reconciliation, and reboot checks. The source
   completes rollback, suspension, archive, restore, rearchive, and ordinary

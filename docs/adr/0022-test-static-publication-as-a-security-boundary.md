@@ -337,14 +337,19 @@ output, and Lower Duck Pond never treats them as application authentication or
 authorization.
 
 Live edge tests prove both public zones use proxied DNS, Full (strict) origin
-TLS, account-specific Authenticated Origin Pulls, and explicit cache bypass.
+TLS, account-specific Authenticated Origin Pulls, explicit cache bypass, and an
+API-observed disabled Always Online setting. The read-only M3.0 preflight stops
+if either zone has Always Online enabled rather than mutating zone-wide state.
 The installed origin must reject direct HTTPS, any client certificate not
 issued by the project CA, spoofed forwarding headers, and traffic from outside
 the reviewed Cloudflare network set. Port 80 admits only that network
 set and can only redirect or reject; it never returns tenant bytes. Repeated
 edge requests prove no route, redirect, error, platform response, or tenant
 body is served from cache in Milestone 3, while method, path, query, host, and
-alias semantics remain unchanged. Tests separately identify the public edge
+alias semantics remain unchanged. Making only the disposable origin
+unavailable must produce a documented Cloudflare origin-unavailable `520`–`527`
+status and never a tenant, platform, stale-cache, or Internet Archive
+representation. Tests separately identify the public edge
 certificate and the Caddy origin certificate so one cannot substitute for the
 other. A disposable rollover test installs both old and replacement origin-pull
 CA certificates, moves the edge to the replacement leaf, proves both rollback
@@ -503,9 +508,9 @@ production source canary in the approved untrusted `.com` tenant namespace, then
 its export into a separately created undeployed target. Verify the `.com` to
 `.net` browser boundary, the documented sibling-cookie behavior and Caddy
 stripping, Cloudflare cache bypass, authenticated-origin enforcement,
-forwarded-header authenticity, the platform-only alias redirect, canonical
-HTTPS, rollback,
-suspension, backup recovery, reboot, and idempotence for the resulting two
+Always Online disabled, forwarded-header authenticity, the platform-only alias
+redirect, canonical HTTPS, rollback, suspension, backup recovery, reboot, and
+idempotence for the resulting two
 tenants. Archive, restore, rearchive, and ordinarily delete the source;
 separately archive and ordinarily delete the imported target. Prove both route
 classes are absent for both tenants and every bound archive object is retired

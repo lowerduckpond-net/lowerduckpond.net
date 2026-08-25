@@ -32,9 +32,10 @@ accepted are now fixed:
 5. Cloudflare is the public HTTP/HTTPS edge for both zones. Caddy remains the
    application origin behind Full (strict) TLS, account-specific Authenticated
    Origin Pulls, and Cloudflare-only web ingress. Milestone 3 explicitly bypasses
-   Cloudflare caching for every route; cache policy and lifecycle-aware purging
-   remain a Milestone 5 feature. Administrative SSH continues directly to the
-   reserved address through its separate CIDR allowlist.
+   Cloudflare caching for every route and keeps Always Online disabled; cache,
+   stale-serving policy, and lifecycle-aware purging remain a Milestone 5
+   feature. Administrative SSH continues directly to the reserved address
+   through its separate CIDR allowlist.
 
 The milestone includes static manifests, archive admission, immutable releases,
 generated Caddy routes, authorization jobs, trusted-workstation commands,
@@ -207,11 +208,11 @@ Implementation status: the hermetic, disposable-host, domain, Caddy, and
 three-engine browser probes for the earlier direct-origin design are
 implemented. They remain useful component diagnostics but cannot satisfy M3.0
 after ADR 0028. The qualification stack and report must first add the public
-Cloudflare edge, authenticated-origin, cache-bypass, and origin-denial
-obligations below. Do not begin another live run until that implementation is
-reviewed and merged. M3.0 is complete only after an explicitly authorized live
-run passes the revised exact-check report and the disposable resources are
-confirmed destroyed.
+Cloudflare edge, authenticated-origin, cache-bypass, Always Online denial, and
+origin-denial obligations below. Do not begin another live run until that
+implementation is reviewed and merged. M3.0 is complete only after an
+explicitly authorized live run passes the revised exact-check report and the
+disposable resources are confirmed destroyed.
 
 Add executable qualification probes and a sanitized report before depending on
 host behavior that the current Molecule suite does not reproduce.
@@ -240,6 +241,11 @@ Deliver:
   alias, unknown-host, redirect, and error requests are not served from edge
   cache; keep port 80 edge-only and limited to redirect or rejection while
   preserving method, path, query, host, and alias semantics;
+- read and require `always_online = off` on both zones without changing that
+  zone-wide state, then make only the disposable origin unavailable and prove
+  Cloudflare returns a documented origin-unavailable `520`–`527` status rather
+  than tenant, platform, stale-cache, or Internet Archive content; stop for a
+  separate reviewed settings change if either preflight value is enabled;
 - disable every optional Cloudflare response-body rewrite and script injection,
   require origin `no-transform`, and compare origin and edge representations;
   distinguish an explicit provider security block from tenant content;
@@ -268,10 +274,11 @@ Deliver:
 
 Gate: every technical probe either passes on the production-equivalent stack or
 produces an accepted replacement design. The dual-domain browser, Caddy cookie,
-Cloudflare proxy, authenticated-origin, cache-bypass, direct-origin-denial, and
-forwarded-header, representation-fidelity, and reserved-path probes are
-mandatory; there is no external PSL step. A warning or skipped technical probe
-is not a pass. The exact production `.com` apex is
+Cloudflare proxy, authenticated-origin, cache-bypass, Always Online,
+origin-unavailability, direct-origin-denial, forwarded-header,
+representation-fidelity, and reserved-path probes are mandatory; there is no
+external PSL step. A warning or skipped technical probe is not a pass. The
+exact production `.com` apex is
 still exercised locally in M3.0 because the disposable boundary may not change
 that record; M3.12 repeats the complete edge matrix against the real production
 apex and wildcard configuration before enablement.
@@ -280,7 +287,7 @@ Rollback: probes use a disposable host, create no tenant state, and select no
 production Caddy input. Teardown removes every test record, origin-pull
 association and uploaded leaf, edge rule, firewall, project assignment, and
 Droplet, then proves the dedicated remote state is empty. It never changes a
-production apex or wildcard association.
+production apex, wildcard association, or zone-wide Always Online setting.
 
 ### M3.1: provision isolated archive storage
 
@@ -456,22 +463,24 @@ Extend the production OpenTofu stack with a second instance of the existing
 Cloudflare DNS module for the `lowerduckpond.com` apex and wildcard, then evolve
 both instances into the reviewed public-edge module. Add a separately named
 non-secret `.com` zone-ID input and plan-policy assertions. The module manages
-proxied public A records, Full (strict), explicit cache bypass, account-specific
-Authenticated Origin Pull configuration, and the reviewed Cloudflare network
-set used by both DigitalOcean and host firewalls. It leaves explicitly
-non-HTTP verification and administrative records DNS-only. It also disables
-optional response-body transformations and installs the two-zone `/cdn-cgi/`
-block. Never manually toggle proxy status or edge features outside OpenTofu.
+proxied public A records, Full (strict), explicit cache bypass, Always Online
+disabled, account-specific Authenticated Origin Pull configuration, and the
+reviewed Cloudflare network set used by both DigitalOcean and host firewalls.
+It leaves explicitly non-HTTP verification and administrative records DNS-only.
+It also disables optional response-body transformations and installs the
+two-zone `/cdn-cgi/` block. Never manually toggle proxy status or edge features
+outside OpenTofu.
 
 Keep Cloudflare capabilities separate. The Caddy DNS-01 token retains
 only Zone Read and DNS Edit for the two zones. The OpenTofu edge token receives
-only the two-zone DNS, origin-pull association, SSL-setting, and ruleset
-permissions required by reviewed resources. A separate expiring operator token
-uploads and later retires each origin-pull leaf certificate from the trusted
-workstation, and is revoked after qualification teardown or production
-rotation; OpenTofu receives only the returned non-secret certificate ID. The
-local leaf key is discarded after upload verification. Neither the project CA
-nor any leaf private key enters OpenTofu configuration, plan, or state. No
+only the two-zone DNS, origin-pull association, zone-setting, SSL-setting, and
+ruleset permissions required by reviewed resources. A separate expiring
+operator token uploads and later retires each origin-pull leaf certificate from
+the trusted workstation, and is revoked after qualification teardown or
+production rotation; OpenTofu receives only the returned non-secret certificate
+ID. The local leaf key is discarded after upload verification. Neither the
+project CA nor any leaf private key enters OpenTofu configuration, plan, or
+state. No
 Milestone 3 runtime receives a
 cache-purge token; a future purge-only credential belongs to the Milestone 5
 cache lifecycle.
@@ -516,8 +525,9 @@ authorization.
 
 Roll production out in fail-safe phases: install and validate the origin-pull
 CA configuration without requiring it; configure Full (strict), cache bypass,
-origin-pull certificates, and proxied records; verify edge and origin behavior;
-then enforce client-certificate and Cloudflare-network ingress. CI compares the
+Always Online disabled, origin-pull certificates, and proxied records; verify
+edge and origin behavior; then enforce client-certificate and Cloudflare-network
+ingress. CI compares the
 committed network set with Cloudflare's published ranges and reports drift, but
 a live plan never downloads and trusts an unreviewed replacement. Range changes
 first add the reviewed superset to both firewalls, verify edge reachability, and
@@ -532,9 +542,9 @@ window.
 Gate: the reviewed OpenTofu plan and approved apply add only the intended
 `.com` resources and two-zone edge policy. Obtain and renew apex and wildcard
 origin certificates in both zones. Prove proxied public DNS, Full (strict),
-account-specific origin pull, explicit cache bypass, direct-origin denial,
-forwarded-header authenticity, response fidelity, `/cdn-cgi/` denial, and
-Cloudflare-only ingress before enforcement.
+account-specific origin pull, explicit cache bypass, Always Online disabled,
+direct-origin denial, forwarded-header authenticity, response fidelity,
+`/cdn-cgi/` denial, and Cloudflare-only ingress before enforcement.
 Run the platform-only Caddy/systemd, cookie-policy, host-input Ansible overlap,
 descriptor-pinning, generation-retention, start-limit, failure-injection, and
 bootstrap-interruption cases in ADR 0022. Publication remains disabled, every
@@ -665,8 +675,8 @@ Before production enablement:
 - repeat the complete public-edge matrix against the real `.net` and `.com`
   apex and wildcard policy: proxied DNS, distinct edge and origin certificates,
   Full (strict), account-specific origin pulls, Cloudflare-only ingress,
-  forwarded-header authenticity, cache bypass, direct-origin denial, strict
-  unknown-host behavior, and safe port 80 handling;
+  forwarded-header authenticity, cache bypass, Always Online disabled,
+  direct-origin denial, strict unknown-host behavior, and safe port 80 handling;
 - pass live supported-browser tests proving the `.com`/`.net` boundary, the
   known sibling `.com` cookie behavior, host-bound `__Host-` behavior, and the
   Caddy request/response cookie policy;
@@ -734,7 +744,7 @@ failure-injection evidence.
 | Critical | Incorrect sync or intent ordering publishes a mixed or non-durable generation after process or power loss. | Centralize durable primitives, record every barrier, inject failure at every boundary, and reconcile from evidence rather than in-memory phase. |
 | Critical | The privileged ZIP parser turns crafted metadata or decompression into root compromise or host exhaustion. | Structural gate first, narrow accepted methods, descriptor-relative extraction, systemd resource sandbox, hostile corpus, and no publication on failure. |
 | Critical | A direct origin path or forged forwarding header bypasses Cloudflare policy or attributes an attacker-selected address to a request. | Require account-specific origin pulls, pin reviewed Cloudflare networks in both firewalls, trust forwarded headers only on that authenticated path, and test denial from outside it. |
-| Critical | Cloudflare caches a tenant, alias, error, or lifecycle response across a state change or identity boundary. | Install explicit two-zone cache bypass in M3, retain origin `no-store`, and test repeated responses and lifecycle transitions. Design cache keys, purges, failure handling, and a purge-only credential separately in M5 before enabling caching. |
+| Critical | Cloudflare serves a tenant, alias, error, or lifecycle response across a state change or identity boundary through cache or Always Online. | Install explicit two-zone cache bypass and disable Always Online in M3, retain origin `no-store`, and test repeated responses, lifecycle transitions, and disposable origin unavailability. Design cache keys, stale serving, purges, failure handling, and a purge-only credential separately in M5 before enabling either mechanism. |
 | High | Cloudflare rewrites a validated tenant representation or serves its reserved endpoint instead of the platform contract. | Disable optional transformations, emit `no-transform`, compare origin and edge representations, block `/cdn-cgi/`, reserve the colliding archive path, and fail M3.0 if the provider endpoint cannot be preempted. |
 | High | Root host-agent scope grows until its review boundary is no longer understandable. | Keep contracts and operator client unprivileged, divide host-agent modules by state/archive/publication/lifecycle, and deliver one invariant group per PR. |
 | High | Spaces behavior differs from assumed S3 version and visibility semantics. | Test the exact DigitalOcean operations and interruption states; quarantine ambiguity and close archive admission rather than guess. |
@@ -759,14 +769,16 @@ These are hypotheses, not design facts:
    zones.
 4. Cloudflare can proxy both zones while preserving the exact host, method,
    path, query, redirect, cookie, and unknown-host contracts; explicit bypass
-   prevents every Milestone 3 response class from entering edge cache, optional
-   transformations stay disabled, and the zone WAF preempts `/cdn-cgi/`.
+   prevents every Milestone 3 response class from entering edge cache, Always
+   Online stays disabled and serves no representation during disposable origin
+   unavailability, optional transformations stay disabled, and the zone WAF
+   preempts `/cdn-cgi/`.
 5. Full (strict), account-specific Authenticated Origin Pulls, and the reviewed
    Cloudflare network set prevent direct-origin and cross-account access without
    making renewal, restart, port 80 handling, or recovery unavailable.
-6. The OpenTofu provider can manage the required proxy, SSL, origin-pull, and
-   cache-bypass resources with narrowly scoped two-zone credentials; its API
-   model does not require an unaccepted account-wide grant.
+6. The OpenTofu provider can manage the required proxy, SSL, origin-pull,
+   zone-setting, and cache-bypass resources with narrowly scoped two-zone
+   credentials; its API model does not require an unaccepted account-wide grant.
 7. Cloudflare accepts the project-CA leaves, a 30-day qualification lifetime
    with at least 14 full days remaining at upload, a one-year production
    lifetime, per-hostname and zone-level association, and the overlap required
@@ -826,8 +838,9 @@ actions:
 
 1. provide the non-secret `lowerduckpond.com` Cloudflare zone ID as a GitHub
    production environment variable; replace the OpenTofu Cloudflare token with
-   one granting only the two-zone DNS, SSL-setting, origin-pull association, and
-   ruleset permissions the implemented plan demonstrates it needs; and replace
+   one granting only the two-zone DNS, zone-setting, SSL-setting, origin-pull
+   association, and ruleset permissions the implemented plan demonstrates it
+   needs; and replace
    the non-expiring Caddy token with one granting Zone Read and DNS Edit only to
    those same two zones; back up both production tokens before convergence;
 2. choose the globally unique production archive bucket name, approve the
@@ -868,9 +881,10 @@ report demonstrates that:
   claiming sibling tenant cookie isolation;
 - public HTTP/HTTPS traversed Cloudflare with Full (strict), account-specific
   origin pulls, Cloudflare-only ingress, authentic forwarding headers, and
-  explicit cache bypass while direct origin access remained denied; origin and
-  edge representations agreed, and `/cdn-cgi/` was blocked and unavailable to
-  tenant archives;
+  explicit cache bypass while Always Online remained disabled and direct origin
+  access remained denied; disposable origin unavailability returned no stale or
+  archived representation, origin and edge representations agreed, and
+  `/cdn-cgi/` was blocked and unavailable to tenant archives;
 - lifecycle and slug reuse converged without transferring a tenant origin;
 - Caddy survived replacement, failed activation, restart, Ansible convergence,
   and reboot using only complete generations;

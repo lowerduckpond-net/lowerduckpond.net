@@ -116,6 +116,8 @@ Cloudflare is the public web entry point for both owned zones. It:
 - terminates visitor TLS with apex and first-level wildcard edge certificates;
 - applies its DDoS controls before a request reaches the small origin;
 - bypasses cache for every route during Milestone 3;
+- keeps Always Online disabled so an origin outage cannot republish stale or
+  externally archived content;
 - disables optional body rewriting and blocks the provider-reserved
   `/cdn-cgi/` namespace; and
 - forwards HTTP and Full (strict) HTTPS to Caddy without becoming tenant or
@@ -279,11 +281,12 @@ use the reserved address and administrative CIDR directly.
 Caddy obtains and renews apex and wildcard origin certificates for both zones
 through ACME DNS-01 using a non-expiring Cloudflare token restricted to only
 those two zones with Zone Read and DNS Edit. A separate OpenTofu edge token
-receives only the two-zone DNS, SSL-setting, origin-pull association, and
-ruleset permissions needed for managed edge resources. A separate expiring
-operator credential uploads replaceable origin-pull leaf material from the
-trusted workstation; only its non-secret certificate ID enters OpenTofu, and
-no CA or leaf private key enters configuration, plan, or state. A future
+receives only the two-zone DNS, zone-setting, SSL-setting, origin-pull
+association, and ruleset permissions needed for managed edge resources. A
+separate expiring operator credential uploads replaceable origin-pull leaf
+material from the trusted workstation; only its non-secret certificate ID
+enters OpenTofu, and no CA or leaf private key enters configuration, plan, or
+state. A future
 cache-purge credential is a distinct purge-only capability and does not exist
 until lifecycle-aware caching is approved. Caddy requires its DNS provider
 module for ACME, so the project builds and pins its Caddy image rather than
@@ -300,10 +303,13 @@ before a provider diagnostic can answer, and static archive admission reserves
 the matching first path component. Provider security blocks and challenges are
 explicit availability events rather than tenant representations.
 
-Milestone 3 explicitly bypasses Cloudflare cache for both zones. CDN caching is
-a later Milestone 5 feature with separately reviewed cache keys, browser and
-edge TTLs, stale behavior, purge authorization, lifecycle recovery, and tests.
-The `.com` apex, reusable aliases, unknown hosts, errors, and
+Milestone 3 explicitly bypasses Cloudflare cache and keeps Always Online
+disabled for both zones. An origin outage returns a provider error rather than
+stale cache or Internet Archive content. CDN caching is a later Milestone 5
+feature with separately reviewed cache keys, browser and edge TTLs, stale
+behavior, purge authorization, lifecycle recovery, and tests. Always Online
+also requires explicit later approval; enabling ordinary caching does not
+enable it. The `.com` apex, reusable aliases, unknown hosts, errors, and
 `secure.lowerduckpond.net` remain permanently uncacheable.
 
 `lowerduckpond.net` is the trusted platform domain and the canonical public,
@@ -521,7 +527,7 @@ remains independently reusable.
 | Tenant content affects platform browser state | Keep every trusted service on `lowerduckpond.net`, every untrusted tenant origin on `lowerduckpond.com`, and use host-only `__Host-` platform cookies with exact-Origin and CSRF checks |
 | One static tenant injects parent `.com` cookies into another tenant's browser state | Ignore incoming cookies and strip outgoing `Set-Cookie` on static `.com` routes, preserve unique immutable origins, document the residual client-side cookie limitation, and require a new decision before authenticated or dynamic `.com` applications |
 | Attackers bypass Cloudflare or spoof its forwarding headers | Proxy every public web hostname, restrict both firewalls to reviewed Cloudflare networks, require account-specific origin pulls on HTTPS, reject unknown hosts, and trust forwarded identity only on the authenticated origin path |
-| Cloudflare caches obsolete tenant or lifecycle responses | Bypass edge cache throughout Milestone 3, preserve `no-store` on aliases and failures, and require lifecycle-aware purge and recovery design before enabling CDN caching |
+| Cloudflare republishes obsolete tenant or lifecycle responses | Bypass edge cache and disable Always Online throughout Milestone 3, preserve `no-store` on aliases and failures, test origin unavailability, and require lifecycle-aware purge and recovery design before enabling either stale-serving mechanism |
 | Cloudflare or its edge configuration fails | Monitor edge and origin separately, retain a reviewed recovery-order rollback to DNS-only service, and treat loss of DDoS protection during that rollback as an explicit incident risk |
 | A single Droplet fails | Encrypted off-host backups, application-aware dumps, host rebuild automation and restore drills |
 

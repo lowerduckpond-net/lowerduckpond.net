@@ -346,9 +346,10 @@ all trusted platform services on `lowerduckpond.net`. A reusable
 canonical origin and never serves tenant-controlled content. Arbitrary and
 custom domains are not accepted in this version. Dual-zone proxied DNS, edge
 and origin certificates, Full (strict), account-specific origin pulls,
-Cloudflare-only ingress, cache bypass, browser-boundary, and Caddy cookie-policy
-qualification are required before the production canary; no PSL submission or
-recognition is assumed. A versioned root-owned platform record pins the suffix
+Cloudflare-only ingress, cache bypass, Always Online denial, browser-boundary,
+and Caddy cookie-policy qualification are required before the production
+canary; no PSL submission or recognition is assumed. A versioned root-owned
+platform record pins the suffix
 before the first tenant is created, and each root-generated manifest stores the
 complete origin.
 Convergence and reconciliation fail closed unless configuration, the platform
@@ -440,6 +441,8 @@ Implement idempotent commands or jobs for:
   application permanently uncacheable. Defer tenant content cache keys, TTLs,
   purge ordering, stale behavior, and a separate purge-only credential to
   Milestone 5.
+- Manage Always Online as disabled for both zones and prove a disposable origin
+  outage cannot serve stale cache or Internet Archive content.
 - Disable optional Cloudflare body rewriting and script injection, require
   `Cache-Control: no-transform`, block the provider-reserved `/cdn-cgi/`
   namespace, and reject its colliding first path component from tenant archives.
@@ -633,10 +636,10 @@ provisioner cannot originate or transform lifecycle authority, read
 authoritative tenant state, or read an export payload. The production canary
 uses a source and separately imported target and passes only after both are
 removed through their ordinary audited lifecycles. The dual-domain browser and
-Caddy cookie boundary, Cloudflare proxy and cache-bypass policy,
-authenticated-origin and direct-origin-denial boundary, isolated archive Space,
-Caddy/systemd recovery, hostile-archive, durability, backup, and audit gates are
-demonstrated with `static_publication_enabled` deliberately enabled.
+Caddy cookie boundary, Cloudflare proxy, cache-bypass and Always Online policy,
+authenticated-origin and direct-origin-denial boundary, isolated archive
+Space, Caddy/systemd recovery, hostile-archive, durability, backup, and audit
+gates are demonstrated with `static_publication_enabled` deliberately enabled.
 
 ## 7. Milestone 4: control plane and lifecycle automation — planned
 
@@ -725,6 +728,9 @@ The complete static-site lifecycle operates through the control plane, produces 
 
 - Keep the Milestone 3 two-zone cache bypass until this phase's threat-model
   amendment and acceptance tests pass.
+- Keep Always Online disabled unless a distinct lifecycle decision approves its
+  stale-cache and Internet Archive behavior; enabling ordinary CDN caching does
+  not implicitly approve it.
 - Define exact eligible route classes, cache keys, browser and edge TTLs, stale
   serving behavior, and cross-tenant denial; aliases, the `.com` apex, unknown
   hosts, errors, and the trusted administration application remain ineligible.
