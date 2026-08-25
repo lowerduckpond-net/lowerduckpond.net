@@ -2,6 +2,9 @@
 - name: Install the qualification sudo boundary
   ansible.builtin.import_tasks: sudo.yml
 
+- name: Install the qualification Python package
+  ansible.builtin.import_tasks: package.yml
+
 - name: Create root-owned qualification directories
   ansible.builtin.file:
     path: "{{ item.path }}"
@@ -10,10 +13,6 @@
     group: "{{ item.group }}"
     mode: "{{ item.mode }}"
   loop:
-    - path: "{{ m3_qualification_install_root }}"
-      owner: root
-      group: root
-      mode: "0755"
     - path: "{{ m3_qualification_state_root }}"
       owner: root
       group: root
@@ -59,15 +58,6 @@
     group: caddy
     mode: "0750"
   when: not m3_qualification_generation_directory.stat.exists
-
-- name: Install the qualification Python package source
-  ansible.builtin.copy:
-    src: "{{ playbook_dir }}/../../../tools/m3-qualification/src/lowerduckpond_m3_qualification/"
-    dest: "{{ m3_qualification_install_root }}/lowerduckpond_m3_qualification/"
-    owner: root
-    group: root
-    mode: preserve
-  notify: Restart M3 qualification fixture
 
 - name: Install qualification executable helpers
   ansible.builtin.copy:

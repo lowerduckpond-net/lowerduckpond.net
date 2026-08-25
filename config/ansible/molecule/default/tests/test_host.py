@@ -29,6 +29,7 @@ BACKUP_SOURCE_PATHS = (
 )
 SYSTEMD_SYSTEM_UNIT_PATHS = (
     "/etc/systemd/system/caddy.service",
+    "/etc/systemd/system/ldp-m3-fixture.service",
     "/etc/systemd/system/lowerduckpond-backup.service",
     "/etc/systemd/system/lowerduckpond-backup.timer",
     "/etc/systemd/system/lowerduckpond-backup-maintenance.service",
@@ -43,6 +44,24 @@ QUALIFICATION_UUID_COMMAND = "/usr/local/libexec/lowerduckpond/m3-qualification-
 QUALIFICATION_UUID_COMMAND_MODE = 0o755
 QUALIFICATION_LOG_MODE = 0o600
 QUALIFICATION_LOG_PATH = "/tmp/lowerduckpond-m3-qualification.json"  # noqa: S108
+QUALIFICATION_PACKAGE_DIRECTORY_MODE = 0o755
+QUALIFICATION_PACKAGE_FILE_MODE = 0o644
+QUALIFICATION_PACKAGE_ROOT = "/opt/lowerduckpond/m3-qualification/lowerduckpond_m3_qualification"
+QUALIFICATION_PYTHON_MODULES = (
+    "__init__.py",
+    "__main__.py",
+    "browser.py",
+    "checks.py",
+    "cli.py",
+    "domains.py",
+    "edge.py",
+    "filesystem.py",
+    "fixture_server.py",
+    "host.py",
+    "libraries.py",
+    "report.py",
+    "session.py",
+)
 QUALIFICATION_REPAIRED_LOG_PATH = "/tmp/lowerduckpond-m3-qualification-repair.json"  # noqa: S108
 QUALIFICATION_SUDOERS_MODE = 0o440
 VALID_UUIDV7 = "0198d17f-6f4a-7000-8000-000000000001"
@@ -141,6 +160,29 @@ def test_qualification_sudo_boundary_uses_the_root_owned_parser(host: Host) -> N
 
     other_command = host.run(shlex.join((*command, "/usr/bin/true")))
     assert other_command.rc != 0
+
+
+def test_qualification_fixture_ignores_restrictive_controller_modes(host: Host) -> None:
+    package = host.file(QUALIFICATION_PACKAGE_ROOT)
+    assert package.is_directory
+    assert package.user == "root"
+    assert package.group == "root"
+    assert package.mode == QUALIFICATION_PACKAGE_DIRECTORY_MODE
+
+    for module_name in QUALIFICATION_PYTHON_MODULES:
+        module = host.file(f"{QUALIFICATION_PACKAGE_ROOT}/{module_name}")
+        assert module.is_file
+        assert module.user == "root"
+        assert module.group == "root"
+        assert module.mode == QUALIFICATION_PACKAGE_FILE_MODE
+
+    assert not host.file(f"{QUALIFICATION_PACKAGE_ROOT}/__pycache__").exists
+    fixture = host.service("ldp-m3-fixture")
+    assert fixture.is_enabled
+    assert fixture.is_running
+    response = host.run("curl --fail --silent http://127.0.0.1:18080/probe")
+    assert response.rc == 0
+    assert response.stdout == "lowerduckpond-m3-cookie-independent-body\n"
 
 
 def test_only_expected_ports_listen_publicly(host: Host) -> None:
