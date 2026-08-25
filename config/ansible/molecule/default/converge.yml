@@ -1,4 +1,38 @@
 ---
+- name: Stage a restrictive qualification package source fixture
+  hosts: localhost
+  connection: local
+  become: false
+  gather_facts: false
+  vars:
+    m3_qualification_molecule_source_root: /tmp/lowerduckpond-m3-controller-source
+  tasks:
+    - name: Create the restrictive controller source directory
+      ansible.builtin.file:
+        path: "{{ m3_qualification_molecule_source_root }}"
+        state: directory
+        mode: "0700"
+
+    - name: Copy the controller source fixture with restrictive modes
+      ansible.builtin.copy:
+        src: >-
+          {{ playbook_dir }}/../../../../tools/m3-qualification/src/lowerduckpond_m3_qualification/
+        dest: "{{ m3_qualification_molecule_source_root }}/"
+        mode: "0600"
+        directory_mode: "0700"
+
+    - name: Inspect the restrictive controller package fixture
+      ansible.builtin.stat:
+        path: "{{ m3_qualification_molecule_source_root }}/__init__.py"
+      register: m3_qualification_molecule_source
+
+    - name: Require the controller package fixture to reproduce the live failure
+      ansible.builtin.assert:
+        that:
+          - m3_qualification_molecule_source.stat.isreg
+          - m3_qualification_molecule_source.stat.mode == '0600'
+        fail_msg: The Molecule controller source must reproduce a restrictive checkout.
+
 - name: Import the hosting-node playbook
   ansible.builtin.import_playbook: ../../playbooks/site.yml
 
@@ -16,6 +50,8 @@
       - 2001:db8::/32
     m3_qualification_log_path: /tmp/lowerduckpond-m3-qualification-repair.json
     m3_qualification_molecule_cloudflare_token: "{{ '0' * 40 }}"
+    m3_qualification_install_root: /opt/lowerduckpond/m3-qualification
+    m3_qualification_package_source_root: /tmp/lowerduckpond-m3-controller-source
     m3_qualification_validator_log_path: /tmp/lowerduckpond-m3-qualification.json
     m3_qualification_origin_pull_ca_paths:
       - /tmp/lowerduckpond-m3-origin-pull-ca.pem
@@ -25,6 +61,29 @@
       ansible.builtin.include_role:
         name: m3_qualification
         tasks_from: sudo.yml
+
+    - name: Include the qualification package tasks
+      ansible.builtin.include_role:
+        name: m3_qualification
+        tasks_from: package.yml
+
+    - name: Install the qualification fixture unit
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../roles/m3_qualification/templates/ldp-m3-fixture.service.j2"
+        dest: /etc/systemd/system/ldp-m3-fixture.service
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Reload systemd for M3 qualification
+
+    - name: Flush qualification package and unit handlers
+      ansible.builtin.meta: flush_handlers
+
+    - name: Enable and start the qualification fixture
+      ansible.builtin.systemd_service:
+        name: ldp-m3-fixture.service
+        enabled: true
+        state: started
 
     - name: Create a disposable origin-pull CA for Caddy validation  # noqa command-instead-of-module
       ansible.builtin.command:

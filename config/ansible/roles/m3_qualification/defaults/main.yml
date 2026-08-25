@@ -1,5 +1,21 @@
 ---
 m3_qualification_install_root: /opt/lowerduckpond/m3-qualification
+m3_qualification_package_source_root: >-
+  {{ role_path }}/../../../../tools/m3-qualification/src/lowerduckpond_m3_qualification
+m3_qualification_python_modules:
+  - __init__.py
+  - __main__.py
+  - browser.py
+  - checks.py
+  - cli.py
+  - domains.py
+  - edge.py
+  - filesystem.py
+  - fixture_server.py
+  - host.py
+  - libraries.py
+  - report.py
+  - session.py
 m3_qualification_runtime_root: /run/lowerduckpond-m3-qualification
 m3_qualification_state_root: /var/lib/lowerduckpond-m3
 m3_qualification_origin_pull_trust: dual

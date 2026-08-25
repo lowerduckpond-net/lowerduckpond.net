@@ -1,0 +1,44 @@
+---
+- name: Create the qualification package directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ m3_qualification_install_root }}"
+    - "{{ m3_qualification_install_root }}/lowerduckpond_m3_qualification"
+
+- name: Discover the controller qualification Python modules
+  ansible.builtin.set_fact:
+    m3_qualification_discovered_python_modules: >-
+      {{ query('ansible.builtin.fileglob',
+               m3_qualification_package_source_root ~ '/*.py') |
+         map('basename') | sort }}
+
+- name: Require the exact qualification Python module allowlist
+  ansible.builtin.assert:
+    that:
+      - >-
+        m3_qualification_discovered_python_modules ==
+        (m3_qualification_python_modules | sort)
+    fail_msg: The qualification Python source does not match its deployment allowlist.
+    quiet: true
+
+- name: Install the allowlisted qualification Python modules
+  ansible.builtin.copy:
+    src: "{{ m3_qualification_package_source_root }}/{{ item }}"
+    dest: "{{ m3_qualification_install_root }}/lowerduckpond_m3_qualification/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ m3_qualification_python_modules }}"
+  loop_control:
+    label: "{{ item }}"
+  notify: Restart M3 qualification fixture
+
+- name: Remove controller Python cache artifacts from the qualification package
+  ansible.builtin.file:
+    path: "{{ m3_qualification_install_root }}/lowerduckpond_m3_qualification/__pycache__"
+    state: absent
