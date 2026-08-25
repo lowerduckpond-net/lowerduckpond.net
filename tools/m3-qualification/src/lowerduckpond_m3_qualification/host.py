@@ -43,6 +43,7 @@ CERTIFICATE_PROBES: Final = (
     ("m3-a.lowerduckpond.com", "*.lowerduckpond.com"),
 )
 UUID_REJECTION_ARGUMENTS: Final = (
+    (),
     (VALID_UUIDV7.upper(),),
     ("0198d17f-6f4a-4000-8000-000000000001",),
     (f"{VALID_UUIDV7};id",),
@@ -115,7 +116,10 @@ def _check_sudo_uuid() -> dict[str, EvidenceValue]:
     for arguments in UUID_REJECTION_ARGUMENTS:
         if _quiet_run((*command, *arguments)).returncode == 0:
             raise RuntimeError
-    return {"accepted": 1, "rejected": len(UUID_REJECTION_ARGUMENTS)}
+    unauthorized = ("runuser", "--user", "ldp-qualification", "--", "sudo", "-n", "/usr/bin/true")
+    if _quiet_run(unauthorized).returncode == 0:
+        raise RuntimeError
+    return {"accepted": 1, "rejected": len(UUID_REJECTION_ARGUMENTS) + 1}
 
 
 def _check_tmpfs_limits() -> dict[str, EvidenceValue]:

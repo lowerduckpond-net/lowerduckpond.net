@@ -80,11 +80,14 @@ archive record and remote object version rather than caller bytes.
 
 The adapter writes and syncs the complete job through an exclusive temporary
 regular file, atomic rename, and parent-directory sync. The provisioner's sudo
-allowlist exposes only `execute-authorized-job <root-generated-job-id>`; it
-accepts one canonical lowercase UUIDv7 matched with an ASCII `fullmatch`, and
-derives the path beneath one fixed root-owned directory. It cannot accept a
-separator or caller path, call the activator with raw operation fields, or
-invoke the job issuer.
+allowlist exposes only the fixed, root-owned `execute-authorized-job`
+executable. Ubuntu 26.04's `sudo-rs` does not support regular expressions or
+wildcards in command arguments, so the rule does not pretend to validate the
+argument. The executable starts in an isolated runtime, accepts exactly one
+canonical lowercase UUIDv7 matched with an ASCII `fullmatch`, and derives the
+path beneath one fixed root-owned directory. It cannot accept a separator or
+caller path, call the activator with raw operation fields, or invoke the job
+issuer.
 
 The parent-directory sync is the operation's acceptance point: the adapter does
 not report acceptance earlier, and after it the exact job may execute even if
@@ -157,6 +160,13 @@ The command contract and result model become compatibility surfaces. Tests must
 prove that local, SSH-adapted, and later queued invocation cannot change core
 semantics. The authorization envelope is also a compatibility surface between
 the trusted SSH issuer now and the authenticated control plane later.
+
+The fixed sudo rule authorizes attempts to invoke its one executable with
+arbitrary argument vectors because `sudo-rs` cannot express the UUID grammar.
+That executable is therefore the privileged argument boundary: it must remain
+root-owned, purpose-built, isolated from caller-controlled interpreter state,
+and tested against missing, additional, noncanonical, separator-bearing, and
+lookalike arguments. Sudo must still reject every other executable.
 
 ## Alternatives considered
 

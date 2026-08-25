@@ -1,0 +1,24 @@
+---
+- name: Create the qualification system account
+  ansible.builtin.user:
+    name: ldp-qualification
+    system: true
+    create_home: false
+    shell: /usr/sbin/nologin
+
+- name: Install the qualification UUID parser
+  ansible.builtin.copy:
+    src: m3-qualification-uuid
+    dest: /usr/local/libexec/lowerduckpond/m3-qualification-uuid
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the fixed qualification sudo rule
+  ansible.builtin.template:
+    src: sudoers.j2
+    dest: /etc/sudoers.d/lowerduckpond-m3-qualification
+    owner: root
+    group: root
+    mode: "0440"
+    validate: /usr/sbin/visudo --check --file=%s
