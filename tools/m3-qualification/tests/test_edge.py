@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -106,21 +107,140 @@ def test_preflight_requires_strict_ssl_offline_fallback_and_fresh_leaves(
     ]
 
 
-def test_retired_primary_stage_requires_525_from_both_zones(
+@pytest.mark.parametrize("status", (520, 525))
+def test_retired_primary_stage_accepts_documented_aop_rejection_from_both_zones(
     monkeypatch: pytest.MonkeyPatch,
+    status: int,
 ) -> None:
     monkeypatch.setattr(edge, "CloudflareClient", lambda token: object())
-    monkeypatch.setattr(edge, "_require_associations", lambda client, values, generation: None)
+    observed_generations: list[str] = []
+    monkeypatch.setattr(
+        edge,
+        "_require_associations",
+        lambda client, values, generation: observed_generations.append(generation),
+    )
+    monkeypatch.setattr(
+        edge,
+        "_origin_certificate",
+        lambda values, hostname: f"origin:{hostname}".encode(),
+    )
     monkeypatch.setattr(
         edge,
         "_request",
-        lambda hostname, path: edge.EdgeResponse(status=525, fields={}, content=b"provider"),
+        lambda hostname, path: edge.EdgeResponse(status=status, fields={}, content=b"provider"),
     )
 
     checks = edge.run_rollover_stage(inputs(), stage="retired-primary")
 
     assert checks[0].check_id == "m3.0.edge.aop-retired-primary"
     assert checks[0].status == "passed"
+    assert checks[0].evidence == {
+        "both_zones_checked": True,
+        "old_leaf_rejected": True,
+        "origin_tls_stable": True,
+    }
+    assert observed_generations == ["primary", "primary"]
+
+
+@pytest.mark.parametrize("status", (521, 522, 523, 524, 526, 527))
+def test_retired_primary_stage_rejects_other_edge_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    status: int,
+) -> None:
+    monkeypatch.setattr(edge, "CloudflareClient", lambda token: object())
+    monkeypatch.setattr(edge, "_require_associations", lambda client, values, generation: None)
+    monkeypatch.setattr(edge, "AOP_PROPAGATION_ATTEMPTS", 1)
+    monkeypatch.setattr(edge, "_origin_certificate", lambda values, hostname: b"origin")
+    monkeypatch.setattr(
+        edge,
+        "_request",
+        lambda hostname, path: edge.EdgeResponse(status=status, fields={}, content=b"provider"),
+    )
+
+    with pytest.raises(edge.EdgeQualificationError, match="old origin-pull leaf"):
+        edge.run_rollover_stage(inputs(), stage="retired-primary")
+
+
+def test_retired_primary_stage_rejects_an_origin_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(edge, "CloudflareClient", lambda token: object())
+    monkeypatch.setattr(edge, "_require_associations", lambda client, values, generation: None)
+    monkeypatch.setattr(edge, "AOP_PROPAGATION_ATTEMPTS", 1)
+    monkeypatch.setattr(edge, "_origin_certificate", lambda values, hostname: b"origin")
+    monkeypatch.setattr(
+        edge,
+        "_request",
+        lambda hostname, path: edge.EdgeResponse(
+            status=520,
+            fields={"x-m3-origin-reached": "true"},
+            content=b"provider",
+        ),
+    )
+
+    with pytest.raises(edge.EdgeQualificationError, match="old origin-pull leaf"):
+        edge.run_rollover_stage(inputs(), stage="retired-primary")
+
+
+def test_retired_primary_stage_requires_a_live_origin_tls_listener(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(edge, "CloudflareClient", lambda token: object())
+    monkeypatch.setattr(edge, "_require_associations", lambda client, values, generation: None)
+
+    def unavailable(values: edge.EdgeInputs, hostname: str) -> bytes:
+        raise edge.EdgeQualificationError("origin certificate could not be observed")
+
+    monkeypatch.setattr(edge, "_origin_certificate", unavailable)
+
+    with pytest.raises(edge.EdgeQualificationError, match="origin certificate"):
+        edge.run_rollover_stage(inputs(), stage="retired-primary")
+
+
+def test_retired_primary_stage_waits_for_both_zones_to_reject(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(edge, "CloudflareClient", lambda token: object())
+    monkeypatch.setattr(edge, "_require_associations", lambda client, values, generation: None)
+    monkeypatch.setattr(edge, "AOP_PROPAGATION_ATTEMPTS", 2)
+    monkeypatch.setattr(edge, "_origin_certificate", lambda values, hostname: b"origin")
+    responses = iter(
+        (
+            edge.EdgeResponse(
+                status=200,
+                fields={"x-m3-origin-reached": "true"},
+                content=b"origin",
+            ),
+            edge.EdgeResponse(status=520, fields={}, content=b"provider"),
+            edge.EdgeResponse(status=520, fields={}, content=b"provider"),
+            edge.EdgeResponse(status=525, fields={}, content=b"provider"),
+        )
+    )
+    monkeypatch.setattr(edge, "_request", lambda hostname, path: next(responses))
+    sleeps: list[float] = []
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+
+    checks = edge.run_rollover_stage(inputs(), stage="retired-primary")
+
+    assert checks[0].status == "passed"
+    assert sleeps == [edge.AOP_PROPAGATION_RETRY_DELAY_SECONDS]
+
+
+def test_retired_primary_stage_requires_a_stable_origin_tls_listener(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(edge, "CloudflareClient", lambda token: object())
+    monkeypatch.setattr(edge, "_require_associations", lambda client, values, generation: None)
+    certificates = iter((b"net-before", b"com-before", b"net-after", b"com-changed"))
+    monkeypatch.setattr(edge, "_origin_certificate", lambda values, hostname: next(certificates))
+    monkeypatch.setattr(
+        edge,
+        "_request",
+        lambda hostname, path: edge.EdgeResponse(status=520, fields={}, content=b"provider"),
+    )
+
+    with pytest.raises(edge.EdgeQualificationError, match="listener changed"):
+        edge.run_rollover_stage(inputs(), stage="retired-primary")
 
 
 @pytest.mark.parametrize(

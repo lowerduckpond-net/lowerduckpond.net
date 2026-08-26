@@ -129,7 +129,9 @@ EVIDENCE_KEYS_BY_CHECK: Final = {
         f"m3.0.edge.aop-{stage}": frozenset({"associations_exact", "edge_reachable"})
         for stage in ("primary", "replacement", "rollback", "forward", "final")
     },
-    "m3.0.edge.aop-retired-primary": frozenset({"both_zones_checked", "old_leaf_rejected"}),
+    "m3.0.edge.aop-retired-primary": frozenset(
+        {"both_zones_checked", "old_leaf_rejected", "origin_tls_stable"}
+    ),
     "m3.0.edge.zone-policy": frozenset({"always_online_disabled", "full_strict"}),
     "m3.0.edge.proxied-dns": frozenset({"origin_hidden", "proxy_addresses"}),
     "m3.0.edge.certificates": frozenset({"distinct_certificates", "public_edge_valid"}),

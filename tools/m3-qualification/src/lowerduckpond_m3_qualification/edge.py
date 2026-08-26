@@ -81,6 +81,8 @@ DIRECT_TIMEOUT_SECONDS: Final = 3
 OUTAGE_ATTEMPTS: Final = 12
 RECOVERY_ATTEMPTS: Final = 20
 RETRY_DELAY_SECONDS: Final = 1.0
+AOP_PROPAGATION_ATTEMPTS: Final = 60
+AOP_PROPAGATION_RETRY_DELAY_SECONDS: Final = 2.0
 MINIMUM_CERTIFICATE_REMAINING: Final = timedelta(days=14)
 MINIMUM_CERTIFICATE_LIFETIME: Final = timedelta(days=29)
 MAXIMUM_CERTIFICATE_LIFETIME: Final = timedelta(days=31)
@@ -93,7 +95,11 @@ IPV4_VERSION: Final = 4
 MINIMUM_TOKEN_LENGTH: Final = 20
 ROLLOVER_CERTIFICATE_COUNT: Final = 4
 CERTIFICATE_IDENTITY_LINE_COUNT: Final = 2
-ORIGIN_TLS_HANDSHAKE_FAILED: Final = 525
+# Cloudflare documents 520 for an AOP/origin mismatch and 525 for an origin TLS
+# handshake failure. Per-hostname client-certificate rejection can surface as
+# either; the retired stage admits no other edge failure and separately proves
+# the origin TLS listener remains stable.
+RETIRED_AOP_EDGE_STATUSES: Final = frozenset({520, 525})
 MAXIMUM_CERTIFICATE_PEM_BYTES: Final = 20_000
 MAXIMUM_API_RESPONSE_BYTES: Final = 2_000_000
 MAXIMUM_EDGE_RESPONSE_BYTES: Final = 1_000_000
@@ -246,19 +252,12 @@ def run_rollover_stage(inputs: EdgeInputs, *, stage: str) -> tuple[CheckResult, 
     _require_associations(client, inputs, generation=generation)
     check_id = f"m3.0.edge.aop-{stage}"
     if stage == "retired-primary":
-        try:
-            net_response = _request(PLATFORM_HOST, "/fidelity")
-            com_response = _request(CANONICAL_HOST, "/static")
-        except OSError as error:
-            raise EdgeQualificationError("retired AOP edge request failed") from error
-        if (
-            net_response.status != ORIGIN_TLS_HANDSHAKE_FAILED
-            or com_response.status != ORIGIN_TLS_HANDSHAKE_FAILED
-            or _origin_reached(net_response)
-            or _origin_reached(com_response)
-        ):
-            raise EdgeQualificationError("old origin-pull leaf was not rejected")
-        evidence = {"both_zones_checked": True, "old_leaf_rejected": True}
+        _require_retired_aop_rejection(inputs, client=client)
+        evidence = {
+            "both_zones_checked": True,
+            "old_leaf_rejected": True,
+            "origin_tls_stable": True,
+        }
         return (CheckResult(check_id=check_id, status="passed", evidence=evidence),)
 
     responses = (
@@ -274,6 +273,27 @@ def run_rollover_stage(inputs: EdgeInputs, *, stage: str) -> tuple[CheckResult, 
     if stage != "final":
         return (stage_check,)
     return (stage_check, *_run_final_edge_checks(inputs, client=client))
+
+
+def _require_retired_aop_rejection(inputs: EdgeInputs, *, client: CloudflareClient) -> None:
+    targets = ((PLATFORM_HOST, "/fidelity"), (CANONICAL_HOST, "/static"))
+    origin_certificates = tuple(_origin_certificate(inputs, hostname) for hostname, _ in targets)
+    for attempt in range(AOP_PROPAGATION_ATTEMPTS):
+        responses = tuple(_request(hostname, path) for hostname, path in targets)
+        if all(
+            response.status in RETIRED_AOP_EDGE_STATUSES and not _origin_reached(response)
+            for response in responses
+        ):
+            if (
+                tuple(_origin_certificate(inputs, hostname) for hostname, _ in targets)
+                != origin_certificates
+            ):
+                raise EdgeQualificationError("origin TLS listener changed during AOP rejection")
+            _require_associations(client, inputs, generation="primary")
+            return
+        if attempt + 1 < AOP_PROPAGATION_ATTEMPTS:
+            time.sleep(AOP_PROPAGATION_RETRY_DELAY_SECONDS)
+    raise EdgeQualificationError("old origin-pull leaf was not rejected")
 
 
 def _run_final_edge_checks(
