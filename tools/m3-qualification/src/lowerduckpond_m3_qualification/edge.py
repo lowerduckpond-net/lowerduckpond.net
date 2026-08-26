@@ -7,6 +7,8 @@ import http.client
 import ipaddress
 import json
 import re
+import secrets
+import shlex
 import socket
 import ssl
 import subprocess
@@ -83,6 +85,8 @@ RECOVERY_ATTEMPTS: Final = 20
 RETRY_DELAY_SECONDS: Final = 1.0
 AOP_PROPAGATION_ATTEMPTS: Final = 60
 AOP_PROPAGATION_RETRY_DELAY_SECONDS: Final = 2.0
+LOG_PROPAGATION_ATTEMPTS: Final = 10
+LOG_PROPAGATION_RETRY_DELAY_SECONDS: Final = 0.2
 MINIMUM_CERTIFICATE_REMAINING: Final = timedelta(days=14)
 MINIMUM_CERTIFICATE_LIFETIME: Final = timedelta(days=29)
 MAXIMUM_CERTIFICATE_LIFETIME: Final = timedelta(days=31)
@@ -103,8 +107,10 @@ RETIRED_AOP_EDGE_STATUSES: Final = frozenset({520, 525})
 MAXIMUM_CERTIFICATE_PEM_BYTES: Final = 20_000
 MAXIMUM_API_RESPONSE_BYTES: Final = 2_000_000
 MAXIMUM_EDGE_RESPONSE_BYTES: Final = 1_000_000
+MAXIMUM_LOG_PROBE_BYTES: Final = 1_000_000
 SSH_EXECUTABLE: Final = "/usr/bin/ssh"
 OPENSSL_EXECUTABLE: Final = "/usr/bin/openssl"
+CADDY_LOG_PATH: Final = "/var/log/caddy/m3-qualification.json"
 CLOUDFLARE_NETWORKS: Final = (
     "173.245.48.0/20",
     "103.21.244.0/22",
@@ -168,6 +174,13 @@ class EdgeResponse:
     status: int
     fields: Mapping[str, str]
     content: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class _LogPosition:
+    device: int
+    inode: int
+    size: int
 
 
 class CloudflareClient:
@@ -304,7 +317,7 @@ def _run_final_edge_checks(
         ("proxied-dns", lambda: _check_proxied_dns(inputs)),
         ("certificates", lambda: _check_certificates(inputs)),
         ("direct-origin", lambda: _check_direct_origin(inputs)),
-        ("forwarded-address", _check_forwarded_address),
+        ("forwarded-address", lambda: _check_forwarded_address(inputs)),
         ("cache-bypass", _check_cache_bypass),
         ("representation-fidelity", lambda: _check_representation_fidelity(inputs)),
         ("reserved-path", _check_reserved_path),
@@ -314,10 +327,23 @@ def _run_final_edge_checks(
     )
     if tuple(suffix for suffix, _ in operations) != FINAL_EDGE_SUFFIXES:
         raise EdgeQualificationError("final edge check set is inconsistent")
-    return tuple(
-        CheckResult(check_id=f"m3.0.edge.{suffix}", status="passed", evidence=operation())
-        for suffix, operation in operations
-    )
+    checks: list[CheckResult] = []
+    for suffix, operation in operations:
+        check_id = f"m3.0.edge.{suffix}"
+        try:
+            evidence = operation()
+        except OSError, ValueError, EdgeQualificationError, subprocess.SubprocessError:
+            checks.append(
+                CheckResult(
+                    check_id=check_id,
+                    status="failed",
+                    evidence={},
+                    error_code="probe_failed",
+                )
+            )
+        else:
+            checks.append(CheckResult(check_id=check_id, status="passed", evidence=evidence))
+    return tuple(checks)
 
 
 def _check_zone_policy(client: CloudflareClient, inputs: EdgeInputs) -> dict[str, EvidenceValue]:
@@ -364,24 +390,34 @@ def _check_direct_origin(inputs: EdgeInputs) -> dict[str, EvidenceValue]:
     return {"http_denied": True, "https_denied": True}
 
 
-def _check_forwarded_address() -> dict[str, EvidenceValue]:
+def _check_forwarded_address(inputs: EdgeInputs) -> dict[str, EvidenceValue]:
     sentinel = "192.0.2.123"
-    for hostname, path in ((PLATFORM_HOST, "/fidelity"), (CANONICAL_HOST, "/static")):
+    nonce = secrets.token_hex(16)
+    initial_position = _caddy_log_position(inputs)
+    expected_uris: dict[str, str] = {}
+    for index, (hostname, path) in enumerate(
+        ((PLATFORM_HOST, "/fidelity"), (CANONICAL_HOST, "/static"))
+    ):
+        uri = f"{path}?m3-forwarded-probe={nonce}-{index}"
+        expected_uris[hostname] = uri
         response = _request(
             hostname,
-            path,
+            uri,
             fields={"CF-Connecting-IP": sentinel, "X-Forwarded-For": sentinel},
         )
-        observed = response.fields.get("x-m3-observed-client-ip", "")
-        try:
-            address = ipaddress.ip_address(observed)
-        except ValueError as error:
-            raise EdgeQualificationError(
-                "origin did not observe a valid visitor address"
-            ) from error
-        if observed == sentinel or not address.is_global or not _origin_reached(response):
-            raise EdgeQualificationError("spoofed forwarding identity reached the origin")
-    return {"authentic_address": True, "spoof_overwritten": True}
+        if response.status != HTTPStatus.OK or not _origin_reached(response):
+            raise EdgeQualificationError("forwarding probe did not reach the origin")
+    for attempt in range(LOG_PROPAGATION_ATTEMPTS):
+        log_delta = _caddy_log_delta(inputs, initial_position)
+        if _forwarding_records_are_valid(
+            log_delta,
+            expected_uris=expected_uris,
+            sentinel=sentinel,
+        ):
+            return {"authentic_address": True, "spoof_overwritten": True}
+        if attempt + 1 < LOG_PROPAGATION_ATTEMPTS:
+            time.sleep(LOG_PROPAGATION_RETRY_DELAY_SECONDS)
+    raise EdgeQualificationError("forwarding probes were absent from the bounded Caddy log")
 
 
 def _check_cache_bypass() -> dict[str, EvidenceValue]:
@@ -431,7 +467,7 @@ def _check_unknown_host() -> dict[str, EvidenceValue]:
     response = _request(UNKNOWN_HOST, "/")
     if response.status != HTTPStatus.NOT_FOUND or not _origin_reached(response):
         raise EdgeQualificationError("unknown disposable host did not fail at Caddy")
-    expected = b"No Lower Duck Pond site has been provisioned for this name.\n"
+    expected = b"No Lower Duck Pond site has been provisioned for this name."
     if response.content != expected:
         raise EdgeQualificationError("unknown disposable host returned a non-generic response")
     return {"generic_failure": True, "origin_reached": True}
@@ -760,11 +796,110 @@ def _origin_certificate(inputs: EdgeInputs, hostname: str) -> bytes:
     return ssl.PEM_cert_to_DER_cert(match.group(0).decode("ascii"))
 
 
+def _caddy_log_position(inputs: EdgeInputs) -> _LogPosition:
+    result = _ssh(
+        inputs,
+        "sudo",
+        "/usr/bin/stat",
+        "--format=%d:%i:%s",
+        CADDY_LOG_PATH,
+    )
+    try:
+        device, inode, size = (
+            int(value) for value in result.stdout.decode("ascii").strip().split(":")
+        )
+    except (UnicodeError, ValueError) as error:
+        raise EdgeQualificationError("Caddy log position is malformed") from error
+    if device < 1 or inode < 1 or size < 0:
+        raise EdgeQualificationError("Caddy log position is unsafe")
+    return _LogPosition(device=device, inode=inode, size=size)
+
+
+def _caddy_log_delta(inputs: EdgeInputs, initial: _LogPosition) -> bytes:
+    current = _caddy_log_position(inputs)
+    if (current.device, current.inode) != (
+        initial.device,
+        initial.inode,
+    ) or current.size < initial.size:
+        raise EdgeQualificationError("Caddy log rotated during the forwarding probe")
+    length = current.size - initial.size
+    if length > MAXIMUM_LOG_PROBE_BYTES:
+        raise EdgeQualificationError("Caddy log probe exceeded its bound")
+    if length == 0:
+        return b""
+    result = _ssh(
+        inputs,
+        "sudo",
+        "/usr/bin/dd",
+        f"if={CADDY_LOG_PATH}",
+        "iflag=skip_bytes,count_bytes",
+        f"skip={initial.size}",
+        f"count={length}",
+        "status=none",
+    )
+    if len(result.stdout) != length:
+        raise EdgeQualificationError("Caddy log probe was not read exactly")
+    return result.stdout
+
+
+def _forwarding_records_are_valid(
+    raw: bytes, *, expected_uris: Mapping[str, str], sentinel: str
+) -> bool:
+    records: dict[str, Mapping[str, object]] = {}
+    for line in raw.splitlines():
+        try:
+            value = json.loads(line)
+        except UnicodeError, json.JSONDecodeError:
+            continue
+        if not isinstance(value, dict):
+            continue
+        request = value.get("request")
+        if not isinstance(request, dict):
+            continue
+        hostname = request.get("host")
+        uri = request.get("uri")
+        if isinstance(hostname, str) and expected_uris.get(hostname) == uri:
+            if hostname in records:
+                raise EdgeQualificationError("forwarding probe log identity was duplicated")
+            records[hostname] = value
+    if set(records) != set(expected_uris):
+        return False
+    for hostname, record in records.items():
+        request = record["request"]
+        if not isinstance(request, dict) or record.get("status") != HTTPStatus.OK:
+            raise EdgeQualificationError("forwarding probe log record is malformed")
+        remote_raw = request.get("remote_ip")
+        client_raw = request.get("client_ip")
+        if not isinstance(remote_raw, str) or not isinstance(client_raw, str):
+            raise EdgeQualificationError("forwarding probe addresses are absent")
+        try:
+            remote = ipaddress.ip_address(remote_raw)
+            client = ipaddress.ip_address(client_raw)
+        except ValueError as error:
+            raise EdgeQualificationError("forwarding probe addresses are malformed") from error
+        if (
+            not _is_cloudflare_address(str(remote))
+            or not client.is_global
+            or str(client) == sentinel
+            or client == remote
+        ):
+            raise EdgeQualificationError(f"forwarding identity was not authentic for {hostname}")
+    return True
+
+
 def _ssh(
     inputs: EdgeInputs, *remote_command: str, check: bool = True
 ) -> subprocess.CompletedProcess[bytes]:
+    if not remote_command or any("\x00" in argument for argument in remote_command):
+        raise EdgeQualificationError("remote command is malformed")
     return subprocess.run(  # noqa: S603
-        (SSH_EXECUTABLE, "-o", "BatchMode=yes", inputs.ssh_target, *remote_command),
+        (
+            SSH_EXECUTABLE,
+            "-o",
+            "BatchMode=yes",
+            inputs.ssh_target,
+            shlex.join(remote_command),
+        ),
         input=b"",
         capture_output=True,
         check=check,

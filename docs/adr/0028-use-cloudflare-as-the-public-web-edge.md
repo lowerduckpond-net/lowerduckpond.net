@@ -178,6 +178,12 @@ apex remains locally exercised on the disposable host until its reviewed
 production cutover; M3.12 repeats the full edge suite against both production
 apexes and wildcards before publication is enabled.
 
+The forwarding proof does not reflect a visitor address in a public response.
+It submits fixed spoofed headers through Cloudflare, reads only the bounded
+access-log suffix created by nonce-tagged qualification requests, and requires
+Caddy's parsed client address to be global and distinct from both the spoof and
+the reviewed Cloudflare peer. Only fixed boolean evidence enters the report.
+
 The current Cloudflare AOP documentation lists the feature on every plan tier
 and describes uploaded certificates for both zone-level and per-hostname
 configuration. Qualification must still call the intended account APIs before

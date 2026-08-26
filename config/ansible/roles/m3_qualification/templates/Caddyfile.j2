@@ -2,6 +2,7 @@
 	admin unix//run/caddy/admin.sock
 	servers {
 		trusted_proxies static {{ (cloudflare_ipv4_cidrs + cloudflare_ipv6_cidrs) | join(' ') }}
+		trusted_proxies_strict
 		client_ip_headers CF-Connecting-IP
 		strict_sni_host on
 	}
@@ -28,7 +29,6 @@ lowerduckpond.net, *.lowerduckpond.net {
 			header {
 				Cache-Control "no-transform"
 				X-M3-Origin-Reached "true"
-				X-M3-Observed-Client-IP "{client_ip}"
 			}
 			@set_platform path /set-platform-state
 			handle @set_platform {
@@ -40,7 +40,7 @@ lowerduckpond.net, *.lowerduckpond.net {
 		}
 		handle {
 			header Cache-Control "no-store, no-transform"
-			respond "No Lower Duck Pond site has been provisioned for this name.\n" 404
+			respond "No Lower Duck Pond site has been provisioned for this name." 404
 		}
 	}
 }
@@ -67,7 +67,6 @@ lowerduckpond.com, *.lowerduckpond.com {
 			Cache-Control "no-store, no-transform"
 			X-M3-Incoming-State "{http.request.header.Cookie}"
 			X-M3-Origin-Reached "true"
-			X-M3-Observed-Client-IP "{client_ip}"
 		}
 		@apex host lowerduckpond.com
 		@alias_root {
@@ -79,7 +78,7 @@ lowerduckpond.com, *.lowerduckpond.com {
 		@canonical host t-0198d17f6f4a70008000000000000001.lowerduckpond.com
 		handle @apex {
 			header +Set-Cookie "ldp_m3_route=must-be-removed; Domain=lowerduckpond.com; Path=/; Secure"
-			respond "No Lower Duck Pond site has been provisioned for this name.\n" 404
+			respond "No Lower Duck Pond site has been provisioned for this name." 404
 		}
 		handle @alias_root {
 			header +Set-Cookie "ldp_m3_route=must-be-removed; Domain=lowerduckpond.com; Path=/; Secure"
@@ -87,7 +86,7 @@ lowerduckpond.com, *.lowerduckpond.com {
 		}
 		handle @alias {
 			header +Set-Cookie "ldp_m3_route=must-be-removed; Domain=lowerduckpond.com; Path=/; Secure"
-			respond "No Lower Duck Pond site has been provisioned for this name.\n" 404
+			respond "No Lower Duck Pond site has been provisioned for this name." 404
 		}
 		handle @canonical {
 			header +Set-Cookie "ldp_m3_route=must-be-removed; Domain=lowerduckpond.com; Path=/; Secure"
@@ -103,7 +102,7 @@ lowerduckpond.com, *.lowerduckpond.com {
 		}
 		handle {
 			header +Set-Cookie "ldp_m3_route=must-be-removed; Domain=lowerduckpond.com; Path=/; Secure"
-			respond "No Lower Duck Pond site has been provisioned for this name.\n" 404
+			respond "No Lower Duck Pond site has been provisioned for this name." 404
 		}
 	}
 }
@@ -139,7 +138,7 @@ http://127.0.0.1:18081 {
 		@canonical host t-0198d17f6f4a70008000000000000001.lowerduckpond.com
 		handle @apex {
 			header +Set-Cookie "ldp_m3_route=must-be-removed; Domain=lowerduckpond.com; Path=/; Secure"
-			respond "No Lower Duck Pond site has been provisioned for this name.\n" 404
+			respond "No Lower Duck Pond site has been provisioned for this name." 404
 		}
 		handle @alias_root {
 			header +Set-Cookie "ldp_m3_route=must-be-removed; Domain=lowerduckpond.com; Path=/; Secure"
@@ -147,7 +146,7 @@ http://127.0.0.1:18081 {
 		}
 		handle @alias {
 			header +Set-Cookie "ldp_m3_route=must-be-removed; Domain=lowerduckpond.com; Path=/; Secure"
-			respond "No Lower Duck Pond site has been provisioned for this name.\n" 404
+			respond "No Lower Duck Pond site has been provisioned for this name." 404
 		}
 		handle @canonical {
 			header +Set-Cookie "ldp_m3_route=must-be-removed; Domain=lowerduckpond.com; Path=/; Secure"
@@ -163,7 +162,7 @@ http://127.0.0.1:18081 {
 		}
 		handle {
 			header +Set-Cookie "ldp_m3_route=must-be-removed; Domain=lowerduckpond.com; Path=/; Secure"
-			respond "No Lower Duck Pond site has been provisioned for this name.\n" 404
+			respond "No Lower Duck Pond site has been provisioned for this name." 404
 		}
 	}
 }
