@@ -544,6 +544,11 @@ origin certificates in both zones. Prove proxied public DNS, Full (strict),
 account-specific origin pull, explicit cache bypass, Always Online disabled,
 direct-origin denial, forwarded-header authenticity, response fidelity,
 `/cdn-cgi/` denial, and Cloudflare-only ingress before enforcement.
+Prove forwarded-header authenticity from the bounded Caddy access-log suffix
+for nonce-tagged requests: the peer must be in the reviewed Cloudflare ranges,
+and Caddy's parsed client address must be global and differ from both the
+attacker-supplied sentinel and the Cloudflare peer. Do not expose visitor
+addresses in public response headers or qualification evidence.
 Run the platform-only Caddy/systemd, cookie-policy, host-input Ansible overlap,
 descriptor-pinning, generation-retention, start-limit, failure-injection, and
 bootstrap-interruption cases in ADR 0022. Publication remains disabled, every

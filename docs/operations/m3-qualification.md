@@ -322,6 +322,14 @@ origin certificates, direct-origin denial, forwarding-header authenticity,
 cache bypass, representation fidelity, reserved-path blocking, generic unknown
 hosts, method/host/path/query-preserving HTTP redirects, and the absence of
 stale bytes during a bounded disposable Caddy outage followed by recovery.
+The forwarding probe sends fixed spoofed visitor-address headers on two
+nonce-tagged requests, then reads at most 1 MiB appended to the qualification
+Caddy log after the probe began. It requires each exact request to have a peer
+in the reviewed Cloudflare ranges and a global Caddy-parsed client address that
+differs from both the spoof and the Cloudflare peer. The raw addresses stay in
+memory on the trusted workstation: no client address is reflected in a public
+response or admitted to the sanitized report. Each final check records its own
+fixed pass/fail result so a failure does not mask the status of later checks.
 
 Install Playwright's pinned browsers and workstation dependencies once, then
 produce the remaining report fragments under replacement-only trust:
