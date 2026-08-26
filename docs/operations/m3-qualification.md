@@ -300,10 +300,22 @@ Use the same guarded procedure for this exact sequence:
 3. run `just m3-qualification configure replacement` to remove primary-CA
    trust from Caddy;
 4. select `primary`, apply a `--transition primary` plan, then run
-   `just m3-qualification edge retired-primary`; this must prove exact `525`
-   rejection in both zones without an origin marker; and
+   `just m3-qualification edge retired-primary`; this must prove documented
+   `520` or `525` rejection in both zones without an origin marker while the
+   origin TLS listener remains available and stable; and
 5. select `replacement`, apply a `--transition replacement` plan, then run
    `just m3-qualification edge final`.
+
+The retired-primary stage does not treat a generic provider or origin outage as
+proof. Before and after the two public probes it retrieves the origin server
+certificate over the SSH-bound loopback path and requires the certificate to
+remain unchanged. It admits only Cloudflare
+[`520`](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-5xx-errors/error-520/)
+(documented for an AOP/origin mismatch) or
+[`525`](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-5xx-errors/error-525/)
+(origin TLS handshake failure), requires both zones, and rejects any origin
+marker. The preceding successful replacement stage and the following
+successful final replacement stage complete the causal rollover proof.
 
 The final edge stage proves current zone policy, proxied DNS, distinct edge and
 origin certificates, direct-origin denial, forwarding-header authenticity,
@@ -384,7 +396,9 @@ for architecture review if any of these fail:
 - Cloudflare accepts 30-day project-CA leaves and exposes stable active
   association state through the documented API;
 - Cloudflare presents the newly selected leaf promptly enough for forward and
-  rollback convergence and returns `525` after the old CA is retired;
+  rollback convergence and, after retirement, converges within the bounded
+  rejection window on only documented `520` or `525` without reaching a live,
+  stable origin;
 - Cloudflare DNS answers expose only addresses in the reviewed provider
   snapshot, and both DigitalOcean and host firewalls deny the known origin;
 - Cloudflare preserves the admitted response while cache bypass and transform
