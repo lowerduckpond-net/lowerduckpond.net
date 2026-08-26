@@ -267,8 +267,8 @@ def test_forwarded_address_uses_current_bounded_caddy_log(
     nonce = "1" * 32
     position = edge._LogPosition(device=1, inode=2, size=3)
     expected_uris = {
-        edge.PLATFORM_HOST: f"/fidelity?m3-forwarded-probe={nonce}-0",
-        edge.CANONICAL_HOST: f"/static?m3-forwarded-probe={nonce}-1",
+        edge.PLATFORM_HOST: f"/fidelity?m3-forwarded-for-spoof={nonce}-0",
+        edge.CANONICAL_HOST: f"/static?m3-forwarded-for-spoof={nonce}-1",
     }
     log_delta = b"\n".join(
         json.dumps(
@@ -299,6 +299,8 @@ def test_forwarded_address_uses_current_bounded_caddy_log(
         assert method == "GET"
         assert follow_redirects is False
         observed.append((hostname, path, fields))
+        if fields == {"CF-Connecting-IP": sentinel}:
+            return edge.EdgeResponse(status=403, fields={}, content=b"error code: 1000\n")
         return edge.EdgeResponse(
             status=200,
             fields={"x-m3-origin-reached": "true"},
@@ -312,20 +314,53 @@ def test_forwarded_address_uses_current_bounded_caddy_log(
 
     assert edge._check_forwarded_address(inputs()) == {
         "authentic_address": True,
-        "spoof_overwritten": True,
+        "cf_header_rejected": True,
+        "xff_spoof_ignored": True,
     }
     assert observed == [
         (
             edge.PLATFORM_HOST,
+            f"/fidelity?m3-cf-connecting-ip-spoof={nonce}-0",
+            {"CF-Connecting-IP": sentinel},
+        ),
+        (
+            edge.PLATFORM_HOST,
             expected_uris[edge.PLATFORM_HOST],
-            {"CF-Connecting-IP": sentinel, "X-Forwarded-For": sentinel},
+            {"X-Forwarded-For": sentinel},
+        ),
+        (
+            edge.CANONICAL_HOST,
+            f"/static?m3-cf-connecting-ip-spoof={nonce}-1",
+            {"CF-Connecting-IP": sentinel},
         ),
         (
             edge.CANONICAL_HOST,
             expected_uris[edge.CANONICAL_HOST],
-            {"CF-Connecting-IP": sentinel, "X-Forwarded-For": sentinel},
+            {"X-Forwarded-For": sentinel},
         ),
     ]
+
+
+@pytest.mark.parametrize(
+    "rejected_response",
+    (
+        edge.EdgeResponse(status=200, fields={}, content=b"fixture"),
+        edge.EdgeResponse(
+            status=403,
+            fields={"x-m3-origin-reached": "true"},
+            content=b"origin response",
+        ),
+    ),
+)
+def test_forwarded_address_requires_cf_header_preemption(
+    monkeypatch: pytest.MonkeyPatch,
+    rejected_response: edge.EdgeResponse,
+) -> None:
+    monkeypatch.setattr(edge, "_caddy_log_position", lambda values: edge._LogPosition(1, 2, 3))
+    monkeypatch.setattr(edge, "_request", lambda hostname, path, **kwargs: rejected_response)
+
+    with pytest.raises(edge.EdgeQualificationError, match="was not preempted"):
+        edge._check_forwarded_address(inputs())
 
 
 @pytest.mark.parametrize(
@@ -357,6 +392,7 @@ def test_forwarding_log_rejects_an_untrusted_or_unparsed_identity(
         edge._forwarding_records_are_valid(
             raw,
             expected_uris=expected,
+            rejected_uris={},
             sentinel="192.0.2.123",
         )
 
@@ -365,8 +401,32 @@ def test_forwarding_log_waits_for_both_exact_probe_records() -> None:
     assert not edge._forwarding_records_are_valid(
         b'{"request":{"host":"unrelated.example","uri":"/"},"status":200}',
         expected_uris={edge.PLATFORM_HOST: "/fidelity?m3-forwarded-probe=test-0"},
+        rejected_uris={},
         sentinel="192.0.2.123",
     )
+
+
+def test_forwarding_log_rejects_a_preempted_cf_header_probe_at_the_origin() -> None:
+    rejected = {edge.PLATFORM_HOST: "/fidelity?m3-cf-connecting-ip-spoof=test-0"}
+    raw = json.dumps(
+        {
+            "request": {
+                "host": edge.PLATFORM_HOST,
+                "uri": rejected[edge.PLATFORM_HOST],
+                "remote_ip": "104.16.0.1",
+                "client_ip": "8.8.8.8",
+            },
+            "status": 200,
+        }
+    ).encode()
+
+    with pytest.raises(edge.EdgeQualificationError, match="spoof reached the origin"):
+        edge._forwarding_records_are_valid(
+            raw,
+            expected_uris={},
+            rejected_uris=rejected,
+            sentinel="192.0.2.123",
+        )
 
 
 def test_qualification_caddy_does_not_reflect_client_ips_or_literal_escapes() -> None:
@@ -375,6 +435,8 @@ def test_qualification_caddy_does_not_reflect_client_ips_or_literal_escapes() ->
 
     assert "trusted_proxies_strict" in template
     assert "X-M3-Observed-Client-IP" not in template
+    assert "http://:18081 {" in template
+    assert "http://127.0.0.1:18081 {" not in template
     assert "provisioned for this name.\\n" not in template
     assert "provisioned for this name.\\n" not in base_template
 

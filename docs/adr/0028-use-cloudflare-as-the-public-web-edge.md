@@ -178,11 +178,22 @@ apex remains locally exercised on the disposable host until its reviewed
 production cutover; M3.12 repeats the full edge suite against both production
 apexes and wildcards before publication is enabled.
 
+The origin side of the representation comparison uses a host-agnostic HTTP site
+address bound only to `127.0.0.1`. Route-level matchers admit only the reviewed
+public qualification hosts. An IP-bearing Caddy site address is not equivalent:
+it adds that IP as a `Host` matcher and would make public-host loopback probes
+observe Caddy's empty unmatched response instead of the origin representation.
+
 The forwarding proof does not reflect a visitor address in a public response.
-It submits fixed spoofed headers through Cloudflare, reads only the bounded
-access-log suffix created by nonce-tagged qualification requests, and requires
-Caddy's parsed client address to be global and distinct from both the spoof and
-the reviewed Cloudflare peer. Only fixed boolean evidence enters the report.
+It requires Cloudflare to preempt a request that supplies its reserved
+`CF-Connecting-IP` header, a documented
+[Error 1000](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-1xxx-errors/error-1000/)
+condition, then submits a fixed spoofed `X-Forwarded-For` value on a separate
+nonce-tagged request. It reads only the bounded access-log suffix, rejects any
+origin record for the preempted request, and requires Caddy's parsed client
+address on the admitted request to be global and distinct from both the spoof
+and the reviewed Cloudflare peer. Only fixed boolean evidence enters the
+report.
 
 The current Cloudflare AOP documentation lists the feature on every plan tier
 and describes uploaded certificates for both zone-level and per-hostname
