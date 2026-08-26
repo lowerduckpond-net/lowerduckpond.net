@@ -395,15 +395,26 @@ def _check_forwarded_address(inputs: EdgeInputs) -> dict[str, EvidenceValue]:
     nonce = secrets.token_hex(16)
     initial_position = _caddy_log_position(inputs)
     expected_uris: dict[str, str] = {}
+    rejected_uris: dict[str, str] = {}
     for index, (hostname, path) in enumerate(
         ((PLATFORM_HOST, "/fidelity"), (CANONICAL_HOST, "/static"))
     ):
-        uri = f"{path}?m3-forwarded-probe={nonce}-{index}"
+        rejected_uri = f"{path}?m3-cf-connecting-ip-spoof={nonce}-{index}"
+        rejected_uris[hostname] = rejected_uri
+        rejected = _request(
+            hostname,
+            rejected_uri,
+            fields={"CF-Connecting-IP": sentinel},
+        )
+        if rejected.status != HTTPStatus.FORBIDDEN or _origin_reached(rejected):
+            raise EdgeQualificationError("forged Cloudflare address header was not preempted")
+
+        uri = f"{path}?m3-forwarded-for-spoof={nonce}-{index}"
         expected_uris[hostname] = uri
         response = _request(
             hostname,
             uri,
-            fields={"CF-Connecting-IP": sentinel, "X-Forwarded-For": sentinel},
+            fields={"X-Forwarded-For": sentinel},
         )
         if response.status != HTTPStatus.OK or not _origin_reached(response):
             raise EdgeQualificationError("forwarding probe did not reach the origin")
@@ -412,9 +423,14 @@ def _check_forwarded_address(inputs: EdgeInputs) -> dict[str, EvidenceValue]:
         if _forwarding_records_are_valid(
             log_delta,
             expected_uris=expected_uris,
+            rejected_uris=rejected_uris,
             sentinel=sentinel,
         ):
-            return {"authentic_address": True, "spoof_overwritten": True}
+            return {
+                "authentic_address": True,
+                "cf_header_rejected": True,
+                "xff_spoof_ignored": True,
+            }
         if attempt + 1 < LOG_PROPAGATION_ATTEMPTS:
             time.sleep(LOG_PROPAGATION_RETRY_DELAY_SECONDS)
     raise EdgeQualificationError("forwarding probes were absent from the bounded Caddy log")
@@ -843,21 +859,22 @@ def _caddy_log_delta(inputs: EdgeInputs, initial: _LogPosition) -> bytes:
 
 
 def _forwarding_records_are_valid(
-    raw: bytes, *, expected_uris: Mapping[str, str], sentinel: str
+    raw: bytes,
+    *,
+    expected_uris: Mapping[str, str],
+    rejected_uris: Mapping[str, str],
+    sentinel: str,
 ) -> bool:
     records: dict[str, Mapping[str, object]] = {}
     for line in raw.splitlines():
-        try:
-            value = json.loads(line)
-        except UnicodeError, json.JSONDecodeError:
+        parsed = _parse_caddy_log_line(line)
+        if parsed is None:
             continue
-        if not isinstance(value, dict):
-            continue
-        request = value.get("request")
-        if not isinstance(request, dict):
-            continue
+        value, request = parsed
         hostname = request.get("host")
         uri = request.get("uri")
+        if isinstance(hostname, str) and rejected_uris.get(hostname) == uri:
+            raise EdgeQualificationError("preempted Cloudflare address spoof reached the origin")
         if isinstance(hostname, str) and expected_uris.get(hostname) == uri:
             if hostname in records:
                 raise EdgeQualificationError("forwarding probe log identity was duplicated")
@@ -865,11 +882,11 @@ def _forwarding_records_are_valid(
     if set(records) != set(expected_uris):
         return False
     for hostname, record in records.items():
-        request = record["request"]
-        if not isinstance(request, dict) or record.get("status") != HTTPStatus.OK:
+        record_request = record.get("request")
+        if not isinstance(record_request, dict) or record.get("status") != HTTPStatus.OK:
             raise EdgeQualificationError("forwarding probe log record is malformed")
-        remote_raw = request.get("remote_ip")
-        client_raw = request.get("client_ip")
+        remote_raw = record_request.get("remote_ip")
+        client_raw = record_request.get("client_ip")
         if not isinstance(remote_raw, str) or not isinstance(client_raw, str):
             raise EdgeQualificationError("forwarding probe addresses are absent")
         try:
@@ -885,6 +902,21 @@ def _forwarding_records_are_valid(
         ):
             raise EdgeQualificationError(f"forwarding identity was not authentic for {hostname}")
     return True
+
+
+def _parse_caddy_log_line(
+    line: bytes,
+) -> tuple[Mapping[str, object], Mapping[str, object]] | None:
+    try:
+        value = json.loads(line)
+    except UnicodeError, json.JSONDecodeError:
+        return None
+    if not isinstance(value, dict):
+        return None
+    request = value.get("request")
+    if not isinstance(request, dict):
+        return None
+    return value, request
 
 
 def _ssh(

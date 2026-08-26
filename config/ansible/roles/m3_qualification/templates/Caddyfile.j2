@@ -108,7 +108,9 @@ lowerduckpond.com, *.lowerduckpond.com {
 }
 
 # Component probes use the same route contracts without creating a public mTLS bypass.
-http://127.0.0.1:18081 {
+# The port-only site address admits the reviewed Host matchers below; bind keeps
+# the listener unavailable outside the origin.
+http://:18081 {
 	bind 127.0.0.1
 	route {
 		@platform host lowerduckpond.net m3-qualification.lowerduckpond.net

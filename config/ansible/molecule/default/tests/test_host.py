@@ -45,6 +45,7 @@ QUALIFICATION_UUID_COMMAND_MODE = 0o755
 QUALIFICATION_LOG_MODE = 0o600
 QUALIFICATION_LOG_PATH = "/tmp/lowerduckpond-m3-qualification.json"  # noqa: S108
 QUALIFICATION_MARKER = "/tmp/lowerduckpond-m3-converged-session"  # noqa: S108
+QUALIFICATION_CADDYFILE = "/tmp/lowerduckpond-m3-Caddyfile"  # noqa: S108
 QUALIFICATION_MARKER_MODE = 0o400
 QUALIFICATION_PACKAGE_DIRECTORY_MODE = 0o755
 QUALIFICATION_PACKAGE_FILE_MODE = 0o644
@@ -244,6 +245,17 @@ def test_caddy_custom_build_and_https_fixture(host: Host) -> None:
     service = host.service("caddy")
     assert service.is_enabled
     assert service.is_running
+
+
+def test_qualification_component_listener_accepts_reviewed_hosts_only_on_loopback(
+    host: Host,
+) -> None:
+    configuration = host.file(QUALIFICATION_CADDYFILE).content_string
+    assert "http://:18081 {" in configuration
+    assert "\tbind 127.0.0.1" in configuration
+    assert "http://127.0.0.1:18081 {" not in configuration
+    assert "@platform host lowerduckpond.net m3-qualification.lowerduckpond.net" in configuration
+    assert "@canonical host t-0198d17f6f4a70008000000000000001.lowerduckpond.com" in configuration
 
 
 def test_caddy_reload_always_validates_first(host: Host) -> None:

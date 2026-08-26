@@ -136,7 +136,9 @@ EVIDENCE_KEYS_BY_CHECK: Final = {
     "m3.0.edge.proxied-dns": frozenset({"origin_hidden", "proxy_addresses"}),
     "m3.0.edge.certificates": frozenset({"distinct_certificates", "public_edge_valid"}),
     "m3.0.edge.direct-origin": frozenset({"http_denied", "https_denied"}),
-    "m3.0.edge.forwarded-address": frozenset({"authentic_address", "spoof_overwritten"}),
+    "m3.0.edge.forwarded-address": frozenset(
+        {"authentic_address", "cf_header_rejected", "xff_spoof_ignored"}
+    ),
     "m3.0.edge.cache-bypass": frozenset({"classes_bypassed", "repeat_bypassed"}),
     "m3.0.edge.representation-fidelity": frozenset({"representations_equal", "transforms_absent"}),
     "m3.0.edge.reserved-path": frozenset({"origin_preempted", "provider_namespace_blocked"}),

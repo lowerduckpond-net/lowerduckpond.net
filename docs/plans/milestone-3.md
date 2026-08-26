@@ -247,7 +247,9 @@ Deliver:
   separate reviewed settings change if either preflight value is enabled;
 - disable every optional Cloudflare response-body rewrite and script injection,
   require origin `no-transform`, and compare origin and edge representations;
-  distinguish an explicit provider security block from tenant content;
+  distinguish an explicit provider security block from tenant content; use a
+  host-agnostic Caddy site address bound only to loopback for the origin-side
+  comparison so the reviewed public `Host` values reach their component routes;
 - block `/cdn-cgi` and its descendants with the managed zone WAF, prove no
   diagnostic endpoint or request reaches Caddy, and prove archive admission
   rejects the normalized, case-insensitive first path component;
