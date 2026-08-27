@@ -50,8 +50,9 @@ just check-m3-qualification && just check-m3-qualification
 This starts pinned disposable Caddy 2.11.4 and Playwright 1.62.0 containers on
 an isolated network and exercises the exact platform/tenant registrable-domain
 split, redirects, hostile parent-domain and host-only upstream cookies, request
-state removal, response state removal, and sibling-parent residual in Chromium,
-Firefox, and WebKit. It does not contact Cloudflare or the qualification host.
+state removal, response state removal, the provisioned canonical-root landing,
+and sibling-parent residual in Chromium, Firefox, and WebKit. It does not
+contact Cloudflare or the qualification host.
 With a workstation-local Docker daemon, the browser controller is published
 only on workstation loopback. With a remote Docker context, the harness creates
 no host port: it carries each connection from a workstation-loopback listener
@@ -82,6 +83,17 @@ The command rejects stale or malformed fragments and identifies the first
 missing or failed stage. Use that result and the current OpenTofu generation to
 resume; do not replay already proven rollover stages merely to rediscover the
 next software failure.
+
+If a reviewed qualification-code correction changes the bound Git revision
+while the retained disposable stack is already converged on replacement-only
+trust and the replacement AOP generation, preserve the prior evidence and
+require a no-change OpenTofu plan before creating the replacement session. Run
+the local gates above, create the new session and library fragment, reconverge
+replacement-only trust, and run the complete live browser fragment immediately.
+Do not reset to primary or repeat the rollover until that browser fragment
+passes. This front-loaded run is a fail-fast diagnostic; rerun the browser
+fragment after the final replacement transition so its assembled evidence
+proves the final state.
 
 ## Required inputs
 
@@ -408,6 +420,12 @@ just m3-qualification domains '/outside/repository/domain-attestation.json'
 just m3-qualification browser
 just m3-qualification assemble
 ```
+
+The browser gate requires the alias redirect to complete at a provisioned
+canonical root in every engine. The landing response must be HTTP 200 with the
+exact state-independent fixture body, no incoming request state, and no
+response cookie before the remaining canonical, alias, and unknown-host routes
+are admitted.
 
 Stop the pinned browser container after the browser fragment is written. Do not
 install Playwright's Ubuntu fallback packages on an unsupported workstation

@@ -1,0 +1,39 @@
+---
+- name: Create the qualification static root
+  ansible.builtin.file:
+    path: "{{ m3_qualification_static_root }}"
+    state: directory
+    owner: root
+    group: caddy
+    mode: "0750"
+
+- name: Install the canonical-root fixture
+  ansible.builtin.copy:
+    content: lowerduckpond-m3-canonical-root
+    dest: "{{ m3_qualification_static_root }}/index.html"
+    owner: root
+    group: caddy
+    mode: "0640"
+
+- name: Install the cookie-independent static fixture
+  ansible.builtin.copy:
+    content: "lowerduckpond-m3-cookie-independent-body\n"
+    dest: "{{ m3_qualification_static_root }}/static"
+    owner: root
+    group: caddy
+    mode: "0640"
+
+- name: Install the response-fidelity fixture
+  ansible.builtin.copy:
+    content: |-
+      <!doctype html>
+      <meta charset="utf-8">
+      <title>Lower Duck Pond M3 fidelity fixture</title>
+      <p>edge-fidelity@example.invalid</p>
+      <a href="http://example.invalid/plain-http">plain HTTP marker</a>
+      <script type="application/json">{"provider_injection":false}</script>
+      <style>@font-face { font-family: M3Fixture; src: url('/fixture.woff2'); }</style>
+    dest: "{{ m3_qualification_static_root }}/fidelity"
+    owner: root
+    group: caddy
+    mode: "0640"

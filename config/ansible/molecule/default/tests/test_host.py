@@ -67,6 +67,8 @@ QUALIFICATION_PYTHON_MODULES = (
 )
 QUALIFICATION_REPAIRED_LOG_PATH = "/tmp/lowerduckpond-m3-qualification-repair.json"  # noqa: S108
 QUALIFICATION_SUDOERS_MODE = 0o440
+QUALIFICATION_STATIC_FILE_MODE = 0o640
+QUALIFICATION_STATIC_ROOT = "/tmp/lowerduckpond-m3-static"  # noqa: S108
 VALID_UUIDV7 = "0198d17f-6f4a-7000-8000-000000000001"
 UUID_REJECTION_ARGUMENTS = (
     (VALID_UUIDV7.upper(),),
@@ -186,6 +188,21 @@ def test_qualification_fixture_ignores_restrictive_controller_modes(host: Host) 
     response = host.run("curl --fail --silent http://127.0.0.1:18080/probe")
     assert response.rc == 0
     assert response.stdout == "lowerduckpond-m3-cookie-independent-body\n"
+
+
+def test_qualification_static_fixtures_include_a_canonical_root(host: Host) -> None:
+    root = host.file(QUALIFICATION_STATIC_ROOT)
+    assert root.is_directory
+    assert root.user == "root"
+    assert root.group == "caddy"
+    assert root.mode == ROUTE_DIRECTORY_MODE
+
+    canonical = host.file(f"{QUALIFICATION_STATIC_ROOT}/index.html")
+    assert canonical.is_file
+    assert canonical.user == "root"
+    assert canonical.group == "caddy"
+    assert canonical.mode == QUALIFICATION_STATIC_FILE_MODE
+    assert canonical.content_string == "lowerduckpond-m3-canonical-root"
 
 
 def test_qualification_convergence_marker_is_byte_exact(host: Host) -> None:
