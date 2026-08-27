@@ -189,11 +189,17 @@ case "$action" in
             --output "$remote_report"
         remote_status=$?
         set -e
-        if ssh -o BatchMode=yes "ldp-admin@$host" sudo test -f "$remote_report"; then
-            ssh -o BatchMode=yes "ldp-admin@$host" sudo cat "$remote_report" \
-                > "$evidence_root/host.json"
+        temporary_host_report=$(mktemp "$evidence_root/.host.json.XXXXXXXX")
+        trap '[[ -z $temporary_host_report ]] || rm -f -- "$temporary_host_report"' EXIT
+        if ssh -o BatchMode=yes "ldp-admin@$host" sudo cat -- "$remote_report" \
+            > "$temporary_host_report"; then
+            mv -- "$temporary_host_report" "$evidence_root/host.json"
+            temporary_host_report=
         else
             echo "host probe did not produce a sanitized report" >&2
+            if [[ $remote_status -eq 0 ]]; then
+                remote_status=1
+            fi
         fi
         exit "$remote_status"
         ;;
