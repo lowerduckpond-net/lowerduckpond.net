@@ -2,8 +2,10 @@
 
 - `digitalocean-host/` owns the VPC, administrative SSH key, Basic Droplet,
   reserved IPv4 address, assignment, and Cloud Firewall.
-- `digitalocean-spaces/` owns retained backup/archive storage and its scoped
-  runtime credentials.
+- `digitalocean-spaces/` owns retained Restic backup storage and its scoped
+  runtime credential.
+- `digitalocean-tenant-archives/` owns separately retained, non-expiring tenant
+  archive storage and its independently scoped runtime credential.
 - `cloudflare-dns/` owns the apex and wildcard records pointing at the retained
   address.
 

@@ -1,0 +1,14 @@
+FROM python@sha256:416f0db2a2b561945630cef9877a7ea0581b27449eb9fd9df42f03e1b74b5b63
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+WORKDIR /workspace
+COPY . /workspace/tool
+RUN python -m pip install \
+    botocore==1.43.78 \
+    pytest==9.0.2 \
+    /workspace/tool
+
+CMD ["python", "-m", "pytest", "-m", "minio", "/workspace/tool/tests/test_minio.py"]

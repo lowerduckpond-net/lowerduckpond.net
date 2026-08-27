@@ -20,7 +20,7 @@ format: _sync
     tofu fmt -recursive infra/opentofu
 
 # Run every validation required by CI.
-check: check-pre-commit check-links check-python check-m3-qualification check-cloudflare-networks check-opentofu check-ansible check-actions check-secrets
+check: check-pre-commit check-links check-python check-m3-qualification check-m3-archive-storage check-cloudflare-networks check-opentofu check-ansible check-actions check-secrets
 
 # Run file hygiene, Markdown, Python, secret, and OpenTofu format hooks.
 check-pre-commit: _sync
@@ -43,6 +43,14 @@ check-m3-qualification: _sync
     bash -n scripts/m3-qualification config/ansible/roles/m3_qualification/files/m3-caddy-hook
     uv run python -m py_compile scripts/assert_m3_qualification_plan.py config/ansible/roles/m3_qualification/files/m3-caddy-generation config/ansible/roles/m3_qualification/files/m3-qualification-tmpfs config/ansible/roles/m3_qualification/files/m3-qualification-uuid
     scripts/check-m3-browser-boundary
+
+# Exercise M3.1 versions, delete markers, pagination, and multipart accounting.
+check-m3-archive-storage: _sync
+    scripts/check-m3-archive-storage
+
+# Run the live M3.1 storage gate from a trusted workstation.
+m3-archive-qualification: _sync
+    scripts/m3-archive-qualification
 
 # Independently exercise the cookie boundary in stock Firefox and Chrome.
 check-m3-stock-browsers: _sync

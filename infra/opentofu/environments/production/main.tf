@@ -23,10 +23,17 @@ module "host" {
 module "storage" {
   source = "../../modules/digitalocean-spaces"
 
-  bucket_name            = var.backup_bucket_name
-  region                 = var.spaces_region
-  archive_retention_days = var.archive_retention_days
-  runtime_key_name       = "lowerduckpond-production-backups"
+  bucket_name      = var.backup_bucket_name
+  region           = var.spaces_region
+  runtime_key_name = "lowerduckpond-production-backups"
+}
+
+module "tenant_archives" {
+  source = "../../modules/digitalocean-tenant-archives"
+
+  bucket_name      = var.archive_bucket_name
+  region           = var.spaces_region
+  runtime_key_name = "lowerduckpond-production-tenant-archives"
 }
 
 module "dns" {
@@ -43,6 +50,7 @@ resource "digitalocean_project_resources" "production" {
   resources = [
     module.host.reserved_ip_urn,
     module.storage.bucket_urn,
+    module.tenant_archives.bucket_urn,
   ]
 }
 

@@ -79,11 +79,18 @@ def _valid_plan() -> dict[str, Any]:
                 {
                     "acl": "private",
                     "force_destroy": False,
+                    "name": "example-backups",
                     "urn": "do:space:example-backups",
                     "versioning": [{"enabled": True}],
                     "lifecycle_rule": [
-                        {"prefix": "backups/"},
-                        {"prefix": "archives/"},
+                        {
+                            "id": "backups-retention",
+                            "prefix": "backups/",
+                            "enabled": True,
+                            "abort_incomplete_multipart_upload_days": 7,
+                            "expiration": [],
+                            "noncurrent_version_expiration": [{"days": 30}],
+                        },
                     ],
                 },
                 address="module.storage.digitalocean_spaces_bucket.backups",
@@ -92,6 +99,26 @@ def _valid_plan() -> dict[str, Any]:
                 "digitalocean_spaces_key",
                 "runtime",
                 {"grant": [{"bucket": "example-backups", "permission": "readwrite"}]},
+                address="module.storage.digitalocean_spaces_key.runtime",
+            ),
+            _resource(
+                "digitalocean_spaces_bucket",
+                "archives",
+                {
+                    "acl": "private",
+                    "force_destroy": False,
+                    "name": "example-tenant-archives",
+                    "urn": "do:space:example-tenant-archives",
+                    "versioning": [{"enabled": True}],
+                    "lifecycle_rule": [],
+                },
+                address="module.tenant_archives.digitalocean_spaces_bucket.archives",
+            ),
+            _resource(
+                "digitalocean_spaces_key",
+                "runtime",
+                {"grant": [{"bucket": "example-tenant-archives", "permission": "readwrite"}]},
+                address="module.tenant_archives.digitalocean_spaces_key.runtime",
             ),
             _resource(
                 "digitalocean_reserved_ip",
@@ -113,6 +140,7 @@ def _valid_plan() -> dict[str, Any]:
                     "resources": [
                         "do:reservedip:203.0.113.10",
                         "do:space:example-backups",
+                        "do:space:example-tenant-archives",
                     ],
                 },
                 address="digitalocean_project_resources.production",
@@ -151,6 +179,8 @@ def _valid_plan() -> dict[str, Any]:
                                     "module.host",
                                     "module.storage.bucket_urn",
                                     "module.storage",
+                                    "module.tenant_archives.bucket_urn",
+                                    "module.tenant_archives",
                                 ]
                             },
                         },
@@ -274,8 +304,132 @@ def _valid_rebuild_drill_plan() -> dict[str, Any]:
     return plan
 
 
+def _valid_archive_storage_migration_plan() -> dict[str, Any]:
+    plan = deepcopy(_valid_plan())
+    for resource in plan["resource_changes"]:
+        resource["change"]["before"] = deepcopy(resource["change"]["after"])
+        resource["change"]["after_unknown"] = {}
+        resource["change"]["actions"] = ["no-op"]
+
+    backup = next(
+        resource
+        for resource in plan["resource_changes"]
+        if resource["address"] == "module.storage.digitalocean_spaces_bucket.backups"
+    )
+    backup_rule = deepcopy(backup["change"]["after"]["lifecycle_rule"][0])
+    archive_rule = {
+        "id": "archives-retention",
+        "prefix": "archives/",
+        "enabled": True,
+        "abort_incomplete_multipart_upload_days": 7,
+        "expiration": [{"days": 180}],
+        "noncurrent_version_expiration": [{"days": 30}],
+    }
+    backup["change"]["before"]["lifecycle_rule"] = [archive_rule, backup_rule]
+    backup["change"]["actions"] = ["update"]
+
+    for address in (
+        "module.tenant_archives.digitalocean_spaces_bucket.archives",
+        "module.tenant_archives.digitalocean_spaces_key.runtime",
+    ):
+        resource = next(item for item in plan["resource_changes"] if item["address"] == address)
+        resource["change"]["before"] = None
+        resource["change"]["actions"] = ["create"]
+
+    archive_bucket = next(
+        resource
+        for resource in plan["resource_changes"]
+        if resource["address"] == "module.tenant_archives.digitalocean_spaces_bucket.archives"
+    )
+    archive_bucket["change"]["after"]["urn"] = None
+    archive_bucket["change"]["after_unknown"] = {"urn": True}
+
+    project = next(
+        resource
+        for resource in plan["resource_changes"]
+        if resource["address"] == "digitalocean_project_resources.production"
+    )
+    project["change"]["before"]["resources"] = [
+        "do:reservedip:203.0.113.10",
+        "do:space:example-backups",
+    ]
+    project["change"]["after"]["resources"][-1] = None
+    project["change"]["after_unknown"] = {"resources": [False, False, True]}
+    project["change"]["actions"] = ["update"]
+    return plan
+
+
 def test_accepts_expected_foundation() -> None:
     assert_plan(_valid_plan())
+
+
+def test_allows_exact_archive_storage_migration() -> None:
+    assert_plan(_valid_archive_storage_migration_plan(), allow_archive_storage_migration=True)
+
+
+def test_rejects_archive_storage_migration_without_explicit_mode() -> None:
+    with pytest.raises(PlanPolicyError, match="requires --allow-archive-storage-migration"):
+        assert_plan(_valid_archive_storage_migration_plan())
+
+
+def test_rejects_archive_storage_migration_with_unrelated_change() -> None:
+    plan = _valid_archive_storage_migration_plan()
+    dns = next(
+        resource
+        for resource in plan["resource_changes"]
+        if resource["type"] == "cloudflare_dns_record"
+    )
+    dns["change"]["actions"] = ["update"]
+    dns["change"]["before"]["proxied"] = True
+
+    with pytest.raises(PlanPolicyError, match="unrelated archive-storage migration actions"):
+        assert_plan(plan, allow_archive_storage_migration=True)
+
+
+def test_rejects_archive_storage_migration_that_changes_backup_retention() -> None:
+    plan = _valid_archive_storage_migration_plan()
+    backup = next(
+        resource
+        for resource in plan["resource_changes"]
+        if resource["address"] == "module.storage.digitalocean_spaces_bucket.backups"
+    )
+    backup["change"]["after"]["lifecycle_rule"][0]["abort_incomplete_multipart_upload_days"] = 8
+
+    with pytest.raises(PlanPolicyError, match="must not alter backups-retention"):
+        assert_plan(plan, allow_archive_storage_migration=True)
+
+
+def test_rejects_archive_bucket_lifecycle_rule() -> None:
+    plan = _valid_plan()
+    archives = next(
+        resource
+        for resource in plan["resource_changes"]
+        if resource["address"] == "module.tenant_archives.digitalocean_spaces_bucket.archives"
+    )
+    archives["change"]["after"]["lifecycle_rule"] = [
+        {
+            "id": "unsafe-expiration",
+            "prefix": "archives/",
+            "enabled": True,
+            "expiration": [{"days": 3650}],
+        }
+    ]
+
+    with pytest.raises(PlanPolicyError, match="must not have lifecycle rules"):
+        assert_plan(plan)
+
+
+def test_rejects_archive_key_grant_to_backup_bucket() -> None:
+    plan = _valid_plan()
+    archive_key = next(
+        resource
+        for resource in plan["resource_changes"]
+        if resource["address"] == "module.tenant_archives.digitalocean_spaces_key.runtime"
+    )
+    archive_key["change"]["after"]["grant"][0]["bucket"] = "example-backups"
+
+    with pytest.raises(PlanPolicyError, match="readwrite access only to its own bucket"):
+        assert_plan(plan)
 
 
 def test_rejects_durable_project_membership_that_does_not_match_resources() -> None:

@@ -302,6 +302,12 @@ production apex, wildcard association, or zone-wide Always Online setting.
 
 ### M3.1: provision isolated archive storage
 
+Implementation status: the infrastructure, exact migration policy, protected
+preflight, local versioned-S3 integration gate, trusted-workstation acceptance,
+and sanitized-report tooling are implemented. The protected production
+migration, live acceptance, evidence backup, and final no-change plan remain
+required before M3.1 is complete.
+
 Add a `digitalocean-tenant-archives` module rather than renaming the existing
 backup module or its state address. Extend the production stack with the second
 bucket, dedicated key, sensitive outputs, project assignment, and plan-policy

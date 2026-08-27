@@ -11,6 +11,7 @@ resolution-markers = [
 members = [
     "lowerduckpond-control-plane",
     "lowerduckpond-development",
+    "lowerduckpond-m3-archive",
     "lowerduckpond-m3-qualification",
     "lowerduckpond-provisioner",
 ]
@@ -710,6 +711,17 @@ dev = [
     { name = "pytest-testinfra", specifier = ">=10.2.2,<11" },
     { name = "ruff", specifier = ">=0.16.3,<0.17" },
 ]
+
+[[package]]
+name = "lowerduckpond-m3-archive"
+version = "0.0.0"
+source = { editable = "tools/m3-archive-qualification" }
+dependencies = [
+    { name = "botocore" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "botocore", specifier = ">=1.43.70,<1.44" }]
 
 [[package]]
 name = "lowerduckpond-m3-qualification"
