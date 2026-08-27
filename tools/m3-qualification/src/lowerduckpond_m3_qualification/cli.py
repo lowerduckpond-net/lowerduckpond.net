@@ -13,6 +13,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Final
 
+from lowerduckpond_m3_qualification.checks import M3_FRAGMENT_CONTRACTS
 from lowerduckpond_m3_qualification.report import (
     CheckResult,
     QualificationReport,
@@ -20,21 +21,6 @@ from lowerduckpond_m3_qualification.report import (
     combine_reports,
 )
 
-FRAGMENT_LABELS: Final = frozenset(
-    {
-        "libraries",
-        "host",
-        "domains",
-        "browser",
-        "edge-primary",
-        "edge-replacement",
-        "edge-rollback",
-        "edge-forward",
-        "edge-retired-primary",
-        "edge-final",
-        "assembled",
-    }
-)
 FRAGMENT_ARGUMENT_PATTERN: Final = re.compile(r"^([a-z-]+)=(.+)$")
 
 
@@ -357,7 +343,7 @@ def _report_status(*, session_path: Path, source_revision: str, fragments: tuple
     next_action: str | None = None
     for raw in fragments:
         match = FRAGMENT_ARGUMENT_PATTERN.fullmatch(raw)
-        if match is None or match.group(1) not in FRAGMENT_LABELS:
+        if match is None or match.group(1) not in M3_FRAGMENT_CONTRACTS:
             print("evidence: invalid-argument")
             return 2
         label, raw_path = match.groups()
@@ -376,7 +362,9 @@ def _report_status(*, session_path: Path, source_revision: str, fragments: tuple
             print(f"{label}: stale")
             next_action = next_action or label
             continue
-        if not report.checks:
+        expected_environment, expected_check_ids = M3_FRAGMENT_CONTRACTS[label]
+        observed_check_ids = frozenset(check.check_id for check in report.checks)
+        if report.environment != expected_environment or observed_check_ids != expected_check_ids:
             print(f"{label}: invalid")
             next_action = next_action or label
             continue

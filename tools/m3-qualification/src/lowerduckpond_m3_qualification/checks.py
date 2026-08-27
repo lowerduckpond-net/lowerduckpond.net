@@ -68,6 +68,13 @@ EDGE_CHECK_IDS: Final = frozenset(
         "m3.0.edge.origin-unavailable",
     }
 )
+EDGE_AOP_CHECK_IDS: Final = frozenset(
+    f"m3.0.edge.aop-{stage}"
+    for stage in ("primary", "replacement", "rollback", "forward", "retired-primary", "final")
+)
+FINAL_EDGE_CHECK_IDS: Final = EDGE_CHECK_IDS.difference(EDGE_AOP_CHECK_IDS).union(
+    {"m3.0.edge.aop-final"}
+)
 M3_REQUIRED_CHECK_IDS: Final = frozenset().union(
     LIBRARY_CHECK_IDS,
     FILESYSTEM_CHECK_IDS,
@@ -76,6 +83,21 @@ M3_REQUIRED_CHECK_IDS: Final = frozenset().union(
     BROWSER_CHECK_IDS,
     EDGE_CHECK_IDS,
 )
+M3_FRAGMENT_CONTRACTS: Final[dict[str, tuple[str, frozenset[str]]]] = {
+    "libraries": ("hermetic-ci", LIBRARY_CHECK_IDS),
+    "host": ("ubuntu-26.04-disposable", HOST_CHECK_IDS | FILESYSTEM_CHECK_IDS),
+    "domains": ("operator-and-cloudflare", DOMAIN_CHECK_IDS),
+    "browser": ("live-dual-domain", BROWSER_CHECK_IDS),
+    **{
+        f"edge-{stage}": (
+            "live-cloudflare-edge",
+            frozenset({f"m3.0.edge.aop-{stage}"}),
+        )
+        for stage in ("primary", "replacement", "rollback", "forward", "retired-primary")
+    },
+    "edge-final": ("live-cloudflare-edge", FINAL_EDGE_CHECK_IDS),
+    "assembled": ("production-equivalent", M3_REQUIRED_CHECK_IDS),
+}
 
 EVIDENCE_KEYS_BY_CHECK: Final = {
     "m3.0.python.runtime": frozenset({"version"}),
