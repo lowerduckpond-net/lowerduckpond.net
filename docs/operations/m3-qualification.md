@@ -1,8 +1,8 @@
 # Milestone 3 platform qualification
 
-> **Status: implementation under review. Do not start the live sequence until
-> its implementation PR is merged and the trusted workstation is on that exact,
-> clean `main` revision.** Repository validation is safe to run before merge.
+> **Status: qualified on 2026-08-27.** The passing run is recorded below. Keep
+> this runbook intact for reviewed requalification; any future live sequence
+> still requires explicit authorization and an exact, clean `main` revision.
 
 M3.0 is a destructive, disposable qualification drill. It puts four temporary
 hostnames through the real Cloudflare edge, uses a production-equivalent NYC1
@@ -22,6 +22,32 @@ Uploaded origin-pull certificates are deliberately outside OpenTofu because
 their private keys must never enter configuration, a plan, or state. The exact
 `.com` apex contract remains a loopback-only component probe; this drill never
 changes the real apex record.
+
+## Recorded qualification
+
+The explicitly authorized production-equivalent run completed with this bound
+identity:
+
+- date: `2026-08-27`;
+- run ID: `01a04330-42aa-77b5-8748-c154bfcf2270`;
+- source revision: `17418c8976e8a26fb46e6caa879e8e5fef4be229`;
+- report schema: `lowerduckpond.m3-qualification/v3`;
+- result: 54 passed, 0 failed; and
+- sanitized report SHA-256:
+  `2c4eb6abf902220900375c0dc8823730dbed09fb0c3deb5543c72f7cf898c4f9`.
+
+The report accompanying the completion change is the only live-run artifact
+that may enter GitHub. Teardown destroyed all 17 managed resources and left the
+encrypted remote state empty. Independent provider checks found the disposable
+Droplet, firewall, project assignment, four DNS records, four Authenticated
+Origin Pulls associations, six rulesets, ACME records, and four uploaded leaves
+absent. Both temporary M3 Cloudflare tokens were revoked. Saved plans, ignored
+configuration, working evidence, request material, and public leaf artifacts
+were removed from the trusted workstation; the backed-up CA roots remain
+retained pending the production-CA decision.
+
+This result closes M3.0 only. It does not enable static publication, qualify
+the production apex or wildcard policy, or replace the M3.12 production gate.
 
 ## Authorization and workstation boundary
 
