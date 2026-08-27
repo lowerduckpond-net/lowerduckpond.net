@@ -1,7 +1,7 @@
 # Milestone 3 implementation plan
 
-- Status: implementation in progress; revised M3.0 edge gate under review
-- Updated: 2026-08-25
+- Status: implementation in progress; M3.0 qualification complete
+- Updated: 2026-08-27
 - Outcome: deliver the complete static-tenant lifecycle through the trusted
   workstation without enabling the Milestone 4 public control plane
 
@@ -207,14 +207,19 @@ deferred. Production remains dark through phases 0–11.
 
 ### M3.0: qualify dangerous platform assumptions
 
-Implementation status: the revised exact-resource stack and 54-check gate are
-implemented for review. They retain the hermetic, disposable-host, domain,
-Caddy, and three-engine browser probes and add the public Cloudflare edge,
-authenticated-origin rollover, cache-bypass, Always Online denial, and
-origin-denial obligations below. Do not begin the live run until that
-implementation is reviewed and merged. M3.0 is complete only after an
-explicitly authorized live run passes the exact report and the disposable
-resources and uploaded leaves are confirmed destroyed.
+Implementation status: complete. The explicitly authorized live qualification
+passed all 54 required checks on 2026-08-27 against source revision
+`17418c8976e8a26fb46e6caa879e8e5fef4be229`. Run
+`01a04330-42aa-77b5-8748-c154bfcf2270` produced a sanitized report with SHA-256
+`2c4eb6abf902220900375c0dc8823730dbed09fb0c3deb5543c72f7cf898c4f9`.
+Teardown destroyed all 17 OpenTofu resources, left the encrypted remote state
+empty, and independently confirmed the Droplet, firewall, project assignment,
+four DNS records, four Authenticated Origin Pulls associations, six rulesets,
+ACME records, and four uploaded leaves absent. Both temporary Cloudflare tokens
+were revoked and disposable trusted-workstation material was removed. The
+backed-up CA roots remain retained pending the production-CA decision required
+before M3.12. M3.1 is the next implementation phase; this result does not
+enable production or satisfy any later Milestone 3 gate.
 
 Add executable qualification probes and a sanitized report before depending on
 host behavior that the current Molecule suite does not reproduce.
