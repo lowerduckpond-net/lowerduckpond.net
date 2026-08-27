@@ -81,3 +81,28 @@ def test_status_rejects_a_stale_report(tmp_path: Path, capsys: pytest.CaptureFix
         == 0
     )
     assert "host: stale" in capsys.readouterr().out
+
+
+def test_status_rejects_an_empty_report(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    session_path = tmp_path / "session.json"
+    report_path = tmp_path / "host.json"
+    _write_session(session_path)
+    QualificationReport.create(
+        run_id=RUN_ID,
+        source_revision=SOURCE_REVISION,
+        environment="ubuntu-26.04-disposable",
+        checks=(),
+    ).write(report_path)
+
+    assert (
+        _report_status(
+            session_path=session_path,
+            source_revision=SOURCE_REVISION,
+            fragments=(f"host={report_path}",),
+        )
+        == 0
+    )
+    captured = capsys.readouterr()
+    assert "host: invalid" in captured.out
+    assert "host: passed" not in captured.out
+    assert "next: host" in captured.out

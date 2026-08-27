@@ -376,6 +376,10 @@ def _report_status(*, session_path: Path, source_revision: str, fragments: tuple
             print(f"{label}: stale")
             next_action = next_action or label
             continue
+        if not report.checks:
+            print(f"{label}: invalid")
+            next_action = next_action or label
+            continue
         failures = tuple(check.check_id for check in report.checks if check.status == "failed")
         if failures:
             print(f"{label}: failed {','.join(failures)}")
