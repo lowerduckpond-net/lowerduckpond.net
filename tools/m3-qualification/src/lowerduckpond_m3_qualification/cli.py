@@ -45,6 +45,13 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915
         choices=("run_id", "source_revision", "droplet_id", "droplet_urn", "ipv4_address"),
     )
 
+    report_status = subparsers.add_parser(
+        "report-status", help="summarize validated local evidence without mutation"
+    )
+    report_status.add_argument("--session", required=True, type=Path)
+    report_status.add_argument("--source-revision", required=True)
+    report_status.add_argument("--fragment", action="append", default=[])
+
     libraries = subparsers.add_parser("libraries", help="qualify pinned Python libraries")
     _add_run_arguments(libraries)
     libraries.add_argument("--output", required=True, type=Path)
@@ -61,6 +68,8 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915
     browser.add_argument("--tenant-alias-origin", required=True)
     browser.add_argument("--tenant-immutable-origin", required=True)
     browser.add_argument("--tenant-unknown-origin", required=True)
+    browser.add_argument("--ws-endpoint")
+    browser.add_argument("--ignore-https-errors", action="store_true")
     browser.add_argument("--output", required=True, type=Path)
 
     host = subparsers.add_parser("host", help="run privileged disposable-host checks")
@@ -140,6 +149,14 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: PLR0911,PLR0912
         "session-value",
     }:
         return _handle_session_command(arguments)
+    if arguments.command == "report-status":
+        from lowerduckpond_m3_qualification.status import report_status
+
+        return report_status(
+            session_path=arguments.session,
+            source_revision=arguments.source_revision,
+            fragments=tuple(arguments.fragment),
+        )
     if arguments.command == "libraries":
         from lowerduckpond_m3_qualification.libraries import run_library_checks
 
@@ -156,7 +173,11 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: PLR0911,PLR0912
             ),
         )
     elif arguments.command == "browser":
-        from lowerduckpond_m3_qualification.browser import BrowserOrigins, run_browser_checks
+        from lowerduckpond_m3_qualification.browser import (
+            BrowserOrigins,
+            run_browser_checks,
+            validate_browser_endpoint,
+        )
 
         try:
             origins = BrowserOrigins(
@@ -165,12 +186,23 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: PLR0911,PLR0912
                 tenant_immutable=arguments.tenant_immutable_origin,
                 tenant_unknown=arguments.tenant_unknown_origin,
             )
+            ws_endpoint = (
+                validate_browser_endpoint(arguments.ws_endpoint)
+                if arguments.ws_endpoint is not None
+                else None
+            )
         except ValueError:
             return 2
         report = _create_report(
             arguments,
             environment="live-dual-domain",
-            checks=asyncio.run(run_browser_checks(origins)),
+            checks=asyncio.run(
+                run_browser_checks(
+                    origins,
+                    ws_endpoint=ws_endpoint,
+                    ignore_https_errors=arguments.ignore_https_errors,
+                )
+            ),
         )
     elif arguments.command == "host":
         from lowerduckpond_m3_qualification.host import run_host_checks

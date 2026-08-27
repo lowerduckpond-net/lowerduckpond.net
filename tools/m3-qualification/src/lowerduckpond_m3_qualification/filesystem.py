@@ -6,11 +6,10 @@ import errno
 import fcntl
 import os
 import tempfile
-from collections.abc import Callable
 from pathlib import Path
 from typing import Final
 
-from lowerduckpond_m3_qualification.report import CheckResult, EvidenceValue
+from lowerduckpond_m3_qualification.report import CheckResult, EvidenceValue, run_check
 
 NETWORK_FILESYSTEMS: Final = frozenset({"9p", "cifs", "fuse", "fuseblk", "nfs", "nfs4"})
 MOUNT_POINT_FIELD_INDEX: Final = 4
@@ -26,32 +25,16 @@ def run_filesystem_checks(
     with tempfile.TemporaryDirectory(prefix="ldp-m3-", dir=work_root) as temporary_name:
         directory = Path(temporary_name)
         return (
-            _run(
+            run_check(
                 "m3.0.filesystem.type",
                 lambda: _check_filesystem_type(filesystem_type, expected_filesystem),
             ),
-            _run("m3.0.filesystem.directory-fsync", lambda: _check_fsync(directory)),
-            _run("m3.0.filesystem.atomic-rename", lambda: _check_atomic_rename(directory)),
-            _run("m3.0.filesystem.hardlink", lambda: _check_hardlink(directory)),
-            _run("m3.0.filesystem.no-follow", lambda: _check_no_follow(directory)),
-            _run("m3.0.filesystem.flock", lambda: _check_flock(directory)),
+            run_check("m3.0.filesystem.directory-fsync", lambda: _check_fsync(directory)),
+            run_check("m3.0.filesystem.atomic-rename", lambda: _check_atomic_rename(directory)),
+            run_check("m3.0.filesystem.hardlink", lambda: _check_hardlink(directory)),
+            run_check("m3.0.filesystem.no-follow", lambda: _check_no_follow(directory)),
+            run_check("m3.0.filesystem.flock", lambda: _check_flock(directory)),
         )
-
-
-def _run(
-    check_id: str,
-    operation: Callable[[], dict[str, EvidenceValue]],
-) -> CheckResult:
-    try:
-        evidence = operation()
-    except Exception:  # The report intentionally excludes exception text.
-        return CheckResult(
-            check_id=check_id,
-            status="failed",
-            evidence={},
-            error_code="probe_failed",
-        )
-    return CheckResult(check_id=check_id, status="passed", evidence=evidence)
 
 
 def _filesystem_type(path: Path) -> str:

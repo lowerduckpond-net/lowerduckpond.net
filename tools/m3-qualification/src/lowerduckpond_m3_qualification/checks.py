@@ -98,7 +98,7 @@ EVIDENCE_KEYS_BY_CHECK: Final = {
     "m3.0.host.caddy-admin": frozenset({"access_limited", "tcp_disabled", "unix_socket"}),
     "m3.0.host.caddy-certificates": frozenset({"certificate_paths"}),
     "m3.0.host.caddy-hooks": frozenset({"bounded_attempts", "invocation_hooks", "reload_pinned"}),
-    "m3.0.host.caddy-routes": frozenset({"independent_body", "route_classes"}),
+    "m3.0.host.caddy-routes": frozenset({"route_classes", "state_independent"}),
     "m3.0.host.caddy-log-safety": frozenset({"structured", "values_omitted"}),
     "m3.0.host.systemd-recovery": frozenset({"handoff_ms", "nonblocking", "reset_recovered"}),
     "m3.0.domain.lowerduckpond-net": frozenset(
@@ -117,7 +117,7 @@ EVIDENCE_KEYS_BY_CHECK: Final = {
     },
     **{
         f"m3.0.browser.{engine}.caddy-filter": frozenset(
-            {"engine", "independent_body", "routes_checked"}
+            {"engine", "routes_checked", "state_independent"}
         )
         for engine in ("chromium", "firefox", "webkit")
     },
@@ -137,7 +137,7 @@ EVIDENCE_KEYS_BY_CHECK: Final = {
     "m3.0.edge.certificates": frozenset({"distinct_certificates", "public_edge_valid"}),
     "m3.0.edge.direct-origin": frozenset({"http_denied", "https_denied"}),
     "m3.0.edge.forwarded-address": frozenset(
-        {"authentic_address", "cf_header_rejected", "xff_spoof_ignored"}
+        {"authentic_address", "cf_spoof_rejected", "xff_spoof_ignored"}
     ),
     "m3.0.edge.cache-bypass": frozenset({"classes_bypassed", "repeat_bypassed"}),
     "m3.0.edge.representation-fidelity": frozenset({"representations_equal", "transforms_absent"}),

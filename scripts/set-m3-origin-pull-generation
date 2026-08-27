@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -ne 1 || ( $1 != primary && $1 != replacement ) ]]; then
+  echo "usage: $0 primary|replacement" >&2
+  exit 64
+fi
+
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+tfvars_path=${M3_QUALIFICATION_TFVARS_PATH:-"$repo_root/infra/opentofu/environments/qualification/terraform.tfvars"}
+generation=$1
+
+if [[ ! -f $tfvars_path || -L $tfvars_path ]]; then
+  echo "qualification terraform.tfvars is missing or is not a regular file" >&2
+  exit 66
+fi
+
+assignment_pattern='^[[:space:]]*origin_pull_generation[[:space:]]*=[[:space:]]*"(primary|replacement)"([[:space:]]*(#.*)?)?$'
+assignment_count=$(awk -v pattern="$assignment_pattern" '$0 ~ pattern { count += 1 } END { print count + 0 }' "$tfvars_path")
+if [[ $assignment_count -ne 1 ]]; then
+  echo "qualification terraform.tfvars must contain exactly one valid origin_pull_generation assignment" >&2
+  exit 65
+fi
+
+temporary_path=$(mktemp "${tfvars_path}.tmp.XXXXXX")
+cleanup() {
+  if [[ -e $temporary_path ]]; then
+    rm -- "$temporary_path"
+  fi
+}
+trap cleanup EXIT
+
+awk -v pattern="$assignment_pattern" -v generation="$generation" '
+  $0 ~ pattern {
+    sub(/"(primary|replacement)"/, "\"" generation "\"")
+  }
+  { print }
+' "$tfvars_path" >"$temporary_path"
+chmod --reference="$tfvars_path" "$temporary_path"
+mv -- "$temporary_path" "$tfvars_path"
+
+echo "M3.0 origin-pull generation selected: $generation"

@@ -1,0 +1,111 @@
+{
+	admin off
+}
+
+platform.ldp-platform.test {
+	tls internal
+	header X-M3-Origin-Reached "true"
+	@set_platform path /set-platform-state
+	handle @set_platform {
+		header Set-Cookie "__Host-ldp_m3_platform=qualified; Path=/; Secure; HttpOnly; SameSite=Lax"
+		respond "qualified\n" 200
+	}
+	@fidelity path /fidelity
+	handle @fidelity {
+		respond "lowerduckpond-m3-fidelity\n" 200
+	}
+	handle {
+		respond "platform\n" 200
+	}
+}
+
+http://:18080 {
+	@probe_with_state {
+		path /probe
+		header Cookie *
+	}
+	handle @probe_with_state {
+		header {
+			Access-Control-Allow-Origin "https://platform.ldp-platform.test"
+			Access-Control-Allow-Credentials "true"
+			Access-Control-Expose-Headers "X-M3-Sec-Fetch-Site"
+			X-M3-Upstream-Saw-State "true"
+			X-M3-Sec-Fetch-Site "{http.request.header.Sec-Fetch-Site}"
+			+Set-Cookie "ldp_m3_upstream=blocked; Domain=ldp-tenant.test; Path=/; Secure"
+			+Set-Cookie "__Host-ldp_m3_upstream_host=blocked; Path=/; Secure"
+		}
+		respond "lowerduckpond-m3-cookie-independent-body\n" 200
+	}
+	@probe path /probe
+	handle @probe {
+		header {
+			Access-Control-Allow-Origin "https://platform.ldp-platform.test"
+			Access-Control-Allow-Credentials "true"
+			Access-Control-Expose-Headers "X-M3-Sec-Fetch-Site"
+			X-M3-Upstream-Saw-State "false"
+			X-M3-Sec-Fetch-Site "{http.request.header.Sec-Fetch-Site}"
+			+Set-Cookie "ldp_m3_upstream=blocked; Domain=ldp-tenant.test; Path=/; Secure"
+			+Set-Cookie "__Host-ldp_m3_upstream_host=blocked; Path=/; Secure"
+		}
+		respond "lowerduckpond-m3-cookie-independent-body\n" 200
+	}
+	respond "missing\n" 404
+}
+
+alias.ldp-tenant.test,
+t-0198d17f6f4a70008000000000000001.ldp-tenant.test,
+unknown.ldp-tenant.test {
+	tls internal
+	route {
+		request_header -Cookie
+		header {
+			-Set-Cookie
+			Cache-Control "no-store, no-transform"
+			X-M3-Incoming-State "{http.request.header.Cookie}"
+			X-M3-Origin-Reached "true"
+		}
+		@alias_root {
+			host alias.ldp-tenant.test
+			method GET HEAD
+			path /
+		}
+		@alias host alias.ldp-tenant.test
+		@canonical host t-0198d17f6f4a70008000000000000001.ldp-tenant.test
+		handle @alias_root {
+			redir https://t-0198d17f6f4a70008000000000000001.ldp-tenant.test/ 302
+		}
+		handle @alias {
+			respond "No Lower Duck Pond site has been provisioned for this name." 404
+		}
+		handle @canonical {
+			@probe_options {
+				method OPTIONS
+				path /probe
+			}
+			handle @probe_options {
+				header {
+					Access-Control-Allow-Origin "https://platform.ldp-platform.test"
+					Access-Control-Allow-Credentials "true"
+					Access-Control-Allow-Methods "GET, OPTIONS"
+					Access-Control-Allow-Private-Network "true"
+				}
+				respond 204
+			}
+			@probe path /probe
+			handle @probe {
+				reverse_proxy 127.0.0.1:18080 {
+					header_up -Cookie
+					header_down -Set-Cookie
+				}
+			}
+			@static path /static
+			handle @static {
+				respond "lowerduckpond-m3-cookie-independent-body\n" 200
+			}
+			respond "No Lower Duck Pond site has been provisioned for this name." 404
+		}
+		handle {
+			respond "No Lower Duck Pond site has been provisioned for this name." 404
+		}
+	}
+}

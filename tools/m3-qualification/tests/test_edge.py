@@ -31,6 +31,28 @@ BASE_CADDY_TEMPLATE = (
 )
 
 
+def test_qualification_tenant_routes_never_originate_cookie_state() -> None:
+    template = CADDY_TEMPLATE.read_text(encoding="utf-8")
+    tenant_site = template.split("lowerduckpond.com, *.lowerduckpond.com", maxsplit=1)[1]
+
+    positive_cookie_lines = [
+        line.strip()
+        for line in template.splitlines()
+        if "Set-Cookie" in line and not line.strip().startswith(("-Set-Cookie", "header_down"))
+    ]
+
+    assert "header +Set-Cookie" not in tenant_site
+    assert positive_cookie_lines == [
+        'header Set-Cookie "__Host-ldp_m3_platform=qualified; Path=/; '
+        'Secure; HttpOnly; SameSite=Lax"',
+        'header Set-Cookie "__Host-ldp_m3_platform=qualified; Path=/; '
+        'Secure; HttpOnly; SameSite=Lax"',
+    ]
+    assert "request_header -Cookie" in tenant_site
+    assert "header_down -Set-Cookie" in tenant_site
+    assert "\t\t\t-Set-Cookie" in tenant_site
+
+
 def inputs() -> edge.EdgeInputs:
     return edge.EdgeInputs(
         origin_ipv4="8.8.8.8",
@@ -314,7 +336,7 @@ def test_forwarded_address_uses_current_bounded_caddy_log(
 
     assert edge._check_forwarded_address(inputs()) == {
         "authentic_address": True,
-        "cf_header_rejected": True,
+        "cf_spoof_rejected": True,
         "xff_spoof_ignored": True,
     }
     assert observed == [

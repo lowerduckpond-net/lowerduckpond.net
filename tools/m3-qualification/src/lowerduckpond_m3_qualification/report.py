@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 import tempfile
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,7 +20,7 @@ from lowerduckpond_m3_qualification.session import (
     validate_source_revision,
 )
 
-REPORT_SCHEMA_VERSION: Final = "lowerduckpond.m3-qualification/v2"
+REPORT_SCHEMA_VERSION: Final = "lowerduckpond.m3-qualification/v3"
 MAX_EVIDENCE_FIELDS: Final = 12
 MAXIMUM_HANDOFF_MILLISECONDS: Final = 1000
 MINIMUM_NAMESERVERS: Final = 2
@@ -71,7 +72,7 @@ FIXED_INTEGER_EVIDENCE: Final = {
     "inodes": frozenset({4096}),
     "initial_links": frozenset({2}),
     "operations": frozenset({4}),
-    "rejected": frozenset({7}),
+    "rejected": frozenset({9}),
     "remaining_links": frozenset({1}),
     "route_classes": frozenset({5}),
     "routes_checked": frozenset({5}),
@@ -239,6 +240,20 @@ class QualificationReport:
         except BaseException:
             temporary_path.unlink(missing_ok=True)
             raise
+
+
+def run_check(check_id: str, operation: Callable[[], Mapping[str, EvidenceValue]]) -> CheckResult:
+    """Run and validate one probe without erasing sibling results on failure."""
+    try:
+        return CheckResult(check_id=check_id, status="passed", evidence=operation())
+    except Exception as error:  # The diagnostic deliberately excludes exception text.
+        print(f"{check_id}: FAIL ({type(error).__name__})", file=sys.stderr)
+        return CheckResult(
+            check_id=check_id,
+            status="failed",
+            evidence={},
+            error_code="probe_failed",
+        )
 
 
 def combine_reports(

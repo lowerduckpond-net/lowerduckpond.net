@@ -11,13 +11,13 @@ import socket
 import stat
 import subprocess
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from http import HTTPStatus
 from pathlib import Path
 from typing import Final
 
 from lowerduckpond_m3_qualification.filesystem import run_filesystem_checks
-from lowerduckpond_m3_qualification.report import CheckResult, EvidenceValue
+from lowerduckpond_m3_qualification.report import CheckResult, EvidenceValue, run_check
 
 HOST_OS_RELEASE: Final = "26.04"
 QUALIFICATION_ROOT: Final = Path("/run/lowerduckpond-m3-qualification")
@@ -70,35 +70,22 @@ GENERATION_PATTERN: Final = re.compile(
 def run_host_checks(*, work_root: Path, expected_generation: str) -> tuple[CheckResult, ...]:
     """Run all checks that require the disposable Ubuntu host."""
     checks: list[CheckResult] = [
-        _run("m3.0.host.ubuntu", _check_ubuntu),
-        _run("m3.0.host.sudo-uuid", _check_sudo_uuid),
-        _run("m3.0.host.tmpfs-limits", _check_tmpfs_limits),
-        _run(
+        run_check("m3.0.host.ubuntu", _check_ubuntu),
+        run_check("m3.0.host.sudo-uuid", _check_sudo_uuid),
+        run_check("m3.0.host.tmpfs-limits", _check_tmpfs_limits),
+        run_check(
             "m3.0.host.caddy-descriptor",
             lambda: _check_caddy_descriptor(expected_generation),
         ),
-        _run("m3.0.host.caddy-admin", _check_caddy_admin),
-        _run("m3.0.host.caddy-hooks", lambda: _check_caddy_hooks(expected_generation)),
-        _run("m3.0.host.caddy-routes", _check_caddy_routes),
-        _run("m3.0.host.caddy-certificates", _check_caddy_certificates),
-        _run("m3.0.host.caddy-log-safety", _check_caddy_log_safety),
-        _run("m3.0.host.systemd-recovery", _check_systemd_recovery),
+        run_check("m3.0.host.caddy-admin", _check_caddy_admin),
+        run_check("m3.0.host.caddy-hooks", lambda: _check_caddy_hooks(expected_generation)),
+        run_check("m3.0.host.caddy-routes", _check_caddy_routes),
+        run_check("m3.0.host.caddy-certificates", _check_caddy_certificates),
+        run_check("m3.0.host.caddy-log-safety", _check_caddy_log_safety),
+        run_check("m3.0.host.systemd-recovery", _check_systemd_recovery),
     ]
     checks.extend(run_filesystem_checks(work_root=work_root, expected_filesystem="ext4"))
     return tuple(checks)
-
-
-def _run(check_id: str, operation: Callable[[], Mapping[str, EvidenceValue]]) -> CheckResult:
-    try:
-        evidence = operation()
-    except Exception:  # Reports intentionally exclude host paths and command output.
-        return CheckResult(
-            check_id=check_id,
-            status="failed",
-            evidence={},
-            error_code="probe_failed",
-        )
-    return CheckResult(check_id=check_id, status="passed", evidence=evidence)
 
 
 def _check_ubuntu() -> dict[str, EvidenceValue]:
@@ -322,7 +309,7 @@ def _check_caddy_routes() -> dict[str, EvidenceValue]:
         or not _headers_are_stateless(unknown_clear_headers)
     ):
         raise RuntimeError
-    return {"independent_body": True, "route_classes": ROUTE_CLASS_COUNT}
+    return {"route_classes": ROUTE_CLASS_COUNT, "state_independent": True}
 
 
 def _headers_are_stateless(headers: Mapping[str, str]) -> bool:
@@ -425,7 +412,9 @@ def _check_systemd_recovery() -> dict[str, EvidenceValue]:
     success_marker = QUALIFICATION_ROOT / "recovery-allowed"
     success_marker.unlink(missing_ok=True)
     _quiet_run(("systemctl", "stop", "ldp-m3-recovery.service"))
-    _checked_run(("systemctl", "reset-failed", "ldp-m3-recovery.service"))
+    # A newly installed unit may not have been loaded yet. Only the reset that
+    # transitions the exhausted service back to healthy is a required action.
+    _quiet_run(("systemctl", "reset-failed", "ldp-m3-recovery.service"))
     started_at = time.monotonic()
     _checked_run(("systemctl", "--no-block", "start", "ldp-m3-recovery.service"))
     handoff_milliseconds = int((time.monotonic() - started_at) * 1000)
@@ -435,13 +424,16 @@ def _check_systemd_recovery() -> dict[str, EvidenceValue]:
     failed_properties = _systemd_properties(
         "ldp-m3-recovery.service", ("NRestarts", "StartLimitBurst")
     )
-    if int(failed_properties["NRestarts"]) >= int(failed_properties["StartLimitBurst"]):
+    if int(failed_properties["NRestarts"]) != int(failed_properties["StartLimitBurst"]):
         raise RuntimeError
 
     success_marker.touch(mode=0o600)
     _checked_run(("systemctl", "reset-failed", "ldp-m3-recovery.service"))
     _checked_run(("systemctl", "--no-block", "start", "ldp-m3-recovery.service"))
     _poll_systemd_state("ldp-m3-recovery.service", "active")
+    recovered = _systemd_properties("ldp-m3-recovery.service", ("NRestarts", "Result"))
+    if recovered.get("NRestarts") != "0" or recovered.get("Result") != "success":
+        raise RuntimeError
     return {"nonblocking": True, "reset_recovered": True, "handoff_ms": handoff_milliseconds}
 
 
