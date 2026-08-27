@@ -50,6 +50,8 @@ def test_selector_changes_only_the_exact_assignment(tmp_path: Path) -> None:
         'unrelated = "primary"\n',
         'origin_pull_generation = "invalid"\n',
         'origin_pull_generation = "primary"\norigin_pull_generation = "replacement"\n',
+        'origin_pull_generation = "primary"\norigin_pull_generation = "invalid"\n',
+        'origin_pull_generation = "primary"\norigin_pull_generation = replacement\n',
     ),
 )
 def test_selector_refuses_a_missing_or_ambiguous_assignment(tmp_path: Path, content: str) -> None:

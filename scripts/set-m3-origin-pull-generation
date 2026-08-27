@@ -15,9 +15,16 @@ if [[ ! -f $tfvars_path || -L $tfvars_path ]]; then
   exit 66
 fi
 
+assignment_prefix_pattern='^[[:space:]]*origin_pull_generation[[:space:]]*='
 assignment_pattern='^[[:space:]]*origin_pull_generation[[:space:]]*=[[:space:]]*"(primary|replacement)"([[:space:]]*(#.*)?)?$'
-assignment_count=$(awk -v pattern="$assignment_pattern" '$0 ~ pattern { count += 1 } END { print count + 0 }' "$tfvars_path")
-if [[ $assignment_count -ne 1 ]]; then
+read -r assignment_count valid_assignment_count < <(
+  awk -v prefix="$assignment_prefix_pattern" -v valid="$assignment_pattern" '
+    $0 ~ prefix { assignments += 1 }
+    $0 ~ valid { valid_assignments += 1 }
+    END { print assignments + 0, valid_assignments + 0 }
+  ' "$tfvars_path"
+)
+if [[ $assignment_count -ne 1 || $valid_assignment_count -ne 1 ]]; then
   echo "qualification terraform.tfvars must contain exactly one valid origin_pull_generation assignment" >&2
   exit 65
 fi
