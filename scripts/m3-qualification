@@ -260,13 +260,10 @@ case "$action" in
         ;;
     browser)
         [[ $# -eq 0 ]] || usage
+        : "${M3_QUALIFICATION_PLAYWRIGHT_WS_ENDPOINT:?live browser qualification requires the pinned Playwright endpoint}"
         load_report_session
         verify_remote_convergence replacement
         rm -f -- "$evidence_root/browser.json"
-        browser_arguments=()
-        if [[ -n ${M3_QUALIFICATION_PLAYWRIGHT_WS_ENDPOINT:-} ]]; then
-            browser_arguments+=(--ws-endpoint "$M3_QUALIFICATION_PLAYWRIGHT_WS_ENDPOINT")
-        fi
         uv run ldp-m3-qualify browser \
             --run-id "$qualification_run_id" \
             --source-revision "$qualification_source_revision" \
@@ -274,7 +271,7 @@ case "$action" in
             --tenant-alias-origin https://m3-a.lowerduckpond.com \
             --tenant-immutable-origin https://t-0198d17f6f4a70008000000000000001.lowerduckpond.com \
             --tenant-unknown-origin https://m3-unknown.lowerduckpond.com \
-            "${browser_arguments[@]}" \
+            --ws-endpoint "$M3_QUALIFICATION_PLAYWRIGHT_WS_ENDPOINT" \
             --output "$evidence_root/browser.json"
         ;;
     assemble)
