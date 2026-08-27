@@ -519,7 +519,9 @@ def _required_string(response: Mapping[str, object], key: str) -> str:
 
 
 def _is_truncated(response: Mapping[str, object]) -> bool:
-    value = response.get("IsTruncated", False)
+    if "IsTruncated" not in response:
+        raise ArchiveQualificationError("IsTruncated is missing from the S3 response")
+    value = response["IsTruncated"]
     if not isinstance(value, bool):
         raise ArchiveQualificationError("IsTruncated is not boolean")
     return value

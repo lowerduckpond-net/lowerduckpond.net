@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import io
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 
@@ -35,6 +35,8 @@ class FakeBackend:
     remote_calls: int = 0
     fail_at_call: int | None = None
     omit_next_version_marker: bool = False
+    omit_is_truncated: bool = False
+    invalid_is_truncated: object | None = None
 
 
 class FakeS3Client:
@@ -71,6 +73,7 @@ class FakeS3Client:
         page = contents[start : start + max_keys]
         truncated = start + len(page) < len(contents)
         response: dict[str, object] = {"Contents": page, "IsTruncated": truncated}
+        self._alter_is_truncated(response)
         if truncated:
             response["NextContinuationToken"] = str(start + len(page))
         return response
@@ -97,6 +100,7 @@ class FakeS3Client:
         max_keys = kwargs.get("MaxKeys")
         assert isinstance(max_keys, int)
         page = flattened[start : start + max_keys]
+        truncated = start + len(page) < len(flattened)
         response: dict[str, object] = {
             "Versions": [
                 {"Key": key, "VersionId": version.version_id}
@@ -108,9 +112,10 @@ class FakeS3Client:
                 for key, version in page
                 if version.delete_marker
             ],
-            "IsTruncated": start + len(page) < len(flattened),
+            "IsTruncated": truncated,
         }
-        if response["IsTruncated"]:
+        self._alter_is_truncated(response)
+        if truncated:
             response["NextKeyMarker"] = page[-1][0]
             if not self.backend.omit_next_version_marker:
                 response["NextVersionIdMarker"] = page[-1][1].version_id
@@ -140,6 +145,7 @@ class FakeS3Client:
             "Uploads": [{"Key": key, "UploadId": upload_id} for key, upload_id in page],
             "IsTruncated": truncated,
         }
+        self._alter_is_truncated(response)
         if truncated:
             response["NextKeyMarker"] = page[-1][0]
             response["NextUploadIdMarker"] = page[-1][1]
@@ -214,6 +220,12 @@ class FakeS3Client:
         value = f"version-{self.backend.next_version}"
         self.backend.next_version += 1
         return value
+
+    def _alter_is_truncated(self, response: dict[str, object]) -> None:
+        if self.backend.omit_is_truncated:
+            del response["IsTruncated"]
+        elif self.backend.invalid_is_truncated is not None:
+            response["IsTruncated"] = self.backend.invalid_is_truncated
 
 
 def test_acceptance_proves_isolation_pagination_and_cleanup() -> None:
@@ -415,6 +427,37 @@ def test_version_pagination_rejects_a_missing_continuation_marker() -> None:
 
     with pytest.raises(ArchiveQualificationError, match="NextVersionIdMarker"):
         list_versions(client, bucket="archives", prefix="probe/", max_keys=1)
+
+
+@pytest.mark.parametrize(
+    "listing",
+    [
+        lambda client: list_current_objects(client, bucket="archives", prefix="probe/"),
+        lambda client: list_versions(client, bucket="archives", prefix="probe/"),
+        lambda client: list_multipart_uploads(client, bucket="archives", prefix="probe/"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("omit_is_truncated", "invalid_is_truncated", "message"),
+    [
+        (True, None, "IsTruncated is missing"),
+        (False, 0, "IsTruncated is not boolean"),
+    ],
+)
+def test_every_listing_rejects_an_ambiguous_truncation_flag(
+    listing: Callable[[FakeS3Client], object],
+    omit_is_truncated: bool,
+    invalid_is_truncated: object | None,
+    message: str,
+) -> None:
+    backend = FakeBackend(
+        omit_is_truncated=omit_is_truncated,
+        invalid_is_truncated=invalid_is_truncated,
+    )
+    client = FakeS3Client(backend, {"archives"})
+
+    with pytest.raises(ArchiveQualificationError, match=message):
+        listing(client)
 
 
 def _string_argument(arguments: Mapping[str, object], name: str) -> str:
