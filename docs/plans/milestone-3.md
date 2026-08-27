@@ -309,19 +309,48 @@ assertions. Remove the obsolete `archives/` lifecycle rule from the backup
 bucket only after a version-aware preflight proves that prefix empty.
 
 The archive bucket enables versioning, prevents destroy, has no current or
-noncurrent expiration, and may abort incomplete multipart uploads as defense in
-depth. Extend production inventory validation and the trusted-workstation secret
-handoff with separately named archive variables; never overload the existing
-Restic variables.
+noncurrent expiration, and has no lifecycle rule. The pinned provider cannot
+express an abort-only rule without an object or version expiration, so managed
+code prohibits multipart and qualification explicitly proves that no multipart
+uploads exist. M3.1 exposes separately named sensitive archive outputs only for
+trusted-workstation retrieval, acceptance, and backup. It neither overloads the
+Restic variables nor places the archive credential in an inventory, artifact,
+or production-host environment; installation waits for the root-owned archive
+component in M3.10.
 
-Gate: plan policy permits only the expected additive bucket/key/project changes
-and lifecycle correction. After approved apply, acceptance proves mutual access
-denial between the backup and archive credentials. Using only the dedicated
-archive credential and an expendable unique prefix, it exercises one
-known-length `PutObject`, the returned version ID, immediate
-`ListObjectVersions`, exact-version reads and deletes, delete markers, and
-version-aware absence confirmation. The probe must permanently purge its test
-versions and markers and establish an empty archive-accounting baseline.
+Immediately before apply, a protected, fully paginated preflight must prove
+that the backup bucket's obsolete `archives/` prefix contains no current object,
+historical or null version, delete marker, or incomplete multipart upload. Run
+the check with the existing protected Spaces operator credential, fail closed
+on every ambiguous response, and repeat it after apply.
+
+Gate: a dedicated one-time migration policy permits exactly two creates—the
+archive bucket and its one-bucket `readwrite` key—and exactly two in-place
+updates—removal of only the backup bucket's `archives-retention` rule and
+addition of only the archive bucket URN to the durable project assignment. It
+permits no destroy or replacement. After migration, ordinary policy requires
+both durable buckets and both independently scoped keys.
+
+After approved apply, acceptance first proves each runtime credential can use
+its own bucket and that both list/read and unique-prefix writes are mutually
+denied across buckets. If an unexpected cross-bucket write succeeds, capture
+and permanently purge its exact returned version before failing. Using only the
+dedicated archive credential and an expendable unique qualification prefix,
+exercise one small known-length `PutObject`, require a non-null returned version
+ID, verify exact-version bytes, perform an unversioned delete, verify its delete
+marker while the old exact version remains readable, then force
+`ListObjectVersions` pagination with a one-entry page while both entries still
+exist. Follow both continuation markers until the data version and marker have
+each been observed exactly once. Permanently delete both exact entries only
+after that pagination proof. Fully paginated version and multipart listings must
+finally establish that the entire new archive bucket—not merely its
+current-object view—contains zero versions, markers, and uploads. Finish with a
+sanitized acceptance report and a no-change production plan.
+
+Before the live gate, strict fake-client protocol tests, negative saved-plan
+fixtures, and a pinned local versioned-S3 integration test must cover pagination,
+delete markers, cleanup, and failure after every remote step. Local emulation
+cannot replace the live DigitalOcean key-isolation and version-semantics proof.
 
 Rollback: retain the isolated bucket and revoke its key if necessary. If a
 failed probe leaves an ambiguous version or marker, preserve and account for it
@@ -764,7 +793,7 @@ failure-injection evidence.
 | Critical | Cloudflare serves a tenant, alias, error, or lifecycle response across a state change or identity boundary through cache or Always Online. | Install explicit two-zone cache bypass and disable Always Online in M3, retain origin `no-store`, and test repeated responses, lifecycle transitions, and disposable origin unavailability. Design cache keys, stale serving, purges, failure handling, and a purge-only credential separately in M5 before enabling either mechanism. |
 | High | Cloudflare rewrites a validated tenant representation or serves its reserved endpoint instead of the platform contract. | Disable optional transformations, emit `no-transform`, compare origin and edge representations, block `/cdn-cgi/`, reserve the colliding archive path, and fail M3.0 if the provider endpoint cannot be preempted. |
 | High | Root host-agent scope grows until its review boundary is no longer understandable. | Keep contracts and operator client unprivileged, divide host-agent modules by state/archive/publication/lifecycle, and deliver one invariant group per PR. |
-| High | Spaces behavior differs from assumed S3 version and visibility semantics. | Test the exact DigitalOcean operations and interruption states; quarantine ambiguity and close archive admission rather than guess. |
+| High | Spaces behavior differs from assumed S3 version, delete-marker, pagination, multipart-listing, or visibility semantics. | Test the exact DigitalOcean operations and interruption states with forced pagination; quarantine ambiguity and close archive admission rather than guess. |
 | High | Archive or backup credentials create a combined destructive blast radius. | Separate bucket-scoped keys, processes, environment files, health checks, and mutual-denial acceptance tests. |
 | High | Molecule passes while the real filesystem, sshd, systemd, Caddy, or object store fails. | Preserve hermetic CI but require disposable production-equivalent qualification and restore before enabling production. |
 | High | Dual-zone DNS, certificate, or route generation sends tenant bytes to `.net` or trusts cookies on `.com`. | Generate route classes from pinned suffixes, limit Cloudflare credentials to the two zones, qualify all four certificate names, and run hostile host/cookie matrices before enablement. |
@@ -806,8 +835,10 @@ These are hypotheses, not design facts:
    forced-command, sandbox, invocation-ID, reset, and fixed-executable
    contracts. `sudo-rs` argument matching is explicitly not assumed; the
    isolated root-owned executable owns that grammar.
-10. DigitalOcean Spaces returns and exposes exact object versions consistently
-   enough for the proposed intent and quarantine algorithm.
+10. DigitalOcean Spaces enforces mutual denial between the two bucket-scoped
+    credentials and returns and exposes exact object versions, delete markers,
+    pagination markers, and multipart listings consistently enough for the
+    proposed intent, cleanup, and quarantine algorithm.
 11. The systemd temporary-filesystem implementation enforces inode as well as
    byte limits on the actual host.
 12. The selected parsing, canonicalization, schema, property-test, and S3
@@ -860,9 +891,12 @@ actions:
    needs; and replace
    the non-expiring Caddy token with one granting Zone Read and DNS Edit only to
    those same two zones; back up both production tokens before convergence;
-2. choose the globally unique production archive bucket name, approve the
-   OpenTofu plan/apply, and place its generated sensitive outputs only in the
-   established production secret path;
+2. use the selected globally unique production archive bucket name
+   `lowerduckpond-net-production-tenant-archives-4f3e6b91` as
+   `ARCHIVE_BUCKET_NAME`, approve the narrowly bounded OpenTofu plan/apply, and
+   place its generated sensitive outputs only in the established production
+   secret path; OpenTofu creates this durable, service-lifetime bucket, so do
+   not create it manually or treat it as an expendable qualification resource;
 3. create and back up the dedicated `ldp-operator` Ed25519 key on the trusted
    workstation, then provide only its public key and chosen audit principal;
 4. before the revised M3.0 live gate, create and back up the project

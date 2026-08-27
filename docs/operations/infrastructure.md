@@ -63,8 +63,9 @@ supplied separately, so the token does not need Zone Read. The `.com` scope and
 zone ID become required when the Milestone 3 tenant-namespace infrastructure
 lands; until then the existing `.net`-only token remains valid for the current
 stack. The production stack creates a separate Spaces key limited to read/write
-operations on the backup bucket; later Ansible work will deliver that key to
-the host.
+operations on the backup bucket. M3.1 adds an independently scoped archive key,
+retrieves and backs it up only from a trusted workstation, and defers host
+installation until the root-owned archive component lands in M3.10.
 
 This OpenTofu token is distinct from the Caddy runtime token documented in
 [`host-configuration.md`](host-configuration.md). Caddy needs both Zone Read
@@ -137,6 +138,9 @@ a personal network address under the game domain solely for firewall access.
 Configure these environment variables:
 
 - `BACKUP_BUCKET_NAME`, using a second globally unique name
+- `ARCHIVE_BUCKET_NAME`, set in M3.1 to the selected durable production name
+  `lowerduckpond-net-production-tenant-archives-4f3e6b91`; OpenTofu creates and
+  owns this service-lifetime bucket, so do not create it manually
 - `CLOUDFLARE_ZONE_ID`, the trusted `lowerduckpond.net` zone
 - `CLOUDFLARE_TENANT_ZONE_ID`, the untrusted `lowerduckpond.com` zone, required
   when the Milestone 3 tenant namespace lands

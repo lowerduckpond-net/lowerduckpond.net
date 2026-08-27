@@ -211,10 +211,12 @@ must equal the intent-bound size and cannot exceed 120 MiB. It does not use a
 high-level transfer manager, `CreateMultipartUpload`, `UploadPart`, or any SDK
 configuration that may cross a multipart threshold. An interrupted request
 therefore leaves either no object version or one complete discoverable version,
-never separately billable uploaded parts outside version accounting. The
-bucket's incomplete-multipart lifecycle rule remains defense in depth for
-non-platform clients; it is not part of archive correctness, reclamation, or
-capacity accounting.
+never separately billable uploaded parts outside version accounting. ADR 0025's
+dedicated archive bucket has no lifecycle rule because the pinned provider
+cannot express abort-only cleanup without also expiring objects or versions.
+Qualification and reconciliation must therefore list incomplete multipart
+uploads, close archive admission on any unexpected result, and explicitly
+account for and remove it.
 
 After Spaces returns the new version ID, root revalidates that exact version's
 bytes and metadata and durably advances the intent to `uploaded` with the
