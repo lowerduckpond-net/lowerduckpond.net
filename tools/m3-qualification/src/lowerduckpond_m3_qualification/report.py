@@ -75,7 +75,7 @@ FIXED_INTEGER_EVIDENCE: Final = {
     "rejected": frozenset({9}),
     "remaining_links": frozenset({1}),
     "route_classes": frozenset({5}),
-    "routes_checked": frozenset({5}),
+    "routes_checked": frozenset({6}),
     "size_mib": frozenset({64}),
 }
 

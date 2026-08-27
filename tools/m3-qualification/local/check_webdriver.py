@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 
 ALIAS_ORIGIN = "https://alias.ldp-tenant.test"
 CANONICAL_ORIGIN = "https://t-0198d17f6f4a70008000000000000001.ldp-tenant.test"
+CANONICAL_ROOT_BODY = "lowerduckpond-m3-canonical-root"
 HOSTILE_NAMES = frozenset({"ldp_m3_upstream", "__Host-ldp_m3_upstream_host"})
 
 
@@ -76,7 +77,13 @@ def run(endpoint: str, browser_name: str) -> None:
         )
         _request(endpoint, "POST", f"{root}/url", {"url": ALIAS_ORIGIN})
         current_url = _request(endpoint, "GET", f"{root}/url")
-        if current_url != f"{CANONICAL_ORIGIN}/":
+        canonical_root_body = _request(
+            endpoint,
+            "POST",
+            f"{root}/execute/sync",
+            {"script": "return document.body.textContent;", "args": []},
+        )
+        if current_url != f"{CANONICAL_ORIGIN}/" or canonical_root_body != CANONICAL_ROOT_BODY:
             raise WebDriverError("alias redirect contract failed")
         _request(endpoint, "POST", f"{root}/url", {"url": f"{CANONICAL_ORIGIN}/probe"})
         cookies = _request(endpoint, "GET", f"{root}/cookie")

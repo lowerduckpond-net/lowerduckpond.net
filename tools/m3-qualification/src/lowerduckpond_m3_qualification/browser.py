@@ -35,7 +35,8 @@ LOCAL_TENANT_HOSTS: Final = (
     "unknown.ldp-tenant.test",
 )
 CANARY_VALUE: Final = "ldp-m3-canary-not-sensitive"
-FILTERED_ROUTE_COUNT: Final = 5
+CANONICAL_ROOT_BODY: Final = b"lowerduckpond-m3-canonical-root"
+FILTERED_ROUTE_COUNT: Final = 6
 
 
 def _diagnostic_line(error: Exception) -> int:
@@ -293,7 +294,9 @@ async def _check_caddy_filter(  # noqa: PLR0912,PLR0915
         responses.append(response)
 
     page.on("response", record_response)
-    await page.goto(origins.tenant_alias, wait_until="networkidle")
+    canonical_root_response = await page.goto(origins.tenant_alias, wait_until="networkidle")
+    if canonical_root_response is None:
+        raise RuntimeError
     alias_response = next(
         (response for response in responses if response.url.rstrip("/") == origins.tenant_alias),
         None,
@@ -309,6 +312,26 @@ async def _check_caddy_filter(  # noqa: PLR0912,PLR0915
         or "set-cookie" in alias_headers
     ):
         raise RuntimeError
+    canonical_root_headers = await canonical_root_response.all_headers()
+    if (
+        canonical_root_response.url.rstrip("/") != origins.tenant_immutable
+        or canonical_root_response.status != HTTPStatus.OK
+        or canonical_root_headers.get("cache-control") != "no-store, no-transform"
+        or canonical_root_headers.get("x-m3-incoming-state", "")
+        or canonical_root_headers.get("x-m3-origin-reached") != "true"
+        or "set-cookie" in canonical_root_headers
+        or await canonical_root_response.body() != CANONICAL_ROOT_BODY
+    ):
+        raise RuntimeError(
+            "canonical root contract "
+            f"target={canonical_root_response.url.rstrip('/') == origins.tenant_immutable} "
+            f"status={canonical_root_response.status == HTTPStatus.OK} "
+            f"cache={canonical_root_headers.get('cache-control') == 'no-store, no-transform'} "
+            f"incoming={not canonical_root_headers.get('x-m3-incoming-state', '')} "
+            f"origin={canonical_root_headers.get('x-m3-origin-reached') == 'true'} "
+            f"stateless={'set-cookie' not in canonical_root_headers} "
+            f"body={await canonical_root_response.body() == CANONICAL_ROOT_BODY}"
+        )
 
     alias_non_root_response = await page.goto(
         f"{origins.tenant_alias}/static", wait_until="networkidle"
