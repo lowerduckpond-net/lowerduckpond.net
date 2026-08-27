@@ -52,6 +52,10 @@ an isolated network and exercises the exact platform/tenant registrable-domain
 split, redirects, hostile parent-domain and host-only upstream cookies, request
 state removal, response state removal, and sibling-parent residual in Chromium,
 Firefox, and WebKit. It does not contact Cloudflare or the qualification host.
+With a workstation-local Docker daemon, the browser controller is published
+only on workstation loopback. With a remote Docker context, the harness creates
+no host port: it carries each connection from a workstation-loopback listener
+through the Docker API into the isolated browser container.
 Do not begin or resume a live run when this local gate fails.
 
 Before the final live qualification, also run the independent stock-browser
@@ -64,7 +68,8 @@ just check-m3-stock-browsers
 It drives pinned stock Firefox and Chrome through WebDriver rather than
 Playwright and checks the same hostile response-cookie and request-state
 boundary. This is a pre-live confidence check, not part of ordinary CI; the
-pinned Playwright matrix remains the reproducible three-engine formal gate.
+pinned Playwright matrix remains the reproducible three-engine formal gate. It
+uses the same no-published-port tunnel for a remote Docker context.
 
 At any interruption boundary, inspect validated local progress without changing
 the host, Cloudflare, or OpenTofu state:

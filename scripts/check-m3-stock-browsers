@@ -10,14 +10,12 @@ readonly chrome_image="selenium/standalone-chrome:${selenium_release}@sha256:956
 readonly suffix=$$
 readonly network="ldp-m3-stock-${suffix}"
 readonly caddy_container="ldp-m3-stock-caddy-${suffix}"
-docker_endpoint=$(docker context inspect --format '{{.Endpoints.docker.Host}}')
+readonly tunnel_connection="${repository_root}/scripts/m3-docker-exec-tcp-connection"
+docker_endpoint=${DOCKER_HOST:-$(docker context inspect --format '{{.Endpoints.docker.Host}}')}
 readonly docker_endpoint
-if [[ $docker_endpoint == tcp://* ]]; then
-    readonly publish_spec=::4444
-    daemon_host=$(sed -E 's#^[a-z]+://([^:/]+).*#\1#' <<< "$docker_endpoint")
-else
-    readonly publish_spec=127.0.0.1::4444
-    daemon_host=127.0.0.1
+publish_arguments=()
+if [[ $docker_endpoint == unix://* || $docker_endpoint == npipe://* ]]; then
+    publish_arguments=(--publish 127.0.0.1::4444)
 fi
 browser_container=
 proxy_pid=
@@ -63,18 +61,22 @@ for browser in firefox chrome; do
     docker run --detach --rm \
         --name "$browser_container" \
         --network "$network" \
-        --publish "$publish_spec" \
+        "${publish_arguments[@]}" \
         --shm-size 2g \
         "$browser_image" >/dev/null
-    webdriver_port=$(docker inspect \
-        --format '{{(index (index .NetworkSettings.Ports "4444/tcp") 0).HostPort}}' \
-        "$browser_container")
-    endpoint_port=$webdriver_port
-    if [[ $docker_endpoint == tcp://* ]]; then
+    if ((${#publish_arguments[@]})); then
+        endpoint_port=$(docker inspect \
+            --format '{{(index (index .NetworkSettings.Ports "4444/tcp") 0).HostPort}}' \
+            "$browser_container")
+    else
+        if [[ $(docker inspect --format '{{len .HostConfig.PortBindings}}' "$browser_container") -ne 0 ]]; then
+            echo "remote browser container unexpectedly publishes a host port" >&2
+            exit 1
+        fi
         endpoint_port=$(uv run python -c \
             'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')
         socat "TCP-LISTEN:${endpoint_port},bind=127.0.0.1,reuseaddr,fork" \
-            "TCP:${daemon_host}:${webdriver_port}" 2>/dev/null &
+            "EXEC:${tunnel_connection} ${browser_container} 4444,nofork" 2>/dev/null &
         proxy_pid=$!
     fi
     for _ in {1..300}; do
