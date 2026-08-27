@@ -92,15 +92,15 @@ case "$action" in
             --session "$session_path" \
             --source-revision "$(current_revision)" \
             --fragment "libraries=$evidence_root/libraries.json" \
-            --fragment "host=$evidence_root/host.json" \
-            --fragment "domains=$evidence_root/domains.json" \
-            --fragment "browser=$evidence_root/browser.json" \
             --fragment "edge-primary=$evidence_root/edge-primary.json" \
             --fragment "edge-replacement=$evidence_root/edge-replacement.json" \
             --fragment "edge-rollback=$evidence_root/edge-rollback.json" \
             --fragment "edge-forward=$evidence_root/edge-forward.json" \
             --fragment "edge-retired-primary=$evidence_root/edge-retired-primary.json" \
             --fragment "edge-final=$evidence_root/edge-final.json" \
+            --fragment "host=$evidence_root/host.json" \
+            --fragment "domains=$evidence_root/domains.json" \
+            --fragment "browser=$evidence_root/browser.json" \
             --fragment "assembled=$evidence_root/m3-qualification.json"
         ;;
     preflight)
