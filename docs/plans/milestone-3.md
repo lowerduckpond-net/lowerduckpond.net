@@ -338,13 +338,14 @@ and permanently purge its exact returned version before failing. Using only the
 dedicated archive credential and an expendable unique qualification prefix,
 exercise one small known-length `PutObject`, require a non-null returned version
 ID, verify exact-version bytes, perform an unversioned delete, verify its delete
-marker while the old exact version remains readable, and permanently delete
-both the data version and marker. Force `ListObjectVersions` pagination with a
-one-entry page and exercise both continuation markers. Fully paginated version
-and multipart listings must finally establish that the entire new archive
-bucket—not merely its current-object view—contains zero versions, markers, and
-uploads. Finish with a sanitized acceptance report and a no-change production
-plan.
+marker while the old exact version remains readable, then force
+`ListObjectVersions` pagination with a one-entry page while both entries still
+exist. Follow both continuation markers until the data version and marker have
+each been observed exactly once. Permanently delete both exact entries only
+after that pagination proof. Fully paginated version and multipart listings must
+finally establish that the entire new archive bucket—not merely its
+current-object view—contains zero versions, markers, and uploads. Finish with a
+sanitized acceptance report and a no-change production plan.
 
 Before the live gate, strict fake-client protocol tests, negative saved-plan
 fixtures, and a pinned local versioned-S3 integration test must cover pagination,

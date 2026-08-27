@@ -251,9 +251,11 @@ body transmission, after remote commit but before response delivery, and before
 the local `uploaded` phase prove reconciliation sees either no version or one
 complete version and never clears the reserved charge prematurely. The
 installed-host exercise lists incomplete multipart uploads below `archives/`
-before and after these cases and requires none; changing the SDK or upload path
-must preserve that assertion rather than relying on the seven-day lifecycle
-abort rule.
+before and after these cases and requires none. An expendable injected multipart
+upload proves reconciliation detects and accounts for its exact upload identity,
+closes archive admission, explicitly aborts it through the cleanup boundary, and
+confirms absence before admission can reopen. Changing the SDK or upload path
+must preserve these assertions; no lifecycle cleanup backstop exists.
 
 Path fixtures cover NFC-normalization and case-fold collisions, strict UTF-8 and
 ASCII flag behavior, 255/256-byte components, 1,024/1,025-byte paths, 32/33
