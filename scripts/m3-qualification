@@ -12,7 +12,7 @@ readonly session_path="${evidence_root}/session.json"
 readonly operation_lock="${evidence_root}/operation.lock"
 
 usage() {
-    echo "usage: scripts/m3-qualification {preflight|begin|libraries|configure TRUST|edge STAGE|host TRUST|domains ATTESTATION|browser|assemble}" >&2
+    echo "usage: scripts/m3-qualification {status|preflight|begin|libraries|configure TRUST|edge STAGE|host TRUST|domains ATTESTATION|browser|assemble}" >&2
     exit 64
 }
 
@@ -82,6 +82,27 @@ fi
 action=$1
 shift
 case "$action" in
+    status)
+        [[ $# -eq 0 ]] || usage
+        if [[ ! -f $session_path ]]; then
+            echo "session: absent"
+            exit 0
+        fi
+        uv run ldp-m3-qualify report-status \
+            --session "$session_path" \
+            --source-revision "$(current_revision)" \
+            --fragment "libraries=$evidence_root/libraries.json" \
+            --fragment "edge-primary=$evidence_root/edge-primary.json" \
+            --fragment "edge-replacement=$evidence_root/edge-replacement.json" \
+            --fragment "edge-rollback=$evidence_root/edge-rollback.json" \
+            --fragment "edge-forward=$evidence_root/edge-forward.json" \
+            --fragment "edge-retired-primary=$evidence_root/edge-retired-primary.json" \
+            --fragment "edge-final=$evidence_root/edge-final.json" \
+            --fragment "host=$evidence_root/host.json" \
+            --fragment "domains=$evidence_root/domains.json" \
+            --fragment "browser=$evidence_root/browser.json" \
+            --fragment "assembled=$evidence_root/m3-qualification.json"
+        ;;
     preflight)
         [[ $# -eq 0 ]] || usage
         require_clean_revision
@@ -168,8 +189,18 @@ case "$action" in
             --output "$remote_report"
         remote_status=$?
         set -e
-        ssh -o BatchMode=yes "ldp-admin@$host" sudo cat "$remote_report" \
-            > "$evidence_root/host.json"
+        temporary_host_report=$(mktemp "$evidence_root/.host.json.XXXXXXXX")
+        trap '[[ -z $temporary_host_report ]] || rm -f -- "$temporary_host_report"' EXIT
+        if ssh -o BatchMode=yes "ldp-admin@$host" sudo cat -- "$remote_report" \
+            > "$temporary_host_report"; then
+            mv -- "$temporary_host_report" "$evidence_root/host.json"
+            temporary_host_report=
+        else
+            echo "host probe did not produce a sanitized report" >&2
+            if [[ $remote_status -eq 0 ]]; then
+                remote_status=1
+            fi
+        fi
         exit "$remote_status"
         ;;
     edge)
@@ -229,6 +260,7 @@ case "$action" in
         ;;
     browser)
         [[ $# -eq 0 ]] || usage
+        : "${M3_QUALIFICATION_PLAYWRIGHT_WS_ENDPOINT:?live browser qualification requires the pinned Playwright endpoint}"
         load_report_session
         verify_remote_convergence replacement
         rm -f -- "$evidence_root/browser.json"
@@ -239,6 +271,7 @@ case "$action" in
             --tenant-alias-origin https://m3-a.lowerduckpond.com \
             --tenant-immutable-origin https://t-0198d17f6f4a70008000000000000001.lowerduckpond.com \
             --tenant-unknown-origin https://m3-unknown.lowerduckpond.com \
+            --ws-endpoint "$M3_QUALIFICATION_PLAYWRIGHT_WS_ENDPOINT" \
             --output "$evidence_root/browser.json"
         ;;
     assemble)

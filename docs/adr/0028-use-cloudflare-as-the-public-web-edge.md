@@ -149,6 +149,14 @@ Cloudflare may emit its own security cookies, but no tenant response
 as authentication, and Caddy continues to remove all request cookies before
 static tenant handling.
 
+Milestone 3 defines no cookie allowlist. Trusted generated `.com` handlers do
+not originate `Set-Cookie`. Untrusted upstream paths remove every `Set-Cookie`
+at the proxy boundary, while the enclosing `.com` response scrub remains
+defense in depth for redirects, errors, static files, and generated route
+classes. A later authenticated tenant tier may propose a narrowly typed
+`__Host-` allowlist only through a separate architecture decision; it cannot
+weaken this static-tier default incidentally.
+
 CDN caching is a later Milestone 5 feature, not an implied side effect of
 proxying. Before enabling it, record and test exact cache keys, browser and edge
 TTLs, stale-serving behavior, purge authority, and recovery semantics for

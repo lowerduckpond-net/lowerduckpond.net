@@ -6,17 +6,22 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import subprocess
 import sys
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Final
 
+from lowerduckpond_m3_qualification.checks import M3_FRAGMENT_CONTRACTS
 from lowerduckpond_m3_qualification.report import (
     CheckResult,
     QualificationReport,
     UnsafeReportError,
     combine_reports,
 )
+
+FRAGMENT_ARGUMENT_PATTERN: Final = re.compile(r"^([a-z-]+)=(.+)$")
 
 
 def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915
@@ -45,6 +50,13 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915
         choices=("run_id", "source_revision", "droplet_id", "droplet_urn", "ipv4_address"),
     )
 
+    report_status = subparsers.add_parser(
+        "report-status", help="summarize validated local evidence without mutation"
+    )
+    report_status.add_argument("--session", required=True, type=Path)
+    report_status.add_argument("--source-revision", required=True)
+    report_status.add_argument("--fragment", action="append", default=[])
+
     libraries = subparsers.add_parser("libraries", help="qualify pinned Python libraries")
     _add_run_arguments(libraries)
     libraries.add_argument("--output", required=True, type=Path)
@@ -61,6 +73,8 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915
     browser.add_argument("--tenant-alias-origin", required=True)
     browser.add_argument("--tenant-immutable-origin", required=True)
     browser.add_argument("--tenant-unknown-origin", required=True)
+    browser.add_argument("--ws-endpoint")
+    browser.add_argument("--ignore-https-errors", action="store_true")
     browser.add_argument("--output", required=True, type=Path)
 
     host = subparsers.add_parser("host", help="run privileged disposable-host checks")
@@ -140,6 +154,12 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: PLR0911,PLR0912
         "session-value",
     }:
         return _handle_session_command(arguments)
+    if arguments.command == "report-status":
+        return _report_status(
+            session_path=arguments.session,
+            source_revision=arguments.source_revision,
+            fragments=tuple(arguments.fragment),
+        )
     if arguments.command == "libraries":
         from lowerduckpond_m3_qualification.libraries import run_library_checks
 
@@ -156,7 +176,11 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: PLR0911,PLR0912
             ),
         )
     elif arguments.command == "browser":
-        from lowerduckpond_m3_qualification.browser import BrowserOrigins, run_browser_checks
+        from lowerduckpond_m3_qualification.browser import (
+            BrowserOrigins,
+            run_browser_checks,
+            validate_browser_endpoint,
+        )
 
         try:
             origins = BrowserOrigins(
@@ -165,12 +189,23 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: PLR0911,PLR0912
                 tenant_immutable=arguments.tenant_immutable_origin,
                 tenant_unknown=arguments.tenant_unknown_origin,
             )
+            ws_endpoint = (
+                validate_browser_endpoint(arguments.ws_endpoint)
+                if arguments.ws_endpoint is not None
+                else None
+            )
         except ValueError:
             return 2
         report = _create_report(
             arguments,
             environment="live-dual-domain",
-            checks=asyncio.run(run_browser_checks(origins)),
+            checks=asyncio.run(
+                run_browser_checks(
+                    origins,
+                    ws_endpoint=ws_endpoint,
+                    ignore_https_errors=arguments.ignore_https_errors,
+                )
+            ),
         )
     elif arguments.command == "host":
         from lowerduckpond_m3_qualification.host import run_host_checks
@@ -286,6 +321,60 @@ def _handle_session_command(arguments: argparse.Namespace) -> int:
                 print(getattr(session, arguments.field))
     except OSError, ValueError, json.JSONDecodeError:
         return 2
+    return 0
+
+
+def _report_status(*, session_path: Path, source_revision: str, fragments: tuple[str, ...]) -> int:
+    """Print only validated identities, labels, check IDs, and status words."""
+    from lowerduckpond_m3_qualification.session import (
+        QualificationSession,
+        UnsafeSessionError,
+    )
+
+    try:
+        session = QualificationSession.read(session_path)
+        if session.source_revision != source_revision:
+            raise UnsafeSessionError("source revision changed")
+    except OSError, ValueError, UnsafeSessionError:
+        print("session: invalid-or-stale")
+        return 2
+    print(f"session: active {session.run_id} {session.source_revision}")
+
+    next_action: str | None = None
+    for raw in fragments:
+        match = FRAGMENT_ARGUMENT_PATTERN.fullmatch(raw)
+        if match is None or match.group(1) not in M3_FRAGMENT_CONTRACTS:
+            print("evidence: invalid-argument")
+            return 2
+        label, raw_path = match.groups()
+        path = Path(raw_path)
+        if not path.is_file():
+            print(f"{label}: absent")
+            next_action = next_action or label
+            continue
+        try:
+            report = QualificationReport.from_json(path.read_text(encoding="utf-8"))
+        except OSError, ValueError, UnsafeReportError:
+            print(f"{label}: invalid")
+            next_action = next_action or label
+            continue
+        if report.run_id != session.run_id or report.source_revision != session.source_revision:
+            print(f"{label}: stale")
+            next_action = next_action or label
+            continue
+        expected_environment, expected_check_ids = M3_FRAGMENT_CONTRACTS[label]
+        observed_check_ids = frozenset(check.check_id for check in report.checks)
+        if report.environment != expected_environment or observed_check_ids != expected_check_ids:
+            print(f"{label}: invalid")
+            next_action = next_action or label
+            continue
+        failures = tuple(check.check_id for check in report.checks if check.status == "failed")
+        if failures:
+            print(f"{label}: failed {','.join(failures)}")
+            next_action = next_action or label
+        else:
+            print(f"{label}: passed")
+    print(f"next: {next_action or 'complete'}")
     return 0
 
 

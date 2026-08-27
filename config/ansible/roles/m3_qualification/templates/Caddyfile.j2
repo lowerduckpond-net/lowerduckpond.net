@@ -77,19 +77,15 @@ lowerduckpond.com, *.lowerduckpond.com {
 		@alias host m3-a.lowerduckpond.com
 		@canonical host t-0198d17f6f4a70008000000000000001.lowerduckpond.com
 		handle @apex {
-			header +Set-Cookie "ldp_m3_route=must-be-removed; Domain=lowerduckpond.com; Path=/; Secure"
 			respond "No Lower Duck Pond site has been provisioned for this name." 404
 		}
 		handle @alias_root {
-			header +Set-Cookie "ldp_m3_route=must-be-removed; Domain=lowerduckpond.com; Path=/; Secure"
 			redir https://t-0198d17f6f4a70008000000000000001.lowerduckpond.com/ 302
 		}
 		handle @alias {
-			header +Set-Cookie "ldp_m3_route=must-be-removed; Domain=lowerduckpond.com; Path=/; Secure"
 			respond "No Lower Duck Pond site has been provisioned for this name." 404
 		}
 		handle @canonical {
-			header +Set-Cookie "ldp_m3_route=must-be-removed; Domain=lowerduckpond.com; Path=/; Secure"
 			@probe path /probe
 			handle @probe {
 				reverse_proxy 127.0.0.1:18080 {
@@ -101,7 +97,6 @@ lowerduckpond.com, *.lowerduckpond.com {
 			file_server
 		}
 		handle {
-			header +Set-Cookie "ldp_m3_route=must-be-removed; Domain=lowerduckpond.com; Path=/; Secure"
 			respond "No Lower Duck Pond site has been provisioned for this name." 404
 		}
 	}
@@ -112,6 +107,13 @@ lowerduckpond.com, *.lowerduckpond.com {
 # the listener unavailable outside the origin.
 http://:18081 {
 	bind 127.0.0.1
+	log {
+		output file {{ m3_qualification_log_path }}
+		format filter {
+			request>headers delete
+			wrap json
+		}
+	}
 	route {
 		@platform host lowerduckpond.net m3-qualification.lowerduckpond.net
 		handle @platform {
@@ -139,19 +141,15 @@ http://:18081 {
 		@alias host m3-a.lowerduckpond.com
 		@canonical host t-0198d17f6f4a70008000000000000001.lowerduckpond.com
 		handle @apex {
-			header +Set-Cookie "ldp_m3_route=must-be-removed; Domain=lowerduckpond.com; Path=/; Secure"
 			respond "No Lower Duck Pond site has been provisioned for this name." 404
 		}
 		handle @alias_root {
-			header +Set-Cookie "ldp_m3_route=must-be-removed; Domain=lowerduckpond.com; Path=/; Secure"
 			redir https://t-0198d17f6f4a70008000000000000001.lowerduckpond.com/ 302
 		}
 		handle @alias {
-			header +Set-Cookie "ldp_m3_route=must-be-removed; Domain=lowerduckpond.com; Path=/; Secure"
 			respond "No Lower Duck Pond site has been provisioned for this name." 404
 		}
 		handle @canonical {
-			header +Set-Cookie "ldp_m3_route=must-be-removed; Domain=lowerduckpond.com; Path=/; Secure"
 			@probe path /probe
 			handle @probe {
 				reverse_proxy 127.0.0.1:18080 {
@@ -163,7 +161,6 @@ http://:18081 {
 			file_server
 		}
 		handle {
-			header +Set-Cookie "ldp_m3_route=must-be-removed; Domain=lowerduckpond.com; Path=/; Secure"
 			respond "No Lower Duck Pond site has been provisioned for this name." 404
 		}
 	}

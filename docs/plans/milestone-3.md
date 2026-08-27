@@ -20,8 +20,11 @@ accepted are now fixed:
    immutable `t-<tenant-uuid-without-hyphens>.lowerduckpond.com` origins. The
    `.com` apex is a stateless, non-cacheable `404` until Milestone 7 designates
    an ordinary municipal tenant by immutable ID. Caddy ignores incoming cookies
-   and removes outgoing `Set-Cookie` on all Milestone 3 `.com` routes; sibling
-   browser-local cookie integrity is an accepted static-tier limitation.
+   and removes outgoing `Set-Cookie` on all Milestone 3 `.com` routes. Trusted
+   generated handlers originate no cookies, untrusted proxy responses receive
+   an immediate blanket scrub, and the enclosing response scrub is defense in
+   depth. No cookie allowlist exists in M3; sibling browser-local cookie
+   integrity remains an accepted static-tier limitation.
 2. Tenant archives use a separate private, versioned production Space and a
    dedicated bucket-only key. They do not share the Restic bucket or key.
 3. Routine operations use a dedicated-key, forced-command `ldp-operator`
@@ -254,7 +257,9 @@ Deliver:
   diagnostic endpoint or request reaches Caddy, and prove archive admission
   rejects the normalized, case-insensitive first path component;
 - prove Caddy can remove `Cookie` before static tenant handling, remove
-  `Set-Cookie` from every `.com` route class, keep routing and bodies
+  `Set-Cookie` from every `.com` route class, prohibit trusted generated
+  handlers from positively emitting it, strip hostile parent-domain and
+  host-only upstream cookies at the proxy boundary, keep routing and bodies
   cookie-independent, and omit cookie values from logs;
 - verify the production filesystem type and mount behavior, directory `fsync`,
   atomic same-filesystem rename, hard-link accounting, `O_NOFOLLOW`, and shared
@@ -551,7 +556,8 @@ for nonce-tagged requests: the peer must be in the reviewed Cloudflare ranges,
 and Caddy's parsed client address must be global and differ from both the
 attacker-supplied sentinel and the Cloudflare peer. Do not expose visitor
 addresses in public response headers or qualification evidence.
-Run the platform-only Caddy/systemd, cookie-policy, host-input Ansible overlap,
+Run the local disposable Caddy/browser cookie gate plus the platform-only
+Caddy/systemd, cookie-policy, host-input Ansible overlap,
 descriptor-pinning, generation-retention, start-limit, failure-injection, and
 bootstrap-interruption cases in ADR 0022. Publication remains disabled, every
 tenant-bearing generation fails closed, and the lifecycle-integrated

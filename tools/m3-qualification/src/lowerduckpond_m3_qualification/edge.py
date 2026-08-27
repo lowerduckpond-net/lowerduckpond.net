@@ -23,7 +23,7 @@ from http import HTTPStatus
 from pathlib import Path
 from typing import Final
 
-from lowerduckpond_m3_qualification.report import CheckResult, EvidenceValue
+from lowerduckpond_m3_qualification.report import CheckResult, EvidenceValue, run_check
 
 API_ROOT: Final = "https://api.cloudflare.com/client/v4"
 PLATFORM_HOST: Final = "m3-qualification.lowerduckpond.net"
@@ -327,23 +327,7 @@ def _run_final_edge_checks(
     )
     if tuple(suffix for suffix, _ in operations) != FINAL_EDGE_SUFFIXES:
         raise EdgeQualificationError("final edge check set is inconsistent")
-    checks: list[CheckResult] = []
-    for suffix, operation in operations:
-        check_id = f"m3.0.edge.{suffix}"
-        try:
-            evidence = operation()
-        except OSError, ValueError, EdgeQualificationError, subprocess.SubprocessError:
-            checks.append(
-                CheckResult(
-                    check_id=check_id,
-                    status="failed",
-                    evidence={},
-                    error_code="probe_failed",
-                )
-            )
-        else:
-            checks.append(CheckResult(check_id=check_id, status="passed", evidence=evidence))
-    return tuple(checks)
+    return tuple(run_check(f"m3.0.edge.{suffix}", operation) for suffix, operation in operations)
 
 
 def _check_zone_policy(client: CloudflareClient, inputs: EdgeInputs) -> dict[str, EvidenceValue]:
@@ -428,7 +412,7 @@ def _check_forwarded_address(inputs: EdgeInputs) -> dict[str, EvidenceValue]:
         ):
             return {
                 "authentic_address": True,
-                "cf_header_rejected": True,
+                "cf_spoof_rejected": True,
                 "xff_spoof_ignored": True,
             }
         if attempt + 1 < LOG_PROPAGATION_ATTEMPTS:

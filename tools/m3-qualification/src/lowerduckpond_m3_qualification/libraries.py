@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from collections.abc import Callable, Mapping
 from importlib.metadata import version
 from typing import Final
 
@@ -17,7 +16,7 @@ from playwright.async_api import async_playwright
 from ruamel.yaml import YAML
 from ruamel.yaml.constructor import DuplicateKeyError
 
-from lowerduckpond_m3_qualification.report import CheckResult, EvidenceValue
+from lowerduckpond_m3_qualification.report import CheckResult, run_check
 
 REQUIRED_S3_OPERATIONS: Final = frozenset(
     {"DeleteObject", "GetObject", "ListObjectVersions", "PutObject"}
@@ -29,27 +28,14 @@ MAXIMUM_SAFE_JSON_INTEGER: Final = 2**53 - 1
 def run_library_checks() -> tuple[CheckResult, ...]:
     """Exercise the exact library capabilities M3 will depend on."""
     return (
-        _run("m3.0.python.runtime", _check_python),
-        _run("m3.0.python.jsonschema", _check_jsonschema),
-        _run("m3.0.python.rfc8785", _check_rfc8785),
-        _run("m3.0.python.hypothesis", _check_hypothesis),
-        _run("m3.0.python.botocore", _check_botocore),
-        _run("m3.0.python.safe-yaml", _check_safe_yaml),
-        _run("m3.0.python.playwright", _check_playwright),
+        run_check("m3.0.python.runtime", _check_python),
+        run_check("m3.0.python.jsonschema", _check_jsonschema),
+        run_check("m3.0.python.rfc8785", _check_rfc8785),
+        run_check("m3.0.python.hypothesis", _check_hypothesis),
+        run_check("m3.0.python.botocore", _check_botocore),
+        run_check("m3.0.python.safe-yaml", _check_safe_yaml),
+        run_check("m3.0.python.playwright", _check_playwright),
     )
-
-
-def _run(check_id: str, operation: Callable[[], Mapping[str, EvidenceValue]]) -> CheckResult:
-    try:
-        evidence = operation()
-    except Exception:  # The report intentionally excludes exception text.
-        return CheckResult(
-            check_id=check_id,
-            status="failed",
-            evidence={},
-            error_code="probe_failed",
-        )
-    return CheckResult(check_id=check_id, status="passed", evidence=evidence)
 
 
 def _check_python() -> dict[str, str]:

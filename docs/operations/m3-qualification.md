@@ -40,6 +40,49 @@ metadata ID, SSH host, root-owned convergence marker, origin-pull trust stage,
 and UUIDv7 run ID. Do not bypass those guards with direct Ansible or probe
 commands.
 
+Before creating or changing disposable infrastructure, run the complete local
+M3 gate twice from a clean checkout:
+
+```bash
+just check-m3-qualification && just check-m3-qualification
+```
+
+This starts pinned disposable Caddy 2.11.4 and Playwright 1.62.0 containers on
+an isolated network and exercises the exact platform/tenant registrable-domain
+split, redirects, hostile parent-domain and host-only upstream cookies, request
+state removal, response state removal, and sibling-parent residual in Chromium,
+Firefox, and WebKit. It does not contact Cloudflare or the qualification host.
+With a workstation-local Docker daemon, the browser controller is published
+only on workstation loopback. With a remote Docker context, the harness creates
+no host port: it carries each connection from a workstation-loopback listener
+through the Docker API into the isolated browser container.
+Do not begin or resume a live run when this local gate fails.
+
+Before the final live qualification, also run the independent stock-browser
+smoke once:
+
+```bash
+just check-m3-stock-browsers
+```
+
+It drives pinned stock Firefox and Chrome through WebDriver rather than
+Playwright and checks the same hostile response-cookie and request-state
+boundary. This is a pre-live confidence check, not part of ordinary CI; the
+pinned Playwright matrix remains the reproducible three-engine formal gate. It
+uses the same no-published-port tunnel for a remote Docker context.
+
+At any interruption boundary, inspect validated local progress without changing
+the host, Cloudflare, or OpenTofu state:
+
+```bash
+just m3-qualification status
+```
+
+The command rejects stale or malformed fragments and identifies the first
+missing or failed stage. Use that result and the current OpenTofu generation to
+resume; do not replay already proven rollover stages merely to rediscover the
+next software failure.
+
 ## Required inputs
 
 Have these existing values ready only on the trusted workstation:
@@ -270,14 +313,15 @@ just m3-qualification configure dual
 just m3-qualification edge primary
 ```
 
-For every association transition below, edit only
-`origin_pull_generation` in `terraform.tfvars`, save a new plan, run the exact
-transition policy, inspect it, and apply it. A transition plan must contain
-exactly four in-place AOP association updates and no other mutation. For the
-first transition:
+For every association transition below, use the matching guarded `just` target
+to change only `origin_pull_generation` in `terraform.tfvars`, save a new plan,
+run the exact transition policy, inspect it, and apply it. The target refuses a
+missing, invalid, duplicated, or symlinked assignment. A transition plan must
+contain exactly four in-place AOP association updates and no other mutation.
+For the first transition:
 
 ```bash
-# Set origin_pull_generation = "replacement" in terraform.tfvars.
+just m3-use-replacement
 cd infra/opentofu/environments/qualification
 set -o pipefail
 tofu plan -out=m3-aop-replacement.tfplan
@@ -293,13 +337,13 @@ just m3-qualification edge replacement
 
 Use the same guarded procedure for this exact sequence:
 
-1. select `primary`, apply a `--transition primary` plan, then run
+1. run `just m3-use-primary`, apply a `--transition primary` plan, then run
    `just m3-qualification edge rollback`;
-2. select `replacement`, apply a `--transition replacement` plan, then run
+2. run `just m3-use-replacement`, apply a `--transition replacement` plan, then run
    `just m3-qualification edge forward`;
 3. run `just m3-qualification configure replacement` to remove primary-CA
    trust from Caddy;
-4. select `primary`, apply a `--transition primary` plan, then run
+4. run `just m3-use-primary`, apply a `--transition primary` plan, then run
    `just m3-qualification edge retired-primary`; this must prove documented
    `520` or `525` rejection in both zones without an origin marker while the
    origin TLS listener remains available and stable; and
@@ -343,16 +387,31 @@ address is reflected in a public response or admitted to the sanitized report.
 Each final check records its own fixed pass/fail result so a failure does not
 mask the status of later checks.
 
-Install Playwright's pinned browsers and workstation dependencies once, then
-produce the remaining report fragments under replacement-only trust:
+Run Playwright's pinned browser server in its supported Ubuntu container. Bind
+it only to workstation loopback; the qualification client rejects a remote or
+credential-bearing WebSocket endpoint:
 
 ```bash
-uv run playwright install --with-deps chromium firefox webkit
+docker run --rm --name lowerduckpond-m3-playwright \
+  --publish 127.0.0.1:3000:3000 \
+  mcr.microsoft.com/playwright:v1.62.0-noble@sha256:baed2032d533817f3dbe6425de795788430ba345e819a1201337009ba17c9d07 \
+  /bin/sh -c 'npx --yes playwright@1.62.0 run-server --port 3000 --host 0.0.0.0'
+```
+
+In a second trusted-workstation shell, produce the remaining report fragments
+under replacement-only trust:
+
+```bash
+export M3_QUALIFICATION_PLAYWRIGHT_WS_ENDPOINT=ws://127.0.0.1:3000/
 just m3-qualification host replacement
 just m3-qualification domains '/outside/repository/domain-attestation.json'
 just m3-qualification browser
 just m3-qualification assemble
 ```
+
+Stop the pinned browser container after the browser fragment is written. Do not
+install Playwright's Ubuntu fallback packages on an unsupported workstation
+distribution and treat that as equivalent evidence.
 
 Assembly succeeds only for the exact 54-check union with no failure, warning,
 or skip. Review

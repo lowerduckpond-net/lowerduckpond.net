@@ -39,6 +39,10 @@ class QualificationRequestHandler(BaseHTTPRequestHandler):
             "Set-Cookie",
             "ldp_m3_upstream=must-be-removed; Domain=lowerduckpond.com; Path=/; Secure",
         )
+        self.send_header(
+            "Set-Cookie",
+            "__Host-ldp_m3_upstream_host=must-be-removed; Path=/; Secure",
+        )
         self.end_headers()
         self.wfile.write(body)
 

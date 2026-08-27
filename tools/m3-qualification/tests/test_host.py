@@ -1,12 +1,51 @@
 from __future__ import annotations
 
+import time
 from http import HTTPStatus
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from lowerduckpond_m3_qualification import host
 
 RUN_ID = "0198d17f-6f4a-7000-8000-000000000001"
+
+
+def test_sudo_probe_reports_all_nine_rejections(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    outcomes = iter([0, *([1] * (len(host.UUID_REJECTION_ARGUMENTS) + 1))])
+    monkeypatch.setattr(
+        host,
+        "_quiet_run",
+        lambda command: SimpleNamespace(returncode=next(outcomes)),
+    )
+
+    assert host._check_sudo_uuid() == {"accepted": 1, "rejected": 9}
+
+
+def test_systemd_recovery_accepts_exact_start_limit_exhaustion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(host, "QUALIFICATION_ROOT", tmp_path)
+    monkeypatch.setattr(host, "_quiet_run", lambda command: SimpleNamespace(returncode=1))
+    monkeypatch.setattr(host, "_checked_run", lambda command: None)
+    monkeypatch.setattr(host, "_poll_systemd_state", lambda unit, expected: None)
+    properties = iter(
+        (
+            {"NRestarts": "3", "StartLimitBurst": "3"},
+            {"NRestarts": "0", "Result": "success"},
+        )
+    )
+    monkeypatch.setattr(host, "_systemd_properties", lambda unit, names: next(properties))
+    times = iter((1.0, 1.01))
+    monkeypatch.setattr(time, "monotonic", lambda: next(times))
+
+    assert host._check_systemd_recovery() == {
+        "handoff_ms": 10,
+        "nonblocking": True,
+        "reset_recovered": True,
+    }
 
 
 def test_certificate_check_requires_each_apex_and_wildcard_path(

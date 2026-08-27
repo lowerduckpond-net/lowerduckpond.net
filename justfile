@@ -37,11 +37,16 @@ check-python: _sync
     uv run mypy
     uv run pytest
 
-# Exercise the hermetic portion of the exact, no-skip M3.0 gate.
+# Exercise the local, no-cloud portion of the exact, no-skip M3.0 gate.
 check-m3-qualification: _sync
     evidence_dir="$(mktemp -d)"; trap 'find "$evidence_dir" -depth -delete' EXIT; uv run ldp-m3-qualify libraries --run-id 0198d17f-6f4a-7000-8000-000000000001 --source-revision 0000000000000000000000000000000000000000 --output "$evidence_dir/libraries.json"
     bash -n scripts/m3-qualification config/ansible/roles/m3_qualification/files/m3-caddy-hook
     uv run python -m py_compile scripts/assert_m3_qualification_plan.py config/ansible/roles/m3_qualification/files/m3-caddy-generation config/ansible/roles/m3_qualification/files/m3-qualification-tmpfs config/ansible/roles/m3_qualification/files/m3-qualification-uuid
+    scripts/check-m3-browser-boundary
+
+# Independently exercise the cookie boundary in stock Firefox and Chrome.
+check-m3-stock-browsers: _sync
+    scripts/check-m3-stock-browsers
 
 # Compare the committed firewall allowlist with Cloudflare's published proxy ranges.
 check-cloudflare-networks: _sync
@@ -50,6 +55,14 @@ check-cloudflare-networks: _sync
 # Run one trusted-workstation M3.0 action (see the operations guide).
 m3-qualification action *arguments: _sync
     scripts/m3-qualification "{{ action }}" {{ arguments }}
+
+# Select the primary M3.0 authenticated-origin-pull generation.
+m3-use-primary:
+    scripts/set-m3-origin-pull-generation primary
+
+# Select the replacement M3.0 authenticated-origin-pull generation.
+m3-use-replacement:
+    scripts/set-m3-origin-pull-generation replacement
 
 # Format, validate, lint, and security-scan every OpenTofu root and module.
 check-opentofu:

@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import hashlib
+import sys
+import traceback
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from http import HTTPStatus
 from typing import Final
 from urllib.parse import urlsplit
 
-from playwright.async_api import Browser, BrowserContext, Page, async_playwright
+from playwright.async_api import Browser, BrowserContext, Page, Response, async_playwright
 
 from lowerduckpond_m3_qualification.report import CheckResult, EvidenceValue
 
@@ -26,11 +28,37 @@ TENANT_HOSTS: Final = (
     "t-0198d17f6f4a70008000000000000001.lowerduckpond.com",
     "m3-unknown.lowerduckpond.com",
 )
-CANONICAL_ORIGIN: Final = "https://t-0198d17f6f4a70008000000000000001.lowerduckpond.com"
-PARENT_TENANT_DOMAIN: Final = "lowerduckpond.com"
-PLATFORM_DOMAIN: Final = "lowerduckpond.net"
+LOCAL_PLATFORM_HOST: Final = "platform.ldp-platform.test"
+LOCAL_TENANT_HOSTS: Final = (
+    "alias.ldp-tenant.test",
+    "t-0198d17f6f4a70008000000000000001.ldp-tenant.test",
+    "unknown.ldp-tenant.test",
+)
 CANARY_VALUE: Final = "ldp-m3-canary-not-sensitive"
 FILTERED_ROUTE_COUNT: Final = 5
+
+
+def _diagnostic_line(error: Exception) -> int:
+    local_frames = [
+        frame for frame in traceback.extract_tb(error.__traceback__) if frame.filename == __file__
+    ]
+    return (local_frames[-1].lineno or 0) if local_frames else 0
+
+
+def validate_browser_endpoint(value: str) -> str:
+    """Accept only the loopback Playwright server used by the qualification harness."""
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme != "ws"
+        or parsed.hostname != "127.0.0.1"
+        or parsed.port is None
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("Playwright endpoint must be an uncredentialed loopback WebSocket")
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,8 +71,13 @@ class BrowserOrigins:
     tenant_unknown: str
 
     def __post_init__(self) -> None:
-        expected_hosts = (PLATFORM_HOST, *TENANT_HOSTS)
-        for origin, expected_host in zip(self.all_origins, expected_hosts, strict=True):
+        hosts = tuple(urlsplit(origin).hostname for origin in self.all_origins)
+        if hosts not in {
+            (PLATFORM_HOST, *TENANT_HOSTS),
+            (LOCAL_PLATFORM_HOST, *LOCAL_TENANT_HOSTS),
+        }:
+            raise ValueError("qualification origins are not an exact approved host set")
+        for origin, expected_host in zip(self.all_origins, hosts, strict=True):
             parsed = urlsplit(origin)
             if (
                 parsed.scheme != "https"
@@ -66,20 +99,51 @@ class BrowserOrigins:
     def all_origins(self) -> tuple[str, str, str, str]:
         return (self.platform, *self.tenant_origins)
 
+    @property
+    def tenant_parent_domain(self) -> str:
+        hostname = urlsplit(self.tenant_alias).hostname
+        if hostname is None:
+            raise ValueError
+        return hostname.split(".", maxsplit=1)[1]
 
-async def run_browser_checks(origins: BrowserOrigins) -> tuple[CheckResult, ...]:
+    @property
+    def platform_domain(self) -> str:
+        hostname = urlsplit(self.platform).hostname
+        if hostname is None:
+            raise ValueError
+        return hostname.split(".", maxsplit=1)[1]
+
+
+async def run_browser_checks(
+    origins: BrowserOrigins,
+    *,
+    ws_endpoint: str | None = None,
+    ignore_https_errors: bool = False,
+) -> tuple[CheckResult, ...]:
     """Run every mandatory boundary check in all supported browser engines."""
     results: list[CheckResult] = []
     async with async_playwright() as playwright:
         for engine in BROWSER_ENGINES:
             browser_type = getattr(playwright, engine)
             try:
-                browser = await browser_type.launch(headless=True)
-            except Exception:
+                browser = (
+                    await browser_type.connect(ws_endpoint)
+                    if ws_endpoint is not None
+                    else await browser_type.launch(headless=True)
+                )
+            except Exception as error:
+                print(f"m3.0.browser.{engine}: FAIL ({type(error).__name__})", file=sys.stderr)
                 results.extend(_failed_engine_checks(engine))
                 continue
             try:
-                results.extend(await _run_engine_checks(browser, engine, origins))
+                results.extend(
+                    await _run_engine_checks(
+                        browser,
+                        engine,
+                        origins,
+                        ignore_https_errors=ignore_https_errors,
+                    )
+                )
             finally:
                 await browser.close()
     return tuple(results)
@@ -89,25 +153,39 @@ async def _run_engine_checks(
     browser: Browser,
     engine: str,
     origins: BrowserOrigins,
+    *,
+    ignore_https_errors: bool,
 ) -> tuple[CheckResult, ...]:
     operations: tuple[
-        tuple[str, Callable[[BrowserContext, Page], Awaitable[dict[str, EvidenceValue]]]], ...
+        tuple[
+            str,
+            Callable[
+                [BrowserContext, Page, BrowserOrigins],
+                Awaitable[dict[str, EvidenceValue]],
+            ],
+        ],
+        ...,
     ] = (
-        ("domain-boundary", lambda context, page: _check_domain_boundary(context, page, origins)),
-        ("cross-site", lambda context, page: _check_cross_site(context, page, origins)),
-        ("caddy-filter", lambda context, page: _check_caddy_filter(context, page, origins)),
-        (
-            "sibling-parent-residual",
-            lambda context, page: _check_sibling_parent_residual(context, page, origins),
-        ),
+        ("domain-boundary", _check_domain_boundary),
+        ("cross-site", _check_cross_site),
+        ("caddy-filter", _check_caddy_filter),
+        ("sibling-parent-residual", _check_sibling_parent_residual),
     )
     results: list[CheckResult] = []
     for suffix, operation in operations:
-        context = await browser.new_context()
+        context = await browser.new_context(ignore_https_errors=ignore_https_errors)
         page = await context.new_page()
         try:
-            evidence = await operation(context, page)
-        except Exception:  # Reports intentionally exclude browser errors and page data.
+            evidence = await operation(context, page, origins)
+        except Exception as error:  # Reports intentionally exclude browser errors and page data.
+            diagnostic_line = _diagnostic_line(error)
+            print(
+                f"m3.0.browser.{engine}.{suffix}: FAIL "
+                f"({type(error).__name__} at browser.py:{diagnostic_line})",
+                file=sys.stderr,
+            )
+            if urlsplit(origins.platform).hostname == LOCAL_PLATFORM_HOST:
+                print(f"local-browser-detail: {error}", file=sys.stderr)
             result = CheckResult(
                 check_id=f"m3.0.browser.{engine}.{suffix}",
                 status="failed",
@@ -115,11 +193,25 @@ async def _run_engine_checks(
                 error_code="probe_failed",
             )
         else:
-            result = CheckResult(
-                check_id=f"m3.0.browser.{engine}.{suffix}",
-                status="passed",
-                evidence={"engine": engine, **evidence},
-            )
+            try:
+                result = CheckResult(
+                    check_id=f"m3.0.browser.{engine}.{suffix}",
+                    status="passed",
+                    evidence={"engine": engine, **evidence},
+                )
+            except Exception as error:
+                diagnostic_line = _diagnostic_line(error)
+                print(
+                    f"m3.0.browser.{engine}.{suffix}: FAIL "
+                    f"({type(error).__name__} at browser.py:{diagnostic_line})",
+                    file=sys.stderr,
+                )
+                result = CheckResult(
+                    check_id=f"m3.0.browser.{engine}.{suffix}",
+                    status="failed",
+                    evidence={"engine": engine},
+                    error_code="probe_failed",
+                )
         finally:
             await context.close()
         results.append(result)
@@ -148,11 +240,12 @@ async def _check_domain_boundary(
 
     await page.goto(f"{origins.tenant_alias}/static", wait_until="networkidle")
     tenant_state = await context.cookies(origins.tenant_alias)
-    if any(item["domain"].endswith(PLATFORM_DOMAIN) for item in tenant_state):
+    if any(item["domain"].endswith(origins.platform_domain) for item in tenant_state):
         raise RuntimeError
 
     await page.evaluate(
-        "document.cookie = 'ldp_m3_invalid=blocked; Domain=lowerduckpond.net; Path=/; Secure'"
+        "document.cookie = "
+        f"'ldp_m3_invalid=blocked; Domain={origins.platform_domain}; Path=/; Secure'"
     )
     platform_state_after = await context.cookies(origins.platform)
     if any(item["name"] == "ldp_m3_invalid" for item in platform_state_after):
@@ -164,7 +257,10 @@ async def _check_cross_site(
     context: BrowserContext, page: Page, origins: BrowserOrigins
 ) -> dict[str, EvidenceValue]:
     del context
-    await page.goto(origins.platform, wait_until="networkidle")
+    # Prime the exact target origin before the cross-site fetch. This keeps the
+    # check focused on browser site classification rather than first-contact TLS.
+    await page.goto(f"{origins.tenant_immutable}/probe", wait_until="networkidle")
+    await page.goto(f"{origins.platform}/fidelity", wait_until="networkidle")
     observed = await page.evaluate(
         """async (origin) => {
             const response = await fetch(`${origin}/probe`, {credentials: 'include'});
@@ -177,7 +273,7 @@ async def _check_cross_site(
     return {"cross_site_observed": True}
 
 
-async def _check_caddy_filter(
+async def _check_caddy_filter(  # noqa: PLR0912,PLR0915
     context: BrowserContext, page: Page, origins: BrowserOrigins
 ) -> dict[str, EvidenceValue]:
     await context.add_cookies(
@@ -185,27 +281,41 @@ async def _check_caddy_filter(
             {
                 "name": "ldp_m3_parent",
                 "value": CANARY_VALUE,
-                "domain": f".{PARENT_TENANT_DOMAIN}",
+                "domain": f".{origins.tenant_parent_domain}",
                 "path": "/",
                 "secure": True,
             }
         ]
     )
-    alias_response = await context.request.get(origins.tenant_alias, max_redirects=0)
-    alias_headers = alias_response.headers
+    responses: list[Response] = []
+
+    def record_response(response: Response) -> None:
+        responses.append(response)
+
+    page.on("response", record_response)
+    await page.goto(origins.tenant_alias, wait_until="networkidle")
+    alias_response = next(
+        (response for response in responses if response.url.rstrip("/") == origins.tenant_alias),
+        None,
+    )
+    if alias_response is None:
+        raise RuntimeError
+    alias_headers = await alias_response.all_headers()
     if (
         alias_response.status != HTTPStatus.FOUND
-        or alias_headers.get("location") != f"{CANONICAL_ORIGIN}/"
+        or alias_headers.get("location") != f"{origins.tenant_immutable}/"
         or alias_headers.get("cache-control") != "no-store, no-transform"
         or alias_headers.get("x-m3-incoming-state", "")
         or "set-cookie" in alias_headers
     ):
         raise RuntimeError
 
-    alias_non_root_response = await context.request.get(
-        f"{origins.tenant_alias}/static", max_redirects=0
+    alias_non_root_response = await page.goto(
+        f"{origins.tenant_alias}/static", wait_until="networkidle"
     )
-    alias_non_root_headers = alias_non_root_response.headers
+    if alias_non_root_response is None:
+        raise RuntimeError
+    alias_non_root_headers = await alias_non_root_response.all_headers()
     alias_non_root_body = await alias_non_root_response.body()
     if (
         alias_non_root_response.status != HTTPStatus.NOT_FOUND
@@ -228,9 +338,16 @@ async def _check_caddy_filter(
         or canonical_headers.get("x-m3-incoming-state", "")
         or "set-cookie" in canonical_headers
     ):
-        raise RuntimeError
+        raise RuntimeError(
+            "canonical contract "
+            f"status={canonical_response.status} "
+            f"upstream={canonical_headers.get('x-m3-upstream-saw-state') == 'false'} "
+            f"incoming={not canonical_headers.get('x-m3-incoming-state', '')} "
+            f"stateless={'set-cookie' not in canonical_headers}"
+        )
     stored = await context.cookies(origins.tenant_immutable)
-    if any(item["name"] in {"ldp_m3_route", "ldp_m3_upstream"} for item in stored):
+    hostile_names = {"ldp_m3_upstream", "__Host-ldp_m3_upstream_host"}
+    if any(item["name"] in hostile_names for item in stored):
         raise RuntimeError
 
     static_response = await page.goto(
@@ -259,10 +376,12 @@ async def _check_caddy_filter(
         raise RuntimeError
 
     await context.clear_cookies()
-    alias_non_root_clear_response = await context.request.get(
-        f"{origins.tenant_alias}/static", max_redirects=0
+    alias_non_root_clear_response = await page.goto(
+        f"{origins.tenant_alias}/static", wait_until="networkidle"
     )
-    alias_non_root_clear_headers = alias_non_root_clear_response.headers
+    if alias_non_root_clear_response is None:
+        raise RuntimeError
+    alias_non_root_clear_headers = await alias_non_root_clear_response.all_headers()
     if (
         alias_non_root_clear_response.status != HTTPStatus.NOT_FOUND
         or alias_non_root_clear_headers.get("cache-control") != "no-store, no-transform"
@@ -282,7 +401,7 @@ async def _check_caddy_filter(
         != hashlib.sha256(canonical_body).digest()
     ):
         raise RuntimeError
-    return {"independent_body": True, "routes_checked": FILTERED_ROUTE_COUNT}
+    return {"routes_checked": FILTERED_ROUTE_COUNT, "state_independent": True}
 
 
 async def _check_sibling_parent_residual(
@@ -291,7 +410,8 @@ async def _check_sibling_parent_residual(
     del context
     await page.goto(f"{origins.tenant_alias}/static", wait_until="networkidle")
     await page.evaluate(
-        "document.cookie = 'ldp_m3_residual=observed; Domain=lowerduckpond.com; Path=/; Secure'"
+        "document.cookie = "
+        f"'ldp_m3_residual=observed; Domain={origins.tenant_parent_domain}; Path=/; Secure'"
     )
     await page.goto(f"{origins.tenant_unknown}/static", wait_until="networkidle")
     names = await page.evaluate(

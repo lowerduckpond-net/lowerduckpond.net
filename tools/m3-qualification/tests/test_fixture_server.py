@@ -10,6 +10,7 @@ from lowerduckpond_m3_qualification.fixture_server import (
 )
 
 OK_STATUS = 200
+HOSTILE_COOKIE_COUNT = 2
 
 
 def test_fixture_reports_state_without_echoing_it() -> None:
@@ -35,6 +36,8 @@ def test_fixture_reports_state_without_echoing_it() -> None:
     assert response.getheader("Access-Control-Allow-Credentials") == "true"
     assert response.getheader("X-M3-Upstream-Saw-State") == "true"
     assert response.getheader("X-M3-Sec-Fetch-Site") == "cross-site"
-    assert response.getheader("Set-Cookie") is not None
+    assert len(response.getheaders()) > 1
+    cookies = [value for key, value in response.getheaders() if key == "Set-Cookie"]
+    assert len(cookies) == HOSTILE_COOKIE_COUNT
     assert b"private" not in body
     assert b"value" not in body
