@@ -3,9 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from lowerduckpond_m3_qualification.cli import _report_status
 from lowerduckpond_m3_qualification.report import CheckResult, QualificationReport
 from lowerduckpond_m3_qualification.session import QualificationSession
-from lowerduckpond_m3_qualification.status import report_status
 
 RUN_ID = "0198d17f-6f4a-7000-8000-000000000001"
 SOURCE_REVISION = "a" * 40
@@ -42,7 +42,7 @@ def test_status_identifies_first_missing_fragment(
         ),
     ).write(report_path)
 
-    status = report_status(
+    status = _report_status(
         session_path=session_path,
         source_revision=SOURCE_REVISION,
         fragments=(f"libraries={report_path}", f"host={tmp_path / 'host.json'}"),
@@ -73,7 +73,7 @@ def test_status_rejects_a_stale_report(tmp_path: Path, capsys: pytest.CaptureFix
     ).write(report_path)
 
     assert (
-        report_status(
+        _report_status(
             session_path=session_path,
             source_revision=SOURCE_REVISION,
             fragments=(f"host={report_path}",),
