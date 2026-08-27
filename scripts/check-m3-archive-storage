@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+container_name="ldp-m3-archive-minio-${RANDOM}-${RANDOM}"
+test_image="ldp-m3-archive-tests:${RANDOM}${RANDOM}"
+minio_image='minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e'
+minio_access_key="m3archive${RANDOM}${RANDOM}"
+minio_secret_key=$(openssl rand -hex 24)
+
+cleanup() {
+    docker rm --force "${container_name}" >/dev/null 2>&1 || true
+    docker image rm "${test_image}" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+docker run --detach --rm \
+    --name "${container_name}" \
+    --env "MINIO_ROOT_USER=${minio_access_key}" \
+    --env "MINIO_ROOT_PASSWORD=${minio_secret_key}" \
+    "${minio_image}" server /data --address :9000 >/dev/null
+
+ready=false
+for _ in $(seq 1 50); do
+    if docker exec "${container_name}" \
+        curl --silent --fail \
+        http://127.0.0.1:9000/minio/health/ready >/dev/null; then
+        ready=true
+        break
+    fi
+    sleep 0.2
+done
+if [[ ${ready} != true ]]; then
+    echo "Pinned MinIO did not become ready." >&2
+    docker logs "${container_name}" >&2
+    exit 1
+fi
+
+docker build --quiet \
+    --file "${repository_root}/tools/m3-archive-qualification/Dockerfile.minio-tests" \
+    --tag "${test_image}" \
+    "${repository_root}/tools/m3-archive-qualification" >/dev/null
+
+docker run --rm \
+    --network "container:${container_name}" \
+    --env "M3_ARCHIVE_MINIO_ACCESS_KEY=${minio_access_key}" \
+    --env 'M3_ARCHIVE_MINIO_ENDPOINT=http://127.0.0.1:9000' \
+    --env "M3_ARCHIVE_MINIO_SECRET_KEY=${minio_secret_key}" \
+    "${test_image}"

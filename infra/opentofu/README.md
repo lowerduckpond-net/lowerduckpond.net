@@ -7,8 +7,8 @@ adds a third, explicitly disposable root:
   bucket-scoped backend key. It intentionally retains local state under
   encrypted operator custody.
 - `environments/production/` creates the NYC1 network, small development
-  Droplet, retained reserved address, firewall, backup storage, scoped runtime
-  key, and Cloudflare records.
+  Droplet, retained reserved address, firewall, isolated backup and tenant-
+  archive storage, independently scoped runtime keys, and Cloudflare records.
 - `environments/qualification/` temporarily creates only the production-
   equivalent M3.0 host, firewall, project assignment, and four test records. It
   has a separate encrypted state key and must be destroyed after the no-skip

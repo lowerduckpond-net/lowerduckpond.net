@@ -26,16 +26,19 @@ package = false
 members = [
   "services/control-plane",
   "services/provisioner",
+  "tools/m3-archive-qualification",
   "tools/m3-qualification",
 ]
 
 [tool.pytest.ini_options]
 addopts = ["-ra", "--strict-config", "--strict-markers"]
+markers = ["minio: exercises versioned S3 behavior against the pinned local MinIO image"]
 pythonpath = ["."]
 testpaths = [
   "services/control-plane/tests",
   "services/provisioner/tests",
   "tests/infrastructure",
+  "tools/m3-archive-qualification/tests",
   "tools/m3-qualification/tests",
 ]
 
@@ -78,6 +81,8 @@ files = [
   "services/control-plane/tests",
   "services/provisioner/src",
   "services/provisioner/tests",
+  "tools/m3-archive-qualification/src",
+  "tools/m3-archive-qualification/tests",
   "tools/m3-qualification/src",
   "tools/m3-qualification/tests",
 ]

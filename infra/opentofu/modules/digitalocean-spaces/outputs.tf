@@ -1,5 +1,5 @@
 output "bucket_name" {
-  description = "Name of the backup and tenant-archive bucket."
+  description = "Name of the backup bucket."
   value       = digitalocean_spaces_bucket.backups.name
 }
 

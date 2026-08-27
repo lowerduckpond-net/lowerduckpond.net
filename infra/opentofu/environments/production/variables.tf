@@ -68,14 +68,21 @@ variable "admin_source_cidrs" {
 }
 
 variable "backup_bucket_name" {
-  description = "Globally unique Spaces bucket for backups and tenant archives."
+  description = "Globally unique Spaces bucket dedicated to Restic backups."
   type        = string
 }
 
-variable "archive_retention_days" {
-  description = "Days to retain current tenant archive objects."
-  type        = number
-  default     = 180
+variable "archive_bucket_name" {
+  description = "Globally unique Spaces bucket dedicated to tenant archives."
+  type        = string
+
+  validation {
+    condition = (
+      can(regex("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", var.archive_bucket_name)) &&
+      var.archive_bucket_name != var.backup_bucket_name
+    )
+    error_message = "archive_bucket_name must be a valid, distinct 3-63 character Spaces bucket name."
+  }
 }
 
 variable "cloudflare_zone_id" {

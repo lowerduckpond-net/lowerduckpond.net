@@ -1,5 +1,5 @@
 variable "bucket_name" {
-  description = "Globally unique name for backup and tenant-archive storage."
+  description = "Globally unique name for backup storage."
   type        = string
 
   validation {
@@ -12,17 +12,6 @@ variable "region" {
   description = "DigitalOcean Spaces region slug."
   type        = string
   default     = "nyc3"
-}
-
-variable "archive_retention_days" {
-  description = "Days to retain current tenant archive objects."
-  type        = number
-  default     = 180
-
-  validation {
-    condition     = var.archive_retention_days >= 90
-    error_message = "archive_retention_days must be at least 90."
-  }
 }
 
 variable "noncurrent_version_retention_days" {

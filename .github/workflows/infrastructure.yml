@@ -7,6 +7,9 @@ on:
       - ".github/workflows/infrastructure.yml"
       - "infra/opentofu/**"
       - "scripts/assert_opentofu_plan.py"
+      - "tools/m3-archive-qualification/**"
+      - "pyproject.toml"
+      - "uv.lock"
   workflow_dispatch:
     inputs:
       operation:
@@ -22,6 +25,11 @@ on:
         type: string
       replace_droplet:
         description: Force the reviewed Droplet replacement drill during plan
+        required: false
+        default: false
+        type: boolean
+      initialize_archive_storage:
+        description: Permit only the one-time reviewed M3.1 archive storage migration
         required: false
         default: false
         type: boolean
@@ -54,6 +62,7 @@ jobs:
       TF_VAR_admin_source_cidrs: '["192.0.2.10/32"]'
       TF_VAR_admin_ssh_public_key: >-
         ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFakeExampleOnlyDoNotUse speculative-plan
+      TF_VAR_archive_bucket_name: lowerduckpond-net-tenant-archives-speculative
       TF_VAR_backup_bucket_name: lowerduckpond-net-backups-speculative
       TF_VAR_cloudflare_zone_id: 00000000000000000000000000000000
       TF_VAR_digitalocean_project_id: 00000000-0000-0000-0000-000000000000
@@ -120,6 +129,7 @@ jobs:
       SPACES_REGION: ${{ vars.SPACES_REGION }}
       TF_VAR_admin_source_cidrs: ${{ secrets.ADMIN_SOURCE_CIDRS_JSON }}
       TF_VAR_admin_ssh_public_key: ${{ secrets.ADMIN_SSH_PUBLIC_KEY }}
+      TF_VAR_archive_bucket_name: ${{ vars.ARCHIVE_BUCKET_NAME }}
       TF_VAR_backup_bucket_name: ${{ vars.BACKUP_BUCKET_NAME }}
       TF_VAR_cloudflare_zone_id: ${{ vars.CLOUDFLARE_ZONE_ID }}
       TF_VAR_digitalocean_project_id: ${{ vars.DIGITALOCEAN_PROJECT_ID }}
@@ -151,6 +161,11 @@ jobs:
         working-directory: ${{ env.PRODUCTION_ROOT }}
         run: |
           plan_arguments=()
+          if [[ "${{ inputs.replace_droplet }}" == "true" && \
+                "${{ inputs.initialize_archive_storage }}" == "true" ]]; then
+            echo "Droplet replacement and archive-storage migration require separate plans." >&2
+            exit 1
+          fi
           if [[ "${{ inputs.replace_droplet }}" == "true" ]]; then
             plan_arguments+=("-replace=module.host.digitalocean_droplet.host")
           fi
@@ -176,6 +191,9 @@ jobs:
           if [[ "${{ inputs.replace_droplet }}" == "true" ]]; then
             policy_arguments+=("--allow-droplet-replacement")
           fi
+          if [[ "${{ inputs.initialize_archive_storage }}" == "true" ]]; then
+            policy_arguments+=("--allow-archive-storage-migration")
+          fi
           python "${GITHUB_WORKSPACE}/scripts/assert_opentofu_plan.py" \
             "${policy_arguments[@]}" plan.json
           rm plan.json
@@ -190,10 +208,13 @@ jobs:
             --arg ref "${GITHUB_REF}" \
             --arg run_id "${GITHUB_RUN_ID}" \
             --arg changes "${PLAN_CHANGES}" \
+            --arg initialize_archive_storage "${{ inputs.initialize_archive_storage }}" \
             --arg replace_droplet "${{ inputs.replace_droplet }}" \
             --arg sha256 "$(sha256sum production.tfplan | cut -d ' ' -f 1)" \
             '{commit: $commit, event: $event, ref: $ref, run_id: $run_id,
-              changes: $changes, replace_droplet: $replace_droplet,
+              changes: $changes,
+              initialize_archive_storage: $initialize_archive_storage,
+              replace_droplet: $replace_droplet,
               plan_sha256: $sha256}' \
             > plan-metadata.json
       - name: Publish plan summary
@@ -240,6 +261,7 @@ jobs:
       SPACES_REGION: ${{ vars.SPACES_REGION }}
       TF_VAR_admin_source_cidrs: ${{ secrets.ADMIN_SOURCE_CIDRS_JSON }}
       TF_VAR_admin_ssh_public_key: ${{ secrets.ADMIN_SSH_PUBLIC_KEY }}
+      TF_VAR_archive_bucket_name: ${{ vars.ARCHIVE_BUCKET_NAME }}
       TF_VAR_backup_bucket_name: ${{ vars.BACKUP_BUCKET_NAME }}
       TF_VAR_cloudflare_zone_id: ${{ vars.CLOUDFLARE_ZONE_ID }}
       TF_VAR_digitalocean_project_id: ${{ vars.DIGITALOCEAN_PROJECT_ID }}
@@ -263,7 +285,7 @@ jobs:
         uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
         with:
           version: 2026.8.8
-          install_args: opentofu
+          install_args: opentofu python uv
       - name: Download reviewed plan
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -278,6 +300,10 @@ jobs:
           test "$(jq -r .event plan-metadata.json)" = "workflow_dispatch"
           test "$(jq -r .ref plan-metadata.json)" = "refs/heads/main"
           test "$(jq -r .run_id plan-metadata.json)" = "${{ inputs.plan_run_id }}"
+          test "$(jq -r .initialize_archive_storage plan-metadata.json)" = \
+            "${{ inputs.initialize_archive_storage }}"
+          test "$(jq -r .replace_droplet plan-metadata.json)" = \
+            "${{ inputs.replace_droplet }}"
           test "$(jq -r .plan_sha256 plan-metadata.json)" = \
             "$(sha256sum production.tfplan | cut -d ' ' -f 1)"
       - name: Initialize the production backend
@@ -294,9 +320,23 @@ jobs:
             -backend-config="skip_region_validation=true" \
             -backend-config="skip_s3_checksum=true" \
             -backend-config="use_lockfile=false"
+      - name: Prove the legacy archive prefix is empty immediately before migration
+        if: inputs.initialize_archive_storage == true
+        run: |
+          uv run --frozen ldp-m3-archive preflight \
+            --bucket "${TF_VAR_backup_bucket_name}" \
+            --prefix archives/ \
+            --region "${SPACES_REGION}"
       - name: Apply the reviewed plan
         working-directory: ${{ env.PRODUCTION_ROOT }}
         run: tofu apply -input=false -auto-approve production.tfplan
+      - name: Re-prove the retired archive prefix after migration
+        if: inputs.initialize_archive_storage == true
+        run: |
+          uv run --frozen ldp-m3-archive preflight \
+            --bucket "${TF_VAR_backup_bucket_name}" \
+            --prefix archives/ \
+            --region "${SPACES_REGION}"
       - name: Export Ansible inventory
         working-directory: ${{ env.PRODUCTION_ROOT }}
         run: tofu output -json ansible_inventory > production-inventory.json

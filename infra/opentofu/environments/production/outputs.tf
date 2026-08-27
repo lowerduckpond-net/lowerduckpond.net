@@ -4,7 +4,7 @@ output "reserved_ip_address" {
 }
 
 output "backup_bucket_name" {
-  description = "Spaces bucket used for backups and tenant archives."
+  description = "Spaces bucket used for Restic backups."
   value       = module.storage.bucket_name
 }
 
@@ -22,6 +22,28 @@ output "backup_runtime_access_key_id" {
 output "backup_runtime_secret_access_key" {
   description = "Bucket-scoped secret key consumed by host configuration."
   value       = module.storage.runtime_secret_access_key
+  sensitive   = true
+}
+
+output "archive_bucket_name" {
+  description = "Spaces bucket dedicated to tenant archives."
+  value       = module.tenant_archives.bucket_name
+}
+
+output "archive_bucket_endpoint" {
+  description = "Spaces endpoint used by the future root-owned archive component."
+  value       = module.tenant_archives.bucket_endpoint
+}
+
+output "archive_runtime_access_key_id" {
+  description = "Bucket-scoped access key ID reserved for the root-owned archive boundary."
+  value       = module.tenant_archives.runtime_access_key_id
+  sensitive   = true
+}
+
+output "archive_runtime_secret_access_key" {
+  description = "Bucket-scoped secret key reserved for the root-owned archive boundary."
+  value       = module.tenant_archives.runtime_secret_access_key
   sensitive   = true
 }
 

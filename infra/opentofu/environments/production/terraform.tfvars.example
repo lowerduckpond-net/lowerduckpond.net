@@ -1,5 +1,6 @@
 digitalocean_project_id = "00000000-0000-0000-0000-000000000000"
 backup_bucket_name      = "lowerduckpond-net-backups-unique-suffix"
+archive_bucket_name     = "lowerduckpond-net-production-tenant-archives-unique-suffix"
 cloudflare_zone_id      = "00000000000000000000000000000000"
 
 admin_ssh_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFakeExampleOnlyDoNotUse lowerduckpond-admin"

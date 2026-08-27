@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Enforce the Milestone 1 safety contract over an OpenTofu JSON plan."""
+"""Enforce the production infrastructure safety contract over an OpenTofu JSON plan."""
 
 from __future__ import annotations
 
@@ -17,6 +17,9 @@ WORLD_CIDRS = {"0.0.0.0/0", "::/0"}
 DURABLE_TYPES = {"digitalocean_reserved_ip", "digitalocean_spaces_bucket"}
 EXPECTED_DNS_RECORD_COUNT = 2
 MIN_MODULE_ADDRESS_PARTS = 3
+BACKUP_MULTIPART_ABORT_DAYS = 7
+BACKUP_NONCURRENT_RETENTION_DAYS = 30
+ARCHIVE_MIGRATION_DURABLE_RESOURCE_COUNT = 3
 REBUILD_DRILL_ACTIONS = {
     "module.host.digitalocean_droplet.host": ("create", "delete"),
     "module.host.digitalocean_reserved_ip_assignment.host": ("delete", "create"),
@@ -58,6 +61,16 @@ REBUILD_DRILL_REQUIRED_FIELD_CHANGES = {
     "module.host.digitalocean_firewall.host": {"droplet_ids"},
     "digitalocean_project_resources.host": {"resources"},
 }
+ARCHIVE_STORAGE_MIGRATION_ACTIONS = {
+    "module.storage.digitalocean_spaces_bucket.backups": ("update",),
+    "module.tenant_archives.digitalocean_spaces_bucket.archives": ("create",),
+    "module.tenant_archives.digitalocean_spaces_key.runtime": ("create",),
+    "digitalocean_project_resources.production": ("update",),
+}
+ARCHIVE_STORAGE_MIGRATION_ALLOWED_FIELD_CHANGES = {
+    "module.storage.digitalocean_spaces_bucket.backups": {"lifecycle_rule"},
+    "digitalocean_project_resources.production": {"resources"},
+}
 EXPECTED_CONFIGURATION_REFERENCES: Final[dict[str, dict[str, tuple[str, ...]]]] = {
     "module.host.digitalocean_reserved_ip_assignment.host": {
         "droplet_id": (
@@ -86,6 +99,8 @@ EXPECTED_CONFIGURATION_REFERENCES: Final[dict[str, dict[str, tuple[str, ...]]]] 
             "module.host",
             "module.storage.bucket_urn",
             "module.storage",
+            "module.tenant_archives.bucket_urn",
+            "module.tenant_archives",
         ),
     },
 }
@@ -96,6 +111,15 @@ EXPECTED_PROJECT_RESOURCE_ADDRESSES = {
 EXPECTED_DURABLE_PROJECT_MEMBERS = {
     "module.host.digitalocean_reserved_ip.host": "urn",
     "module.storage.digitalocean_spaces_bucket.backups": "urn",
+    "module.tenant_archives.digitalocean_spaces_bucket.archives": "urn",
+}
+EXPECTED_SPACES_BUCKET_ADDRESSES = {
+    "module.storage.digitalocean_spaces_bucket.backups",
+    "module.tenant_archives.digitalocean_spaces_bucket.archives",
+}
+EXPECTED_SPACES_KEY_ADDRESSES = {
+    "module.storage.digitalocean_spaces_key.runtime",
+    "module.tenant_archives.digitalocean_spaces_key.runtime",
 }
 NON_MUTATING_ACTIONS = {("no-op",), ("read",)}
 
@@ -125,6 +149,11 @@ def _change_by_address(plan: dict[str, Any], address: str) -> dict[str, Any] | N
 
 def _after(resource: dict[str, Any]) -> dict[str, Any]:
     value = resource.get("change", {}).get("after")
+    return value if isinstance(value, dict) else {}
+
+
+def _before(resource: dict[str, Any]) -> dict[str, Any]:
+    value = resource.get("change", {}).get("before")
     return value if isinstance(value, dict) else {}
 
 
@@ -287,7 +316,9 @@ def _planned_attribute(resource: dict[str, Any], field: str) -> tuple[object, bo
     return value, unknown
 
 
-def _check_project_resources(plan: dict[str, Any], errors: list[str]) -> None:
+def _check_project_resources(
+    plan: dict[str, Any], errors: list[str], *, allow_archive_storage_migration: bool
+) -> None:
     resources = _changes_by_type(plan, "digitalocean_project_resources")
     observed_addresses = {str(resource.get("address", "")) for resource in resources}
     if (
@@ -316,8 +347,19 @@ def _check_project_resources(plan: dict[str, Any], errors: list[str]) -> None:
         expected_durable_members.append(value)
 
     if durable_members_unknown:
-        if durable_actions != ("create",) or not durable_sources_unknown:
-            errors.append("durable project membership may be unknown only during initial creation")
+        migration_unknown_is_expected = (
+            allow_archive_storage_migration
+            and durable_actions == ("update",)
+            and durable_sources_unknown
+        )
+        initial_creation_unknown_is_expected = (
+            durable_actions == ("create",) and durable_sources_unknown
+        )
+        if not migration_unknown_is_expected and not initial_creation_unknown_is_expected:
+            errors.append(
+                "durable project membership is unexpectedly unknown outside initial creation "
+                "or the archive-storage migration"
+            )
     elif (
         durable_sources_unknown
         or not isinstance(durable_members, list)
@@ -393,31 +435,198 @@ def _check_firewall(plan: dict[str, Any], errors: list[str]) -> None:
         errors.append(f"firewall inbound ports must be exactly 22, 80, and 443; found {seen_ports}")
 
 
+def _check_spaces_buckets(plan: dict[str, Any], errors: list[str]) -> dict[str, dict[str, Any]]:
+    buckets = _changes_by_type(plan, "digitalocean_spaces_bucket")
+    buckets_by_address = {str(resource.get("address", "")): resource for resource in buckets}
+    if set(buckets_by_address) != EXPECTED_SPACES_BUCKET_ADDRESSES:
+        errors.append(
+            "Spaces buckets must be exactly the isolated backup and tenant-archive resources; "
+            f"found {sorted(buckets_by_address)}"
+        )
+    for address, bucket in buckets_by_address.items():
+        after = _after(bucket)
+        if after.get("acl") != "private":
+            errors.append(f"{address} ACL must be private")
+        if after.get("force_destroy") is not False:
+            errors.append(f"{address} force_destroy must be false")
+        versioning = after.get("versioning") or []
+        if not versioning or versioning[0].get("enabled") is not True:
+            errors.append(f"{address} versioning must be enabled")
+
+    backup = buckets_by_address.get("module.storage.digitalocean_spaces_bucket.backups")
+    if backup is not None:
+        rules = _after(backup).get("lifecycle_rule") or []
+        if len(rules) != 1 or rules[0].get("id") != "backups-retention":
+            errors.append("backup bucket must retain only the backups-retention lifecycle rule")
+        elif (
+            rules[0].get("prefix") != "backups/"
+            or rules[0].get("enabled") is not True
+            or rules[0].get("abort_incomplete_multipart_upload_days") != BACKUP_MULTIPART_ABORT_DAYS
+            or bool(rules[0].get("expiration"))
+            or rules[0].get("noncurrent_version_expiration")
+            != [{"days": BACKUP_NONCURRENT_RETENTION_DAYS}]
+        ):
+            errors.append("backup bucket lifecycle rule does not match the Restic safety contract")
+
+    archives = buckets_by_address.get("module.tenant_archives.digitalocean_spaces_bucket.archives")
+    if archives is not None and (_after(archives).get("lifecycle_rule") or []):
+        errors.append("tenant archive bucket must not have lifecycle rules")
+    return buckets_by_address
+
+
+def _check_spaces_keys(
+    plan: dict[str, Any],
+    errors: list[str],
+    *,
+    buckets_by_address: dict[str, dict[str, Any]],
+) -> None:
+    keys = _changes_by_type(plan, "digitalocean_spaces_key")
+    keys_by_address = {str(resource.get("address", "")): resource for resource in keys}
+    if set(keys_by_address) != EXPECTED_SPACES_KEY_ADDRESSES:
+        errors.append(
+            "Spaces keys must be exactly the isolated backup and tenant-archive credentials; "
+            f"found {sorted(keys_by_address)}"
+        )
+    bucket_address_by_key = {
+        "module.storage.digitalocean_spaces_key.runtime": (
+            "module.storage.digitalocean_spaces_bucket.backups"
+        ),
+        "module.tenant_archives.digitalocean_spaces_key.runtime": (
+            "module.tenant_archives.digitalocean_spaces_bucket.archives"
+        ),
+    }
+    for address, key in keys_by_address.items():
+        grants = _after(key).get("grant") or []
+        if len(grants) != 1:
+            errors.append(f"{address} must have exactly one bucket grant")
+            continue
+        expected_bucket = buckets_by_address.get(bucket_address_by_key.get(address, ""))
+        expected_name = _after(expected_bucket).get("name") if expected_bucket else None
+        if (
+            grants[0].get("permission") != "readwrite"
+            or not isinstance(expected_name, str)
+            or grants[0].get("bucket") != expected_name
+        ):
+            errors.append(f"{address} must have readwrite access only to its own bucket")
+
+    backup = buckets_by_address.get("module.storage.digitalocean_spaces_bucket.backups")
+    archives = buckets_by_address.get("module.tenant_archives.digitalocean_spaces_bucket.archives")
+    if backup is not None and archives is not None:
+        backup_name = _after(backup).get("name")
+        archive_name = _after(archives).get("name")
+        if not isinstance(backup_name, str) or backup_name == archive_name:
+            errors.append("backup and tenant archive bucket names must be distinct")
+
+
 def _check_spaces(plan: dict[str, Any], errors: list[str]) -> None:
     if _changes_by_type(plan, "digitalocean_spaces_bucket_policy"):
         errors.append("Spaces bucket policies are incompatible with bucket-scoped access keys")
+    buckets_by_address = _check_spaces_buckets(plan, errors)
+    _check_spaces_keys(plan, errors, buckets_by_address=buckets_by_address)
 
-    bucket = _require_one(plan, "digitalocean_spaces_bucket", errors)
-    if bucket is not None:
-        after = _after(bucket)
-        if after.get("acl") != "private":
-            errors.append("Spaces bucket ACL must be private")
-        if after.get("force_destroy") is not False:
-            errors.append("Spaces bucket force_destroy must be false")
-        versioning = after.get("versioning") or []
-        if not versioning or versioning[0].get("enabled") is not True:
-            errors.append("Spaces bucket versioning must be enabled")
-        prefixes = {rule.get("prefix") for rule in after.get("lifecycle_rule") or []}
-        if not {"backups/", "archives/"}.issubset(prefixes):
-            errors.append("Spaces lifecycle rules must cover backups/ and archives/")
 
-    key = _require_one(plan, "digitalocean_spaces_key", errors)
-    if key is not None:
-        grants = _after(key).get("grant") or []
-        if len(grants) != 1:
-            errors.append("runtime Spaces key must have exactly one bucket grant")
-        elif grants[0].get("permission") != "readwrite" or not grants[0].get("bucket"):
-            errors.append("runtime Spaces key must have bucket-scoped readwrite access")
+def _check_archive_storage_migration(plan: dict[str, Any], errors: list[str]) -> None:
+    observed_changes: set[str] = set()
+    resources_by_address = {
+        str(resource.get("address", "")): resource for resource in plan.get("resource_changes", [])
+    }
+    for address, resource in resources_by_address.items():
+        actions = tuple(resource.get("change", {}).get("actions", []))
+        if actions in NON_MUTATING_ACTIONS:
+            continue
+        expected_actions = ARCHIVE_STORAGE_MIGRATION_ACTIONS.get(address)
+        if expected_actions is None:
+            errors.append(f"{address} has unrelated archive-storage migration actions")
+            continue
+        observed_changes.add(address)
+        if actions != expected_actions:
+            errors.append(
+                f"{address} archive-storage migration actions must be "
+                f"{list(expected_actions)}, found {list(actions)}"
+            )
+
+        allowed_fields = ARCHIVE_STORAGE_MIGRATION_ALLOWED_FIELD_CHANGES.get(address)
+        if allowed_fields is not None:
+            changed_fields = _changed_top_level_fields(resource)
+            if changed_fields is None:
+                errors.append(f"{address} must have comparable before and after values")
+            elif changed_fields != allowed_fields:
+                errors.append(
+                    f"{address} archive-storage migration fields must be "
+                    f"{sorted(allowed_fields)}, found {sorted(changed_fields)}"
+                )
+
+    missing_changes = ARCHIVE_STORAGE_MIGRATION_ACTIONS.keys() - observed_changes
+    errors.extend(
+        f"{address} must change during the archive-storage migration"
+        for address in sorted(missing_changes)
+    )
+
+    _check_archive_storage_migration_invariants(resources_by_address, errors)
+
+
+def _check_archive_storage_migration_invariants(
+    resources_by_address: dict[str, dict[str, Any]], errors: list[str]
+) -> None:
+    backup = resources_by_address.get("module.storage.digitalocean_spaces_bucket.backups")
+    if backup is not None:
+        before_rules = _before(backup).get("lifecycle_rule") or []
+        after_rules = _after(backup).get("lifecycle_rule") or []
+        before_by_id = {rule.get("id"): rule for rule in before_rules}
+        after_by_id = {rule.get("id"): rule for rule in after_rules}
+        if set(before_by_id) != {"archives-retention", "backups-retention"}:
+            errors.append(
+                "backup bucket must begin migration with exactly the legacy archive and "
+                "backup lifecycle rules"
+            )
+        if set(after_by_id) != {"backups-retention"}:
+            errors.append("backup bucket migration must remove only archives-retention")
+        elif before_by_id.get("backups-retention") != after_by_id["backups-retention"]:
+            errors.append("backup bucket migration must not alter backups-retention")
+
+    project = resources_by_address.get("digitalocean_project_resources.production")
+    reserved_ip = resources_by_address.get("module.host.digitalocean_reserved_ip.host")
+    if backup is not None and project is not None and reserved_ip is not None:
+        expected_existing_members = {
+            _before(reserved_ip).get("urn"),
+            _before(backup).get("urn"),
+        }
+        before_members = _before(project).get("resources")
+        after_members = _after(project).get("resources")
+        known_after_members = {
+            member for member in (after_members or []) if isinstance(member, str)
+        }
+        if (
+            None in expected_existing_members
+            or not isinstance(before_members, list)
+            or set(before_members) != expected_existing_members
+        ):
+            errors.append(
+                "durable project assignment must begin migration with exactly the reserved IP "
+                "and backup bucket"
+            )
+        if (
+            not isinstance(after_members, list)
+            or len(after_members) != ARCHIVE_MIGRATION_DURABLE_RESOURCE_COUNT
+            or known_after_members != expected_existing_members
+        ):
+            errors.append(
+                "durable project assignment migration must retain the reserved IP and backup "
+                "bucket while adding only the unknown archive bucket URN"
+            )
+
+
+def _reject_unapproved_archive_storage_migration(plan: dict[str, Any], errors: list[str]) -> None:
+    backup = _change_by_address(plan, "module.storage.digitalocean_spaces_bucket.backups")
+    archives = _change_by_address(
+        plan, "module.tenant_archives.digitalocean_spaces_bucket.archives"
+    )
+    if backup is None or archives is None:
+        return
+    backup_actions = tuple(backup.get("change", {}).get("actions", []))
+    archive_actions = tuple(archives.get("change", {}).get("actions", []))
+    if backup_actions == ("update",) and archive_actions == ("create",):
+        errors.append("archive-storage migration requires --allow-archive-storage-migration")
 
 
 def _check_dns(plan: dict[str, Any], errors: list[str]) -> None:
@@ -435,17 +644,30 @@ def _check_dns(plan: dict[str, Any], errors: list[str]) -> None:
         errors.append("DNS records must include lowerduckpond.net and *.lowerduckpond.net")
 
 
-def assert_plan(plan: dict[str, Any], *, allow_droplet_replacement: bool = False) -> None:
+def assert_plan(
+    plan: dict[str, Any],
+    *,
+    allow_droplet_replacement: bool = False,
+    allow_archive_storage_migration: bool = False,
+) -> None:
     """Raise PlanPolicyError when a production plan violates policy."""
     errors: list[str] = []
+    if allow_droplet_replacement and allow_archive_storage_migration:
+        errors.append("Droplet replacement and archive-storage migration must be separate plans")
     _check_destructive_actions(plan, errors, allow_droplet_replacement=allow_droplet_replacement)
     if allow_droplet_replacement:
         _check_rebuild_drill_actions(plan, errors)
+    if allow_archive_storage_migration:
+        _check_archive_storage_migration(plan, errors)
+    else:
+        _reject_unapproved_archive_storage_migration(plan, errors)
     _check_droplet(plan, errors)
     _check_firewall(plan, errors)
     _check_spaces(plan, errors)
     _check_dns(plan, errors)
-    _check_project_resources(plan, errors)
+    _check_project_resources(
+        plan, errors, allow_archive_storage_migration=allow_archive_storage_migration
+    )
     _require_one(plan, "digitalocean_reserved_ip", errors)
     _require_one(plan, "digitalocean_reserved_ip_assignment", errors)
     if errors:
@@ -461,6 +683,11 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="allow only the explicit Droplet rebuild and its required attachment changes",
     )
+    parser.add_argument(
+        "--allow-archive-storage-migration",
+        action="store_true",
+        help="allow only the one-time isolated archive storage migration",
+    )
     return parser.parse_args()
 
 
@@ -469,11 +696,15 @@ def main() -> int:
     args = _parse_args()
     try:
         plan = json.loads(args.plan_json.read_text(encoding="utf-8"))
-        assert_plan(plan, allow_droplet_replacement=args.allow_droplet_replacement)
+        assert_plan(
+            plan,
+            allow_droplet_replacement=args.allow_droplet_replacement,
+            allow_archive_storage_migration=args.allow_archive_storage_migration,
+        )
     except (OSError, json.JSONDecodeError, PlanPolicyError) as error:
         print(error)
         return 1
-    print("OpenTofu plan satisfies the Milestone 1 infrastructure policy.")
+    print("OpenTofu plan satisfies the production infrastructure policy.")
     return 0
 
 
