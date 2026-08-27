@@ -33,21 +33,29 @@ The archive Space has:
 - versioning enabled;
 - `force_destroy = false` and an OpenTofu destroy guard;
 - no current-object or noncurrent-version age expiration;
-- an incomplete-multipart abort rule only as defense in depth for non-platform
-  clients; and
+- no lifecycle rule: the pinned DigitalOcean provider requires an expiration
+  whenever a lifecycle rule is present and therefore cannot express an
+  abort-only rule without violating the no-expiration invariant; and
 - project assignment and policy checks equivalent to the backup Space.
 
 Managed archive code continues to use unique keys beneath `archives/`, exactly
 one known-length `PutObject`, exact version binding, version-aware accounting,
-and explicit permanent deletion from ADR 0019. It does not depend on lifecycle
-expiration for correctness or reclamation.
+and explicit permanent deletion from ADR 0019. It must not use multipart or a
+high-level transfer API. Qualification and reconciliation list incomplete
+multipart uploads and fail closed if any exist. The implementation does not
+depend on lifecycle expiration for correctness or reclamation, and it must not
+add a distant expiration merely to satisfy the provider schema.
 
 The archive credential is installed only for the root-owned archive boundary.
 It is not readable by Caddy, the provisioner, the operator account, Restic, or
 tenant workloads. The backup credential cannot access the archive Space, and
 the archive credential cannot access the backup Space. OpenTofu marks generated
 credential outputs sensitive; the trusted configuration workstation transports
-them without committing a secret inventory or variables file.
+them without committing a secret inventory or variables file. M3.1 retrieves,
+tests, and backs up the credential only on that trusted workstation. It does not
+place the credential in a workflow artifact or Ansible inventory and does not
+install it on the production host before the consuming root-owned archive
+component lands in M3.10.
 
 Archive metadata remains part of the authoritative root-owned state protected
 by Restic. The archive bundles themselves are not copied into Restic. Restore
@@ -66,6 +74,13 @@ secret handoff, health check, and recovery dependency. A root compromise can
 still reach both credentials on the host while their services run; this
 decision reduces component and mistake blast radius rather than claiming to
 contain root.
+
+Because the pinned provider cannot express abort-only cleanup, an unexpected
+multipart upload is not reclaimed by an age rule. This is acceptable only while
+the credential remains confined to code that prohibits multipart and the live
+acceptance and later reconciliation gates prove that no multipart uploads
+exist. Any unexpected upload closes archive admission until it is explicitly
+accounted for and removed.
 
 The existing backup Space's `archives/` lifecycle rule becomes obsolete and is
 removed without deleting any objects. It is currently empty; migration must
@@ -86,3 +101,4 @@ inside a second retention system.
 - [0019: Constrain static archives and exports](0019-constrain-static-archives-and-exports.md)
 - [0021: Define static tenant lifecycle semantics](0021-define-static-tenant-lifecycle-semantics.md)
 - [DigitalOcean Spaces API reference](https://docs.digitalocean.com/reference/api/spaces/)
+- [Pinned provider `digitalocean_spaces_bucket` lifecycle schema](https://github.com/digitalocean/terraform-provider-digitalocean/blob/v2.100.0/docs/resources/spaces_bucket.md)

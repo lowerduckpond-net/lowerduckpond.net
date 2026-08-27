@@ -160,16 +160,19 @@ record is retained in ADR 0025's dedicated archive Space without current-object
 or noncurrent-version age expiration. Before enabling archive operations,
 Milestone 3 provisions that Space and removes the obsolete `archives/`
 lifecycle rule from the backup Space only after a version-aware preflight finds
-no object or version there. The archive Space may abort incomplete multipart
-uploads as defense in depth but never expires stored archive objects or
-versions. Explicit version-aware cleanup permanently purges every version and
-delete marker of an unreferenced unique key and confirms none remain; a storage
-lifecycle rule is not a cleanup backstop and cannot reclaim charged capacity or
-reopen archive admission. Restore, ordinary deletion, and an emergency deletion
-of archived state journal that cleanup before unbinding the record. Until the
-journal is reconciled and the key is proven absent, the object remains charged
-against the hard 25-key, 25-version-or-marker, and 3,000-MiB remote archive
-ceilings and further archive admission stays closed.
+no object, version, delete marker, or incomplete multipart upload there. The
+archive Space has no lifecycle rule because the pinned provider cannot express
+abort-only cleanup without also expiring objects or versions. Managed archive
+code prohibits multipart; qualification and reconciliation list incomplete
+multipart uploads and close admission on any unexpected result. Explicit
+version-aware cleanup permanently purges every version and delete marker of an
+unreferenced unique key and confirms none remain; a storage lifecycle rule is
+not a cleanup backstop and cannot reclaim charged capacity or reopen archive
+admission. Restore, ordinary deletion, and an emergency deletion of archived
+state journal that cleanup before unbinding the record. Until the journal is
+reconciled and the key is proven absent, the object remains charged against the
+hard 25-key, 25-version-or-marker, and 3,000-MiB remote archive ceilings and
+further archive admission stays closed.
 
 Every externally requested operation in the ordinary matrix requires the
 root-owned authorization job defined by ADR 0020. The activator verifies its
