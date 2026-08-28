@@ -367,27 +367,15 @@ def test_allows_exact_archive_storage_migration() -> None:
     assert_plan(_valid_archive_storage_migration_plan(), allow_archive_storage_migration=True)
 
 
-def test_allows_provider_to_mark_the_whole_migrated_project_membership_unknown() -> None:
-    plan = _valid_archive_storage_migration_plan()
-    project = next(
-        resource
-        for resource in plan["resource_changes"]
-        if resource["address"] == "digitalocean_project_resources.production"
-    )
-    project["change"]["after"]["resources"] = None
-    project["change"]["after_unknown"]["resources"] = True
-
-    assert_plan(plan, allow_archive_storage_migration=True)
-
-
 @pytest.mark.parametrize(
     ("after_members", "after_unknown"),
     [
+        (None, True),
         (None, [False, False, True]),
         (["do:reservedip:203.0.113.10", "do:space:example-backups"], True),
     ],
 )
-def test_rejects_inconsistent_whole_project_membership_unknown_shapes(
+def test_rejects_wholly_unknown_or_inconsistent_project_membership_shapes(
     after_members: object, after_unknown: object
 ) -> None:
     plan = _valid_archive_storage_migration_plan()
