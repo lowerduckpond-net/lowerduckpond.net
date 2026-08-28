@@ -5,7 +5,7 @@ output "bucket_name" {
 
 output "bucket_urn" {
   description = "DigitalOcean project resource URN for the archive bucket."
-  value       = digitalocean_spaces_bucket.archives.urn
+  value       = "do:space:${var.bucket_name}"
 }
 
 output "bucket_endpoint" {

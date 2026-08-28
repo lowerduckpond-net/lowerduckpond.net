@@ -52,6 +52,8 @@ resource "digitalocean_project_resources" "production" {
     module.storage.bucket_urn,
     module.tenant_archives.bucket_urn,
   ]
+
+  depends_on = [module.tenant_archives]
 }
 
 resource "digitalocean_project_resources" "host" {
