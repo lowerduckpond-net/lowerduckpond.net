@@ -5,14 +5,7 @@ output "bucket_name" {
 
 output "bucket_urn" {
   description = "DigitalOcean project resource URN for the archive bucket."
-  value       = "do:space:${digitalocean_spaces_bucket.archives.name}"
-
-  precondition {
-    condition = digitalocean_spaces_bucket.archives.urn == (
-      "do:space:${digitalocean_spaces_bucket.archives.name}"
-    )
-    error_message = "The DigitalOcean provider returned an unexpected archive bucket URN."
-  }
+  value       = "do:space:${var.bucket_name}"
 }
 
 output "bucket_endpoint" {

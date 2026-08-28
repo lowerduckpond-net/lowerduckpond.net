@@ -171,6 +171,7 @@ def _valid_plan() -> dict[str, Any]:
                 "resources": [
                     {
                         "address": "digitalocean_project_resources.production",
+                        "depends_on": ["module.tenant_archives"],
                         "expressions": {
                             "project": {"references": ["var.digitalocean_project_id"]},
                             "resources": {
@@ -187,6 +188,7 @@ def _valid_plan() -> dict[str, Any]:
                     },
                     {
                         "address": "digitalocean_project_resources.host",
+                        "depends_on": ["digitalocean_project_resources.production"],
                         "expressions": {
                             "project": {"references": ["var.digitalocean_project_id"]},
                             "resources": {
@@ -353,8 +355,8 @@ def _valid_archive_storage_migration_plan() -> dict[str, Any]:
         "do:reservedip:203.0.113.10",
         "do:space:example-backups",
     ]
-    project["change"]["after"]["resources"][-1] = None
-    project["change"]["after_unknown"] = {"resources": [False, False, True]}
+    project["change"]["after"]["resources"][-1] = "do:space:example-tenant-archives"
+    project["change"]["after_unknown"] = {}
     project["change"]["actions"] = ["update"]
     return plan
 
@@ -387,7 +389,20 @@ def test_rejects_wholly_unknown_or_inconsistent_project_membership_shapes(
     project["change"]["after"]["resources"] = after_members
     project["change"]["after_unknown"]["resources"] = after_unknown
 
-    with pytest.raises(PlanPolicyError, match="adding only the unknown archive bucket URN"):
+    with pytest.raises(PlanPolicyError, match="adding only the exact archive bucket URN"):
+        assert_plan(plan, allow_archive_storage_migration=True)
+
+
+def test_rejects_an_incorrect_synthesized_archive_project_member() -> None:
+    plan = _valid_archive_storage_migration_plan()
+    project = next(
+        resource
+        for resource in plan["resource_changes"]
+        if resource["address"] == "digitalocean_project_resources.production"
+    )
+    project["change"]["after"]["resources"][-1] = "do:space:wrong-archive"
+
+    with pytest.raises(PlanPolicyError, match="adding only the exact archive bucket URN"):
         assert_plan(plan, allow_archive_storage_migration=True)
 
 
@@ -602,6 +617,19 @@ def test_rejects_missing_durable_project_configuration_reference() -> None:
 
     with pytest.raises(PlanPolicyError, match="must retain its exact infrastructure references"):
         assert_plan(plan, allow_droplet_replacement=True)
+
+
+def test_rejects_missing_archive_project_creation_dependency() -> None:
+    plan = _valid_archive_storage_migration_plan()
+    durable_configuration = next(
+        resource
+        for resource in plan["configuration"]["root_module"]["resources"]
+        if resource["address"] == "digitalocean_project_resources.production"
+    )
+    durable_configuration["depends_on"] = []
+
+    with pytest.raises(PlanPolicyError, match="must retain its exact creation dependencies"):
+        assert_plan(plan, allow_archive_storage_migration=True)
 
 
 def test_rejects_incidental_droplet_replacement_during_drill() -> None:

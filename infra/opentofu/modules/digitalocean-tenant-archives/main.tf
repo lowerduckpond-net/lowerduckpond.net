@@ -10,6 +10,11 @@ resource "digitalocean_spaces_bucket" "archives" {
 
   lifecycle {
     prevent_destroy = true
+
+    postcondition {
+      condition     = self.urn == "do:space:${self.name}"
+      error_message = "The DigitalOcean provider returned an unexpected archive bucket URN."
+    }
   }
 }
 

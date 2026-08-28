@@ -104,6 +104,10 @@ EXPECTED_CONFIGURATION_REFERENCES: Final[dict[str, dict[str, tuple[str, ...]]]] 
         ),
     },
 }
+EXPECTED_CONFIGURATION_DEPENDS_ON: Final[dict[str, tuple[str, ...]]] = {
+    "digitalocean_project_resources.host": ("digitalocean_project_resources.production",),
+    "digitalocean_project_resources.production": ("module.tenant_archives",),
+}
 EXPECTED_PROJECT_RESOURCE_ADDRESSES = {
     "digitalocean_project_resources.host",
     "digitalocean_project_resources.production",
@@ -225,6 +229,13 @@ def _check_configuration_references(plan: dict[str, Any], address: str, errors: 
                 f"{address}.{field} must retain its exact infrastructure references; "
                 f"found {list(observed_references)}"
             )
+    expected_dependencies = EXPECTED_CONFIGURATION_DEPENDS_ON.get(address, ())
+    observed_dependencies = tuple(resource.get("depends_on", []))
+    if observed_dependencies != expected_dependencies:
+        errors.append(
+            f"{address} must retain its exact creation dependencies; "
+            f"found {list(observed_dependencies)}"
+        )
 
 
 def _require_one(
@@ -316,6 +327,16 @@ def _planned_attribute(resource: dict[str, Any], field: str) -> tuple[object, bo
     return value, unknown
 
 
+def _expected_durable_member(
+    resource: dict[str, Any], *, address: str, field: str
+) -> tuple[object, bool]:
+    if address != "module.tenant_archives.digitalocean_spaces_bucket.archives":
+        return _planned_attribute(resource, field)
+    archive_name, unknown = _planned_attribute(resource, "name")
+    value = f"do:space:{archive_name}" if isinstance(archive_name, str) else None
+    return value, unknown
+
+
 def _check_project_resources(
     plan: dict[str, Any], errors: list[str], *, allow_archive_storage_migration: bool
 ) -> None:
@@ -342,7 +363,7 @@ def _check_project_resources(
         if source is None:
             errors.append(f"{address} is missing from the plan")
             continue
-        value, unknown = _planned_attribute(source, field)
+        value, unknown = _expected_durable_member(source, address=address, field=field)
         durable_sources_unknown |= unknown
         expected_durable_members.append(value)
 
@@ -586,16 +607,26 @@ def _check_archive_storage_migration_invariants(
 
     project = resources_by_address.get("digitalocean_project_resources.production")
     reserved_ip = resources_by_address.get("module.host.digitalocean_reserved_ip.host")
-    if backup is not None and project is not None and reserved_ip is not None:
+    archives = resources_by_address.get(
+        "module.tenant_archives.digitalocean_spaces_bucket.archives"
+    )
+    if (
+        backup is not None
+        and project is not None
+        and reserved_ip is not None
+        and archives is not None
+    ):
         expected_existing_members = {
             _before(reserved_ip).get("urn"),
             _before(backup).get("urn"),
         }
+        archive_name = _after(archives).get("name")
+        expected_archive_member = (
+            f"do:space:{archive_name}" if isinstance(archive_name, str) else None
+        )
+        expected_after_members = expected_existing_members | {expected_archive_member}
         before_members = _before(project).get("resources")
         after_members = _after(project).get("resources")
-        known_after_members = {
-            member for member in (after_members or []) if isinstance(member, str)
-        }
         if (
             None in expected_existing_members
             or not isinstance(before_members, list)
@@ -606,13 +637,14 @@ def _check_archive_storage_migration_invariants(
                 "and backup bucket"
             )
         if (
-            not isinstance(after_members, list)
+            None in expected_after_members
+            or not isinstance(after_members, list)
             or len(after_members) != ARCHIVE_MIGRATION_DURABLE_RESOURCE_COUNT
-            or known_after_members != expected_existing_members
+            or set(after_members) != expected_after_members
         ):
             errors.append(
                 "durable project assignment migration must retain the reserved IP and backup "
-                "bucket while adding only the unknown archive bucket URN"
+                "bucket while adding only the exact archive bucket URN"
             )
 
 
