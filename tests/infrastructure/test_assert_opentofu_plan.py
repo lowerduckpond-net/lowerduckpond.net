@@ -367,6 +367,42 @@ def test_allows_exact_archive_storage_migration() -> None:
     assert_plan(_valid_archive_storage_migration_plan(), allow_archive_storage_migration=True)
 
 
+def test_allows_provider_to_mark_the_whole_migrated_project_membership_unknown() -> None:
+    plan = _valid_archive_storage_migration_plan()
+    project = next(
+        resource
+        for resource in plan["resource_changes"]
+        if resource["address"] == "digitalocean_project_resources.production"
+    )
+    project["change"]["after"]["resources"] = None
+    project["change"]["after_unknown"]["resources"] = True
+
+    assert_plan(plan, allow_archive_storage_migration=True)
+
+
+@pytest.mark.parametrize(
+    ("after_members", "after_unknown"),
+    [
+        (None, [False, False, True]),
+        (["do:reservedip:203.0.113.10", "do:space:example-backups"], True),
+    ],
+)
+def test_rejects_inconsistent_whole_project_membership_unknown_shapes(
+    after_members: object, after_unknown: object
+) -> None:
+    plan = _valid_archive_storage_migration_plan()
+    project = next(
+        resource
+        for resource in plan["resource_changes"]
+        if resource["address"] == "digitalocean_project_resources.production"
+    )
+    project["change"]["after"]["resources"] = after_members
+    project["change"]["after_unknown"]["resources"] = after_unknown
+
+    with pytest.raises(PlanPolicyError, match="adding only the unknown archive bucket URN"):
+        assert_plan(plan, allow_archive_storage_migration=True)
+
+
 def test_rejects_archive_storage_migration_without_explicit_mode() -> None:
     with pytest.raises(PlanPolicyError, match="requires --allow-archive-storage-migration"):
         assert_plan(_valid_archive_storage_migration_plan())

@@ -593,6 +593,7 @@ def _check_archive_storage_migration_invariants(
         }
         before_members = _before(project).get("resources")
         after_members = _after(project).get("resources")
+        after_members_unknown = project.get("change", {}).get("after_unknown", {}).get("resources")
         known_after_members = {
             member for member in (after_members or []) if isinstance(member, str)
         }
@@ -605,11 +606,13 @@ def _check_archive_storage_migration_invariants(
                 "durable project assignment must begin migration with exactly the reserved IP "
                 "and backup bucket"
             )
-        if (
-            not isinstance(after_members, list)
-            or len(after_members) != ARCHIVE_MIGRATION_DURABLE_RESOURCE_COUNT
-            or known_after_members != expected_existing_members
-        ):
+        whole_membership_is_unknown = after_members is None and after_members_unknown is True
+        element_membership_is_exact = (
+            isinstance(after_members, list)
+            and len(after_members) == ARCHIVE_MIGRATION_DURABLE_RESOURCE_COUNT
+            and known_after_members == expected_existing_members
+        )
+        if not whole_membership_is_unknown and not element_membership_is_exact:
             errors.append(
                 "durable project assignment migration must retain the reserved IP and backup "
                 "bucket while adding only the unknown archive bucket URN"
