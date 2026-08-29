@@ -74,6 +74,8 @@ class _CorrelationTransaction(Protocol):
 
     def allocation_upper_bound(self, byte_count: int) -> int: ...
 
+    def namespace_allocation_upper_bound(self, entry_count: int) -> int: ...
+
     def measure_filesystem_capacity(self) -> FilesystemCapacity: ...
 
     def admit_inventory(
@@ -283,7 +285,10 @@ def _admit_writes(
     admit_release_capacity(
         ReleaseCapacityUsage(()),
         CapacityReservation(
-            allocated_bytes=reservation.authorization_allocated_bytes,
+            allocated_bytes=(
+                reservation.authorization_allocated_bytes
+                + transaction.namespace_allocation_upper_bound(reservation.authorization_records)
+            ),
             unique_inodes=reservation.authorization_records,
         ),
         transaction.measure_filesystem_capacity(),

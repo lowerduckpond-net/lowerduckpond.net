@@ -618,6 +618,12 @@ class _StateTransaction:
         self._require_exclusive()
         return self._repository._durable.allocation_upper_bound(byte_count)
 
+    def namespace_allocation_upper_bound(self, entry_count: int) -> int:
+        """Return the transient directory-growth ceiling for immutable writes."""
+
+        self._require_exclusive()
+        return self._repository._durable.namespace_allocation_upper_bound(entry_count)
+
     def measure_filesystem_capacity(self) -> FilesystemCapacity:
         """Measure the state filesystem through the verified root descriptor."""
 

@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 from lowerduckpond_static_contracts import request_digest
 from lowerduckpond_static_host_agent import (
+    CapacityProjection,
     CapacityRejectedError,
     CorrelationAdmission,
     CorrelationConflictError,
@@ -23,6 +24,7 @@ from lowerduckpond_static_host_agent import (
     StateRecordPath,
     StateRepository,
 )
+from lowerduckpond_static_host_agent.capacity import CapacityReservation
 
 _FIXTURE_ROOT = Path(__file__).parents[3] / "tests/static-publication/fixtures/accepted"
 _BASE_TIME = datetime(2026, 8, 29, 12, 0, 1, tzinfo=UTC)
@@ -403,6 +405,54 @@ def test_correlation_writes_respect_filesystem_free_capacity_floors(
 
     assert inventory.job_ids == ()
     assert len(inventory.correlation_ids) == int(interrupted_repair)
+
+
+@pytest.mark.parametrize("interrupted_repair", [False, True])
+def test_correlation_capacity_includes_transient_directory_growth(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    interrupted_repair: bool,
+) -> None:
+    root = _state_root(tmp_path)
+    candidate = _candidate(1)
+    request = candidate["request"]
+    assert type(request) is dict
+    if interrupted_repair:
+        with _repository(root) as repository:
+            repository.create_immutable(
+                StateRecordPath.authorization_correlation(request["correlationId"]),
+                candidate,
+            )
+
+    observed: list[CapacityReservation] = []
+
+    def capture_reservation(
+        _usage: object,
+        reservation: CapacityReservation,
+        _filesystem: object,
+        *,
+        limits: object,
+    ) -> CapacityProjection:
+        del limits
+        observed.append(reservation)
+        return CapacityProjection(0, 0, 0, 0, 0, 0)
+
+    monkeypatch.setattr(
+        "lowerduckpond_static_host_agent.correlations.admit_release_capacity",
+        capture_reservation,
+    )
+    monkeypatch.setattr(
+        "lowerduckpond_static_host_agent.repository._StateTransaction.namespace_allocation_upper_bound",
+        lambda _transaction, entry_count: entry_count * 8192,
+    )
+
+    with _repository(root) as repository:
+        CorrelationAdmission(repository).resolve(candidate, now=_BASE_TIME)
+
+    assert len(observed) == 1
+    expected_records = 1 if interrupted_repair else 2
+    assert observed[0].unique_inodes == expected_records
+    assert observed[0].allocated_bytes >= expected_records * 8192
 
 
 def test_correlation_record_cannot_be_replaced_through_repository_cas(

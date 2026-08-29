@@ -258,6 +258,22 @@ class DurableDirectory:
             raise StatePathError("state filesystem has no valid allocation fragment")
         return ((byte_count + fragment_size - 1) // fragment_size) * fragment_size
 
+    def namespace_allocation_upper_bound(self, entry_count: int) -> int:
+        """Reserve ext4 directory growth for temporary creation and rename."""
+
+        self._require_open()
+        if type(entry_count) is not int or entry_count < 0:
+            raise ValueError("namespace entry count must be a nonnegative integer")
+        filesystem = os.fstatvfs(self._directory_fd)
+        block_size = max(filesystem.f_frsize, filesystem.f_bsize)
+        if block_size <= 0:
+            raise StatePathError("state filesystem has no valid directory block size")
+        # Immutable publication first creates a temporary directory entry and
+        # then renames it without replacement. At a directory-block boundary,
+        # each namespace mutation can require a block before the old temporary
+        # entry is reclaimed. Production M3 state is committed to ext4.
+        return entry_count * 2 * block_size
+
     def open_descendant(self, components: tuple[str, ...]) -> DurableDirectory:
         """Open a verified descendant directory without resolving the root path again."""
 
