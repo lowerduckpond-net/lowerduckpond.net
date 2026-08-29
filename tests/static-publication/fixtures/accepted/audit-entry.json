@@ -12,5 +12,6 @@
     "format": "lowerduckpond-result-v1",
     "algorithm": "sha256",
     "value": "1111111111111111111111111111111111111111111111111111111111111111"
-  }
+  },
+  "resultStatus": "succeeded"
 }

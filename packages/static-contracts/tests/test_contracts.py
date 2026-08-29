@@ -676,6 +676,27 @@ def test_delete_audit_entry_requires_a_deletion_tombstone() -> None:
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
 
+def test_failed_delete_audit_entry_cannot_claim_a_deletion_tombstone() -> None:
+    entry = _load_object(FIXTURE_ROOT / "accepted/audit-entry.json")
+    entry["operation"] = "delete"
+    entry["resultStatus"] = "failed"
+
+    assert validate_contract(entry) is ContractKind.AUDIT_ENTRY
+
+    entry["deletionTombstone"] = {
+        "mode": "never-deployed",
+        "releasedSlugs": ["duck-repair"],
+        "archiveRecordDigest": None,
+        "bucket": None,
+        "key": None,
+        "versionId": None,
+        "emergencyReason": None,
+    }
+    with pytest.raises(ContractError) as captured:
+        validate_contract(entry)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
 def test_non_delete_audit_entry_rejects_a_deletion_tombstone() -> None:
     entry = _load_object(FIXTURE_ROOT / "accepted/audit-entry.json")
     entry["deletionTombstone"] = {

@@ -216,10 +216,14 @@
         "properties": {
           "operation": {
             "const": "delete"
+          },
+          "resultStatus": {
+            "const": "succeeded"
           }
         },
         "required": [
-          "operation"
+          "operation",
+          "resultStatus"
         ]
       },
       "then": {
@@ -261,6 +265,13 @@
     "resultDigest": {
       "$ref": "common.schema.json#/$defs/resultDigest"
     },
+    "resultStatus": {
+      "enum": [
+        "succeeded",
+        "failed"
+      ],
+      "type": "string"
+    },
     "sequence": {
       "minimum": 0,
       "type": "integer"
@@ -289,7 +300,8 @@
     "operation",
     "tenantId",
     "correlationId",
-    "resultDigest"
+    "resultDigest",
+    "resultStatus"
   ],
   "type": "object"
 }
