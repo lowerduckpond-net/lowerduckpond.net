@@ -394,6 +394,16 @@ def _validate_lifecycle_recovery(document: dict[str, object]) -> None:
             ErrorCode.SCHEMA_INVALID,
             "lifecycle transition did not change the manifest generation",
         )
+    if operation in {"deploy", "rollback"} and (
+        source_observed is None
+        or candidate_observed is None
+        or source_observed["activeDeploymentId"] == candidate_observed["activeDeploymentId"]
+        or document["sourceManifestDigest"] == document["candidateManifestDigest"]
+    ):
+        raise ContractError(
+            ErrorCode.SCHEMA_INVALID,
+            "deployment-selecting transition did not select a distinct generation",
+        )
     if operation in {"suspend", "resume", "rename", "reconcile"} and (
         source_observed is None
         or candidate_observed is None

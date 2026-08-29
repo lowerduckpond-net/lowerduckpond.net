@@ -1112,6 +1112,35 @@ def test_route_only_intent_preserves_the_remembered_deployment(
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
 
+@pytest.mark.parametrize("operation", ["deploy", "rollback"])
+def test_deployment_selection_intent_changes_the_remembered_deployment(
+    operation: str,
+) -> None:
+    intent = _route_only_transaction_intent(operation, "active", "active")
+    recovery = intent["lifecycleRecovery"]
+    assert type(recovery) is dict
+    candidate = recovery["candidateObservedState"]
+    assert type(candidate) is dict
+    candidate["activeDeploymentId"] = "0198d17f-6f4a-7000-8000-000000000009"
+
+    assert validate_contract(intent) is ContractKind.TRANSACTION_INTENT
+
+    source = recovery["sourceObservedState"]
+    assert type(source) is dict
+    candidate["activeDeploymentId"] = source["activeDeploymentId"]
+    with pytest.raises(ContractError) as captured:
+        validate_contract(intent)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+    candidate["activeDeploymentId"] = "0198d17f-6f4a-7000-8000-000000000009"
+    source_digest = deepcopy(intent["sourceManifestDigest"])
+    intent["candidateManifestDigest"] = source_digest
+    candidate["desiredManifestDigest"] = source_digest
+    with pytest.raises(ContractError) as captured:
+        validate_contract(intent)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
 @pytest.mark.parametrize(
     ("operation", "source_state", "candidate_state"),
     [
@@ -1142,10 +1171,15 @@ def test_lifecycle_change_requires_a_distinct_manifest_generation(
 
 def test_runtime_mutation_intent_requires_exact_recovery_generations() -> None:
     intent = _load_object(FIXTURE_ROOT / "accepted/transaction-intent.json")
+    candidate_digest = deepcopy(intent["candidateManifestDigest"])
+    assert type(candidate_digest) is dict
+    candidate_digest["value"] = "b" * 64
+    intent["candidateManifestDigest"] = candidate_digest
     source = _load_object(FIXTURE_ROOT / "accepted/tenant-observed-state.json")
     source["desiredManifestDigest"] = intent["sourceManifestDigest"]
     candidate = deepcopy(source)
     candidate["desiredManifestDigest"] = intent["candidateManifestDigest"]
+    candidate["activeDeploymentId"] = "0198d17f-6f4a-7000-8000-000000000009"
     candidate["runtimeGenerationId"] = "0198d17f-6f4a-7000-8000-000000000006"
     intent["operation"] = "deploy"
     intent["lifecycleRecovery"] = {
