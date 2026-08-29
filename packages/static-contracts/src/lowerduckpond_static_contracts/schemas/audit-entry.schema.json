@@ -197,10 +197,14 @@
         "properties": {
           "operation": {
             "const": "create"
+          },
+          "resultStatus": {
+            "const": "failed"
           }
         },
         "required": [
-          "operation"
+          "operation",
+          "resultStatus"
         ]
       }
     },

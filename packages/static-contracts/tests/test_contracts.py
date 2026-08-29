@@ -704,11 +704,21 @@ def test_non_create_audit_entries_require_a_tenant_identity(operation: str) -> N
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
 
-def test_create_audit_entry_may_precede_tenant_identity_generation() -> None:
+def test_failed_create_audit_entry_may_precede_tenant_identity_generation() -> None:
+    entry = _load_object(FIXTURE_ROOT / "accepted/audit-entry.json")
+    entry["tenantId"] = None
+    entry["resultStatus"] = "failed"
+
+    assert validate_contract(entry) is ContractKind.AUDIT_ENTRY
+
+
+def test_successful_create_audit_entry_requires_generated_tenant_identity() -> None:
     entry = _load_object(FIXTURE_ROOT / "accepted/audit-entry.json")
     entry["tenantId"] = None
 
-    assert validate_contract(entry) is ContractKind.AUDIT_ENTRY
+    with pytest.raises(ContractError) as captured:
+        validate_contract(entry)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
 
 def test_archived_deletion_evidence_preserves_destructive_object_identity() -> None:
