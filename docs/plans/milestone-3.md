@@ -590,8 +590,9 @@ tests exercise this gate. Extraction, bundle handling, and a service entry
 point remain absent until the following slices add their own gates.
 
 The second review slice keeps the structurally admitted artifact descriptor
-pinned while streaming stored or raw-Deflate content into one newly created
-tree beneath a verified private staging parent. It creates and reopens every
+pinned while the caller's exclusive intake lock remains held, then streams
+stored or raw-Deflate content into one newly created tree beneath a verified
+private staging parent. It creates and reopens every
 directory and file relative to trusted descriptors, normalizes modes, rejects
 pre-existing destinations, bounds decoder output before each write, and
 rechecks observed CRC-32, per-file and aggregate bytes, namespace, inode
@@ -615,6 +616,22 @@ second complete source measurement and generation check precede success.
 Pinned byte vectors prove that creation order, filesystem timestamps, inode
 identity, and JSON member order cannot change the bundle or its separately
 named artifact, manifest, release-tree, and bundle digests.
+
+The fourth review slice parses that exact v1 envelope without a general ZIP
+decoder, requires byte-canonical local and central metadata, verifies the fixed
+format and canonical manifest plus an exact checksum set for every regular
+content member, and rejects padding, reordered records, unbound bytes, and
+source-generation changes. Import requires the caller's exclusive intake lock
+through return, capacity-admits and descriptor-extracts only the already
+validated `content/` subtree into a new unpublished normalized tree, and
+revalidates its named parent and candidate against pinned descriptors before
+success. Cleanup removes only the originally claimed candidate inode. The
+embedded manifest is
+returned under explicitly provenance-named fields and is never materialized as
+target state. Tests prove exact builder/inspector identity, ordinary-deployment
+parser separation, checksum and metadata tampering rejection, cleanup, source
+mutation detection, and content-only round trips. The APIs remain inert library
+surface with no production caller.
 
 ### M3.5: install the dark host boundary
 

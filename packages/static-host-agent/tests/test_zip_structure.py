@@ -10,12 +10,18 @@ from contextlib import suppress
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+import lowerduckpond_static_host_agent.zip_structure as zip_structure_module
 import pytest
 from hypothesis import HealthCheck, given, settings, strategies
 from lowerduckpond_static_host_agent import (
+    CapacityProjection,
     CapacityRejectedError,
     FilesystemCapacity,
     InodeAllocation,
+    LockManager,
+    LockMode,
+    LockName,
+    LockOrderError,
     ReleaseCapacityUsage,
     ZipEntryType,
     ZipExtraction,
@@ -23,8 +29,10 @@ from lowerduckpond_static_host_agent import (
     ZipLimits,
     ZipStructure,
     ZipStructureError,
-    extract_deployment_zip,
     inspect_deployment_zip,
+)
+from lowerduckpond_static_host_agent import (
+    extract_deployment_zip as _extract_deployment_zip,
 )
 
 _OWNER = os.geteuid()
@@ -183,10 +191,35 @@ def _staging_parent(tmp_path: Path) -> Path:
     return parent
 
 
+def _extract_with_intake_lock(
+    path: Path,
+    *,
+    staging_parent: Path,
+    staging_name: str,
+    expected_owner: int,
+    retained_usage: ReleaseCapacityUsage,
+) -> ZipExtraction:
+    lock_root = path.parent / ".intake-locks"
+    lock_root.mkdir(mode=0o700, exist_ok=True)
+    lock_root.chmod(0o700)
+    with (
+        LockManager.initialize(lock_root, expected_owner=expected_owner) as manager,
+        manager.acquire(LockName.INTAKE),
+    ):
+        return _extract_deployment_zip(
+            path,
+            staging_parent=staging_parent,
+            staging_name=staging_name,
+            expected_owner=expected_owner,
+            retained_usage=retained_usage,
+            lock_manager=manager,
+        )
+
+
 def _extract(tmp_path: Path, data: bytes, name: str = "candidate") -> tuple[Path, ZipExtraction]:
     source = _write(tmp_path, data)
     parent = _staging_parent(tmp_path)
-    result = extract_deployment_zip(
+    result = _extract_with_intake_lock(
         source,
         staging_parent=parent,
         staging_name=name,
@@ -731,6 +764,29 @@ def test_extraction_streams_stored_and_deflated_files_into_normalized_tree(
     assert result.allocated_bytes <= result.capacity_projection.projected_allocated_bytes
 
 
+def test_extraction_requires_the_exclusive_intake_lock(tmp_path: Path) -> None:
+    source = _write(tmp_path, _archive(_MemberSpec(name=b"index.html", content=b"home")))
+    parent = _staging_parent(tmp_path)
+    lock_root = tmp_path / "locks"
+    lock_root.mkdir(mode=0o700)
+
+    with (
+        LockManager.initialize(lock_root, expected_owner=_OWNER) as manager,
+        manager.acquire(LockName.INTAKE, mode=LockMode.SHARED),
+        pytest.raises(LockOrderError, match="exclusive"),
+    ):
+        _extract_deployment_zip(
+            source,
+            staging_parent=parent,
+            staging_name="candidate",
+            expected_owner=_OWNER,
+            retained_usage=ReleaseCapacityUsage(()),
+            lock_manager=manager,
+        )
+
+    assert list(parent.iterdir()) == []
+
+
 @pytest.mark.parametrize("method", [_STORED, _DEFLATE])
 def test_extraction_rechecks_crc_and_removes_partial_tree(
     tmp_path: Path,
@@ -743,7 +799,7 @@ def test_extraction_rechecks_crc_and_removes_partial_tree(
     parent = _staging_parent(tmp_path)
 
     with pytest.raises(ZipExtractionError):
-        extract_deployment_zip(
+        _extract_with_intake_lock(
             source,
             staging_parent=parent,
             staging_name="candidate",
@@ -771,7 +827,7 @@ def test_extraction_rechecks_observed_expanded_size(
     parent = _staging_parent(tmp_path)
 
     with pytest.raises(ZipExtractionError, match="observed"):
-        extract_deployment_zip(
+        _extract_with_intake_lock(
             source,
             staging_parent=parent,
             staging_name="candidate",
@@ -796,7 +852,7 @@ def test_extraction_rejects_deflate_data_after_the_stream_end(tmp_path: Path) ->
     parent = _staging_parent(tmp_path)
 
     with pytest.raises(ZipExtractionError, match="declared boundary"):
-        extract_deployment_zip(
+        _extract_with_intake_lock(
             source,
             staging_parent=parent,
             staging_name="candidate",
@@ -821,7 +877,7 @@ def test_extraction_never_writes_more_than_the_declared_size(tmp_path: Path) -> 
     parent = _staging_parent(tmp_path)
 
     with pytest.raises(ZipExtractionError, match="observed file bytes"):
-        extract_deployment_zip(
+        _extract_with_intake_lock(
             source,
             staging_parent=parent,
             staging_name="candidate",
@@ -841,7 +897,7 @@ def test_extraction_refuses_an_existing_destination_without_removing_it(tmp_path
     marker.write_text("keep", encoding="utf-8")
 
     with pytest.raises(ZipExtractionError, match="could not complete safely"):
-        extract_deployment_zip(
+        _extract_with_intake_lock(
             source,
             staging_parent=parent,
             staging_name="candidate",
@@ -860,7 +916,7 @@ def test_extraction_requires_one_canonical_staging_component(
     source = _write(tmp_path, _archive(_MemberSpec(name=b"index.html")))
     parent = _staging_parent(tmp_path)
     with pytest.raises(ValueError, match="staging name"):
-        extract_deployment_zip(
+        _extract_with_intake_lock(
             source,
             staging_parent=parent,
             staging_name=name,
@@ -875,7 +931,7 @@ def test_extraction_requires_a_private_owned_staging_parent(tmp_path: Path) -> N
     parent.chmod(0o755)
 
     with pytest.raises(ZipExtractionError, match="staging parent"):
-        extract_deployment_zip(
+        _extract_with_intake_lock(
             source,
             staging_parent=parent,
             staging_name="candidate",
@@ -898,7 +954,7 @@ def test_extraction_allows_artifact_and_staging_on_different_filesystems(
         if source.stat().st_dev == parent.stat().st_dev:
             pytest.skip("the available staging root is not an independent filesystem")
 
-        result = extract_deployment_zip(
+        result = _extract_with_intake_lock(
             source,
             staging_parent=parent,
             staging_name="candidate",
@@ -947,7 +1003,7 @@ def test_extraction_validation_bounds_descriptors_for_a_wide_tree(
     monkeypatch.setattr(os, "open", track_open)
     monkeypatch.setattr(os, "close", track_close)
 
-    extract_deployment_zip(
+    _extract_with_intake_lock(
         source,
         staging_parent=parent,
         staging_name="candidate",
@@ -965,7 +1021,7 @@ def test_extraction_runs_capacity_admission_before_creating_the_tree(tmp_path: P
     retained = ReleaseCapacityUsage((InodeAllocation(device, 1, 10 * 1024 * 1024 * 1024),))
 
     with pytest.raises(CapacityRejectedError, match="host byte ceiling"):
-        extract_deployment_zip(
+        _extract_with_intake_lock(
             source,
             staging_parent=parent,
             staging_name="candidate",
@@ -1006,7 +1062,7 @@ def test_extraction_detects_source_mutation_and_removes_the_tree(
     )
 
     with pytest.raises(ZipExtractionError, match="changed during extraction"):
-        extract_deployment_zip(
+        _extract_with_intake_lock(
             source,
             staging_parent=parent,
             staging_name="candidate",
@@ -1043,7 +1099,7 @@ def test_extraction_rechecks_the_free_space_floor_before_success(
     )
 
     with pytest.raises(ZipExtractionError, match="free-space floor"):
-        extract_deployment_zip(
+        _extract_with_intake_lock(
             source,
             staging_parent=parent,
             staging_name="candidate",
@@ -1053,6 +1109,228 @@ def test_extraction_rechecks_the_free_space_floor_before_success(
 
     assert calls == _CAPACITY_CHECKS
     assert not (parent / "candidate").exists()
+
+
+def test_extraction_revalidates_the_named_staging_parent_before_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _write(tmp_path, _archive(_MemberSpec(name=b"index.html", content=b"home")))
+    parent = _staging_parent(tmp_path)
+    moved_parent = tmp_path / "moved-staging"
+    real_validate = zip_structure_module._validate_remaining_capacity
+
+    def replace_parent(
+        parent_fd: int,
+        projection: CapacityProjection,
+    ) -> None:
+        real_validate(parent_fd, projection)
+        parent.rename(moved_parent)
+        parent.mkdir(mode=0o700)
+
+    monkeypatch.setattr(zip_structure_module, "_validate_remaining_capacity", replace_parent)
+
+    with pytest.raises(ZipExtractionError, match="staging parent changed"):
+        _extract_with_intake_lock(
+            source,
+            staging_parent=parent,
+            staging_name="candidate",
+            expected_owner=_OWNER,
+            retained_usage=ReleaseCapacityUsage(()),
+        )
+
+    assert list(parent.iterdir()) == []
+    assert list(moved_parent.iterdir()) == []
+
+
+def test_extraction_does_not_remove_a_replacement_staging_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _write(tmp_path, _archive(_MemberSpec(name=b"index.html", content=b"home")))
+    parent = _staging_parent(tmp_path)
+    candidate = parent / "candidate"
+    moved_candidate = parent / "moved-candidate"
+    real_validate = zip_structure_module._validate_remaining_capacity
+
+    def replace_candidate(
+        parent_fd: int,
+        projection: CapacityProjection,
+    ) -> None:
+        real_validate(parent_fd, projection)
+        candidate.rename(moved_candidate)
+        candidate.mkdir(mode=0o755)
+        (candidate / "unrelated").write_bytes(b"keep")
+
+    monkeypatch.setattr(zip_structure_module, "_validate_remaining_capacity", replace_candidate)
+
+    with pytest.raises(ZipExtractionError, match="staging candidate changed"):
+        _extract_with_intake_lock(
+            source,
+            staging_parent=parent,
+            staging_name="candidate",
+            expected_owner=_OWNER,
+            retained_usage=ReleaseCapacityUsage(()),
+        )
+
+    assert (candidate / "unrelated").read_bytes() == b"keep"
+    assert (moved_candidate / "index.html").read_bytes() == b"home"
+
+
+def test_extraction_detects_candidate_replacement_between_creation_and_open(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _write(tmp_path, _archive(_MemberSpec(name=b"index.html", content=b"home")))
+    parent = _staging_parent(tmp_path)
+    candidate = parent / "candidate"
+    moved_candidate = parent / "moved-candidate"
+    real_open = os.open
+    replaced = False
+
+    def replace_before_open(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal replaced
+        if path == "candidate" and dir_fd is not None and not replaced:
+            replaced = True
+            candidate.rename(moved_candidate)
+            candidate.mkdir(mode=_NORMALIZED_DIRECTORY_MODE)
+            (candidate / "unrelated").write_bytes(b"keep")
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "open", replace_before_open)
+
+    with pytest.raises(ZipExtractionError, match="changed while it was opened"):
+        _extract_with_intake_lock(
+            source,
+            staging_parent=parent,
+            staging_name="candidate",
+            expected_owner=_OWNER,
+            retained_usage=ReleaseCapacityUsage(()),
+        )
+
+    assert (candidate / "unrelated").read_bytes() == b"keep"
+    assert list(moved_candidate.iterdir()) == []
+
+
+def test_extraction_removes_the_created_candidate_when_initial_open_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _write(tmp_path, _archive(_MemberSpec(name=b"index.html", content=b"home")))
+    parent = _staging_parent(tmp_path)
+    real_open = os.open
+
+    def fail_candidate_open(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        if path == "candidate" and dir_fd is not None:
+            raise OSError("simulated descriptor exhaustion")
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "open", fail_candidate_open)
+
+    with pytest.raises(ZipExtractionError, match="could not complete safely"):
+        _extract_with_intake_lock(
+            source,
+            staging_parent=parent,
+            staging_name="candidate",
+            expected_owner=_OWNER,
+            retained_usage=ReleaseCapacityUsage(()),
+        )
+
+    assert list(parent.iterdir()) == []
+
+
+def test_extraction_removes_the_created_candidate_when_identity_probe_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _write(tmp_path, _archive(_MemberSpec(name=b"index.html", content=b"home")))
+    parent = _staging_parent(tmp_path)
+    real_stat = os.stat
+    failed = False
+
+    def fail_candidate_stat(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        *,
+        dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ) -> os.stat_result:
+        nonlocal failed
+        if path == "candidate" and dir_fd is not None and not failed:
+            failed = True
+            raise OSError("simulated identity-probe failure")
+        return real_stat(path, dir_fd=dir_fd, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(os, "stat", fail_candidate_stat)
+
+    with pytest.raises(ZipExtractionError, match="could not complete safely"):
+        _extract_with_intake_lock(
+            source,
+            staging_parent=parent,
+            staging_name="candidate",
+            expected_owner=_OWNER,
+            retained_usage=ReleaseCapacityUsage(()),
+        )
+
+    assert list(parent.iterdir()) == []
+
+
+def test_extraction_closes_and_removes_the_candidate_when_initial_fstat_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _write(tmp_path, _archive(_MemberSpec(name=b"index.html", content=b"home")))
+    parent = _staging_parent(tmp_path)
+    real_open = os.open
+    real_fstat = os.fstat
+    candidate_fd: int | None = None
+    failed = False
+
+    def track_candidate_open(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal candidate_fd
+        descriptor = real_open(path, flags, mode, dir_fd=dir_fd)
+        if path == "candidate" and dir_fd is not None:
+            candidate_fd = descriptor
+        return descriptor
+
+    def fail_candidate_fstat(descriptor: int) -> os.stat_result:
+        nonlocal failed
+        if descriptor == candidate_fd and not failed:
+            failed = True
+            raise OSError("simulated descriptor identity failure")
+        return real_fstat(descriptor)
+
+    monkeypatch.setattr(os, "open", track_candidate_open)
+    monkeypatch.setattr(os, "fstat", fail_candidate_fstat)
+
+    with pytest.raises(ZipExtractionError, match="could not complete safely"):
+        _extract_with_intake_lock(
+            source,
+            staging_parent=parent,
+            staging_name="candidate",
+            expected_owner=_OWNER,
+            retained_usage=ReleaseCapacityUsage(()),
+        )
+
+    assert failed
+    assert list(parent.iterdir()) == []
 
 
 @given(
