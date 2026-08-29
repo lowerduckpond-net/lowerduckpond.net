@@ -442,9 +442,12 @@ those fields. Thread and process races prove that two writers starting from one
 revision produce one commit and one conflict.
 
 The third review slice adds stable release measurement and physical-capacity
-admission without connecting either to a service. One descriptor-relative,
-no-follow traversal rejects non-NFC or ambiguous names, case-fold collisions,
-the reserved `cdn-cgi` subtree, symbolic links and special files,
+admission without connecting either to a service. Measurement requires the
+caller's publication lock to remain held through return, so every cooperating
+namespace writer is excluded for the complete traversal and final validation.
+One descriptor-relative, no-follow traversal rejects non-NFC or ambiguous
+names, case-fold collisions, the reserved `cdn-cgi` subtree, symbolic links
+and special files,
 cross-filesystem descendants, wrong ownership or normalized modes, every v1
 tree-limit breach, and any inode or namespace generation change before
 returning. It emits the exact `lowerduckpond-release-tree-v1` path/content

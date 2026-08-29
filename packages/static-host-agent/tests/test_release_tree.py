@@ -2,20 +2,53 @@ from __future__ import annotations
 
 import hashlib
 import os
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 from lowerduckpond_static_host_agent import (
+    LockManager,
+    LockName,
+    LockOrderError,
     ReleaseTreeBoundary,
     ReleaseTreeError,
     ReleaseTreeLimits,
-    measure_release_tree,
+    ReleaseTreeMeasurement,
+    StateBusyError,
+)
+from lowerduckpond_static_host_agent import (
+    measure_release_tree as _measure_release_tree,
 )
 
 _OWNER = os.geteuid()
 _PINNED_ENTRY_COUNT = 5
 _HARDLINKED_ENTRY_COUNT = 2
 _FIRST_OVER_LIMIT_OBSERVATIONS = 2
+_DEFAULT_LIMITS = ReleaseTreeLimits()
+_LOCK_FILENAMES = {name.filename for name in LockName}
+
+
+def measure_release_tree(
+    root: Path,
+    *,
+    expected_owner: int,
+    limits: ReleaseTreeLimits = _DEFAULT_LIMITS,
+    measurement_hook: Callable[[ReleaseTreeBoundary, bytes | None], None] | None = None,
+) -> ReleaseTreeMeasurement:
+    lock_root = root.parent / "locks"
+    lock_root.mkdir(exist_ok=True)
+    with (
+        LockManager.initialize(lock_root, expected_owner=_OWNER) as manager,
+        manager.acquire(LockName.PUBLICATION),
+    ):
+        return _measure_release_tree(
+            root,
+            lock_manager=manager,
+            expected_owner=expected_owner,
+            limits=limits,
+            measurement_hook=measurement_hook,
+        )
 
 
 def _release_root(tmp_path: Path, name: str = "release") -> Path:
@@ -237,7 +270,7 @@ def test_entry_limit_stops_streaming_before_later_names_are_inspected(
         follow_symlinks: bool = True,
     ) -> os.stat_result:
         nonlocal inspected
-        if dir_fd is not None:
+        if dir_fd is not None and path not in _LOCK_FILENAMES:
             inspected += 1
         return original_stat(path, dir_fd=dir_fd, follow_symlinks=follow_symlinks)
 
@@ -345,6 +378,56 @@ def test_root_is_revalidated_after_every_entry(tmp_path: Path) -> None:
         )
 
 
+def test_measurement_requires_the_callers_publication_lock(tmp_path: Path) -> None:
+    root = _release_root(tmp_path)
+    lock_root = tmp_path / "locks"
+    lock_root.mkdir()
+
+    with (
+        LockManager.initialize(lock_root, expected_owner=_OWNER) as manager,
+        pytest.raises(LockOrderError, match=r"publication\.lock must already be held"),
+    ):
+        _measure_release_tree(
+            root,
+            lock_manager=manager,
+            expected_owner=_OWNER,
+        )
+
+
+def test_publication_lock_remains_held_through_every_final_check(tmp_path: Path) -> None:
+    root = _release_root(tmp_path)
+    _file(root, "a/child", b"stable")
+    _file(root, "z", b"stable")
+    contention_observed = False
+
+    def mutation_lock_is_busy() -> bool:
+        try:
+            with (
+                LockManager(root.parent / "locks", expected_owner=_OWNER) as contender,
+                contender.acquire(LockName.PUBLICATION),
+            ):
+                return False
+        except StateBusyError:
+            return True
+
+    def attempt_sibling_mutation(
+        boundary: ReleaseTreeBoundary,
+        path: bytes | None,
+    ) -> None:
+        nonlocal contention_observed
+        if boundary is ReleaseTreeBoundary.FINAL_ENTRY and path == b"a":
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                contention_observed = executor.submit(mutation_lock_is_busy).result()
+
+    measure_release_tree(
+        root,
+        expected_owner=_OWNER,
+        measurement_hook=attempt_sibling_mutation,
+    )
+
+    assert contention_observed
+
+
 @pytest.mark.parametrize(
     ("failing_call", "message"),
     [
@@ -371,7 +454,7 @@ def test_path_stat_races_are_translated_to_release_tree_errors(
         follow_symlinks: bool = True,
     ) -> os.stat_result:
         nonlocal descriptor_relative_calls
-        if dir_fd is not None:
+        if dir_fd is not None and path not in _LOCK_FILENAMES:
             descriptor_relative_calls += 1
             if descriptor_relative_calls == failing_call:
                 raise FileNotFoundError(path)

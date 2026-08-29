@@ -247,6 +247,14 @@ class LockManager:
         if held and name <= held[-1].name:
             raise LockOrderError("host locks must follow intake, export, publication, tenant-state")
 
+    def require_held(self, name: LockName) -> None:
+        """Require this manager's named lock in the current execution context."""
+
+        if not any(
+            lock.manager_token is self._token and lock.name is name for lock in self._held()
+        ):
+            raise LockOrderError(f"{name.filename} must already be held")
+
     def _assert_sequence(self, requests: Sequence[LockRequest]) -> None:
         previous = self._held()[-1].name if self._held() else None
         seen: set[LockName] = set()

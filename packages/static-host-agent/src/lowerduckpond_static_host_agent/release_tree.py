@@ -15,6 +15,8 @@ from typing import Final, Protocol
 
 from lowerduckpond_static_contracts import Digest
 
+from lowerduckpond_static_host_agent.locks import LockManager, LockName
+
 RELEASE_TREE_FORMAT: Final = "lowerduckpond-release-tree-v1"
 MAX_RELEASE_ENTRIES: Final = 5_000
 MAX_RELEASE_CONTENT_BYTES: Final = 100 * 1024 * 1024
@@ -503,11 +505,14 @@ DEFAULT_RELEASE_TREE_LIMITS: Final = ReleaseTreeLimits()
 def measure_release_tree(
     root: Path,
     *,
+    lock_manager: LockManager,
     expected_owner: int,
     limits: ReleaseTreeLimits = DEFAULT_RELEASE_TREE_LIMITS,
     measurement_hook: MeasurementHook | None = None,
 ) -> ReleaseTreeMeasurement:
     """Measure one normalized, stable release without following namespace links."""
+
+    lock_manager.require_held(LockName.PUBLICATION)
 
     try:
         root_fd = os.open(root, _DIRECTORY_FLAGS)
