@@ -11,6 +11,7 @@ from lowerduckpond_static_contracts import (
     MAX_RAW_REQUEST_BYTES,
     ContractError,
     ContractKind,
+    Digest,
     ErrorCode,
     canonical_json_bytes,
     decode_contract,
@@ -244,3 +245,24 @@ def test_successful_create_result_rejects_a_null_tenant_identity() -> None:
         validate_contract(result)
 
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+@pytest.mark.parametrize(
+    "format_identifier",
+    ["lowerduckpond--v1", "lowerduckpond-state--v1", "lowerduckpond--state-v1"],
+)
+def test_schema_and_digest_value_reject_empty_format_segments(format_identifier: str) -> None:
+    job = _load_object(FIXTURE_ROOT / "accepted/authorization-job.json")
+    expected = job["expectedSource"]
+    assert type(expected) is dict
+    platform_digest = expected["platformStateDigest"]
+    assert type(platform_digest) is dict
+    platform_digest["format"] = format_identifier
+
+    with pytest.raises(ContractError) as schema_error:
+        validate_contract(job)
+    with pytest.raises(ContractError) as value_error:
+        Digest(format_identifier, "sha256", "f" * 64)
+
+    assert schema_error.value.code is ErrorCode.SCHEMA_INVALID
+    assert value_error.value.code is ErrorCode.INVALID_IDENTIFIER
