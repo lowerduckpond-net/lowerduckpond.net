@@ -451,6 +451,43 @@ def test_archive_evidence_keeps_the_portable_bundle_digest_domain(fixture: str) 
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
 
+def test_archive_retirement_accepts_distinct_emergency_provenance() -> None:
+    intent = _load_object(FIXTURE_ROOT / "accepted/archive-retirement-intent.json")
+    intent["provenance"] = {
+        "kind": "emergency-administrator",
+        "reason": "verified operator recovery",
+    }
+
+    assert validate_contract(intent) is ContractKind.ARCHIVE_RETIREMENT_INTENT
+
+    intent["transition"] = "restore"
+    with pytest.raises(ContractError) as captured:
+        validate_contract(intent)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+def test_archive_retirement_provenance_cannot_invent_or_mix_job_identity() -> None:
+    intent = _load_object(FIXTURE_ROOT / "accepted/archive-retirement-intent.json")
+    provenance = intent["provenance"]
+    assert type(provenance) is dict
+    del provenance["jobId"]
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(intent)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+    provenance.update(
+        {
+            "kind": "emergency-administrator",
+            "jobId": "0198d17f-6f4a-7000-8000-000000000002",
+            "reason": "verified operator recovery",
+        }
+    )
+    with pytest.raises(ContractError) as captured:
+        validate_contract(intent)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
 def test_site_canonical_origin_is_bound_to_its_tenant_identity() -> None:
     site = _load_object(FIXTURE_ROOT / "accepted/site.json")
     metadata = site["metadata"]

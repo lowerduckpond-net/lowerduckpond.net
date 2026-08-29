@@ -2,6 +2,74 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://schemas.lowerduckpond.net/static-publication/v1alpha1/archive-retirement-intent.schema.json",
   "additionalProperties": false,
+  "$defs": {
+    "provenance": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "jobId": {
+              "$ref": "common.schema.json#/$defs/uuidv7"
+            },
+            "kind": {
+              "const": "authorization-job"
+            }
+          },
+          "required": [
+            "kind",
+            "jobId"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "emergency-administrator"
+            },
+            "reason": {
+              "maxLength": 1024,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "provenance": {
+            "properties": {
+              "kind": {
+                "const": "emergency-administrator"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          }
+        },
+        "required": [
+          "provenance"
+        ]
+      },
+      "then": {
+        "properties": {
+          "transition": {
+            "const": "delete"
+          }
+        }
+      }
+    }
+  ],
   "properties": {
     "apiVersion": {
       "$ref": "common.schema.json#/$defs/apiVersion"
@@ -29,9 +97,6 @@
     "intentId": {
       "$ref": "common.schema.json#/$defs/uuidv7"
     },
-    "jobId": {
-      "$ref": "common.schema.json#/$defs/uuidv7"
-    },
     "key": {
       "$ref": "common.schema.json#/$defs/archiveKey"
     },
@@ -48,6 +113,9 @@
         "purged"
       ],
       "type": "string"
+    },
+    "provenance": {
+      "$ref": "#/$defs/provenance"
     },
     "sourceManifestDigest": {
       "$ref": "common.schema.json#/$defs/manifestDigest"
@@ -70,7 +138,7 @@
     "apiVersion",
     "kind",
     "intentId",
-    "jobId",
+    "provenance",
     "operatorPrincipal",
     "tenantId",
     "correlationId",
