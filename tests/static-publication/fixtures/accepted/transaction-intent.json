@@ -1,0 +1,16 @@
+{
+  "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+  "kind": "TransactionIntent",
+  "intentId": "0198d17f-6f4a-7000-8000-000000000003",
+  "tenantId": "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100",
+  "correlationId": "0198d17f-6f4a-7000-8000-000000000001",
+  "operation": "deploy",
+  "sourceManifestDigest": null,
+  "candidateManifestDigest": {
+    "format": "lowerduckpond-manifest-v1",
+    "algorithm": "sha256",
+    "value": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "phase": "prepared",
+  "createdAt": "2026-08-29T12:00:20Z"
+}

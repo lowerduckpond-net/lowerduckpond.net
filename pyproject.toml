@@ -24,6 +24,7 @@ package = false
 
 [tool.uv.workspace]
 members = [
+  "packages/static-contracts",
   "services/control-plane",
   "services/provisioner",
   "tools/m3-archive-qualification",
@@ -35,6 +36,7 @@ addopts = ["-ra", "--strict-config", "--strict-markers"]
 markers = ["minio: exercises versioned S3 behavior against the pinned local MinIO image"]
 pythonpath = ["."]
 testpaths = [
+  "packages/static-contracts/tests",
   "services/control-plane/tests",
   "services/provisioner/tests",
   "tests/infrastructure",
@@ -77,6 +79,8 @@ python_version = "3.14"
 strict = true
 warn_unreachable = true
 files = [
+  "packages/static-contracts/src",
+  "packages/static-contracts/tests",
   "services/control-plane/src",
   "services/control-plane/tests",
   "services/provisioner/src",

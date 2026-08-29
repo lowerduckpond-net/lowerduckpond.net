@@ -1,0 +1,25 @@
+{
+  "format": "lowerduckpond-contract-digests-v1",
+  "vectors": [
+    {
+      "fixture": "accepted/operation-request.json",
+      "canonicalBytes": 218,
+      "canonicalSha256": "50f1b76745a9d8c9c9aa47ad575062cb8ff2a3ac156dbd7c48a1deac5ed4e014",
+      "digest": {
+        "format": "lowerduckpond-request-v1",
+        "algorithm": "sha256",
+        "value": "00fa5c0147c5ec1a59d86ff94f17a3b72700bd8ca807386216aea7e58ac56c5d"
+      }
+    },
+    {
+      "fixture": "accepted/operation-result.json",
+      "canonicalBytes": 671,
+      "canonicalSha256": "71b693c282583a46e3fe7187f8d24313a99fe26d0e5e75898324ca7141171983",
+      "digest": {
+        "format": "lowerduckpond-result-v1",
+        "algorithm": "sha256",
+        "value": "d3a3e4340c7ce34e83dedef3f19f630e08c799ba49f0da5e62bc3cfc25dcb4ae"
+      }
+    }
+  ]
+}

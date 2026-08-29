@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.lowerduckpond.net/static-publication/v1alpha1/audit-entry.schema.json",
+  "additionalProperties": false,
+  "properties": {
+    "apiVersion": {
+      "$ref": "common.schema.json#/$defs/apiVersion"
+    },
+    "correlationId": {
+      "$ref": "common.schema.json#/$defs/correlationId"
+    },
+    "kind": {
+      "const": "AuditEntry"
+    },
+    "operation": {
+      "$ref": "common.schema.json#/$defs/operation"
+    },
+    "operatorPrincipal": {
+      "$ref": "common.schema.json#/$defs/principal"
+    },
+    "previousEntryDigest": {
+      "oneOf": [
+        {
+          "$ref": "common.schema.json#/$defs/digest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "resultDigest": {
+      "$ref": "common.schema.json#/$defs/resultDigest"
+    },
+    "sequence": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "tenantId": {
+      "oneOf": [
+        {
+          "$ref": "common.schema.json#/$defs/uuidv7"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "timestamp": {
+      "$ref": "common.schema.json#/$defs/timestamp"
+    }
+  },
+  "required": [
+    "apiVersion",
+    "kind",
+    "sequence",
+    "previousEntryDigest",
+    "timestamp",
+    "operatorPrincipal",
+    "operation",
+    "tenantId",
+    "correlationId",
+    "resultDigest"
+  ],
+  "type": "object"
+}

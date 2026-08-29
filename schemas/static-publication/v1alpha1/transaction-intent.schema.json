@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.lowerduckpond.net/static-publication/v1alpha1/transaction-intent.schema.json",
+  "additionalProperties": false,
+  "properties": {
+    "apiVersion": {
+      "$ref": "common.schema.json#/$defs/apiVersion"
+    },
+    "candidateManifestDigest": {
+      "oneOf": [
+        {
+          "$ref": "common.schema.json#/$defs/manifestDigest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "correlationId": {
+      "$ref": "common.schema.json#/$defs/correlationId"
+    },
+    "createdAt": {
+      "$ref": "common.schema.json#/$defs/timestamp"
+    },
+    "intentId": {
+      "$ref": "common.schema.json#/$defs/uuidv7"
+    },
+    "kind": {
+      "const": "TransactionIntent"
+    },
+    "operation": {
+      "$ref": "common.schema.json#/$defs/operation"
+    },
+    "phase": {
+      "enum": [
+        "prepared",
+        "runtime-selected",
+        "state-committed"
+      ],
+      "type": "string"
+    },
+    "sourceManifestDigest": {
+      "oneOf": [
+        {
+          "$ref": "common.schema.json#/$defs/manifestDigest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "tenantId": {
+      "$ref": "common.schema.json#/$defs/uuidv7"
+    }
+  },
+  "required": [
+    "apiVersion",
+    "kind",
+    "intentId",
+    "tenantId",
+    "correlationId",
+    "operation",
+    "sourceManifestDigest",
+    "candidateManifestDigest",
+    "phase",
+    "createdAt"
+  ],
+  "type": "object"
+}

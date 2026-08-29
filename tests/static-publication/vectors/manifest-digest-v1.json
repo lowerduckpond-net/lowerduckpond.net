@@ -1,0 +1,11 @@
+{
+  "format": "lowerduckpond-manifest-digest-v1",
+  "fixture": "accepted/site.json",
+  "canonicalBytes": 461,
+  "canonicalSha256": "0578cfe3f6a43b3f8688c63f916e204941b27eafb3d9ef05701953677eb7befa",
+  "digest": {
+    "format": "lowerduckpond-manifest-v1",
+    "algorithm": "sha256",
+    "value": "ccbc0375cec4fd6227a39a1ee425b44306d703b4aa89d3f3d03413bea538e426"
+  }
+}

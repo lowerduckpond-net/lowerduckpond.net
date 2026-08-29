@@ -1,0 +1,22 @@
+{
+  "format": "lowerduckpond-rfc8785-v1",
+  "vectors": [
+    {
+      "input": {
+        "z": "é",
+        "a": [3, 2, 1],
+        "n": 0
+      },
+      "canonicalHex": "7b2261223a5b332c322c315d2c226e223a302c227a223a22c3a9227d0a",
+      "canonicalSha256": "b5d366cf91c4a8991ba903724dbf0e24a07c3272f28039b35194712cb4829065"
+    },
+    {
+      "input": {
+        "numbers": [0, 1, -1, 1.5],
+        "text": "pond"
+      },
+      "canonicalHex": "7b226e756d62657273223a5b302c312c2d312c312e355d2c2274657874223a22706f6e64227d0a",
+      "canonicalSha256": "fbbc61b6e148fe7519eb21eba818c95bb7638745a0f71dc4b97ddeccac80f7d5"
+    }
+  ]
+}

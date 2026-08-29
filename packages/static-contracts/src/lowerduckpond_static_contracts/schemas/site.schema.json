@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.lowerduckpond.net/static-publication/v1alpha1/site.schema.json",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "spec": {
+            "properties": {
+              "desiredState": {
+                "const": "undeployed"
+              }
+            },
+            "required": [
+              "desiredState"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "spec": {
+            "not": {
+              "required": [
+                "desiredDeployment"
+              ]
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "spec": {
+            "required": [
+              "desiredDeployment"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "properties": {
+    "apiVersion": {
+      "$ref": "common.schema.json#/$defs/apiVersion"
+    },
+    "kind": {
+      "const": "Site"
+    },
+    "metadata": {
+      "additionalProperties": false,
+      "properties": {
+        "canonicalOrigin": {
+          "$ref": "common.schema.json#/$defs/canonicalOrigin"
+        },
+        "id": {
+          "$ref": "common.schema.json#/$defs/uuidv7"
+        },
+        "slug": {
+          "$ref": "common.schema.json#/$defs/slug"
+        }
+      },
+      "required": [
+        "id",
+        "slug",
+        "canonicalOrigin"
+      ],
+      "type": "object"
+    },
+    "spec": {
+      "additionalProperties": false,
+      "properties": {
+        "desiredDeployment": {
+          "$ref": "common.schema.json#/$defs/deploymentReference"
+        },
+        "desiredState": {
+          "$ref": "common.schema.json#/$defs/lifecycle"
+        },
+        "quotas": {
+          "$ref": "common.schema.json#/$defs/quotas"
+        },
+        "runtime": {
+          "const": "static"
+        }
+      },
+      "required": [
+        "runtime",
+        "desiredState",
+        "quotas"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "apiVersion",
+    "kind",
+    "metadata",
+    "spec"
+  ],
+  "type": "object"
+}

@@ -1,0 +1,7 @@
+{
+  "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+  "kind": "OperationRequest",
+  "operation": "suspend",
+  "correlationId": "0198D17F-6F4A-7000-8000-000000000001",
+  "tenantId": "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100"
+}

@@ -1,0 +1,17 @@
+{
+  "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+  "kind": "Site",
+  "metadata": {
+    "id": "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100",
+    "slug": "duck-repair",
+    "canonicalOrigin": "t-0191e2c48f7a7c3b8d1e5f62047a2100.lowerduckpond.com"
+  },
+  "spec": {
+    "runtime": "static",
+    "desiredState": "undeployed",
+    "quotas": {
+      "storageMiB": 100,
+      "entries": 5000
+    }
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.lowerduckpond.net/static-publication/v1alpha1/platform-namespace.schema.json",
+  "additionalProperties": false,
+  "properties": {
+    "apiVersion": {
+      "$ref": "common.schema.json#/$defs/apiVersion"
+    },
+    "initializedAt": {
+      "$ref": "common.schema.json#/$defs/timestamp"
+    },
+    "kind": {
+      "const": "PlatformNamespace"
+    },
+    "tenantOriginSuffix": {
+      "const": "lowerduckpond.com"
+    }
+  },
+  "required": [
+    "apiVersion",
+    "kind",
+    "tenantOriginSuffix",
+    "initializedAt"
+  ],
+  "type": "object"
+}

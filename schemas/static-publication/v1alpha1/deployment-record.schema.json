@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.lowerduckpond.net/static-publication/v1alpha1/deployment-record.schema.json",
+  "additionalProperties": false,
+  "properties": {
+    "apiVersion": {
+      "$ref": "common.schema.json#/$defs/apiVersion"
+    },
+    "archiveSha256": {
+      "$ref": "common.schema.json#/$defs/sha256"
+    },
+    "correlationId": {
+      "$ref": "common.schema.json#/$defs/correlationId"
+    },
+    "createdAt": {
+      "$ref": "common.schema.json#/$defs/timestamp"
+    },
+    "id": {
+      "$ref": "common.schema.json#/$defs/uuidv7"
+    },
+    "kind": {
+      "const": "DeploymentRecord"
+    },
+    "releaseTreeDigest": {
+      "$ref": "common.schema.json#/$defs/releaseTreeDigest"
+    },
+    "tenantId": {
+      "$ref": "common.schema.json#/$defs/uuidv7"
+    }
+  },
+  "required": [
+    "apiVersion",
+    "kind",
+    "id",
+    "tenantId",
+    "archiveSha256",
+    "releaseTreeDigest",
+    "createdAt",
+    "correlationId"
+  ],
+  "type": "object"
+}

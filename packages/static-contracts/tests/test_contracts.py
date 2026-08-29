@@ -1,0 +1,208 @@
+from __future__ import annotations
+
+import json
+from copy import deepcopy
+from pathlib import Path
+
+import pytest
+from conftest import FIXTURE_ROOT
+from lowerduckpond_static_contracts import (
+    MAX_CANONICAL_BYTES,
+    MAX_RAW_REQUEST_BYTES,
+    ContractError,
+    ContractKind,
+    ErrorCode,
+    canonical_json_bytes,
+    decode_contract,
+    decode_request,
+    validate_contract,
+)
+from lowerduckpond_static_contracts.schema import SCHEMA_FILE_BY_KIND, schema_for
+
+PUBLIC_SCHEMA_ROOT = Path(__file__).parents[3] / "schemas/static-publication/v1alpha1"
+PACKAGED_SCHEMA_ROOT = Path(__file__).parents[1] / "src/lowerduckpond_static_contracts/schemas"
+
+
+def _load_object(path: Path) -> dict[str, object]:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    assert type(value) is dict
+    return value
+
+
+def test_every_committed_schema_has_one_accepted_golden_fixture() -> None:
+    paths = sorted((FIXTURE_ROOT / "accepted").glob("*.json"))
+
+    decoded = [decode_contract(path.read_bytes()) for path in paths]
+
+    assert {document["kind"] for document in decoded} == {kind.value for kind in ContractKind}
+    assert len(paths) == len(SCHEMA_FILE_BY_KIND)
+
+
+@pytest.mark.parametrize(
+    "path",
+    sorted((FIXTURE_ROOT / "accepted").glob("*.json")),
+    ids=lambda path: path.name,
+)
+def test_accepted_fixtures_round_trip_through_canonical_bytes(path: Path) -> None:
+    first = decode_contract(path.read_bytes())
+    encoded = canonical_json_bytes(first)
+
+    assert encoded.endswith(b"\n") and not encoded.endswith(b"\n\n")
+    assert canonical_json_bytes(decode_contract(encoded)) == encoded
+
+
+def test_schema_loader_returns_a_copy_not_mutable_cached_state() -> None:
+    schema = schema_for(ContractKind.SITE)
+    schema["type"] = "array"
+
+    assert schema_for(ContractKind.SITE)["type"] == "object"
+
+
+def test_public_and_packaged_schema_snapshots_are_byte_identical() -> None:
+    public = {path.name: path.read_bytes() for path in PUBLIC_SCHEMA_ROOT.glob("*.schema.json")}
+    packaged = {path.name: path.read_bytes() for path in PACKAGED_SCHEMA_ROOT.glob("*.schema.json")}
+
+    assert public == packaged
+
+
+def test_hostile_golden_fixtures_have_stable_error_codes() -> None:
+    hostile = FIXTURE_ROOT / "hostile"
+    expected = _load_object(hostile / "index.json")
+    observed: dict[str, str] = {}
+    for filename in expected:
+        assert type(filename) is str
+        path = hostile / filename
+        decoder = decode_request
+        with pytest.raises(ContractError) as captured:
+            decoder(path.read_bytes())
+        observed[filename] = captured.value.code.value
+
+    assert observed == expected
+
+
+def test_validation_failure_does_not_mutate_the_supplied_document() -> None:
+    document = _load_object(FIXTURE_ROOT / "accepted/operation-request.json")
+    document["unknown"] = {"nested": [1, 2, 3]}
+    before = deepcopy(document)
+
+    with pytest.raises(ContractError, match="schema") as captured:
+        validate_contract(document)
+
+    assert captured.value.code is ErrorCode.UNKNOWN_FIELD
+    assert document == before
+
+
+def test_duplicate_members_are_rejected_before_schema_or_correlation_work() -> None:
+    raw = (FIXTURE_ROOT / "hostile/duplicate-json-member.json.raw").read_bytes()
+
+    with pytest.raises(ContractError) as captured:
+        decode_request(raw)
+
+    assert captured.value.code is ErrorCode.DUPLICATE_JSON_MEMBER
+
+
+def test_raw_request_limit_reads_at_most_the_detection_byte() -> None:
+    with pytest.raises(ContractError) as captured:
+        decode_request(b" " * (MAX_RAW_REQUEST_BYTES + 1))
+
+    assert captured.value.code is ErrorCode.RAW_REQUEST_TOO_LARGE
+
+
+def test_canonical_limit_includes_exactly_one_trailing_lf() -> None:
+    framing_bytes = len(b'{"x":""}\n')
+    value = {"x": "a" * (MAX_CANONICAL_BYTES - framing_bytes)}
+
+    assert len(canonical_json_bytes(value)) == MAX_CANONICAL_BYTES
+    value["x"] = str(value["x"]) + "a"
+    with pytest.raises(ContractError) as captured:
+        canonical_json_bytes(value)
+    assert captured.value.code is ErrorCode.CANONICAL_TOO_LARGE
+
+
+def test_request_cannot_carry_a_standalone_desired_manifest() -> None:
+    raw = (FIXTURE_ROOT / "hostile/standalone-manifest.json").read_bytes()
+
+    with pytest.raises(ContractError) as captured:
+        decode_request(raw)
+
+    assert captured.value.code is ErrorCode.STANDALONE_MANIFEST_FRAME
+
+
+@pytest.mark.parametrize(
+    ("operation", "fields"),
+    [
+        ("create", {"slug": "duck-repair", "quotas": {"storageMiB": 100, "entries": 5000}}),
+        (
+            "deploy",
+            {
+                "tenantId": "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100",
+                "artifact": {"size": 104857600, "sha256": "a" * 64},
+            },
+        ),
+        (
+            "rollback",
+            {
+                "tenantId": "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100",
+                "deploymentId": "0191e2ca-49f2-7608-8cf3-f80ab2cab151",
+            },
+        ),
+        ("suspend", {"tenantId": "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100"}),
+        ("resume", {"tenantId": "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100"}),
+        (
+            "rename",
+            {"tenantId": "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100", "slug": "new-duck"},
+        ),
+        ("export", {"tenantId": "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100"}),
+        (
+            "import",
+            {
+                "tenantId": "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100",
+                "artifact": {"size": 125829120, "sha256": "b" * 64},
+            },
+        ),
+        ("archive", {"tenantId": "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100"}),
+        ("restore", {"tenantId": "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100"}),
+        ("delete", {"tenantId": "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100"}),
+        ("reconcile", {"tenantId": "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100"}),
+    ],
+)
+def test_every_operation_has_one_strict_request_shape(
+    operation: str, fields: dict[str, object]
+) -> None:
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": operation,
+        "correlationId": "0198d17f-6f4a-7000-8000-000000000001",
+        **fields,
+    }
+
+    assert decode_request(canonical_json_bytes(request)) == request
+
+
+def test_deploy_and_import_keep_their_distinct_artifact_ceilings() -> None:
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "deploy",
+        "correlationId": "0198d17f-6f4a-7000-8000-000000000001",
+        "tenantId": "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100",
+        "artifact": {"size": 104857601, "sha256": "a" * 64},
+    }
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(request)
+
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+def test_authorization_job_expected_source_bindings_are_not_optional_conventions() -> None:
+    job = _load_object(FIXTURE_ROOT / "accepted/authorization-job.json")
+    expected = job["expectedSource"]
+    assert type(expected) is dict
+    expected["expectsTenantAbsent"] = False
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(job)
+
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID

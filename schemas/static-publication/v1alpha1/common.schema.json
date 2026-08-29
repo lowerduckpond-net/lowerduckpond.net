@@ -1,0 +1,183 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.lowerduckpond.net/static-publication/v1alpha1/common.schema.json",
+  "$defs": {
+    "apiVersion": {
+      "const": "hosting.lowerduckpond.net/v1alpha1"
+    },
+    "archiveDigest": {
+      "$ref": "#/$defs/digest",
+      "properties": {
+        "format": {
+          "const": "lowerduckpond-archive-v1"
+        }
+      }
+    },
+    "artifact": {
+      "additionalProperties": false,
+      "properties": {
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "size": {
+          "maximum": 125829120,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "size",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "canonicalOrigin": {
+      "maxLength": 253,
+      "pattern": "^t-[0-9a-f]{32}\\.lowerduckpond\\.com(?![\\s\\S])",
+      "type": "string"
+    },
+    "correlationId": {
+      "$ref": "#/$defs/uuidv7"
+    },
+    "deploymentReference": {
+      "additionalProperties": false,
+      "properties": {
+        "archiveSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "id": {
+          "$ref": "#/$defs/uuidv7"
+        }
+      },
+      "required": [
+        "id",
+        "archiveSha256"
+      ],
+      "type": "object"
+    },
+    "digest": {
+      "additionalProperties": false,
+      "properties": {
+        "algorithm": {
+          "const": "sha256"
+        },
+        "format": {
+          "pattern": "^lowerduckpond-[a-z0-9-]+-v1(?![\\s\\S])",
+          "type": "string"
+        },
+        "value": {
+          "$ref": "#/$defs/sha256"
+        }
+      },
+      "required": [
+        "format",
+        "algorithm",
+        "value"
+      ],
+      "type": "object"
+    },
+    "lifecycle": {
+      "enum": [
+        "undeployed",
+        "active",
+        "suspended",
+        "archived"
+      ],
+      "type": "string"
+    },
+    "manifestDigest": {
+      "$ref": "#/$defs/digest",
+      "properties": {
+        "format": {
+          "const": "lowerduckpond-manifest-v1"
+        }
+      }
+    },
+    "operation": {
+      "enum": [
+        "create",
+        "deploy",
+        "rollback",
+        "suspend",
+        "resume",
+        "rename",
+        "export",
+        "import",
+        "archive",
+        "restore",
+        "delete",
+        "reconcile"
+      ],
+      "type": "string"
+    },
+    "principal": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9._@-]{0,127})(?![\\s\\S])",
+      "type": "string"
+    },
+    "quotas": {
+      "additionalProperties": false,
+      "properties": {
+        "entries": {
+          "maximum": 5000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "storageMiB": {
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "storageMiB",
+        "entries"
+      ],
+      "type": "object"
+    },
+    "releaseTreeDigest": {
+      "$ref": "#/$defs/digest",
+      "properties": {
+        "format": {
+          "const": "lowerduckpond-release-tree-v1"
+        }
+      }
+    },
+    "requestDigest": {
+      "$ref": "#/$defs/digest",
+      "properties": {
+        "format": {
+          "const": "lowerduckpond-request-v1"
+        }
+      }
+    },
+    "resultDigest": {
+      "$ref": "#/$defs/digest",
+      "properties": {
+        "format": {
+          "const": "lowerduckpond-result-v1"
+        }
+      }
+    },
+    "sha256": {
+      "pattern": "^[0-9a-f]{64}(?![\\s\\S])",
+      "type": "string"
+    },
+    "slug": {
+      "maxLength": 63,
+      "minLength": 1,
+      "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?![\\s\\S])",
+      "type": "string"
+    },
+    "timestamp": {
+      "format": "date-time",
+      "pattern": "Z(?![\\s\\S])",
+      "type": "string"
+    },
+    "uuidv7": {
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])",
+      "type": "string"
+    }
+  }
+}
