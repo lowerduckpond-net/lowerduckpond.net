@@ -22,7 +22,7 @@ ARCHIVE_SANDBOX_STATIC_PROPERTIES: Final[tuple[tuple[str, str], ...]] = (
     ("RuntimeMaxSec", "5min"),
     ("TimeoutStartSec", "5min"),
     ("CPUQuota", "100%"),
-    ("PrivateTmp", "true"),
+    ("PrivateIPC", "true"),
     ("PrivateDevices", "true"),
     ("PrivateNetwork", "true"),
     ("ProtectSystem", "strict"),
@@ -51,6 +51,10 @@ ARCHIVE_SANDBOX_STATIC_PROPERTIES: Final[tuple[tuple[str, str], ...]] = (
     (
         "SystemCallFilter",
         "~kill tkill tgkill rt_sigqueueinfo rt_tgsigqueueinfo pidfd_send_signal",
+    ),
+    (
+        "SystemCallFilter",
+        "~ptrace process_vm_readv process_vm_writev pidfd_getfd process_madvise process_mrelease",
     ),
     ("SystemCallErrorNumber", "EPERM"),
     ("DevicePolicy", "closed"),

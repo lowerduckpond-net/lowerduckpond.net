@@ -29,8 +29,8 @@ _EXPECTED_ISOLATION_PROPERTIES = {
     "MemoryDenyWriteExecute": "true",
     "NoNewPrivileges": "true",
     "PrivateDevices": "true",
+    "PrivateIPC": "true",
     "PrivateNetwork": "true",
-    "PrivateTmp": "true",
     "ProtectHome": "true",
     "ProtectSystem": "strict",
     "RestrictAddressFamilies": "~AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_PACKET",
@@ -42,6 +42,7 @@ _EXPECTED_SYSTEM_CALL_FILTERS = (
     "@system-service",
     "~@network-io",
     "~kill tkill tgkill rt_sigqueueinfo rt_tgsigqueueinfo pidfd_send_signal",
+    "~ptrace process_vm_readv process_vm_writev pidfd_getfd process_madvise process_mrelease",
 )
 _BOUND_PATH_COUNT = 3
 
