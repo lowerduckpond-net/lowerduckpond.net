@@ -12,6 +12,13 @@ from lowerduckpond_static_host_agent.capacity import (
     aggregate_release_usage,
     measure_filesystem_capacity,
 )
+from lowerduckpond_static_host_agent.correlations import (
+    CorrelationAdmission,
+    CorrelationConflictError,
+    CorrelationError,
+    CorrelationRateLimitError,
+    CorrelationResolution,
+)
 from lowerduckpond_static_host_agent.durable import (
     DurabilityBoundary,
     DurableDirectory,
@@ -43,6 +50,7 @@ from lowerduckpond_static_host_agent.repository import (
     StoredContract,
 )
 from lowerduckpond_static_host_agent.state_inventory import (
+    AuthorizationRecordInventory,
     StateAdmissionRejectedError,
     StateInventory,
     StateInventoryError,
@@ -53,10 +61,16 @@ from lowerduckpond_static_host_agent.state_inventory import (
 )
 
 __all__ = [
+    "AuthorizationRecordInventory",
     "CapacityError",
     "CapacityProjection",
     "CapacityRejectedError",
     "CapacityReservation",
+    "CorrelationAdmission",
+    "CorrelationConflictError",
+    "CorrelationError",
+    "CorrelationRateLimitError",
+    "CorrelationResolution",
     "DurabilityBoundary",
     "DurableDirectory",
     "FilesystemCapacity",

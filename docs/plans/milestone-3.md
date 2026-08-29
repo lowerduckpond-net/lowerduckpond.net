@@ -474,8 +474,22 @@ Pre-mutation admission enforces the 25-tenant and shared 10,000-record/64-MiB
 authorization-correlation ceilings. Public overrides may tighten but cannot
 weaken those boundaries.
 
-Hash-chained audit, correlation idempotency, and intent discovery and recovery
-remain in M3.3 and do not move to a later phase.
+The fifth review slice makes correlation admission durable and restart-safe.
+The immutable correlation copy is the complete canonical authorization job,
+so an interruption between publishing the correlation and job copies can be
+reconciled without reconstructing authority from caller input. Every admission
+first reconciles the bounded jobs and correlations stores, refuses divergent or
+duplicate bindings, and repairs only a provable missing counterpart. Exact
+retries compare the operator, canonical request and digest, artifact, and
+expected source while ignoring newly generated acceptance time, job identity,
+and pending phase; a changed binding fails closed. New identities reserve both
+records and their filesystem-rounded allocation before mutation. Their durable
+acceptance timestamps rebuild both the 60-per-rolling-hour ceiling and the
+five-token burst bucket after restart; clock rollback closes only new-ID
+admission, not an exact established retry.
+
+Hash-chained audit and intent discovery and recovery remain in M3.3 and do not
+move to a later phase.
 
 Create the host-agent package around the root-domain constructor and add its
 root-only state repository. Implement
