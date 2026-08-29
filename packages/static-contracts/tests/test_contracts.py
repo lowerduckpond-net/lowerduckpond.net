@@ -15,6 +15,7 @@ from lowerduckpond_static_contracts import (
     ErrorCode,
     Operation,
     TransactionPhase,
+    audit_entry_digest,
     canonical_json_bytes,
     decode_contract,
     decode_request,
@@ -54,6 +55,23 @@ def test_accepted_fixtures_round_trip_through_canonical_bytes(path: Path) -> Non
 
     assert encoded.endswith(b"\n") and not encoded.endswith(b"\n\n")
     assert canonical_json_bytes(decode_contract(encoded)) == encoded
+
+
+def test_audit_entry_digest_has_a_pinned_domain_separated_vector() -> None:
+    document = _load_object(FIXTURE_ROOT / "accepted/audit-entry.json")
+
+    assert audit_entry_digest(document).to_dict() == {
+        "format": "lowerduckpond-audit-entry-v1",
+        "algorithm": "sha256",
+        "value": "5a88a866a74fc4b0f694a53ecae12e96d60ac2253177dd32b762d722b94f1372",
+    }
+
+
+def test_audit_entry_digest_rejects_another_contract_kind() -> None:
+    document = _load_object(FIXTURE_ROOT / "accepted/authorization-job.json")
+
+    with pytest.raises(ContractError):
+        audit_entry_digest(document)
 
 
 def test_schema_loader_returns_a_copy_not_mutable_cached_state() -> None:

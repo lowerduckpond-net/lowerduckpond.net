@@ -8,6 +8,7 @@ from lowerduckpond_static_contracts.canonical import (
 )
 from lowerduckpond_static_contracts.digest import (
     Digest,
+    audit_entry_digest,
     manifest_digest,
     request_digest,
     result_digest,
@@ -55,6 +56,7 @@ __all__ = [
     "TransactionPhase",
     "ValidatedCreateRequest",
     "ValidatedPlatformNamespace",
+    "audit_entry_digest",
     "canonical_json_bytes",
     "decode_contract",
     "decode_json_object",
