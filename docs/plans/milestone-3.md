@@ -218,8 +218,9 @@ four DNS records, four Authenticated Origin Pulls associations, six rulesets,
 ACME records, and four uploaded leaves absent. Both temporary Cloudflare tokens
 were revoked and disposable trusted-workstation material was removed. The
 backed-up CA roots remain retained pending the production-CA decision required
-before M3.12. M3.1 is the next implementation phase; this result does not
-enable production or satisfy any later Milestone 3 gate.
+before M3.12. M3.1 subsequently completed, and M3.2 is the next implementation
+phase; the M3.0 result does not enable production or satisfy any later
+Milestone 3 gate.
 
 Add executable qualification probes and a sanitized report before depending on
 host behavior that the current Molecule suite does not reproduce.
@@ -302,11 +303,19 @@ production apex, wildcard association, or zone-wide Always Online setting.
 
 ### M3.1: provision isolated archive storage
 
-Implementation status: the infrastructure, exact migration policy, protected
-preflight, local versioned-S3 integration gate, trusted-workstation acceptance,
-and sanitized-report tooling are implemented. The protected production
-migration, live acceptance, evidence backup, and final no-change plan remain
-required before M3.1 is complete.
+Implementation status: complete. On 2026-08-28, protected plan run
+`33216049669` and apply run `33216599520` created exactly two resources, changed
+exactly two resources in place, and destroyed none against source revision
+`5d0260ed9c81ad1b2918e8ee12958518edca6663`. The fully paginated preflight
+proved the retired backup prefix empty immediately before and after apply.
+Trusted-workstation acceptance run `01a04a98-a393-714c-9955-a7aa77cc8df8`
+passed, its sanitized report and SHA-256 sidecar were verified and backed up,
+and an independent version-aware and multipart-aware probe proved the entire
+archive bucket empty. Protected run `33219502391` then passed ordinary
+production policy and reported no changes with the migration flag disabled.
+The archive credential remains in operator custody and off the production host
+until M3.10. M3.2 is the next implementation phase; M3.1 does not enable
+production or satisfy any later Milestone 3 gate.
 
 Add a `digitalocean-tenant-archives` module rather than renaming the existing
 backup module or its state address. Extend the production stack with the second

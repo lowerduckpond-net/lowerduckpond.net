@@ -4,14 +4,14 @@ This roadmap turns the architecture in [`architecture.md`](architecture.md) into
 
 ## Progress
 
-Status as of 2026-08-27:
+Status as of 2026-08-28:
 
 | Milestone | Status | Outcome |
 | --- | --- | --- |
 | 0: Repository foundation | Complete | The public repository, development workflow, CI gates, application boundaries, and architecture decisions are established. |
 | 1: DigitalOcean foundation | Complete | OpenTofu manages the production network, Droplet, reserved IP, firewall, DNS, state, and durable backup storage; the guarded rebuild drill succeeded. |
 | 2: Reproducible host configuration | Complete | One trusted-workstation command converges production idempotently and passes host, HTTPS, backup, restore, and post-reboot acceptance checks. |
-| 3: Static tenant MVP | Current | M3.0 qualification is complete; M3.1 archive-storage implementation awaits its protected production migration and live gate before M3.2 begins. |
+| 3: Static tenant MVP | Current | M3.0 qualification and M3.1 isolated archive storage are complete; M3.2 contracts and test-spine implementation is next. |
 | 4: Control plane and lifecycle automation | Planned | Expose the static lifecycle through the FastAPI control plane with approvals, jobs, policy, and audit history. |
 | 5: Backup, observability, and operations | Planned | Complete platform-level recovery, central observability, alerting, and operator runbooks. Host backup and monitoring foundations arrived early in Milestone 2. |
 | 6: Dynamic PHP pilot | Planned | Introduce isolated PHP and tenant-scoped SQL only after the static platform and recovery path are proven. |
@@ -21,9 +21,10 @@ Status as of 2026-08-27:
 merely that its implementation was merged. “Current” identifies the active
 implementation target. Milestone 3's design is accepted, and the M3.0 live
 qualification passed all 54 checks before its complete disposable teardown.
-M3.1 implementation is ready for its protected production migration and live
-acceptance. Production remains disabled, and
-Milestone 3 remains incomplete until every phase gate through M3.12 passes.
+M3.1's protected production migration, live acceptance, evidence backup,
+independent empty-bucket proof, and final no-change plan also passed. M3.2 is
+the current implementation phase. Production remains disabled, and Milestone 3
+remains incomplete until every phase gate through M3.12 passes.
 
 ## 1. Proposed platform repository
 
