@@ -385,6 +385,20 @@ class StateRevision:
             raise ValueError("state revision is not a canonical SHA-256 token")
 
 
+@dataclass(frozen=True, slots=True)
+class IntentRemovalToken:
+    """Exact canonical and inode generation authorized for intent removal."""
+
+    revision: StateRevision
+    metadata_generation: tuple[int, ...]
+
+    def __post_init__(self) -> None:
+        if not self.metadata_generation or any(
+            type(value) is not int for value in self.metadata_generation
+        ):
+            raise ValueError("intent removal metadata generation is invalid")
+
+
 class StoredContract:
     """A validated immutable snapshot and its storage-local revision token."""
 
@@ -536,7 +550,7 @@ class StateRepository:
     def remove_reconciled_intent(
         self,
         path: StateRecordPath,
-        expected_revision: StateRevision,
+        expected: IntentRemovalToken,
         *,
         failure_hook: FailureHook | None = None,
         blocking: bool = False,
@@ -546,7 +560,7 @@ class StateRepository:
         with self.transaction(mode=LockMode.EXCLUSIVE, blocking=blocking) as transaction:
             transaction.remove_reconciled_intent(
                 path,
-                expected_revision,
+                expected,
                 failure_hook=failure_hook,
             )
 
@@ -738,7 +752,7 @@ class _StateTransaction:
     def remove_reconciled_intent(
         self,
         path: StateRecordPath,
-        expected_revision: StateRevision,
+        expected: IntentRemovalToken,
         *,
         failure_hook: FailureHook | None = None,
     ) -> None:
@@ -746,8 +760,19 @@ class _StateTransaction:
         if not path.is_intent:
             raise StateRecordError("only an intent can cross the reconciliation removal boundary")
         current = self._repository._read_locked(path)
-        if current.revision != expected_revision:
+        if current.revision != expected.revision:
             raise StateConflictError("intent changed after it was reconciled")
+        inventory = self.measure_intent_records()
+        generation = next(
+            (
+                record.metadata_generation
+                for record in inventory.records
+                if record.intent_id == path.record_id
+            ),
+            None,
+        )
+        if generation != expected.metadata_generation:
+            raise StateConflictError("intent inode changed after it was reconciled")
         self._repository._durable.remove(
             path.components,
             failure_hook=failure_hook,

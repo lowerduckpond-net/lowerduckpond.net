@@ -240,12 +240,15 @@ def test_reconciled_intent_removal_requires_the_discovered_revision(
 
     with _repository(root) as repository:
         created = repository.create_immutable(path, document)
+        discovered = IntentDiscovery(repository).discover().intents[0]
         updated_document = deepcopy(document)
         updated_document["phase"] = "state-committed"
         updated = repository.compare_and_swap(path, created.revision, updated_document)
         with pytest.raises(StateConflictError, match="changed"):
-            repository.remove_reconciled_intent(path, created.revision)
-        repository.remove_reconciled_intent(path, updated.revision)
+            repository.remove_reconciled_intent(path, discovered.removal_token)
+        current = IntentDiscovery(repository).discover().intents[0]
+        assert current.record.revision == updated.revision
+        repository.remove_reconciled_intent(path, current.removal_token)
         plan = IntentDiscovery(repository).discover()
 
     assert plan.intents == ()
@@ -257,11 +260,33 @@ def test_recovery_removal_refuses_a_non_intent_path(tmp_path: Path) -> None:
 
     with _repository(root) as repository:
         created = repository.create_immutable(_path(document), document)
+        discovered = IntentDiscovery(repository).discover().intents[0]
+        assert discovered.record.revision == created.revision
         with pytest.raises(StateRecordError, match="only an intent"):
             repository.remove_reconciled_intent(
                 StateRecordPath.platform_launch(),
-                created.revision,
+                discovered.removal_token,
             )
+
+
+def test_recreated_identical_intent_rejects_the_stale_removal_token(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    document = _load("transaction-intent.json")
+    path = _path(document)
+
+    with _repository(root) as repository:
+        repository.create_immutable(path, document)
+        stale = IntentDiscovery(repository).discover().intents[0]
+        repository.remove_reconciled_intent(path, stale.removal_token)
+        repository.create_immutable(path, document)
+        current = IntentDiscovery(repository).discover().intents[0]
+        assert current.record.revision == stale.record.revision
+        assert current.removal_token != stale.removal_token
+        with pytest.raises(StateConflictError, match="inode changed"):
+            repository.remove_reconciled_intent(path, stale.removal_token)
+        assert repository.read(path).document == document
 
 
 @pytest.mark.parametrize(
@@ -282,10 +307,12 @@ def test_removal_failure_exposes_only_the_complete_old_or_absent_state(
 
     with _repository(root) as repository:
         created = repository.create_immutable(path, document)
+        discovered = IntentDiscovery(repository).discover().intents[0]
+        assert discovered.record.revision == created.revision
         with pytest.raises(RuntimeError, match="injected"):
             repository.remove_reconciled_intent(
                 path,
-                created.revision,
+                discovered.removal_token,
                 failure_hook=fail_at,
             )
         plan = IntentDiscovery(repository).discover()

@@ -9,6 +9,7 @@ from lowerduckpond_static_contracts import ContractKind
 
 from lowerduckpond_static_host_agent.locks import LockMode
 from lowerduckpond_static_host_agent.repository import (
+    IntentRemovalToken,
     StateRecordPath,
     StateRepository,
     StoredContract,
@@ -34,6 +35,7 @@ class DiscoveredIntent:
 
     path: StateRecordPath
     record: StoredContract
+    removal_token: IntentRemovalToken
 
     @property
     def kind(self) -> ContractKind:
@@ -68,14 +70,20 @@ class IntentDiscovery:
             blocking=blocking,
         ) as transaction:
             before = transaction.measure_intent_records(limits=self._limits)
-            intents = tuple(
-                DiscoveredIntent(*transaction.read_intent(intent_id))
-                for intent_id in before.intent_ids
-            )
+            intents = []
+            for identity in before.records:
+                path, record = transaction.read_intent(identity.intent_id)
+                intents.append(
+                    DiscoveredIntent(
+                        path,
+                        record,
+                        IntentRemovalToken(record.revision, identity.metadata_generation),
+                    )
+                )
             after = transaction.measure_intent_records(limits=self._limits)
             if before != after:
                 raise IntentDiscoveryError("intent store changed during recovery discovery")
-            return _recovery_plan(intents)
+            return _recovery_plan(tuple(intents))
 
 
 def _recovery_plan(intents: tuple[DiscoveredIntent, ...]) -> IntentRecoveryPlan:

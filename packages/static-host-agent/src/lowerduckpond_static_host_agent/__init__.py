@@ -56,6 +56,7 @@ from lowerduckpond_static_host_agent.release_tree import (
     measure_release_tree,
 )
 from lowerduckpond_static_host_agent.repository import (
+    IntentRemovalToken,
     StateConflictError,
     StateRecordError,
     StateRecordPath,
@@ -108,6 +109,7 @@ __all__ = [
     "IntentRecordIdentity",
     "IntentRecordInventory",
     "IntentRecoveryPlan",
+    "IntentRemovalToken",
     "LockManager",
     "LockMode",
     "LockName",
