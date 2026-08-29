@@ -1178,6 +1178,36 @@ def test_lifecycle_change_requires_a_distinct_manifest_generation(
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
 
+@pytest.mark.parametrize(
+    ("operation", "state"),
+    [
+        ("suspend", "suspended"),
+        ("resume", "active"),
+    ],
+)
+def test_satisfied_route_transition_preserves_the_manifest_generation(
+    operation: str,
+    state: str,
+) -> None:
+    intent = _route_only_transaction_intent(operation, state, state)
+    candidate_digest = deepcopy(intent["candidateManifestDigest"])
+    source_digest = deepcopy(intent["sourceManifestDigest"])
+    intent["candidateManifestDigest"] = source_digest
+    recovery = intent["lifecycleRecovery"]
+    assert type(recovery) is dict
+    candidate = recovery["candidateObservedState"]
+    assert type(candidate) is dict
+    candidate["desiredManifestDigest"] = source_digest
+
+    assert validate_contract(intent) is ContractKind.TRANSACTION_INTENT
+
+    intent["candidateManifestDigest"] = candidate_digest
+    candidate["desiredManifestDigest"] = candidate_digest
+    with pytest.raises(ContractError) as captured:
+        validate_contract(intent)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
 def test_runtime_mutation_intent_requires_exact_recovery_generations() -> None:
     intent = _load_object(FIXTURE_ROOT / "accepted/transaction-intent.json")
     candidate_digest = deepcopy(intent["candidateManifestDigest"])

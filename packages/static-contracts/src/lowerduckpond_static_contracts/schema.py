@@ -394,6 +394,15 @@ def _validate_lifecycle_recovery(document: dict[str, object]) -> None:
             ErrorCode.SCHEMA_INVALID,
             "lifecycle transition did not change the manifest generation",
         )
+    if (
+        operation in {"suspend", "resume"}
+        and source_state == candidate_state
+        and document["sourceManifestDigest"] != document["candidateManifestDigest"]
+    ):
+        raise ContractError(
+            ErrorCode.SCHEMA_INVALID,
+            "no-op route transition changed the manifest generation",
+        )
     if operation in {"deploy", "rollback"} and (
         source_observed is None
         or candidate_observed is None
