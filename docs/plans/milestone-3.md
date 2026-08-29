@@ -374,6 +374,13 @@ storage as an application rollback.
 
 ### M3.2: establish contracts and the test spine
 
+Implementation status: in progress. The first review slice establishes the
+standalone `static_contracts` package, strict schema set, canonical and digest
+vectors, identifier reservations, lifecycle matrix, client-only YAML
+translation, and accepted and hostile fixtures. The separate root-domain
+constructor, its injected UUIDv7 generator, and the combined M3.2 gate remain
+required before this phase is complete.
+
 Add strict schemas for platform namespace and launch records, desired and
 observed tenant state, deployment and archive records, requests, authorization
 jobs, intents, audit entries, and results. Commit accepted and hostile golden

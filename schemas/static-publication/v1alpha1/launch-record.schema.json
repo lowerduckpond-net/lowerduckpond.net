@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.lowerduckpond.net/static-publication/v1alpha1/launch-record.schema.json",
+  "additionalProperties": false,
+  "properties": {
+    "acceptanceEvidenceDigest": {
+      "$ref": "common.schema.json#/$defs/digest",
+      "properties": {
+        "format": {
+          "const": "lowerduckpond-m3-acceptance-v1"
+        }
+      }
+    },
+    "aliasSuffix": {
+      "const": "lowerduckpond.com"
+    },
+    "apiVersion": {
+      "$ref": "common.schema.json#/$defs/apiVersion"
+    },
+    "cloudflareNetworkSetDigest": {
+      "$ref": "common.schema.json#/$defs/digest",
+      "properties": {
+        "format": {
+          "const": "lowerduckpond-cloudflare-network-set-v1"
+        }
+      }
+    },
+    "configurationVersion": {
+      "pattern": "^[0-9a-f]{40}(?![\\s\\S])",
+      "type": "string"
+    },
+    "cookiePolicyVersion": {
+      "const": "lowerduckpond-cookie-policy-v1"
+    },
+    "edgePolicyVersion": {
+      "const": "lowerduckpond-edge-policy-v1"
+    },
+    "kind": {
+      "const": "LaunchRecord"
+    },
+    "launchedAt": {
+      "$ref": "common.schema.json#/$defs/timestamp"
+    },
+    "tenantOriginSuffix": {
+      "const": "lowerduckpond.com"
+    },
+    "trustedPlatformDomain": {
+      "const": "lowerduckpond.net"
+    }
+  },
+  "required": [
+    "apiVersion",
+    "kind",
+    "configurationVersion",
+    "trustedPlatformDomain",
+    "aliasSuffix",
+    "tenantOriginSuffix",
+    "cookiePolicyVersion",
+    "edgePolicyVersion",
+    "cloudflareNetworkSetDigest",
+    "acceptanceEvidenceDigest",
+    "launchedAt"
+  ],
+  "type": "object"
+}

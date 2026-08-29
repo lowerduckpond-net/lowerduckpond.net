@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.lowerduckpond.net/static-publication/v1alpha1/archive-retirement-intent.schema.json",
+  "additionalProperties": false,
+  "$defs": {
+    "provenance": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "jobId": {
+              "$ref": "common.schema.json#/$defs/uuidv7"
+            },
+            "kind": {
+              "const": "authorization-job"
+            }
+          },
+          "required": [
+            "kind",
+            "jobId"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "emergency-administrator"
+            },
+            "reason": {
+              "maxLength": 1024,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "provenance": {
+            "properties": {
+              "kind": {
+                "const": "emergency-administrator"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          }
+        },
+        "required": [
+          "provenance"
+        ]
+      },
+      "then": {
+        "properties": {
+          "transition": {
+            "const": "delete"
+          }
+        }
+      }
+    }
+  ],
+  "properties": {
+    "apiVersion": {
+      "$ref": "common.schema.json#/$defs/apiVersion"
+    },
+    "archiveRecordDigest": {
+      "$ref": "common.schema.json#/$defs/archiveRecordDigest"
+    },
+    "bucket": {
+      "$ref": "common.schema.json#/$defs/archiveBucket"
+    },
+    "bundleDigest": {
+      "$ref": "common.schema.json#/$defs/archiveDigest"
+    },
+    "bundleSize": {
+      "maximum": 125829120,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "correlationId": {
+      "$ref": "common.schema.json#/$defs/correlationId"
+    },
+    "createdAt": {
+      "$ref": "common.schema.json#/$defs/timestamp"
+    },
+    "intentId": {
+      "$ref": "common.schema.json#/$defs/uuidv7"
+    },
+    "key": {
+      "$ref": "common.schema.json#/$defs/archiveKey"
+    },
+    "kind": {
+      "const": "ArchiveRetirementIntent"
+    },
+    "operatorPrincipal": {
+      "$ref": "common.schema.json#/$defs/principal"
+    },
+    "phase": {
+      "enum": [
+        "prepared",
+        "state-committed",
+        "purged"
+      ],
+      "type": "string"
+    },
+    "provenance": {
+      "$ref": "#/$defs/provenance"
+    },
+    "sourceManifestDigest": {
+      "$ref": "common.schema.json#/$defs/manifestDigest"
+    },
+    "tenantId": {
+      "$ref": "common.schema.json#/$defs/uuidv7"
+    },
+    "transition": {
+      "enum": [
+        "restore",
+        "delete"
+      ],
+      "type": "string"
+    },
+    "versionId": {
+      "$ref": "common.schema.json#/$defs/archiveVersionId"
+    }
+  },
+  "required": [
+    "apiVersion",
+    "kind",
+    "intentId",
+    "provenance",
+    "operatorPrincipal",
+    "tenantId",
+    "correlationId",
+    "transition",
+    "sourceManifestDigest",
+    "archiveRecordDigest",
+    "bundleDigest",
+    "bundleSize",
+    "bucket",
+    "key",
+    "versionId",
+    "phase",
+    "createdAt"
+  ],
+  "type": "object"
+}

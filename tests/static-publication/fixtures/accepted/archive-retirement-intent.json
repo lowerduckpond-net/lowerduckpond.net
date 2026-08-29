@@ -1,0 +1,34 @@
+{
+  "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+  "kind": "ArchiveRetirementIntent",
+  "intentId": "0198d17f-6f4a-7000-8000-000000000005",
+  "provenance": {
+    "kind": "authorization-job",
+    "jobId": "0198d17f-6f4a-7000-8000-000000000002"
+  },
+  "operatorPrincipal": "operator@example.test",
+  "tenantId": "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100",
+  "correlationId": "0198d17f-6f4a-7000-8000-000000000001",
+  "transition": "delete",
+  "sourceManifestDigest": {
+    "format": "lowerduckpond-manifest-v1",
+    "algorithm": "sha256",
+    "value": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "archiveRecordDigest": {
+    "format": "lowerduckpond-archive-record-v1",
+    "algorithm": "sha256",
+    "value": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+  },
+  "bundleDigest": {
+    "format": "lowerduckpond-archive-v1",
+    "algorithm": "sha256",
+    "value": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  },
+  "bundleSize": 4096,
+  "bucket": "lowerduckpond-net-production-tenant-archives-4f3e6b91",
+  "key": "archives/0198d17f-6f4a-7000-8000-000000000003.zip",
+  "versionId": "3LgY0Q5G-safe-fixture-version",
+  "phase": "state-committed",
+  "createdAt": "2026-08-29T12:03:00Z"
+}

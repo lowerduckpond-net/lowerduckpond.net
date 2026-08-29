@@ -1,0 +1,500 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.lowerduckpond.net/static-publication/v1alpha1/operation-result.schema.json",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "else": {
+        "properties": {
+          "tenantId": {
+            "$ref": "common.schema.json#/$defs/uuidv7"
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "create"
+          }
+        },
+        "required": [
+          "operation"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "delete"
+          },
+          "status": {
+            "const": "succeeded"
+          }
+        },
+        "required": [
+          "operation",
+          "status"
+        ]
+      },
+      "then": {
+        "not": {
+          "required": [
+            "manifest"
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "suspend"
+          },
+          "status": {
+            "const": "succeeded"
+          }
+        },
+        "required": [
+          "operation",
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "manifest": {
+            "properties": {
+              "spec": {
+                "properties": {
+                  "desiredState": {
+                    "const": "suspended"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "enum": [
+              "resume",
+              "import",
+              "restore"
+            ]
+          },
+          "status": {
+            "const": "succeeded"
+          }
+        },
+        "required": [
+          "operation",
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "manifest": {
+            "properties": {
+              "spec": {
+                "properties": {
+                  "desiredState": {
+                    "const": "active"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "archive"
+          },
+          "status": {
+            "const": "succeeded"
+          }
+        },
+        "required": [
+          "operation",
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "manifest": {
+            "properties": {
+              "spec": {
+                "properties": {
+                  "desiredState": {
+                    "const": "archived"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "enum": [
+              "deploy",
+              "rollback"
+            ]
+          },
+          "status": {
+            "const": "succeeded"
+          }
+        },
+        "required": [
+          "operation",
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "manifest": {
+            "properties": {
+              "spec": {
+                "properties": {
+                  "desiredState": {
+                    "enum": [
+                      "active",
+                      "suspended"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "rename"
+          },
+          "status": {
+            "const": "succeeded"
+          }
+        },
+        "required": [
+          "operation",
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "manifest": {
+            "properties": {
+              "spec": {
+                "properties": {
+                  "desiredState": {
+                    "enum": [
+                      "undeployed",
+                      "active",
+                      "suspended"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "export"
+          },
+          "status": {
+            "const": "succeeded"
+          }
+        },
+        "required": [
+          "operation",
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "manifest": {
+            "properties": {
+              "spec": {
+                "properties": {
+                  "desiredState": {
+                    "enum": [
+                      "active",
+                      "suspended",
+                      "archived"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "required": [
+          "exportBundle"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "exportBundle"
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "provenance": {
+            "properties": {
+              "kind": {
+                "const": "emergency-administrator"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          }
+        },
+        "required": [
+          "provenance"
+        ]
+      },
+      "then": {
+        "properties": {
+          "operation": {
+            "const": "delete"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "exportBundle": {
+      "additionalProperties": false,
+      "properties": {
+        "digest": {
+          "$ref": "common.schema.json#/$defs/archiveDigest"
+        },
+        "size": {
+          "maximum": 125829120,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "digest",
+        "size"
+      ],
+      "type": "object"
+    },
+    "provenance": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "jobId": {
+              "$ref": "common.schema.json#/$defs/uuidv7"
+            },
+            "kind": {
+              "const": "authorization-job"
+            }
+          },
+          "required": [
+            "kind",
+            "jobId"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "emergency-administrator"
+            },
+            "operatorPrincipal": {
+              "$ref": "common.schema.json#/$defs/principal"
+            },
+            "reason": {
+              "maxLength": 1024,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "operatorPrincipal",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "oneOf": [
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "create"
+          }
+        },
+        "required": [
+          "operation"
+        ]
+      },
+      "properties": {
+        "status": {
+          "const": "succeeded"
+        }
+      },
+      "not": {
+        "required": [
+          "errorCode"
+        ]
+      },
+      "then": {
+        "properties": {
+          "manifest": {
+            "properties": {
+              "spec": {
+                "not": {
+                  "required": [
+                    "desiredDeployment"
+                  ]
+                },
+                "properties": {
+                  "desiredState": {
+                    "const": "undeployed"
+                  }
+                },
+                "required": [
+                  "desiredState"
+                ]
+              }
+            }
+          },
+          "tenantId": {
+            "$ref": "common.schema.json#/$defs/uuidv7"
+          }
+        },
+        "required": [
+          "tenantId",
+          "canonicalOrigin",
+          "manifest"
+        ]
+      }
+    },
+    {
+      "properties": {
+        "status": {
+          "const": "failed"
+        }
+      },
+      "required": [
+        "errorCode"
+      ],
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "manifest"
+            ]
+          },
+          {
+            "required": [
+              "canonicalOrigin"
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "properties": {
+    "apiVersion": {
+      "$ref": "common.schema.json#/$defs/apiVersion"
+    },
+    "canonicalOrigin": {
+      "$ref": "common.schema.json#/$defs/canonicalOrigin"
+    },
+    "correlationId": {
+      "$ref": "common.schema.json#/$defs/correlationId"
+    },
+    "errorCode": {
+      "enum": [
+        "archive_unavailable",
+        "busy",
+        "capacity_exceeded",
+        "conflict",
+        "denied",
+        "invalid_artifact",
+        "invalid_request",
+        "not_found",
+        "not_implemented",
+        "publication_disabled",
+        "state_drift",
+        "unavailable"
+      ],
+      "type": "string"
+    },
+    "exportBundle": {
+      "$ref": "#/$defs/exportBundle"
+    },
+    "kind": {
+      "const": "OperationResult"
+    },
+    "manifest": {
+      "$ref": "site.schema.json"
+    },
+    "operation": {
+      "$ref": "common.schema.json#/$defs/operation"
+    },
+    "provenance": {
+      "$ref": "#/$defs/provenance"
+    },
+    "status": {
+      "enum": [
+        "succeeded",
+        "failed"
+      ],
+      "type": "string"
+    },
+    "tenantId": {
+      "oneOf": [
+        {
+          "$ref": "common.schema.json#/$defs/uuidv7"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "apiVersion",
+    "kind",
+    "provenance",
+    "correlationId",
+    "operation",
+    "status",
+    "tenantId"
+  ],
+  "type": "object"
+}

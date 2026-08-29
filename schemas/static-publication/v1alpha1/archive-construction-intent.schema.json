@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.lowerduckpond.net/static-publication/v1alpha1/archive-construction-intent.schema.json",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "else": {
+        "properties": {
+          "versionId": {
+            "$ref": "common.schema.json#/$defs/archiveVersionId"
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "phase": {
+            "const": "prepared"
+          }
+        },
+        "required": [
+          "phase"
+        ]
+      },
+      "then": {
+        "properties": {
+          "versionId": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ],
+  "properties": {
+    "apiVersion": {
+      "$ref": "common.schema.json#/$defs/apiVersion"
+    },
+    "bucket": {
+      "$ref": "common.schema.json#/$defs/archiveBucket"
+    },
+    "bundleDigest": {
+      "$ref": "common.schema.json#/$defs/archiveDigest"
+    },
+    "bundleSize": {
+      "maximum": 125829120,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "candidateManifestDigest": {
+      "$ref": "common.schema.json#/$defs/manifestDigest"
+    },
+    "correlationId": {
+      "$ref": "common.schema.json#/$defs/correlationId"
+    },
+    "createdAt": {
+      "$ref": "common.schema.json#/$defs/timestamp"
+    },
+    "deploymentRecordDigest": {
+      "$ref": "common.schema.json#/$defs/deploymentRecordDigest"
+    },
+    "intentId": {
+      "$ref": "common.schema.json#/$defs/uuidv7"
+    },
+    "jobId": {
+      "$ref": "common.schema.json#/$defs/uuidv7"
+    },
+    "key": {
+      "$ref": "common.schema.json#/$defs/archiveKey"
+    },
+    "kind": {
+      "const": "ArchiveConstructionIntent"
+    },
+    "operatorPrincipal": {
+      "$ref": "common.schema.json#/$defs/principal"
+    },
+    "phase": {
+      "enum": [
+        "prepared",
+        "uploaded"
+      ],
+      "type": "string"
+    },
+    "releaseTreeDigest": {
+      "$ref": "common.schema.json#/$defs/releaseTreeDigest"
+    },
+    "sourceManifestDigest": {
+      "$ref": "common.schema.json#/$defs/manifestDigest"
+    },
+    "tenantId": {
+      "$ref": "common.schema.json#/$defs/uuidv7"
+    },
+    "uploadAttemptId": {
+      "$ref": "common.schema.json#/$defs/uuidv7"
+    },
+    "versionId": {
+      "oneOf": [
+        {
+          "$ref": "common.schema.json#/$defs/archiveVersionId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "apiVersion",
+    "kind",
+    "intentId",
+    "uploadAttemptId",
+    "jobId",
+    "operatorPrincipal",
+    "tenantId",
+    "correlationId",
+    "sourceManifestDigest",
+    "candidateManifestDigest",
+    "deploymentRecordDigest",
+    "releaseTreeDigest",
+    "bundleDigest",
+    "bundleSize",
+    "bucket",
+    "key",
+    "versionId",
+    "phase",
+    "createdAt"
+  ],
+  "type": "object"
+}

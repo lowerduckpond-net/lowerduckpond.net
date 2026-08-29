@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.lowerduckpond.net/static-publication/v1alpha1/authorization-job.schema.json",
+  "additionalProperties": false,
+  "properties": {
+    "acceptedAt": {
+      "$ref": "common.schema.json#/$defs/timestamp"
+    },
+    "apiVersion": {
+      "$ref": "common.schema.json#/$defs/apiVersion"
+    },
+    "artifact": {
+      "oneOf": [
+        {
+          "$ref": "common.schema.json#/$defs/artifact"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "compatibilityVersion": {
+      "const": "static-job-v1"
+    },
+    "expectedSource": {
+      "additionalProperties": false,
+      "properties": {
+        "archiveRecordDigest": {
+          "oneOf": [
+            {
+              "$ref": "common.schema.json#/$defs/archiveRecordDigest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "deploymentDigest": {
+          "oneOf": [
+            {
+              "$ref": "common.schema.json#/$defs/deploymentRecordDigest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "expectsTenantAbsent": {
+          "type": "boolean"
+        },
+        "lifecycle": {
+          "oneOf": [
+            {
+              "$ref": "common.schema.json#/$defs/lifecycle"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "manifestDigest": {
+          "oneOf": [
+            {
+              "$ref": "common.schema.json#/$defs/manifestDigest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "platformStateDigest": {
+          "$ref": "common.schema.json#/$defs/platformStateDigest"
+        }
+      },
+      "required": [
+        "expectsTenantAbsent",
+        "lifecycle",
+        "manifestDigest",
+        "deploymentDigest",
+        "archiveRecordDigest",
+        "platformStateDigest"
+      ],
+      "type": "object"
+    },
+    "jobId": {
+      "$ref": "common.schema.json#/$defs/uuidv7"
+    },
+    "kind": {
+      "const": "AuthorizationJob"
+    },
+    "operatorPrincipal": {
+      "$ref": "common.schema.json#/$defs/principal"
+    },
+    "phase": {
+      "enum": [
+        "pending",
+        "claimed",
+        "completed",
+        "failed"
+      ],
+      "type": "string"
+    },
+    "request": {
+      "$ref": "operation-request.schema.json"
+    },
+    "requestDigest": {
+      "$ref": "common.schema.json#/$defs/requestDigest"
+    }
+  },
+  "required": [
+    "apiVersion",
+    "kind",
+    "compatibilityVersion",
+    "jobId",
+    "operatorPrincipal",
+    "request",
+    "requestDigest",
+    "artifact",
+    "expectedSource",
+    "acceptedAt",
+    "phase"
+  ],
+  "type": "object"
+}

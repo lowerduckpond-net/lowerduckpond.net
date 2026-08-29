@@ -1,0 +1,242 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.lowerduckpond.net/static-publication/v1alpha1/operation-request.schema.json",
+  "additionalProperties": false,
+  "oneOf": [
+    {
+      "properties": {
+        "operation": {
+          "const": "create"
+        }
+      },
+      "required": [
+        "slug",
+        "quotas"
+      ],
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "tenantId"
+            ]
+          },
+          {
+            "required": [
+              "deploymentId"
+            ]
+          },
+          {
+            "required": [
+              "artifact"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "properties": {
+        "artifact": {
+          "properties": {
+            "size": {
+              "maximum": 104857600
+            }
+          }
+        },
+        "operation": {
+          "const": "deploy"
+        }
+      },
+      "required": [
+        "tenantId",
+        "artifact"
+      ],
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "slug"
+            ]
+          },
+          {
+            "required": [
+              "quotas"
+            ]
+          },
+          {
+            "required": [
+              "deploymentId"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "properties": {
+        "operation": {
+          "const": "rollback"
+        }
+      },
+      "required": [
+        "tenantId",
+        "deploymentId"
+      ],
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "slug"
+            ]
+          },
+          {
+            "required": [
+              "quotas"
+            ]
+          },
+          {
+            "required": [
+              "artifact"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "properties": {
+        "operation": {
+          "enum": [
+            "suspend",
+            "resume",
+            "export",
+            "archive",
+            "restore",
+            "delete",
+            "reconcile"
+          ]
+        }
+      },
+      "required": [
+        "tenantId"
+      ],
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "slug"
+            ]
+          },
+          {
+            "required": [
+              "quotas"
+            ]
+          },
+          {
+            "required": [
+              "deploymentId"
+            ]
+          },
+          {
+            "required": [
+              "artifact"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "properties": {
+        "operation": {
+          "const": "rename"
+        }
+      },
+      "required": [
+        "tenantId",
+        "slug"
+      ],
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "quotas"
+            ]
+          },
+          {
+            "required": [
+              "deploymentId"
+            ]
+          },
+          {
+            "required": [
+              "artifact"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "properties": {
+        "operation": {
+          "const": "import"
+        }
+      },
+      "required": [
+        "tenantId",
+        "artifact"
+      ],
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "slug"
+            ]
+          },
+          {
+            "required": [
+              "quotas"
+            ]
+          },
+          {
+            "required": [
+              "deploymentId"
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "properties": {
+    "apiVersion": {
+      "$ref": "common.schema.json#/$defs/apiVersion"
+    },
+    "artifact": {
+      "$ref": "common.schema.json#/$defs/artifact"
+    },
+    "correlationId": {
+      "$ref": "common.schema.json#/$defs/correlationId"
+    },
+    "deploymentId": {
+      "$ref": "common.schema.json#/$defs/uuidv7"
+    },
+    "kind": {
+      "const": "OperationRequest"
+    },
+    "operation": {
+      "$ref": "common.schema.json#/$defs/operation"
+    },
+    "quotas": {
+      "$ref": "common.schema.json#/$defs/quotas"
+    },
+    "slug": {
+      "$ref": "common.schema.json#/$defs/slug"
+    },
+    "tenantId": {
+      "$ref": "common.schema.json#/$defs/uuidv7"
+    }
+  },
+  "required": [
+    "apiVersion",
+    "kind",
+    "operation",
+    "correlationId"
+  ],
+  "type": "object"
+}

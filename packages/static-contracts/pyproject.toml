@@ -1,0 +1,24 @@
+[project]
+name = "lowerduckpond-static-contracts"
+version = "0.0.0"
+description = "Strict static-publication protocol contracts for Lower Duck Pond"
+requires-python = ">=3.14,<3.15"
+dependencies = [
+  "jsonschema>=4.26.0,<5",
+  "rfc3339-validator>=0.1.4,<0.2",
+  "rfc8785==0.1.4",
+]
+
+[project.optional-dependencies]
+client = ["ruamel-yaml>=0.19.1,<0.20"]
+
+[dependency-groups]
+test = [
+  "hypothesis>=6.165.5,<7",
+  "ruamel-yaml>=0.19.1,<0.20",
+  "types-jsonschema>=4.25.1.20251009,<5",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13"]
+build-backend = "uv_build"

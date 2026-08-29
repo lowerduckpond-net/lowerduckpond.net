@@ -1,0 +1,41 @@
+{
+  "format": "lowerduckpond-identifiers-v1",
+  "uuidv7": {
+    "accepted": [
+      "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100",
+      "0198d17f-6f4a-7000-8000-000000000001",
+      "ffffffff-ffff-7fff-bfff-ffffffffffff"
+    ],
+    "rejected": [
+      "0191E2C4-8F7A-7C3B-8D1E-5F62047A2100",
+      "0191e2c48f7a7c3b8d1e5f62047a2100",
+      "0191e2c4-8f7a-6c3b-8d1e-5f62047a2100",
+      "0191e2c4-8f7a-7c3b-7d1e-5f62047a2100",
+      "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100\n",
+      "not-an-identifier"
+    ]
+  },
+  "slug": {
+    "accepted": [
+      "a",
+      "duck-repair",
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    ],
+    "rejected": [
+      "",
+      "-duck",
+      "duck-",
+      "Duck",
+      "duck_repair",
+      "duck\n",
+      "dück",
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    ],
+    "reserved": [
+      "hosting",
+      "secure",
+      "www",
+      "t-0191e2c48f7a7c3b8d1e5f62047a2100"
+    ]
+  }
+}

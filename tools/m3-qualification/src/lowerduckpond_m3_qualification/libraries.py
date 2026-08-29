@@ -10,8 +10,8 @@ from typing import Final
 import botocore.session  # type: ignore[import-untyped]
 import rfc8785
 from hypothesis import given, settings, strategies
-from jsonschema import Draft202012Validator  # type: ignore[import-untyped]
-from jsonschema.exceptions import ValidationError  # type: ignore[import-untyped]
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import ValidationError
 from playwright.async_api import async_playwright
 from ruamel.yaml import YAML
 from ruamel.yaml.constructor import DuplicateKeyError

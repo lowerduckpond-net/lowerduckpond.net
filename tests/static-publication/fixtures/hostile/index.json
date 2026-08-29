@@ -1,0 +1,13 @@
+{
+  "caller-selected-identity.json": "contract.caller_selected_identity",
+  "canonical-shaped-slug.json": "contract.reserved_slug",
+  "duplicate-json-member.json.raw": "contract.duplicate_json_member",
+  "noncanonical-uuid.json": "contract.schema_invalid",
+  "reserved-slug.json": "contract.reserved_slug",
+  "standalone-manifest.json": "contract.standalone_manifest_frame",
+  "trailing-slug-control.json": "contract.schema_invalid",
+  "type-coercion.json": "contract.schema_invalid",
+  "unknown-field.json": "contract.unknown_field",
+  "unknown-kind.json": "contract.unknown_kind",
+  "unsupported-version.json": "contract.unsupported_version"
+}

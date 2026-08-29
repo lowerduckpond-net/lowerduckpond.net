@@ -1,0 +1,32 @@
+{
+  "format": "lowerduckpond-lifecycle-v1",
+  "allowed": [
+    ["create", "absent", "undeployed"],
+    ["deploy", "undeployed", "active"],
+    ["deploy", "active", "active"],
+    ["deploy", "suspended", "suspended"],
+    ["rollback", "active", "active"],
+    ["rollback", "suspended", "suspended"],
+    ["suspend", "active", "suspended"],
+    ["suspend", "suspended", "suspended"],
+    ["resume", "suspended", "active"],
+    ["resume", "active", "active"],
+    ["rename", "undeployed", "undeployed"],
+    ["rename", "active", "active"],
+    ["rename", "suspended", "suspended"],
+    ["export", "active", "active"],
+    ["export", "suspended", "suspended"],
+    ["export", "archived", "archived"],
+    ["import", "undeployed", "active"],
+    ["archive", "active", "archived"],
+    ["archive", "suspended", "archived"],
+    ["archive", "archived", "archived"],
+    ["restore", "archived", "active"],
+    ["delete", "undeployed", "absent"],
+    ["delete", "archived", "absent"],
+    ["reconcile", "undeployed", "undeployed"],
+    ["reconcile", "active", "active"],
+    ["reconcile", "suspended", "suspended"],
+    ["reconcile", "archived", "archived"]
+  ]
+}

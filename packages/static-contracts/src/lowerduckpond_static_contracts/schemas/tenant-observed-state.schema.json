@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.lowerduckpond.net/static-publication/v1alpha1/tenant-observed-state.schema.json",
+  "additionalProperties": false,
+  "oneOf": [
+    {
+      "properties": {
+        "activeDeploymentId": {
+          "$ref": "common.schema.json#/$defs/uuidv7"
+        },
+        "observedState": {
+          "const": "active"
+        },
+        "runtimeGenerationId": {
+          "$ref": "common.schema.json#/$defs/uuidv7"
+        }
+      }
+    },
+    {
+      "properties": {
+        "activeDeploymentId": {
+          "$ref": "common.schema.json#/$defs/uuidv7"
+        },
+        "observedState": {
+          "const": "suspended"
+        },
+        "runtimeGenerationId": {
+          "type": "null"
+        }
+      }
+    },
+    {
+      "properties": {
+        "activeDeploymentId": {
+          "type": "null"
+        },
+        "observedState": {
+          "enum": [
+            "undeployed",
+            "archived"
+          ]
+        },
+        "runtimeGenerationId": {
+          "type": "null"
+        }
+      }
+    }
+  ],
+  "properties": {
+    "activeDeploymentId": {
+      "oneOf": [
+        {
+          "$ref": "common.schema.json#/$defs/uuidv7"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "apiVersion": {
+      "$ref": "common.schema.json#/$defs/apiVersion"
+    },
+    "desiredManifestDigest": {
+      "$ref": "common.schema.json#/$defs/manifestDigest"
+    },
+    "kind": {
+      "const": "TenantObservedState"
+    },
+    "observedState": {
+      "$ref": "common.schema.json#/$defs/lifecycle"
+    },
+    "reconciledAt": {
+      "$ref": "common.schema.json#/$defs/timestamp"
+    },
+    "runtimeGenerationId": {
+      "oneOf": [
+        {
+          "$ref": "common.schema.json#/$defs/uuidv7"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "tenantId": {
+      "$ref": "common.schema.json#/$defs/uuidv7"
+    }
+  },
+  "required": [
+    "apiVersion",
+    "kind",
+    "tenantId",
+    "desiredManifestDigest",
+    "observedState",
+    "activeDeploymentId",
+    "runtimeGenerationId",
+    "reconciledAt"
+  ],
+  "type": "object"
+}

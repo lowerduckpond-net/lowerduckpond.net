@@ -1,0 +1,336 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.lowerduckpond.net/static-publication/v1alpha1/audit-entry.schema.json",
+  "$defs": {
+    "deletionEvidence": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "archiveRecordDigest": {
+              "type": "null"
+            },
+            "bucket": {
+              "type": "null"
+            },
+            "emergencyReason": {
+              "type": "null"
+            },
+            "key": {
+              "type": "null"
+            },
+            "mode": {
+              "const": "never-deployed"
+            },
+            "versionId": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "archiveRecordDigest": {
+              "$ref": "common.schema.json#/$defs/archiveRecordDigest"
+            },
+            "bucket": {
+              "$ref": "common.schema.json#/$defs/archiveBucket"
+            },
+            "emergencyReason": {
+              "type": "null"
+            },
+            "key": {
+              "$ref": "common.schema.json#/$defs/archiveKey"
+            },
+            "mode": {
+              "const": "archived"
+            },
+            "versionId": {
+              "$ref": "common.schema.json#/$defs/archiveVersionId"
+            }
+          }
+        },
+        {
+          "properties": {
+            "archiveRecordDigest": {
+              "type": "null"
+            },
+            "bucket": {
+              "type": "null"
+            },
+            "emergencyReason": {
+              "maxLength": 1024,
+              "minLength": 1,
+              "type": "string"
+            },
+            "key": {
+              "type": "null"
+            },
+            "mode": {
+              "const": "emergency"
+            },
+            "versionId": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "archiveRecordDigest": {
+              "$ref": "common.schema.json#/$defs/archiveRecordDigest"
+            },
+            "bucket": {
+              "$ref": "common.schema.json#/$defs/archiveBucket"
+            },
+            "emergencyReason": {
+              "maxLength": 1024,
+              "minLength": 1,
+              "type": "string"
+            },
+            "key": {
+              "$ref": "common.schema.json#/$defs/archiveKey"
+            },
+            "mode": {
+              "const": "emergency-archived"
+            },
+            "versionId": {
+              "$ref": "common.schema.json#/$defs/archiveVersionId"
+            }
+          }
+        }
+      ],
+      "properties": {
+        "archiveRecordDigest": {
+          "oneOf": [
+            {
+              "$ref": "common.schema.json#/$defs/archiveRecordDigest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "bucket": {
+          "oneOf": [
+            {
+              "$ref": "common.schema.json#/$defs/archiveBucket"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "emergencyReason": {
+          "oneOf": [
+            {
+              "maxLength": 1024,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "key": {
+          "oneOf": [
+            {
+              "$ref": "common.schema.json#/$defs/archiveKey"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "mode": {
+          "enum": [
+            "never-deployed",
+            "archived",
+            "emergency",
+            "emergency-archived"
+          ],
+          "type": "string"
+        },
+        "releasedSlugs": {
+          "items": {
+            "$ref": "common.schema.json#/$defs/slug"
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "versionId": {
+          "oneOf": [
+            {
+              "$ref": "common.schema.json#/$defs/archiveVersionId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "mode",
+        "releasedSlugs",
+        "archiveRecordDigest",
+        "bucket",
+        "key",
+        "versionId",
+        "emergencyReason"
+      ],
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "else": {
+        "properties": {
+          "previousEntryDigest": {
+            "$ref": "common.schema.json#/$defs/auditEntryDigest"
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "sequence": {
+            "const": 0
+          }
+        },
+        "required": [
+          "sequence"
+        ]
+      },
+      "then": {
+        "properties": {
+          "previousEntryDigest": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "else": {
+        "properties": {
+          "tenantId": {
+            "$ref": "common.schema.json#/$defs/uuidv7"
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "create"
+          },
+          "resultStatus": {
+            "const": "failed"
+          }
+        },
+        "required": [
+          "operation",
+          "resultStatus"
+        ]
+      }
+    },
+    {
+      "else": {
+        "not": {
+          "required": [
+            "deletionEvidence"
+          ]
+        }
+      },
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "delete"
+          },
+          "resultStatus": {
+            "const": "succeeded"
+          }
+        },
+        "required": [
+          "operation",
+          "resultStatus"
+        ]
+      },
+      "then": {
+        "required": [
+          "deletionEvidence"
+        ]
+      }
+    }
+  ],
+  "properties": {
+    "apiVersion": {
+      "$ref": "common.schema.json#/$defs/apiVersion"
+    },
+    "correlationId": {
+      "$ref": "common.schema.json#/$defs/correlationId"
+    },
+    "deletionEvidence": {
+      "$ref": "#/$defs/deletionEvidence"
+    },
+    "kind": {
+      "const": "AuditEntry"
+    },
+    "operation": {
+      "$ref": "common.schema.json#/$defs/operation"
+    },
+    "operatorPrincipal": {
+      "$ref": "common.schema.json#/$defs/principal"
+    },
+    "previousEntryDigest": {
+      "oneOf": [
+        {
+          "$ref": "common.schema.json#/$defs/auditEntryDigest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "resultDigest": {
+      "$ref": "common.schema.json#/$defs/resultDigest"
+    },
+    "resultStatus": {
+      "enum": [
+        "succeeded",
+        "failed"
+      ],
+      "type": "string"
+    },
+    "sequence": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "tenantId": {
+      "oneOf": [
+        {
+          "$ref": "common.schema.json#/$defs/uuidv7"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "timestamp": {
+      "$ref": "common.schema.json#/$defs/timestamp"
+    }
+  },
+  "required": [
+    "apiVersion",
+    "kind",
+    "sequence",
+    "previousEntryDigest",
+    "timestamp",
+    "operatorPrincipal",
+    "operation",
+    "tenantId",
+    "correlationId",
+    "resultDigest",
+    "resultStatus"
+  ],
+  "type": "object"
+}

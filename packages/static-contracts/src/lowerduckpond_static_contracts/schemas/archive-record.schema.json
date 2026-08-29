@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.lowerduckpond.net/static-publication/v1alpha1/archive-record.schema.json",
+  "additionalProperties": false,
+  "properties": {
+    "apiVersion": {
+      "$ref": "common.schema.json#/$defs/apiVersion"
+    },
+    "bucket": {
+      "$ref": "common.schema.json#/$defs/archiveBucket"
+    },
+    "bundleDigest": {
+      "$ref": "common.schema.json#/$defs/archiveDigest"
+    },
+    "bundleSize": {
+      "maximum": 125829120,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "correlationId": {
+      "$ref": "common.schema.json#/$defs/correlationId"
+    },
+    "createdAt": {
+      "$ref": "common.schema.json#/$defs/timestamp"
+    },
+    "deploymentId": {
+      "$ref": "common.schema.json#/$defs/uuidv7"
+    },
+    "key": {
+      "$ref": "common.schema.json#/$defs/archiveKey"
+    },
+    "kind": {
+      "const": "ArchiveRecord"
+    },
+    "manifestDigest": {
+      "$ref": "common.schema.json#/$defs/manifestDigest"
+    },
+    "releaseTreeDigest": {
+      "$ref": "common.schema.json#/$defs/releaseTreeDigest"
+    },
+    "tenantId": {
+      "$ref": "common.schema.json#/$defs/uuidv7"
+    },
+    "versionId": {
+      "$ref": "common.schema.json#/$defs/archiveVersionId"
+    }
+  },
+  "required": [
+    "apiVersion",
+    "kind",
+    "tenantId",
+    "deploymentId",
+    "releaseTreeDigest",
+    "manifestDigest",
+    "bundleDigest",
+    "bundleSize",
+    "bucket",
+    "key",
+    "versionId",
+    "createdAt",
+    "correlationId"
+  ],
+  "type": "object"
+}

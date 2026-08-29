@@ -280,9 +280,11 @@ Restore, ordinary deletion, and any emergency deletion that will make an
 authoritative archive record unreferenced take the export lock before their
 publication and tenant-state transaction. Before changing authoritative state,
 root creates and syncs a retirement intent that binds the correlation ID,
-authorization-job ID, authenticated operator, tenant ID, transition, exact
-preceding manifest and archive record, bucket, unique key, version ID, bundle
-digest, and size. The lifecycle transaction may
+authenticated operator, tenant ID, transition, exact preceding manifest and
+archive record, bucket, unique key, version ID, bundle digest, and size.
+Ordinary retirement also binds its authorization-job ID; emergency deletion
+instead binds distinct emergency-administrator provenance and its mandatory
+reason, without inventing an ordinary job. The lifecycle transaction may
 then either preserve that exact archived state or durably commit the new state,
 result, and audit evidence that no longer bind the object. It never deletes the
 bundle before that choice is durable.

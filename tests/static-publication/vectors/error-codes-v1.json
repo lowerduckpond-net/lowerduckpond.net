@@ -1,0 +1,38 @@
+{
+  "format": "lowerduckpond-error-codes-v1",
+  "codes": [
+    "client.duplicate_yaml_key",
+    "client.invalid_yaml",
+    "contract.caller_selected_identity",
+    "contract.canonical_too_large",
+    "contract.duplicate_json_member",
+    "contract.invalid_canonical_origin",
+    "contract.invalid_identifier",
+    "contract.invalid_json",
+    "contract.invalid_namespace",
+    "contract.invalid_slug",
+    "contract.invalid_utf8",
+    "contract.lifecycle_denied",
+    "contract.raw_request_too_large",
+    "contract.reserved_slug",
+    "contract.schema_invalid",
+    "contract.standalone_manifest_frame",
+    "contract.unknown_field",
+    "contract.unknown_kind",
+    "contract.unsupported_version"
+  ],
+  "resultCodes": [
+    "archive_unavailable",
+    "busy",
+    "capacity_exceeded",
+    "conflict",
+    "denied",
+    "invalid_artifact",
+    "invalid_request",
+    "not_found",
+    "not_implemented",
+    "publication_disabled",
+    "state_drift",
+    "unavailable"
+  ]
+}

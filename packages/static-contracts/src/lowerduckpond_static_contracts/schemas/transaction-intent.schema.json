@@ -1,0 +1,339 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.lowerduckpond.net/static-publication/v1alpha1/transaction-intent.schema.json",
+  "$defs": {
+    "archiveRecovery": {
+      "additionalProperties": false,
+      "properties": {
+        "candidateArchiveRecord": {
+          "$ref": "archive-record.schema.json"
+        },
+        "candidateManifest": {
+          "$ref": "site.schema.json",
+          "properties": {
+            "spec": {
+              "properties": {
+                "desiredState": {
+                  "const": "archived"
+                }
+              },
+              "required": [
+                "desiredState"
+              ]
+            }
+          }
+        },
+        "candidateRouteSet": {
+          "const": "absent"
+        },
+        "candidateRuntimeGenerationId": {
+          "$ref": "common.schema.json#/$defs/uuidv7"
+        },
+        "sourceManifest": {
+          "$ref": "site.schema.json",
+          "properties": {
+            "spec": {
+              "properties": {
+                "desiredState": {
+                  "enum": [
+                    "active",
+                    "suspended"
+                  ]
+                }
+              },
+              "required": [
+                "desiredState"
+              ]
+            }
+          }
+        },
+        "sourceObservedState": {
+          "$ref": "tenant-observed-state.schema.json",
+          "properties": {
+            "observedState": {
+              "enum": [
+                "active",
+                "suspended"
+              ]
+            }
+          }
+        },
+        "sourceRouteSet": {
+          "enum": [
+            "both",
+            "absent"
+          ],
+          "type": "string"
+        },
+        "sourceRuntimeGenerationId": {
+          "$ref": "common.schema.json#/$defs/uuidv7"
+        }
+      },
+      "required": [
+        "sourceManifest",
+        "sourceObservedState",
+        "sourceRuntimeGenerationId",
+        "sourceRouteSet",
+        "candidateManifest",
+        "candidateArchiveRecord",
+        "candidateRuntimeGenerationId",
+        "candidateRouteSet"
+      ],
+      "type": "object"
+    },
+    "lifecycleRecovery": {
+      "additionalProperties": false,
+      "properties": {
+        "candidateObservedState": {
+          "oneOf": [
+            {
+              "$ref": "tenant-observed-state.schema.json"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "candidateRouteSet": {
+          "enum": [
+            "both",
+            "absent"
+          ],
+          "type": "string"
+        },
+        "candidateRuntimeGenerationId": {
+          "$ref": "common.schema.json#/$defs/uuidv7"
+        },
+        "sourceObservedState": {
+          "oneOf": [
+            {
+              "$ref": "tenant-observed-state.schema.json"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sourceRouteSet": {
+          "enum": [
+            "both",
+            "absent"
+          ],
+          "type": "string"
+        },
+        "sourceRuntimeGenerationId": {
+          "$ref": "common.schema.json#/$defs/uuidv7"
+        }
+      },
+      "required": [
+        "sourceObservedState",
+        "sourceRuntimeGenerationId",
+        "sourceRouteSet",
+        "candidateObservedState",
+        "candidateRuntimeGenerationId",
+        "candidateRouteSet"
+      ],
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "else": {
+        "properties": {
+          "sourceManifestDigest": {
+            "$ref": "common.schema.json#/$defs/manifestDigest"
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "create"
+          }
+        },
+        "required": [
+          "operation"
+        ]
+      },
+      "then": {
+        "properties": {
+          "sourceManifestDigest": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "else": {
+        "properties": {
+          "candidateManifestDigest": {
+            "$ref": "common.schema.json#/$defs/manifestDigest"
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "delete"
+          }
+        },
+        "required": [
+          "operation"
+        ]
+      },
+      "then": {
+        "properties": {
+          "candidateManifestDigest": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "else": {
+        "properties": {
+          "archiveRecovery": {
+            "type": "null"
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "archive"
+          }
+        },
+        "required": [
+          "operation"
+        ]
+      },
+      "then": {
+        "properties": {
+          "archiveRecovery": {
+            "$ref": "#/$defs/archiveRecovery"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "enum": [
+              "archive",
+              "export"
+            ]
+          }
+        },
+        "required": [
+          "operation"
+        ]
+      },
+      "then": {
+        "properties": {
+          "lifecycleRecovery": {
+            "type": "null"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "lifecycleRecovery": {
+            "$ref": "#/$defs/lifecycleRecovery"
+          }
+        }
+      }
+    }
+  ],
+  "properties": {
+    "apiVersion": {
+      "$ref": "common.schema.json#/$defs/apiVersion"
+    },
+    "archiveRecovery": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/archiveRecovery"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "candidateManifestDigest": {
+      "oneOf": [
+        {
+          "$ref": "common.schema.json#/$defs/manifestDigest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "correlationId": {
+      "$ref": "common.schema.json#/$defs/correlationId"
+    },
+    "createdAt": {
+      "$ref": "common.schema.json#/$defs/timestamp"
+    },
+    "intentId": {
+      "$ref": "common.schema.json#/$defs/uuidv7"
+    },
+    "kind": {
+      "const": "TransactionIntent"
+    },
+    "lifecycleRecovery": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/lifecycleRecovery"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "operation": {
+      "$ref": "common.schema.json#/$defs/operation"
+    },
+    "phase": {
+      "enum": [
+        "prepared",
+        "runtime-selected",
+        "restart-required",
+        "candidate-starting",
+        "rollback-restart-required",
+        "recovery-starting",
+        "state-committed"
+      ],
+      "type": "string"
+    },
+    "sourceManifestDigest": {
+      "oneOf": [
+        {
+          "$ref": "common.schema.json#/$defs/manifestDigest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "tenantId": {
+      "$ref": "common.schema.json#/$defs/uuidv7"
+    }
+  },
+  "required": [
+    "apiVersion",
+    "kind",
+    "intentId",
+    "tenantId",
+    "correlationId",
+    "operation",
+    "archiveRecovery",
+    "lifecycleRecovery",
+    "sourceManifestDigest",
+    "candidateManifestDigest",
+    "phase",
+    "createdAt"
+  ],
+  "type": "object"
+}

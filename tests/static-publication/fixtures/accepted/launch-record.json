@@ -1,0 +1,21 @@
+{
+  "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+  "kind": "LaunchRecord",
+  "configurationVersion": "17418c8976e8a26fb46e6caa879e8e5fef4be229",
+  "trustedPlatformDomain": "lowerduckpond.net",
+  "aliasSuffix": "lowerduckpond.com",
+  "tenantOriginSuffix": "lowerduckpond.com",
+  "cookiePolicyVersion": "lowerduckpond-cookie-policy-v1",
+  "edgePolicyVersion": "lowerduckpond-edge-policy-v1",
+  "cloudflareNetworkSetDigest": {
+    "format": "lowerduckpond-cloudflare-network-set-v1",
+    "algorithm": "sha256",
+    "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "acceptanceEvidenceDigest": {
+    "format": "lowerduckpond-m3-acceptance-v1",
+    "algorithm": "sha256",
+    "value": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "launchedAt": "2026-08-29T12:00:00Z"
+}

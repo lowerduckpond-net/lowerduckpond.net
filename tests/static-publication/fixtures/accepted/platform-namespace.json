@@ -1,0 +1,6 @@
+{
+  "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+  "kind": "PlatformNamespace",
+  "tenantOriginSuffix": "lowerduckpond.com",
+  "initializedAt": "2026-08-29T12:00:00Z"
+}
