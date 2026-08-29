@@ -506,17 +506,14 @@ def _validate_tree(
 DEFAULT_RELEASE_TREE_LIMITS: Final = ReleaseTreeLimits()
 
 
-def measure_release_tree(
+def _measure_release_tree(
     root: Path,
     *,
-    lock_manager: LockManager,
     expected_owner: int,
     limits: ReleaseTreeLimits = DEFAULT_RELEASE_TREE_LIMITS,
     measurement_hook: MeasurementHook | None = None,
 ) -> ReleaseTreeMeasurement:
     """Measure one normalized, stable release without following namespace links."""
-
-    lock_manager.require_held(LockName.PUBLICATION)
 
     try:
         root_fd = os.open(root, _DIRECTORY_FLAGS)
@@ -580,3 +577,41 @@ def measure_release_tree(
         )
     finally:
         os.close(root_fd)
+
+
+def measure_release_tree(
+    root: Path,
+    *,
+    lock_manager: LockManager,
+    expected_owner: int,
+    limits: ReleaseTreeLimits = DEFAULT_RELEASE_TREE_LIMITS,
+    measurement_hook: MeasurementHook | None = None,
+) -> ReleaseTreeMeasurement:
+    """Measure an authoritative release while publication remains excluded."""
+
+    lock_manager.require_held(LockName.PUBLICATION)
+    return _measure_release_tree(
+        root,
+        expected_owner=expected_owner,
+        limits=limits,
+        measurement_hook=measurement_hook,
+    )
+
+
+def measure_release_tree_snapshot(
+    root: Path,
+    *,
+    lock_manager: LockManager,
+    expected_owner: int,
+    limits: ReleaseTreeLimits = DEFAULT_RELEASE_TREE_LIMITS,
+    measurement_hook: MeasurementHook | None = None,
+) -> ReleaseTreeMeasurement:
+    """Measure a private export snapshot while its exclusive spool lock is held."""
+
+    lock_manager.require_held(LockName.EXPORT)
+    return _measure_release_tree(
+        root,
+        expected_owner=expected_owner,
+        limits=limits,
+        measurement_hook=measurement_hook,
+    )

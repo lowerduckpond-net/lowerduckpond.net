@@ -603,6 +603,19 @@ round-trip properties, corrupt streams, declared-size lies, trailing streams,
 source mutation, capacity failure, and cleanup behavior are executable tests;
 the result remains unpublished and callable only as a library.
 
+The third review slice constructs the canonical v1 portable bundle from a
+private, normalized release snapshot while the exclusive export lock remains
+held. It validates and JCS-serializes the manifest, measures the source through
+the same release-tree digest contract, hashes every file through stable
+descriptors, and writes the exact stored-ZIP headers, fixed metadata order,
+timestamps, modes, checksum manifest, and central directory required by ADR
+0019. Output is a new one-link `0600` inode beneath a verified private parent,
+is bounded at 120 MiB before every write, and is removed on any failure. A
+second complete source measurement and generation check precede success.
+Pinned byte vectors prove that creation order, filesystem timestamps, inode
+identity, and JSON member order cannot change the bundle or its separately
+named artifact, manifest, release-tree, and bundle digests.
+
 ### M3.5: install the dark host boundary
 
 Ansible installs a hash-pinned host-agent artifact in a versioned root-owned
