@@ -40,6 +40,8 @@ _LOCAL_FLAGS_OFFSET = 6
 _LOCAL_METHOD_OFFSET = 8
 _LOCAL_COMPRESSED_SIZE_OFFSET = 18
 _LOCAL_EXPANDED_SIZE_OFFSET = 22
+_FINAL_PATH_STAT_CALL = 2
+_MAXIMUM_ENTRIES = 5_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -516,6 +518,40 @@ def test_snapshot_inode_mode_owner_and_link_count_are_fail_closed(tmp_path: Path
         inspect_deployment_zip(symlink, expected_owner=_OWNER)
 
 
+def test_fifo_snapshot_fails_without_waiting_for_a_writer(tmp_path: Path) -> None:
+    path = tmp_path / "deployment.zip"
+    os.mkfifo(path, mode=0o600)
+
+    with pytest.raises(ZipStructureError, match="unsafe inode shape"):
+        inspect_deployment_zip(path, expected_owner=_OWNER)
+
+
+def test_final_named_inode_check_detects_same_inode_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = _write(tmp_path, _archive(_MemberSpec(name=b"index.html", content=b"home")))
+    real_stat = Path.stat
+    path_stats = 0
+
+    def mutate_before_final_stat(
+        candidate: Path,
+        *,
+        follow_symlinks: bool = True,
+    ) -> os.stat_result:
+        nonlocal path_stats
+        if candidate == path:
+            path_stats += 1
+            if path_stats == _FINAL_PATH_STAT_CALL:
+                os.utime(path, ns=(1_000_000_000, 1_000_000_000))
+        return real_stat(candidate, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(Path, "stat", mutate_before_final_stat)
+
+    with pytest.raises(ZipStructureError, match="changed during structural inspection"):
+        inspect_deployment_zip(path, expected_owner=_OWNER)
+
+
 def test_limits_are_tighten_only_nonnegative_integers() -> None:
     with pytest.raises(ValueError, match="cannot weaken"):
         ZipLimits(maximum_entries=5_001)
@@ -554,6 +590,33 @@ def test_local_flag_mutation_is_rejected(tmp_path: Path) -> None:
     changed = _replace_u16(data, _LOCAL_FLAGS_OFFSET, _UTF8_FLAG)
     with pytest.raises(ZipStructureError, match="local header disagrees"):
         _inspect(tmp_path, changed)
+
+
+def test_dos_volume_label_is_rejected_as_a_special_inode(tmp_path: Path) -> None:
+    with pytest.raises(ZipStructureError, match="volume-label"):
+        _inspect(
+            tmp_path,
+            _archive(
+                _MemberSpec(
+                    name=b"index.html",
+                    made_by=_DECODER_VERSION,
+                    external_attributes=0x08,
+                )
+            ),
+        )
+
+
+def test_shared_implicit_parents_coalesce_at_the_entry_boundary(tmp_path: Path) -> None:
+    parent = "/".join(f"p{index}" for index in range(31))
+    maximum_files = _MAXIMUM_ENTRIES - 31 - 1
+    members = [_MemberSpec(name=b"index.html")]
+    members.extend(
+        _MemberSpec(name=f"{parent}/f{index:04}.txt".encode()) for index in range(maximum_files)
+    )
+
+    structure = _inspect(tmp_path, _archive(*members))
+
+    assert structure.materialized_entry_count == _MAXIMUM_ENTRIES
 
 
 @given(strategies.binary(max_size=2_048))

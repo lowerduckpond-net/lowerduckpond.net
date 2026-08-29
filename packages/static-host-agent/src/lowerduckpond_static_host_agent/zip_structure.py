@@ -43,6 +43,7 @@ _MAXIMUM_DECODER_VERSION: Final = 20
 _DRIVE_PREFIX_BYTES: Final = 2
 _UNIX_MADE_BY_HOST: Final = 3
 _NTFS_TIMESTAMP_VALUE_BYTES: Final = 32
+_SNAPSHOT_OPEN_FLAGS: Final = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC
 
 
 class ZipStructureError(RuntimeError):
@@ -202,7 +203,7 @@ def inspect_deployment_zip(
 
     descriptor: int | None = None
     try:
-        descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+        descriptor = os.open(path, _SNAPSHOT_OPEN_FLAGS)
         before = _validate_snapshot(
             os.fstat(descriptor),
             expected_owner=expected_owner,
@@ -222,10 +223,9 @@ def inspect_deployment_zip(
             limits=limits,
         )
         current = path.stat(follow_symlinks=False)
-        if _metadata_generation(before) != _metadata_generation(after) or (
-            after.st_dev,
-            after.st_ino,
-        ) != (current.st_dev, current.st_ino):
+        if _metadata_generation(before) != _metadata_generation(after) or _metadata_generation(
+            after
+        ) != _metadata_generation(current):
             raise ZipStructureError("ZIP snapshot changed during structural inspection")
         return ZipStructure(
             archive_bytes=structure.archive_bytes,
@@ -492,7 +492,10 @@ def _entry_type(
     host = made_by >> 8
     unix_mode = (external_attributes >> 16) & 0xFFFF
     file_type = stat.S_IFMT(unix_mode)
+    dos_volume_label = bool(external_attributes & 0x08)
     dos_directory = bool(external_attributes & 0x10)
+    if dos_volume_label:
+        raise ZipStructureError("ZIP entry has a DOS volume-label inode type")
     if host == _UNIX_MADE_BY_HOST and file_type:
         if stat.S_ISDIR(unix_mode):
             attribute_type = ZipEntryType.DIRECTORY
@@ -529,6 +532,8 @@ def _materialized_paths(
             raise ZipStructureError("ZIP member paths have a case-folding collision")
         if any(item.entry_type is not claim.entry_type for item in established):
             raise ZipStructureError("ZIP member path is both a file and a directory")
+        if not claim.explicit and established:
+            return
         if claim.explicit and any(item.explicit for item in established):
             raise ZipStructureError("ZIP contains a duplicate explicit member")
         established.append(claim)
