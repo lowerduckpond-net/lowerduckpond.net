@@ -9,13 +9,17 @@ from pathlib import Path
 import pytest
 from lowerduckpond_static_contracts import request_digest
 from lowerduckpond_static_host_agent import (
+    CapacityRejectedError,
     CorrelationAdmission,
     CorrelationConflictError,
     CorrelationError,
     CorrelationRateLimitError,
+    FilesystemCapacity,
+    HostCapacityLimits,
     LockManager,
     StateAdmissionRejectedError,
     StateInventoryLimits,
+    StateRecordError,
     StateRecordPath,
     StateRepository,
 )
@@ -24,6 +28,23 @@ _FIXTURE_ROOT = Path(__file__).parents[3] / "tests/static-publication/fixtures/a
 _BASE_TIME = datetime(2026, 8, 29, 12, 0, 1, tzinfo=UTC)
 _DIRECTORY_MODE = 0o700
 _PAIR_RECORD_COUNT = 2
+
+
+@pytest.fixture(autouse=True)
+def _state_filesystem_with_inode_accounting(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Model the production ext4 inode counters absent from the test overlay."""
+
+    monkeypatch.setattr(
+        "lowerduckpond_static_host_agent.repository._StateTransaction.measure_filesystem_capacity",
+        lambda _transaction: FilesystemCapacity(
+            device=1,
+            fragment_size=4096,
+            total_blocks=100_000_000,
+            available_blocks=80_000_000,
+            total_inodes=1_000_000,
+            available_inodes=900_000,
+        ),
+    )
 
 
 def _mkdir(path: Path) -> None:
@@ -320,6 +341,88 @@ def test_new_correlation_cannot_reuse_a_job_identity_repaired_in_this_admission(
                 candidate,
                 now=_BASE_TIME + timedelta(minutes=1),
             )
+
+
+def test_duplicate_correlation_job_claims_fail_before_any_repair(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    first = _candidate(1)
+    second = _candidate(2)
+    second["jobId"] = first["jobId"]
+    second_request = second["request"]
+    assert type(second_request) is dict
+    second["requestDigest"] = request_digest(second_request).to_dict()
+    first_request = first["request"]
+    assert type(first_request) is dict
+
+    with _repository(root) as repository:
+        repository.create_immutable(
+            StateRecordPath.authorization_correlation(first_request["correlationId"]),
+            first,
+        )
+        repository.create_immutable(
+            StateRecordPath.authorization_correlation(second_request["correlationId"]),
+            second,
+        )
+        with pytest.raises(CorrelationError, match="multiple correlations"):
+            CorrelationAdmission(repository).resolve(first, now=_BASE_TIME)
+        inventory = repository.measure_authorization_records()
+
+    assert inventory.job_ids == ()
+
+
+@pytest.mark.parametrize("interrupted_repair", [False, True])
+@pytest.mark.parametrize("floor", ["block", "inode"])
+def test_correlation_writes_respect_filesystem_free_capacity_floors(
+    tmp_path: Path,
+    interrupted_repair: bool,
+    floor: str,
+) -> None:
+    root = _state_root(tmp_path)
+    candidate = _candidate(1)
+    request = candidate["request"]
+    assert type(request) is dict
+    if interrupted_repair:
+        with _repository(root) as repository:
+            repository.create_immutable(
+                StateRecordPath.authorization_correlation(request["correlationId"]),
+                candidate,
+            )
+
+    limits = (
+        HostCapacityLimits(minimum_available_bytes=1 << 60)
+        if floor == "block"
+        else HostCapacityLimits(minimum_available_inodes=1_000_000)
+    )
+    with _repository(root) as repository:
+        with pytest.raises(CapacityRejectedError, match=f"free-{floor}"):
+            CorrelationAdmission(repository, capacity_limits=limits).resolve(
+                candidate,
+                now=_BASE_TIME,
+            )
+        inventory = repository.measure_authorization_records()
+
+    assert inventory.job_ids == ()
+    assert len(inventory.correlation_ids) == int(interrupted_repair)
+
+
+def test_correlation_record_cannot_be_replaced_through_repository_cas(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    candidate = _candidate(1)
+    request = candidate["request"]
+    assert type(request) is dict
+    path = StateRecordPath.authorization_correlation(request["correlationId"])
+
+    with _repository(root) as repository:
+        created = repository.create_immutable(path, candidate)
+        replacement = deepcopy(candidate)
+        replacement["operatorPrincipal"] = "other@example.test"
+        with pytest.raises(StateRecordError, match="immutable"):
+            repository.compare_and_swap(path, created.revision, replacement)
+        established = repository.read(path)
+
+    assert established.document == candidate
 
 
 def test_new_admission_requires_pending_phase_and_current_timestamp(tmp_path: Path) -> None:

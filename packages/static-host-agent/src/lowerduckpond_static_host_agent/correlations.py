@@ -14,6 +14,14 @@ from lowerduckpond_static_contracts import (
     validate_uuid7,
 )
 
+from lowerduckpond_static_host_agent.capacity import (
+    DEFAULT_HOST_CAPACITY_LIMITS,
+    CapacityReservation,
+    FilesystemCapacity,
+    HostCapacityLimits,
+    ReleaseCapacityUsage,
+    admit_release_capacity,
+)
 from lowerduckpond_static_host_agent.locks import LockMode
 from lowerduckpond_static_host_agent.repository import (
     StateRecordPath,
@@ -66,6 +74,8 @@ class _CorrelationTransaction(Protocol):
 
     def allocation_upper_bound(self, byte_count: int) -> int: ...
 
+    def measure_filesystem_capacity(self) -> FilesystemCapacity: ...
+
     def admit_inventory(
         self,
         reservation: StateInventoryReservation,
@@ -82,9 +92,11 @@ class CorrelationAdmission:
         repository: StateRepository,
         *,
         limits: StateInventoryLimits = DEFAULT_STATE_INVENTORY_LIMITS,
+        capacity_limits: HostCapacityLimits = DEFAULT_HOST_CAPACITY_LIMITS,
     ) -> None:
         self._repository = repository
         self._limits = limits
+        self._capacity_limits = capacity_limits
 
     def resolve(
         self,
@@ -108,6 +120,7 @@ class CorrelationAdmission:
                 transaction,
                 inventory=inventory,
                 limits=self._limits,
+                capacity_limits=self._capacity_limits,
             )
             established = correlations.get(correlation_id)
             if established is not None:
@@ -133,12 +146,14 @@ class CorrelationAdmission:
                 accepted_at,
             )
             allocation = transaction.allocation_upper_bound(len(canonical))
-            transaction.admit_inventory(
+            _admit_writes(
+                transaction,
                 StateInventoryReservation(
                     authorization_records=2,
                     authorization_allocated_bytes=2 * allocation,
                 ),
-                limits=self._limits,
+                state_limits=self._limits,
+                capacity_limits=self._capacity_limits,
             )
             correlation = transaction.create_immutable(
                 StateRecordPath.authorization_correlation(correlation_id),
@@ -189,6 +204,7 @@ def _reconcile_pairs(
     *,
     inventory: AuthorizationRecordInventory,
     limits: StateInventoryLimits,
+    capacity_limits: HostCapacityLimits,
 ) -> tuple[dict[str, dict[str, object]], int]:
     # These concrete attributes are provided by the repository transaction and
     # bounded AuthorizationRecordInventory. Keeping reconciliation here avoids
@@ -213,6 +229,13 @@ def _reconcile_pairs(
             raise CorrelationError("multiple jobs claim one correlation identity")
         jobs_by_correlation[correlation_id] = job
 
+    correlations_by_job: dict[str, str] = {}
+    for correlation_id, correlation in correlations.items():
+        job_id = _job_id(correlation)
+        established_correlation = correlations_by_job.setdefault(job_id, correlation_id)
+        if established_correlation != correlation_id:
+            raise CorrelationError("multiple correlations claim one job identity")
+
     repairs: list[tuple[StateRecordPath, dict[str, object]]] = []
     for correlation_id, correlation in correlations.items():
         job_id = _job_id(correlation)
@@ -235,16 +258,37 @@ def _reconcile_pairs(
             transaction.allocation_upper_bound(len(canonical_json_bytes(document)))
             for _path, document in repairs
         )
-        transaction.admit_inventory(
+        _admit_writes(
+            transaction,
             StateInventoryReservation(
                 authorization_records=len(repairs),
                 authorization_allocated_bytes=reservation_bytes,
             ),
-            limits=limits,
+            state_limits=limits,
+            capacity_limits=capacity_limits,
         )
         for path, document in repairs:
             transaction.create_immutable(path, document)
     return correlations, len(repairs)
+
+
+def _admit_writes(
+    transaction: _CorrelationTransaction,
+    reservation: StateInventoryReservation,
+    *,
+    state_limits: StateInventoryLimits,
+    capacity_limits: HostCapacityLimits,
+) -> None:
+    transaction.admit_inventory(reservation, limits=state_limits)
+    admit_release_capacity(
+        ReleaseCapacityUsage(()),
+        CapacityReservation(
+            allocated_bytes=reservation.authorization_allocated_bytes,
+            unique_inodes=reservation.authorization_records,
+        ),
+        transaction.measure_filesystem_capacity(),
+        limits=capacity_limits,
+    )
 
 
 def _retry_binding(document: dict[str, object]) -> bytes:

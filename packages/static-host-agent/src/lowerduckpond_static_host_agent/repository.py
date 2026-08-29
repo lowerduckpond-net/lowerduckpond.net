@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -22,6 +23,10 @@ from lowerduckpond_static_contracts import (
     validate_uuid7,
 )
 
+from lowerduckpond_static_host_agent.capacity import (
+    FilesystemCapacity,
+    measure_filesystem_capacity_descriptor,
+)
 from lowerduckpond_static_host_agent.durable import DurableDirectory
 from lowerduckpond_static_host_agent.locks import LockManager, LockMode, LockName
 from lowerduckpond_static_host_agent.state_inventory import (
@@ -294,6 +299,21 @@ class StateRecordPath:
         ):
             raise StateRecordError("intent identity does not match its path")
 
+    @property
+    def allows_replacement(self) -> bool:
+        """Return whether this record kind has a committed mutable lifecycle."""
+
+        return self.name in {
+            _StateRecordName.PLATFORM_NAMESPACE,
+            _StateRecordName.PLATFORM_LAUNCH,
+            _StateRecordName.TENANT_DESIRED,
+            _StateRecordName.TENANT_OBSERVED,
+            _StateRecordName.AUTHORIZATION_JOB,
+            _StateRecordName.TRANSACTION_INTENT,
+            _StateRecordName.ARCHIVE_CONSTRUCTION_INTENT,
+            _StateRecordName.ARCHIVE_RETIREMENT_INTENT,
+        }
+
 
 def _validate_authorization_binding(
     name: _StateRecordName,
@@ -450,6 +470,8 @@ class StateRepository:
         *,
         blocking: bool = False,
     ) -> StoredContract:
+        if not path.allows_replacement:
+            raise StateRecordError("immutable state-record path cannot be replaced")
         candidate = self._encode(path, document)
         with self.transaction(mode=LockMode.EXCLUSIVE, blocking=blocking) as transaction:
             return transaction._compare_and_swap_bytes(path, expected_revision, candidate)
@@ -596,6 +618,16 @@ class _StateTransaction:
         self._require_exclusive()
         return self._repository._durable.allocation_upper_bound(byte_count)
 
+    def measure_filesystem_capacity(self) -> FilesystemCapacity:
+        """Measure the state filesystem through the verified root descriptor."""
+
+        self._require_exclusive()
+        descriptor = self._repository._durable.duplicate_descriptor()
+        try:
+            return measure_filesystem_capacity_descriptor(descriptor)
+        finally:
+            os.close(descriptor)
+
     def _compare_and_swap_bytes(
         self,
         path: StateRecordPath,
@@ -603,6 +635,8 @@ class _StateTransaction:
         candidate: bytes,
     ) -> StoredContract:
         self._require_exclusive()
+        if not path.allows_replacement:
+            raise StateRecordError("immutable state-record path cannot be replaced")
         current = self._repository._read_locked(path)
         if current.revision != expected_revision:
             raise StateConflictError("authoritative state changed before commit")

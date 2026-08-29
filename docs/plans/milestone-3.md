@@ -486,7 +486,13 @@ and pending phase; a changed binding fails closed. New identities reserve both
 records and their filesystem-rounded allocation before mutation. Their durable
 acceptance timestamps rebuild both the 60-per-rolling-hour ceiling and the
 five-token burst bucket after restart; clock rollback closes only new-ID
-admission, not an exact established retry.
+admission, not an exact established retry. New pairs and interrupted-pair
+repairs also reserve their blocks and inodes against the host's absolute and
+percentage free-space floors before either immutable write. Reconciliation
+rejects duplicate correlation-to-job authority before constructing repairs,
+and compare-and-swap is available only to record kinds with a committed mutable
+lifecycle; correlation indexes, results, deployments, and archives cannot be
+replaced through the repository.
 
 Hash-chained audit and intent discovery and recovery remain in M3.3 and do not
 move to a later phase.
