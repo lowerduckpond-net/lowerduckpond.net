@@ -24,15 +24,18 @@ from lowerduckpond_static_host_agent import (
     LockOrderError,
     PortableBundle,
     PortableBundleError,
+    PortableBundleImport,
     ReleaseCapacityUsage,
     ZipExtractionError,
     ZipLimits,
     ZipMember,
     ZipStructureError,
     build_portable_bundle,
-    import_portable_bundle,
     inspect_deployment_zip,
     inspect_portable_bundle,
+)
+from lowerduckpond_static_host_agent import (
+    import_portable_bundle as _import_portable_bundle,
 )
 
 _OWNER = os.geteuid()
@@ -140,6 +143,31 @@ def _build(
             expected_owner=_OWNER,
         )
     return output_parent / output_name, bundle
+
+
+def _import_with_intake_lock(
+    path: Path,
+    *,
+    staging_parent: Path,
+    staging_name: str,
+    expected_owner: int,
+    retained_usage: ReleaseCapacityUsage,
+) -> PortableBundleImport:
+    lock_root = path.parent / ".intake-locks"
+    lock_root.mkdir(mode=_PRIVATE_MODE, exist_ok=True)
+    lock_root.chmod(_PRIVATE_MODE)
+    with (
+        LockManager.initialize(lock_root, expected_owner=expected_owner) as manager,
+        manager.acquire(LockName.INTAKE),
+    ):
+        return _import_portable_bundle(
+            path,
+            staging_parent=staging_parent,
+            staging_name=staging_name,
+            expected_owner=expected_owner,
+            retained_usage=retained_usage,
+            lock_manager=manager,
+        )
 
 
 def _populated_release(tmp_path: Path, name: str = "release") -> Path:
@@ -800,7 +828,7 @@ def test_importer_materializes_only_content_as_an_unpublished_tree(tmp_path: Pat
     path, bundle = _build(tmp_path, root)
     staging_parent = _private_directory(tmp_path, "staging")
 
-    imported = import_portable_bundle(
+    imported = _import_with_intake_lock(
         path,
         staging_parent=staging_parent,
         staging_name="candidate",
@@ -821,6 +849,29 @@ def test_importer_materializes_only_content_as_an_unpublished_tree(tmp_path: Pat
     assert not (candidate / "manifest.json").exists()
     assert stat.S_IMODE(candidate.stat().st_mode) == _DIRECTORY_MODE
     assert stat.S_IMODE((candidate / "index.html").stat().st_mode) == _FILE_MODE
+
+
+def test_import_requires_the_exclusive_intake_lock(tmp_path: Path) -> None:
+    root = _populated_release(tmp_path)
+    path, _bundle = _build(tmp_path, root)
+    staging_parent = _private_directory(tmp_path, "staging")
+    lock_root = _private_directory(tmp_path, "intake-locks")
+
+    with (
+        LockManager.initialize(lock_root, expected_owner=_OWNER) as manager,
+        manager.acquire(LockName.INTAKE, mode=LockMode.SHARED),
+        pytest.raises(LockOrderError, match="exclusive"),
+    ):
+        _import_portable_bundle(
+            path,
+            staging_parent=staging_parent,
+            staging_name="candidate",
+            expected_owner=_OWNER,
+            retained_usage=ReleaseCapacityUsage(()),
+            lock_manager=manager,
+        )
+
+    assert list(staging_parent.iterdir()) == []
 
 
 def test_portable_bundle_is_not_an_ordinary_deployment_zip(tmp_path: Path) -> None:
@@ -963,7 +1014,7 @@ def test_failed_import_removes_the_unpublished_candidate(
     monkeypatch.setattr(zip_structure_module, "_write_extracted", fail_write)
 
     with pytest.raises(PortableBundleError, match="could not complete safely"):
-        import_portable_bundle(
+        _import_with_intake_lock(
             path,
             staging_parent=staging_parent,
             staging_name="candidate",
@@ -1015,7 +1066,7 @@ def test_import_detects_source_generation_change_and_removes_candidate(
     monkeypatch.setattr(zip_structure_module, "_write_extracted", mutate_source)
 
     with pytest.raises(PortableBundleError, match="changed during import"):
-        import_portable_bundle(
+        _import_with_intake_lock(
             path,
             staging_parent=staging_parent,
             staging_name="candidate",
@@ -1047,7 +1098,7 @@ def test_import_revalidates_the_named_staging_parent_before_success(
     monkeypatch.setattr(zip_structure_module, "_validate_remaining_capacity", replace_parent)
 
     with pytest.raises(PortableBundleError, match="extraction contract") as raised:
-        import_portable_bundle(
+        _import_with_intake_lock(
             path,
             staging_parent=staging_parent,
             staging_name="candidate",
@@ -1084,7 +1135,7 @@ def test_import_does_not_remove_a_replacement_staging_candidate(
     monkeypatch.setattr(zip_structure_module, "_validate_remaining_capacity", replace_candidate)
 
     with pytest.raises(PortableBundleError, match="extraction contract") as raised:
-        import_portable_bundle(
+        _import_with_intake_lock(
             path,
             staging_parent=staging_parent,
             staging_name="candidate",

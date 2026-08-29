@@ -22,6 +22,7 @@ from lowerduckpond_static_host_agent.capacity import (
     admit_release_capacity,
     measure_filesystem_capacity_descriptor,
 )
+from lowerduckpond_static_host_agent.locks import LockManager, LockMode, LockName
 
 MEBIBYTE: Final = 1024 * 1024
 _MAXIMUM_ARCHIVE_BYTES: Final = 100 * MEBIBYTE
@@ -285,12 +286,14 @@ def extract_deployment_zip(  # noqa: PLR0913,PLR0915 - explicit extraction trust
     staging_name: str,
     expected_owner: int,
     retained_usage: ReleaseCapacityUsage,
+    lock_manager: LockManager,
     expected_mode: int = 0o600,
     limits: ZipLimits = DEFAULT_ZIP_LIMITS,
     capacity_limits: HostCapacityLimits = DEFAULT_HOST_CAPACITY_LIMITS,
 ) -> ZipExtraction:
     """Structurally admit and stream one ZIP into a new descriptor-relative tree."""
 
+    lock_manager.require_held(LockName.INTAKE, mode=LockMode.EXCLUSIVE)
     _validate_staging_name(staging_name)
     source_fd: int | None = None
     parent_fd: int | None = None
@@ -338,11 +341,7 @@ def extract_deployment_zip(  # noqa: PLR0913,PLR0915 - explicit extraction trust
 
         os.mkdir(staging_name, mode=_DIRECTORY_MODE, dir_fd=parent_fd)
         created = True
-        created_identity = _inode_identity(
-            os.stat(staging_name, dir_fd=parent_fd, follow_symlinks=False)
-        )
-        root_fd = os.open(staging_name, _DIRECTORY_OPEN_FLAGS, dir_fd=parent_fd)
-        created_identity = _inode_identity(os.fstat(root_fd))
+        root_fd, created_identity = _open_created_staging(parent_fd, staging_name)
         os.fchmod(root_fd, _DIRECTORY_MODE)
         _extract_members(
             source,
@@ -1242,6 +1241,15 @@ def _validate_staging_result(
     named_metadata = os.stat(staging_name, dir_fd=parent_fd, follow_symlinks=False)
     if _metadata_generation(root_metadata) != _metadata_generation(named_metadata):
         raise ZipExtractionError("ZIP staging candidate changed during extraction")
+
+
+def _open_created_staging(parent_fd: int, name: str) -> tuple[int, tuple[int, int]]:
+    created_identity = _inode_identity(os.stat(name, dir_fd=parent_fd, follow_symlinks=False))
+    root_fd = os.open(name, _DIRECTORY_OPEN_FLAGS, dir_fd=parent_fd)
+    if _inode_identity(os.fstat(root_fd)) != created_identity:
+        os.close(root_fd)
+        raise ZipExtractionError("ZIP staging candidate changed while it was opened")
+    return root_fd, created_identity
 
 
 def _inode_identity(metadata: os.stat_result) -> tuple[int, int]:

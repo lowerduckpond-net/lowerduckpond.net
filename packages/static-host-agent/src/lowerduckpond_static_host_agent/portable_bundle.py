@@ -409,12 +409,14 @@ def import_portable_bundle(  # noqa: PLR0913,PLR0915 - explicit import trust wor
     staging_name: str,
     expected_owner: int,
     retained_usage: ReleaseCapacityUsage,
+    lock_manager: LockManager,
     expected_mode: int = _OUTPUT_MODE,
     limits: _zip.ZipLimits = _zip.DEFAULT_ZIP_LIMITS,
     capacity_limits: HostCapacityLimits = DEFAULT_HOST_CAPACITY_LIMITS,
 ) -> PortableBundleImport:
     """Validate and extract only content/ as a new unpublished deployment tree."""
 
+    lock_manager.require_held(LockName.INTAKE, mode=LockMode.EXCLUSIVE)
     _zip._validate_staging_name(staging_name)
     source_fd: int | None = None
     parent_fd: int | None = None
@@ -454,11 +456,7 @@ def import_portable_bundle(  # noqa: PLR0913,PLR0915 - explicit import trust wor
         )
         os.mkdir(staging_name, mode=_DIRECTORY_MODE, dir_fd=parent_fd)
         created = True
-        created_identity = _zip._inode_identity(
-            os.stat(staging_name, dir_fd=parent_fd, follow_symlinks=False)
-        )
-        root_fd = os.open(staging_name, _zip._DIRECTORY_OPEN_FLAGS, dir_fd=parent_fd)
-        created_identity = _zip._inode_identity(os.fstat(root_fd))
+        root_fd, created_identity = _zip._open_created_staging(parent_fd, staging_name)
         os.fchmod(root_fd, _DIRECTORY_MODE)
         _zip._extract_members(
             source,
