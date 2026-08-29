@@ -72,6 +72,30 @@
               "type": "null"
             }
           }
+        },
+        {
+          "properties": {
+            "archiveRecordDigest": {
+              "$ref": "common.schema.json#/$defs/archiveRecordDigest"
+            },
+            "bucket": {
+              "$ref": "common.schema.json#/$defs/archiveBucket"
+            },
+            "emergencyReason": {
+              "maxLength": 1024,
+              "minLength": 1,
+              "type": "string"
+            },
+            "key": {
+              "$ref": "common.schema.json#/$defs/archiveKey"
+            },
+            "mode": {
+              "const": "emergency-archived"
+            },
+            "versionId": {
+              "$ref": "common.schema.json#/$defs/archiveVersionId"
+            }
+          }
         }
       ],
       "properties": {
@@ -121,7 +145,8 @@
           "enum": [
             "never-deployed",
             "archived",
-            "emergency"
+            "emergency",
+            "emergency-archived"
           ],
           "type": "string"
         },

@@ -841,6 +841,39 @@ def test_archived_deletion_evidence_preserves_destructive_object_identity() -> N
 
 
 @pytest.mark.parametrize(
+    "missing_field",
+    ["archiveRecordDigest", "bucket", "key", "versionId", "emergencyReason"],
+)
+def test_emergency_archived_deletion_preserves_reason_and_object_identity(
+    missing_field: str,
+) -> None:
+    entry = _load_object(FIXTURE_ROOT / "accepted/audit-entry.json")
+    entry["operation"] = "delete"
+    entry["deletionEvidence"] = {
+        "mode": "emergency-archived",
+        "releasedSlugs": ["duck-repair"],
+        "archiveRecordDigest": {
+            "format": "lowerduckpond-archive-record-v1",
+            "algorithm": "sha256",
+            "value": "a" * 64,
+        },
+        "bucket": "lowerduckpond-net-production-tenant-archives-4f3e6b91",
+        "key": "archives/0198d17f-6f4a-7000-8000-000000000003.zip",
+        "versionId": "3LgY0Q5G-safe-fixture-version",
+        "emergencyReason": "verified operator recovery",
+    }
+
+    assert validate_contract(entry) is ContractKind.AUDIT_ENTRY
+
+    evidence = entry["deletionEvidence"]
+    assert type(evidence) is dict
+    evidence[missing_field] = None
+    with pytest.raises(ContractError) as captured:
+        validate_contract(entry)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+@pytest.mark.parametrize(
     ("mode", "reason"),
     [("never-deployed", None), ("emergency", "verified operator override")],
 )

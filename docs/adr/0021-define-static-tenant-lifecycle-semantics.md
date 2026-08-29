@@ -150,7 +150,9 @@ authenticated administrative SSH and sudo boundary and records the operator
 identity, correlation ID, and mandatory reason before deletion begins. A reason
 or correlation ID supplied through the provisioner is never authorization for
 this path. Its immutable operation result carries emergency-administrator
-provenance rather than inventing an authorization-job ID.
+provenance rather than inventing an authorization-job ID. When emergency
+deletion unbinds an archived tenant, its permanent deletion evidence retains
+both that reason and the exact archive record and object identity.
 
 Every transition is idempotent and appends an audit event. Retrying the same
 correlation ID and request returns the established result. Automated notices,
