@@ -32,6 +32,10 @@ from lowerduckpond_static_contracts.identifiers import (
     validate_uuid7,
 )
 from lowerduckpond_static_contracts.lifecycle import LIFECYCLE_MATRIX, LifecycleState, Operation
+from lowerduckpond_static_contracts.values import (
+    ValidatedCreateRequest,
+    ValidatedPlatformNamespace,
+)
 
 API_VERSION: Final = "hosting.lowerduckpond.net/v1alpha1"
 SCHEMA_DIRECTORY: Final = files("lowerduckpond_static_contracts").joinpath("schemas")
@@ -505,6 +509,42 @@ def validate_contract(
     return kind
 
 
+def _reject_create_authority_fields(document: dict[str, object]) -> None:
+    if document.get("operation") == "create" and any(
+        field in document for field in ("id", "tenantId", "canonicalOrigin", "manifest")
+    ):
+        raise ContractError(
+            ErrorCode.CALLER_SELECTED_IDENTITY,
+            "create cannot select identity, origin, or desired state",
+        )
+
+
+def materialize_create_request(document: dict[str, object]) -> ValidatedCreateRequest:
+    """Validate and project the caller choices needed by pure create construction."""
+
+    _reject_create_authority_fields(document)
+    validate_contract(document, expected_kind=ContractKind.OPERATION_REQUEST)
+    if document["operation"] != "create":
+        raise ContractError(ErrorCode.SCHEMA_INVALID, "request is not a create operation")
+    quotas = cast(dict[str, object], document["quotas"])
+    return ValidatedCreateRequest(
+        slug=cast(str, document["slug"]),
+        storage_mib=cast(int, quotas["storageMiB"]),
+        entries=cast(int, quotas["entries"]),
+    )
+
+
+def materialize_platform_namespace(
+    document: dict[str, object],
+) -> ValidatedPlatformNamespace:
+    """Validate and project the pinned input needed by pure create construction."""
+
+    validate_contract(document, expected_kind=ContractKind.PLATFORM_NAMESPACE)
+    return ValidatedPlatformNamespace(
+        tenant_origin_suffix=cast(str, document["tenantOriginSuffix"]),
+    )
+
+
 def decode_contract(
     raw: bytes,
     *,
@@ -527,13 +567,7 @@ def decode_request(raw: bytes) -> dict[str, object]:
             ErrorCode.STANDALONE_MANIFEST_FRAME,
             "a desired manifest is not an operation request",
         )
-    if document.get("operation") == "create" and any(
-        field in document for field in ("id", "tenantId", "canonicalOrigin")
-    ):
-        raise ContractError(
-            ErrorCode.CALLER_SELECTED_IDENTITY,
-            "create cannot select tenant identity or origin",
-        )
+    _reject_create_authority_fields(document)
     validate_contract(document, expected_kind=ContractKind.OPERATION_REQUEST)
     return document
 

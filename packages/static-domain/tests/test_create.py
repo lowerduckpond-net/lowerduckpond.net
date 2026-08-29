@@ -10,9 +10,14 @@ import pytest
 from lowerduckpond_static_contracts import (
     ContractError,
     ErrorCode,
+    ValidatedCreateRequest,
+    ValidatedPlatformNamespace,
     canonical_json_bytes,
     manifest_digest,
+    materialize_create_request,
+    materialize_platform_namespace,
 )
+from lowerduckpond_static_contracts import schema as contract_schema
 from lowerduckpond_static_contracts.identifiers import MAX_DNS_HOSTNAME_BYTES
 from lowerduckpond_static_domain import construct_create_manifest
 
@@ -30,18 +35,25 @@ def _load_object(path: Path) -> dict[str, object]:
     return value
 
 
-def _inputs() -> tuple[dict[str, object], dict[str, object]]:
+def _documents() -> tuple[dict[str, object], dict[str, object]]:
     return (
         _load_object(FIXTURE_ROOT / "accepted/operation-request.json"),
         _load_object(FIXTURE_ROOT / "accepted/platform-namespace.json"),
     )
 
 
+def _inputs() -> tuple[ValidatedCreateRequest, ValidatedPlatformNamespace]:
+    request, namespace = _documents()
+    return materialize_create_request(request), materialize_platform_namespace(namespace)
+
+
 def test_create_constructor_matches_the_committed_real_producer_vector() -> None:
     vector = _load_object(VECTOR_ROOT / "root-domain-v1.json")["create"]
     assert type(vector) is dict
-    request = _load_object(FIXTURE_ROOT / vector["requestFixture"])
-    namespace = _load_object(FIXTURE_ROOT / vector["namespaceFixture"])
+    request = materialize_create_request(_load_object(FIXTURE_ROOT / vector["requestFixture"]))
+    namespace = materialize_platform_namespace(
+        _load_object(FIXTURE_ROOT / vector["namespaceFixture"])
+    )
     entropy = bytes.fromhex(str(vector["entropyHex"]))
 
     created = construct_create_manifest(
@@ -71,7 +83,7 @@ def test_create_constructor_accepts_no_identity_or_origin_parameter() -> None:
 def test_caller_selected_identity_origin_or_manifest_is_rejected_before_generation(
     field: str,
 ) -> None:
-    request, namespace = _inputs()
+    request, _namespace = _documents()
     request[field] = "caller-selected"
     calls: list[str] = []
 
@@ -84,12 +96,7 @@ def test_caller_selected_identity_origin_or_manifest_is_rejected_before_generati
         return bytes(length)
 
     with pytest.raises(ContractError) as captured:
-        construct_create_manifest(
-            request,
-            namespace,
-            clock=clock,
-            entropy=entropy,
-        )
+        materialize_create_request(request)
 
     assert captured.value.code is ErrorCode.CALLER_SELECTED_IDENTITY
     assert calls == []
@@ -99,7 +106,7 @@ def test_caller_selected_identity_origin_or_manifest_is_rejected_before_generati
 def test_invalid_authoritative_inputs_are_rejected_before_generation(
     invalid_input: str,
 ) -> None:
-    request, namespace = _inputs()
+    request, namespace = _documents()
     if invalid_input == "request":
         request["unexpected"] = True
     else:
@@ -115,18 +122,20 @@ def test_invalid_authoritative_inputs_are_rejected_before_generation(
         return bytes(length)
 
     with pytest.raises(ContractError):
-        construct_create_manifest(
-            request,
-            namespace,
-            clock=clock,
-            entropy=entropy,
-        )
+        if invalid_input == "request":
+            materialize_create_request(request)
+        else:
+            materialize_platform_namespace(namespace)
 
     assert calls == []
 
 
 def test_rejection_and_success_do_not_mutate_authoritative_inputs() -> None:
-    request, namespace = _inputs()
+    request_document, namespace_document = _documents()
+    request_document_before = deepcopy(request_document)
+    namespace_document_before = deepcopy(namespace_document)
+    request = materialize_create_request(request_document)
+    namespace = materialize_platform_namespace(namespace_document)
     request_before = deepcopy(request)
     namespace_before = deepcopy(namespace)
 
@@ -144,18 +153,37 @@ def test_rejection_and_success_do_not_mutate_authoritative_inputs() -> None:
 
     assert request == request_before
     assert namespace == namespace_before
+    assert request_document == request_document_before
+    assert namespace_document == namespace_document_before
 
-    request["slug"] = "secure"
-    rejected_before = deepcopy(request)
+    request_document["slug"] = "secure"
+    rejected_before = deepcopy(request_document)
     with pytest.raises(ContractError):
-        construct_create_manifest(
-            request,
-            namespace,
-            clock=lambda: 0,
-            entropy=_zero_entropy,
-        )
-    assert request == rejected_before
-    assert namespace == namespace_before
+        materialize_create_request(request_document)
+    assert request_document == rejected_before
+    assert namespace_document == namespace_document_before
+
+
+def test_create_constructor_cannot_read_schemas_with_cold_contract_caches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request, namespace = _inputs()
+    contract_schema._validator.cache_clear()
+    contract_schema._registry.cache_clear()
+    contract_schema._schema_documents.cache_clear()
+    contract_schema._cached_schema.cache_clear()
+
+    def reject_schema_read(_path: object) -> dict[str, object]:
+        raise AssertionError("pure create construction attempted to read a schema")
+
+    monkeypatch.setattr(contract_schema, "_read_schema", reject_schema_read)
+
+    construct_create_manifest(
+        request,
+        namespace,
+        clock=lambda: 0,
+        entropy=_zero_entropy,
+    )
 
 
 def test_generated_manifest_is_always_undeployed_without_a_deployment_reference() -> None:
