@@ -843,3 +843,11 @@ def test_schema_and_digest_value_reject_empty_format_segments(format_identifier:
 
     assert schema_error.value.code is ErrorCode.SCHEMA_INVALID
     assert value_error.value.code is ErrorCode.INVALID_IDENTIFIER
+
+
+@pytest.mark.parametrize("value", [None, 64, b"a" * 64, ["a" * 64]])
+def test_digest_rejects_non_string_values_through_the_contract_boundary(value: object) -> None:
+    with pytest.raises(ContractError) as captured:
+        Digest("lowerduckpond-result-v1", "sha256", value)  # type: ignore[arg-type]
+
+    assert captured.value.code is ErrorCode.INVALID_IDENTIFIER

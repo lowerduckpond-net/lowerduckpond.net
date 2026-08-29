@@ -29,7 +29,11 @@ class Digest:
     value: str
 
     def __post_init__(self) -> None:
-        if self.algorithm != "sha256" or SHA256_PATTERN.fullmatch(self.value) is None:
+        if (
+            self.algorithm != "sha256"
+            or type(self.value) is not str
+            or SHA256_PATTERN.fullmatch(self.value) is None
+        ):
             raise ContractError(ErrorCode.INVALID_IDENTIFIER, "digest is not canonical SHA-256")
         if type(self.format) is not str or FORMAT_PATTERN.fullmatch(self.format) is None:
             raise ContractError(ErrorCode.INVALID_IDENTIFIER, "digest format is not recognized")
