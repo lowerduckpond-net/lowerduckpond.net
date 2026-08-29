@@ -385,10 +385,108 @@ def test_existing_tenant_intent_requires_a_source_manifest_digest() -> None:
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
 
+SYSTEMD_INVOCATION_ID = "0123456789abcdef0123456789abcdef"
+
+
+def _restart_fence_for_phase(phase: TransactionPhase) -> dict[str, object] | None:
+    if phase is TransactionPhase.RESTART_REQUIRED:
+        return {
+            "selectedTarget": "candidate",
+            "candidateAttemptCount": 0,
+            "recoveryAttemptCount": 0,
+            "systemdInvocationId": None,
+        }
+    if phase is TransactionPhase.CANDIDATE_STARTING:
+        return {
+            "selectedTarget": "candidate",
+            "candidateAttemptCount": 1,
+            "recoveryAttemptCount": 0,
+            "systemdInvocationId": SYSTEMD_INVOCATION_ID,
+        }
+    if phase is TransactionPhase.ROLLBACK_RESTART_REQUIRED:
+        return {
+            "selectedTarget": "previous",
+            "candidateAttemptCount": 1,
+            "recoveryAttemptCount": 0,
+            "systemdInvocationId": None,
+        }
+    if phase is TransactionPhase.RECOVERY_STARTING:
+        return {
+            "selectedTarget": "previous",
+            "candidateAttemptCount": 1,
+            "recoveryAttemptCount": 1,
+            "systemdInvocationId": SYSTEMD_INVOCATION_ID,
+        }
+    return None
+
+
 @pytest.mark.parametrize("phase", list(TransactionPhase))
 def test_transaction_intent_accepts_each_durable_phase(phase: TransactionPhase) -> None:
     intent = _load_object(FIXTURE_ROOT / "accepted/transaction-intent.json")
     intent["phase"] = phase.value
+    intent["restartFence"] = _restart_fence_for_phase(phase)
+
+    assert validate_contract(intent) is ContractKind.TRANSACTION_INTENT
+
+
+@pytest.mark.parametrize(
+    ("phase", "field", "value"),
+    [
+        (
+            TransactionPhase.PREPARED,
+            "restartFence",
+            _restart_fence_for_phase(TransactionPhase.CANDIDATE_STARTING),
+        ),
+        (TransactionPhase.RESTART_REQUIRED, "candidateAttemptCount", 1),
+        (TransactionPhase.CANDIDATE_STARTING, "selectedTarget", "previous"),
+        (TransactionPhase.CANDIDATE_STARTING, "systemdInvocationId", None),
+        (TransactionPhase.ROLLBACK_RESTART_REQUIRED, "recoveryAttemptCount", 1),
+        (TransactionPhase.RECOVERY_STARTING, "recoveryAttemptCount", 0),
+    ],
+)
+def test_restart_phase_rejects_mismatched_attempt_fencing(
+    phase: TransactionPhase,
+    field: str,
+    value: object,
+) -> None:
+    intent = _load_object(FIXTURE_ROOT / "accepted/transaction-intent.json")
+    intent["phase"] = phase.value
+    fence = _restart_fence_for_phase(phase)
+    if field == "restartFence":
+        intent[field] = value
+    else:
+        assert type(fence) is dict
+        fence[field] = value
+        intent["restartFence"] = fence
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(intent)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+@pytest.mark.parametrize(
+    "fence",
+    [
+        {
+            "selectedTarget": "candidate",
+            "candidateAttemptCount": 3,
+            "recoveryAttemptCount": 0,
+            "systemdInvocationId": SYSTEMD_INVOCATION_ID,
+        },
+        {
+            "selectedTarget": "previous",
+            "candidateAttemptCount": 3,
+            "recoveryAttemptCount": 3,
+            "systemdInvocationId": SYSTEMD_INVOCATION_ID,
+        },
+    ],
+)
+def test_committed_restart_retains_the_verified_attempt_fence(
+    fence: dict[str, object],
+) -> None:
+    intent = _load_object(FIXTURE_ROOT / "accepted/transaction-intent.json")
+    intent["phase"] = "state-committed"
+    intent["restartFence"] = fence
 
     assert validate_contract(intent) is ContractKind.TRANSACTION_INTENT
 

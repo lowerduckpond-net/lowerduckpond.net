@@ -31,7 +31,12 @@ from lowerduckpond_static_contracts.identifiers import (
     validate_slug,
     validate_uuid7,
 )
-from lowerduckpond_static_contracts.lifecycle import LIFECYCLE_MATRIX, LifecycleState, Operation
+from lowerduckpond_static_contracts.lifecycle import (
+    LIFECYCLE_MATRIX,
+    LifecycleState,
+    Operation,
+    TransactionPhase,
+)
 from lowerduckpond_static_contracts.values import (
     ValidatedCreateRequest,
     ValidatedPlatformNamespace,
@@ -266,6 +271,7 @@ def _manifest_digest(document: dict[str, object]) -> dict[str, str]:
 
 
 def _validate_transaction_intent(document: dict[str, object]) -> None:
+    _validate_restart_fence(document)
     operation = document["operation"]
     if operation != "archive":
         _validate_nonarchive_transaction_intent(document, cast(str, operation))
@@ -413,6 +419,90 @@ def _validate_lifecycle_recovery(document: dict[str, object]) -> None:
         )
     if recovery["candidateRuntimeGenerationId"] == recovery["sourceRuntimeGenerationId"]:
         raise ContractError(ErrorCode.SCHEMA_INVALID, "runtime generations are not distinct")
+
+
+def _restart_fence_matches(
+    fence: object,
+    *,
+    target: str,
+    candidate_attempts: range,
+    recovery_attempts: range,
+    invocation_required: bool,
+) -> bool:
+    if type(fence) is not dict:
+        return False
+    candidate_count = fence["candidateAttemptCount"]
+    recovery_count = fence["recoveryAttemptCount"]
+    invocation = fence["systemdInvocationId"]
+    return (
+        fence["selectedTarget"] == target
+        and candidate_count in candidate_attempts
+        and recovery_count in recovery_attempts
+        and (invocation is not None) == invocation_required
+    )
+
+
+def _validate_restart_fence(document: dict[str, object]) -> None:
+    phase = TransactionPhase(cast(str, document["phase"]))
+    fence = document["restartFence"]
+    valid = False
+    if phase in {TransactionPhase.PREPARED, TransactionPhase.RUNTIME_SELECTED}:
+        valid = fence is None
+    elif phase is TransactionPhase.RESTART_REQUIRED:
+        valid = _restart_fence_matches(
+            fence,
+            target="candidate",
+            candidate_attempts=range(1),
+            recovery_attempts=range(1),
+            invocation_required=False,
+        )
+    elif phase is TransactionPhase.CANDIDATE_STARTING:
+        valid = _restart_fence_matches(
+            fence,
+            target="candidate",
+            candidate_attempts=range(1, 4),
+            recovery_attempts=range(1),
+            invocation_required=True,
+        )
+    elif phase is TransactionPhase.ROLLBACK_RESTART_REQUIRED:
+        valid = _restart_fence_matches(
+            fence,
+            target="previous",
+            candidate_attempts=range(1, 4),
+            recovery_attempts=range(1),
+            invocation_required=False,
+        )
+    elif phase is TransactionPhase.RECOVERY_STARTING:
+        valid = _restart_fence_matches(
+            fence,
+            target="previous",
+            candidate_attempts=range(1, 4),
+            recovery_attempts=range(1, 4),
+            invocation_required=True,
+        )
+    elif phase is TransactionPhase.STATE_COMMITTED:
+        valid = (
+            fence is None
+            or _restart_fence_matches(
+                fence,
+                target="candidate",
+                candidate_attempts=range(1, 4),
+                recovery_attempts=range(1),
+                invocation_required=True,
+            )
+            or _restart_fence_matches(
+                fence,
+                target="previous",
+                candidate_attempts=range(1, 4),
+                recovery_attempts=range(1, 4),
+                invocation_required=True,
+            )
+        )
+    if not valid:
+        raise ContractError(
+            ErrorCode.SCHEMA_INVALID,
+            "restart attempt fence does not match the durable transaction phase",
+        )
 
 
 def _validate_manifest_transition_binding(

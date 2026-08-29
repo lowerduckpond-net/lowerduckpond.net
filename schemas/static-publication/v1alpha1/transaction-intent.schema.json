@@ -134,6 +134,46 @@
         "candidateRouteSet"
       ],
       "type": "object"
+    },
+    "restartFence": {
+      "additionalProperties": false,
+      "properties": {
+        "candidateAttemptCount": {
+          "maximum": 3,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "recoveryAttemptCount": {
+          "maximum": 3,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "selectedTarget": {
+          "enum": [
+            "candidate",
+            "previous"
+          ],
+          "type": "string"
+        },
+        "systemdInvocationId": {
+          "oneOf": [
+            {
+              "pattern": "^[0-9a-f]{32}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "selectedTarget",
+        "candidateAttemptCount",
+        "recoveryAttemptCount",
+        "systemdInvocationId"
+      ],
+      "type": "object"
     }
   },
   "additionalProperties": false,
@@ -307,6 +347,16 @@
       ],
       "type": "string"
     },
+    "restartFence": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/restartFence"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "sourceManifestDigest": {
       "oneOf": [
         {
@@ -333,6 +383,7 @@
     "sourceManifestDigest",
     "candidateManifestDigest",
     "phase",
+    "restartFence",
     "createdAt"
   ],
   "type": "object"
