@@ -16,6 +16,7 @@ from lowerduckpond_static_host_agent import (
     ReleaseTreeLimits,
     ReleaseTreeMeasurement,
     StateBusyError,
+    measure_release_tree_snapshot,
 )
 from lowerduckpond_static_host_agent import (
     measure_release_tree as _measure_release_tree,
@@ -126,6 +127,25 @@ def test_empty_tree_has_a_pinned_zero_entry_digest(tmp_path: Path) -> None:
     assert measurement.entry_count == 0
     assert measurement.logical_content_bytes == 0
     assert measurement.unique_inode_count == 1  # The release root still consumes capacity.
+
+
+def test_private_snapshot_measurement_requires_export_lock(tmp_path: Path) -> None:
+    root = _release_root(tmp_path)
+    _file(root, "index.html", b"content")
+    lock_root = tmp_path / "locks"
+    lock_root.mkdir()
+
+    with LockManager.initialize(lock_root, expected_owner=_OWNER) as manager:
+        with pytest.raises(LockOrderError, match=r"export\.lock"):
+            measure_release_tree_snapshot(root, lock_manager=manager, expected_owner=_OWNER)
+        with manager.acquire(LockName.EXPORT):
+            snapshot = measure_release_tree_snapshot(
+                root,
+                lock_manager=manager,
+                expected_owner=_OWNER,
+            )
+
+    assert snapshot.digest == measure_release_tree(root, expected_owner=_OWNER).digest
 
 
 def test_digest_ignores_creation_order_timestamps_and_inode_identity(tmp_path: Path) -> None:

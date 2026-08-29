@@ -47,6 +47,15 @@ from lowerduckpond_static_host_agent.locks import (
     LockRequest,
     StateBusyError,
 )
+from lowerduckpond_static_host_agent.portable_bundle import (
+    FORMAT_BYTES,
+    MAXIMUM_PORTABLE_BUNDLE_BYTES,
+    PORTABLE_BUNDLE_FORMAT,
+    PORTABLE_ENVELOPE,
+    PortableBundle,
+    PortableBundleError,
+    build_portable_bundle,
+)
 from lowerduckpond_static_host_agent.release_tree import (
     InodeAllocation,
     ReleaseTreeBoundary,
@@ -54,6 +63,7 @@ from lowerduckpond_static_host_agent.release_tree import (
     ReleaseTreeLimits,
     ReleaseTreeMeasurement,
     measure_release_tree,
+    measure_release_tree_snapshot,
 )
 from lowerduckpond_static_host_agent.repository import (
     IntentRemovalToken,
@@ -95,6 +105,10 @@ __all__ = [
     "DEFAULT_AUDIT_LIMITS",
     "DEFAULT_INTENT_INVENTORY_LIMITS",
     "DEFAULT_ZIP_LIMITS",
+    "FORMAT_BYTES",
+    "MAXIMUM_PORTABLE_BUNDLE_BYTES",
+    "PORTABLE_BUNDLE_FORMAT",
+    "PORTABLE_ENVELOPE",
     "AuditAppend",
     "AuditCapacityError",
     "AuditError",
@@ -128,6 +142,8 @@ __all__ = [
     "LockName",
     "LockOrderError",
     "LockRequest",
+    "PortableBundle",
+    "PortableBundleError",
     "ReleaseCapacityUsage",
     "ReleaseTreeBoundary",
     "ReleaseTreeError",
@@ -158,8 +174,10 @@ __all__ = [
     "admit_release_capacity",
     "admit_state_inventory",
     "aggregate_release_usage",
+    "build_portable_bundle",
     "extract_deployment_zip",
     "inspect_deployment_zip",
     "measure_filesystem_capacity",
     "measure_release_tree",
+    "measure_release_tree_snapshot",
 ]
