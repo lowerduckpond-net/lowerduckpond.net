@@ -273,6 +273,25 @@ def test_open_refuses_a_symlinked_state_root(tmp_path: Path) -> None:
         DurableDirectory.open(linked_root)
 
 
+def test_descendant_open_remains_anchored_to_the_verified_root_descriptor(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "locks").mkdir()
+    moved = tmp_path / "moved"
+
+    with DurableDirectory.open(root) as directory:
+        root.rename(moved)
+        root.mkdir()
+        (root / "locks").mkdir()
+        with directory.open_descendant(("locks",)) as descendant:
+            descendant.create_immutable(("probe",), b"original-root")
+
+    assert (moved / "locks" / "probe").read_bytes() == b"original-root"
+    assert not (root / "locks" / "probe").exists()
+
+
 def test_concurrent_immutable_creation_has_exactly_one_winner(tmp_path: Path) -> None:
     def create(candidate: int) -> tuple[str, bytes]:
         payload = f"candidate-{candidate}".encode()

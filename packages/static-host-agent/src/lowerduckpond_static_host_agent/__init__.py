@@ -14,6 +14,14 @@ from lowerduckpond_static_host_agent.locks import (
     LockRequest,
     StateBusyError,
 )
+from lowerduckpond_static_host_agent.repository import (
+    StateConflictError,
+    StateRecordError,
+    StateRecordPath,
+    StateRepository,
+    StateRevision,
+    StoredContract,
+)
 
 __all__ = [
     "DurabilityBoundary",
@@ -25,5 +33,11 @@ __all__ = [
     "LockRequest",
     "StateAlreadyExistsError",
     "StateBusyError",
+    "StateConflictError",
     "StatePathError",
+    "StateRecordError",
+    "StateRecordPath",
+    "StateRepository",
+    "StateRevision",
+    "StoredContract",
 ]
