@@ -253,6 +253,7 @@ def build_portable_bundle(  # noqa: PLR0912,PLR0913,PLR0915 - explicit trust wor
         if final_measurement != initial_measurement:
             raise PortableBundleError("portable source changed during bundle construction")
         _validate_root_generation(release_root, root_fd, root_snapshot)
+        _validate_source_generation(root_fd, entries)
         os.link(
             temporary_name,
             output_name,
@@ -275,6 +276,11 @@ def build_portable_bundle(  # noqa: PLR0912,PLR0913,PLR0915 - explicit trust wor
             or published.size != final_size
         ):
             raise PortableBundleError("portable output changed during atomic publication")
+        _validate_output_parent(
+            output_parent,
+            parent_fd,
+            expected_owner=expected_owner,
+        )
         return PortableBundle(
             output_name=output_name,
             bundle_size=final_size,
@@ -494,6 +500,28 @@ def _open_source_directory(root_fd: int, components: tuple[str, ...]) -> int:
     except BaseException:
         os.close(directory_fd)
         raise
+
+
+def _validate_source_generation(
+    root_fd: int,
+    entries: tuple[_SourceEntry, ...],
+) -> None:
+    for entry in entries:
+        parent_fd = _open_source_directory(root_fd, entry.components[:-1])
+        descriptor: int | None = None
+        try:
+            flags = _DIRECTORY_FLAGS if entry.is_directory else _FILE_FLAGS
+            descriptor = os.open(entry.components[-1], flags, dir_fd=parent_fd)
+            opened = _Snapshot.capture(os.fstat(descriptor))
+            named = _Snapshot.capture(
+                os.stat(entry.components[-1], dir_fd=parent_fd, follow_symlinks=False)
+            )
+            if opened != entry.snapshot or named != entry.snapshot:
+                raise PortableBundleError("portable source entry changed during construction")
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            os.close(parent_fd)
 
 
 def _hash_source_file(

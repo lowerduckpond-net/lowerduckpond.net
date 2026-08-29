@@ -6,6 +6,7 @@ import stat
 import zipfile
 from pathlib import Path
 
+import lowerduckpond_static_host_agent.portable_bundle as portable_bundle_module
 import pytest
 from lowerduckpond_static_contracts import ContractError, ContractKind, decode_contract
 from lowerduckpond_static_host_agent import (
@@ -412,6 +413,99 @@ def test_builder_removes_partial_output_when_the_source_changes(
         )
 
     assert list(output_parent.iterdir()) == []
+
+
+def test_builder_revalidates_source_generation_after_the_final_measurement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _populated_release(tmp_path)
+    source = root / "index.html"
+    lock_root = _private_directory(tmp_path, "locks")
+    output_parent = _private_directory(tmp_path, "output")
+    real_validate_root = portable_bundle_module._validate_root_generation
+    validations = 0
+
+    def mutate_and_restore_after_final_measurement(
+        path: Path,
+        descriptor: int,
+        expected: portable_bundle_module._Snapshot,
+    ) -> None:
+        nonlocal validations
+        validations += 1
+        real_validate_root(path, descriptor, expected)
+        if validations == _HARDLINK_TREE_COUNT:
+            source.write_bytes(b"other\n")
+            source.write_bytes(b"home\n")
+            source.chmod(_FILE_MODE)
+
+    monkeypatch.setattr(
+        portable_bundle_module,
+        "_validate_root_generation",
+        mutate_and_restore_after_final_measurement,
+    )
+
+    with (
+        LockManager.initialize(lock_root, expected_owner=_OWNER) as manager,
+        manager.acquire(LockName.EXPORT),
+        pytest.raises(PortableBundleError, match="source entry changed"),
+    ):
+        build_portable_bundle(
+            root,
+            _manifest(),
+            output_parent=output_parent,
+            output_name="export.zip",
+            lock_manager=manager,
+            expected_owner=_OWNER,
+        )
+
+    assert list(output_parent.iterdir()) == []
+
+
+def test_builder_revalidates_the_named_output_parent_after_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _populated_release(tmp_path)
+    lock_root = _private_directory(tmp_path, "locks")
+    output_parent = _private_directory(tmp_path, "output")
+    moved_parent = tmp_path / "moved-output"
+    parent_metadata = output_parent.stat()
+    parent_identity = (parent_metadata.st_dev, parent_metadata.st_ino)
+    real_fsync = os.fsync
+    replaced = False
+
+    def replace_parent_after_publication(descriptor: int) -> None:
+        nonlocal replaced
+        metadata = os.fstat(descriptor)
+        if not replaced and (metadata.st_dev, metadata.st_ino) == parent_identity:
+            replaced = True
+            output_parent.rename(moved_parent)
+            output_parent.mkdir()
+            output_parent.chmod(_PRIVATE_MODE)
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(
+        "lowerduckpond_static_host_agent.portable_bundle.os.fsync",
+        replace_parent_after_publication,
+    )
+
+    with (
+        LockManager.initialize(lock_root, expected_owner=_OWNER) as manager,
+        manager.acquire(LockName.EXPORT),
+        pytest.raises(PortableBundleError, match="output parent"),
+    ):
+        build_portable_bundle(
+            root,
+            _manifest(),
+            output_parent=output_parent,
+            output_name="export.zip",
+            lock_manager=manager,
+            expected_owner=_OWNER,
+        )
+
+    assert list(output_parent.iterdir()) == []
+    assert list(moved_parent.iterdir()) == []
 
 
 def test_builder_accepts_release_files_that_share_an_inode(tmp_path: Path) -> None:
