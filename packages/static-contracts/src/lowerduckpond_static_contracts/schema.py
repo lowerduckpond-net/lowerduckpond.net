@@ -387,6 +387,13 @@ def _validate_lifecycle_recovery(document: dict[str, object]) -> None:
     expected = LIFECYCLE_MATRIX.get((Operation(operation), source_state))
     if expected != candidate_state:
         raise ContractError(ErrorCode.SCHEMA_INVALID, "recovery states violate lifecycle matrix")
+    if source_state != candidate_state and (
+        document["sourceManifestDigest"] == document["candidateManifestDigest"]
+    ):
+        raise ContractError(
+            ErrorCode.SCHEMA_INVALID,
+            "lifecycle transition did not change the manifest generation",
+        )
     if operation in {"suspend", "resume", "rename", "reconcile"} and (
         source_observed is None
         or candidate_observed is None
