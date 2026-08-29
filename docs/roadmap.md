@@ -24,9 +24,11 @@ qualification passed all 54 checks before its complete disposable teardown.
 M3.1's protected production migration, live acceptance, evidence backup,
 independent empty-bucket proof, and final no-change plan also passed. M3.2's
 strict contracts, pure root-owned identity and manifest construction, and
-combined package-isolation gate passed. M3.3 is the current implementation
-phase; its first review slice establishes the standalone host-agent package,
-durable file primitives, and executable host lock order. Production remains
+combined package-isolation gate passed. M3.3's durable state kernel is
+complete; it provides bounded release and record
+inventory, capacity admission, correlation idempotency, a hash-chained audit,
+and fail-closed intent discovery and recovery planning. M3.4's hostile-ZIP and
+portable-bundle engine is the current implementation phase. Production remains
 disabled, and Milestone 3 remains incomplete until every phase gate through
 M3.12 passes.
 
