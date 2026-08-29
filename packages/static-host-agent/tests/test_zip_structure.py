@@ -10,9 +10,11 @@ from contextlib import suppress
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+import lowerduckpond_static_host_agent.zip_structure as zip_structure_module
 import pytest
 from hypothesis import HealthCheck, given, settings, strategies
 from lowerduckpond_static_host_agent import (
+    CapacityProjection,
     CapacityRejectedError,
     FilesystemCapacity,
     InodeAllocation,
@@ -1053,6 +1055,72 @@ def test_extraction_rechecks_the_free_space_floor_before_success(
 
     assert calls == _CAPACITY_CHECKS
     assert not (parent / "candidate").exists()
+
+
+def test_extraction_revalidates_the_named_staging_parent_before_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _write(tmp_path, _archive(_MemberSpec(name=b"index.html", content=b"home")))
+    parent = _staging_parent(tmp_path)
+    moved_parent = tmp_path / "moved-staging"
+    real_validate = zip_structure_module._validate_remaining_capacity
+
+    def replace_parent(
+        parent_fd: int,
+        projection: CapacityProjection,
+    ) -> None:
+        real_validate(parent_fd, projection)
+        parent.rename(moved_parent)
+        parent.mkdir(mode=0o700)
+
+    monkeypatch.setattr(zip_structure_module, "_validate_remaining_capacity", replace_parent)
+
+    with pytest.raises(ZipExtractionError, match="staging parent changed"):
+        extract_deployment_zip(
+            source,
+            staging_parent=parent,
+            staging_name="candidate",
+            expected_owner=_OWNER,
+            retained_usage=ReleaseCapacityUsage(()),
+        )
+
+    assert list(parent.iterdir()) == []
+    assert list(moved_parent.iterdir()) == []
+
+
+def test_extraction_does_not_remove_a_replacement_staging_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _write(tmp_path, _archive(_MemberSpec(name=b"index.html", content=b"home")))
+    parent = _staging_parent(tmp_path)
+    candidate = parent / "candidate"
+    moved_candidate = parent / "moved-candidate"
+    real_validate = zip_structure_module._validate_remaining_capacity
+
+    def replace_candidate(
+        parent_fd: int,
+        projection: CapacityProjection,
+    ) -> None:
+        real_validate(parent_fd, projection)
+        candidate.rename(moved_candidate)
+        candidate.mkdir(mode=0o755)
+        (candidate / "unrelated").write_bytes(b"keep")
+
+    monkeypatch.setattr(zip_structure_module, "_validate_remaining_capacity", replace_candidate)
+
+    with pytest.raises(ZipExtractionError, match="staging candidate changed"):
+        extract_deployment_zip(
+            source,
+            staging_parent=parent,
+            staging_name="candidate",
+            expected_owner=_OWNER,
+            retained_usage=ReleaseCapacityUsage(()),
+        )
+
+    assert (candidate / "unrelated").read_bytes() == b"keep"
+    assert (moved_candidate / "index.html").read_bytes() == b"home"
 
 
 @given(

@@ -278,7 +278,7 @@ def inspect_deployment_zip(
             os.close(descriptor)
 
 
-def extract_deployment_zip(  # noqa: PLR0913 - keep trust boundaries explicit
+def extract_deployment_zip(  # noqa: PLR0913,PLR0915 - explicit extraction trust workflow
     path: Path,
     *,
     staging_parent: Path,
@@ -294,6 +294,8 @@ def extract_deployment_zip(  # noqa: PLR0913 - keep trust boundaries explicit
     _validate_staging_name(staging_name)
     source_fd: int | None = None
     parent_fd: int | None = None
+    root_fd: int | None = None
+    created_identity: tuple[int, int] | None = None
     created = False
     try:
         source_fd = os.open(path, _SNAPSHOT_OPEN_FLAGS)
@@ -336,25 +338,26 @@ def extract_deployment_zip(  # noqa: PLR0913 - keep trust boundaries explicit
 
         os.mkdir(staging_name, mode=_DIRECTORY_MODE, dir_fd=parent_fd)
         created = True
+        created_identity = _inode_identity(
+            os.stat(staging_name, dir_fd=parent_fd, follow_symlinks=False)
+        )
         root_fd = os.open(staging_name, _DIRECTORY_OPEN_FLAGS, dir_fd=parent_fd)
-        try:
-            os.fchmod(root_fd, _DIRECTORY_MODE)
-            _extract_members(
-                source,
-                structure,
-                root_fd=root_fd,
-                expected_owner=expected_owner,
-                limits=limits,
-            )
-            allocated_bytes, unique_inodes = _validate_extracted_tree(
-                root_fd,
-                structure,
-                expected_owner=expected_owner,
-                reservation=reservation,
-            )
-            os.fsync(root_fd)
-        finally:
-            os.close(root_fd)
+        created_identity = _inode_identity(os.fstat(root_fd))
+        os.fchmod(root_fd, _DIRECTORY_MODE)
+        _extract_members(
+            source,
+            structure,
+            root_fd=root_fd,
+            expected_owner=expected_owner,
+            limits=limits,
+        )
+        allocated_bytes, unique_inodes = _validate_extracted_tree(
+            root_fd,
+            structure,
+            expected_owner=expected_owner,
+            reservation=reservation,
+        )
+        os.fsync(root_fd)
         os.fsync(parent_fd)
 
         after = _validate_snapshot(
@@ -371,6 +374,13 @@ def extract_deployment_zip(  # noqa: PLR0913 - keep trust boundaries explicit
         if _metadata_generation(before) != _metadata_generation(after):
             raise ZipExtractionError("ZIP snapshot changed during extraction")
         _validate_remaining_capacity(parent_fd, projection)
+        _validate_staging_result(
+            staging_parent,
+            parent_fd=parent_fd,
+            staging_name=staging_name,
+            root_fd=root_fd,
+            expected_owner=expected_owner,
+        )
         return ZipExtraction(
             structure=structure,
             staging_name=staging_name,
@@ -379,14 +389,16 @@ def extract_deployment_zip(  # noqa: PLR0913 - keep trust boundaries explicit
             unique_inodes=unique_inodes,
         )
     except OSError as error:
-        if created and parent_fd is not None:
-            _remove_extraction(parent_fd, staging_name)
+        if created and parent_fd is not None and created_identity is not None:
+            _remove_extraction(parent_fd, staging_name, expected_identity=created_identity)
         raise ZipExtractionError("ZIP extraction could not complete safely") from error
     except BaseException:
-        if created and parent_fd is not None:
-            _remove_extraction(parent_fd, staging_name)
+        if created and parent_fd is not None and created_identity is not None:
+            _remove_extraction(parent_fd, staging_name, expected_identity=created_identity)
         raise
     finally:
+        if root_fd is not None:
+            os.close(root_fd)
         if parent_fd is not None:
             os.close(parent_fd)
         if source_fd is not None:
@@ -1204,15 +1216,64 @@ def _validate_remaining_capacity(parent_fd: int, projection: CapacityProjection)
         raise ZipExtractionError("ZIP extraction crossed the host free-space floor")
 
 
-def _remove_extraction(parent_fd: int, name: str) -> None:
+def _validate_staging_result(
+    staging_parent: Path,
+    *,
+    parent_fd: int,
+    staging_name: str,
+    root_fd: int,
+    expected_owner: int,
+) -> None:
+    parent_metadata = _validate_staging_parent(
+        os.fstat(parent_fd),
+        expected_owner=expected_owner,
+    )
+    _validate_open_identity(
+        staging_parent,
+        parent_metadata,
+        "ZIP staging parent changed during extraction",
+    )
+    root_metadata = _validate_extracted_inode(
+        os.fstat(root_fd),
+        expected_owner=expected_owner,
+        expected_mode=_DIRECTORY_MODE,
+        is_directory=True,
+    )
+    named_metadata = os.stat(staging_name, dir_fd=parent_fd, follow_symlinks=False)
+    if _metadata_generation(root_metadata) != _metadata_generation(named_metadata):
+        raise ZipExtractionError("ZIP staging candidate changed during extraction")
+
+
+def _inode_identity(metadata: os.stat_result) -> tuple[int, int]:
+    return metadata.st_dev, metadata.st_ino
+
+
+def _remove_extraction(
+    parent_fd: int,
+    name: str,
+    *,
+    expected_identity: tuple[int, int] | None = None,
+) -> None:
     try:
         root_fd = os.open(name, _DIRECTORY_OPEN_FLAGS, dir_fd=parent_fd)
     except FileNotFoundError:
         return
     try:
+        if (
+            expected_identity is not None
+            and _inode_identity(os.fstat(root_fd)) != expected_identity
+        ):
+            return
         _remove_directory_contents(root_fd)
     finally:
         os.close(root_fd)
+    if expected_identity is not None:
+        try:
+            named_identity = _inode_identity(os.stat(name, dir_fd=parent_fd, follow_symlinks=False))
+        except FileNotFoundError:
+            return
+        if named_identity != expected_identity:
+            return
     os.rmdir(name, dir_fd=parent_fd)
     os.fsync(parent_fd)
 

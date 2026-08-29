@@ -16,6 +16,7 @@ from lowerduckpond_static_host_agent import (
     FORMAT_BYTES,
     PORTABLE_BUNDLE_FORMAT,
     PORTABLE_ENVELOPE,
+    CapacityProjection,
     FilesystemCapacity,
     LockManager,
     LockMode,
@@ -24,6 +25,7 @@ from lowerduckpond_static_host_agent import (
     PortableBundle,
     PortableBundleError,
     ReleaseCapacityUsage,
+    ZipExtractionError,
     ZipLimits,
     ZipMember,
     ZipStructureError,
@@ -1022,3 +1024,75 @@ def test_import_detects_source_generation_change_and_removes_candidate(
         )
 
     assert list(staging_parent.iterdir()) == []
+
+
+def test_import_revalidates_the_named_staging_parent_before_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _populated_release(tmp_path)
+    path, _bundle = _build(tmp_path, root)
+    staging_parent = _private_directory(tmp_path, "staging")
+    moved_parent = tmp_path / "moved-staging"
+    real_validate = zip_structure_module._validate_remaining_capacity
+
+    def replace_parent(
+        parent_fd: int,
+        projection: CapacityProjection,
+    ) -> None:
+        real_validate(parent_fd, projection)
+        staging_parent.rename(moved_parent)
+        staging_parent.mkdir(mode=_PRIVATE_MODE)
+
+    monkeypatch.setattr(zip_structure_module, "_validate_remaining_capacity", replace_parent)
+
+    with pytest.raises(PortableBundleError, match="extraction contract") as raised:
+        import_portable_bundle(
+            path,
+            staging_parent=staging_parent,
+            staging_name="candidate",
+            expected_owner=_OWNER,
+            retained_usage=ReleaseCapacityUsage(()),
+        )
+
+    assert isinstance(raised.value.__cause__, ZipExtractionError)
+    assert "staging parent changed" in str(raised.value.__cause__)
+    assert list(staging_parent.iterdir()) == []
+    assert list(moved_parent.iterdir()) == []
+
+
+def test_import_does_not_remove_a_replacement_staging_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _populated_release(tmp_path)
+    path, _bundle = _build(tmp_path, root)
+    staging_parent = _private_directory(tmp_path, "staging")
+    candidate = staging_parent / "candidate"
+    moved_candidate = staging_parent / "moved-candidate"
+    real_validate = zip_structure_module._validate_remaining_capacity
+
+    def replace_candidate(
+        parent_fd: int,
+        projection: CapacityProjection,
+    ) -> None:
+        real_validate(parent_fd, projection)
+        candidate.rename(moved_candidate)
+        candidate.mkdir(mode=_DIRECTORY_MODE)
+        (candidate / "unrelated").write_bytes(b"keep")
+
+    monkeypatch.setattr(zip_structure_module, "_validate_remaining_capacity", replace_candidate)
+
+    with pytest.raises(PortableBundleError, match="extraction contract") as raised:
+        import_portable_bundle(
+            path,
+            staging_parent=staging_parent,
+            staging_name="candidate",
+            expected_owner=_OWNER,
+            retained_usage=ReleaseCapacityUsage(()),
+        )
+
+    assert isinstance(raised.value.__cause__, ZipExtractionError)
+    assert "staging candidate changed" in str(raised.value.__cause__)
+    assert (candidate / "unrelated").read_bytes() == b"keep"
+    assert (moved_candidate / "index.html").read_bytes() == b"home\n"

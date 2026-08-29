@@ -418,6 +418,8 @@ def import_portable_bundle(  # noqa: PLR0913,PLR0915 - explicit import trust wor
     _zip._validate_staging_name(staging_name)
     source_fd: int | None = None
     parent_fd: int | None = None
+    root_fd: int | None = None
+    created_identity: tuple[int, int] | None = None
     created = False
     try:
         source_fd = os.open(path, _zip._SNAPSHOT_OPEN_FLAGS)
@@ -452,25 +454,26 @@ def import_portable_bundle(  # noqa: PLR0913,PLR0915 - explicit import trust wor
         )
         os.mkdir(staging_name, mode=_DIRECTORY_MODE, dir_fd=parent_fd)
         created = True
+        created_identity = _zip._inode_identity(
+            os.stat(staging_name, dir_fd=parent_fd, follow_symlinks=False)
+        )
         root_fd = os.open(staging_name, _zip._DIRECTORY_OPEN_FLAGS, dir_fd=parent_fd)
-        try:
-            os.fchmod(root_fd, _DIRECTORY_MODE)
-            _zip._extract_members(
-                source,
-                structure,
-                root_fd=root_fd,
-                expected_owner=expected_owner,
-                limits=limits,
-            )
-            allocated_bytes, unique_inodes = _zip._validate_extracted_tree(
-                root_fd,
-                structure,
-                expected_owner=expected_owner,
-                reservation=reservation,
-            )
-            os.fsync(root_fd)
-        finally:
-            os.close(root_fd)
+        created_identity = _zip._inode_identity(os.fstat(root_fd))
+        os.fchmod(root_fd, _DIRECTORY_MODE)
+        _zip._extract_members(
+            source,
+            structure,
+            root_fd=root_fd,
+            expected_owner=expected_owner,
+            limits=limits,
+        )
+        allocated_bytes, unique_inodes = _zip._validate_extracted_tree(
+            root_fd,
+            structure,
+            expected_owner=expected_owner,
+            reservation=reservation,
+        )
+        os.fsync(root_fd)
         os.fsync(parent_fd)
 
         after = _validate_portable_snapshot(
@@ -480,6 +483,13 @@ def import_portable_bundle(  # noqa: PLR0913,PLR0915 - explicit import trust wor
         if _zip._metadata_generation(before) != _zip._metadata_generation(after):
             raise PortableBundleError("portable bundle changed during import")
         _zip._validate_remaining_capacity(parent_fd, projection)
+        _zip._validate_staging_result(
+            staging_parent,
+            parent_fd=parent_fd,
+            staging_name=staging_name,
+            root_fd=root_fd,
+            expected_owner=expected_owner,
+        )
         return PortableBundleImport(
             inspection=admission.inspection,
             staging_name=staging_name,
@@ -488,18 +498,32 @@ def import_portable_bundle(  # noqa: PLR0913,PLR0915 - explicit import trust wor
             unique_inodes=unique_inodes,
         )
     except _zip.ZipStructureError as error:
-        if created and parent_fd is not None:
-            _zip._remove_extraction(parent_fd, staging_name)
+        if created and parent_fd is not None and created_identity is not None:
+            _zip._remove_extraction(
+                parent_fd,
+                staging_name,
+                expected_identity=created_identity,
+            )
         raise PortableBundleError("portable import violates its extraction contract") from error
     except OSError as error:
-        if created and parent_fd is not None:
-            _zip._remove_extraction(parent_fd, staging_name)
+        if created and parent_fd is not None and created_identity is not None:
+            _zip._remove_extraction(
+                parent_fd,
+                staging_name,
+                expected_identity=created_identity,
+            )
         raise PortableBundleError("portable import could not complete safely") from error
     except BaseException:
-        if created and parent_fd is not None:
-            _zip._remove_extraction(parent_fd, staging_name)
+        if created and parent_fd is not None and created_identity is not None:
+            _zip._remove_extraction(
+                parent_fd,
+                staging_name,
+                expected_identity=created_identity,
+            )
         raise
     finally:
+        if root_fd is not None:
+            os.close(root_fd)
         if parent_fd is not None:
             os.close(parent_fd)
         if source_fd is not None:
