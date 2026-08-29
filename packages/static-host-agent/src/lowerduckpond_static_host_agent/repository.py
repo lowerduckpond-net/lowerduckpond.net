@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -22,15 +23,21 @@ from lowerduckpond_static_contracts import (
     validate_uuid7,
 )
 
+from lowerduckpond_static_host_agent.capacity import (
+    FilesystemCapacity,
+    measure_filesystem_capacity_descriptor,
+)
 from lowerduckpond_static_host_agent.durable import DurableDirectory
 from lowerduckpond_static_host_agent.locks import LockManager, LockMode, LockName
 from lowerduckpond_static_host_agent.state_inventory import (
     DEFAULT_STATE_INVENTORY_LIMITS,
+    AuthorizationRecordInventory,
     StateInventory,
     StateInventoryLimits,
     StateInventoryProjection,
     StateInventoryReservation,
     admit_state_inventory,
+    measure_authorization_records,
     measure_state_inventory,
 )
 
@@ -58,6 +65,7 @@ class _StateRecordName(StrEnum):
     AUTHORIZATION_JOB = "authorization-job"
     AUTHORIZATION_RESULT = "authorization-result"
     EMERGENCY_RESULT = "emergency-result"
+    AUTHORIZATION_CORRELATION = "authorization-correlation"
     TRANSACTION_INTENT = "transaction-intent"
     ARCHIVE_CONSTRUCTION_INTENT = "archive-construction-intent"
     ARCHIVE_RETIREMENT_INTENT = "archive-retirement-intent"
@@ -132,6 +140,13 @@ class StateRecordPath:
         )
 
     @classmethod
+    def authorization_correlation(cls, correlation_id: object) -> Self:
+        return cls._new(
+            _StateRecordName.AUTHORIZATION_CORRELATION,
+            record_id=validate_uuid7(correlation_id),
+        )
+
+    @classmethod
     def transaction_intent(cls, intent_id: object) -> Self:
         return cls._new(
             _StateRecordName.TRANSACTION_INTENT,
@@ -180,6 +195,7 @@ class StateRecordPath:
             _StateRecordName.AUTHORIZATION_JOB: ContractKind.AUTHORIZATION_JOB,
             _StateRecordName.AUTHORIZATION_RESULT: ContractKind.OPERATION_RESULT,
             _StateRecordName.EMERGENCY_RESULT: ContractKind.OPERATION_RESULT,
+            _StateRecordName.AUTHORIZATION_CORRELATION: ContractKind.AUTHORIZATION_JOB,
             _StateRecordName.TRANSACTION_INTENT: ContractKind.TRANSACTION_INTENT,
             _StateRecordName.ARCHIVE_CONSTRUCTION_INTENT: (
                 ContractKind.ARCHIVE_CONSTRUCTION_INTENT
@@ -201,6 +217,12 @@ class StateRecordPath:
             _StateRecordName.EMERGENCY_RESULT,
         }:
             components = ("authorization", "results", f"{self._require_record_id()}.json")
+        elif self.name is _StateRecordName.AUTHORIZATION_CORRELATION:
+            components = (
+                "authorization",
+                "correlations",
+                f"{self._require_record_id()}.json",
+            )
         elif self.name in {
             _StateRecordName.TRANSACTION_INTENT,
             _StateRecordName.ARCHIVE_CONSTRUCTION_INTENT,
@@ -256,26 +278,16 @@ class StateRecordPath:
             or document.get("deploymentId") != self.deployment_id
         ):
             raise StateRecordError("archive identity does not match its path")
-        elif self.name is _StateRecordName.AUTHORIZATION_JOB and (
-            document.get("jobId") != self.record_id
-        ):
-            raise StateRecordError("authorization-job identity does not match its path")
-        elif self.name is _StateRecordName.AUTHORIZATION_RESULT:
-            provenance = document.get("provenance")
-            if (
-                type(provenance) is not dict
-                or provenance.get("kind") != "authorization-job"
-                or provenance.get("jobId") != self.record_id
-            ):
-                raise StateRecordError("authorization-result identity does not match its path")
-        elif self.name is _StateRecordName.EMERGENCY_RESULT:
-            provenance = document.get("provenance")
-            if (
-                type(provenance) is not dict
-                or provenance.get("kind") != "emergency-administrator"
-                or document.get("correlationId") != self.record_id
-            ):
-                raise StateRecordError("emergency-result identity does not match its path")
+        elif self.name in {
+            _StateRecordName.AUTHORIZATION_JOB,
+            _StateRecordName.AUTHORIZATION_CORRELATION,
+        }:
+            _validate_authorization_binding(self.name, self.record_id, document)
+        elif self.name in {
+            _StateRecordName.AUTHORIZATION_RESULT,
+            _StateRecordName.EMERGENCY_RESULT,
+        }:
+            _validate_result_binding(self.name, self.record_id, document)
         elif (
             self.name
             in {
@@ -286,6 +298,54 @@ class StateRecordPath:
             and document.get("intentId") != self.record_id
         ):
             raise StateRecordError("intent identity does not match its path")
+
+    @property
+    def allows_replacement(self) -> bool:
+        """Return whether this record kind has a committed mutable lifecycle."""
+
+        return self.name in {
+            _StateRecordName.PLATFORM_NAMESPACE,
+            _StateRecordName.PLATFORM_LAUNCH,
+            _StateRecordName.TENANT_DESIRED,
+            _StateRecordName.TENANT_OBSERVED,
+            _StateRecordName.AUTHORIZATION_JOB,
+            _StateRecordName.TRANSACTION_INTENT,
+            _StateRecordName.ARCHIVE_CONSTRUCTION_INTENT,
+            _StateRecordName.ARCHIVE_RETIREMENT_INTENT,
+        }
+
+
+def _validate_authorization_binding(
+    name: _StateRecordName,
+    record_id: str | None,
+    document: dict[str, object],
+) -> None:
+    if name is _StateRecordName.AUTHORIZATION_JOB:
+        if document.get("jobId") != record_id:
+            raise StateRecordError("authorization-job identity does not match its path")
+        return
+    request = document.get("request")
+    if type(request) is not dict or request.get("correlationId") != record_id:
+        raise StateRecordError("authorization-correlation identity does not match its path")
+
+
+def _validate_result_binding(
+    name: _StateRecordName,
+    record_id: str | None,
+    document: dict[str, object],
+) -> None:
+    provenance = document.get("provenance")
+    if type(provenance) is not dict:
+        raise StateRecordError("operation-result provenance is not an object")
+    if name is _StateRecordName.AUTHORIZATION_RESULT:
+        if provenance.get("kind") != "authorization-job" or provenance.get("jobId") != record_id:
+            raise StateRecordError("authorization-result identity does not match its path")
+        return
+    if (
+        provenance.get("kind") != "emergency-administrator"
+        or document.get("correlationId") != record_id
+    ):
+        raise StateRecordError("emergency-result identity does not match its path")
 
 
 @dataclass(frozen=True, slots=True)
@@ -410,6 +470,8 @@ class StateRepository:
         *,
         blocking: bool = False,
     ) -> StoredContract:
+        if not path.allows_replacement:
+            raise StateRecordError("immutable state-record path cannot be replaced")
         candidate = self._encode(path, document)
         with self.transaction(mode=LockMode.EXCLUSIVE, blocking=blocking) as transaction:
             return transaction._compare_and_swap_bytes(path, expected_revision, candidate)
@@ -424,6 +486,17 @@ class StateRepository:
 
         with self.transaction(mode=LockMode.EXCLUSIVE, blocking=blocking) as transaction:
             return transaction.measure_inventory(limits=limits)
+
+    def measure_authorization_records(
+        self,
+        *,
+        limits: StateInventoryLimits = DEFAULT_STATE_INVENTORY_LIMITS,
+        blocking: bool = False,
+    ) -> AuthorizationRecordInventory:
+        """List bounded authorization identities under exclusive tenant-state."""
+
+        with self.transaction(mode=LockMode.EXCLUSIVE, blocking=blocking) as transaction:
+            return transaction.measure_authorization_records(limits=limits)
 
     def _read_locked(self, path: StateRecordPath) -> StoredContract:
         raw = self._durable.read_regular(
@@ -514,6 +587,20 @@ class _StateTransaction:
             limits=limits,
         )
 
+    def measure_authorization_records(
+        self,
+        *,
+        limits: StateInventoryLimits = DEFAULT_STATE_INVENTORY_LIMITS,
+    ) -> AuthorizationRecordInventory:
+        self._require_exclusive()
+        return measure_authorization_records(
+            self._repository._durable,
+            expected_owner=self._repository._expected_owner,
+            expected_directory_mode=self._repository._expected_directory_mode,
+            expected_record_mode=self._repository._expected_record_mode,
+            limits=limits,
+        )
+
     def admit_inventory(
         self,
         reservation: StateInventoryReservation,
@@ -525,6 +612,28 @@ class _StateTransaction:
         inventory = self.measure_inventory(limits=limits)
         return admit_state_inventory(inventory, reservation, limits=limits)
 
+    def allocation_upper_bound(self, byte_count: int) -> int:
+        """Return a pre-write allocation ceiling for this state filesystem."""
+
+        self._require_exclusive()
+        return self._repository._durable.allocation_upper_bound(byte_count)
+
+    def namespace_allocation_upper_bound(self, entry_count: int) -> int:
+        """Return the transient directory-growth ceiling for immutable writes."""
+
+        self._require_exclusive()
+        return self._repository._durable.namespace_allocation_upper_bound(entry_count)
+
+    def measure_filesystem_capacity(self) -> FilesystemCapacity:
+        """Measure the state filesystem through the verified root descriptor."""
+
+        self._require_exclusive()
+        descriptor = self._repository._durable.duplicate_descriptor()
+        try:
+            return measure_filesystem_capacity_descriptor(descriptor)
+        finally:
+            os.close(descriptor)
+
     def _compare_and_swap_bytes(
         self,
         path: StateRecordPath,
@@ -532,6 +641,8 @@ class _StateTransaction:
         candidate: bytes,
     ) -> StoredContract:
         self._require_exclusive()
+        if not path.allows_replacement:
+            raise StateRecordError("immutable state-record path cannot be replaced")
         current = self._repository._read_locked(path)
         if current.revision != expected_revision:
             raise StateConflictError("authoritative state changed before commit")

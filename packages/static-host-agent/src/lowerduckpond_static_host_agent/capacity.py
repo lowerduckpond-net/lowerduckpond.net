@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import stat
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -155,10 +156,19 @@ def measure_filesystem_capacity(root: Path) -> FilesystemCapacity:
     flags = os.O_RDONLY | os.O_NONBLOCK | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
     file_descriptor = os.open(root, flags)
     try:
-        filesystem = os.fstatvfs(file_descriptor)
-        device = os.fstat(file_descriptor).st_dev
+        return measure_filesystem_capacity_descriptor(file_descriptor)
     finally:
         os.close(file_descriptor)
+
+
+def measure_filesystem_capacity_descriptor(file_descriptor: int) -> FilesystemCapacity:
+    """Read statvfs from a caller-owned verified directory descriptor."""
+
+    filesystem = os.fstatvfs(file_descriptor)
+    metadata = os.fstat(file_descriptor)
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise CapacityError("filesystem-capacity descriptor is not a directory")
+    device = metadata.st_dev
     fragment_size = filesystem.f_frsize or filesystem.f_bsize
     return FilesystemCapacity(
         device=device,
