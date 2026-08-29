@@ -3,23 +3,34 @@ from __future__ import annotations
 import hashlib
 import os
 import stat
+import struct
 import zipfile
+import zlib
 from pathlib import Path
 
 import lowerduckpond_static_host_agent.portable_bundle as portable_bundle_module
+import lowerduckpond_static_host_agent.zip_structure as zip_structure_module
 import pytest
 from lowerduckpond_static_contracts import ContractError, ContractKind, decode_contract
 from lowerduckpond_static_host_agent import (
     FORMAT_BYTES,
     PORTABLE_BUNDLE_FORMAT,
     PORTABLE_ENVELOPE,
+    FilesystemCapacity,
     LockManager,
     LockMode,
     LockName,
     LockOrderError,
     PortableBundle,
     PortableBundleError,
+    ReleaseCapacityUsage,
+    ZipLimits,
+    ZipMember,
+    ZipStructureError,
     build_portable_bundle,
+    import_portable_bundle,
+    inspect_deployment_zip,
+    inspect_portable_bundle,
 )
 
 _OWNER = os.geteuid()
@@ -37,6 +48,35 @@ _PINNED_BUNDLE_BYTES = 2_346
 _PINNED_BUNDLE_SHA256 = "c949c78143843e2c867033e98d9ae8a43577250b0287aca63c0a95dde92a6f18"
 _HARDLINK_TREE_COUNT = 2
 _MAXIMUM_OBSERVED_DIRECTORY_DESCRIPTORS = 32
+_ZIP_NAME_RECORD_COUNT = 2
+_IMPORTED_INODES = 6
+_LOCAL = struct.Struct("<I5H3I2H")
+_CENTRAL = struct.Struct("<I6H3I5H2I")
+_EOCD = struct.Struct("<I4H2IH")
+
+
+@pytest.fixture(autouse=True)
+def _reported_inode_capacity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give the container overlay the concrete inode counts production ext4 reports."""
+
+    def measure(file_descriptor: int) -> FilesystemCapacity:
+        return FilesystemCapacity(
+            device=os.fstat(file_descriptor).st_dev,
+            fragment_size=4_096,
+            total_blocks=4_000_000,
+            available_blocks=3_000_000,
+            total_inodes=4_000_000,
+            available_inodes=3_000_000,
+        )
+
+    monkeypatch.setattr(
+        "lowerduckpond_static_host_agent.portable_bundle.measure_filesystem_capacity_descriptor",
+        measure,
+    )
+    monkeypatch.setattr(
+        "lowerduckpond_static_host_agent.zip_structure.measure_filesystem_capacity_descriptor",
+        measure,
+    )
 
 
 def _manifest() -> dict[str, object]:
@@ -107,6 +147,36 @@ def _populated_release(tmp_path: Path, name: str = "release") -> Path:
     _file(root, "empty.txt", b"")
     _directory(root, "vacant")
     return root
+
+
+def _rewrite_stored_member(path: Path, member_name: str, replacement: bytes) -> None:
+    """Replace one stored member while preserving a structurally canonical ZIP."""
+
+    data = bytearray(path.read_bytes())
+    with zipfile.ZipFile(path) as archive:
+        member = archive.getinfo(member_name)
+        if len(replacement) != member.file_size:
+            raise AssertionError("replacement must preserve the member size")
+        local = _LOCAL.unpack_from(data, member.header_offset)
+        data_offset = member.header_offset + _LOCAL.size + local[9] + local[10]
+        data[data_offset : data_offset + member.file_size] = replacement
+
+    crc32 = zlib.crc32(replacement) & 0xFFFFFFFF
+    struct.pack_into("<I", data, member.header_offset + 14, crc32)
+    eocd = _EOCD.unpack_from(data, len(data) - _EOCD.size)
+    cursor = eocd[6]
+    for _record_number in range(eocd[4]):
+        central = _CENTRAL.unpack_from(data, cursor)
+        fixed_end = cursor + _CENTRAL.size
+        name = bytes(data[fixed_end : fixed_end + central[10]])
+        if name.decode() == member_name:
+            struct.pack_into("<I", data, cursor + 16, crc32)
+            break
+        cursor = fixed_end + central[10] + central[11] + central[12]
+    else:
+        raise AssertionError("member has no central record")
+    path.write_bytes(data)
+    path.chmod(_OUTPUT_MODE)
 
 
 def test_builder_emits_the_exact_canonical_v1_envelope(tmp_path: Path) -> None:
@@ -629,3 +699,212 @@ def test_builder_requires_a_private_owned_output_parent(tmp_path: Path) -> None:
             lock_manager=manager,
             expected_owner=_OWNER,
         )
+
+
+def test_inspector_validates_exact_envelope_checksums_and_provenance(tmp_path: Path) -> None:
+    root = _populated_release(tmp_path)
+    path, bundle = _build(tmp_path, root)
+
+    inspection = inspect_portable_bundle(path, expected_owner=_OWNER)
+
+    assert inspection.bundle_size == bundle.bundle_size
+    assert inspection.bundle_digest == bundle.bundle_digest
+    assert inspection.provenance_manifest == _manifest()
+    assert inspection.provenance_manifest_digest == bundle.manifest_digest
+    assert inspection.content_paths == (
+        "assets",
+        "assets/site.css",
+        "empty.txt",
+        "index.html",
+        "vacant",
+    )
+    assert inspection.content_bytes == len(b"body{}\nhome\n")
+
+
+def test_importer_materializes_only_content_as_an_unpublished_tree(tmp_path: Path) -> None:
+    root = _populated_release(tmp_path)
+    path, bundle = _build(tmp_path, root)
+    staging_parent = _private_directory(tmp_path, "staging")
+
+    imported = import_portable_bundle(
+        path,
+        staging_parent=staging_parent,
+        staging_name="candidate",
+        expected_owner=_OWNER,
+        retained_usage=ReleaseCapacityUsage(()),
+    )
+
+    candidate = staging_parent / "candidate"
+    assert imported.inspection.bundle_digest == bundle.bundle_digest
+    assert imported.inspection.provenance_manifest == _manifest()
+    assert imported.staging_name == "candidate"
+    assert imported.unique_inodes == _IMPORTED_INODES
+    assert (candidate / "index.html").read_bytes() == b"home\n"
+    assert (candidate / "assets/site.css").read_bytes() == b"body{}\n"
+    assert (candidate / "empty.txt").read_bytes() == b""
+    assert (candidate / "vacant").is_dir()
+    assert not (candidate / PORTABLE_ENVELOPE).exists()
+    assert not (candidate / "manifest.json").exists()
+    assert stat.S_IMODE(candidate.stat().st_mode) == _DIRECTORY_MODE
+    assert stat.S_IMODE((candidate / "index.html").stat().st_mode) == _FILE_MODE
+
+
+def test_portable_bundle_is_not_an_ordinary_deployment_zip(tmp_path: Path) -> None:
+    root = _populated_release(tmp_path)
+    path, _bundle = _build(tmp_path, root)
+
+    with pytest.raises(ZipStructureError):
+        inspect_deployment_zip(path, expected_owner=_OWNER)
+
+
+@pytest.mark.parametrize(
+    ("member_name", "replacement", "message"),
+    [
+        (
+            f"{PORTABLE_ENVELOPE}/format.json",
+            FORMAT_BYTES.replace(b'"version":1', b'"version":2'),
+            "format.json",
+        ),
+        (
+            f"{PORTABLE_ENVELOPE}/content/index.html",
+            b"Home\n",
+            "does not bind exact content",
+        ),
+    ],
+)
+def test_inspector_rejects_crc_consistent_bytes_not_bound_by_the_envelope(
+    tmp_path: Path,
+    member_name: str,
+    replacement: bytes,
+    message: str,
+) -> None:
+    root = _populated_release(tmp_path)
+    path, _bundle = _build(tmp_path, root)
+    _rewrite_stored_member(path, member_name, replacement)
+
+    with pytest.raises(PortableBundleError, match=message):
+        inspect_portable_bundle(path, expected_owner=_OWNER)
+
+
+def test_inspector_rejects_a_checksum_manifest_that_does_not_bind_exact_content(
+    tmp_path: Path,
+) -> None:
+    root = _populated_release(tmp_path)
+    path, _bundle = _build(tmp_path, root)
+    member_name = f"{PORTABLE_ENVELOPE}/checksums.sha256"
+    with zipfile.ZipFile(path) as archive:
+        checksums = bytearray(archive.read(member_name))
+    checksums[0] = ord("0") if checksums[0] != ord("0") else ord("1")
+    _rewrite_stored_member(path, member_name, bytes(checksums))
+
+    with pytest.raises(PortableBundleError, match="does not bind exact content"):
+        inspect_portable_bundle(path, expected_owner=_OWNER)
+
+
+def test_inspector_rejects_noncanonical_zip_metadata(tmp_path: Path) -> None:
+    root = _populated_release(tmp_path)
+    path, _bundle = _build(tmp_path, root)
+    data = bytearray(path.read_bytes())
+    central_offset = _EOCD.unpack_from(data, len(data) - _EOCD.size)[6]
+    struct.pack_into("<H", data, central_offset + 8, 0)
+    path.write_bytes(data)
+    path.chmod(_OUTPUT_MODE)
+
+    with pytest.raises(PortableBundleError, match="central record is not canonical"):
+        inspect_portable_bundle(path, expected_owner=_OWNER)
+
+
+def test_inspector_translates_shared_path_rejection_to_the_portable_boundary(
+    tmp_path: Path,
+) -> None:
+    root = _populated_release(tmp_path)
+    path, _bundle = _build(tmp_path, root)
+    original = f"{PORTABLE_ENVELOPE}/content/empty.txt".encode()
+    reserved = f"{PORTABLE_ENVELOPE}/content/cdn-cgi/x".encode()
+    data = path.read_bytes()
+    assert len(original) == len(reserved)
+    assert data.count(original) == _ZIP_NAME_RECORD_COUNT
+    path.write_bytes(data.replace(original, reserved))
+    path.chmod(_OUTPUT_MODE)
+
+    with pytest.raises(PortableBundleError, match="structural contract") as raised:
+        inspect_portable_bundle(path, expected_owner=_OWNER)
+
+    assert isinstance(raised.value.__cause__, ZipStructureError)
+
+
+def test_failed_import_removes_the_unpublished_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _populated_release(tmp_path)
+    path, _bundle = _build(tmp_path, root)
+    staging_parent = _private_directory(tmp_path, "staging")
+
+    def fail_write(*_arguments: object, **_keywords: object) -> tuple[int, int]:
+        raise OSError("simulated write failure")
+
+    monkeypatch.setattr(zip_structure_module, "_write_extracted", fail_write)
+
+    with pytest.raises(PortableBundleError, match="could not complete safely"):
+        import_portable_bundle(
+            path,
+            staging_parent=staging_parent,
+            staging_name="candidate",
+            expected_owner=_OWNER,
+            retained_usage=ReleaseCapacityUsage(()),
+        )
+
+    assert list(staging_parent.iterdir()) == []
+
+
+def test_import_detects_source_generation_change_and_removes_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _populated_release(tmp_path)
+    path, _bundle = _build(tmp_path, root)
+    staging_parent = _private_directory(tmp_path, "staging")
+    original = path.stat()
+    real_write = zip_structure_module._write_extracted
+    changed = False
+
+    def mutate_source(  # noqa: PLR0913 - mirrors the explicit extraction boundary
+        file_descriptor: int,
+        data: bytes,
+        *,
+        crc32: int,
+        expanded: int,
+        member: ZipMember,
+        limits: ZipLimits,
+    ) -> tuple[int, int]:
+        nonlocal changed
+        result = real_write(
+            file_descriptor,
+            data,
+            crc32=crc32,
+            expanded=expanded,
+            member=member,
+            limits=limits,
+        )
+        if not changed:
+            changed = True
+            os.utime(
+                path,
+                ns=(original.st_atime_ns, original.st_mtime_ns + 1),
+                follow_symlinks=False,
+            )
+        return result
+
+    monkeypatch.setattr(zip_structure_module, "_write_extracted", mutate_source)
+
+    with pytest.raises(PortableBundleError, match="changed during import"):
+        import_portable_bundle(
+            path,
+            staging_parent=staging_parent,
+            staging_name="candidate",
+            expected_owner=_OWNER,
+            retained_usage=ReleaseCapacityUsage(()),
+        )
+
+    assert list(staging_parent.iterdir()) == []
