@@ -5,6 +5,7 @@ import stat
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from multiprocessing import get_context
+from multiprocessing.connection import Connection
 from pathlib import Path
 
 import pytest
@@ -48,6 +49,23 @@ def _crash_during_write(root: str, boundary_value: str, replace: bool) -> None:
                 b"complete-new-state",
                 failure_hook=crash,
             )
+
+
+def _attempt_fifo_read(root: str, connection: Connection) -> None:
+    try:
+        with DurableDirectory.open(Path(root)) as directory:
+            directory.read_regular(
+                ("record.json",),
+                expected_owner=os.geteuid(),
+                expected_mode=_STATE_MODE,
+                maximum_bytes=1024,
+            )
+    except StatePathError:
+        connection.send("rejected")
+    else:
+        connection.send("accepted")
+    finally:
+        connection.close()
 
 
 def test_immutable_create_publishes_exact_bytes_and_mode(tmp_path: Path) -> None:
@@ -271,6 +289,27 @@ def test_open_refuses_a_symlinked_state_root(tmp_path: Path) -> None:
 
     with pytest.raises(StatePathError):
         DurableDirectory.open(linked_root)
+
+
+def test_reader_rejects_a_fifo_without_waiting_for_a_writer(tmp_path: Path) -> None:
+    fifo = tmp_path / "record.json"
+    os.mkfifo(fifo, mode=_STATE_MODE)
+    fifo.chmod(_STATE_MODE)
+    context = get_context("spawn")
+    receiving, sending = context.Pipe(duplex=False)
+    process = context.Process(target=_attempt_fifo_read, args=(str(tmp_path), sending))
+    try:
+        process.start()
+        sending.close()
+        assert receiving.poll(_PROCESS_TIMEOUT_SECONDS)
+        assert receiving.recv() == "rejected"
+        process.join(_PROCESS_TIMEOUT_SECONDS)
+        assert process.exitcode == 0
+    finally:
+        receiving.close()
+        if process.is_alive():
+            process.terminate()
+            process.join(_PROCESS_TIMEOUT_SECONDS)
 
 
 def test_descendant_open_remains_anchored_to_the_verified_root_descriptor(
