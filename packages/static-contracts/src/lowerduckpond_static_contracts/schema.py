@@ -31,7 +31,16 @@ from lowerduckpond_static_contracts.identifiers import (
     validate_slug,
     validate_uuid7,
 )
-from lowerduckpond_static_contracts.lifecycle import LIFECYCLE_MATRIX, LifecycleState, Operation
+from lowerduckpond_static_contracts.lifecycle import (
+    LIFECYCLE_MATRIX,
+    LifecycleState,
+    Operation,
+    TransactionPhase,
+)
+from lowerduckpond_static_contracts.values import (
+    ValidatedCreateRequest,
+    ValidatedPlatformNamespace,
+)
 
 API_VERSION: Final = "hosting.lowerduckpond.net/v1alpha1"
 SCHEMA_DIRECTORY: Final = files("lowerduckpond_static_contracts").joinpath("schemas")
@@ -262,6 +271,7 @@ def _manifest_digest(document: dict[str, object]) -> dict[str, str]:
 
 
 def _validate_transaction_intent(document: dict[str, object]) -> None:
+    _validate_restart_fence(document)
     operation = document["operation"]
     if operation != "archive":
         _validate_nonarchive_transaction_intent(document, cast(str, operation))
@@ -387,22 +397,7 @@ def _validate_lifecycle_recovery(document: dict[str, object]) -> None:
     expected = LIFECYCLE_MATRIX.get((Operation(operation), source_state))
     if expected != candidate_state:
         raise ContractError(ErrorCode.SCHEMA_INVALID, "recovery states violate lifecycle matrix")
-    if source_state != candidate_state and (
-        document["sourceManifestDigest"] == document["candidateManifestDigest"]
-    ):
-        raise ContractError(
-            ErrorCode.SCHEMA_INVALID,
-            "lifecycle transition did not change the manifest generation",
-        )
-    if (
-        operation in {"suspend", "resume"}
-        and source_state == candidate_state
-        and document["sourceManifestDigest"] != document["candidateManifestDigest"]
-    ):
-        raise ContractError(
-            ErrorCode.SCHEMA_INVALID,
-            "no-op route transition changed the manifest generation",
-        )
+    _validate_manifest_transition_binding(document, operation, source_state, candidate_state)
     if operation in {"deploy", "rollback"} and (
         source_observed is None
         or candidate_observed is None
@@ -424,6 +419,116 @@ def _validate_lifecycle_recovery(document: dict[str, object]) -> None:
         )
     if recovery["candidateRuntimeGenerationId"] == recovery["sourceRuntimeGenerationId"]:
         raise ContractError(ErrorCode.SCHEMA_INVALID, "runtime generations are not distinct")
+
+
+def _restart_fence_matches(
+    fence: object,
+    *,
+    target: str,
+    candidate_attempts: range,
+    recovery_attempts: range,
+    invocation_required: bool,
+) -> bool:
+    if type(fence) is not dict:
+        return False
+    candidate_count = fence["candidateAttemptCount"]
+    recovery_count = fence["recoveryAttemptCount"]
+    invocation = fence["systemdInvocationId"]
+    return (
+        fence["selectedTarget"] == target
+        and candidate_count in candidate_attempts
+        and recovery_count in recovery_attempts
+        and (invocation is not None) == invocation_required
+    )
+
+
+def _validate_restart_fence(document: dict[str, object]) -> None:
+    phase = TransactionPhase(cast(str, document["phase"]))
+    fence = document["restartFence"]
+    valid = False
+    if phase in {TransactionPhase.PREPARED, TransactionPhase.RUNTIME_SELECTED}:
+        valid = fence is None
+    elif phase is TransactionPhase.RESTART_REQUIRED:
+        valid = _restart_fence_matches(
+            fence,
+            target="candidate",
+            candidate_attempts=range(1),
+            recovery_attempts=range(1),
+            invocation_required=False,
+        )
+    elif phase is TransactionPhase.CANDIDATE_STARTING:
+        valid = _restart_fence_matches(
+            fence,
+            target="candidate",
+            candidate_attempts=range(1, 4),
+            recovery_attempts=range(1),
+            invocation_required=True,
+        )
+    elif phase is TransactionPhase.ROLLBACK_RESTART_REQUIRED:
+        valid = _restart_fence_matches(
+            fence,
+            target="previous",
+            candidate_attempts=range(1, 4),
+            recovery_attempts=range(1),
+            invocation_required=False,
+        )
+    elif phase is TransactionPhase.RECOVERY_STARTING:
+        valid = _restart_fence_matches(
+            fence,
+            target="previous",
+            candidate_attempts=range(1, 4),
+            recovery_attempts=range(1, 4),
+            invocation_required=True,
+        )
+    elif phase is TransactionPhase.STATE_COMMITTED:
+        valid = (
+            fence is None
+            or _restart_fence_matches(
+                fence,
+                target="candidate",
+                candidate_attempts=range(1, 4),
+                recovery_attempts=range(1),
+                invocation_required=True,
+            )
+            or _restart_fence_matches(
+                fence,
+                target="previous",
+                candidate_attempts=range(1, 4),
+                recovery_attempts=range(1, 4),
+                invocation_required=True,
+            )
+        )
+    if not valid:
+        raise ContractError(
+            ErrorCode.SCHEMA_INVALID,
+            "restart attempt fence does not match the durable transaction phase",
+        )
+
+
+def _validate_manifest_transition_binding(
+    document: dict[str, object],
+    operation: str,
+    source_state: LifecycleState,
+    candidate_state: LifecycleState,
+) -> None:
+    same_digest = document["sourceManifestDigest"] == document["candidateManifestDigest"]
+    if source_state != candidate_state:
+        if same_digest:
+            raise ContractError(
+                ErrorCode.SCHEMA_INVALID,
+                "lifecycle transition did not change the manifest generation",
+            )
+        return
+    if operation in {"suspend", "resume"} and not same_digest:
+        raise ContractError(
+            ErrorCode.SCHEMA_INVALID,
+            "no-op route transition changed the manifest generation",
+        )
+    if operation == "rename" and same_digest:
+        raise ContractError(
+            ErrorCode.SCHEMA_INVALID,
+            "rename transition did not change the manifest generation",
+        )
 
 
 def _validate_observed_recovery_binding(
@@ -505,6 +610,42 @@ def validate_contract(
     return kind
 
 
+def _reject_create_authority_fields(document: dict[str, object]) -> None:
+    if document.get("operation") == "create" and any(
+        field in document for field in ("id", "tenantId", "canonicalOrigin", "manifest")
+    ):
+        raise ContractError(
+            ErrorCode.CALLER_SELECTED_IDENTITY,
+            "create cannot select identity, origin, or desired state",
+        )
+
+
+def materialize_create_request(document: dict[str, object]) -> ValidatedCreateRequest:
+    """Validate and project the caller choices needed by pure create construction."""
+
+    _reject_create_authority_fields(document)
+    validate_contract(document, expected_kind=ContractKind.OPERATION_REQUEST)
+    if document["operation"] != "create":
+        raise ContractError(ErrorCode.SCHEMA_INVALID, "request is not a create operation")
+    quotas = cast(dict[str, object], document["quotas"])
+    return ValidatedCreateRequest(
+        slug=cast(str, document["slug"]),
+        storage_mib=cast(int, quotas["storageMiB"]),
+        entries=cast(int, quotas["entries"]),
+    )
+
+
+def materialize_platform_namespace(
+    document: dict[str, object],
+) -> ValidatedPlatformNamespace:
+    """Validate and project the pinned input needed by pure create construction."""
+
+    validate_contract(document, expected_kind=ContractKind.PLATFORM_NAMESPACE)
+    return ValidatedPlatformNamespace(
+        tenant_origin_suffix=cast(str, document["tenantOriginSuffix"]),
+    )
+
+
 def decode_contract(
     raw: bytes,
     *,
@@ -527,13 +668,7 @@ def decode_request(raw: bytes) -> dict[str, object]:
             ErrorCode.STANDALONE_MANIFEST_FRAME,
             "a desired manifest is not an operation request",
         )
-    if document.get("operation") == "create" and any(
-        field in document for field in ("id", "tenantId", "canonicalOrigin")
-    ):
-        raise ContractError(
-            ErrorCode.CALLER_SELECTED_IDENTITY,
-            "create cannot select tenant identity or origin",
-        )
+    _reject_create_authority_fields(document)
     validate_contract(document, expected_kind=ContractKind.OPERATION_REQUEST)
     return document
 

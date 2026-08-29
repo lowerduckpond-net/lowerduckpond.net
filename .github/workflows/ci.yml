@@ -80,8 +80,8 @@ jobs:
       - name: Check local M3 assumptions
         run: just check-m3-qualification
 
-  m3-static-contracts:
-    name: M3 static contracts
+  m3-contract-spine:
+    name: M3 contract spine
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -92,8 +92,8 @@ jobs:
         with:
           version: 2026.8.8
           install_args: just python uv
-      - name: Check standalone contract wheel
-        run: just check-m3-static-contracts
+      - name: Check standalone contract and root-domain wheels
+        run: just check-m3-contract-spine
 
   m3-archive-storage:
     name: M3 archive storage (local)
@@ -190,7 +190,7 @@ jobs:
   gate:
     name: Gate
     if: always()
-    needs: [pre-commit, links, python, m3-static-contracts, m3-qualification, m3-archive-storage, cloudflare-networks, opentofu, ansible, actions, secrets]
+    needs: [pre-commit, links, python, m3-contract-spine, m3-qualification, m3-archive-storage, cloudflare-networks, opentofu, ansible, actions, secrets]
     runs-on: ubuntu-24.04
     steps:
       - name: Require every validation job

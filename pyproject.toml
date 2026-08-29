@@ -22,9 +22,13 @@ dev = [
 [tool.uv]
 package = false
 
+[tool.uv.sources]
+lowerduckpond-static-contracts = { workspace = true }
+
 [tool.uv.workspace]
 members = [
   "packages/static-contracts",
+  "packages/static-domain",
   "services/control-plane",
   "services/provisioner",
   "tools/m3-archive-qualification",
@@ -37,6 +41,7 @@ markers = ["minio: exercises versioned S3 behavior against the pinned local MinI
 pythonpath = ["."]
 testpaths = [
   "packages/static-contracts/tests",
+  "packages/static-domain/tests",
   "services/control-plane/tests",
   "services/provisioner/tests",
   "tests/infrastructure",
@@ -81,6 +86,8 @@ warn_unreachable = true
 files = [
   "packages/static-contracts/src",
   "packages/static-contracts/tests",
+  "packages/static-domain/src",
+  "packages/static-domain/tests",
   "services/control-plane/src",
   "services/control-plane/tests",
   "services/provisioner/src",

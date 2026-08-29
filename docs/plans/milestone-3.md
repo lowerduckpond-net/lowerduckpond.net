@@ -218,9 +218,9 @@ four DNS records, four Authenticated Origin Pulls associations, six rulesets,
 ACME records, and four uploaded leaves absent. Both temporary Cloudflare tokens
 were revoked and disposable trusted-workstation material was removed. The
 backed-up CA roots remain retained pending the production-CA decision required
-before M3.12. M3.1 subsequently completed, and M3.2 is the next implementation
-phase; the M3.0 result does not enable production or satisfy any later
-Milestone 3 gate.
+before M3.12. M3.1 and M3.2 subsequently completed, and M3.3 is the next
+implementation phase; the M3.0 result does not enable production or satisfy
+any later Milestone 3 gate.
 
 Add executable qualification probes and a sanitized report before depending on
 host behavior that the current Molecule suite does not reproduce.
@@ -314,8 +314,8 @@ and an independent version-aware and multipart-aware probe proved the entire
 archive bucket empty. Protected run `33219502391` then passed ordinary
 production policy and reported no changes with the migration flag disabled.
 The archive credential remains in operator custody and off the production host
-until M3.10. M3.2 is the next implementation phase; M3.1 does not enable
-production or satisfy any later Milestone 3 gate.
+until M3.10. M3.2 subsequently completed, and M3.3 is the next implementation
+phase; M3.1 does not enable production or satisfy any later Milestone 3 gate.
 
 Add a `digitalocean-tenant-archives` module rather than renaming the existing
 backup module or its state address. Extend the production stack with the second
@@ -374,12 +374,14 @@ storage as an application rollback.
 
 ### M3.2: establish contracts and the test spine
 
-Implementation status: in progress. The first review slice establishes the
+Implementation status: complete. The first review slice establishes the
 standalone `static_contracts` package, strict schema set, canonical and digest
 vectors, identifier reservations, lifecycle matrix, client-only YAML
-translation, and accepted and hostile fixtures. The separate root-domain
-constructor, its injected UUIDv7 generator, and the combined M3.2 gate remain
-required before this phase is complete.
+translation, and accepted and hostile fixtures. The second adds the separate
+pure root-domain package, injected UUIDv7 generation, authoritative create
+constructor, root-domain vectors and hostile/property tests, and a combined
+wheel-isolation gate. Both packages remain unused by production and the
+publication flag remains false.
 
 Add strict schemas for platform namespace and launch records, desired and
 observed tenant state, deployment and archive records, requests, authorization

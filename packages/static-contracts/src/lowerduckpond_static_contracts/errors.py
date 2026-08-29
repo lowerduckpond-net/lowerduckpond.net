@@ -13,6 +13,8 @@ class ErrorCode(StrEnum):
     DUPLICATE_JSON_MEMBER = "contract.duplicate_json_member"
     DUPLICATE_YAML_KEY = "client.duplicate_yaml_key"
     INVALID_CANONICAL_ORIGIN = "contract.invalid_canonical_origin"
+    INVALID_CLOCK = "contract.invalid_clock"
+    INVALID_ENTROPY = "contract.invalid_entropy"
     INVALID_IDENTIFIER = "contract.invalid_identifier"
     INVALID_JSON = "contract.invalid_json"
     INVALID_NAMESPACE = "contract.invalid_namespace"

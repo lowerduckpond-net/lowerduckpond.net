@@ -30,7 +30,13 @@ from lowerduckpond_static_contracts.schema import (
     decode_contract,
     decode_request,
     decode_result,
+    materialize_create_request,
+    materialize_platform_namespace,
     validate_contract,
+)
+from lowerduckpond_static_contracts.values import (
+    ValidatedCreateRequest,
+    ValidatedPlatformNamespace,
 )
 
 __all__ = [
@@ -47,12 +53,16 @@ __all__ = [
     "Operation",
     "ResultErrorCode",
     "TransactionPhase",
+    "ValidatedCreateRequest",
+    "ValidatedPlatformNamespace",
     "canonical_json_bytes",
     "decode_contract",
     "decode_json_object",
     "decode_request",
     "decode_result",
     "manifest_digest",
+    "materialize_create_request",
+    "materialize_platform_namespace",
     "request_digest",
     "result_digest",
     "validate_contract",
