@@ -28,6 +28,32 @@
           }
         }
       }
+    },
+    {
+      "else": {
+        "properties": {
+          "candidateManifestDigest": {
+            "$ref": "common.schema.json#/$defs/manifestDigest"
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "delete"
+          }
+        },
+        "required": [
+          "operation"
+        ]
+      },
+      "then": {
+        "properties": {
+          "candidateManifestDigest": {
+            "type": "null"
+          }
+        }
+      }
     }
   ],
   "properties": {

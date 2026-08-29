@@ -424,6 +424,38 @@ def test_create_audit_entry_may_precede_tenant_identity_generation() -> None:
 
 
 @pytest.mark.parametrize(
+    "operation",
+    [operation for operation in Operation if operation is not Operation.DELETE],
+)
+def test_non_delete_intents_require_a_candidate_manifest_digest(operation: Operation) -> None:
+    intent = _load_object(FIXTURE_ROOT / "accepted/transaction-intent.json")
+    intent["operation"] = operation.value
+    if operation is Operation.CREATE:
+        intent["sourceManifestDigest"] = None
+    intent["candidateManifestDigest"] = None
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(intent)
+
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+def test_delete_intent_requires_an_absent_candidate_manifest() -> None:
+    intent = _load_object(FIXTURE_ROOT / "accepted/transaction-intent.json")
+    candidate_digest = intent["candidateManifestDigest"]
+    intent["operation"] = "delete"
+    intent["candidateManifestDigest"] = None
+
+    assert validate_contract(intent) is ContractKind.TRANSACTION_INTENT
+
+    intent["candidateManifestDigest"] = candidate_digest
+    with pytest.raises(ContractError) as captured:
+        validate_contract(intent)
+
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+@pytest.mark.parametrize(
     "format_identifier",
     ["lowerduckpond--v1", "lowerduckpond-state--v1", "lowerduckpond--state-v1"],
 )
