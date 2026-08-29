@@ -11,7 +11,7 @@ Status as of 2026-08-29:
 | 0: Repository foundation | Complete | The public repository, development workflow, CI gates, application boundaries, and architecture decisions are established. |
 | 1: DigitalOcean foundation | Complete | OpenTofu manages the production network, Droplet, reserved IP, firewall, DNS, state, and durable backup storage; the guarded rebuild drill succeeded. |
 | 2: Reproducible host configuration | Complete | One trusted-workstation command converges production idempotently and passes host, HTTPS, backup, restore, and post-reboot acceptance checks. |
-| 3: Static tenant MVP | Current | M3.0 qualification, M3.1 isolated archive storage, and M3.2 contracts and test spine are complete; M3.3 durable-state implementation is in progress. |
+| 3: Static tenant MVP | Current | M3.0 qualification, M3.1 isolated archive storage, M3.2 contracts and test spine, and M3.3 durable-state implementation are complete; M3.4 hostile-ZIP implementation is in progress. |
 | 4: Control plane and lifecycle automation | Planned | Expose the static lifecycle through the FastAPI control plane with approvals, jobs, policy, and audit history. |
 | 5: Backup, observability, and operations | Planned | Complete platform-level recovery, central observability, alerting, and operator runbooks. Host backup and monitoring foundations arrived early in Milestone 2. |
 | 6: Dynamic PHP pilot | Planned | Introduce isolated PHP and tenant-scoped SQL only after the static platform and recovery path are proven. |
@@ -24,9 +24,11 @@ qualification passed all 54 checks before its complete disposable teardown.
 M3.1's protected production migration, live acceptance, evidence backup,
 independent empty-bucket proof, and final no-change plan also passed. M3.2's
 strict contracts, pure root-owned identity and manifest construction, and
-combined package-isolation gate passed. M3.3 is the current implementation
-phase; its first review slice establishes the standalone host-agent package,
-durable file primitives, and executable host lock order. Production remains
+combined package-isolation gate passed. M3.3's durable state kernel is
+complete; it provides bounded release and record
+inventory, capacity admission, correlation idempotency, a hash-chained audit,
+and fail-closed intent discovery and recovery planning. M3.4's hostile-ZIP and
+portable-bundle engine is the current implementation phase. Production remains
 disabled, and Milestone 3 remains incomplete until every phase gate through
 M3.12 passes.
 

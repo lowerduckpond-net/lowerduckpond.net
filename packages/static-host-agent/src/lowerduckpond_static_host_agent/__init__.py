@@ -33,6 +33,12 @@ from lowerduckpond_static_host_agent.durable import (
     StateAlreadyExistsError,
     StatePathError,
 )
+from lowerduckpond_static_host_agent.intents import (
+    DiscoveredIntent,
+    IntentDiscovery,
+    IntentDiscoveryError,
+    IntentRecoveryPlan,
+)
 from lowerduckpond_static_host_agent.locks import (
     LockManager,
     LockMode,
@@ -50,6 +56,7 @@ from lowerduckpond_static_host_agent.release_tree import (
     measure_release_tree,
 )
 from lowerduckpond_static_host_agent.repository import (
+    IntentRemovalToken,
     StateConflictError,
     StateRecordError,
     StateRecordPath,
@@ -58,7 +65,11 @@ from lowerduckpond_static_host_agent.repository import (
     StoredContract,
 )
 from lowerduckpond_static_host_agent.state_inventory import (
+    DEFAULT_INTENT_INVENTORY_LIMITS,
     AuthorizationRecordInventory,
+    IntentInventoryLimits,
+    IntentRecordIdentity,
+    IntentRecordInventory,
     StateAdmissionRejectedError,
     StateInventory,
     StateInventoryError,
@@ -70,6 +81,7 @@ from lowerduckpond_static_host_agent.state_inventory import (
 
 __all__ = [
     "DEFAULT_AUDIT_LIMITS",
+    "DEFAULT_INTENT_INVENTORY_LIMITS",
     "AuditAppend",
     "AuditCapacityError",
     "AuditError",
@@ -85,11 +97,19 @@ __all__ = [
     "CorrelationError",
     "CorrelationRateLimitError",
     "CorrelationResolution",
+    "DiscoveredIntent",
     "DurabilityBoundary",
     "DurableDirectory",
     "FilesystemCapacity",
     "HostCapacityLimits",
     "InodeAllocation",
+    "IntentDiscovery",
+    "IntentDiscoveryError",
+    "IntentInventoryLimits",
+    "IntentRecordIdentity",
+    "IntentRecordInventory",
+    "IntentRecoveryPlan",
+    "IntentRemovalToken",
     "LockManager",
     "LockMode",
     "LockName",
