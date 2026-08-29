@@ -122,6 +122,49 @@ def test_rotation_is_bounded_and_canonically_packed(tmp_path: Path) -> None:
     assert len(first) + len(second.splitlines(keepends=True)[0]) > MAX_CANONICAL_BYTES
 
 
+def test_segment_count_bound_uses_minimum_allocation_not_perfect_packing() -> None:
+    limits = AuditLimits(
+        maximum_segment_bytes=MAX_CANONICAL_BYTES,
+        maximum_ordinary_bytes=2 * MAX_CANONICAL_BYTES,
+        maximum_administrator_reserve_bytes=0,
+    )
+
+    perfectly_packed = (
+        limits.maximum_administrator_bytes + limits.maximum_segment_bytes - 1
+    ) // limits.maximum_segment_bytes
+    assert limits.maximum_segments == limits.maximum_administrator_bytes // 512
+    assert limits.maximum_segments > perfectly_packed
+
+
+def test_replacement_admission_accounts_for_old_and_temporary_generations(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    first = _entry(0, None)
+    second = _entry(1, audit_entry_digest(first).to_dict())
+
+    with _repository(root) as repository:
+        state = repository.append_audit(first).state
+
+    filesystem = os.statvfs(root / "audit")
+    fragment = filesystem.f_frsize or filesystem.f_bsize
+    replacement_bytes = len(canonical_json_bytes(first) + canonical_json_bytes(second))
+    replacement_allocation = ((replacement_bytes + fragment - 1) // fragment) * fragment
+    limits = AuditLimits(
+        maximum_ordinary_bytes=state.allocated_bytes + replacement_allocation - 1,
+        maximum_administrator_reserve_bytes=0,
+    )
+
+    with (
+        _repository(root) as repository,
+        pytest.raises(
+            AuditCapacityError,
+            match="protected capacity",
+        ),
+    ):
+        repository.append_audit(second, limits=limits)
+
+
 def test_sparse_segment_rotation_is_rejected(tmp_path: Path) -> None:
     root = _state_root(tmp_path)
     first = _entry(0, None)
@@ -140,7 +183,7 @@ def test_administrator_reserve_is_unavailable_to_ordinary_append(tmp_path: Path)
     limits = AuditLimits(
         maximum_segment_bytes=MAX_CANONICAL_BYTES,
         maximum_ordinary_bytes=0,
-        maximum_administrator_reserve_bytes=8192,
+        maximum_administrator_reserve_bytes=16384,
     )
     document = _entry(0, None)
 

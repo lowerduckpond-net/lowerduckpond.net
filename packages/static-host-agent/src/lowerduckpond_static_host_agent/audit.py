@@ -74,8 +74,10 @@ class AuditLimits:
 
     @property
     def maximum_segments(self) -> int:
-        total = self.maximum_administrator_bytes
-        return (total + self.maximum_segment_bytes - 1) // self.maximum_segment_bytes
+        # Every accepted nonempty segment must account for at least one POSIX
+        # st_blocks unit. This bounds sparse packing without assuming that
+        # variable-sized entries fill every segment to its byte ceiling.
+        return self.maximum_administrator_bytes // _BLOCK_BYTES
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,8 +172,8 @@ def append_audit(  # noqa: PLR0913 - keep every security boundary explicit
             replacement = target.data + canonical
             projected = (
                 state.allocated_bytes
-                - target.allocated_bytes
                 + audit_directory.allocation_upper_bound(len(replacement))
+                + audit_directory.namespace_allocation_upper_bound(1)
             )
             _admit_capacity(projected, administrator=administrator, limits=limits)
             audit_directory.replace(
@@ -184,8 +186,10 @@ def append_audit(  # noqa: PLR0913 - keep every security boundary explicit
             next_number = len(segments)
             if next_number >= limits.maximum_segments:
                 raise AuditCapacityError("audit segment count is exhausted")
-            projected = state.allocated_bytes + audit_directory.allocation_upper_bound(
-                len(canonical)
+            projected = (
+                state.allocated_bytes
+                + audit_directory.allocation_upper_bound(len(canonical))
+                + audit_directory.namespace_allocation_upper_bound(1)
             )
             _admit_capacity(projected, administrator=administrator, limits=limits)
             audit_directory.create_immutable(
@@ -362,7 +366,7 @@ def _validate_segment_metadata(
         or stat.S_IMODE(metadata.st_mode) != expected_mode
         or metadata.st_nlink != 1
         or metadata.st_size > maximum_bytes
-        or metadata.st_blocks < 0
+        or metadata.st_blocks <= 0
     ):
         raise AuditError("audit segment has an unsafe inode shape")
 
