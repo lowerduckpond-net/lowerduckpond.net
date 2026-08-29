@@ -360,7 +360,7 @@ def test_local_and_central_records_must_agree(tmp_path: Path) -> None:
 
 def test_local_and_central_supported_timestamp_fields_may_differ(tmp_path: Path) -> None:
     local_timestamp = struct.pack("<HHBII", 0x5455, 9, 3, 1, 2)
-    central_timestamp = struct.pack("<HHBI", 0x5455, 5, 1, 1)
+    central_timestamp = struct.pack("<HHBI", 0x5455, 5, 3, 1)
 
     structure = _inspect(
         tmp_path,
@@ -395,7 +395,8 @@ def test_unknown_or_malformed_extra_fields_are_rejected(tmp_path: Path, extra: b
 
 
 def test_supported_timestamp_extra_fields_are_accepted(tmp_path: Path) -> None:
-    extended = struct.pack("<HHBII", 0x5455, 9, 3, 1, 2)
+    local_extended = struct.pack("<HHBII", 0x5455, 9, 3, 1, 2)
+    central_extended = struct.pack("<HHBI", 0x5455, 5, 3, 1)
     ntfs_value = b"\0" * 4 + struct.pack("<HH", 1, 24) + b"\0" * 24
     ntfs = struct.pack("<HH", 0x000A, len(ntfs_value)) + ntfs_value
 
@@ -404,8 +405,8 @@ def test_supported_timestamp_extra_fields_are_accepted(tmp_path: Path) -> None:
         _archive(
             _MemberSpec(
                 name=b"index.html",
-                local_extra=extended + ntfs,
-                central_extra=extended + ntfs,
+                local_extra=local_extended + ntfs,
+                central_extra=central_extended + ntfs,
             )
         ),
     )

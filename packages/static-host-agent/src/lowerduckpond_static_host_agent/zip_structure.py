@@ -333,7 +333,7 @@ def _parse_central(
             raise ZipStructureError("ZIP central record starts on another disk")
         raw_name = data[fixed_end : fixed_end + name_bytes]
         extra = data[fixed_end + name_bytes : fixed_end + name_bytes + extra_bytes]
-        _validate_extra(extra)
+        _validate_extra(extra, central=True)
         entries.append(
             _central_entry(
                 fields,
@@ -591,7 +591,7 @@ def _validate_local_regions(
         variable_offset = entry.local_header_offset + _LOCAL.size
         raw_name = source.read(variable_offset, name_bytes)
         extra = source.read(variable_offset + name_bytes, extra_bytes)
-        _validate_extra(extra)
+        _validate_extra(extra, central=False)
         expected = (
             entry.version_needed,
             entry.flags,
@@ -632,7 +632,7 @@ def _validate_local_regions(
     return tuple(members)
 
 
-def _validate_extra(data: bytes) -> None:
+def _validate_extra(data: bytes, *, central: bool) -> None:
     cursor = 0
     seen: set[int] = set()
     while cursor < len(data):
@@ -648,7 +648,10 @@ def _validate_extra(data: bytes) -> None:
         seen.add(identifier)
         value = data[cursor:end]
         if identifier == _EXTENDED_TIMESTAMP_EXTRA:
-            if not value or value[0] & ~0x07 or len(value) != 1 + 4 * value[0].bit_count():
+            if not value or value[0] & ~0x07:
+                raise ZipStructureError("ZIP extended-timestamp field is malformed")
+            expected_values = bool(value and value[0] & 0x01) if central else value[0].bit_count()
+            if len(value) != 1 + 4 * expected_values:
                 raise ZipStructureError("ZIP extended-timestamp field is malformed")
         elif identifier == _NTFS_TIMESTAMP_EXTRA:
             if (
