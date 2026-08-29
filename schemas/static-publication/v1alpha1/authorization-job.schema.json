@@ -28,7 +28,7 @@
         "archiveRecordDigest": {
           "oneOf": [
             {
-              "$ref": "common.schema.json#/$defs/digest"
+              "$ref": "common.schema.json#/$defs/archiveRecordDigest"
             },
             {
               "type": "null"
@@ -38,7 +38,7 @@
         "deploymentDigest": {
           "oneOf": [
             {
-              "$ref": "common.schema.json#/$defs/digest"
+              "$ref": "common.schema.json#/$defs/deploymentRecordDigest"
             },
             {
               "type": "null"
@@ -69,7 +69,7 @@
           ]
         },
         "platformStateDigest": {
-          "$ref": "common.schema.json#/$defs/digest"
+          "$ref": "common.schema.json#/$defs/platformStateDigest"
         }
       },
       "required": [

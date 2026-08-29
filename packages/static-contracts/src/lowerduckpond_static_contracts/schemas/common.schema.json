@@ -13,6 +13,14 @@
         }
       }
     },
+    "archiveRecordDigest": {
+      "$ref": "#/$defs/digest",
+      "properties": {
+        "format": {
+          "const": "lowerduckpond-archive-record-v1"
+        }
+      }
+    },
     "artifact": {
       "additionalProperties": false,
       "properties": {
@@ -76,6 +84,14 @@
       ],
       "type": "object"
     },
+    "deploymentRecordDigest": {
+      "$ref": "#/$defs/digest",
+      "properties": {
+        "format": {
+          "const": "lowerduckpond-deployment-record-v1"
+        }
+      }
+    },
     "lifecycle": {
       "enum": [
         "undeployed",
@@ -109,6 +125,14 @@
         "reconcile"
       ],
       "type": "string"
+    },
+    "platformStateDigest": {
+      "$ref": "#/$defs/digest",
+      "properties": {
+        "format": {
+          "const": "lowerduckpond-platform-state-v1"
+        }
+      }
     },
     "principal": {
       "maxLength": 128,
