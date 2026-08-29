@@ -247,6 +247,25 @@ def test_successful_create_result_rejects_a_null_tenant_identity() -> None:
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
 
+@pytest.mark.parametrize("desired_state", ["active", "suspended", "archived"])
+def test_successful_create_result_requires_an_undeployed_manifest(desired_state: str) -> None:
+    result = _load_object(FIXTURE_ROOT / "accepted/operation-result.json")
+    manifest = result["manifest"]
+    assert type(manifest) is dict
+    spec = manifest["spec"]
+    assert type(spec) is dict
+    spec["desiredState"] = desired_state
+    spec["desiredDeployment"] = {
+        "id": "0191e2ca-49f2-7608-8cf3-f80ab2cab151",
+        "archiveSha256": "a" * 64,
+    }
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(result)
+
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
 @pytest.mark.parametrize(
     "format_identifier",
     ["lowerduckpond--v1", "lowerduckpond-state--v1", "lowerduckpond--state-v1"],

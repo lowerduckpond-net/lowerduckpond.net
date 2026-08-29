@@ -26,6 +26,25 @@
       },
       "then": {
         "properties": {
+          "manifest": {
+            "properties": {
+              "spec": {
+                "not": {
+                  "required": [
+                    "desiredDeployment"
+                  ]
+                },
+                "properties": {
+                  "desiredState": {
+                    "const": "undeployed"
+                  }
+                },
+                "required": [
+                  "desiredState"
+                ]
+              }
+            }
+          },
           "tenantId": {
             "$ref": "common.schema.json#/$defs/uuidv7"
           }
