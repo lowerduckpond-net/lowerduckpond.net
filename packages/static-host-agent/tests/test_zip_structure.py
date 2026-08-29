@@ -1286,6 +1286,53 @@ def test_extraction_removes_the_created_candidate_when_identity_probe_fails(
     assert list(parent.iterdir()) == []
 
 
+def test_extraction_closes_and_removes_the_candidate_when_initial_fstat_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _write(tmp_path, _archive(_MemberSpec(name=b"index.html", content=b"home")))
+    parent = _staging_parent(tmp_path)
+    real_open = os.open
+    real_fstat = os.fstat
+    candidate_fd: int | None = None
+    failed = False
+
+    def track_candidate_open(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal candidate_fd
+        descriptor = real_open(path, flags, mode, dir_fd=dir_fd)
+        if path == "candidate" and dir_fd is not None:
+            candidate_fd = descriptor
+        return descriptor
+
+    def fail_candidate_fstat(descriptor: int) -> os.stat_result:
+        nonlocal failed
+        if descriptor == candidate_fd and not failed:
+            failed = True
+            raise OSError("simulated descriptor identity failure")
+        return real_fstat(descriptor)
+
+    monkeypatch.setattr(os, "open", track_candidate_open)
+    monkeypatch.setattr(os, "fstat", fail_candidate_fstat)
+
+    with pytest.raises(ZipExtractionError, match="could not complete safely"):
+        _extract_with_intake_lock(
+            source,
+            staging_parent=parent,
+            staging_name="candidate",
+            expected_owner=_OWNER,
+            retained_usage=ReleaseCapacityUsage(()),
+        )
+
+    assert failed
+    assert list(parent.iterdir()) == []
+
+
 @given(
     content=strategies.binary(max_size=65_536),
     method=strategies.sampled_from([_STORED, _DEFLATE]),
