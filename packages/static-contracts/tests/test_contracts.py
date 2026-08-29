@@ -365,6 +365,16 @@ def test_failed_create_result_may_precede_tenant_identity_generation() -> None:
     assert validate_contract(result) is ContractKind.OPERATION_RESULT
 
 
+def test_unimplemented_handler_returns_a_versioned_failed_result() -> None:
+    result = _load_object(FIXTURE_ROOT / "accepted/operation-result.json")
+    del result["canonicalOrigin"]
+    del result["manifest"]
+    result["status"] = "failed"
+    result["errorCode"] = "not_implemented"
+
+    assert validate_contract(result) is ContractKind.OPERATION_RESULT
+
+
 def test_existing_tenant_intent_requires_a_source_manifest_digest() -> None:
     intent = _load_object(FIXTURE_ROOT / "accepted/transaction-intent.json")
     intent["sourceManifestDigest"] = None

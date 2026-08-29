@@ -30,6 +30,7 @@
     "invalid_artifact",
     "invalid_request",
     "not_found",
+    "not_implemented",
     "publication_disabled",
     "state_drift",
     "unavailable"

@@ -40,6 +40,7 @@ class ResultErrorCode(StrEnum):
     INVALID_ARTIFACT = "invalid_artifact"
     INVALID_REQUEST = "invalid_request"
     NOT_FOUND = "not_found"
+    NOT_IMPLEMENTED = "not_implemented"
     PUBLICATION_DISABLED = "publication_disabled"
     STATE_DRIFT = "state_drift"
     UNAVAILABLE = "unavailable"
