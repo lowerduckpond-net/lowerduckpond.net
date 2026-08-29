@@ -391,22 +391,7 @@ def _validate_lifecycle_recovery(document: dict[str, object]) -> None:
     expected = LIFECYCLE_MATRIX.get((Operation(operation), source_state))
     if expected != candidate_state:
         raise ContractError(ErrorCode.SCHEMA_INVALID, "recovery states violate lifecycle matrix")
-    if source_state != candidate_state and (
-        document["sourceManifestDigest"] == document["candidateManifestDigest"]
-    ):
-        raise ContractError(
-            ErrorCode.SCHEMA_INVALID,
-            "lifecycle transition did not change the manifest generation",
-        )
-    if (
-        operation in {"suspend", "resume"}
-        and source_state == candidate_state
-        and document["sourceManifestDigest"] != document["candidateManifestDigest"]
-    ):
-        raise ContractError(
-            ErrorCode.SCHEMA_INVALID,
-            "no-op route transition changed the manifest generation",
-        )
+    _validate_manifest_transition_binding(document, operation, source_state, candidate_state)
     if operation in {"deploy", "rollback"} and (
         source_observed is None
         or candidate_observed is None
@@ -428,6 +413,32 @@ def _validate_lifecycle_recovery(document: dict[str, object]) -> None:
         )
     if recovery["candidateRuntimeGenerationId"] == recovery["sourceRuntimeGenerationId"]:
         raise ContractError(ErrorCode.SCHEMA_INVALID, "runtime generations are not distinct")
+
+
+def _validate_manifest_transition_binding(
+    document: dict[str, object],
+    operation: str,
+    source_state: LifecycleState,
+    candidate_state: LifecycleState,
+) -> None:
+    same_digest = document["sourceManifestDigest"] == document["candidateManifestDigest"]
+    if source_state != candidate_state:
+        if same_digest:
+            raise ContractError(
+                ErrorCode.SCHEMA_INVALID,
+                "lifecycle transition did not change the manifest generation",
+            )
+        return
+    if operation in {"suspend", "resume"} and not same_digest:
+        raise ContractError(
+            ErrorCode.SCHEMA_INVALID,
+            "no-op route transition changed the manifest generation",
+        )
+    if operation == "rename" and same_digest:
+        raise ContractError(
+            ErrorCode.SCHEMA_INVALID,
+            "rename transition did not change the manifest generation",
+        )
 
 
 def _validate_observed_recovery_binding(

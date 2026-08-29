@@ -1227,6 +1227,23 @@ def test_satisfied_route_transition_preserves_the_manifest_generation(
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
 
+def test_rename_intent_requires_a_distinct_manifest_generation() -> None:
+    intent = _route_only_transaction_intent("rename", "active", "active")
+
+    assert validate_contract(intent) is ContractKind.TRANSACTION_INTENT
+
+    source_digest = deepcopy(intent["sourceManifestDigest"])
+    intent["candidateManifestDigest"] = source_digest
+    recovery = intent["lifecycleRecovery"]
+    assert type(recovery) is dict
+    candidate = recovery["candidateObservedState"]
+    assert type(candidate) is dict
+    candidate["desiredManifestDigest"] = source_digest
+    with pytest.raises(ContractError) as captured:
+        validate_contract(intent)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
 def test_runtime_mutation_intent_requires_exact_recovery_generations() -> None:
     intent = _load_object(FIXTURE_ROOT / "accepted/transaction-intent.json")
     candidate_digest = deepcopy(intent["candidateManifestDigest"])
