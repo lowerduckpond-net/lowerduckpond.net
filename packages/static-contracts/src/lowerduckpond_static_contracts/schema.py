@@ -207,6 +207,9 @@ def _validate_job(document: dict[str, object]) -> None:
 
 
 def _validate_result(document: dict[str, object]) -> None:
+    canonical_origin = document.get("canonicalOrigin")
+    if canonical_origin is not None:
+        validate_canonical_origin(document["tenantId"], canonical_origin)
     if "manifest" not in document:
         return
     manifest = cast(dict[str, object], document["manifest"])
@@ -214,7 +217,7 @@ def _validate_result(document: dict[str, object]) -> None:
     metadata = cast(dict[str, object], manifest["metadata"])
     if document["tenantId"] != metadata["id"]:
         raise ContractError(ErrorCode.SCHEMA_INVALID, "result tenant identity does not match")
-    if document.get("canonicalOrigin") != metadata["canonicalOrigin"]:
+    if canonical_origin != metadata["canonicalOrigin"]:
         raise ContractError(ErrorCode.SCHEMA_INVALID, "result tenant origin does not match")
 
 

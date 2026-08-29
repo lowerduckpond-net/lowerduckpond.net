@@ -387,6 +387,20 @@ def test_later_audit_entries_require_a_predecessor() -> None:
     assert validate_contract(entry) is ContractKind.AUDIT_ENTRY
 
 
+def test_manifestless_result_origin_is_bound_to_its_tenant_identity() -> None:
+    result = _load_object(FIXTURE_ROOT / "accepted/operation-result.json")
+    del result["manifest"]
+    result["operation"] = "deploy"
+    result["canonicalOrigin"] = "t-0198d17f6f4a70008000000000000001.lowerduckpond.com"
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(result)
+    assert captured.value.code is ErrorCode.INVALID_CANONICAL_ORIGIN
+
+    result["canonicalOrigin"] = "t-0191e2c48f7a7c3b8d1e5f62047a2100.lowerduckpond.com"
+    assert validate_contract(result) is ContractKind.OPERATION_RESULT
+
+
 @pytest.mark.parametrize(
     "format_identifier",
     ["lowerduckpond--v1", "lowerduckpond-state--v1", "lowerduckpond--state-v1"],
