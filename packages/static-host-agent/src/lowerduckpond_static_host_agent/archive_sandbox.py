@@ -10,6 +10,7 @@ from pathlib import Path, PurePosixPath
 from typing import Final
 
 _SAFE_COMPONENT = re.compile(r"[A-Za-z0-9._-]+", flags=re.ASCII)
+_MAXIMUM_FDINFO_BYTES: Final = 4_096
 
 ARCHIVE_SANDBOX_STATIC_PROPERTIES: Final[tuple[tuple[str, str], ...]] = (
     ("Type", "exec"),
@@ -56,6 +57,8 @@ ARCHIVE_SANDBOX_STATIC_PROPERTIES: Final[tuple[tuple[str, str], ...]] = (
     ("SystemCallFilter", "~@keyring"),
     ("SystemCallFilter", "~@resources"),
     ("SystemCallFilter", "~prlimit64"),
+    ("SystemCallFilter", "~sync syncfs"),
+    ("SystemCallFilter", "~inotify_init inotify_init1 inotify_add_watch"),
     ("SystemCallFilter", "~io_uring_setup io_uring_register io_uring_enter"),
     ("SystemCallFilter", "~clone clone3 fork vfork"),
     (
@@ -144,6 +147,7 @@ def _validated_existing_path(path: Path, *, label: str, directory: bool) -> _Pat
         descriptors.append(descriptor)
         root = os.fstat(descriptor)
         inode_chain.append((root.st_dev, root.st_ino))
+        mount_id = _mount_id(descriptor)
         for index, component in enumerate(parsed.parts[1:]):
             final = index == len(parsed.parts[1:]) - 1
             flags = os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -152,6 +156,10 @@ def _validated_existing_path(path: Path, *, label: str, directory: bool) -> _Pat
             descriptor = os.open(component, flags, dir_fd=descriptor)
             descriptors.append(descriptor)
             metadata = os.fstat(descriptor)
+            component_mount_id = _mount_id(descriptor)
+            if component_mount_id != mount_id:
+                raise ArchiveSandboxError(f"archive sandbox {label} path crosses a mount point")
+            mount_id = component_mount_id
             if stat.S_ISLNK(metadata.st_mode):
                 raise ArchiveSandboxError(f"archive sandbox {label} path contains a symbolic link")
             if not final and not stat.S_ISDIR(metadata.st_mode):
@@ -175,6 +183,27 @@ def _validated_existing_path(path: Path, *, label: str, directory: bool) -> _Pat
         for descriptor in reversed(descriptors):
             os.close(descriptor)
     return _PathIdentity(Path(raw), parsed.parts, tuple(inode_chain))
+
+
+def _mount_id(descriptor: int) -> int:
+    fdinfo = os.open(
+        f"/proc/self/fdinfo/{descriptor}",
+        os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+    )
+    try:
+        payload = os.read(fdinfo, _MAXIMUM_FDINFO_BYTES + 1)
+        if len(payload) > _MAXIMUM_FDINFO_BYTES or os.read(fdinfo, 1):
+            raise ArchiveSandboxError("archive sandbox descriptor metadata is oversized")
+    finally:
+        os.close(fdinfo)
+    mount_ids = [
+        line.removeprefix(b"mnt_id:\t")
+        for line in payload.splitlines()
+        if line.startswith(b"mnt_id:\t")
+    ]
+    if len(mount_ids) != 1 or not mount_ids[0].isdigit():
+        raise ArchiveSandboxError("archive sandbox descriptor has no trustworthy mount identity")
+    return int(mount_ids[0])
 
 
 def _paths_alias_or_overlap(first: _PathIdentity, second: _PathIdentity) -> bool:

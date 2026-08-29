@@ -4,6 +4,7 @@ import os
 import subprocess
 from pathlib import Path
 
+import lowerduckpond_static_host_agent.archive_sandbox as archive_sandbox_module
 import pytest
 from lowerduckpond_static_host_agent import (
     ARCHIVE_SANDBOX_STATIC_PROPERTIES,
@@ -49,6 +50,8 @@ _EXPECTED_SYSTEM_CALL_FILTERS = (
     "~@keyring",
     "~@resources",
     "~prlimit64",
+    "~sync syncfs",
+    "~inotify_init inotify_init1 inotify_add_watch",
     "~io_uring_setup io_uring_register io_uring_enter",
     "~clone clone3 fork vfork",
     "~kill tkill tgkill rt_sigqueueinfo rt_tgsigqueueinfo pidfd_send_signal",
@@ -144,6 +147,31 @@ def test_archive_sandbox_rejects_runtime_or_artifact_aliases(tmp_path: Path) -> 
     staging.mkdir()
 
     with pytest.raises(ArchiveSandboxError, match="disjoint and unaliased"):
+        archive_sandbox_policy(runtime, artifact, staging)
+
+
+def test_archive_sandbox_rejects_a_mount_point_component(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    artifact = tmp_path / "artifact.zip"
+    artifact.write_bytes(b"")
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    runtime_identity = (runtime.stat().st_dev, runtime.stat().st_ino)
+    real_mount_id = archive_sandbox_module._mount_id
+
+    def mounted_runtime(descriptor: int) -> int:
+        metadata = os.fstat(descriptor)
+        if (metadata.st_dev, metadata.st_ino) == runtime_identity:
+            return real_mount_id(descriptor) + 1
+        return real_mount_id(descriptor)
+
+    monkeypatch.setattr(archive_sandbox_module, "_mount_id", mounted_runtime)
+
+    with pytest.raises(ArchiveSandboxError, match="mount point"):
         archive_sandbox_policy(runtime, artifact, staging)
 
 

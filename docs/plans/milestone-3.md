@@ -638,17 +638,18 @@ isolation property set as inert typed package data. It fixes the ADR 0019
 memory, swap, task, descriptor, CPU, effective runtime, and one-CPU ceilings;
 removes capabilities, child-process creation, socket, keyring, io_uring,
 cross-process signal, process-memory, descriptor-transfer, and same-UID
-resource-control calls; disables core dumps; discards all standard streams;
-makes `/proc` wholly inaccessible; and applies strict filesystem, home, device,
-kernel, IPC, namespace, and syscall controls. A read-only empty filesystem view
+resource-control calls; denies host-wide sync and UID-shared inotify quota
+operations; disables core dumps; discards all standard streams; makes `/proc`
+wholly inaccessible; and applies strict filesystem, home, device, kernel, IPC,
+namespace, and syscall controls. A read-only empty filesystem view
 with no independent temporary output then exposes only one self-contained
 runtime, one immutable artifact, and one writable staging parent through
 explicit bind mounts. Descriptor-walked validation rejects relative,
-ambiguous, missing, symlinked, overlapping, and inode-aliased paths before
-emitting those bindings. Executable tests pass a generated unit through
-`systemd-analyze verify` without hiding runtime-limit warnings. The policy has
-no launcher or executable and is not installed or enabled; M3.5 consumes this
-reviewed contract when it creates the dark host boundary.
+ambiguous, missing, symlinked, mount-crossing, overlapping, and inode-aliased
+paths before emitting those bindings. Executable tests pass a generated unit
+through `systemd-analyze verify` without hiding runtime-limit warnings. The
+policy has no launcher or executable and is not installed or enabled; M3.5
+consumes this reviewed contract when it creates the dark host boundary.
 
 ### M3.5: install the dark host boundary
 
