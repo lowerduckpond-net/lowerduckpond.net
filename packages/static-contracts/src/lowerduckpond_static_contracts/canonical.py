@@ -54,7 +54,7 @@ def decode_json_object(
         )
     except ContractError:
         raise
-    except (json.JSONDecodeError, RecursionError) as error:
+    except (json.JSONDecodeError, RecursionError, ValueError) as error:
         raise ContractError(ErrorCode.INVALID_JSON, "raw JSON is not one valid document") from error
     if type(value) is not dict:
         raise ContractError(ErrorCode.SCHEMA_INVALID, "contract document must be an object")

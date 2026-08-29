@@ -105,6 +105,15 @@ def test_duplicate_members_are_rejected_before_schema_or_correlation_work() -> N
     assert captured.value.code is ErrorCode.DUPLICATE_JSON_MEMBER
 
 
+def test_oversized_integer_is_rejected_at_the_contract_error_boundary() -> None:
+    raw = b'{"value":' + (b"9" * 5000) + b"}"
+
+    with pytest.raises(ContractError) as captured:
+        decode_request(raw)
+
+    assert captured.value.code is ErrorCode.INVALID_JSON
+
+
 def test_raw_request_limit_reads_at_most_the_detection_byte() -> None:
     with pytest.raises(ContractError) as captured:
         decode_request(b" " * (MAX_RAW_REQUEST_BYTES + 1))
