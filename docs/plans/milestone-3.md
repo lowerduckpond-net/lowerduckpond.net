@@ -633,6 +633,17 @@ parser separation, checksum and metadata tampering rejection, cleanup, source
 mutation detection, and content-only round trips. The APIs remain inert library
 surface with no production caller.
 
+The fifth review slice commits the archive worker's exact systemd resource and
+isolation property set as inert typed package data. It fixes the ADR 0019
+memory, swap, task, descriptor, CPU, runtime, and one-CPU ceilings; removes
+capabilities and network access; applies strict filesystem, home, device,
+kernel, namespace, syscall, and process visibility controls; and admits only
+one canonical read-only artifact path and one disjoint writable staging parent.
+Executable tests reject relative, ambiguous, and overlapping path bindings and
+pass a generated unit through `systemd-analyze verify`. The policy has no
+launcher or executable and is not installed or enabled; M3.5 consumes this
+reviewed contract when it creates the dark host boundary.
+
 ### M3.5: install the dark host boundary
 
 Ansible installs a hash-pinned host-agent artifact in a versioned root-owned

@@ -1,5 +1,11 @@
 """Root-only durable-state primitives for the static-publication host agent."""
 
+from lowerduckpond_static_host_agent.archive_sandbox import (
+    ARCHIVE_SANDBOX_STATIC_PROPERTIES,
+    ArchiveSandboxError,
+    ArchiveSandboxPolicy,
+    archive_sandbox_policy,
+)
 from lowerduckpond_static_host_agent.audit import (
     DEFAULT_AUDIT_LIMITS,
     AuditAppend,
@@ -106,6 +112,7 @@ from lowerduckpond_static_host_agent.zip_structure import (
 )
 
 __all__ = [
+    "ARCHIVE_SANDBOX_STATIC_PROPERTIES",
     "DEFAULT_AUDIT_LIMITS",
     "DEFAULT_INTENT_INVENTORY_LIMITS",
     "DEFAULT_ZIP_LIMITS",
@@ -113,6 +120,8 @@ __all__ = [
     "MAXIMUM_PORTABLE_BUNDLE_BYTES",
     "PORTABLE_BUNDLE_FORMAT",
     "PORTABLE_ENVELOPE",
+    "ArchiveSandboxError",
+    "ArchiveSandboxPolicy",
     "AuditAppend",
     "AuditCapacityError",
     "AuditError",
@@ -180,6 +189,7 @@ __all__ = [
     "admit_release_capacity",
     "admit_state_inventory",
     "aggregate_release_usage",
+    "archive_sandbox_policy",
     "build_portable_bundle",
     "extract_deployment_zip",
     "import_portable_bundle",
