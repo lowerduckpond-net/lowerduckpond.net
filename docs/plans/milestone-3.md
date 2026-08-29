@@ -464,9 +464,18 @@ and after content hashing are executable tests. M3.4 will supply archive
 preflight's worst-case reservation to this inert M3.3 kernel; it will not change
 the accounting or digest contract.
 
-Hash-chained audit, correlation idempotency, tenant-count and bounded-record
-admission, the remaining record layouts, intent discovery and recovery remain
-in M3.3 and do not move to a later phase.
+The fourth review slice completes typed paths and identity binding for archive
+records, authorization jobs and results, and all three intent kinds. It also
+adds one exclusive-lock inventory of canonical tenant directories and the
+fixed jobs, results, and correlations stores. Inventory is descriptor-relative,
+bounded before enumeration can exceed a committed count, rejects unexpected
+layout entries and unsafe inode metadata, and accounts actual allocated blocks.
+Pre-mutation admission enforces the 25-tenant and shared 10,000-record/64-MiB
+authorization-correlation ceilings. Public overrides may tighten but cannot
+weaken those boundaries.
+
+Hash-chained audit, correlation idempotency, and intent discovery and recovery
+remain in M3.3 and do not move to a later phase.
 
 Create the host-agent package around the root-domain constructor and add its
 root-only state repository. Implement

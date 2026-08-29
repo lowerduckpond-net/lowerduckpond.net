@@ -24,6 +24,15 @@ from lowerduckpond_static_contracts import (
 
 from lowerduckpond_static_host_agent.durable import DurableDirectory
 from lowerduckpond_static_host_agent.locks import LockManager, LockMode, LockName
+from lowerduckpond_static_host_agent.state_inventory import (
+    DEFAULT_STATE_INVENTORY_LIMITS,
+    StateInventory,
+    StateInventoryLimits,
+    StateInventoryProjection,
+    StateInventoryReservation,
+    admit_state_inventory,
+    measure_state_inventory,
+)
 
 _STATE_REVISION_FORMAT: Final = b"lowerduckpond-state-revision-v1"
 _SHA256_PATTERN: Final = re.compile(r"[0-9a-f]{64}", flags=re.ASCII)
@@ -45,6 +54,13 @@ class _StateRecordName(StrEnum):
     TENANT_DESIRED = "tenant-desired"
     TENANT_OBSERVED = "tenant-observed"
     TENANT_DEPLOYMENT = "tenant-deployment"
+    TENANT_ARCHIVE = "tenant-archive"
+    AUTHORIZATION_JOB = "authorization-job"
+    AUTHORIZATION_RESULT = "authorization-result"
+    EMERGENCY_RESULT = "emergency-result"
+    TRANSACTION_INTENT = "transaction-intent"
+    ARCHIVE_CONSTRUCTION_INTENT = "archive-construction-intent"
+    ARCHIVE_RETIREMENT_INTENT = "archive-retirement-intent"
 
 
 @dataclass(frozen=True, slots=True, init=False)
@@ -54,6 +70,7 @@ class StateRecordPath:
     name: _StateRecordName
     tenant_id: str | None
     deployment_id: str | None
+    record_id: str | None
 
     @classmethod
     def platform_namespace(cls) -> Self:
@@ -86,17 +103,69 @@ class StateRecordPath:
         )
 
     @classmethod
+    def tenant_archive(cls, tenant_id: object, deployment_id: object) -> Self:
+        return cls._new(
+            _StateRecordName.TENANT_ARCHIVE,
+            tenant_id=validate_uuid7(tenant_id),
+            deployment_id=validate_uuid7(deployment_id),
+        )
+
+    @classmethod
+    def authorization_job(cls, job_id: object) -> Self:
+        return cls._new(
+            _StateRecordName.AUTHORIZATION_JOB,
+            record_id=validate_uuid7(job_id),
+        )
+
+    @classmethod
+    def authorization_result(cls, job_id: object) -> Self:
+        return cls._new(
+            _StateRecordName.AUTHORIZATION_RESULT,
+            record_id=validate_uuid7(job_id),
+        )
+
+    @classmethod
+    def emergency_result(cls, correlation_id: object) -> Self:
+        return cls._new(
+            _StateRecordName.EMERGENCY_RESULT,
+            record_id=validate_uuid7(correlation_id),
+        )
+
+    @classmethod
+    def transaction_intent(cls, intent_id: object) -> Self:
+        return cls._new(
+            _StateRecordName.TRANSACTION_INTENT,
+            record_id=validate_uuid7(intent_id),
+        )
+
+    @classmethod
+    def archive_construction_intent(cls, intent_id: object) -> Self:
+        return cls._new(
+            _StateRecordName.ARCHIVE_CONSTRUCTION_INTENT,
+            record_id=validate_uuid7(intent_id),
+        )
+
+    @classmethod
+    def archive_retirement_intent(cls, intent_id: object) -> Self:
+        return cls._new(
+            _StateRecordName.ARCHIVE_RETIREMENT_INTENT,
+            record_id=validate_uuid7(intent_id),
+        )
+
+    @classmethod
     def _new(
         cls,
         name: _StateRecordName,
         *,
         tenant_id: str | None = None,
         deployment_id: str | None = None,
+        record_id: str | None = None,
     ) -> Self:
         value = object.__new__(cls)
         object.__setattr__(value, "name", name)
         object.__setattr__(value, "tenant_id", tenant_id)
         object.__setattr__(value, "deployment_id", deployment_id)
+        object.__setattr__(value, "record_id", record_id)
         return value
 
     @property
@@ -107,28 +176,66 @@ class StateRecordPath:
             _StateRecordName.TENANT_DESIRED: ContractKind.SITE,
             _StateRecordName.TENANT_OBSERVED: ContractKind.TENANT_OBSERVED_STATE,
             _StateRecordName.TENANT_DEPLOYMENT: ContractKind.DEPLOYMENT_RECORD,
+            _StateRecordName.TENANT_ARCHIVE: ContractKind.ARCHIVE_RECORD,
+            _StateRecordName.AUTHORIZATION_JOB: ContractKind.AUTHORIZATION_JOB,
+            _StateRecordName.AUTHORIZATION_RESULT: ContractKind.OPERATION_RESULT,
+            _StateRecordName.EMERGENCY_RESULT: ContractKind.OPERATION_RESULT,
+            _StateRecordName.TRANSACTION_INTENT: ContractKind.TRANSACTION_INTENT,
+            _StateRecordName.ARCHIVE_CONSTRUCTION_INTENT: (
+                ContractKind.ARCHIVE_CONSTRUCTION_INTENT
+            ),
+            _StateRecordName.ARCHIVE_RETIREMENT_INTENT: ContractKind.ARCHIVE_RETIREMENT_INTENT,
         }[self.name]
 
     @property
     def components(self) -> tuple[str, ...]:
+        components: tuple[str, ...]
         if self.name is _StateRecordName.PLATFORM_NAMESPACE:
-            return ("platform", "namespace.json")
-        if self.name is _StateRecordName.PLATFORM_LAUNCH:
-            return ("platform", "launch.json")
-        if self.tenant_id is None:
+            components = ("platform", "namespace.json")
+        elif self.name is _StateRecordName.PLATFORM_LAUNCH:
+            components = ("platform", "launch.json")
+        elif self.name is _StateRecordName.AUTHORIZATION_JOB:
+            components = ("authorization", "jobs", f"{self._require_record_id()}.json")
+        elif self.name in {
+            _StateRecordName.AUTHORIZATION_RESULT,
+            _StateRecordName.EMERGENCY_RESULT,
+        }:
+            components = ("authorization", "results", f"{self._require_record_id()}.json")
+        elif self.name in {
+            _StateRecordName.TRANSACTION_INTENT,
+            _StateRecordName.ARCHIVE_CONSTRUCTION_INTENT,
+            _StateRecordName.ARCHIVE_RETIREMENT_INTENT,
+        }:
+            components = ("intents", f"{self._require_record_id()}.json")
+        elif self.tenant_id is None:
             raise RuntimeError("tenant record path has no tenant identity")
-        if self.name is _StateRecordName.TENANT_DESIRED:
-            return ("tenants", self.tenant_id, "desired.json")
-        if self.name is _StateRecordName.TENANT_OBSERVED:
-            return ("tenants", self.tenant_id, "observed.json")
-        if self.deployment_id is None:
-            raise RuntimeError("deployment record path has no deployment identity")
-        return (
-            "tenants",
-            self.tenant_id,
-            "deployments",
-            f"{self.deployment_id}.json",
-        )
+        elif self.name is _StateRecordName.TENANT_DESIRED:
+            components = ("tenants", self.tenant_id, "desired.json")
+        elif self.name is _StateRecordName.TENANT_OBSERVED:
+            components = ("tenants", self.tenant_id, "observed.json")
+        elif self.name in {
+            _StateRecordName.TENANT_DEPLOYMENT,
+            _StateRecordName.TENANT_ARCHIVE,
+        }:
+            if self.deployment_id is None:
+                raise RuntimeError("deployment-bound record has no deployment identity")
+            directory = (
+                "deployments" if self.name is _StateRecordName.TENANT_DEPLOYMENT else "archives"
+            )
+            components = (
+                "tenants",
+                self.tenant_id,
+                directory,
+                f"{self.deployment_id}.json",
+            )
+        else:
+            raise RuntimeError("state record path is not implemented")
+        return components
+
+    def _require_record_id(self) -> str:
+        if self.record_id is None:
+            raise RuntimeError("global state record has no identity")
+        return self.record_id
 
     def validate_binding(self, document: dict[str, object]) -> None:
         """Prove that record identity agrees with its typed filesystem path."""
@@ -144,6 +251,41 @@ class StateRecordPath:
             document.get("tenantId") != self.tenant_id or document.get("id") != self.deployment_id
         ):
             raise StateRecordError("deployment identity does not match its path")
+        elif self.name is _StateRecordName.TENANT_ARCHIVE and (
+            document.get("tenantId") != self.tenant_id
+            or document.get("deploymentId") != self.deployment_id
+        ):
+            raise StateRecordError("archive identity does not match its path")
+        elif self.name is _StateRecordName.AUTHORIZATION_JOB and (
+            document.get("jobId") != self.record_id
+        ):
+            raise StateRecordError("authorization-job identity does not match its path")
+        elif self.name is _StateRecordName.AUTHORIZATION_RESULT:
+            provenance = document.get("provenance")
+            if (
+                type(provenance) is not dict
+                or provenance.get("kind") != "authorization-job"
+                or provenance.get("jobId") != self.record_id
+            ):
+                raise StateRecordError("authorization-result identity does not match its path")
+        elif self.name is _StateRecordName.EMERGENCY_RESULT:
+            provenance = document.get("provenance")
+            if (
+                type(provenance) is not dict
+                or provenance.get("kind") != "emergency-administrator"
+                or document.get("correlationId") != self.record_id
+            ):
+                raise StateRecordError("emergency-result identity does not match its path")
+        elif (
+            self.name
+            in {
+                _StateRecordName.TRANSACTION_INTENT,
+                _StateRecordName.ARCHIVE_CONSTRUCTION_INTENT,
+                _StateRecordName.ARCHIVE_RETIREMENT_INTENT,
+            }
+            and document.get("intentId") != self.record_id
+        ):
+            raise StateRecordError("intent identity does not match its path")
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,6 +344,7 @@ class StateRepository:
             self._durable.close()
             raise
         self._expected_owner = expected_owner
+        self._expected_directory_mode = expected_directory_mode
         self._expected_record_mode = expected_record_mode
         self._closed = False
 
@@ -270,6 +413,17 @@ class StateRepository:
         candidate = self._encode(path, document)
         with self.transaction(mode=LockMode.EXCLUSIVE, blocking=blocking) as transaction:
             return transaction._compare_and_swap_bytes(path, expected_revision, candidate)
+
+    def measure_inventory(
+        self,
+        *,
+        limits: StateInventoryLimits = DEFAULT_STATE_INVENTORY_LIMITS,
+        blocking: bool = False,
+    ) -> StateInventory:
+        """Measure bounded durable-state usage under exclusive tenant-state."""
+
+        with self.transaction(mode=LockMode.EXCLUSIVE, blocking=blocking) as transaction:
+            return transaction.measure_inventory(limits=limits)
 
     def _read_locked(self, path: StateRecordPath) -> StoredContract:
         raw = self._durable.read_regular(
@@ -345,6 +499,31 @@ class _StateTransaction:
         self._require_exclusive()
         candidate = self._repository._encode(path, document)
         return self._compare_and_swap_bytes(path, expected_revision, candidate)
+
+    def measure_inventory(
+        self,
+        *,
+        limits: StateInventoryLimits = DEFAULT_STATE_INVENTORY_LIMITS,
+    ) -> StateInventory:
+        self._require_exclusive()
+        return measure_state_inventory(
+            self._repository._durable,
+            expected_owner=self._repository._expected_owner,
+            expected_directory_mode=self._repository._expected_directory_mode,
+            expected_record_mode=self._repository._expected_record_mode,
+            limits=limits,
+        )
+
+    def admit_inventory(
+        self,
+        reservation: StateInventoryReservation,
+        *,
+        limits: StateInventoryLimits = DEFAULT_STATE_INVENTORY_LIMITS,
+    ) -> StateInventoryProjection:
+        """Admit growth while retaining this exclusive transaction's lock."""
+
+        inventory = self.measure_inventory(limits=limits)
+        return admit_state_inventory(inventory, reservation, limits=limits)
 
     def _compare_and_swap_bytes(
         self,
