@@ -193,6 +193,10 @@ def measure_state_inventory(
         for directory_name in _AUTHORIZATION_DIRECTORIES:
             directory = authorization_root.open_descendant((directory_name,))
             try:
+                directory.remove_abandoned_publication_temporaries(
+                    expected_owner=expected_owner,
+                    expected_mode=expected_record_mode,
+                )
                 entries = _stable_directory_entries(
                     directory,
                     expected_owner=expected_owner,
@@ -361,12 +365,16 @@ def _validate_regular_metadata(
         raise StateInventoryError("authorization record has unexpected ownership or mode")
 
 
-def _metadata_generation(metadata: os.stat_result) -> tuple[int, int, int, int, int, int]:
+def _metadata_generation(metadata: os.stat_result) -> tuple[int, ...]:
     return (
         metadata.st_dev,
         metadata.st_ino,
         metadata.st_mode,
+        metadata.st_uid,
+        metadata.st_gid,
+        metadata.st_nlink,
         metadata.st_size,
+        metadata.st_blocks,
         metadata.st_mtime_ns,
         metadata.st_ctime_ns,
     )

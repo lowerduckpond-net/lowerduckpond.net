@@ -4,10 +4,13 @@ import json
 import os
 import stat
 from concurrent.futures import ThreadPoolExecutor
+from multiprocessing import get_context
 from pathlib import Path
 
 import pytest
 from lowerduckpond_static_host_agent import (
+    DurabilityBoundary,
+    DurableDirectory,
     LockManager,
     LockMode,
     StateAdmissionRejectedError,
@@ -16,6 +19,7 @@ from lowerduckpond_static_host_agent import (
     StateInventoryError,
     StateInventoryLimits,
     StateInventoryReservation,
+    StatePathError,
     StateRecordPath,
     StateRepository,
     admit_state_inventory,
@@ -31,6 +35,7 @@ _EXPECTED_TENANTS = 2
 _EXPECTED_AUTHORIZATION_RECORDS = 3
 _TENANT_CEILING = 25
 _FIXTURE_ROOT = Path(__file__).parents[3] / "tests/static-publication/fixtures/accepted"
+_CRASH_EXIT_STATUS = 91
 
 
 def _mkdir(path: Path) -> None:
@@ -74,6 +79,24 @@ def _record(path: Path, data: bytes = b"{}\n") -> int:
     return path.stat().st_blocks * 512
 
 
+def _crash_during_authorization_publication(root: str) -> None:
+    def crash(boundary: DurabilityBoundary) -> None:
+        if boundary is DurabilityBoundary.WRITE:
+            os._exit(_CRASH_EXIT_STATUS)
+
+    with DurableDirectory.open(
+        Path(root),
+        expected_owner=os.geteuid(),
+        expected_directory_mode=_DIRECTORY_MODE,
+    ) as directory:
+        directory.create_immutable(
+            ("authorization", "jobs", f"{_JOB_ID}.json"),
+            b"partial",
+            mode=_RECORD_MODE,
+            failure_hook=crash,
+        )
+
+
 def _fixture(name: str) -> dict[str, object]:
     value = json.loads((_FIXTURE_ROOT / name).read_text(encoding="utf-8"))
     assert type(value) is dict
@@ -87,6 +110,45 @@ def test_empty_inventory_is_measured_through_the_repository_lock(tmp_path: Path)
         inventory = repository.measure_inventory()
 
     assert inventory == StateInventory((), 0, 0, 0, 0)
+
+
+def test_inventory_recovers_a_publication_temporary_left_by_process_exit(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    process = get_context("spawn").Process(
+        target=_crash_during_authorization_publication,
+        args=(str(root),),
+    )
+    process.start()
+    process.join(timeout=10)
+    assert process.exitcode == _CRASH_EXIT_STATUS
+    temporary_directory = root / "authorization" / "jobs"
+    assert len(list(temporary_directory.glob(".ldp-state-*"))) == 1
+
+    with _repository(root) as repository:
+        inventory = repository.measure_inventory()
+
+    assert inventory.authorization_record_count == 0
+    assert list(temporary_directory.glob(".ldp-state-*")) == []
+
+
+@pytest.mark.parametrize("unsafe_shape", ["name", "hardlink"])
+def test_inventory_refuses_to_remove_an_unsafe_reserved_temporary(
+    tmp_path: Path,
+    unsafe_shape: str,
+) -> None:
+    root = _state_root(tmp_path)
+    filename = ".ldp-state-" + ("not-random" if unsafe_shape == "name" else "a" * 32)
+    temporary = root / "authorization" / "jobs" / filename
+    _record(temporary, b"partial")
+    if unsafe_shape == "hardlink":
+        os.link(temporary, root / "unsafe-link")
+
+    with _repository(root) as repository, pytest.raises(StatePathError):
+        repository.measure_inventory()
+
+    assert temporary.exists()
 
 
 def test_inventory_counts_exact_tenants_records_and_allocated_blocks(tmp_path: Path) -> None:

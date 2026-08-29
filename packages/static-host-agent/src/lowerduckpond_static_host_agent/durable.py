@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes
 import errno
 import os
+import re
 import secrets
 import stat
 from collections.abc import Callable
@@ -18,6 +19,7 @@ _FILE_CREATE_FLAGS: Final = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
 _FILE_READ_FLAGS: Final = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC
 _RENAME_NOREPLACE: Final = 1
 _TEMP_NAME_PREFIX: Final = ".ldp-state-"
+_TEMP_NAME_PATTERN: Final = re.compile(r"\.ldp-state-[0-9a-f]{32}", flags=re.ASCII)
 
 
 class StatePathError(RuntimeError):
@@ -198,6 +200,43 @@ class DurableDirectory:
 
         self._require_open()
         return os.dup(self._directory_fd)
+
+    def remove_abandoned_publication_temporaries(
+        self,
+        *,
+        expected_owner: int,
+        expected_mode: int,
+    ) -> int:
+        """Remove only safely shaped temporaries left by an interrupted writer."""
+
+        self._require_open()
+        descriptor = os.dup(self._directory_fd)
+        removed = 0
+        try:
+            names = sorted(
+                entry.name
+                for entry in os.scandir(descriptor)
+                if entry.name.startswith(_TEMP_NAME_PREFIX)
+            )
+            for name in names:
+                if _TEMP_NAME_PATTERN.fullmatch(name) is None:
+                    raise StatePathError("reserved temporary name has an invalid shape")
+                metadata = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+                if (
+                    not stat.S_ISREG(metadata.st_mode)
+                    or metadata.st_uid != expected_owner
+                    or stat.S_IMODE(metadata.st_mode) != expected_mode
+                    or metadata.st_nlink != 1
+                ):
+                    raise StatePathError("reserved temporary has an unsafe inode shape")
+            for name in names:
+                os.unlink(name, dir_fd=descriptor)
+                removed += 1
+            if removed:
+                os.fsync(descriptor)
+            return removed
+        finally:
+            os.close(descriptor)
 
     def open_descendant(self, components: tuple[str, ...]) -> DurableDirectory:
         """Open a verified descendant directory without resolving the root path again."""
