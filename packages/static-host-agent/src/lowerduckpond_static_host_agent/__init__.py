@@ -81,10 +81,13 @@ from lowerduckpond_static_host_agent.state_inventory import (
 from lowerduckpond_static_host_agent.zip_structure import (
     DEFAULT_ZIP_LIMITS,
     ZipEntryType,
+    ZipExtraction,
+    ZipExtractionError,
     ZipLimits,
     ZipMember,
     ZipStructure,
     ZipStructureError,
+    extract_deployment_zip,
     inspect_deployment_zip,
 )
 
@@ -146,6 +149,8 @@ __all__ = [
     "StateRevision",
     "StoredContract",
     "ZipEntryType",
+    "ZipExtraction",
+    "ZipExtractionError",
     "ZipLimits",
     "ZipMember",
     "ZipStructure",
@@ -153,6 +158,7 @@ __all__ = [
     "admit_release_capacity",
     "admit_state_inventory",
     "aggregate_release_usage",
+    "extract_deployment_zip",
     "inspect_deployment_zip",
     "measure_filesystem_capacity",
     "measure_release_tree",

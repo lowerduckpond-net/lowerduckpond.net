@@ -7,10 +7,21 @@ import os
 import stat
 import struct
 import unicodedata
+import zlib
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Final, Protocol
+
+from lowerduckpond_static_host_agent.capacity import (
+    DEFAULT_HOST_CAPACITY_LIMITS,
+    CapacityProjection,
+    CapacityReservation,
+    HostCapacityLimits,
+    ReleaseCapacityUsage,
+    admit_release_capacity,
+    measure_filesystem_capacity_descriptor,
+)
 
 MEBIBYTE: Final = 1024 * 1024
 _MAXIMUM_ARCHIVE_BYTES: Final = 100 * MEBIBYTE
@@ -44,10 +55,23 @@ _DRIVE_PREFIX_BYTES: Final = 2
 _UNIX_MADE_BY_HOST: Final = 3
 _NTFS_TIMESTAMP_VALUE_BYTES: Final = 32
 _SNAPSHOT_OPEN_FLAGS: Final = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC
+_DIRECTORY_OPEN_FLAGS: Final = (
+    os.O_RDONLY | os.O_NONBLOCK | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+)
+_FILE_CREATE_FLAGS: Final = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+_EXTRACTION_CHUNK_BYTES: Final = 64 * 1024
+_BLOCK_UNIT_BYTES: Final = 512
+_STAGING_PARENT_MODE: Final = 0o700
+_DIRECTORY_MODE: Final = 0o755
+_FILE_MODE: Final = 0o644
 
 
 class ZipStructureError(RuntimeError):
     """A ZIP snapshot violates the bounded structural contract."""
+
+
+class ZipExtractionError(ZipStructureError):
+    """A structurally admitted ZIP could not produce one safe release tree."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +157,17 @@ class ZipStructure:
     @property
     def materialized_entry_count(self) -> int:
         return len(self.materialized_paths)
+
+
+@dataclass(frozen=True, slots=True)
+class ZipExtraction:
+    """One complete but still unpublished normalized staging tree."""
+
+    structure: ZipStructure
+    staging_name: str
+    capacity_projection: CapacityProjection
+    allocated_bytes: int
+    unique_inodes: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,6 +276,123 @@ def inspect_deployment_zip(
     finally:
         if descriptor is not None:
             os.close(descriptor)
+
+
+def extract_deployment_zip(  # noqa: PLR0913,PLR0915 - keep trust boundaries explicit
+    path: Path,
+    *,
+    staging_parent: Path,
+    staging_name: str,
+    expected_owner: int,
+    retained_usage: ReleaseCapacityUsage,
+    expected_mode: int = 0o600,
+    limits: ZipLimits = DEFAULT_ZIP_LIMITS,
+    capacity_limits: HostCapacityLimits = DEFAULT_HOST_CAPACITY_LIMITS,
+) -> ZipExtraction:
+    """Structurally admit and stream one ZIP into a new descriptor-relative tree."""
+
+    _validate_staging_name(staging_name)
+    source_fd: int | None = None
+    parent_fd: int | None = None
+    created = False
+    try:
+        source_fd = os.open(path, _SNAPSHOT_OPEN_FLAGS)
+        before = _validate_snapshot(
+            os.fstat(source_fd),
+            expected_owner=expected_owner,
+            expected_mode=expected_mode,
+            limits=limits,
+        )
+        _validate_open_identity(path, before, "ZIP snapshot inode changed while it was opened")
+        source = _DescriptorSource(source_fd, before.st_size)
+        inspected = _inspect(source, limits=limits)
+        structure = ZipStructure(
+            archive_bytes=inspected.archive_bytes,
+            artifact_sha256=_sha256(source_fd, before.st_size),
+            central_directory_offset=inspected.central_directory_offset,
+            central_directory_bytes=inspected.central_directory_bytes,
+            members=inspected.members,
+            materialized_paths=inspected.materialized_paths,
+            expanded_regular_file_bytes=inspected.expanded_regular_file_bytes,
+        )
+
+        parent_fd = os.open(staging_parent, _DIRECTORY_OPEN_FLAGS)
+        parent_metadata = _validate_staging_parent(
+            os.fstat(parent_fd),
+            expected_owner=expected_owner,
+        )
+        _validate_open_identity(
+            staging_parent,
+            parent_metadata,
+            "ZIP staging parent changed while it was opened",
+        )
+        if parent_metadata.st_dev != before.st_dev:
+            raise ZipExtractionError("ZIP artifact and staging tree span filesystems")
+        reservation = _extraction_reservation(structure, parent_fd)
+        projection = admit_release_capacity(
+            retained_usage,
+            reservation,
+            measure_filesystem_capacity_descriptor(parent_fd),
+            limits=capacity_limits,
+        )
+
+        os.mkdir(staging_name, mode=_DIRECTORY_MODE, dir_fd=parent_fd)
+        created = True
+        root_fd = os.open(staging_name, _DIRECTORY_OPEN_FLAGS, dir_fd=parent_fd)
+        try:
+            os.fchmod(root_fd, _DIRECTORY_MODE)
+            _extract_members(
+                source,
+                structure,
+                root_fd=root_fd,
+                expected_owner=expected_owner,
+                limits=limits,
+            )
+            allocated_bytes, unique_inodes = _validate_extracted_tree(
+                root_fd,
+                structure,
+                expected_owner=expected_owner,
+                reservation=reservation,
+            )
+            os.fsync(root_fd)
+        finally:
+            os.close(root_fd)
+        os.fsync(parent_fd)
+
+        after = _validate_snapshot(
+            os.fstat(source_fd),
+            expected_owner=expected_owner,
+            expected_mode=expected_mode,
+            limits=limits,
+        )
+        _validate_open_identity(
+            path,
+            after,
+            "ZIP snapshot changed during extraction",
+        )
+        if _metadata_generation(before) != _metadata_generation(after):
+            raise ZipExtractionError("ZIP snapshot changed during extraction")
+        _validate_remaining_capacity(parent_fd, projection)
+        return ZipExtraction(
+            structure=structure,
+            staging_name=staging_name,
+            capacity_projection=projection,
+            allocated_bytes=allocated_bytes,
+            unique_inodes=unique_inodes,
+        )
+    except OSError as error:
+        if created and parent_fd is not None:
+            _remove_extraction(parent_fd, staging_name)
+        raise ZipExtractionError("ZIP extraction could not complete safely") from error
+    except BaseException:
+        if created and parent_fd is not None:
+            _remove_extraction(parent_fd, staging_name)
+        raise
+    finally:
+        if parent_fd is not None:
+            os.close(parent_fd)
+        if source_fd is not None:
+            os.close(source_fd)
 
 
 def _inspect(source: _Source, *, limits: ZipLimits) -> ZipStructure:
@@ -711,3 +863,373 @@ def _metadata_generation(metadata: os.stat_result) -> tuple[int, ...]:
         metadata.st_mtime_ns,
         metadata.st_ctime_ns,
     )
+
+
+def _validate_staging_name(name: str) -> None:
+    if (
+        not name
+        or name in {".", ".."}
+        or "/" in name
+        or "\\" in name
+        or "\0" in name
+        or Path(name).is_absolute()
+        or unicodedata.normalize("NFC", name) != name
+        or any(unicodedata.category(character) == "Cc" for character in name)
+    ):
+        raise ValueError("ZIP staging name must be one canonical relative component")
+
+
+def _validate_open_identity(path: Path, opened: os.stat_result, message: str) -> None:
+    current = path.stat(follow_symlinks=False)
+    if _metadata_generation(opened) != _metadata_generation(current):
+        raise ZipExtractionError(message)
+
+
+def _validate_staging_parent(
+    metadata: os.stat_result,
+    *,
+    expected_owner: int,
+) -> os.stat_result:
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != expected_owner
+        or stat.S_IMODE(metadata.st_mode) != _STAGING_PARENT_MODE
+    ):
+        raise ZipExtractionError("ZIP staging parent has an unsafe inode shape")
+    return metadata
+
+
+def _extraction_reservation(structure: ZipStructure, parent_fd: int) -> CapacityReservation:
+    filesystem = os.fstatvfs(parent_fd)
+    fragment = filesystem.f_frsize or filesystem.f_bsize
+    if fragment <= 0:
+        raise ZipExtractionError("ZIP staging filesystem has no allocation fragment")
+    file_allocation = sum(
+        ((member.expanded_bytes + fragment - 1) // fragment) * fragment
+        for member in structure.members
+        if member.entry_type is ZipEntryType.REGULAR_FILE
+    )
+    namespace_allocation = fragment * (structure.materialized_entry_count + 1)
+    return CapacityReservation(
+        allocated_bytes=file_allocation + namespace_allocation,
+        unique_inodes=structure.materialized_entry_count + 1,
+    )
+
+
+def _extract_members(
+    source: _Source,
+    structure: ZipStructure,
+    *,
+    root_fd: int,
+    expected_owner: int,
+    limits: ZipLimits,
+) -> None:
+    directories = _extracted_directories(structure)
+    for path in sorted(directories, key=lambda value: (value.count("/"), value.encode())):
+        parent_components, name = _split_components(path)
+        parent_fd = _open_directory_chain(root_fd, parent_components, expected_owner=expected_owner)
+        try:
+            os.mkdir(name, mode=_DIRECTORY_MODE, dir_fd=parent_fd)
+            directory_fd = os.open(name, _DIRECTORY_OPEN_FLAGS, dir_fd=parent_fd)
+            try:
+                os.fchmod(directory_fd, _DIRECTORY_MODE)
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
+
+    expanded_bytes = 0
+    regular_members = sorted(
+        (member for member in structure.members if member.entry_type is ZipEntryType.REGULAR_FILE),
+        key=lambda member: member.normalized_path.encode(),
+    )
+    for member in regular_members:
+        expanded_bytes += _extract_regular_member(
+            source,
+            member,
+            root_fd=root_fd,
+            expected_owner=expected_owner,
+            limits=limits,
+        )
+        if expanded_bytes > limits.maximum_expanded_bytes:
+            raise ZipExtractionError("ZIP observed expanded bytes cross their boundary")
+
+    for path in sorted(directories, key=lambda value: (-value.count("/"), value.encode())):
+        directory_fd = _open_directory_chain(
+            root_fd,
+            tuple(path.split("/")),
+            expected_owner=expected_owner,
+        )
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+
+
+def _extracted_directories(structure: ZipStructure) -> set[str]:
+    regular = {
+        member.normalized_path
+        for member in structure.members
+        if member.entry_type is ZipEntryType.REGULAR_FILE
+    }
+    return set(structure.materialized_paths) - regular
+
+
+def _split_components(path: str) -> tuple[tuple[str, ...], str]:
+    components = tuple(path.split("/"))
+    return components[:-1], components[-1]
+
+
+def _open_directory_chain(
+    root_fd: int,
+    components: tuple[str, ...],
+    *,
+    expected_owner: int,
+) -> int:
+    current = os.dup(root_fd)
+    try:
+        _validate_extracted_inode(
+            os.fstat(current),
+            expected_owner=expected_owner,
+            expected_mode=_DIRECTORY_MODE,
+            is_directory=True,
+        )
+        for component in components:
+            child = os.open(component, _DIRECTORY_OPEN_FLAGS, dir_fd=current)
+            try:
+                _validate_extracted_inode(
+                    os.fstat(child),
+                    expected_owner=expected_owner,
+                    expected_mode=_DIRECTORY_MODE,
+                    is_directory=True,
+                )
+            except BaseException:
+                os.close(child)
+                raise
+            os.close(current)
+            current = child
+        return current
+    except BaseException:
+        os.close(current)
+        raise
+
+
+def _extract_regular_member(
+    source: _Source,
+    member: ZipMember,
+    *,
+    root_fd: int,
+    expected_owner: int,
+    limits: ZipLimits,
+) -> int:
+    parent_components, name = _split_components(member.normalized_path)
+    parent_fd = _open_directory_chain(root_fd, parent_components, expected_owner=expected_owner)
+    file_fd: int | None = None
+    try:
+        file_fd = os.open(name, _FILE_CREATE_FLAGS, _FILE_MODE, dir_fd=parent_fd)
+        os.fchmod(file_fd, _FILE_MODE)
+        try:
+            crc32, expanded = _stream_member(source, member, file_fd=file_fd, limits=limits)
+        except zlib.error as error:
+            raise ZipExtractionError("ZIP Deflate stream is invalid") from error
+        os.fsync(file_fd)
+        metadata = _validate_extracted_inode(
+            os.fstat(file_fd),
+            expected_owner=expected_owner,
+            expected_mode=_FILE_MODE,
+            is_directory=False,
+        )
+        if metadata.st_size != member.expanded_bytes or expanded != member.expanded_bytes:
+            raise ZipExtractionError("ZIP observed file size disagrees with structural metadata")
+        if crc32 != member.crc32:
+            raise ZipExtractionError("ZIP observed CRC-32 disagrees with structural metadata")
+        os.fsync(parent_fd)
+        return expanded
+    finally:
+        if file_fd is not None:
+            os.close(file_fd)
+        os.close(parent_fd)
+
+
+def _stream_member(
+    source: _Source,
+    member: ZipMember,
+    *,
+    file_fd: int,
+    limits: ZipLimits,
+) -> tuple[int, int]:
+    compressed_remaining = member.compressed_bytes
+    input_offset = member.data_offset
+    expanded = 0
+    crc32 = 0
+    decoder = zlib.decompressobj(wbits=-zlib.MAX_WBITS) if member.compression_method else None
+    while compressed_remaining:
+        chunk = source.read(input_offset, min(compressed_remaining, _EXTRACTION_CHUNK_BYTES))
+        compressed_remaining -= len(chunk)
+        input_offset += len(chunk)
+        if decoder is None:
+            crc32, expanded = _write_extracted(
+                file_fd,
+                chunk,
+                crc32=crc32,
+                expanded=expanded,
+                member=member,
+                limits=limits,
+            )
+            continue
+        pending = chunk
+        while pending:
+            output = decoder.decompress(
+                pending,
+                min(_EXTRACTION_CHUNK_BYTES, member.expanded_bytes - expanded + 1),
+            )
+            pending = decoder.unconsumed_tail
+            crc32, expanded = _write_extracted(
+                file_fd,
+                output,
+                crc32=crc32,
+                expanded=expanded,
+                member=member,
+                limits=limits,
+            )
+            if not output and pending:
+                raise ZipExtractionError("ZIP Deflate decoder made no bounded progress")
+    if decoder is not None and (not decoder.eof or decoder.unused_data or decoder.unconsumed_tail):
+        raise ZipExtractionError("ZIP Deflate stream does not end at its declared boundary")
+    return crc32 & 0xFFFFFFFF, expanded
+
+
+def _write_extracted(  # noqa: PLR0913 - preserve explicit streaming counters
+    file_fd: int,
+    data: bytes,
+    *,
+    crc32: int,
+    expanded: int,
+    member: ZipMember,
+    limits: ZipLimits,
+) -> tuple[int, int]:
+    projected = expanded + len(data)
+    if projected > member.expanded_bytes or projected > limits.maximum_file_bytes:
+        raise ZipExtractionError("ZIP observed file bytes cross their declared boundary")
+    remaining = memoryview(data)
+    while remaining:
+        written = os.write(file_fd, remaining)
+        if written <= 0:
+            raise ZipExtractionError("ZIP extraction write made no progress")
+        remaining = remaining[written:]
+    return zlib.crc32(data, crc32), projected
+
+
+def _validate_extracted_tree(
+    root_fd: int,
+    structure: ZipStructure,
+    *,
+    expected_owner: int,
+    reservation: CapacityReservation,
+) -> tuple[int, int]:
+    observed_paths: set[str] = set()
+    allocated_bytes = 0
+    unique_inodes = 0
+    stack: list[tuple[int, tuple[str, ...]]] = [
+        (os.open(".", _DIRECTORY_OPEN_FLAGS, dir_fd=root_fd), ())
+    ]
+    try:
+        while stack:
+            directory_fd, parent = stack.pop()
+            try:
+                directory_metadata = _validate_extracted_inode(
+                    os.fstat(directory_fd),
+                    expected_owner=expected_owner,
+                    expected_mode=_DIRECTORY_MODE,
+                    is_directory=True,
+                )
+                allocated_bytes += directory_metadata.st_blocks * _BLOCK_UNIT_BYTES
+                unique_inodes += 1
+                with os.scandir(directory_fd) as iterator:
+                    entries = sorted(iterator, key=lambda entry: os.fsencode(entry.name))
+                for entry in entries:
+                    components = (*parent, entry.name)
+                    normalized_path = "/".join(components)
+                    observed_paths.add(normalized_path)
+                    metadata = os.stat(entry.name, dir_fd=directory_fd, follow_symlinks=False)
+                    if stat.S_ISDIR(metadata.st_mode):
+                        child = os.open(entry.name, _DIRECTORY_OPEN_FLAGS, dir_fd=directory_fd)
+                        stack.append((child, components))
+                    else:
+                        _validate_extracted_inode(
+                            metadata,
+                            expected_owner=expected_owner,
+                            expected_mode=_FILE_MODE,
+                            is_directory=False,
+                        )
+                        allocated_bytes += metadata.st_blocks * _BLOCK_UNIT_BYTES
+                        unique_inodes += 1
+            finally:
+                os.close(directory_fd)
+    except BaseException:
+        for descriptor, _path in stack:
+            os.close(descriptor)
+        raise
+    if observed_paths != set(structure.materialized_paths):
+        raise ZipExtractionError("ZIP extracted namespace disagrees with structural preflight")
+    if allocated_bytes > reservation.allocated_bytes or unique_inodes != reservation.unique_inodes:
+        raise ZipExtractionError("ZIP extraction crossed its capacity reservation")
+    return allocated_bytes, unique_inodes
+
+
+def _validate_extracted_inode(
+    metadata: os.stat_result,
+    *,
+    expected_owner: int,
+    expected_mode: int,
+    is_directory: bool,
+) -> os.stat_result:
+    expected_type = stat.S_ISDIR if is_directory else stat.S_ISREG
+    if (
+        not expected_type(metadata.st_mode)
+        or metadata.st_uid != expected_owner
+        or stat.S_IMODE(metadata.st_mode) != expected_mode
+        or (not is_directory and metadata.st_nlink != 1)
+    ):
+        raise ZipExtractionError("ZIP extracted inode has an unsafe shape")
+    return metadata
+
+
+def _validate_remaining_capacity(parent_fd: int, projection: CapacityProjection) -> None:
+    filesystem = measure_filesystem_capacity_descriptor(parent_fd)
+    if (
+        filesystem.available_bytes < projection.required_available_bytes
+        or filesystem.available_inodes < projection.required_available_inodes
+    ):
+        raise ZipExtractionError("ZIP extraction crossed the host free-space floor")
+
+
+def _remove_extraction(parent_fd: int, name: str) -> None:
+    try:
+        root_fd = os.open(name, _DIRECTORY_OPEN_FLAGS, dir_fd=parent_fd)
+    except FileNotFoundError:
+        return
+    try:
+        _remove_directory_contents(root_fd)
+    finally:
+        os.close(root_fd)
+    os.rmdir(name, dir_fd=parent_fd)
+    os.fsync(parent_fd)
+
+
+def _remove_directory_contents(directory_fd: int) -> None:
+    with os.scandir(directory_fd) as iterator:
+        entries = list(iterator)
+    for entry in entries:
+        metadata = os.stat(entry.name, dir_fd=directory_fd, follow_symlinks=False)
+        if stat.S_ISDIR(metadata.st_mode):
+            child = os.open(entry.name, _DIRECTORY_OPEN_FLAGS, dir_fd=directory_fd)
+            try:
+                _remove_directory_contents(child)
+            finally:
+                os.close(child)
+            os.rmdir(entry.name, dir_fd=directory_fd)
+        else:
+            os.unlink(entry.name, dir_fd=directory_fd)

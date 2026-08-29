@@ -589,6 +589,20 @@ and tightened boundaries, snapshot-inode failures, and arbitrary-byte property
 tests exercise this gate. Extraction, bundle handling, and a service entry
 point remain absent until the following slices add their own gates.
 
+The second review slice keeps the structurally admitted artifact descriptor
+pinned while streaming stored or raw-Deflate content into one newly created
+tree beneath a verified private staging parent. It creates and reopens every
+directory and file relative to trusted descriptors, normalizes modes, rejects
+pre-existing destinations, bounds decoder output before each write, and
+rechecks observed CRC-32, per-file and aggregate bytes, namespace, inode
+allocation, source generation, and free-space floors before returning. A
+filesystem-rounded worst-case reservation charges every output file, namespace
+entry, and inode through the M3.3 capacity kernel before the first mutation.
+Every failure removes only the candidate tree it created. Stored and Deflate
+round-trip properties, corrupt streams, declared-size lies, trailing streams,
+source mutation, capacity failure, and cleanup behavior are executable tests;
+the result remains unpublished and callable only as a library.
+
 ### M3.5: install the dark host boundary
 
 Ansible installs a hash-pinned host-agent artifact in a versioned root-owned

@@ -4,6 +4,7 @@ import hashlib
 import os
 import stat
 import struct
+import tempfile
 import zlib
 from contextlib import suppress
 from dataclasses import dataclass, replace
@@ -12,10 +13,17 @@ from pathlib import Path
 import pytest
 from hypothesis import HealthCheck, given, settings, strategies
 from lowerduckpond_static_host_agent import (
+    CapacityRejectedError,
+    FilesystemCapacity,
+    InodeAllocation,
+    ReleaseCapacityUsage,
     ZipEntryType,
+    ZipExtraction,
+    ZipExtractionError,
     ZipLimits,
     ZipStructure,
     ZipStructureError,
+    extract_deployment_zip,
     inspect_deployment_zip,
 )
 
@@ -42,6 +50,29 @@ _LOCAL_COMPRESSED_SIZE_OFFSET = 18
 _LOCAL_EXPANDED_SIZE_OFFSET = 22
 _FINAL_PATH_STAT_CALL = 2
 _MAXIMUM_ENTRIES = 5_000
+_NORMALIZED_DIRECTORY_MODE = 0o755
+_NORMALIZED_FILE_MODE = 0o644
+_CAPACITY_CHECKS = 2
+
+
+@pytest.fixture(autouse=True)
+def _reported_inode_capacity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give the container overlay the concrete inode counts production ext4 reports."""
+
+    def measure(file_descriptor: int) -> FilesystemCapacity:
+        return FilesystemCapacity(
+            device=os.fstat(file_descriptor).st_dev,
+            fragment_size=4_096,
+            total_blocks=4_000_000,
+            available_blocks=3_000_000,
+            total_inodes=4_000_000,
+            available_inodes=3_000_000,
+        )
+
+    monkeypatch.setattr(
+        "lowerduckpond_static_host_agent.zip_structure.measure_filesystem_capacity_descriptor",
+        measure,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,6 +173,26 @@ def _write(tmp_path: Path, data: bytes, name: str = "deployment.zip") -> Path:
     path.write_bytes(data)
     path.chmod(0o600)
     return path
+
+
+def _staging_parent(tmp_path: Path) -> Path:
+    parent = tmp_path / "staging"
+    parent.mkdir()
+    parent.chmod(0o700)
+    return parent
+
+
+def _extract(tmp_path: Path, data: bytes, name: str = "candidate") -> tuple[Path, ZipExtraction]:
+    source = _write(tmp_path, data)
+    parent = _staging_parent(tmp_path)
+    result = extract_deployment_zip(
+        source,
+        staging_parent=parent,
+        staging_name=name,
+        expected_owner=_OWNER,
+        retained_usage=ReleaseCapacityUsage(()),
+    )
+    return parent, result
 
 
 def _inspect(
@@ -642,3 +693,311 @@ def test_arbitrary_structural_bytes_fail_only_with_the_domain_error(
 ) -> None:
     with suppress(ZipStructureError):
         _inspect(tmp_path, data)
+
+
+def test_extraction_streams_stored_and_deflated_files_into_normalized_tree(
+    tmp_path: Path,
+) -> None:
+    data = _archive(
+        _MemberSpec(
+            name=b"index.html",
+            content=b"home",
+            external_attributes=(stat.S_IFREG | 0o777) << 16,
+        ),
+        _MemberSpec(
+            name=b"assets/",
+            external_attributes=((stat.S_IFDIR | 0o700) << 16) | 0x10,
+        ),
+        _MemberSpec(
+            name=b"assets/site.css",
+            content=b"body { color: green; }" * 100,
+            method=_DEFLATE,
+        ),
+        _MemberSpec(name=b"empty.txt"),
+    )
+
+    parent, result = _extract(tmp_path, data)
+    root = parent / result.staging_name
+
+    assert result.structure.artifact_sha256 == hashlib.sha256(data).hexdigest()
+    assert (root / "index.html").read_bytes() == b"home"
+    assert (root / "assets/site.css").read_bytes() == b"body { color: green; }" * 100
+    assert (root / "empty.txt").read_bytes() == b""
+    assert stat.S_IMODE(root.stat().st_mode) == _NORMALIZED_DIRECTORY_MODE
+    assert stat.S_IMODE((root / "assets").stat().st_mode) == _NORMALIZED_DIRECTORY_MODE
+    assert stat.S_IMODE((root / "index.html").stat().st_mode) == _NORMALIZED_FILE_MODE
+    assert result.unique_inodes == result.structure.materialized_entry_count + 1
+    assert result.allocated_bytes <= result.capacity_projection.projected_allocated_bytes
+
+
+@pytest.mark.parametrize("method", [_STORED, _DEFLATE])
+def test_extraction_rechecks_crc_and_removes_partial_tree(
+    tmp_path: Path,
+    method: int,
+) -> None:
+    data = bytearray(_archive(_MemberSpec(name=b"index.html", content=b"content", method=method)))
+    data_offset = _LOCAL.size + len(b"index.html")
+    data[data_offset] ^= 0xFF
+    source = _write(tmp_path, bytes(data))
+    parent = _staging_parent(tmp_path)
+
+    with pytest.raises(ZipExtractionError):
+        extract_deployment_zip(
+            source,
+            staging_parent=parent,
+            staging_name="candidate",
+            expected_owner=_OWNER,
+            retained_usage=ReleaseCapacityUsage(()),
+        )
+
+    assert list(parent.iterdir()) == []
+
+
+@pytest.mark.parametrize("declared_size", [3, 5])
+def test_extraction_rechecks_observed_expanded_size(
+    tmp_path: Path,
+    declared_size: int,
+) -> None:
+    data = _archive(
+        _MemberSpec(
+            name=b"index.html",
+            content=b"home",
+            method=_DEFLATE,
+            expanded_bytes=declared_size,
+        )
+    )
+    source = _write(tmp_path, data)
+    parent = _staging_parent(tmp_path)
+
+    with pytest.raises(ZipExtractionError, match="observed"):
+        extract_deployment_zip(
+            source,
+            staging_parent=parent,
+            staging_name="candidate",
+            expected_owner=_OWNER,
+            retained_usage=ReleaseCapacityUsage(()),
+        )
+
+    assert not (parent / "candidate").exists()
+
+
+def test_extraction_rejects_deflate_data_after_the_stream_end(tmp_path: Path) -> None:
+    content = b"home"
+    data = _archive(
+        _MemberSpec(
+            name=b"index.html",
+            content=content,
+            method=_DEFLATE,
+            compressed=_deflate(content) + b"trailing",
+        )
+    )
+    source = _write(tmp_path, data)
+    parent = _staging_parent(tmp_path)
+
+    with pytest.raises(ZipExtractionError, match="declared boundary"):
+        extract_deployment_zip(
+            source,
+            staging_parent=parent,
+            staging_name="candidate",
+            expected_owner=_OWNER,
+            retained_usage=ReleaseCapacityUsage(()),
+        )
+
+    assert not (parent / "candidate").exists()
+
+
+def test_extraction_never_writes_more_than_the_declared_size(tmp_path: Path) -> None:
+    content = b"x" * 10_000
+    data = _archive(
+        _MemberSpec(
+            name=b"index.html",
+            content=content,
+            method=_DEFLATE,
+            expanded_bytes=1,
+        )
+    )
+    source = _write(tmp_path, data)
+    parent = _staging_parent(tmp_path)
+
+    with pytest.raises(ZipExtractionError, match="observed file bytes"):
+        extract_deployment_zip(
+            source,
+            staging_parent=parent,
+            staging_name="candidate",
+            expected_owner=_OWNER,
+            retained_usage=ReleaseCapacityUsage(()),
+        )
+
+    assert not (parent / "candidate").exists()
+
+
+def test_extraction_refuses_an_existing_destination_without_removing_it(tmp_path: Path) -> None:
+    source = _write(tmp_path, _archive(_MemberSpec(name=b"index.html")))
+    parent = _staging_parent(tmp_path)
+    existing = parent / "candidate"
+    existing.mkdir()
+    marker = existing / "marker"
+    marker.write_text("keep", encoding="utf-8")
+
+    with pytest.raises(ZipExtractionError, match="could not complete safely"):
+        extract_deployment_zip(
+            source,
+            staging_parent=parent,
+            staging_name="candidate",
+            expected_owner=_OWNER,
+            retained_usage=ReleaseCapacityUsage(()),
+        )
+
+    assert marker.read_text(encoding="utf-8") == "keep"
+
+
+@pytest.mark.parametrize("name", ["", ".", "..", "a/b", "a\\b", "line\nfeed"])
+def test_extraction_requires_one_canonical_staging_component(
+    tmp_path: Path,
+    name: str,
+) -> None:
+    source = _write(tmp_path, _archive(_MemberSpec(name=b"index.html")))
+    parent = _staging_parent(tmp_path)
+    with pytest.raises(ValueError, match="staging name"):
+        extract_deployment_zip(
+            source,
+            staging_parent=parent,
+            staging_name=name,
+            expected_owner=_OWNER,
+            retained_usage=ReleaseCapacityUsage(()),
+        )
+
+
+def test_extraction_requires_a_private_owned_staging_parent(tmp_path: Path) -> None:
+    source = _write(tmp_path, _archive(_MemberSpec(name=b"index.html")))
+    parent = _staging_parent(tmp_path)
+    parent.chmod(0o755)
+
+    with pytest.raises(ZipExtractionError, match="staging parent"):
+        extract_deployment_zip(
+            source,
+            staging_parent=parent,
+            staging_name="candidate",
+            expected_owner=_OWNER,
+            retained_usage=ReleaseCapacityUsage(()),
+        )
+
+
+def test_extraction_runs_capacity_admission_before_creating_the_tree(tmp_path: Path) -> None:
+    source = _write(tmp_path, _archive(_MemberSpec(name=b"index.html", content=b"home")))
+    parent = _staging_parent(tmp_path)
+    device = parent.stat().st_dev
+    retained = ReleaseCapacityUsage((InodeAllocation(device, 1, 10 * 1024 * 1024 * 1024),))
+
+    with pytest.raises(CapacityRejectedError, match="host byte ceiling"):
+        extract_deployment_zip(
+            source,
+            staging_parent=parent,
+            staging_name="candidate",
+            expected_owner=_OWNER,
+            retained_usage=retained,
+        )
+
+    assert list(parent.iterdir()) == []
+
+
+def test_extraction_detects_source_mutation_and_removes_the_tree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = _archive(_MemberSpec(name=b"index.html", content=b"home"))
+    source = _write(tmp_path, data)
+    parent = _staging_parent(tmp_path)
+    original_write = os.write
+    changed = False
+
+    def mutate_after_write(file_descriptor: int, content: bytes | memoryview) -> int:
+        nonlocal changed
+        written = original_write(file_descriptor, content)
+        if not changed:
+            changed = True
+            with source.open("r+b") as mutable:
+                mutable.seek(_LOCAL.size + len(b"index.html"))
+                byte = mutable.read(1)
+                mutable.seek(-1, os.SEEK_CUR)
+                mutable.write(bytes([byte[0] ^ 0xFF]))
+                mutable.flush()
+                os.fsync(mutable.fileno())
+        return written
+
+    monkeypatch.setattr(
+        "lowerduckpond_static_host_agent.zip_structure.os.write",
+        mutate_after_write,
+    )
+
+    with pytest.raises(ZipExtractionError, match="changed during extraction"):
+        extract_deployment_zip(
+            source,
+            staging_parent=parent,
+            staging_name="candidate",
+            expected_owner=_OWNER,
+            retained_usage=ReleaseCapacityUsage(()),
+        )
+
+    assert not (parent / "candidate").exists()
+
+
+def test_extraction_rechecks_the_free_space_floor_before_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _write(tmp_path, _archive(_MemberSpec(name=b"index.html", content=b"home")))
+    parent = _staging_parent(tmp_path)
+    calls = 0
+
+    def capacity(file_descriptor: int) -> FilesystemCapacity:
+        nonlocal calls
+        calls += 1
+        return FilesystemCapacity(
+            device=os.fstat(file_descriptor).st_dev,
+            fragment_size=4_096,
+            total_blocks=4_000_000,
+            available_blocks=3_000_000 if calls == 1 else 1,
+            total_inodes=4_000_000,
+            available_inodes=3_000_000,
+        )
+
+    monkeypatch.setattr(
+        "lowerduckpond_static_host_agent.zip_structure.measure_filesystem_capacity_descriptor",
+        capacity,
+    )
+
+    with pytest.raises(ZipExtractionError, match="free-space floor"):
+        extract_deployment_zip(
+            source,
+            staging_parent=parent,
+            staging_name="candidate",
+            expected_owner=_OWNER,
+            retained_usage=ReleaseCapacityUsage(()),
+        )
+
+    assert calls == _CAPACITY_CHECKS
+    assert not (parent / "candidate").exists()
+
+
+@given(
+    content=strategies.binary(max_size=65_536),
+    method=strategies.sampled_from([_STORED, _DEFLATE]),
+)
+@settings(
+    max_examples=50,
+    deadline=None,
+    suppress_health_check=[HealthCheck.function_scoped_fixture],
+)
+def test_bounded_valid_content_round_trips_through_extraction(
+    content: bytes,
+    method: int,
+) -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        parent, result = _extract(
+            root,
+            _archive(_MemberSpec(name=b"index.html", content=content, method=method)),
+        )
+
+        assert (parent / result.staging_name / "index.html").read_bytes() == content
