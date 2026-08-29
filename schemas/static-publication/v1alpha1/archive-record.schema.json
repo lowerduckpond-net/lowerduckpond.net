@@ -9,8 +9,8 @@
     "bucket": {
       "$ref": "common.schema.json#/$defs/archiveBucket"
     },
-    "bundleSha256": {
-      "$ref": "common.schema.json#/$defs/sha256"
+    "bundleDigest": {
+      "$ref": "common.schema.json#/$defs/archiveDigest"
     },
     "bundleSize": {
       "maximum": 125829120,
@@ -52,7 +52,7 @@
     "deploymentId",
     "releaseTreeDigest",
     "manifestDigest",
-    "bundleSha256",
+    "bundleDigest",
     "bundleSize",
     "bucket",
     "key",

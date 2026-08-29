@@ -419,6 +419,21 @@ def test_archive_key_stays_inside_the_exact_managed_prefix(key: str) -> None:
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
 
+@pytest.mark.parametrize(
+    "fixture",
+    ["archive-record.json", "archive-construction-intent.json", "archive-retirement-intent.json"],
+)
+def test_archive_evidence_keeps_the_portable_bundle_digest_domain(fixture: str) -> None:
+    document = _load_object(FIXTURE_ROOT / "accepted" / fixture)
+    digest = document["bundleDigest"]
+    assert type(digest) is dict
+    digest["format"] = "lowerduckpond-release-tree-v1"
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(document)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
 def test_site_canonical_origin_is_bound_to_its_tenant_identity() -> None:
     site = _load_object(FIXTURE_ROOT / "accepted/site.json")
     metadata = site["metadata"]

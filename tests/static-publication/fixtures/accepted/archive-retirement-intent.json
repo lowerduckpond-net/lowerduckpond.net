@@ -17,7 +17,11 @@
     "algorithm": "sha256",
     "value": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
   },
-  "bundleSha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "bundleDigest": {
+    "format": "lowerduckpond-archive-v1",
+    "algorithm": "sha256",
+    "value": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  },
   "bundleSize": 4096,
   "bucket": "lowerduckpond-net-production-tenant-archives-4f3e6b91",
   "key": "archives/0198d17f-6f4a-7000-8000-000000000003.zip",
