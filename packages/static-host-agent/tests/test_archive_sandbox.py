@@ -37,6 +37,9 @@ _EXPECTED_ISOLATION_PROPERTIES = {
     "ProtectSystem": "strict",
     "RestrictAddressFamilies": "~AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_PACKET",
     "RestrictNamespaces": "true",
+    "StandardError": "null",
+    "StandardInput": "null",
+    "StandardOutput": "null",
     "SystemCallArchitectures": "native",
     "TemporaryFileSystem": "/:ro",
 }
@@ -44,7 +47,10 @@ _EXPECTED_SYSTEM_CALL_FILTERS = (
     "@system-service",
     "~@network-io",
     "~@keyring",
+    "~@resources",
+    "~prlimit64",
     "~io_uring_setup io_uring_register io_uring_enter",
+    "~clone clone3 fork vfork",
     "~kill tkill tgkill rt_sigqueueinfo rt_tgsigqueueinfo pidfd_send_signal",
     "~ptrace process_vm_readv process_vm_writev pidfd_getfd process_madvise process_mrelease",
 )
