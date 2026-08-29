@@ -53,6 +53,7 @@ _MAXIMUM_ENTRIES = 5_000
 _NORMALIZED_DIRECTORY_MODE = 0o755
 _NORMALIZED_FILE_MODE = 0o644
 _CAPACITY_CHECKS = 2
+_MAXIMUM_VALIDATION_DESCRIPTORS = 16
 
 
 @pytest.fixture(autouse=True)
@@ -881,6 +882,80 @@ def test_extraction_requires_a_private_owned_staging_parent(tmp_path: Path) -> N
             expected_owner=_OWNER,
             retained_usage=ReleaseCapacityUsage(()),
         )
+
+
+def test_extraction_allows_artifact_and_staging_on_different_filesystems(
+    tmp_path: Path,
+) -> None:
+    source = _write(tmp_path, _archive(_MemberSpec(name=b"index.html", content=b"home")))
+    try:
+        temporary = tempfile.TemporaryDirectory(dir="/dev/shm")
+    except FileNotFoundError, PermissionError:
+        pytest.skip("no writable independent tmpfs is available")
+    with temporary:
+        parent = Path(temporary.name)
+        parent.chmod(0o700)
+        if source.stat().st_dev == parent.stat().st_dev:
+            pytest.skip("the available staging root is not an independent filesystem")
+
+        result = extract_deployment_zip(
+            source,
+            staging_parent=parent,
+            staging_name="candidate",
+            expected_owner=_OWNER,
+            retained_usage=ReleaseCapacityUsage(()),
+        )
+
+        assert (parent / result.staging_name / "index.html").read_bytes() == b"home"
+
+
+def test_extraction_validation_bounds_descriptors_for_a_wide_tree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    directories = tuple(
+        _MemberSpec(
+            name=f"directory-{index:04d}/".encode(),
+            external_attributes=_DIRECTORY_ATTRIBUTES,
+        )
+        for index in range(64)
+    )
+    source = _write(tmp_path, _archive(_MemberSpec(name=b"index.html"), *directories))
+    parent = _staging_parent(tmp_path)
+    real_open = os.open
+    real_close = os.close
+    tracked: set[int] = set()
+    peak = 0
+
+    def track_open(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal peak
+        descriptor = real_open(path, flags, mode, dir_fd=dir_fd)
+        tracked.add(descriptor)
+        peak = max(peak, len(tracked))
+        return descriptor
+
+    def track_close(descriptor: int) -> None:
+        tracked.discard(descriptor)
+        real_close(descriptor)
+
+    monkeypatch.setattr(os, "open", track_open)
+    monkeypatch.setattr(os, "close", track_close)
+
+    extract_deployment_zip(
+        source,
+        staging_parent=parent,
+        staging_name="candidate",
+        expected_owner=_OWNER,
+        retained_usage=ReleaseCapacityUsage(()),
+    )
+
+    assert peak < _MAXIMUM_VALIDATION_DESCRIPTORS
 
 
 def test_extraction_runs_capacity_admission_before_creating_the_tree(tmp_path: Path) -> None:

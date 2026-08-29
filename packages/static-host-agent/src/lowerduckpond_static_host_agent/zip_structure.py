@@ -278,7 +278,7 @@ def inspect_deployment_zip(
             os.close(descriptor)
 
 
-def extract_deployment_zip(  # noqa: PLR0913,PLR0915 - keep trust boundaries explicit
+def extract_deployment_zip(  # noqa: PLR0913 - keep trust boundaries explicit
     path: Path,
     *,
     staging_parent: Path,
@@ -326,8 +326,6 @@ def extract_deployment_zip(  # noqa: PLR0913,PLR0915 - keep trust boundaries exp
             parent_metadata,
             "ZIP staging parent changed while it was opened",
         )
-        if parent_metadata.st_dev != before.st_dev:
-            raise ZipExtractionError("ZIP artifact and staging tree span filesystems")
         reservation = _extraction_reservation(structure, parent_fd)
         projection = admit_release_capacity(
             retained_usage,
@@ -988,7 +986,7 @@ def _open_directory_chain(
     *,
     expected_owner: int,
 ) -> int:
-    current = os.dup(root_fd)
+    current = os.open(".", _DIRECTORY_OPEN_FLAGS, dir_fd=root_fd)
     try:
         _validate_extracted_inode(
             os.fstat(current),
@@ -1132,46 +1130,46 @@ def _validate_extracted_tree(
     observed_paths: set[str] = set()
     allocated_bytes = 0
     unique_inodes = 0
-    stack: list[tuple[int, tuple[str, ...]]] = [
-        (os.open(".", _DIRECTORY_OPEN_FLAGS, dir_fd=root_fd), ())
-    ]
-    try:
-        while stack:
-            directory_fd, parent = stack.pop()
-            try:
-                directory_metadata = _validate_extracted_inode(
-                    os.fstat(directory_fd),
-                    expected_owner=expected_owner,
-                    expected_mode=_DIRECTORY_MODE,
-                    is_directory=True,
-                )
-                allocated_bytes += directory_metadata.st_blocks * _BLOCK_UNIT_BYTES
-                unique_inodes += 1
-                with os.scandir(directory_fd) as iterator:
-                    entries = sorted(iterator, key=lambda entry: os.fsencode(entry.name))
-                for entry in entries:
-                    components = (*parent, entry.name)
-                    normalized_path = "/".join(components)
-                    observed_paths.add(normalized_path)
-                    metadata = os.stat(entry.name, dir_fd=directory_fd, follow_symlinks=False)
-                    if stat.S_ISDIR(metadata.st_mode):
-                        child = os.open(entry.name, _DIRECTORY_OPEN_FLAGS, dir_fd=directory_fd)
-                        stack.append((child, components))
-                    else:
-                        _validate_extracted_inode(
-                            metadata,
-                            expected_owner=expected_owner,
-                            expected_mode=_FILE_MODE,
-                            is_directory=False,
-                        )
-                        allocated_bytes += metadata.st_blocks * _BLOCK_UNIT_BYTES
-                        unique_inodes += 1
-            finally:
-                os.close(directory_fd)
-    except BaseException:
-        for descriptor, _path in stack:
-            os.close(descriptor)
-        raise
+    stack: list[tuple[str, ...]] = [()]
+    while stack:
+        parent = stack.pop()
+        directory_fd = _open_directory_chain(
+            root_fd,
+            parent,
+            expected_owner=expected_owner,
+        )
+        try:
+            directory_metadata = os.fstat(directory_fd)
+            allocated_bytes += directory_metadata.st_blocks * _BLOCK_UNIT_BYTES
+            unique_inodes += 1
+            with os.scandir(directory_fd) as iterator:
+                entries = sorted(iterator, key=lambda entry: os.fsencode(entry.name))
+            directories: list[tuple[str, ...]] = []
+            for entry in entries:
+                components = (*parent, entry.name)
+                normalized_path = "/".join(components)
+                observed_paths.add(normalized_path)
+                metadata = os.stat(entry.name, dir_fd=directory_fd, follow_symlinks=False)
+                if stat.S_ISDIR(metadata.st_mode):
+                    _validate_extracted_inode(
+                        metadata,
+                        expected_owner=expected_owner,
+                        expected_mode=_DIRECTORY_MODE,
+                        is_directory=True,
+                    )
+                    directories.append(components)
+                else:
+                    _validate_extracted_inode(
+                        metadata,
+                        expected_owner=expected_owner,
+                        expected_mode=_FILE_MODE,
+                        is_directory=False,
+                    )
+                    allocated_bytes += metadata.st_blocks * _BLOCK_UNIT_BYTES
+                    unique_inodes += 1
+            stack.extend(reversed(directories))
+        finally:
+            os.close(directory_fd)
     if observed_paths != set(structure.materialized_paths):
         raise ZipExtractionError("ZIP extracted namespace disagrees with structural preflight")
     if allocated_bytes > reservation.allocated_bytes or unique_inodes != reservation.unique_inodes:
