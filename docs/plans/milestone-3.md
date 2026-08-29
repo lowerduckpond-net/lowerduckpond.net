@@ -220,7 +220,7 @@ four DNS records, four Authenticated Origin Pulls associations, six rulesets,
 ACME records, and four uploaded leaves absent. Both temporary Cloudflare tokens
 were revoked and disposable trusted-workstation material was removed. The
 backed-up CA roots remain retained pending the production-CA decision required
-before M3.12. M3.1 and M3.2 subsequently completed, and M3.3 is the next
+before M3.12. M3.1 through M3.3 subsequently completed, and M3.4 is the next
 implementation phase; the M3.0 result does not enable production or satisfy
 any later Milestone 3 gate.
 
@@ -316,8 +316,9 @@ and an independent version-aware and multipart-aware probe proved the entire
 archive bucket empty. Protected run `33219502391` then passed ordinary
 production policy and reported no changes with the migration flag disabled.
 The archive credential remains in operator custody and off the production host
-until M3.10. M3.2 subsequently completed, and M3.3 is the next implementation
-phase; M3.1 does not enable production or satisfy any later Milestone 3 gate.
+until M3.10. M3.2 and M3.3 subsequently completed, and M3.4 is the next
+implementation phase; M3.1 does not enable production or satisfy any later
+Milestone 3 gate.
 
 Add a `digitalocean-tenant-archives` module rather than renaming the existing
 backup module or its state address. Extend the production stack with the second
@@ -417,7 +418,7 @@ the publication flag remains false.
 
 ### M3.3: implement the durable state kernel
 
-Implementation status: in progress. The first review slice creates the
+Implementation status: complete. The first review slice creates the
 standalone `static_host_agent` package and its production-inert wheel gate. It
 implements fixed directory-relative no-follow traversal, exclusive immutable
 publication, atomic replacement, file and parent-directory sync, durable
@@ -510,8 +511,18 @@ and deletion of locally closed segments remain disabled until M3.11 supplies
 the restore-verified rotation protocol; this slice never discards audit
 evidence.
 
-Hash-chained audit and intent discovery and recovery remain in M3.3 and do not
-move to a later phase.
+The seventh review slice completes bounded intent discovery and recovery
+planning. The fixed intent store admits at most one lifecycle transaction and
+one related archive-construction or archive-retirement intent. Discovery holds
+exclusive tenant-state, snapshots each exact inode generation before and after
+canonical record reads, and fails closed if the store changes, authority kinds
+are duplicated, construction and retirement coexist, or the tenant,
+correlation, and transition bindings disagree. A recovery plan always orders a
+matching lifecycle transaction before its remote archive intent. Reconciled
+intent removal requires the discovered storage revision and uses durable
+descriptor-relative deletion. This production-inert slice chooses no recovery
+outcome and performs no lifecycle or remote side effect; later phases consume
+the verified plan.
 
 Create the host-agent package around the root-domain constructor and add its
 root-only state repository. Implement

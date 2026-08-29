@@ -42,14 +42,18 @@ from lowerduckpond_static_host_agent.capacity import (
 from lowerduckpond_static_host_agent.durable import DurableDirectory, FailureHook
 from lowerduckpond_static_host_agent.locks import LockManager, LockMode, LockName
 from lowerduckpond_static_host_agent.state_inventory import (
+    DEFAULT_INTENT_INVENTORY_LIMITS,
     DEFAULT_STATE_INVENTORY_LIMITS,
     AuthorizationRecordInventory,
+    IntentInventoryLimits,
+    IntentRecordInventory,
     StateInventory,
     StateInventoryLimits,
     StateInventoryProjection,
     StateInventoryReservation,
     admit_state_inventory,
     measure_authorization_records,
+    measure_intent_records,
     measure_state_inventory,
 )
 
@@ -326,6 +330,14 @@ class StateRecordPath:
             _StateRecordName.ARCHIVE_RETIREMENT_INTENT,
         }
 
+    @property
+    def is_intent(self) -> bool:
+        return self.name in {
+            _StateRecordName.TRANSACTION_INTENT,
+            _StateRecordName.ARCHIVE_CONSTRUCTION_INTENT,
+            _StateRecordName.ARCHIVE_RETIREMENT_INTENT,
+        }
+
 
 def _validate_authorization_binding(
     name: _StateRecordName,
@@ -510,6 +522,34 @@ class StateRepository:
         with self.transaction(mode=LockMode.EXCLUSIVE, blocking=blocking) as transaction:
             return transaction.measure_authorization_records(limits=limits)
 
+    def measure_intent_records(
+        self,
+        *,
+        limits: IntentInventoryLimits = DEFAULT_INTENT_INVENTORY_LIMITS,
+        blocking: bool = False,
+    ) -> IntentRecordInventory:
+        """List stable active intent identities under exclusive tenant-state."""
+
+        with self.transaction(mode=LockMode.EXCLUSIVE, blocking=blocking) as transaction:
+            return transaction.measure_intent_records(limits=limits)
+
+    def remove_reconciled_intent(
+        self,
+        path: StateRecordPath,
+        expected_revision: StateRevision,
+        *,
+        failure_hook: FailureHook | None = None,
+        blocking: bool = False,
+    ) -> None:
+        """Durably clear only the exact intent generation a caller reconciled."""
+
+        with self.transaction(mode=LockMode.EXCLUSIVE, blocking=blocking) as transaction:
+            transaction.remove_reconciled_intent(
+                path,
+                expected_revision,
+                failure_hook=failure_hook,
+            )
+
     def inspect_audit(
         self,
         *,
@@ -557,6 +597,40 @@ class StateRepository:
             raise StateRecordError("state record is not its exact canonical representation")
         path.validate_binding(document)
         return StoredContract(document, _revision(path.contract_kind, canonical))
+
+    def _read_intent_locked(
+        self,
+        intent_id: object,
+    ) -> tuple[StateRecordPath, StoredContract]:
+        canonical_id = validate_uuid7(intent_id)
+        raw = self._durable.read_regular(
+            ("intents", f"{canonical_id}.json"),
+            expected_owner=self._expected_owner,
+            expected_mode=self._expected_record_mode,
+            maximum_bytes=MAX_CANONICAL_BYTES,
+        )
+        document = decode_contract(raw, maximum_raw_bytes=MAX_CANONICAL_BYTES)
+        factories = {
+            ContractKind.TRANSACTION_INTENT: StateRecordPath.transaction_intent,
+            ContractKind.ARCHIVE_CONSTRUCTION_INTENT: (StateRecordPath.archive_construction_intent),
+            ContractKind.ARCHIVE_RETIREMENT_INTENT: StateRecordPath.archive_retirement_intent,
+        }
+        kind_value = document.get("kind")
+        if type(kind_value) is not str:
+            raise StateRecordError("intent record has no contract kind")
+        try:
+            kind = ContractKind(kind_value)
+        except ValueError as error:
+            raise StateRecordError("intent store contains an unknown contract kind") from error
+        factory = factories.get(kind)
+        if factory is None:
+            raise StateRecordError("intent store contains another contract kind")
+        path = factory(canonical_id)
+        canonical = canonical_json_bytes(document)
+        if raw != canonical:
+            raise StateRecordError("intent record is not its exact canonical representation")
+        path.validate_binding(document)
+        return path, StoredContract(document, _revision(kind, canonical))
 
     def _encode(self, path: StateRecordPath, document: dict[str, object]) -> bytes:
         if type(document) is not dict:
@@ -641,6 +715,42 @@ class _StateTransaction:
             expected_directory_mode=self._repository._expected_directory_mode,
             expected_record_mode=self._repository._expected_record_mode,
             limits=limits,
+        )
+
+    def measure_intent_records(
+        self,
+        *,
+        limits: IntentInventoryLimits = DEFAULT_INTENT_INVENTORY_LIMITS,
+    ) -> IntentRecordInventory:
+        self._require_exclusive()
+        return measure_intent_records(
+            self._repository._durable,
+            expected_owner=self._repository._expected_owner,
+            expected_directory_mode=self._repository._expected_directory_mode,
+            expected_record_mode=self._repository._expected_record_mode,
+            limits=limits,
+        )
+
+    def read_intent(self, intent_id: object) -> tuple[StateRecordPath, StoredContract]:
+        self._require_exclusive()
+        return self._repository._read_intent_locked(intent_id)
+
+    def remove_reconciled_intent(
+        self,
+        path: StateRecordPath,
+        expected_revision: StateRevision,
+        *,
+        failure_hook: FailureHook | None = None,
+    ) -> None:
+        self._require_exclusive()
+        if not path.is_intent:
+            raise StateRecordError("only an intent can cross the reconciliation removal boundary")
+        current = self._repository._read_locked(path)
+        if current.revision != expected_revision:
+            raise StateConflictError("intent changed after it was reconciled")
+        self._repository._durable.remove(
+            path.components,
+            failure_hook=failure_hook,
         )
 
     def inspect_audit(

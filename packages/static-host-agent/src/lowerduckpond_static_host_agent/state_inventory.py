@@ -18,6 +18,7 @@ MEBIBYTE: Final = 1024 * 1024
 _INITIAL_MAXIMUM_TENANTS: Final = 25
 _INITIAL_MAXIMUM_AUTHORIZATION_RECORDS: Final = 10_000
 _INITIAL_MAXIMUM_AUTHORIZATION_ALLOCATED_BYTES: Final = 64 * MEBIBYTE
+_INITIAL_MAXIMUM_INTENT_RECORDS: Final = 2
 _AUTHORIZATION_DIRECTORIES: Final = ("correlations", "jobs", "results")
 _DIRECTORY_SCAN_MARGIN: Final = 1
 _BLOCK_BYTES: Final = 512
@@ -156,12 +157,64 @@ class AuthorizationRecordInventory:
 
 
 @dataclass(frozen=True, slots=True)
+class IntentInventoryLimits:
+    """Bound one lifecycle transaction and one associated remote-object intent."""
+
+    maximum_records: int = _INITIAL_MAXIMUM_INTENT_RECORDS
+
+    def __post_init__(self) -> None:
+        if type(self.maximum_records) is not int or self.maximum_records < 0:
+            raise ValueError("intent inventory limit must be a nonnegative integer")
+        if self.maximum_records > _INITIAL_MAXIMUM_INTENT_RECORDS:
+            raise ValueError("intent inventory limit cannot weaken the committed M3 boundary")
+
+
+@dataclass(frozen=True, slots=True)
+class IntentRecordIdentity:
+    """One intent identity and the exact inode generation trusted by discovery."""
+
+    intent_id: str
+    metadata_generation: tuple[int, ...]
+
+    def __post_init__(self) -> None:
+        try:
+            if validate_uuid7(self.intent_id) != self.intent_id:
+                raise StateInventoryError("intent identity is not canonical")
+        except ContractError as error:
+            raise StateInventoryError("intent identity is invalid") from error
+        if not self.metadata_generation or any(
+            type(value) is not int for value in self.metadata_generation
+        ):
+            raise StateInventoryError("intent metadata generation is invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class IntentRecordInventory:
+    """Stable bounded identities, generations, and allocation for active intents."""
+
+    records: tuple[IntentRecordIdentity, ...]
+    allocated_bytes: int
+
+    def __post_init__(self) -> None:
+        identifiers = tuple(record.intent_id for record in self.records)
+        if identifiers != tuple(sorted(set(identifiers))):
+            raise StateInventoryError("intent inventory must contain sorted unique identities")
+        if type(self.allocated_bytes) is not int or self.allocated_bytes < 0:
+            raise StateInventoryError("intent allocation must be a nonnegative integer")
+
+    @property
+    def intent_ids(self) -> tuple[str, ...]:
+        return tuple(record.intent_id for record in self.records)
+
+
+@dataclass(frozen=True, slots=True)
 class _DirectoryEntry:
     name: str
     metadata: os.stat_result
 
 
 DEFAULT_STATE_INVENTORY_LIMITS: Final = StateInventoryLimits()
+DEFAULT_INTENT_INVENTORY_LIMITS: Final = IntentInventoryLimits()
 
 
 def admit_state_inventory(
@@ -268,7 +321,7 @@ def measure_authorization_records(
                     maximum_entries=remaining_records,
                 )
                 for entry in entries:
-                    _validate_authorization_record(
+                    _validate_bounded_record(
                         entry,
                         expected_owner=expected_owner,
                         expected_record_mode=expected_record_mode,
@@ -289,6 +342,50 @@ def measure_authorization_records(
         correlation_ids=identifiers["correlations"],
         allocated_bytes=allocated_bytes,
     )
+
+
+def measure_intent_records(
+    root: DurableDirectory,
+    *,
+    expected_owner: int,
+    expected_directory_mode: int,
+    expected_record_mode: int,
+    limits: IntentInventoryLimits = DEFAULT_INTENT_INVENTORY_LIMITS,
+) -> IntentRecordInventory:
+    """List the fixed bounded intent store and retain exact inode generations."""
+
+    directory = root.open_descendant(("intents",))
+    try:
+        directory.remove_abandoned_publication_temporaries(
+            expected_owner=expected_owner,
+            expected_mode=expected_record_mode,
+            maximum_entries=limits.maximum_records + 1,
+        )
+        entries = _stable_directory_entries(
+            directory,
+            expected_owner=expected_owner,
+            expected_directory_mode=expected_directory_mode,
+            maximum_entries=limits.maximum_records,
+        )
+    finally:
+        directory.close()
+
+    records: list[IntentRecordIdentity] = []
+    allocated_bytes = 0
+    for entry in entries:
+        _validate_bounded_record(
+            entry,
+            expected_owner=expected_owner,
+            expected_record_mode=expected_record_mode,
+        )
+        records.append(
+            IntentRecordIdentity(
+                intent_id=_identifier_from_name(entry.name, suffix=".json"),
+                metadata_generation=_metadata_generation(entry.metadata),
+            )
+        )
+        allocated_bytes += entry.metadata.st_blocks * _BLOCK_BYTES
+    return IntentRecordInventory(tuple(records), allocated_bytes)
 
 
 def _measure_tenants(
@@ -321,7 +418,7 @@ def _measure_tenants(
     return tuple(tenant_ids)
 
 
-def _validate_authorization_record(
+def _validate_bounded_record(
     entry: _DirectoryEntry,
     *,
     expected_owner: int,
@@ -330,11 +427,11 @@ def _validate_authorization_record(
     _identifier_from_name(entry.name, suffix=".json")
     metadata = entry.metadata
     if not stat.S_ISREG(metadata.st_mode):
-        raise StateInventoryError("authorization record is not a regular file")
+        raise StateInventoryError("bounded state record is not a regular file")
     if metadata.st_size > MAX_CANONICAL_BYTES:
-        raise StateInventoryError("authorization record exceeds its canonical byte ceiling")
+        raise StateInventoryError("bounded state record exceeds its canonical byte ceiling")
     if metadata.st_blocks < 0:
-        raise StateInventoryError("authorization record has invalid block accounting")
+        raise StateInventoryError("bounded state record has invalid block accounting")
     _validate_regular_metadata(
         metadata,
         expected_owner=expected_owner,
