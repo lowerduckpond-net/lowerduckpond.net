@@ -420,6 +420,36 @@ def test_timestamp_format_validation_is_not_an_optional_environment_feature() ->
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
 
+@pytest.mark.parametrize(
+    ("fixture", "path"),
+    [
+        ("site.json", ("spec", "quotas", "storageMiB")),
+        ("operation-request.json", ("artifact", "size")),
+        ("audit-entry.json", ("sequence",)),
+        ("archive-record.json", ("bundleSize",)),
+    ],
+)
+def test_integer_contract_fields_reject_integral_float_representations(
+    fixture: str,
+    path: tuple[str, ...],
+) -> None:
+    document = _load_object(FIXTURE_ROOT / "accepted" / fixture)
+    if path[0] == "artifact":
+        document["artifact"] = {"size": 4096, "sha256": "a" * 64}
+    container = document
+    for component in path[:-1]:
+        nested = container[component]
+        assert type(nested) is dict
+        container = nested
+    value = container[path[-1]]
+    assert type(value) is int
+    container[path[-1]] = float(value)
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(document)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
 @pytest.mark.parametrize("bucket", ["ab", "a" * 64])
 def test_archive_bucket_uses_the_provisioned_spaces_length_bounds(bucket: str) -> None:
     archive = _load_object(FIXTURE_ROOT / "accepted/archive-record.json")

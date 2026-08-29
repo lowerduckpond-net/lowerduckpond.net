@@ -10,7 +10,7 @@ from importlib.resources import files
 from importlib.resources.abc import Traversable
 from typing import Final, cast
 
-from jsonschema import Draft202012Validator, FormatChecker
+from jsonschema import Draft202012Validator, FormatChecker, validators
 from jsonschema.exceptions import ValidationError
 from referencing import Registry, Resource
 
@@ -35,6 +35,16 @@ from lowerduckpond_static_contracts.lifecycle import LIFECYCLE_MATRIX, Lifecycle
 
 API_VERSION: Final = "hosting.lowerduckpond.net/v1alpha1"
 SCHEMA_DIRECTORY: Final = files("lowerduckpond_static_contracts").joinpath("schemas")
+STRICT_DRAFT_202012_VALIDATOR: Final[type[Draft202012Validator]] = cast(
+    type[Draft202012Validator],
+    validators.extend(  # type: ignore[no-untyped-call]
+        Draft202012Validator,
+        type_checker=Draft202012Validator.TYPE_CHECKER.redefine(
+            "integer",
+            lambda _checker, value: type(value) is int,
+        ),
+    ),
+)
 
 
 class ContractKind(StrEnum):
@@ -123,7 +133,7 @@ def schema_for(kind: ContractKind) -> dict[str, object]:
 @cache
 def _validator(kind: ContractKind) -> Draft202012Validator:
     schema = _cached_schema(kind)
-    return Draft202012Validator(
+    return STRICT_DRAFT_202012_VALIDATOR(
         schema,
         registry=_registry(),  # type: ignore[arg-type]  # jsonschema stub is wider
         format_checker=FormatChecker(),
