@@ -442,6 +442,21 @@ def test_later_audit_entries_require_a_predecessor() -> None:
     assert validate_contract(entry) is ContractKind.AUDIT_ENTRY
 
 
+def test_audit_predecessor_is_pinned_to_the_audit_entry_digest_domain() -> None:
+    entry = _load_object(FIXTURE_ROOT / "accepted/audit-entry.json")
+    entry["sequence"] = 1
+    entry["previousEntryDigest"] = {
+        "format": "lowerduckpond-result-v1",
+        "algorithm": "sha256",
+        "value": "a" * 64,
+    }
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(entry)
+
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
 def test_manifestless_result_origin_is_bound_to_its_tenant_identity() -> None:
     result = _load_object(FIXTURE_ROOT / "accepted/operation-result.json")
     del result["manifest"]

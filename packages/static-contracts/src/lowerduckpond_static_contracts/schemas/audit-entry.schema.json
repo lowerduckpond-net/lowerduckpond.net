@@ -7,7 +7,7 @@
       "else": {
         "properties": {
           "previousEntryDigest": {
-            "$ref": "common.schema.json#/$defs/digest"
+            "$ref": "common.schema.json#/$defs/auditEntryDigest"
           }
         }
       },
@@ -68,7 +68,7 @@
     "previousEntryDigest": {
       "oneOf": [
         {
-          "$ref": "common.schema.json#/$defs/digest"
+          "$ref": "common.schema.json#/$defs/auditEntryDigest"
         },
         {
           "type": "null"

@@ -39,6 +39,14 @@
       ],
       "type": "object"
     },
+    "auditEntryDigest": {
+      "$ref": "#/$defs/digest",
+      "properties": {
+        "format": {
+          "const": "lowerduckpond-audit-entry-v1"
+        }
+      }
+    },
     "canonicalOrigin": {
       "maxLength": 253,
       "pattern": "^t-[0-9a-f]{32}\\.lowerduckpond\\.com(?![\\s\\S])",
