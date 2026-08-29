@@ -575,6 +575,20 @@ round trips pass without creating a public release.
 
 Rollback: the engine remains library-only and has no production entry point.
 
+The first review slice implements the decoder-free structural gate as an inert
+host-agent library. It opens only a stable, one-link, root-owned artifact inode;
+bounds and parses the physical end record, central directory, local headers,
+variable fields, and declared data regions; and rejects ZIP64, spanning,
+comments, descriptors, encryption, unsupported methods and extras, aliasing,
+padding, and local/central disagreement before any decoder is initialized. It
+then applies the flat-deployment tree limits, strict ASCII-or-flagged-UTF-8 and
+NFC path rules, exact implicit-parent accounting, collision checks, allowed
+inode types, the reserved `cdn-cgi` rule, and the root `index.html` requirement.
+Stored and Deflate fixtures, independently encoded hostile structures, exact
+and tightened boundaries, snapshot-inode failures, and arbitrary-byte property
+tests exercise this gate. Extraction, bundle handling, and a service entry
+point remain absent until the following slices add their own gates.
+
 ### M3.5: install the dark host boundary
 
 Ansible installs a hash-pinned host-agent artifact in a versioned root-owned
