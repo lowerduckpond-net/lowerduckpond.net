@@ -35,6 +35,10 @@ _TENANT_ID = "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100"
 _OTHER_TENANT_ID = "0198d17f-6f4a-7000-8000-000000000001"
 _DEPLOYMENT_ID = "0191e2ca-49f2-7608-8cf3-f80ab2cab151"
 _OTHER_DEPLOYMENT_ID = "0198d17f-6f4a-7000-8000-000000000002"
+_JOB_ID = "0198d17f-6f4a-7000-8000-000000000002"
+_INTENT_ID = "0198d17f-6f4a-7000-8000-000000000003"
+_ARCHIVE_CONSTRUCTION_INTENT_ID = "0198d17f-6f4a-7000-8000-000000000004"
+_ARCHIVE_RETIREMENT_INTENT_ID = "0198d17f-6f4a-7000-8000-000000000005"
 _DIRECTORY_MODE = 0o700
 _RECORD_MODE = 0o600
 _PROCESS_TIMEOUT_SECONDS = 10
@@ -58,6 +62,12 @@ def _state_root(tmp_path: Path) -> Path:
     _mkdir(root / "tenants")
     _mkdir(root / "tenants" / _TENANT_ID)
     _mkdir(root / "tenants" / _TENANT_ID / "deployments")
+    _mkdir(root / "tenants" / _TENANT_ID / "archives")
+    _mkdir(root / "authorization")
+    _mkdir(root / "authorization" / "jobs")
+    _mkdir(root / "authorization" / "results")
+    _mkdir(root / "authorization" / "correlations")
+    _mkdir(root / "intents")
     _mkdir(root / "locks")
     manager = LockManager.initialize(root / "locks", expected_owner=os.geteuid())
     manager.close()
@@ -131,6 +141,33 @@ def test_typed_paths_pin_the_committed_authoritative_layout() -> None:
         "deployments",
         f"{_DEPLOYMENT_ID}.json",
     )
+    assert StateRecordPath.tenant_archive(_TENANT_ID, _DEPLOYMENT_ID).components == (
+        "tenants",
+        _TENANT_ID,
+        "archives",
+        f"{_DEPLOYMENT_ID}.json",
+    )
+    assert StateRecordPath.authorization_job(_JOB_ID).components == (
+        "authorization",
+        "jobs",
+        f"{_JOB_ID}.json",
+    )
+    assert StateRecordPath.authorization_result(_JOB_ID).components == (
+        "authorization",
+        "results",
+        f"{_JOB_ID}.json",
+    )
+    assert StateRecordPath.transaction_intent(_INTENT_ID).components == (
+        "intents",
+        f"{_INTENT_ID}.json",
+    )
+    assert StateRecordPath.archive_construction_intent(
+        _ARCHIVE_CONSTRUCTION_INTENT_ID
+    ).components == ("intents", f"{_ARCHIVE_CONSTRUCTION_INTENT_ID}.json")
+    assert StateRecordPath.archive_retirement_intent(_ARCHIVE_RETIREMENT_INTENT_ID).components == (
+        "intents",
+        f"{_ARCHIVE_RETIREMENT_INTENT_ID}.json",
+    )
 
 
 @pytest.mark.parametrize(
@@ -152,6 +189,21 @@ def test_typed_paths_reject_noncanonical_or_escaping_identifiers(tenant_id: str)
         (
             StateRecordPath.tenant_deployment(_TENANT_ID, _DEPLOYMENT_ID),
             "deployment-record.json",
+        ),
+        (
+            StateRecordPath.tenant_archive(_TENANT_ID, _DEPLOYMENT_ID),
+            "archive-record.json",
+        ),
+        (StateRecordPath.authorization_job(_JOB_ID), "authorization-job.json"),
+        (StateRecordPath.authorization_result(_JOB_ID), "operation-result.json"),
+        (StateRecordPath.transaction_intent(_INTENT_ID), "transaction-intent.json"),
+        (
+            StateRecordPath.archive_construction_intent(_ARCHIVE_CONSTRUCTION_INTENT_ID),
+            "archive-construction-intent.json",
+        ),
+        (
+            StateRecordPath.archive_retirement_intent(_ARCHIVE_RETIREMENT_INTENT_ID),
+            "archive-retirement-intent.json",
         ),
     ],
 )
@@ -235,6 +287,25 @@ def test_reader_rejects_duplicate_members_before_trusting_state(tmp_path: Path) 
         (
             StateRecordPath.tenant_deployment(_TENANT_ID, _OTHER_DEPLOYMENT_ID),
             "deployment-record.json",
+        ),
+        (
+            StateRecordPath.tenant_archive(_OTHER_TENANT_ID, _DEPLOYMENT_ID),
+            "archive-record.json",
+        ),
+        (
+            StateRecordPath.tenant_archive(_TENANT_ID, _OTHER_DEPLOYMENT_ID),
+            "archive-record.json",
+        ),
+        (StateRecordPath.authorization_job(_INTENT_ID), "authorization-job.json"),
+        (StateRecordPath.authorization_result(_INTENT_ID), "operation-result.json"),
+        (StateRecordPath.transaction_intent(_JOB_ID), "transaction-intent.json"),
+        (
+            StateRecordPath.archive_construction_intent(_JOB_ID),
+            "archive-construction-intent.json",
+        ),
+        (
+            StateRecordPath.archive_retirement_intent(_JOB_ID),
+            "archive-retirement-intent.json",
         ),
     ],
 )

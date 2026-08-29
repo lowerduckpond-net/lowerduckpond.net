@@ -42,6 +42,15 @@ from lowerduckpond_static_host_agent.repository import (
     StateRevision,
     StoredContract,
 )
+from lowerduckpond_static_host_agent.state_inventory import (
+    StateAdmissionRejectedError,
+    StateInventory,
+    StateInventoryError,
+    StateInventoryLimits,
+    StateInventoryProjection,
+    StateInventoryReservation,
+    admit_state_inventory,
+)
 
 __all__ = [
     "CapacityError",
@@ -63,9 +72,15 @@ __all__ = [
     "ReleaseTreeError",
     "ReleaseTreeLimits",
     "ReleaseTreeMeasurement",
+    "StateAdmissionRejectedError",
     "StateAlreadyExistsError",
     "StateBusyError",
     "StateConflictError",
+    "StateInventory",
+    "StateInventoryError",
+    "StateInventoryLimits",
+    "StateInventoryProjection",
+    "StateInventoryReservation",
     "StatePathError",
     "StateRecordError",
     "StateRecordPath",
@@ -73,6 +88,7 @@ __all__ = [
     "StateRevision",
     "StoredContract",
     "admit_release_capacity",
+    "admit_state_inventory",
     "aggregate_release_usage",
     "measure_filesystem_capacity",
     "measure_release_tree",
