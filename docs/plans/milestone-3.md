@@ -646,10 +646,12 @@ memory, swap, task, descriptor, CPU, effective runtime, and one-CPU ceilings;
 removes capabilities, child-process creation, socket, keyring, io_uring,
 cross-process signal, process-memory, descriptor-transfer, and same-UID
 resource-control calls; denies host-wide sync and UID-shared inotify quota
-operations; denies asynchronous-I/O ownership controls and POSIX timer creation;
-disables core dumps; discards all standard streams; makes `/proc` wholly
-inaccessible; and applies strict filesystem, home, device, kernel, IPC,
-namespace, and syscall controls. A read-only empty filesystem view
+operations; denies creation of asynchronous-signal-capable pipes and FIFOs,
+device-control operations, and POSIX timers while retaining CPython's required
+descriptor controls; disables core dumps; discards all standard streams; makes
+`/proc` and terminal device paths wholly inaccessible; and applies strict
+filesystem, home, device, kernel, IPC, namespace, and syscall controls. A
+read-only empty filesystem view
 with no independent temporary output then exposes only one self-contained
 runtime, one immutable artifact, and one writable staging parent through
 explicit bind mounts. Descriptor-walked validation rejects relative,

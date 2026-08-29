@@ -28,7 +28,6 @@ _EXPECTED_ISOLATION_PROPERTIES = {
     "CapabilityBoundingSet": "",
     "DevicePolicy": "closed",
     "IPAddressDeny": "any",
-    "InaccessiblePaths": "/proc",
     "MemoryDenyWriteExecute": "true",
     "NoNewPrivileges": "true",
     "PrivateDevices": "true",
@@ -52,7 +51,7 @@ _EXPECTED_SYSTEM_CALL_FILTERS = (
     "~prlimit64",
     "~sync syncfs",
     "~inotify_init inotify_init1 inotify_add_watch",
-    "~fcntl fcntl64 ioctl",
+    "~pipe pipe2 mknod mknodat ioctl",
     "~timer_create",
     "~io_uring_setup io_uring_register io_uring_enter",
     "~clone clone3 fork vfork",
@@ -79,6 +78,14 @@ def test_archive_sandbox_commits_exact_resource_and_isolation_backstops() -> Non
         _EXPECTED_ISOLATION_PROPERTIES
     )
     assert filters == _EXPECTED_SYSTEM_CALL_FILTERS
+    assert not {"fcntl", "fcntl64"}.intersection(
+        word
+        for system_call_filter in filters
+        for word in system_call_filter.removeprefix("~").split()
+    )
+    assert [
+        value for name, value in ARCHIVE_SANDBOX_STATIC_PROPERTIES if name == "InaccessiblePaths"
+    ] == ["/proc", "/dev/tty", "/dev/ptmx", "/dev/pts"]
 
 
 def test_archive_sandbox_exposes_only_runtime_one_input_and_one_output_tree(
