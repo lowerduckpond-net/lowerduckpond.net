@@ -13,12 +13,12 @@
     },
     {
       "fixture": "accepted/operation-result.json",
-      "canonicalBytes": 671,
-      "canonicalSha256": "71b693c282583a46e3fe7187f8d24313a99fe26d0e5e75898324ca7141171983",
+      "canonicalBytes": 713,
+      "canonicalSha256": "5ac250d64f01fd8220fa6b8dad597c3816269a35c89b13d9b7365d5123388d8a",
       "digest": {
         "format": "lowerduckpond-result-v1",
         "algorithm": "sha256",
-        "value": "d3a3e4340c7ce34e83dedef3f19f630e08c799ba49f0da5e62bc3cfc25dcb4ae"
+        "value": "5a13375020c8e826079feea2280f82ce83f1044d017cf8b4fdde0f5cfde86611"
       }
     }
   ]
