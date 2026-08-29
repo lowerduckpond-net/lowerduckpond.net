@@ -21,6 +21,29 @@
           "operation"
         ]
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "delete"
+          },
+          "status": {
+            "const": "succeeded"
+          }
+        },
+        "required": [
+          "operation",
+          "status"
+        ]
+      },
+      "then": {
+        "not": {
+          "required": [
+            "manifest"
+          ]
+        }
+      }
     }
   ],
   "oneOf": [

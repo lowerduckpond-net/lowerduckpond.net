@@ -401,6 +401,18 @@ def test_manifestless_result_origin_is_bound_to_its_tenant_identity() -> None:
     assert validate_contract(result) is ContractKind.OPERATION_RESULT
 
 
+def test_successful_delete_result_cannot_return_a_desired_manifest() -> None:
+    result = _load_object(FIXTURE_ROOT / "accepted/operation-result.json")
+    result["operation"] = "delete"
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(result)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+    del result["manifest"]
+    assert validate_contract(result) is ContractKind.OPERATION_RESULT
+
+
 @pytest.mark.parametrize(
     "operation",
     [operation.value for operation in Operation if operation is not Operation.CREATE],
