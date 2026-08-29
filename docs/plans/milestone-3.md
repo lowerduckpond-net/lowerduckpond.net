@@ -441,8 +441,28 @@ a manifest, deployment, archive, or other protocol digest and cannot be used in
 those fields. Thread and process races prove that two writers starting from one
 revision produce one commit and one conflict.
 
-Release-tree digests, capacity admission, hash-chained audit, correlation
-idempotency, the remaining record layouts, intent discovery and recovery remain
+The third review slice adds stable release measurement and physical-capacity
+admission without connecting either to a service. One descriptor-relative,
+no-follow traversal rejects non-NFC or ambiguous names, case-fold collisions,
+the reserved `cdn-cgi` subtree, symbolic links and special files,
+cross-filesystem descendants, wrong ownership or normalized modes, every v1
+tree-limit breach, and any inode or namespace generation change before
+returning. It emits the exact `lowerduckpond-release-tree-v1` path/content
+digest while separately deduplicating actual `(device, inode)` allocations and
+`st_blocks` for capacity;
+hard-linked paths remain distinct digest records but consume physical capacity
+once. Admission adds an explicit worst-case pre-mutation reservation, enforces
+the 10-GiB and 500,000-inode host ceilings, and uses `f_bavail`/`f_favail` to
+retain the greater absolute-or-10-percent free floors. Public policy overrides
+may tighten but cannot weaken the recorded ceilings. Exact and one-over
+boundaries, hostile names and inode types, hardlinks, sparse allocation
+accounting, metadata-independent digest fixtures, and mutations before, during,
+and after content hashing are executable tests. M3.4 will supply archive
+preflight's worst-case reservation to this inert M3.3 kernel; it will not change
+the accounting or digest contract.
+
+Hash-chained audit, correlation idempotency, tenant-count and bounded-record
+admission, the remaining record layouts, intent discovery and recovery remain
 in M3.3 and do not move to a later phase.
 
 Create the host-agent package around the root-domain constructor and add its
