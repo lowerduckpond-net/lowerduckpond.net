@@ -549,6 +549,38 @@ def test_successful_deterministic_result_manifest_matches_its_target_state(
 
 
 @pytest.mark.parametrize(
+    ("operation", "allowed_state", "impossible_state"),
+    [
+        ("deploy", "active", "archived"),
+        ("rollback", "suspended", "archived"),
+        ("rename", "active", "archived"),
+        ("export", "archived", "undeployed"),
+    ],
+)
+def test_successful_source_dependent_result_manifest_stays_in_its_outcome_set(
+    operation: str,
+    allowed_state: str,
+    impossible_state: str,
+) -> None:
+    result = _load_object(FIXTURE_ROOT / "accepted/operation-result.json")
+    manifest = _load_object(FIXTURE_ROOT / "accepted/site.json")
+    spec = manifest["spec"]
+    assert type(spec) is dict
+    spec["desiredState"] = allowed_state
+    result["operation"] = operation
+    result["manifest"] = manifest
+
+    assert validate_contract(result) is ContractKind.OPERATION_RESULT
+
+    spec["desiredState"] = impossible_state
+    if impossible_state == "undeployed":
+        del spec["desiredDeployment"]
+    with pytest.raises(ContractError) as captured:
+        validate_contract(result)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+@pytest.mark.parametrize(
     "operation",
     [operation.value for operation in Operation if operation is not Operation.CREATE],
 )
