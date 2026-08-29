@@ -24,11 +24,13 @@ package = false
 
 [tool.uv.sources]
 lowerduckpond-static-contracts = { workspace = true }
+lowerduckpond-static-domain = { workspace = true }
 
 [tool.uv.workspace]
 members = [
   "packages/static-contracts",
   "packages/static-domain",
+  "packages/static-host-agent",
   "services/control-plane",
   "services/provisioner",
   "tools/m3-archive-qualification",
@@ -42,6 +44,7 @@ pythonpath = ["."]
 testpaths = [
   "packages/static-contracts/tests",
   "packages/static-domain/tests",
+  "packages/static-host-agent/tests",
   "services/control-plane/tests",
   "services/provisioner/tests",
   "tests/infrastructure",
@@ -88,6 +91,8 @@ files = [
   "packages/static-contracts/tests",
   "packages/static-domain/src",
   "packages/static-domain/tests",
+  "packages/static-host-agent/src",
+  "packages/static-host-agent/tests",
   "services/control-plane/src",
   "services/control-plane/tests",
   "services/provisioner/src",
