@@ -357,6 +357,36 @@ def test_site_canonical_origin_is_bound_to_its_tenant_identity() -> None:
     assert captured.value.code is ErrorCode.INVALID_CANONICAL_ORIGIN
 
 
+def test_audit_genesis_entry_cannot_claim_a_predecessor() -> None:
+    entry = _load_object(FIXTURE_ROOT / "accepted/audit-entry.json")
+    entry["previousEntryDigest"] = {
+        "format": "lowerduckpond-audit-entry-v1",
+        "algorithm": "sha256",
+        "value": "a" * 64,
+    }
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(entry)
+
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+def test_later_audit_entries_require_a_predecessor() -> None:
+    entry = _load_object(FIXTURE_ROOT / "accepted/audit-entry.json")
+    entry["sequence"] = 1
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(entry)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+    entry["previousEntryDigest"] = {
+        "format": "lowerduckpond-audit-entry-v1",
+        "algorithm": "sha256",
+        "value": "a" * 64,
+    }
+    assert validate_contract(entry) is ContractKind.AUDIT_ENTRY
+
+
 @pytest.mark.parametrize(
     "format_identifier",
     ["lowerduckpond--v1", "lowerduckpond-state--v1", "lowerduckpond--state-v1"],

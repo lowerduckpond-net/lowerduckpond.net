@@ -2,6 +2,34 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://schemas.lowerduckpond.net/static-publication/v1alpha1/audit-entry.schema.json",
   "additionalProperties": false,
+  "allOf": [
+    {
+      "else": {
+        "properties": {
+          "previousEntryDigest": {
+            "$ref": "common.schema.json#/$defs/digest"
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "sequence": {
+            "const": 0
+          }
+        },
+        "required": [
+          "sequence"
+        ]
+      },
+      "then": {
+        "properties": {
+          "previousEntryDigest": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ],
   "properties": {
     "apiVersion": {
       "$ref": "common.schema.json#/$defs/apiVersion"
