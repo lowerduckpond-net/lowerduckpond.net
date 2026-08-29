@@ -1251,6 +1251,41 @@ def test_extraction_removes_the_created_candidate_when_initial_open_fails(
     assert list(parent.iterdir()) == []
 
 
+def test_extraction_removes_the_created_candidate_when_identity_probe_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _write(tmp_path, _archive(_MemberSpec(name=b"index.html", content=b"home")))
+    parent = _staging_parent(tmp_path)
+    real_stat = os.stat
+    failed = False
+
+    def fail_candidate_stat(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        *,
+        dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ) -> os.stat_result:
+        nonlocal failed
+        if path == "candidate" and dir_fd is not None and not failed:
+            failed = True
+            raise OSError("simulated identity-probe failure")
+        return real_stat(path, dir_fd=dir_fd, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(os, "stat", fail_candidate_stat)
+
+    with pytest.raises(ZipExtractionError, match="could not complete safely"):
+        _extract_with_intake_lock(
+            source,
+            staging_parent=parent,
+            staging_name="candidate",
+            expected_owner=_OWNER,
+            retained_usage=ReleaseCapacityUsage(()),
+        )
+
+    assert list(parent.iterdir()) == []
+
+
 @given(
     content=strategies.binary(max_size=65_536),
     method=strategies.sampled_from([_STORED, _DEFLATE]),
