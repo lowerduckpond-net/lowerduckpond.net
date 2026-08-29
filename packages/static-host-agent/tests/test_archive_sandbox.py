@@ -18,7 +18,9 @@ _EXPECTED_RESOURCE_PROPERTIES = {
     "MemoryMax": "256M",
     "MemorySwapMax": "0",
     "RuntimeMaxSec": "5min",
+    "TimeoutStartSec": "5min",
     "TasksMax": "32",
+    "Type": "exec",
 }
 _EXPECTED_ISOLATION_PROPERTIES = {
     "CapabilityBoundingSet": "",
@@ -31,36 +33,59 @@ _EXPECTED_ISOLATION_PROPERTIES = {
     "PrivateTmp": "true",
     "ProtectHome": "true",
     "ProtectSystem": "strict",
-    "RestrictAddressFamilies": "AF_UNIX",
+    "RestrictAddressFamilies": "~AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_PACKET",
     "RestrictNamespaces": "true",
     "SystemCallArchitectures": "native",
-    "SystemCallFilter": "@system-service",
+    "TemporaryFileSystem": "/:ro",
 }
+_EXPECTED_SYSTEM_CALL_FILTERS = (
+    "@system-service",
+    "~@network-io",
+    "~kill tkill tgkill rt_sigqueueinfo rt_tgsigqueueinfo pidfd_send_signal",
+)
+_BOUND_PATH_COUNT = 3
 
 
 def test_archive_sandbox_commits_exact_resource_and_isolation_backstops() -> None:
-    properties = dict(ARCHIVE_SANDBOX_STATIC_PROPERTIES)
+    properties = {
+        name: value
+        for name, value in ARCHIVE_SANDBOX_STATIC_PROPERTIES
+        if name != "SystemCallFilter"
+    }
+    filters = tuple(
+        value for name, value in ARCHIVE_SANDBOX_STATIC_PROPERTIES if name == "SystemCallFilter"
+    )
 
-    assert len(properties) == len(ARCHIVE_SANDBOX_STATIC_PROPERTIES)
     assert {name: properties[name] for name in _EXPECTED_RESOURCE_PROPERTIES} == (
         _EXPECTED_RESOURCE_PROPERTIES
     )
     assert {name: properties[name] for name in _EXPECTED_ISOLATION_PROPERTIES} == (
         _EXPECTED_ISOLATION_PROPERTIES
     )
+    assert filters == _EXPECTED_SYSTEM_CALL_FILTERS
 
 
-def test_archive_sandbox_exposes_only_one_input_and_one_output_tree() -> None:
+def test_archive_sandbox_exposes_only_runtime_one_input_and_one_output_tree(
+    tmp_path: Path,
+) -> None:
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    artifact = tmp_path / "artifact.zip"
+    artifact.write_bytes(b"")
+    staging = tmp_path / "staging"
+    staging.mkdir()
     policy = archive_sandbox_policy(
-        Path("/var/lib/lowerduckpond/intake/artifact.zip"),
-        Path("/var/lib/lowerduckpond/releases/staging"),
+        runtime,
+        artifact,
+        staging,
     )
 
-    assert policy.properties[-2:] == (
-        ("ReadOnlyPaths", "/var/lib/lowerduckpond/intake/artifact.zip"),
-        ("ReadWritePaths", "/var/lib/lowerduckpond/releases/staging"),
+    assert policy.properties[-3:] == (
+        ("BindReadOnlyPaths", os.fspath(runtime)),
+        ("BindReadOnlyPaths", os.fspath(artifact)),
+        ("BindPaths", os.fspath(staging)),
     )
-    assert policy.artifact != policy.staging_parent
+    assert len({policy.runtime_root, policy.artifact, policy.staging_parent}) == _BOUND_PATH_COUNT
 
 
 @pytest.mark.parametrize(
@@ -75,19 +100,50 @@ def test_archive_sandbox_exposes_only_one_input_and_one_output_tree() -> None:
     ],
 )
 def test_archive_sandbox_rejects_ambiguous_or_overlapping_paths(
+    tmp_path: Path,
     artifact: str,
     staging: str,
 ) -> None:
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
     with pytest.raises(ArchiveSandboxError):
-        archive_sandbox_policy(Path(artifact), Path(staging))
+        archive_sandbox_policy(runtime, Path(artifact), Path(staging))
 
 
-def test_archive_sandbox_properties_form_a_valid_systemd_unit(tmp_path: Path) -> None:
+def test_archive_sandbox_rejects_symlinked_path_components(tmp_path: Path) -> None:
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
     artifact = tmp_path / "artifact.zip"
     artifact.write_bytes(b"")
     staging = tmp_path / "staging"
     staging.mkdir()
-    policy = archive_sandbox_policy(artifact, staging)
+    alias = tmp_path / "alias"
+    alias.symlink_to(staging, target_is_directory=True)
+
+    with pytest.raises(ArchiveSandboxError, match=r"symbolic link|unavailable"):
+        archive_sandbox_policy(runtime, artifact, alias)
+
+
+def test_archive_sandbox_rejects_runtime_or_artifact_aliases(tmp_path: Path) -> None:
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    artifact = tmp_path / "artifact.zip"
+    artifact.write_bytes(b"")
+    staging = runtime / "staging"
+    staging.mkdir()
+
+    with pytest.raises(ArchiveSandboxError, match="disjoint and unaliased"):
+        archive_sandbox_policy(runtime, artifact, staging)
+
+
+def test_archive_sandbox_properties_form_a_valid_systemd_unit(tmp_path: Path) -> None:
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    artifact = tmp_path / "artifact.zip"
+    artifact.write_bytes(b"")
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    policy = archive_sandbox_policy(runtime, artifact, staging)
     service = tmp_path / "lowerduckpond-archive-sandbox-test.service"
     properties = "\n".join(f"{name}={value}" for name, value in policy.properties)
     service.write_text(
@@ -104,7 +160,8 @@ def test_archive_sandbox_properties_form_a_valid_systemd_unit(tmp_path: Path) ->
         check=False,
         capture_output=True,
         text=True,
-        env={**os.environ, "SYSTEMD_LOG_LEVEL": "err"},
+        env={**os.environ, "SYSTEMD_LOG_LEVEL": "warning"},
     )
 
     assert completed.returncode == 0, completed.stderr
+    assert "RuntimeMaxSec= has no effect" not in completed.stderr

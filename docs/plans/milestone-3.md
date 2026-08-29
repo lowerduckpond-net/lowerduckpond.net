@@ -618,15 +618,15 @@ identity, and JSON member order cannot change the bundle or its separately
 named artifact, manifest, release-tree, and bundle digests.
 
 The fourth review slice parses that exact v1 envelope without a general ZIP
-decoder, requires byte-canonical local and central metadata, verifies the fixed
-format and canonical manifest plus an exact checksum set for every regular
-content member, and rejects padding, reordered records, unbound bytes, and
-source-generation changes. Import requires the caller's exclusive intake lock
-through return, capacity-admits and descriptor-extracts only the already
-validated `content/` subtree into a new unpublished normalized tree, and
-revalidates its named parent and candidate against pinned descriptors before
-success. Cleanup removes only the originally claimed candidate inode. The
-embedded manifest is
+decoder, requires byte-canonical local and central metadata in the same physical
+order, verifies the fixed format and canonical manifest plus an exact checksum
+set for every regular content member, and rejects padding, implicit directory
+records, reordered records, unbound bytes, and source-generation changes.
+Import requires the caller's exclusive intake lock through return,
+capacity-admits and descriptor-extracts only the already validated `content/`
+subtree into a new unpublished normalized tree, and revalidates its named
+parent and candidate against pinned descriptors before success. Cleanup removes
+only the originally claimed candidate inode. The embedded manifest is
 returned under explicitly provenance-named fields and is never materialized as
 target state. Tests prove exact builder/inspector identity, ordinary-deployment
 parser separation, checksum and metadata tampering rejection, cleanup, source
@@ -635,13 +635,16 @@ surface with no production caller.
 
 The fifth review slice commits the archive worker's exact systemd resource and
 isolation property set as inert typed package data. It fixes the ADR 0019
-memory, swap, task, descriptor, CPU, runtime, and one-CPU ceilings; removes
-capabilities and network access; applies strict filesystem, home, device,
-kernel, namespace, syscall, and process visibility controls; and admits only
-one canonical read-only artifact path and one disjoint writable staging parent.
-Executable tests reject relative, ambiguous, and overlapping path bindings and
-pass a generated unit through `systemd-analyze verify`. The policy has no
-launcher or executable and is not installed or enabled; M3.5 consumes this
+memory, swap, task, descriptor, CPU, effective runtime, and one-CPU ceilings;
+removes capabilities, socket creation, and cross-process signal calls; and
+applies strict filesystem, home, device, kernel, namespace, syscall, and process
+visibility controls. A read-only empty filesystem view then exposes only one
+self-contained runtime, one immutable artifact, and one writable staging parent
+through explicit bind mounts. Descriptor-walked validation rejects relative,
+ambiguous, missing, symlinked, overlapping, and inode-aliased paths before
+emitting those bindings. Executable tests pass a generated unit through
+`systemd-analyze verify` without hiding runtime-limit warnings. The policy has
+no launcher or executable and is not installed or enabled; M3.5 consumes this
 reviewed contract when it creates the dark host boundary.
 
 ### M3.5: install the dark host boundary
