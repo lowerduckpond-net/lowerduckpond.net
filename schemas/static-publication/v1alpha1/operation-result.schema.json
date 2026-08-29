@@ -44,6 +44,103 @@
           ]
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "suspend"
+          },
+          "status": {
+            "const": "succeeded"
+          }
+        },
+        "required": [
+          "operation",
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "manifest": {
+            "properties": {
+              "spec": {
+                "properties": {
+                  "desiredState": {
+                    "const": "suspended"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "enum": [
+              "resume",
+              "import",
+              "restore"
+            ]
+          },
+          "status": {
+            "const": "succeeded"
+          }
+        },
+        "required": [
+          "operation",
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "manifest": {
+            "properties": {
+              "spec": {
+                "properties": {
+                  "desiredState": {
+                    "const": "active"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "archive"
+          },
+          "status": {
+            "const": "succeeded"
+          }
+        },
+        "required": [
+          "operation",
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "manifest": {
+            "properties": {
+              "spec": {
+                "properties": {
+                  "desiredState": {
+                    "const": "archived"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "oneOf": [

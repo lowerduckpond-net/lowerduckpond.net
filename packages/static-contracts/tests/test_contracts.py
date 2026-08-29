@@ -503,6 +503,37 @@ def test_successful_delete_result_cannot_return_a_desired_manifest() -> None:
 
 
 @pytest.mark.parametrize(
+    ("operation", "expected_state", "wrong_state"),
+    [
+        ("suspend", "suspended", "active"),
+        ("resume", "active", "suspended"),
+        ("import", "active", "suspended"),
+        ("archive", "archived", "active"),
+        ("restore", "active", "archived"),
+    ],
+)
+def test_successful_deterministic_result_manifest_matches_its_target_state(
+    operation: str,
+    expected_state: str,
+    wrong_state: str,
+) -> None:
+    result = _load_object(FIXTURE_ROOT / "accepted/operation-result.json")
+    manifest = _load_object(FIXTURE_ROOT / "accepted/site.json")
+    spec = manifest["spec"]
+    assert type(spec) is dict
+    spec["desiredState"] = expected_state
+    result["operation"] = operation
+    result["manifest"] = manifest
+
+    assert validate_contract(result) is ContractKind.OPERATION_RESULT
+
+    spec["desiredState"] = wrong_state
+    with pytest.raises(ContractError) as captured:
+        validate_contract(result)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+@pytest.mark.parametrize(
     "operation",
     [operation.value for operation in Operation if operation is not Operation.CREATE],
 )
