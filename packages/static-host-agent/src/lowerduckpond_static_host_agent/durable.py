@@ -246,6 +246,18 @@ class DurableDirectory:
         finally:
             os.close(descriptor)
 
+    def allocation_upper_bound(self, byte_count: int) -> int:
+        """Round one complete write up to this filesystem's allocation fragment."""
+
+        self._require_open()
+        if type(byte_count) is not int or byte_count < 0:
+            raise ValueError("allocation byte count must be a nonnegative integer")
+        filesystem = os.fstatvfs(self._directory_fd)
+        fragment_size = filesystem.f_frsize or filesystem.f_bsize
+        if fragment_size <= 0:
+            raise StatePathError("state filesystem has no valid allocation fragment")
+        return ((byte_count + fragment_size - 1) // fragment_size) * fragment_size
+
     def open_descendant(self, components: tuple[str, ...]) -> DurableDirectory:
         """Open a verified descendant directory without resolving the root path again."""
 

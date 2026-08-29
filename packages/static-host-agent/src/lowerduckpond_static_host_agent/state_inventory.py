@@ -122,6 +122,40 @@ class StateInventoryProjection:
 
 
 @dataclass(frozen=True, slots=True)
+class AuthorizationRecordInventory:
+    """Stable identities and allocation for the three fixed authorization stores."""
+
+    job_ids: tuple[str, ...]
+    result_ids: tuple[str, ...]
+    correlation_ids: tuple[str, ...]
+    allocated_bytes: int
+
+    def __post_init__(self) -> None:
+        for identifiers in (self.job_ids, self.result_ids, self.correlation_ids):
+            if identifiers != tuple(sorted(set(identifiers))):
+                raise StateInventoryError(
+                    "authorization inventory must contain sorted unique identities"
+                )
+            try:
+                if any(validate_uuid7(value) != value for value in identifiers):
+                    raise StateInventoryError(
+                        "authorization inventory contains a noncanonical identity"
+                    )
+            except ContractError as error:
+                raise StateInventoryError(
+                    "authorization inventory contains an invalid identity"
+                ) from error
+        if type(self.allocated_bytes) is not int or self.allocated_bytes < 0:
+            raise StateInventoryError(
+                "authorization inventory allocation must be a nonnegative integer"
+            )
+
+    @property
+    def record_count(self) -> int:
+        return len(self.job_ids) + len(self.result_ids) + len(self.correlation_ids)
+
+
+@dataclass(frozen=True, slots=True)
 class _DirectoryEntry:
     name: str
     metadata: os.stat_result
@@ -176,6 +210,35 @@ def measure_state_inventory(
         expected_directory_mode=expected_directory_mode,
         maximum_tenants=limits.maximum_tenants,
     )
+    authorization = measure_authorization_records(
+        root,
+        expected_owner=expected_owner,
+        expected_directory_mode=expected_directory_mode,
+        expected_record_mode=expected_record_mode,
+        limits=limits,
+    )
+
+    inventory = StateInventory(
+        tenant_ids=tenant_ids,
+        authorization_jobs=len(authorization.job_ids),
+        authorization_results=len(authorization.result_ids),
+        authorization_correlations=len(authorization.correlation_ids),
+        authorization_allocated_bytes=authorization.allocated_bytes,
+    )
+    admit_state_inventory(inventory, StateInventoryReservation(), limits=limits)
+    return inventory
+
+
+def measure_authorization_records(
+    root: DurableDirectory,
+    *,
+    expected_owner: int,
+    expected_directory_mode: int,
+    expected_record_mode: int,
+    limits: StateInventoryLimits = DEFAULT_STATE_INVENTORY_LIMITS,
+) -> AuthorizationRecordInventory:
+    """List the bounded fixed authorization stores through the trusted root."""
+
     authorization_root = root.open_descendant(("authorization",))
     try:
         root_entries = _stable_directory_entries(
@@ -187,7 +250,7 @@ def measure_state_inventory(
         if tuple(entry.name for entry in root_entries) != _AUTHORIZATION_DIRECTORIES:
             raise StateInventoryError("authorization layout contains an unexpected entry")
 
-        counts: dict[str, int] = {}
+        identifiers: dict[str, tuple[str, ...]] = {}
         allocated_bytes = 0
         remaining_records = limits.maximum_authorization_records
         for directory_name in _AUTHORIZATION_DIRECTORIES:
@@ -211,22 +274,21 @@ def measure_state_inventory(
                         expected_record_mode=expected_record_mode,
                     )
                     allocated_bytes += entry.metadata.st_blocks * _BLOCK_BYTES
-                counts[directory_name] = len(entries)
+                identifiers[directory_name] = tuple(
+                    _identifier_from_name(entry.name, suffix=".json") for entry in entries
+                )
                 remaining_records -= len(entries)
             finally:
                 directory.close()
     finally:
         authorization_root.close()
 
-    inventory = StateInventory(
-        tenant_ids=tenant_ids,
-        authorization_jobs=counts["jobs"],
-        authorization_results=counts["results"],
-        authorization_correlations=counts["correlations"],
-        authorization_allocated_bytes=allocated_bytes,
+    return AuthorizationRecordInventory(
+        job_ids=identifiers["jobs"],
+        result_ids=identifiers["results"],
+        correlation_ids=identifiers["correlations"],
+        allocated_bytes=allocated_bytes,
     )
-    admit_state_inventory(inventory, StateInventoryReservation(), limits=limits)
-    return inventory
 
 
 def _measure_tenants(

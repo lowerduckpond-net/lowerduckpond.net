@@ -162,6 +162,11 @@ def test_typed_paths_pin_the_committed_authoritative_layout() -> None:
         "results",
         f"{_INTENT_ID}.json",
     )
+    assert StateRecordPath.authorization_correlation(_INTENT_ID).components == (
+        "authorization",
+        "correlations",
+        f"{_INTENT_ID}.json",
+    )
     assert StateRecordPath.transaction_intent(_INTENT_ID).components == (
         "intents",
         f"{_INTENT_ID}.json",
@@ -201,6 +206,10 @@ def test_typed_paths_reject_noncanonical_or_escaping_identifiers(tenant_id: str)
         ),
         (StateRecordPath.authorization_job(_JOB_ID), "authorization-job.json"),
         (StateRecordPath.authorization_result(_JOB_ID), "operation-result.json"),
+        (
+            StateRecordPath.authorization_correlation("0198d17f-6f4a-7000-8000-000000000001"),
+            "authorization-job.json",
+        ),
         (StateRecordPath.transaction_intent(_INTENT_ID), "transaction-intent.json"),
         (
             StateRecordPath.archive_construction_intent(_ARCHIVE_CONSTRUCTION_INTENT_ID),
@@ -324,6 +333,10 @@ def test_reader_rejects_duplicate_members_before_trusting_state(tmp_path: Path) 
         ),
         (StateRecordPath.authorization_job(_INTENT_ID), "authorization-job.json"),
         (StateRecordPath.authorization_result(_INTENT_ID), "operation-result.json"),
+        (
+            StateRecordPath.authorization_correlation(_JOB_ID),
+            "authorization-job.json",
+        ),
         (StateRecordPath.transaction_intent(_JOB_ID), "transaction-intent.json"),
         (
             StateRecordPath.archive_construction_intent(_JOB_ID),
