@@ -755,9 +755,11 @@ def _validate_portable_locals(
             )
         )
     cursor = 0
-    for start, end in sorted(regions):
+    for start, end in regions:
         if start != cursor or end < start:
-            raise PortableBundleError("portable local regions alias, overlap, or leave padding")
+            raise PortableBundleError(
+                "portable local regions are reordered, alias, overlap, or leave padding"
+            )
         cursor = end
     if cursor != central_offset:
         raise PortableBundleError("portable local regions do not exactly cover their area")
@@ -846,6 +848,9 @@ def _validate_portable_envelope(
     if ordered_paths != sorted(ordered_paths):
         raise PortableBundleError("portable content records are not in canonical path order")
     materialized = _zip._materialized_paths(tuple(central_entries), limits=limits)
+    explicit_paths = tuple(entry.normalized_path for entry in central_entries)
+    if materialized != explicit_paths:
+        raise PortableBundleError("portable content directories must have explicit records")
     expanded = sum(
         member.expanded_bytes
         for member in members

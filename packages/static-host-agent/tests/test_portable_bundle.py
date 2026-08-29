@@ -179,6 +179,78 @@ def _rewrite_stored_member(path: Path, member_name: str, replacement: bytes) -> 
     path.chmod(_OUTPUT_MODE)
 
 
+def _central_records(data: bytes) -> tuple[tuple[int, int, bytes, int], ...]:
+    eocd = _EOCD.unpack_from(data, len(data) - _EOCD.size)
+    cursor = eocd[6]
+    records: list[tuple[int, int, bytes, int]] = []
+    for _record_number in range(eocd[4]):
+        central = _CENTRAL.unpack_from(data, cursor)
+        end = cursor + _CENTRAL.size + central[10] + central[11] + central[12]
+        name = data[cursor + _CENTRAL.size : cursor + _CENTRAL.size + central[10]]
+        records.append((cursor, end, name, central[16]))
+        cursor = end
+    return tuple(records)
+
+
+def _reorder_local_members(path: Path, first_name: str, second_name: str) -> None:
+    data = path.read_bytes()
+    eocd = _EOCD.unpack_from(data, len(data) - _EOCD.size)
+    records = _central_records(data)
+    ordered = sorted(records, key=lambda record: record[3])
+    chunks: dict[bytes, bytes] = {}
+    for position, record in enumerate(ordered):
+        next_offset = ordered[position + 1][3] if position + 1 < len(ordered) else eocd[6]
+        chunks[record[2]] = data[record[3] : next_offset]
+    names = [record[2] for record in ordered]
+    first = first_name.encode()
+    second = second_name.encode()
+    first_index = names.index(first)
+    second_index = names.index(second)
+    names[first_index], names[second_index] = names[second_index], names[first_index]
+
+    offsets: dict[bytes, int] = {}
+    local = bytearray()
+    for name in names:
+        offsets[name] = len(local)
+        local.extend(chunks[name])
+
+    central_bytes = bytearray()
+    for start, end, name, _offset in records:
+        encoded = bytearray(data[start:end])
+        struct.pack_into("<I", encoded, 42, offsets[name])
+        central_bytes.extend(encoded)
+    path.write_bytes(bytes(local) + bytes(central_bytes) + data[-_EOCD.size :])
+    path.chmod(_OUTPUT_MODE)
+
+
+def _remove_member(path: Path, member_name: str) -> None:
+    data = path.read_bytes()
+    eocd = list(_EOCD.unpack_from(data, len(data) - _EOCD.size))
+    records = _central_records(data)
+    target_name = member_name.encode()
+    ordered = sorted(records, key=lambda record: record[3])
+    target_index = next(index for index, record in enumerate(ordered) if record[2] == target_name)
+    target = ordered[target_index]
+    local_end = ordered[target_index + 1][3] if target_index + 1 < len(ordered) else eocd[6]
+    removed_local_bytes = local_end - target[3]
+    local = data[: target[3]] + data[local_end : eocd[6]]
+
+    central_bytes = bytearray()
+    for start, end, name, offset in records:
+        if name == target_name:
+            continue
+        encoded = bytearray(data[start:end])
+        if offset > target[3]:
+            struct.pack_into("<I", encoded, 42, offset - removed_local_bytes)
+        central_bytes.extend(encoded)
+    eocd[3] -= 1
+    eocd[4] -= 1
+    eocd[5] = len(central_bytes)
+    eocd[6] = len(local)
+    path.write_bytes(bytes(local) + bytes(central_bytes) + _EOCD.pack(*eocd))
+    path.chmod(_OUTPUT_MODE)
+
+
 def test_builder_emits_the_exact_canonical_v1_envelope(tmp_path: Path) -> None:
     root = _populated_release(tmp_path)
 
@@ -811,6 +883,32 @@ def test_inspector_rejects_noncanonical_zip_metadata(tmp_path: Path) -> None:
     path.chmod(_OUTPUT_MODE)
 
     with pytest.raises(PortableBundleError, match="central record is not canonical"):
+        inspect_portable_bundle(path, expected_owner=_OWNER)
+
+
+def test_inspector_rejects_local_members_reordered_behind_canonical_central_records(
+    tmp_path: Path,
+) -> None:
+    root = _populated_release(tmp_path)
+    path, _bundle = _build(tmp_path, root)
+    _reorder_local_members(
+        path,
+        f"{PORTABLE_ENVELOPE}/content/empty.txt",
+        f"{PORTABLE_ENVELOPE}/content/index.html",
+    )
+
+    with pytest.raises(PortableBundleError, match="local regions are reordered"):
+        inspect_portable_bundle(path, expected_owner=_OWNER)
+
+
+def test_inspector_rejects_an_implicitly_materialized_content_directory(
+    tmp_path: Path,
+) -> None:
+    root = _populated_release(tmp_path)
+    path, _bundle = _build(tmp_path, root)
+    _remove_member(path, f"{PORTABLE_ENVELOPE}/content/assets/")
+
+    with pytest.raises(PortableBundleError, match="directories must have explicit records"):
         inspect_portable_bundle(path, expected_owner=_OWNER)
 
 
