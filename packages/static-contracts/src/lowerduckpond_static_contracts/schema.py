@@ -316,6 +316,7 @@ def _validate_transaction_intent(document: dict[str, object]) -> None:
         archive["tenantId"] != tenant_id
         or archive["deploymentId"] != source_deployment["id"]
         or archive["manifestDigest"] != document["candidateManifestDigest"]
+        or archive["correlationId"] != document["correlationId"]
     ):
         raise ContractError(ErrorCode.SCHEMA_INVALID, "archive record binding is invalid")
     if recovery["candidateRuntimeGenerationId"] == recovery["sourceRuntimeGenerationId"]:

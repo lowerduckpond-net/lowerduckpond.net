@@ -1058,6 +1058,19 @@ def test_archive_transaction_intent_binds_both_recovery_outcomes() -> None:
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
 
+def test_archive_candidate_record_binds_transaction_correlation() -> None:
+    intent = _archive_transaction_intent()
+    recovery = intent["archiveRecovery"]
+    assert type(recovery) is dict
+    archive = recovery["candidateArchiveRecord"]
+    assert type(archive) is dict
+    archive["correlationId"] = "0198d17f-6f4a-7000-8000-000000000009"
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(intent)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
 def test_archive_transaction_intent_binds_the_verified_archive_record() -> None:
     intent = _archive_transaction_intent()
     recovery = intent["archiveRecovery"]
