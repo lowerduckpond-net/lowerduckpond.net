@@ -41,6 +41,8 @@ class ContractKind(StrEnum):
     TENANT_OBSERVED_STATE = "TenantObservedState"
     DEPLOYMENT_RECORD = "DeploymentRecord"
     ARCHIVE_RECORD = "ArchiveRecord"
+    ARCHIVE_CONSTRUCTION_INTENT = "ArchiveConstructionIntent"
+    ARCHIVE_RETIREMENT_INTENT = "ArchiveRetirementIntent"
     OPERATION_REQUEST = "OperationRequest"
     AUTHORIZATION_JOB = "AuthorizationJob"
     TRANSACTION_INTENT = "TransactionIntent"
@@ -55,6 +57,8 @@ SCHEMA_FILE_BY_KIND: Final = {
     ContractKind.TENANT_OBSERVED_STATE: "tenant-observed-state.schema.json",
     ContractKind.DEPLOYMENT_RECORD: "deployment-record.schema.json",
     ContractKind.ARCHIVE_RECORD: "archive-record.schema.json",
+    ContractKind.ARCHIVE_CONSTRUCTION_INTENT: "archive-construction-intent.schema.json",
+    ContractKind.ARCHIVE_RETIREMENT_INTENT: "archive-retirement-intent.schema.json",
     ContractKind.OPERATION_REQUEST: "operation-request.schema.json",
     ContractKind.AUTHORIZATION_JOB: "authorization-job.schema.json",
     ContractKind.TRANSACTION_INTENT: "transaction-intent.schema.json",
@@ -221,12 +225,22 @@ def _validate_result(document: dict[str, object]) -> None:
         raise ContractError(ErrorCode.SCHEMA_INVALID, "result tenant origin does not match")
 
 
+def _validate_archive_construction_intent(document: dict[str, object]) -> None:
+    upload_attempt_id = validate_uuid7(document["uploadAttemptId"])
+    if document["key"] != f"archives/{upload_attempt_id}.zip":
+        raise ContractError(
+            ErrorCode.SCHEMA_INVALID,
+            "archive key does not match its upload attempt identity",
+        )
+
+
 _SEMANTIC_VALIDATORS: Final[dict[ContractKind, Callable[[dict[str, object]], None]]] = {
     ContractKind.PLATFORM_NAMESPACE: _validate_namespace,
     ContractKind.SITE: _validate_site,
     ContractKind.OPERATION_REQUEST: _validate_request,
     ContractKind.AUTHORIZATION_JOB: _validate_job,
     ContractKind.OPERATION_RESULT: _validate_result,
+    ContractKind.ARCHIVE_CONSTRUCTION_INTENT: _validate_archive_construction_intent,
 }
 
 
@@ -234,7 +248,15 @@ def _semantic_validation(document: dict[str, object], kind: ContractKind) -> Non
     validator = _SEMANTIC_VALIDATORS.get(kind)
     if validator is not None:
         validator(document)
-    for field in ("id", "tenantId", "deploymentId", "jobId", "intentId", "correlationId"):
+    for field in (
+        "id",
+        "tenantId",
+        "deploymentId",
+        "jobId",
+        "intentId",
+        "uploadAttemptId",
+        "correlationId",
+    ):
         value = document.get(field)
         if value is not None:
             validate_uuid7(value)

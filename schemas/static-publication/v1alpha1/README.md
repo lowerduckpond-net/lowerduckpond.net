@@ -10,3 +10,9 @@ desired state and is deliberately not a request or transport frame. The
 byte-identical copies packaged with `lowerduckpond-static-contracts` let an
 installed wheel validate without access to this repository; the test suite
 fails if either copy drifts.
+
+`TransactionIntent` protects the authoritative lifecycle transaction.
+`ArchiveConstructionIntent` separately makes an in-flight remote upload
+recoverable, while `ArchiveRetirementIntent` preserves the exact object
+identity until a committed restore or deletion has completed version-aware
+purge and absence confirmation.

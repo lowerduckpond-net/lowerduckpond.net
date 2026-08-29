@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.lowerduckpond.net/static-publication/v1alpha1/archive-retirement-intent.schema.json",
+  "additionalProperties": false,
+  "properties": {
+    "apiVersion": {
+      "$ref": "common.schema.json#/$defs/apiVersion"
+    },
+    "archiveRecordDigest": {
+      "$ref": "common.schema.json#/$defs/archiveRecordDigest"
+    },
+    "bucket": {
+      "$ref": "common.schema.json#/$defs/archiveBucket"
+    },
+    "bundleSha256": {
+      "$ref": "common.schema.json#/$defs/sha256"
+    },
+    "bundleSize": {
+      "maximum": 125829120,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "correlationId": {
+      "$ref": "common.schema.json#/$defs/correlationId"
+    },
+    "createdAt": {
+      "$ref": "common.schema.json#/$defs/timestamp"
+    },
+    "intentId": {
+      "$ref": "common.schema.json#/$defs/uuidv7"
+    },
+    "jobId": {
+      "$ref": "common.schema.json#/$defs/uuidv7"
+    },
+    "key": {
+      "$ref": "common.schema.json#/$defs/archiveKey"
+    },
+    "kind": {
+      "const": "ArchiveRetirementIntent"
+    },
+    "operatorPrincipal": {
+      "$ref": "common.schema.json#/$defs/principal"
+    },
+    "phase": {
+      "enum": [
+        "prepared",
+        "state-committed",
+        "purged"
+      ],
+      "type": "string"
+    },
+    "sourceManifestDigest": {
+      "$ref": "common.schema.json#/$defs/manifestDigest"
+    },
+    "tenantId": {
+      "$ref": "common.schema.json#/$defs/uuidv7"
+    },
+    "transition": {
+      "enum": [
+        "restore",
+        "delete"
+      ],
+      "type": "string"
+    },
+    "versionId": {
+      "$ref": "common.schema.json#/$defs/archiveVersionId"
+    }
+  },
+  "required": [
+    "apiVersion",
+    "kind",
+    "intentId",
+    "jobId",
+    "operatorPrincipal",
+    "tenantId",
+    "correlationId",
+    "transition",
+    "sourceManifestDigest",
+    "archiveRecordDigest",
+    "bundleSha256",
+    "bundleSize",
+    "bucket",
+    "key",
+    "versionId",
+    "phase",
+    "createdAt"
+  ],
+  "type": "object"
+}

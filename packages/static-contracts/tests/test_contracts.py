@@ -555,6 +555,37 @@ def test_delete_intent_requires_an_absent_candidate_manifest() -> None:
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
 
+def test_archive_construction_prepared_phase_precedes_a_remote_version() -> None:
+    intent = _load_object(FIXTURE_ROOT / "accepted/archive-construction-intent.json")
+    intent["phase"] = "prepared"
+    intent["versionId"] = None
+
+    assert validate_contract(intent) is ContractKind.ARCHIVE_CONSTRUCTION_INTENT
+
+    intent["versionId"] = "unexpected-version"
+    with pytest.raises(ContractError) as captured:
+        validate_contract(intent)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+def test_archive_construction_uploaded_phase_binds_a_remote_version() -> None:
+    intent = _load_object(FIXTURE_ROOT / "accepted/archive-construction-intent.json")
+    intent["versionId"] = None
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(intent)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+def test_archive_construction_key_is_bound_to_the_upload_attempt() -> None:
+    intent = _load_object(FIXTURE_ROOT / "accepted/archive-construction-intent.json")
+    intent["key"] = "archives/0198d17f-6f4a-7000-8000-000000000006.zip"
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(intent)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
 @pytest.mark.parametrize(
     ("field", "wrong_format"),
     [
