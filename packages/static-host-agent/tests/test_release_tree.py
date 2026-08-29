@@ -25,6 +25,7 @@ _OWNER = os.geteuid()
 _PINNED_ENTRY_COUNT = 5
 _HARDLINKED_ENTRY_COUNT = 2
 _FIRST_OVER_LIMIT_OBSERVATIONS = 2
+_EOF_PROBE_READ = 2
 _DEFAULT_LIMITS = ReleaseTreeLimits()
 _LOCK_FILENAMES = {name.filename for name in LockName}
 
@@ -480,6 +481,27 @@ def test_file_content_mutation_during_read_is_detected(tmp_path: Path) -> None:
 
     with pytest.raises(ReleaseTreeError, match="changed while"):
         measure_release_tree(root, expected_owner=_OWNER, measurement_hook=mutate)
+
+
+def test_final_eof_read_failure_is_translated_to_release_tree_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _release_root(tmp_path)
+    _file(root, "payload", b"content")
+    original_read = os.read
+    release_reads = 0
+
+    def fail_eof_probe(file_descriptor: int, byte_count: int) -> bytes:
+        nonlocal release_reads
+        release_reads += 1
+        if release_reads == _EOF_PROBE_READ:
+            raise OSError("simulated EOF probe failure")
+        return original_read(file_descriptor, byte_count)
+
+    monkeypatch.setattr(os, "read", fail_eof_probe)
+    with pytest.raises(ReleaseTreeError, match="release file could not be read"):
+        measure_release_tree(root, expected_owner=_OWNER)
 
 
 def test_allocated_bytes_are_derived_from_unique_stat_blocks(tmp_path: Path) -> None:

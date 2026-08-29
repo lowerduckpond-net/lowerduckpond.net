@@ -436,7 +436,11 @@ def _hash_file(
             digest.update(chunk)
             remaining -= len(chunk)
             _notify(hook, ReleaseTreeBoundary.FILE_CHUNK, entry.path_bytes)
-        if os.read(file_fd, 1):
+        try:
+            trailing = os.read(file_fd, 1)
+        except OSError as error:
+            raise ReleaseTreeError("release file could not be read") from error
+        if trailing:
             raise ReleaseTreeError("release file became longer while it was read")
         final = _Snapshot.capture(os.fstat(file_fd))
         final_path = _stat_entry(
