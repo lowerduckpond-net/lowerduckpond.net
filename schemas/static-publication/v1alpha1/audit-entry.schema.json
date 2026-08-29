@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://schemas.lowerduckpond.net/static-publication/v1alpha1/audit-entry.schema.json",
   "$defs": {
-    "deletionTombstone": {
+    "deletionEvidence": {
       "additionalProperties": false,
       "oneOf": [
         {
@@ -208,7 +208,7 @@
       "else": {
         "not": {
           "required": [
-            "deletionTombstone"
+            "deletionEvidence"
           ]
         }
       },
@@ -228,7 +228,7 @@
       },
       "then": {
         "required": [
-          "deletionTombstone"
+          "deletionEvidence"
         ]
       }
     }
@@ -240,8 +240,8 @@
     "correlationId": {
       "$ref": "common.schema.json#/$defs/correlationId"
     },
-    "deletionTombstone": {
-      "$ref": "#/$defs/deletionTombstone"
+    "deletionEvidence": {
+      "$ref": "#/$defs/deletionEvidence"
     },
     "kind": {
       "const": "AuditEntry"

@@ -31,6 +31,7 @@ from lowerduckpond_static_contracts.identifiers import (
     validate_slug,
     validate_uuid7,
 )
+from lowerduckpond_static_contracts.lifecycle import LIFECYCLE_MATRIX, LifecycleState, Operation
 
 API_VERSION: Final = "hosting.lowerduckpond.net/v1alpha1"
 SCHEMA_DIRECTORY: Final = files("lowerduckpond_static_contracts").joinpath("schemas")
@@ -246,7 +247,10 @@ def _manifest_digest(document: dict[str, object]) -> dict[str, str]:
 
 
 def _validate_transaction_intent(document: dict[str, object]) -> None:
-    if document["operation"] != "archive":
+    operation = document["operation"]
+    if operation != "archive":
+        if operation != "export":
+            _validate_lifecycle_recovery(document)
         return
     recovery = cast(dict[str, object], document["archiveRecovery"])
     source = cast(dict[str, object], recovery["sourceManifest"])
@@ -304,11 +308,77 @@ def _validate_transaction_intent(document: dict[str, object]) -> None:
         )
 
 
+def _validate_lifecycle_recovery(document: dict[str, object]) -> None:
+    operation = cast(str, document["operation"])
+    recovery = cast(dict[str, object], document["lifecycleRecovery"])
+    source = recovery["sourceObservedState"]
+    candidate = recovery["candidateObservedState"]
+    if (operation == "create") != (source is None):
+        raise ContractError(ErrorCode.SCHEMA_INVALID, "source recovery state is invalid")
+    if (operation == "delete") != (candidate is None):
+        raise ContractError(ErrorCode.SCHEMA_INVALID, "candidate recovery state is invalid")
+
+    source_state = LifecycleState.ABSENT
+    if source is not None:
+        source_observed = cast(dict[str, object], source)
+        source_state = LifecycleState(cast(str, source_observed["observedState"]))
+        _validate_observed_recovery_binding(
+            document,
+            source_observed,
+            digest_field="sourceManifestDigest",
+            route_set=recovery["sourceRouteSet"],
+            runtime_generation=recovery["sourceRuntimeGenerationId"],
+        )
+    elif recovery["sourceRouteSet"] != "absent":
+        raise ContractError(ErrorCode.SCHEMA_INVALID, "absent source retained tenant routes")
+
+    candidate_state = LifecycleState.ABSENT
+    if candidate is not None:
+        candidate_observed = cast(dict[str, object], candidate)
+        candidate_state = LifecycleState(cast(str, candidate_observed["observedState"]))
+        _validate_observed_recovery_binding(
+            document,
+            candidate_observed,
+            digest_field="candidateManifestDigest",
+            route_set=recovery["candidateRouteSet"],
+            runtime_generation=recovery["candidateRuntimeGenerationId"],
+        )
+    elif recovery["candidateRouteSet"] != "absent":
+        raise ContractError(ErrorCode.SCHEMA_INVALID, "absent candidate retained tenant routes")
+
+    expected = LIFECYCLE_MATRIX.get((Operation(operation), source_state))
+    if expected != candidate_state:
+        raise ContractError(ErrorCode.SCHEMA_INVALID, "recovery states violate lifecycle matrix")
+    if recovery["candidateRuntimeGenerationId"] == recovery["sourceRuntimeGenerationId"]:
+        raise ContractError(ErrorCode.SCHEMA_INVALID, "runtime generations are not distinct")
+
+
+def _validate_observed_recovery_binding(
+    document: dict[str, object],
+    observed: dict[str, object],
+    *,
+    digest_field: str,
+    route_set: object,
+    runtime_generation: object,
+) -> None:
+    if (
+        observed["tenantId"] != document["tenantId"]
+        or observed["desiredManifestDigest"] != document[digest_field]
+    ):
+        raise ContractError(ErrorCode.SCHEMA_INVALID, "observed recovery binding is invalid")
+    state = observed["observedState"]
+    expected_routes = "both" if state == "active" else "absent"
+    if route_set != expected_routes:
+        raise ContractError(ErrorCode.SCHEMA_INVALID, "observed route binding is invalid")
+    if state == "active" and observed["runtimeGenerationId"] != runtime_generation:
+        raise ContractError(ErrorCode.SCHEMA_INVALID, "observed runtime binding is invalid")
+
+
 def _validate_audit_entry(document: dict[str, object]) -> None:
-    tombstone = document.get("deletionTombstone")
-    if tombstone is None:
+    evidence = document.get("deletionEvidence")
+    if evidence is None:
         return
-    deletion = cast(dict[str, object], tombstone)
+    deletion = cast(dict[str, object], evidence)
     for slug in cast(list[object], deletion["releasedSlugs"]):
         validate_slug(slug)
 

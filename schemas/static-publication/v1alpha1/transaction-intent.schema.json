@@ -80,6 +80,60 @@
         "candidateRouteSet"
       ],
       "type": "object"
+    },
+    "lifecycleRecovery": {
+      "additionalProperties": false,
+      "properties": {
+        "candidateObservedState": {
+          "oneOf": [
+            {
+              "$ref": "tenant-observed-state.schema.json"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "candidateRouteSet": {
+          "enum": [
+            "both",
+            "absent"
+          ],
+          "type": "string"
+        },
+        "candidateRuntimeGenerationId": {
+          "$ref": "common.schema.json#/$defs/uuidv7"
+        },
+        "sourceObservedState": {
+          "oneOf": [
+            {
+              "$ref": "tenant-observed-state.schema.json"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sourceRouteSet": {
+          "enum": [
+            "both",
+            "absent"
+          ],
+          "type": "string"
+        },
+        "sourceRuntimeGenerationId": {
+          "$ref": "common.schema.json#/$defs/uuidv7"
+        }
+      },
+      "required": [
+        "sourceObservedState",
+        "sourceRuntimeGenerationId",
+        "sourceRouteSet",
+        "candidateObservedState",
+        "candidateRuntimeGenerationId",
+        "candidateRouteSet"
+      ],
+      "type": "object"
     }
   },
   "additionalProperties": false,
@@ -161,6 +215,35 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "enum": [
+              "archive",
+              "export"
+            ]
+          }
+        },
+        "required": [
+          "operation"
+        ]
+      },
+      "then": {
+        "properties": {
+          "lifecycleRecovery": {
+            "type": "null"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "lifecycleRecovery": {
+            "$ref": "#/$defs/lifecycleRecovery"
+          }
+        }
+      }
     }
   ],
   "properties": {
@@ -199,6 +282,16 @@
     "kind": {
       "const": "TransactionIntent"
     },
+    "lifecycleRecovery": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/lifecycleRecovery"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "operation": {
       "$ref": "common.schema.json#/$defs/operation"
     },
@@ -232,6 +325,7 @@
     "correlationId",
     "operation",
     "archiveRecovery",
+    "lifecycleRecovery",
     "sourceManifestDigest",
     "candidateManifestDigest",
     "phase",

@@ -370,6 +370,23 @@ def test_create_intent_requires_an_absent_source_manifest() -> None:
     source_digest = intent["sourceManifestDigest"]
     intent["operation"] = "create"
     intent["sourceManifestDigest"] = None
+    candidate = _load_object(FIXTURE_ROOT / "accepted/tenant-observed-state.json")
+    candidate.update(
+        {
+            "desiredManifestDigest": intent["candidateManifestDigest"],
+            "observedState": "undeployed",
+            "activeDeploymentId": None,
+            "runtimeGenerationId": None,
+        }
+    )
+    intent["lifecycleRecovery"] = {
+        "sourceObservedState": None,
+        "sourceRuntimeGenerationId": "0198d17f-6f4a-7000-8000-000000000004",
+        "sourceRouteSet": "absent",
+        "candidateObservedState": candidate,
+        "candidateRuntimeGenerationId": "0198d17f-6f4a-7000-8000-000000000006",
+        "candidateRouteSet": "absent",
+    }
 
     assert validate_contract(intent) is ContractKind.TRANSACTION_INTENT
 
@@ -602,10 +619,10 @@ def test_create_audit_entry_may_precede_tenant_identity_generation() -> None:
     assert validate_contract(entry) is ContractKind.AUDIT_ENTRY
 
 
-def test_archived_deletion_tombstone_preserves_destructive_object_evidence() -> None:
+def test_archived_deletion_evidence_preserves_destructive_object_identity() -> None:
     entry = _load_object(FIXTURE_ROOT / "accepted/audit-entry.json")
     entry["operation"] = "delete"
-    entry["deletionTombstone"] = {
+    entry["deletionEvidence"] = {
         "mode": "archived",
         "releasedSlugs": ["duck-repair"],
         "archiveRecordDigest": {
@@ -621,15 +638,15 @@ def test_archived_deletion_tombstone_preserves_destructive_object_evidence() -> 
 
     assert validate_contract(entry) is ContractKind.AUDIT_ENTRY
 
-    tombstone = entry["deletionTombstone"]
-    assert type(tombstone) is dict
-    tombstone["versionId"] = None
+    evidence = entry["deletionEvidence"]
+    assert type(evidence) is dict
+    evidence["versionId"] = None
     with pytest.raises(ContractError) as captured:
         validate_contract(entry)
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
-    tombstone["versionId"] = "3LgY0Q5G-safe-fixture-version"
-    archive_digest = tombstone["archiveRecordDigest"]
+    evidence["versionId"] = "3LgY0Q5G-safe-fixture-version"
+    archive_digest = evidence["archiveRecordDigest"]
     assert type(archive_digest) is dict
     archive_digest["format"] = "lowerduckpond-result-v1"
     with pytest.raises(ContractError) as captured:
@@ -647,7 +664,7 @@ def test_archive_free_deletion_modes_cannot_claim_remote_object_evidence(
 ) -> None:
     entry = _load_object(FIXTURE_ROOT / "accepted/audit-entry.json")
     entry["operation"] = "delete"
-    entry["deletionTombstone"] = {
+    entry["deletionEvidence"] = {
         "mode": mode,
         "releasedSlugs": ["duck-repair"],
         "archiveRecordDigest": None,
@@ -659,15 +676,15 @@ def test_archive_free_deletion_modes_cannot_claim_remote_object_evidence(
 
     assert validate_contract(entry) is ContractKind.AUDIT_ENTRY
 
-    tombstone = entry["deletionTombstone"]
-    assert type(tombstone) is dict
-    tombstone["versionId"] = "unexpected-version"
+    evidence = entry["deletionEvidence"]
+    assert type(evidence) is dict
+    evidence["versionId"] = "unexpected-version"
     with pytest.raises(ContractError) as captured:
         validate_contract(entry)
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
 
-def test_delete_audit_entry_requires_a_deletion_tombstone() -> None:
+def test_successful_delete_audit_entry_requires_deletion_evidence() -> None:
     entry = _load_object(FIXTURE_ROOT / "accepted/audit-entry.json")
     entry["operation"] = "delete"
 
@@ -676,14 +693,14 @@ def test_delete_audit_entry_requires_a_deletion_tombstone() -> None:
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
 
-def test_failed_delete_audit_entry_cannot_claim_a_deletion_tombstone() -> None:
+def test_failed_delete_audit_entry_cannot_claim_deletion_evidence() -> None:
     entry = _load_object(FIXTURE_ROOT / "accepted/audit-entry.json")
     entry["operation"] = "delete"
     entry["resultStatus"] = "failed"
 
     assert validate_contract(entry) is ContractKind.AUDIT_ENTRY
 
-    entry["deletionTombstone"] = {
+    entry["deletionEvidence"] = {
         "mode": "never-deployed",
         "releasedSlugs": ["duck-repair"],
         "archiveRecordDigest": None,
@@ -697,9 +714,9 @@ def test_failed_delete_audit_entry_cannot_claim_a_deletion_tombstone() -> None:
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
 
-def test_non_delete_audit_entry_rejects_a_deletion_tombstone() -> None:
+def test_non_delete_audit_entry_rejects_deletion_evidence() -> None:
     entry = _load_object(FIXTURE_ROOT / "accepted/audit-entry.json")
-    entry["deletionTombstone"] = {
+    entry["deletionEvidence"] = {
         "mode": "never-deployed",
         "releasedSlugs": ["duck-repair"],
         "archiveRecordDigest": None,
@@ -715,10 +732,10 @@ def test_non_delete_audit_entry_rejects_a_deletion_tombstone() -> None:
 
 
 @pytest.mark.parametrize("slug", ["hosting", "secure", "www", "t-0198d17f6f4a70008000000000000001"])
-def test_deletion_tombstone_rejects_reserved_released_slugs(slug: str) -> None:
+def test_deletion_evidence_rejects_reserved_released_slugs(slug: str) -> None:
     entry = _load_object(FIXTURE_ROOT / "accepted/audit-entry.json")
     entry["operation"] = "delete"
-    entry["deletionTombstone"] = {
+    entry["deletionEvidence"] = {
         "mode": "never-deployed",
         "releasedSlugs": [slug],
         "archiveRecordDigest": None,
@@ -755,6 +772,23 @@ def test_delete_intent_requires_an_absent_candidate_manifest() -> None:
     candidate_digest = intent["candidateManifestDigest"]
     intent["operation"] = "delete"
     intent["candidateManifestDigest"] = None
+    source = _load_object(FIXTURE_ROOT / "accepted/tenant-observed-state.json")
+    source.update(
+        {
+            "desiredManifestDigest": intent["sourceManifestDigest"],
+            "observedState": "archived",
+            "activeDeploymentId": None,
+            "runtimeGenerationId": None,
+        }
+    )
+    intent["lifecycleRecovery"] = {
+        "sourceObservedState": source,
+        "sourceRuntimeGenerationId": "0198d17f-6f4a-7000-8000-000000000004",
+        "sourceRouteSet": "absent",
+        "candidateObservedState": None,
+        "candidateRuntimeGenerationId": "0198d17f-6f4a-7000-8000-000000000006",
+        "candidateRouteSet": "absent",
+    }
 
     assert validate_contract(intent) is ContractKind.TRANSACTION_INTENT
 
@@ -762,6 +796,33 @@ def test_delete_intent_requires_an_absent_candidate_manifest() -> None:
     with pytest.raises(ContractError) as captured:
         validate_contract(intent)
 
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+def test_runtime_mutation_intent_requires_exact_recovery_generations() -> None:
+    intent = _load_object(FIXTURE_ROOT / "accepted/transaction-intent.json")
+    source = _load_object(FIXTURE_ROOT / "accepted/tenant-observed-state.json")
+    source["desiredManifestDigest"] = intent["sourceManifestDigest"]
+    candidate = deepcopy(source)
+    candidate["desiredManifestDigest"] = intent["candidateManifestDigest"]
+    candidate["runtimeGenerationId"] = "0198d17f-6f4a-7000-8000-000000000006"
+    intent["operation"] = "deploy"
+    intent["lifecycleRecovery"] = {
+        "sourceObservedState": source,
+        "sourceRuntimeGenerationId": source["runtimeGenerationId"],
+        "sourceRouteSet": "both",
+        "candidateObservedState": candidate,
+        "candidateRuntimeGenerationId": "0198d17f-6f4a-7000-8000-000000000006",
+        "candidateRouteSet": "both",
+    }
+
+    assert validate_contract(intent) is ContractKind.TRANSACTION_INTENT
+
+    recovery = intent["lifecycleRecovery"]
+    assert type(recovery) is dict
+    recovery["candidateRouteSet"] = "absent"
+    with pytest.raises(ContractError) as captured:
+        validate_contract(intent)
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
 
