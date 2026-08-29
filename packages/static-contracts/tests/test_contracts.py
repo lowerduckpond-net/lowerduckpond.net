@@ -456,6 +456,28 @@ def test_delete_intent_requires_an_absent_candidate_manifest() -> None:
 
 
 @pytest.mark.parametrize(
+    ("field", "wrong_format"),
+    [
+        ("acceptanceEvidenceDigest", "lowerduckpond-cloudflare-network-set-v1"),
+        ("cloudflareNetworkSetDigest", "lowerduckpond-m3-acceptance-v1"),
+    ],
+)
+def test_launch_evidence_digests_are_pinned_to_their_domains(
+    field: str,
+    wrong_format: str,
+) -> None:
+    launch = _load_object(FIXTURE_ROOT / "accepted/launch-record.json")
+    digest = launch[field]
+    assert type(digest) is dict
+    digest["format"] = wrong_format
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(launch)
+
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+@pytest.mark.parametrize(
     "format_identifier",
     ["lowerduckpond--v1", "lowerduckpond-state--v1", "lowerduckpond--state-v1"],
 )

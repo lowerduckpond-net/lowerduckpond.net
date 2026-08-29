@@ -4,7 +4,12 @@
   "additionalProperties": false,
   "properties": {
     "acceptanceEvidenceDigest": {
-      "$ref": "common.schema.json#/$defs/digest"
+      "$ref": "common.schema.json#/$defs/digest",
+      "properties": {
+        "format": {
+          "const": "lowerduckpond-m3-acceptance-v1"
+        }
+      }
     },
     "aliasSuffix": {
       "const": "lowerduckpond.com"
@@ -13,7 +18,12 @@
       "$ref": "common.schema.json#/$defs/apiVersion"
     },
     "cloudflareNetworkSetDigest": {
-      "$ref": "common.schema.json#/$defs/digest"
+      "$ref": "common.schema.json#/$defs/digest",
+      "properties": {
+        "format": {
+          "const": "lowerduckpond-cloudflare-network-set-v1"
+        }
+      }
     },
     "configurationVersion": {
       "pattern": "^[0-9a-f]{40}(?![\\s\\S])",
