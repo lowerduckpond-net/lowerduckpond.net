@@ -28,6 +28,25 @@
           }
         }
       }
+    },
+    {
+      "else": {
+        "properties": {
+          "tenantId": {
+            "$ref": "common.schema.json#/$defs/uuidv7"
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "create"
+          }
+        },
+        "required": [
+          "operation"
+        ]
+      }
     }
   ],
   "properties": {

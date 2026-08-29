@@ -402,6 +402,28 @@ def test_manifestless_result_origin_is_bound_to_its_tenant_identity() -> None:
 
 
 @pytest.mark.parametrize(
+    "operation",
+    [operation.value for operation in Operation if operation is not Operation.CREATE],
+)
+def test_non_create_audit_entries_require_a_tenant_identity(operation: str) -> None:
+    entry = _load_object(FIXTURE_ROOT / "accepted/audit-entry.json")
+    entry["operation"] = operation
+    entry["tenantId"] = None
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(entry)
+
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+def test_create_audit_entry_may_precede_tenant_identity_generation() -> None:
+    entry = _load_object(FIXTURE_ROOT / "accepted/audit-entry.json")
+    entry["tenantId"] = None
+
+    assert validate_contract(entry) is ContractKind.AUDIT_ENTRY
+
+
+@pytest.mark.parametrize(
     "format_identifier",
     ["lowerduckpond--v1", "lowerduckpond-state--v1", "lowerduckpond--state-v1"],
 )
