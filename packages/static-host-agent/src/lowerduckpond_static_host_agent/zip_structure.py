@@ -1245,11 +1245,30 @@ def _validate_staging_result(
 
 def _open_created_staging(parent_fd: int, name: str) -> tuple[int, tuple[int, int]]:
     created_identity = _inode_identity(os.stat(name, dir_fd=parent_fd, follow_symlinks=False))
-    root_fd = os.open(name, _DIRECTORY_OPEN_FLAGS, dir_fd=parent_fd)
+    try:
+        root_fd = os.open(name, _DIRECTORY_OPEN_FLAGS, dir_fd=parent_fd)
+    except OSError:
+        _remove_unopened_created_staging(parent_fd, name, created_identity)
+        raise
     if _inode_identity(os.fstat(root_fd)) != created_identity:
         os.close(root_fd)
         raise ZipExtractionError("ZIP staging candidate changed while it was opened")
     return root_fd, created_identity
+
+
+def _remove_unopened_created_staging(
+    parent_fd: int,
+    name: str,
+    expected_identity: tuple[int, int],
+) -> None:
+    try:
+        named_identity = _inode_identity(os.stat(name, dir_fd=parent_fd, follow_symlinks=False))
+        if named_identity != expected_identity:
+            return
+        os.rmdir(name, dir_fd=parent_fd)
+        os.fsync(parent_fd)
+    except OSError:
+        return
 
 
 def _inode_identity(metadata: os.stat_result) -> tuple[int, int]:

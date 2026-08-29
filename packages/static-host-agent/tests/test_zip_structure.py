@@ -1218,6 +1218,39 @@ def test_extraction_detects_candidate_replacement_between_creation_and_open(
     assert list(moved_candidate.iterdir()) == []
 
 
+def test_extraction_removes_the_created_candidate_when_initial_open_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _write(tmp_path, _archive(_MemberSpec(name=b"index.html", content=b"home")))
+    parent = _staging_parent(tmp_path)
+    real_open = os.open
+
+    def fail_candidate_open(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        if path == "candidate" and dir_fd is not None:
+            raise OSError("simulated descriptor exhaustion")
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "open", fail_candidate_open)
+
+    with pytest.raises(ZipExtractionError, match="could not complete safely"):
+        _extract_with_intake_lock(
+            source,
+            staging_parent=parent,
+            staging_name="candidate",
+            expected_owner=_OWNER,
+            retained_usage=ReleaseCapacityUsage(()),
+        )
+
+    assert list(parent.iterdir()) == []
+
+
 @given(
     content=strategies.binary(max_size=65_536),
     method=strategies.sampled_from([_STORED, _DEFLATE]),
