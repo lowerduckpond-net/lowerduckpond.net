@@ -1,6 +1,162 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://schemas.lowerduckpond.net/static-publication/v1alpha1/audit-entry.schema.json",
+  "$defs": {
+    "deletionTombstone": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "archiveRecordDigest": {
+              "type": "null"
+            },
+            "bucket": {
+              "type": "null"
+            },
+            "emergencyReason": {
+              "type": "null"
+            },
+            "key": {
+              "type": "null"
+            },
+            "mode": {
+              "const": "never-deployed"
+            },
+            "versionId": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "archiveRecordDigest": {
+              "$ref": "common.schema.json#/$defs/archiveRecordDigest"
+            },
+            "bucket": {
+              "$ref": "common.schema.json#/$defs/archiveBucket"
+            },
+            "emergencyReason": {
+              "type": "null"
+            },
+            "key": {
+              "$ref": "common.schema.json#/$defs/archiveKey"
+            },
+            "mode": {
+              "const": "archived"
+            },
+            "versionId": {
+              "$ref": "common.schema.json#/$defs/archiveVersionId"
+            }
+          }
+        },
+        {
+          "properties": {
+            "archiveRecordDigest": {
+              "type": "null"
+            },
+            "bucket": {
+              "type": "null"
+            },
+            "emergencyReason": {
+              "maxLength": 1024,
+              "minLength": 1,
+              "type": "string"
+            },
+            "key": {
+              "type": "null"
+            },
+            "mode": {
+              "const": "emergency"
+            },
+            "versionId": {
+              "type": "null"
+            }
+          }
+        }
+      ],
+      "properties": {
+        "archiveRecordDigest": {
+          "oneOf": [
+            {
+              "$ref": "common.schema.json#/$defs/archiveRecordDigest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "bucket": {
+          "oneOf": [
+            {
+              "$ref": "common.schema.json#/$defs/archiveBucket"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "emergencyReason": {
+          "oneOf": [
+            {
+              "maxLength": 1024,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "key": {
+          "oneOf": [
+            {
+              "$ref": "common.schema.json#/$defs/archiveKey"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "mode": {
+          "enum": [
+            "never-deployed",
+            "archived",
+            "emergency"
+          ],
+          "type": "string"
+        },
+        "releasedSlugs": {
+          "items": {
+            "$ref": "common.schema.json#/$defs/slug"
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "versionId": {
+          "oneOf": [
+            {
+              "$ref": "common.schema.json#/$defs/archiveVersionId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "mode",
+        "releasedSlugs",
+        "archiveRecordDigest",
+        "bucket",
+        "key",
+        "versionId",
+        "emergencyReason"
+      ],
+      "type": "object"
+    }
+  },
   "additionalProperties": false,
   "allOf": [
     {
@@ -47,6 +203,30 @@
           "operation"
         ]
       }
+    },
+    {
+      "else": {
+        "not": {
+          "required": [
+            "deletionTombstone"
+          ]
+        }
+      },
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "delete"
+          }
+        },
+        "required": [
+          "operation"
+        ]
+      },
+      "then": {
+        "required": [
+          "deletionTombstone"
+        ]
+      }
     }
   ],
   "properties": {
@@ -55,6 +235,9 @@
     },
     "correlationId": {
       "$ref": "common.schema.json#/$defs/correlationId"
+    },
+    "deletionTombstone": {
+      "$ref": "#/$defs/deletionTombstone"
     },
     "kind": {
       "const": "AuditEntry"

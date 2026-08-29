@@ -523,6 +523,97 @@ def test_create_audit_entry_may_precede_tenant_identity_generation() -> None:
     assert validate_contract(entry) is ContractKind.AUDIT_ENTRY
 
 
+def test_archived_deletion_tombstone_preserves_destructive_object_evidence() -> None:
+    entry = _load_object(FIXTURE_ROOT / "accepted/audit-entry.json")
+    entry["operation"] = "delete"
+    entry["deletionTombstone"] = {
+        "mode": "archived",
+        "releasedSlugs": ["duck-repair"],
+        "archiveRecordDigest": {
+            "format": "lowerduckpond-archive-record-v1",
+            "algorithm": "sha256",
+            "value": "a" * 64,
+        },
+        "bucket": "lowerduckpond-net-production-tenant-archives-4f3e6b91",
+        "key": "archives/0198d17f-6f4a-7000-8000-000000000003.zip",
+        "versionId": "3LgY0Q5G-safe-fixture-version",
+        "emergencyReason": None,
+    }
+
+    assert validate_contract(entry) is ContractKind.AUDIT_ENTRY
+
+    tombstone = entry["deletionTombstone"]
+    assert type(tombstone) is dict
+    tombstone["versionId"] = None
+    with pytest.raises(ContractError) as captured:
+        validate_contract(entry)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+    tombstone["versionId"] = "3LgY0Q5G-safe-fixture-version"
+    archive_digest = tombstone["archiveRecordDigest"]
+    assert type(archive_digest) is dict
+    archive_digest["format"] = "lowerduckpond-result-v1"
+    with pytest.raises(ContractError) as captured:
+        validate_contract(entry)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+@pytest.mark.parametrize(
+    ("mode", "reason"),
+    [("never-deployed", None), ("emergency", "verified operator override")],
+)
+def test_archive_free_deletion_modes_cannot_claim_remote_object_evidence(
+    mode: str,
+    reason: str | None,
+) -> None:
+    entry = _load_object(FIXTURE_ROOT / "accepted/audit-entry.json")
+    entry["operation"] = "delete"
+    entry["deletionTombstone"] = {
+        "mode": mode,
+        "releasedSlugs": ["duck-repair"],
+        "archiveRecordDigest": None,
+        "bucket": None,
+        "key": None,
+        "versionId": None,
+        "emergencyReason": reason,
+    }
+
+    assert validate_contract(entry) is ContractKind.AUDIT_ENTRY
+
+    tombstone = entry["deletionTombstone"]
+    assert type(tombstone) is dict
+    tombstone["versionId"] = "unexpected-version"
+    with pytest.raises(ContractError) as captured:
+        validate_contract(entry)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+def test_delete_audit_entry_requires_a_deletion_tombstone() -> None:
+    entry = _load_object(FIXTURE_ROOT / "accepted/audit-entry.json")
+    entry["operation"] = "delete"
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(entry)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+def test_non_delete_audit_entry_rejects_a_deletion_tombstone() -> None:
+    entry = _load_object(FIXTURE_ROOT / "accepted/audit-entry.json")
+    entry["deletionTombstone"] = {
+        "mode": "never-deployed",
+        "releasedSlugs": ["duck-repair"],
+        "archiveRecordDigest": None,
+        "bucket": None,
+        "key": None,
+        "versionId": None,
+        "emergencyReason": None,
+    }
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(entry)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
 @pytest.mark.parametrize(
     "operation",
     [operation for operation in Operation if operation is not Operation.DELETE],
