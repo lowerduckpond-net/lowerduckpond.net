@@ -14,6 +14,7 @@ from lowerduckpond_static_host_agent import (
 _EXPECTED_RESOURCE_PROPERTIES = {
     "CPUQuota": "100%",
     "LimitCPU": "120",
+    "LimitCORE": "0",
     "LimitNOFILE": "1024",
     "MemoryMax": "256M",
     "MemorySwapMax": "0",
@@ -26,6 +27,7 @@ _EXPECTED_ISOLATION_PROPERTIES = {
     "CapabilityBoundingSet": "",
     "DevicePolicy": "closed",
     "IPAddressDeny": "any",
+    "InaccessiblePaths": "/proc",
     "MemoryDenyWriteExecute": "true",
     "NoNewPrivileges": "true",
     "PrivateDevices": "true",
@@ -41,6 +43,8 @@ _EXPECTED_ISOLATION_PROPERTIES = {
 _EXPECTED_SYSTEM_CALL_FILTERS = (
     "@system-service",
     "~@network-io",
+    "~@keyring",
+    "~io_uring_setup io_uring_register io_uring_enter",
     "~kill tkill tgkill rt_sigqueueinfo rt_tgsigqueueinfo pidfd_send_signal",
     "~ptrace process_vm_readv process_vm_writev pidfd_getfd process_madvise process_mrelease",
 )
