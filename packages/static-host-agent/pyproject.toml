@@ -1,0 +1,16 @@
+[project]
+name = "lowerduckpond-static-host-agent"
+version = "0.0.0"
+description = "Privileged durable-state kernel for Lower Duck Pond static publication"
+requires-python = ">=3.14,<3.15"
+dependencies = [
+  "lowerduckpond-static-contracts",
+  "lowerduckpond-static-domain",
+]
+
+[dependency-groups]
+test = ["hypothesis>=6.165.5,<7"]
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13"]
+build-backend = "uv_build"

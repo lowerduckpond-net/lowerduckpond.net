@@ -415,6 +415,18 @@ the publication flag remains false.
 
 ### M3.3: implement the durable state kernel
 
+Implementation status: in progress. The first review slice creates the
+standalone `static_host_agent` package and its production-inert wheel gate. It
+implements fixed directory-relative no-follow traversal, exclusive immutable
+publication, atomic replacement, file and parent-directory sync, durable
+removal, verified kernel lock inodes, nonblocking shared and exclusive locks,
+and executable `intake → export → publication → tenant-state` ordering across
+manager instances. Exception and process-exit injection proves that the file
+primitives expose only absence or one complete old or new state. The root state
+repository, strict readers and compare-and-swap layer, release-tree digests,
+capacity admission, hash-chained audit, correlation idempotency, and intent
+discovery remain in M3.3 and do not move to a later phase.
+
 Create the host-agent package around the root-domain constructor and add its
 root-only state repository. Implement
 directory-relative no-follow opens, exclusive creation, atomic replacement,

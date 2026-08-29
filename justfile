@@ -45,8 +45,12 @@ check-m3-static-contracts: _sync
 check-m3-static-domain: _sync
     repo_root="$PWD"; build_dir="$(mktemp -d)"; trap 'find "$build_dir" -depth -delete' EXIT; uv build --package lowerduckpond-static-contracts --wheel --out-dir "$build_dir" >/dev/null; uv build --package lowerduckpond-static-domain --wheel --out-dir "$build_dir" >/dev/null; extract_dir="$build_dir/extracted"; mkdir "$extract_dir"; for wheel in "$build_dir"/*.whl; do uv run python -m zipfile -e "$wheel" "$extract_dir"; done; cd "$build_dir"; PYTHONPATH="$extract_dir" uv run --project "$repo_root" --frozen python -c 'import sys; from pathlib import Path; import lowerduckpond_static_contracts as contracts; import lowerduckpond_static_domain as domain; root = Path(sys.argv[1]); assert Path(contracts.__file__).is_relative_to(root); assert Path(domain.__file__).is_relative_to(root); assert domain.generate_uuid7(clock=lambda: 0, entropy=lambda length: bytes(length)) == "00000000-0000-7000-8000-000000000000"' "$extract_dir"
 
-# Run both independently packaged M3.2 proof obligations.
-check-m3-contract-spine: check-m3-static-contracts check-m3-static-domain
+# Prove the M3.3 host-agent wheel owns I/O and loads only over the pure lower layers.
+check-m3-static-host-agent: _sync
+    repo_root="$PWD"; build_dir="$(mktemp -d)"; trap 'find "$build_dir" -depth -delete' EXIT; uv build --package lowerduckpond-static-contracts --wheel --out-dir "$build_dir" >/dev/null; uv build --package lowerduckpond-static-domain --wheel --out-dir "$build_dir" >/dev/null; uv build --package lowerduckpond-static-host-agent --wheel --out-dir "$build_dir" >/dev/null; extract_dir="$build_dir/extracted"; mkdir "$extract_dir"; for wheel in "$build_dir"/*.whl; do uv run python -m zipfile -e "$wheel" "$extract_dir"; done; cd "$build_dir"; PYTHONPATH="$extract_dir" uv run --project "$repo_root" --frozen python -c 'import sys; from pathlib import Path; import lowerduckpond_static_contracts as contracts; import lowerduckpond_static_domain as domain; import lowerduckpond_static_host_agent as agent; root = Path(sys.argv[1]); assert all(Path(package.__file__).is_relative_to(root) for package in (contracts, domain, agent)); assert [lock.name for lock in agent.LockName] == ["INTAKE", "EXPORT", "PUBLICATION", "TENANT_STATE"]' "$extract_dir"
+
+# Run every independently packaged M3 static-publication proof obligation.
+check-m3-contract-spine: check-m3-static-contracts check-m3-static-domain check-m3-static-host-agent
 
 # Exercise the local, no-cloud portion of the exact, no-skip M3.0 gate.
 check-m3-qualification: _sync

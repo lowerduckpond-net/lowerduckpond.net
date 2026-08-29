@@ -16,6 +16,7 @@ members = [
     "lowerduckpond-provisioner",
     "lowerduckpond-static-contracts",
     "lowerduckpond-static-domain",
+    "lowerduckpond-static-host-agent",
 ]
 
 [[package]]
@@ -806,6 +807,29 @@ test = [
 
 [package.metadata]
 requires-dist = [{ name = "lowerduckpond-static-contracts", editable = "packages/static-contracts" }]
+
+[package.metadata.requires-dev]
+test = [{ name = "hypothesis", specifier = ">=6.165.5,<7" }]
+
+[[package]]
+name = "lowerduckpond-static-host-agent"
+version = "0.0.0"
+source = { editable = "packages/static-host-agent" }
+dependencies = [
+    { name = "lowerduckpond-static-contracts" },
+    { name = "lowerduckpond-static-domain" },
+]
+
+[package.dev-dependencies]
+test = [
+    { name = "hypothesis" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "lowerduckpond-static-contracts", editable = "packages/static-contracts" },
+    { name = "lowerduckpond-static-domain", editable = "packages/static-domain" },
+]
 
 [package.metadata.requires-dev]
 test = [{ name = "hypothesis", specifier = ">=6.165.5,<7" }]
