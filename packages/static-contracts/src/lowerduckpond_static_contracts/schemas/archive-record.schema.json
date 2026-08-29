@@ -7,8 +7,8 @@
       "$ref": "common.schema.json#/$defs/apiVersion"
     },
     "bucket": {
-      "maxLength": 255,
-      "minLength": 1,
+      "maxLength": 63,
+      "minLength": 3,
       "pattern": "^[a-z0-9][a-z0-9.-]*[a-z0-9](?![\\s\\S])",
       "type": "string"
     },

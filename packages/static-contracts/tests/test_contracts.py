@@ -334,6 +334,17 @@ def test_timestamp_format_validation_is_not_an_optional_environment_feature() ->
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
 
+@pytest.mark.parametrize("bucket", ["ab", "a" * 64])
+def test_archive_bucket_uses_the_provisioned_spaces_length_bounds(bucket: str) -> None:
+    archive = _load_object(FIXTURE_ROOT / "accepted/archive-record.json")
+    archive["bucket"] = bucket
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(archive)
+
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
 @pytest.mark.parametrize(
     "format_identifier",
     ["lowerduckpond--v1", "lowerduckpond-state--v1", "lowerduckpond--state-v1"],
