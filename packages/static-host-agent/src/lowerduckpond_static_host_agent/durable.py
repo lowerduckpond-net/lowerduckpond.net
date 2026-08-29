@@ -206,18 +206,26 @@ class DurableDirectory:
         *,
         expected_owner: int,
         expected_mode: int,
+        maximum_entries: int,
     ) -> int:
         """Remove only safely shaped temporaries left by an interrupted writer."""
 
         self._require_open()
+        if type(maximum_entries) is not int or maximum_entries < 0:
+            raise ValueError("temporary scan bound must be a nonnegative integer")
         descriptor = os.dup(self._directory_fd)
         removed = 0
         try:
-            names = sorted(
-                entry.name
-                for entry in os.scandir(descriptor)
-                if entry.name.startswith(_TEMP_NAME_PREFIX)
-            )
+            names: list[str] = []
+            with os.scandir(descriptor) as iterator:
+                for entry_count, entry in enumerate(iterator, start=1):
+                    if entry_count > maximum_entries:
+                        raise StatePathError(
+                            "state directory exceeds its temporary recovery ceiling"
+                        )
+                    if entry.name.startswith(_TEMP_NAME_PREFIX):
+                        names.append(entry.name)
+            names.sort()
             for name in names:
                 if _TEMP_NAME_PATTERN.fullmatch(name) is None:
                     raise StatePathError("reserved temporary name has an invalid shape")

@@ -196,6 +196,7 @@ def measure_state_inventory(
                 directory.remove_abandoned_publication_temporaries(
                     expected_owner=expected_owner,
                     expected_mode=expected_record_mode,
+                    maximum_entries=remaining_records + 1,
                 )
                 entries = _stable_directory_entries(
                     directory,

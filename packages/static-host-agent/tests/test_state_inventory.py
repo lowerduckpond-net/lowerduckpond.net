@@ -33,6 +33,7 @@ _DIRECTORY_MODE = 0o700
 _RECORD_MODE = 0o600
 _EXPECTED_TENANTS = 2
 _EXPECTED_AUTHORIZATION_RECORDS = 3
+_UNSAFE_TEMPORARY_COUNT = 2
 _TENANT_CEILING = 25
 _FIXTURE_ROOT = Path(__file__).parents[3] / "tests/static-publication/fixtures/accepted"
 _CRASH_EXIT_STATUS = 91
@@ -149,6 +150,21 @@ def test_inventory_refuses_to_remove_an_unsafe_reserved_temporary(
         repository.measure_inventory()
 
     assert temporary.exists()
+
+
+def test_temporary_recovery_bounds_the_complete_directory_walk(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    directory = root / "authorization" / "jobs"
+    for index in range(_UNSAFE_TEMPORARY_COUNT):
+        _record(directory / f".ldp-state-{index:032x}", b"partial")
+
+    with (
+        _repository(root) as repository,
+        pytest.raises(StatePathError, match="recovery ceiling"),
+    ):
+        repository.measure_inventory(limits=StateInventoryLimits(maximum_authorization_records=0))
+
+    assert len(list(directory.glob(".ldp-state-*"))) == _UNSAFE_TEMPORARY_COUNT
 
 
 def test_inventory_counts_exact_tenants_records_and_allocated_blocks(tmp_path: Path) -> None:

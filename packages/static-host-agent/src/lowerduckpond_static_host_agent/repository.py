@@ -57,6 +57,7 @@ class _StateRecordName(StrEnum):
     TENANT_ARCHIVE = "tenant-archive"
     AUTHORIZATION_JOB = "authorization-job"
     AUTHORIZATION_RESULT = "authorization-result"
+    EMERGENCY_RESULT = "emergency-result"
     TRANSACTION_INTENT = "transaction-intent"
     ARCHIVE_CONSTRUCTION_INTENT = "archive-construction-intent"
     ARCHIVE_RETIREMENT_INTENT = "archive-retirement-intent"
@@ -124,6 +125,13 @@ class StateRecordPath:
         )
 
     @classmethod
+    def emergency_result(cls, correlation_id: object) -> Self:
+        return cls._new(
+            _StateRecordName.EMERGENCY_RESULT,
+            record_id=validate_uuid7(correlation_id),
+        )
+
+    @classmethod
     def transaction_intent(cls, intent_id: object) -> Self:
         return cls._new(
             _StateRecordName.TRANSACTION_INTENT,
@@ -171,6 +179,7 @@ class StateRecordPath:
             _StateRecordName.TENANT_ARCHIVE: ContractKind.ARCHIVE_RECORD,
             _StateRecordName.AUTHORIZATION_JOB: ContractKind.AUTHORIZATION_JOB,
             _StateRecordName.AUTHORIZATION_RESULT: ContractKind.OPERATION_RESULT,
+            _StateRecordName.EMERGENCY_RESULT: ContractKind.OPERATION_RESULT,
             _StateRecordName.TRANSACTION_INTENT: ContractKind.TRANSACTION_INTENT,
             _StateRecordName.ARCHIVE_CONSTRUCTION_INTENT: (
                 ContractKind.ARCHIVE_CONSTRUCTION_INTENT
@@ -187,7 +196,10 @@ class StateRecordPath:
             components = ("platform", "launch.json")
         elif self.name is _StateRecordName.AUTHORIZATION_JOB:
             components = ("authorization", "jobs", f"{self._require_record_id()}.json")
-        elif self.name is _StateRecordName.AUTHORIZATION_RESULT:
+        elif self.name in {
+            _StateRecordName.AUTHORIZATION_RESULT,
+            _StateRecordName.EMERGENCY_RESULT,
+        }:
             components = ("authorization", "results", f"{self._require_record_id()}.json")
         elif self.name in {
             _StateRecordName.TRANSACTION_INTENT,
@@ -256,6 +268,14 @@ class StateRecordPath:
                 or provenance.get("jobId") != self.record_id
             ):
                 raise StateRecordError("authorization-result identity does not match its path")
+        elif self.name is _StateRecordName.EMERGENCY_RESULT:
+            provenance = document.get("provenance")
+            if (
+                type(provenance) is not dict
+                or provenance.get("kind") != "emergency-administrator"
+                or document.get("correlationId") != self.record_id
+            ):
+                raise StateRecordError("emergency-result identity does not match its path")
         elif (
             self.name
             in {

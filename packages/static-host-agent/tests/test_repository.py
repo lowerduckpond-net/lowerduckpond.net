@@ -157,6 +157,11 @@ def test_typed_paths_pin_the_committed_authoritative_layout() -> None:
         "results",
         f"{_JOB_ID}.json",
     )
+    assert StateRecordPath.emergency_result(_INTENT_ID).components == (
+        "authorization",
+        "results",
+        f"{_INTENT_ID}.json",
+    )
     assert StateRecordPath.transaction_intent(_INTENT_ID).components == (
         "intents",
         f"{_INTENT_ID}.json",
@@ -243,6 +248,27 @@ def test_state_revision_has_a_pinned_domain_separated_representation(tmp_path: P
         + canonical
     )
     assert revision.sha256 == hashlib.sha256(framed).hexdigest()
+
+
+def test_emergency_result_binds_its_correlation_identity_to_the_result_path(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    result = _fixture("operation-result.json")
+    del result["manifest"]
+    result["operation"] = "delete"
+    result["provenance"] = {
+        "kind": "emergency-administrator",
+        "operatorPrincipal": "operator@example.test",
+        "reason": "verified operator recovery",
+    }
+    path = StateRecordPath.emergency_result("0198d17f-6f4a-7000-8000-000000000001")
+
+    with _repository(root) as repository:
+        created = repository.create_immutable(path, result)
+        reread = repository.read(path)
+
+    assert created.document == reread.document == result
 
 
 def test_reader_rejects_schema_valid_but_noncanonical_bytes(tmp_path: Path) -> None:
