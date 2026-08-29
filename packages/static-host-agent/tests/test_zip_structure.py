@@ -351,6 +351,16 @@ def test_inode_attributes_must_agree_with_name_marker(
         _inspect(tmp_path, _archive(member))
 
 
+def test_unix_regular_file_cannot_also_claim_the_dos_directory_type(tmp_path: Path) -> None:
+    member = _MemberSpec(
+        name=b"index.html",
+        external_attributes=_REGULAR_ATTRIBUTES | 0x10,
+    )
+
+    with pytest.raises(ZipStructureError, match="DOS and Unix inode types disagree"):
+        _inspect(tmp_path, _archive(member))
+
+
 def test_local_and_central_records_must_agree(tmp_path: Path) -> None:
     data = _archive(_MemberSpec(name=b"index.html", content=b"home"))
     changed = _replace_u16(data, _LOCAL_METHOD_OFFSET, _DEFLATE)

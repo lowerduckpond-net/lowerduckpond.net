@@ -503,6 +503,8 @@ def _entry_type(
             attribute_type = ZipEntryType.REGULAR_FILE
         else:
             raise ZipStructureError("ZIP entry has a link or special Unix inode type")
+        if dos_directory and attribute_type is not ZipEntryType.DIRECTORY:
+            raise ZipStructureError("ZIP DOS and Unix inode types disagree")
         if (attribute_type is ZipEntryType.DIRECTORY) != marker_is_directory:
             raise ZipStructureError("ZIP Unix inode type disagrees with its name marker")
         return attribute_type
