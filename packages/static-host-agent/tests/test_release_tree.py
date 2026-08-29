@@ -311,6 +311,77 @@ def test_content_mutation_after_hashing_is_detected(tmp_path: Path) -> None:
         measure_release_tree(root, expected_owner=_OWNER, measurement_hook=mutate)
 
 
+def test_ancestors_are_revalidated_after_their_descendants(tmp_path: Path) -> None:
+    root = _release_root(tmp_path)
+    _file(root, "nested/child", b"stable")
+
+    def add_late_descendant(boundary: ReleaseTreeBoundary, path: bytes | None) -> None:
+        if boundary is ReleaseTreeBoundary.FINAL_ENTRY and path == b"nested/child":
+            late = root / "nested/late"
+            late.write_bytes(b"mutation")
+            late.chmod(0o644)
+
+    with pytest.raises(ReleaseTreeError, match="final validation"):
+        measure_release_tree(
+            root,
+            expected_owner=_OWNER,
+            measurement_hook=add_late_descendant,
+        )
+
+
+def test_root_is_revalidated_after_every_entry(tmp_path: Path) -> None:
+    root = _release_root(tmp_path)
+    _file(root, "child", b"stable")
+
+    def add_late_root_entry(boundary: ReleaseTreeBoundary, path: bytes | None) -> None:
+        if boundary is ReleaseTreeBoundary.FINAL_ENTRY and path == b"child":
+            _file(root, "late", b"mutation")
+
+    with pytest.raises(ReleaseTreeError, match="release root changed"):
+        measure_release_tree(
+            root,
+            expected_owner=_OWNER,
+            measurement_hook=add_late_root_entry,
+        )
+
+
+@pytest.mark.parametrize(
+    ("failing_call", "message"),
+    [
+        (2, "changed before"),
+        (3, "changed while"),
+        (4, "final validation"),
+    ],
+)
+def test_path_stat_races_are_translated_to_release_tree_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failing_call: int,
+    message: str,
+) -> None:
+    root = _release_root(tmp_path)
+    _file(root, "index.html", b"stable")
+    original_stat = os.stat
+    descriptor_relative_calls = 0
+
+    def disappearing_stat(
+        path: os.PathLike[str] | str | bytes | int,
+        *,
+        dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ) -> os.stat_result:
+        nonlocal descriptor_relative_calls
+        if dir_fd is not None:
+            descriptor_relative_calls += 1
+            if descriptor_relative_calls == failing_call:
+                raise FileNotFoundError(path)
+        return original_stat(path, dir_fd=dir_fd, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(os, "stat", disappearing_stat)
+    with pytest.raises(ReleaseTreeError, match=message):
+        measure_release_tree(root, expected_owner=_OWNER)
+
+
 def test_file_content_mutation_during_read_is_detected(tmp_path: Path) -> None:
     root = _release_root(tmp_path)
     target = _file(root, "large", b"a" * (128 * 1024))

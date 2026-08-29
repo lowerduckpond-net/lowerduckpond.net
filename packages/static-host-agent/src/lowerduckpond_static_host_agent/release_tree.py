@@ -41,6 +41,7 @@ class ReleaseTreeBoundary(StrEnum):
     AFTER_SCAN = "after-scan"
     FILE_CHUNK = "file-chunk"
     BEFORE_FINAL_VALIDATION = "before-final-validation"
+    FINAL_ENTRY = "final-entry"
 
 
 MeasurementHook = Callable[[ReleaseTreeBoundary, bytes | None], None]
@@ -285,6 +286,13 @@ def _open_file_at(root_fd: int, components: tuple[str, ...]) -> tuple[int, int, 
     return parent_fd, file_fd, components[-1]
 
 
+def _stat_entry(parent_fd: int, name: str, *, error_message: str) -> _Snapshot:
+    try:
+        return _Snapshot.capture(os.stat(name, dir_fd=parent_fd, follow_symlinks=False))
+    except OSError as error:
+        raise ReleaseTreeError(error_message) from error
+
+
 def _record_allocation(
     allocations: dict[tuple[int, int], int],
     snapshot: _Snapshot,
@@ -408,7 +416,11 @@ def _hash_file(
         raise ReleaseTreeError("release file changed before it could be read") from error
     try:
         opened = _Snapshot.capture(os.fstat(file_fd))
-        current = _Snapshot.capture(os.stat(name, dir_fd=parent_fd, follow_symlinks=False))
+        current = _stat_entry(
+            parent_fd,
+            name,
+            error_message="release file changed before it was read",
+        )
         if not _same_generation(entry.snapshot, opened) or not _same_generation(opened, current):
             raise ReleaseTreeError("release file changed before it was read")
         remaining = entry.snapshot.size
@@ -425,7 +437,11 @@ def _hash_file(
         if os.read(file_fd, 1):
             raise ReleaseTreeError("release file became longer while it was read")
         final = _Snapshot.capture(os.fstat(file_fd))
-        final_path = _Snapshot.capture(os.stat(name, dir_fd=parent_fd, follow_symlinks=False))
+        final_path = _stat_entry(
+            parent_fd,
+            name,
+            error_message="release file changed while it was read",
+        )
         if not _same_generation(entry.snapshot, final) or not _same_generation(final, final_path):
             raise ReleaseTreeError("release file changed while it was read")
     finally:
@@ -438,17 +454,10 @@ def _validate_tree(
     root_path: Path,
     root_snapshot: _Snapshot,
     entries: list[_Entry],
+    hook: MeasurementHook | None,
 ) -> None:
-    current_root = _Snapshot.capture(os.fstat(root_fd))
-    try:
-        named_root = _Snapshot.capture(root_path.stat(follow_symlinks=False))
-    except OSError as error:
-        raise ReleaseTreeError("release root changed during measurement") from error
-    if not _same_generation(root_snapshot, current_root) or not _same_generation(
-        current_root, named_root
-    ):
-        raise ReleaseTreeError("release root changed during measurement")
-    for entry in entries:
+    final_order = sorted(entries, key=lambda entry: (-len(entry.components), entry.path_bytes))
+    for entry in final_order:
         if entry.is_directory:
             try:
                 entry_fd = _open_directory_at(root_fd, entry.components)
@@ -465,8 +474,10 @@ def _validate_tree(
             if not _same_generation(entry.snapshot, final):
                 raise ReleaseTreeError("release entry changed during final validation")
             if parent_fd is not None:
-                final_path = _Snapshot.capture(
-                    os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+                final_path = _stat_entry(
+                    parent_fd,
+                    name,
+                    error_message="release file changed during final validation",
                 )
                 if not _same_generation(final, final_path):
                     raise ReleaseTreeError("release file changed during final validation")
@@ -474,6 +485,16 @@ def _validate_tree(
             os.close(entry_fd)
             if parent_fd is not None:
                 os.close(parent_fd)
+        _notify(hook, ReleaseTreeBoundary.FINAL_ENTRY, entry.path_bytes)
+    current_root = _Snapshot.capture(os.fstat(root_fd))
+    try:
+        named_root = _Snapshot.capture(root_path.stat(follow_symlinks=False))
+    except OSError as error:
+        raise ReleaseTreeError("release root changed during measurement") from error
+    if not _same_generation(root_snapshot, current_root) or not _same_generation(
+        current_root, named_root
+    ):
+        raise ReleaseTreeError("release root changed during measurement")
 
 
 DEFAULT_RELEASE_TREE_LIMITS: Final = ReleaseTreeLimits()
@@ -537,7 +558,7 @@ def measure_release_tree(
                 _hash_file(digest, root_fd, entry, measurement_hook)
 
         _notify(measurement_hook, ReleaseTreeBoundary.BEFORE_FINAL_VALIDATION)
-        _validate_tree(root_fd, root, root_snapshot, state.entries)
+        _validate_tree(root_fd, root, root_snapshot, state.entries, measurement_hook)
         ordered_allocations = tuple(
             InodeAllocation(device, inode, allocated_bytes)
             for (device, inode), allocated_bytes in sorted(state.allocations.items())
