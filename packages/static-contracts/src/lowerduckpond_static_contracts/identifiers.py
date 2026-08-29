@@ -23,6 +23,8 @@ MAX_DNS_HOSTNAME_BYTES: Final = 253
 MAX_DNS_LABEL_BYTES: Final = 63
 MINIMUM_SUFFIX_LABELS: Final = 2
 UUID_VERSION: Final = 7
+TENANT_ORIGIN_PREFIX: Final = "t-"
+TENANT_ORIGIN_SUFFIX: Final = "lowerduckpond.com"
 
 
 def validate_uuid7(value: object) -> str:
@@ -33,6 +35,19 @@ def validate_uuid7(value: object) -> str:
     parsed = uuid.UUID(value)
     if parsed.version != UUID_VERSION or str(parsed) != value:
         raise ContractError(ErrorCode.INVALID_IDENTIFIER, "identifier is not a canonical UUIDv7")
+    return value
+
+
+def validate_canonical_origin(tenant_id: object, value: object) -> str:
+    """Require the pinned canonical origin derived from the same tenant identity."""
+
+    canonical_id = validate_uuid7(tenant_id)
+    expected = f"{TENANT_ORIGIN_PREFIX}{canonical_id.replace('-', '')}.{TENANT_ORIGIN_SUFFIX}"
+    if type(value) is not str or value != expected:
+        raise ContractError(
+            ErrorCode.INVALID_CANONICAL_ORIGIN,
+            "canonical origin does not match the tenant identity",
+        )
     return value
 
 

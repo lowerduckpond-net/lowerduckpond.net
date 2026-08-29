@@ -345,6 +345,18 @@ def test_archive_bucket_uses_the_provisioned_spaces_length_bounds(bucket: str) -
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
 
+def test_site_canonical_origin_is_bound_to_its_tenant_identity() -> None:
+    site = _load_object(FIXTURE_ROOT / "accepted/site.json")
+    metadata = site["metadata"]
+    assert type(metadata) is dict
+    metadata["canonicalOrigin"] = "t-0198d17f6f4a70008000000000000001.lowerduckpond.com"
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(site)
+
+    assert captured.value.code is ErrorCode.INVALID_CANONICAL_ORIGIN
+
+
 @pytest.mark.parametrize(
     "format_identifier",
     ["lowerduckpond--v1", "lowerduckpond-state--v1", "lowerduckpond--state-v1"],

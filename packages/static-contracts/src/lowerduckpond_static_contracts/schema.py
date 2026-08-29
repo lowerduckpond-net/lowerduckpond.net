@@ -23,6 +23,7 @@ from lowerduckpond_static_contracts.canonical import (
 )
 from lowerduckpond_static_contracts.errors import ContractError, ErrorCode
 from lowerduckpond_static_contracts.identifiers import (
+    validate_canonical_origin,
     validate_slug,
     validate_uuid7,
 )
@@ -149,8 +150,9 @@ def _validate_namespace(document: dict[str, object]) -> None:
 
 def _validate_site(document: dict[str, object]) -> None:
     metadata = cast(dict[str, object], document["metadata"])
-    validate_uuid7(metadata["id"])
+    tenant_id = validate_uuid7(metadata["id"])
     validate_slug(metadata["slug"])
+    validate_canonical_origin(tenant_id, metadata["canonicalOrigin"])
 
 
 def _validate_request(document: dict[str, object]) -> None:
