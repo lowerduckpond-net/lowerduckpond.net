@@ -299,6 +299,31 @@ def test_failed_create_result_may_precede_tenant_identity_generation() -> None:
     assert validate_contract(result) is ContractKind.OPERATION_RESULT
 
 
+def test_existing_tenant_intent_requires_a_source_manifest_digest() -> None:
+    intent = _load_object(FIXTURE_ROOT / "accepted/transaction-intent.json")
+    intent["sourceManifestDigest"] = None
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(intent)
+
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+def test_create_intent_requires_an_absent_source_manifest() -> None:
+    intent = _load_object(FIXTURE_ROOT / "accepted/transaction-intent.json")
+    source_digest = intent["sourceManifestDigest"]
+    intent["operation"] = "create"
+    intent["sourceManifestDigest"] = None
+
+    assert validate_contract(intent) is ContractKind.TRANSACTION_INTENT
+
+    intent["sourceManifestDigest"] = source_digest
+    with pytest.raises(ContractError) as captured:
+        validate_contract(intent)
+
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
 @pytest.mark.parametrize(
     "format_identifier",
     ["lowerduckpond--v1", "lowerduckpond-state--v1", "lowerduckpond--state-v1"],

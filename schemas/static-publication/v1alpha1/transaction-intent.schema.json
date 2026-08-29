@@ -2,6 +2,34 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://schemas.lowerduckpond.net/static-publication/v1alpha1/transaction-intent.schema.json",
   "additionalProperties": false,
+  "allOf": [
+    {
+      "else": {
+        "properties": {
+          "sourceManifestDigest": {
+            "$ref": "common.schema.json#/$defs/manifestDigest"
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "create"
+          }
+        },
+        "required": [
+          "operation"
+        ]
+      },
+      "then": {
+        "properties": {
+          "sourceManifestDigest": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ],
   "properties": {
     "apiVersion": {
       "$ref": "common.schema.json#/$defs/apiVersion"
