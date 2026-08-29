@@ -7,10 +7,7 @@
       "$ref": "common.schema.json#/$defs/apiVersion"
     },
     "bucket": {
-      "maxLength": 63,
-      "minLength": 3,
-      "pattern": "^[a-z0-9][a-z0-9.-]*[a-z0-9](?![\\s\\S])",
-      "type": "string"
+      "$ref": "common.schema.json#/$defs/archiveBucket"
     },
     "bundleSha256": {
       "$ref": "common.schema.json#/$defs/sha256"
@@ -30,9 +27,7 @@
       "$ref": "common.schema.json#/$defs/uuidv7"
     },
     "key": {
-      "maxLength": 1024,
-      "minLength": 1,
-      "type": "string"
+      "$ref": "common.schema.json#/$defs/archiveKey"
     },
     "kind": {
       "const": "ArchiveRecord"
@@ -47,9 +42,7 @@
       "$ref": "common.schema.json#/$defs/uuidv7"
     },
     "versionId": {
-      "maxLength": 1024,
-      "minLength": 1,
-      "type": "string"
+      "$ref": "common.schema.json#/$defs/archiveVersionId"
     }
   },
   "required": [

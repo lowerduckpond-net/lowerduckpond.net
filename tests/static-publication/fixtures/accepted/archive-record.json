@@ -16,7 +16,7 @@
   "bundleSha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
   "bundleSize": 4096,
   "bucket": "lowerduckpond-net-production-tenant-archives-4f3e6b91",
-  "key": "tenants/0191e2c4-8f7a-7c3b-8d1e-5f62047a2100/archives/0191e2ca-49f2-7608-8cf3-f80ab2cab151.zip",
+  "key": "archives/0198d17f-6f4a-7000-8000-000000000003.zip",
   "versionId": "3LgY0Q5G-safe-fixture-version",
   "createdAt": "2026-08-29T12:02:00Z",
   "correlationId": "0198d17f-6f4a-7000-8000-000000000001"

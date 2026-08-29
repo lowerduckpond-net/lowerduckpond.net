@@ -21,6 +21,22 @@
         }
       }
     },
+    "archiveBucket": {
+      "maxLength": 63,
+      "minLength": 3,
+      "pattern": "^[a-z0-9][a-z0-9.-]*[a-z0-9](?![\\s\\S])",
+      "type": "string"
+    },
+    "archiveKey": {
+      "maxLength": 1024,
+      "pattern": "^archives/[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\\.zip(?![\\s\\S])",
+      "type": "string"
+    },
+    "archiveVersionId": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "type": "string"
+    },
     "artifact": {
       "additionalProperties": false,
       "properties": {

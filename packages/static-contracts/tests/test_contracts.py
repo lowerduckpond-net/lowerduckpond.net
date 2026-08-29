@@ -400,6 +400,24 @@ def test_archive_bucket_uses_the_provisioned_spaces_length_bounds(bucket: str) -
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
 
+@pytest.mark.parametrize(
+    "key",
+    [
+        "tenants/0191e2c4-8f7a-7c3b-8d1e-5f62047a2100/archive.zip",
+        "archives/not-a-root-generated-uuid.zip",
+        "archives/0198d17f-6f4a-7000-8000-000000000003.zip/extra",
+    ],
+)
+def test_archive_key_stays_inside_the_exact_managed_prefix(key: str) -> None:
+    archive = _load_object(FIXTURE_ROOT / "accepted/archive-record.json")
+    archive["key"] = key
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(archive)
+
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
 def test_site_canonical_origin_is_bound_to_its_tenant_identity() -> None:
     site = _load_object(FIXTURE_ROOT / "accepted/site.json")
     metadata = site["metadata"]
