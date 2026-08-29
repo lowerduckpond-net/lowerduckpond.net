@@ -494,6 +494,22 @@ and compare-and-swap is available only to record kinds with a committed mutable
 lifecycle; correlation indexes, results, deployments, and archives cannot be
 replaced through the repository.
 
+The sixth review slice adds the production-inert local audit chain. Entries use
+an explicit `lowerduckpond-audit-entry-v1` domain-separated digest and extend a
+strictly contiguous sequence and predecessor digest. The root agent verifies
+every exact canonical JSON line and inode generation under exclusive
+tenant-state before replacing the current segment or creating the next one;
+segment rotation is deterministic, descriptor-relative, no-follow, and capped
+at 8 MiB. Physical allocation is limited to 128 MiB for ordinary work with a
+separate 8-MiB administrator reserve that ordinary requests cannot consume.
+Incomplete publication temporaries are recovered only when their reserved name,
+owner, mode, link count, and bounded directory inventory are all safe. Failure
+injection at every append write, sync, and rename boundary proves that restart
+selects one complete old or new chain. The protected off-host snapshot index
+and deletion of locally closed segments remain disabled until M3.11 supplies
+the restore-verified rotation protocol; this slice never discards audit
+evidence.
+
 Hash-chained audit and intent discovery and recovery remain in M3.3 and do not
 move to a later phase.
 

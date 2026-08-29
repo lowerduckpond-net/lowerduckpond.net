@@ -1,5 +1,13 @@
 """Root-only durable-state primitives for the static-publication host agent."""
 
+from lowerduckpond_static_host_agent.audit import (
+    DEFAULT_AUDIT_LIMITS,
+    AuditAppend,
+    AuditCapacityError,
+    AuditError,
+    AuditLimits,
+    AuditState,
+)
 from lowerduckpond_static_host_agent.capacity import (
     CapacityError,
     CapacityProjection,
@@ -61,6 +69,12 @@ from lowerduckpond_static_host_agent.state_inventory import (
 )
 
 __all__ = [
+    "DEFAULT_AUDIT_LIMITS",
+    "AuditAppend",
+    "AuditCapacityError",
+    "AuditError",
+    "AuditLimits",
+    "AuditState",
     "AuthorizationRecordInventory",
     "CapacityError",
     "CapacityProjection",

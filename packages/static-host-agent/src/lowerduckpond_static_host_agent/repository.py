@@ -23,11 +23,23 @@ from lowerduckpond_static_contracts import (
     validate_uuid7,
 )
 
+from lowerduckpond_static_host_agent.audit import (
+    DEFAULT_AUDIT_LIMITS,
+    AuditAppend,
+    AuditLimits,
+    AuditState,
+)
+from lowerduckpond_static_host_agent.audit import (
+    append_audit as append_audit_record,
+)
+from lowerduckpond_static_host_agent.audit import (
+    inspect_audit as inspect_audit_records,
+)
 from lowerduckpond_static_host_agent.capacity import (
     FilesystemCapacity,
     measure_filesystem_capacity_descriptor,
 )
-from lowerduckpond_static_host_agent.durable import DurableDirectory
+from lowerduckpond_static_host_agent.durable import DurableDirectory, FailureHook
 from lowerduckpond_static_host_agent.locks import LockManager, LockMode, LockName
 from lowerduckpond_static_host_agent.state_inventory import (
     DEFAULT_STATE_INVENTORY_LIMITS,
@@ -498,6 +510,36 @@ class StateRepository:
         with self.transaction(mode=LockMode.EXCLUSIVE, blocking=blocking) as transaction:
             return transaction.measure_authorization_records(limits=limits)
 
+    def inspect_audit(
+        self,
+        *,
+        limits: AuditLimits = DEFAULT_AUDIT_LIMITS,
+        blocking: bool = False,
+    ) -> AuditState:
+        """Validate the bounded audit chain under exclusive tenant-state."""
+
+        with self.transaction(mode=LockMode.EXCLUSIVE, blocking=blocking) as transaction:
+            return transaction.inspect_audit(limits=limits)
+
+    def append_audit(
+        self,
+        document: dict[str, object],
+        *,
+        administrator: bool = False,
+        limits: AuditLimits = DEFAULT_AUDIT_LIMITS,
+        failure_hook: FailureHook | None = None,
+        blocking: bool = False,
+    ) -> AuditAppend:
+        """Append one entry after verifying the complete bounded audit chain."""
+
+        with self.transaction(mode=LockMode.EXCLUSIVE, blocking=blocking) as transaction:
+            return transaction.append_audit(
+                document,
+                administrator=administrator,
+                limits=limits,
+                failure_hook=failure_hook,
+            )
+
     def _read_locked(self, path: StateRecordPath) -> StoredContract:
         raw = self._durable.read_regular(
             path.components,
@@ -599,6 +641,40 @@ class _StateTransaction:
             expected_directory_mode=self._repository._expected_directory_mode,
             expected_record_mode=self._repository._expected_record_mode,
             limits=limits,
+        )
+
+    def inspect_audit(
+        self,
+        *,
+        limits: AuditLimits = DEFAULT_AUDIT_LIMITS,
+    ) -> AuditState:
+        self._require_exclusive()
+        return inspect_audit_records(
+            self._repository._durable,
+            expected_owner=self._repository._expected_owner,
+            expected_directory_mode=self._repository._expected_directory_mode,
+            expected_record_mode=self._repository._expected_record_mode,
+            limits=limits,
+        )
+
+    def append_audit(
+        self,
+        document: dict[str, object],
+        *,
+        administrator: bool = False,
+        limits: AuditLimits = DEFAULT_AUDIT_LIMITS,
+        failure_hook: FailureHook | None = None,
+    ) -> AuditAppend:
+        self._require_exclusive()
+        return append_audit_record(
+            self._repository._durable,
+            document,
+            expected_owner=self._repository._expected_owner,
+            expected_directory_mode=self._repository._expected_directory_mode,
+            expected_record_mode=self._repository._expected_record_mode,
+            administrator=administrator,
+            limits=limits,
+            failure_hook=failure_hook,
         )
 
     def admit_inventory(

@@ -12,6 +12,7 @@ from lowerduckpond_static_contracts.errors import ContractError, ErrorCode
 MANIFEST_DIGEST_FORMAT: Final = "lowerduckpond-manifest-v1"
 REQUEST_DIGEST_FORMAT: Final = "lowerduckpond-request-v1"
 RESULT_DIGEST_FORMAT: Final = "lowerduckpond-result-v1"
+AUDIT_ENTRY_DIGEST_FORMAT: Final = "lowerduckpond-audit-entry-v1"
 SHA256_PATTERN: Final = re.compile(r"[0-9a-f]{64}", flags=re.ASCII)
 FORMAT_PATTERN: Final = re.compile(
     r"lowerduckpond-[a-z0-9]+(?:-[a-z0-9]+)*-v1",

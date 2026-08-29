@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from lowerduckpond_static_contracts._digest import (
+    AUDIT_ENTRY_DIGEST_FORMAT,
     MANIFEST_DIGEST_FORMAT,
     REQUEST_DIGEST_FORMAT,
     RESULT_DIGEST_FORMAT,
@@ -13,7 +14,25 @@ from lowerduckpond_static_contracts.canonical import canonical_json_bytes
 from lowerduckpond_static_contracts.errors import ContractError, ErrorCode
 from lowerduckpond_static_contracts.schema import ContractKind, validate_contract
 
-__all__ = ["Digest", "manifest_digest", "request_digest", "result_digest"]
+__all__ = [
+    "Digest",
+    "audit_entry_digest",
+    "manifest_digest",
+    "request_digest",
+    "result_digest",
+]
+
+
+def audit_entry_digest(entry: object) -> Digest:
+    """Compute the accepted v1 canonical audit-entry digest."""
+
+    if type(entry) is not dict:
+        raise ContractError(ErrorCode.SCHEMA_INVALID, "audit entry must be a contract object")
+    validate_contract(entry, expected_kind=ContractKind.AUDIT_ENTRY)
+    return digest_bytes(
+        canonical_json_bytes(entry),
+        format_identifier=AUDIT_ENTRY_DIGEST_FORMAT,
+    )
 
 
 def manifest_digest(manifest: object) -> Digest:
