@@ -247,6 +247,11 @@ def _validate_archive_construction_intent(document: dict[str, object]) -> None:
             ErrorCode.SCHEMA_INVALID,
             "archive key does not match its upload attempt identity",
         )
+    if document["sourceManifestDigest"] == document["candidateManifestDigest"]:
+        raise ContractError(
+            ErrorCode.SCHEMA_INVALID,
+            "archive construction did not change the manifest generation",
+        )
 
 
 def _manifest_digest(document: dict[str, object]) -> dict[str, str]:
@@ -259,14 +264,7 @@ def _manifest_digest(document: dict[str, object]) -> dict[str, str]:
 def _validate_transaction_intent(document: dict[str, object]) -> None:
     operation = document["operation"]
     if operation != "archive":
-        if operation == "export":
-            if document["sourceManifestDigest"] != document["candidateManifestDigest"]:
-                raise ContractError(
-                    ErrorCode.SCHEMA_INVALID,
-                    "export intent manifest generation drifted",
-                )
-            return
-        _validate_lifecycle_recovery(document)
+        _validate_nonarchive_transaction_intent(document, cast(str, operation))
         return
     recovery = cast(dict[str, object], document["archiveRecovery"])
     source = cast(dict[str, object], recovery["sourceManifest"])
@@ -325,6 +323,27 @@ def _validate_transaction_intent(document: dict[str, object]) -> None:
         )
 
 
+def _validate_nonarchive_transaction_intent(
+    document: dict[str, object],
+    operation: str,
+) -> None:
+    if operation == "export":
+        if document["sourceManifestDigest"] != document["candidateManifestDigest"]:
+            raise ContractError(
+                ErrorCode.SCHEMA_INVALID,
+                "export intent manifest generation drifted",
+            )
+        return
+    if operation == "reconcile" and (
+        document["sourceManifestDigest"] != document["candidateManifestDigest"]
+    ):
+        raise ContractError(
+            ErrorCode.SCHEMA_INVALID,
+            "reconcile intent manifest generation drifted",
+        )
+    _validate_lifecycle_recovery(document)
+
+
 def _validate_lifecycle_recovery(document: dict[str, object]) -> None:
     operation = cast(str, document["operation"])
     recovery = cast(dict[str, object], document["lifecycleRecovery"])
@@ -336,6 +355,7 @@ def _validate_lifecycle_recovery(document: dict[str, object]) -> None:
         raise ContractError(ErrorCode.SCHEMA_INVALID, "candidate recovery state is invalid")
 
     source_state = LifecycleState.ABSENT
+    source_observed: dict[str, object] | None = None
     if source is not None:
         source_observed = cast(dict[str, object], source)
         source_state = LifecycleState(cast(str, source_observed["observedState"]))
@@ -350,6 +370,7 @@ def _validate_lifecycle_recovery(document: dict[str, object]) -> None:
         raise ContractError(ErrorCode.SCHEMA_INVALID, "absent source retained tenant routes")
 
     candidate_state = LifecycleState.ABSENT
+    candidate_observed: dict[str, object] | None = None
     if candidate is not None:
         candidate_observed = cast(dict[str, object], candidate)
         candidate_state = LifecycleState(cast(str, candidate_observed["observedState"]))
@@ -366,6 +387,15 @@ def _validate_lifecycle_recovery(document: dict[str, object]) -> None:
     expected = LIFECYCLE_MATRIX.get((Operation(operation), source_state))
     if expected != candidate_state:
         raise ContractError(ErrorCode.SCHEMA_INVALID, "recovery states violate lifecycle matrix")
+    if operation in {"suspend", "resume", "rename", "reconcile"} and (
+        source_observed is None
+        or candidate_observed is None
+        or source_observed["activeDeploymentId"] != candidate_observed["activeDeploymentId"]
+    ):
+        raise ContractError(
+            ErrorCode.SCHEMA_INVALID,
+            "route-only transition changed the remembered deployment",
+        )
     if recovery["candidateRuntimeGenerationId"] == recovery["sourceRuntimeGenerationId"]:
         raise ContractError(ErrorCode.SCHEMA_INVALID, "runtime generations are not distinct")
 

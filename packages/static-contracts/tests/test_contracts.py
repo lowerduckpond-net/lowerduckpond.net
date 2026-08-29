@@ -1018,6 +1018,100 @@ def test_delete_intent_requires_an_absent_candidate_manifest() -> None:
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
 
+def _route_only_transaction_intent(
+    operation: str,
+    source_state: str,
+    candidate_state: str,
+) -> dict[str, object]:
+    intent = _load_object(FIXTURE_ROOT / "accepted/transaction-intent.json")
+    if operation != "reconcile":
+        candidate_digest = deepcopy(intent["candidateManifestDigest"])
+        assert type(candidate_digest) is dict
+        candidate_digest["value"] = "b" * 64
+        intent["candidateManifestDigest"] = candidate_digest
+    source = _load_object(FIXTURE_ROOT / "accepted/tenant-observed-state.json")
+    source.update(
+        {
+            "desiredManifestDigest": intent["sourceManifestDigest"],
+            "observedState": source_state,
+            "runtimeGenerationId": (
+                "0198d17f-6f4a-7000-8000-000000000004" if source_state == "active" else None
+            ),
+        }
+    )
+    candidate = deepcopy(source)
+    candidate.update(
+        {
+            "desiredManifestDigest": intent["candidateManifestDigest"],
+            "observedState": candidate_state,
+            "runtimeGenerationId": (
+                "0198d17f-6f4a-7000-8000-000000000006" if candidate_state == "active" else None
+            ),
+        }
+    )
+    intent.update(
+        {
+            "operation": operation,
+            "lifecycleRecovery": {
+                "sourceObservedState": source,
+                "sourceRuntimeGenerationId": "0198d17f-6f4a-7000-8000-000000000004",
+                "sourceRouteSet": "both" if source_state == "active" else "absent",
+                "candidateObservedState": candidate,
+                "candidateRuntimeGenerationId": "0198d17f-6f4a-7000-8000-000000000006",
+                "candidateRouteSet": "both" if candidate_state == "active" else "absent",
+            },
+        }
+    )
+    return intent
+
+
+def test_reconcile_intent_pins_one_unchanged_manifest_generation() -> None:
+    intent = _route_only_transaction_intent("reconcile", "active", "active")
+
+    assert validate_contract(intent) is ContractKind.TRANSACTION_INTENT
+
+    candidate_digest = deepcopy(intent["candidateManifestDigest"])
+    assert type(candidate_digest) is dict
+    candidate_digest["value"] = "b" * 64
+    intent["candidateManifestDigest"] = candidate_digest
+    recovery = intent["lifecycleRecovery"]
+    assert type(recovery) is dict
+    candidate = recovery["candidateObservedState"]
+    assert type(candidate) is dict
+    candidate["desiredManifestDigest"] = candidate_digest
+    with pytest.raises(ContractError) as captured:
+        validate_contract(intent)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+@pytest.mark.parametrize(
+    ("operation", "source_state", "candidate_state"),
+    [
+        ("suspend", "active", "suspended"),
+        ("resume", "suspended", "active"),
+        ("rename", "active", "active"),
+        ("reconcile", "active", "active"),
+    ],
+)
+def test_route_only_intent_preserves_the_remembered_deployment(
+    operation: str,
+    source_state: str,
+    candidate_state: str,
+) -> None:
+    intent = _route_only_transaction_intent(operation, source_state, candidate_state)
+
+    assert validate_contract(intent) is ContractKind.TRANSACTION_INTENT
+
+    recovery = intent["lifecycleRecovery"]
+    assert type(recovery) is dict
+    candidate = recovery["candidateObservedState"]
+    assert type(candidate) is dict
+    candidate["activeDeploymentId"] = "0198d17f-6f4a-7000-8000-000000000009"
+    with pytest.raises(ContractError) as captured:
+        validate_contract(intent)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
 def test_runtime_mutation_intent_requires_exact_recovery_generations() -> None:
     intent = _load_object(FIXTURE_ROOT / "accepted/transaction-intent.json")
     source = _load_object(FIXTURE_ROOT / "accepted/tenant-observed-state.json")
@@ -1125,6 +1219,15 @@ def test_archive_construction_prepared_phase_precedes_a_remote_version() -> None
     assert validate_contract(intent) is ContractKind.ARCHIVE_CONSTRUCTION_INTENT
 
     intent["versionId"] = "unexpected-version"
+    with pytest.raises(ContractError) as captured:
+        validate_contract(intent)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+def test_archive_construction_requires_a_distinct_archived_manifest() -> None:
+    intent = _load_object(FIXTURE_ROOT / "accepted/archive-construction-intent.json")
+    intent["candidateManifestDigest"] = deepcopy(intent["sourceManifestDigest"])
+
     with pytest.raises(ContractError) as captured:
         validate_contract(intent)
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
