@@ -324,6 +324,16 @@ def test_create_intent_requires_an_absent_source_manifest() -> None:
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
 
+def test_timestamp_format_validation_is_not_an_optional_environment_feature() -> None:
+    namespace = _load_object(FIXTURE_ROOT / "accepted/platform-namespace.json")
+    namespace["initializedAt"] = "not-a-dateZ"
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(namespace)
+
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
 @pytest.mark.parametrize(
     "format_identifier",
     ["lowerduckpond--v1", "lowerduckpond-state--v1", "lowerduckpond--state-v1"],

@@ -5,6 +5,7 @@ description = "Strict static-publication protocol contracts for Lower Duck Pond"
 requires-python = ">=3.14,<3.15"
 dependencies = [
   "jsonschema>=4.26.0,<5",
+  "rfc3339-validator>=0.1.4,<0.2",
   "rfc8785==0.1.4",
 ]
 
