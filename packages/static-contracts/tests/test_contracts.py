@@ -13,6 +13,7 @@ from lowerduckpond_static_contracts import (
     ContractKind,
     Digest,
     ErrorCode,
+    Operation,
     canonical_json_bytes,
     decode_contract,
     decode_request,
@@ -264,6 +265,38 @@ def test_successful_create_result_requires_an_undeployed_manifest(desired_state:
         validate_contract(result)
 
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+@pytest.mark.parametrize("status", ["succeeded", "failed"])
+@pytest.mark.parametrize(
+    "operation",
+    [operation.value for operation in Operation if operation is not Operation.CREATE],
+)
+def test_existing_tenant_results_require_a_tenant_identity(operation: str, status: str) -> None:
+    result = _load_object(FIXTURE_ROOT / "accepted/operation-result.json")
+    del result["canonicalOrigin"]
+    del result["manifest"]
+    result["operation"] = operation
+    result["status"] = status
+    result["tenantId"] = None
+    if status == "failed":
+        result["errorCode"] = "unavailable"
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(result)
+
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+def test_failed_create_result_may_precede_tenant_identity_generation() -> None:
+    result = _load_object(FIXTURE_ROOT / "accepted/operation-result.json")
+    del result["canonicalOrigin"]
+    del result["manifest"]
+    result["status"] = "failed"
+    result["tenantId"] = None
+    result["errorCode"] = "capacity_exceeded"
+
+    assert validate_contract(result) is ContractKind.OPERATION_RESULT
 
 
 @pytest.mark.parametrize(
