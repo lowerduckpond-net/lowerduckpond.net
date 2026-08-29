@@ -584,6 +584,47 @@ def test_successful_delete_result_cannot_return_a_desired_manifest() -> None:
     assert validate_contract(result) is ContractKind.OPERATION_RESULT
 
 
+def test_emergency_delete_result_has_non_job_provenance() -> None:
+    result = _load_object(FIXTURE_ROOT / "accepted/operation-result.json")
+    del result["manifest"]
+    result["operation"] = "delete"
+    result["provenance"] = {
+        "kind": "emergency-administrator",
+        "operatorPrincipal": "operator@example.test",
+        "reason": "verified operator recovery",
+    }
+
+    assert validate_contract(result) is ContractKind.OPERATION_RESULT
+
+    result["operation"] = "archive"
+    with pytest.raises(ContractError) as captured:
+        validate_contract(result)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+def test_operation_result_provenance_cannot_mix_job_and_emergency_identity() -> None:
+    result = _load_object(FIXTURE_ROOT / "accepted/operation-result.json")
+    provenance = result["provenance"]
+    assert type(provenance) is dict
+    del provenance["jobId"]
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(result)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+    provenance.update(
+        {
+            "kind": "emergency-administrator",
+            "jobId": "0198d17f-6f4a-7000-8000-000000000002",
+            "operatorPrincipal": "operator@example.test",
+            "reason": "verified operator recovery",
+        }
+    )
+    with pytest.raises(ContractError) as captured:
+        validate_contract(result)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
 @pytest.mark.parametrize(
     ("operation", "expected_state", "wrong_state"),
     [

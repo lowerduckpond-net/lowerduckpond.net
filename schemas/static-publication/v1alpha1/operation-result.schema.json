@@ -258,6 +258,32 @@
           ]
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "provenance": {
+            "properties": {
+              "kind": {
+                "const": "emergency-administrator"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          }
+        },
+        "required": [
+          "provenance"
+        ]
+      },
+      "then": {
+        "properties": {
+          "operation": {
+            "const": "delete"
+          }
+        }
+      }
     }
   ],
   "$defs": {
@@ -278,6 +304,48 @@
         "size"
       ],
       "type": "object"
+    },
+    "provenance": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "jobId": {
+              "$ref": "common.schema.json#/$defs/uuidv7"
+            },
+            "kind": {
+              "const": "authorization-job"
+            }
+          },
+          "required": [
+            "kind",
+            "jobId"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "emergency-administrator"
+            },
+            "operatorPrincipal": {
+              "$ref": "common.schema.json#/$defs/principal"
+            },
+            "reason": {
+              "maxLength": 1024,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "operatorPrincipal",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
     }
   },
   "oneOf": [
@@ -388,9 +456,6 @@
     "exportBundle": {
       "$ref": "#/$defs/exportBundle"
     },
-    "jobId": {
-      "$ref": "common.schema.json#/$defs/uuidv7"
-    },
     "kind": {
       "const": "OperationResult"
     },
@@ -399,6 +464,9 @@
     },
     "operation": {
       "$ref": "common.schema.json#/$defs/operation"
+    },
+    "provenance": {
+      "$ref": "#/$defs/provenance"
     },
     "status": {
       "enum": [
@@ -421,7 +489,7 @@
   "required": [
     "apiVersion",
     "kind",
-    "jobId",
+    "provenance",
     "correlationId",
     "operation",
     "status",

@@ -149,7 +149,8 @@ transport-independent worker interface. It is available only through the
 authenticated administrative SSH and sudo boundary and records the operator
 identity, correlation ID, and mandatory reason before deletion begins. A reason
 or correlation ID supplied through the provisioner is never authorization for
-this path.
+this path. Its immutable operation result carries emergency-administrator
+provenance rather than inventing an authorization-job ID.
 
 Every transition is idempotent and appends an audit event. Retrying the same
 correlation ID and request returns the established result. Automated notices,
