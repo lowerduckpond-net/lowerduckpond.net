@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Final, Protocol
 
 from lowerduckpond_static_contracts import (
+    ContractError,
     ContractKind,
     Digest,
     canonical_json_bytes,
@@ -587,11 +588,14 @@ def _inspect_portable_source(
         manifest_record,
         maximum_bytes=_MAXIMUM_MANIFEST_BYTES,
     )
-    provenance_manifest = decode_contract(
-        manifest_bytes,
-        expected_kind=ContractKind.SITE,
-        maximum_raw_bytes=_MAXIMUM_MANIFEST_BYTES,
-    )
+    try:
+        provenance_manifest = decode_contract(
+            manifest_bytes,
+            expected_kind=ContractKind.SITE,
+            maximum_raw_bytes=_MAXIMUM_MANIFEST_BYTES,
+        )
+    except ContractError as error:
+        raise PortableBundleError("portable manifest.json violates its contract") from error
     if canonical_json_bytes(provenance_manifest) != manifest_bytes:
         raise PortableBundleError("portable manifest.json is not canonical")
     checksum_bytes, _checksum_sha = _read_portable_record(

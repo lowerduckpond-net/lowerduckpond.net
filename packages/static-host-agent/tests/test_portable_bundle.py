@@ -873,6 +873,22 @@ def test_inspector_rejects_a_checksum_manifest_that_does_not_bind_exact_content(
         inspect_portable_bundle(path, expected_owner=_OWNER)
 
 
+def test_inspector_translates_an_invalid_manifest_to_the_portable_boundary(
+    tmp_path: Path,
+) -> None:
+    root = _populated_release(tmp_path)
+    path, _bundle = _build(tmp_path, root)
+    member_name = f"{PORTABLE_ENVELOPE}/manifest.json"
+    with zipfile.ZipFile(path) as archive:
+        manifest = archive.read(member_name)
+    _rewrite_stored_member(path, member_name, b"[" + manifest[1:])
+
+    with pytest.raises(PortableBundleError, match=r"manifest\.json violates") as raised:
+        inspect_portable_bundle(path, expected_owner=_OWNER)
+
+    assert isinstance(raised.value.__cause__, ContractError)
+
+
 def test_inspector_rejects_noncanonical_zip_metadata(tmp_path: Path) -> None:
     root = _populated_release(tmp_path)
     path, _bundle = _build(tmp_path, root)
