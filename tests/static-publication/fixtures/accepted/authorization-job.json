@@ -18,7 +18,7 @@
   "requestDigest": {
     "format": "lowerduckpond-request-v1",
     "algorithm": "sha256",
-    "value": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    "value": "00fa5c0147c5ec1a59d86ff94f17a3b72700bd8ca807386216aea7e58ac56c5d"
   },
   "artifact": null,
   "expectedSource": {

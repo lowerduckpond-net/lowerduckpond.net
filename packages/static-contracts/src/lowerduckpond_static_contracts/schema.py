@@ -14,6 +14,7 @@ from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import ValidationError
 from referencing import Registry, Resource
 
+from lowerduckpond_static_contracts._digest import REQUEST_DIGEST_FORMAT, digest_bytes
 from lowerduckpond_static_contracts.canonical import (
     MAX_CANONICAL_BYTES,
     MAX_RAW_REQUEST_BYTES,
@@ -168,6 +169,12 @@ def _validate_request(document: dict[str, object]) -> None:
 def _validate_job(document: dict[str, object]) -> None:
     request = cast(dict[str, object], document["request"])
     _validate_request(request)
+    expected_request_digest = digest_bytes(
+        canonical_json_bytes(request),
+        format_identifier=REQUEST_DIGEST_FORMAT,
+    ).to_dict()
+    if document["requestDigest"] != expected_request_digest:
+        raise ContractError(ErrorCode.SCHEMA_INVALID, "job request digest binding does not match")
     if document["artifact"] != request.get("artifact"):
         raise ContractError(ErrorCode.SCHEMA_INVALID, "job artifact binding does not match")
     expected = cast(dict[str, object], document["expectedSource"])

@@ -15,6 +15,7 @@ from lowerduckpond_static_contracts import (
     canonical_json_bytes,
     decode_contract,
     decode_request,
+    request_digest,
     validate_contract,
 )
 from lowerduckpond_static_contracts.schema import SCHEMA_FILE_BY_KIND, schema_for
@@ -201,6 +202,22 @@ def test_authorization_job_expected_source_bindings_are_not_optional_conventions
     expected = job["expectedSource"]
     assert type(expected) is dict
     expected["expectsTenantAbsent"] = False
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(job)
+
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+def test_authorization_job_request_digest_binds_the_embedded_request() -> None:
+    job = _load_object(FIXTURE_ROOT / "accepted/authorization-job.json")
+    request = job["request"]
+    assert type(request) is dict
+
+    assert job["requestDigest"] == request_digest(request).to_dict()
+    digest = job["requestDigest"]
+    assert type(digest) is dict
+    digest["value"] = "e" * 64
 
     with pytest.raises(ContractError) as captured:
         validate_contract(job)
