@@ -661,6 +661,25 @@ def test_non_delete_audit_entry_rejects_a_deletion_tombstone() -> None:
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
 
+@pytest.mark.parametrize("slug", ["hosting", "secure", "www", "t-0198d17f6f4a70008000000000000001"])
+def test_deletion_tombstone_rejects_reserved_released_slugs(slug: str) -> None:
+    entry = _load_object(FIXTURE_ROOT / "accepted/audit-entry.json")
+    entry["operation"] = "delete"
+    entry["deletionTombstone"] = {
+        "mode": "never-deployed",
+        "releasedSlugs": [slug],
+        "archiveRecordDigest": None,
+        "bucket": None,
+        "key": None,
+        "versionId": None,
+        "emergencyReason": None,
+    }
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(entry)
+    assert captured.value.code is ErrorCode.RESERVED_SLUG
+
+
 @pytest.mark.parametrize(
     "operation",
     [operation for operation in Operation if operation is not Operation.DELETE],

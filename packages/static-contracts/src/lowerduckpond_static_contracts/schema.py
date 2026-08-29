@@ -304,6 +304,15 @@ def _validate_transaction_intent(document: dict[str, object]) -> None:
         )
 
 
+def _validate_audit_entry(document: dict[str, object]) -> None:
+    tombstone = document.get("deletionTombstone")
+    if tombstone is None:
+        return
+    deletion = cast(dict[str, object], tombstone)
+    for slug in cast(list[object], deletion["releasedSlugs"]):
+        validate_slug(slug)
+
+
 _SEMANTIC_VALIDATORS: Final[dict[ContractKind, Callable[[dict[str, object]], None]]] = {
     ContractKind.PLATFORM_NAMESPACE: _validate_namespace,
     ContractKind.SITE: _validate_site,
@@ -312,6 +321,7 @@ _SEMANTIC_VALIDATORS: Final[dict[ContractKind, Callable[[dict[str, object]], Non
     ContractKind.OPERATION_RESULT: _validate_result,
     ContractKind.ARCHIVE_CONSTRUCTION_INTENT: _validate_archive_construction_intent,
     ContractKind.TRANSACTION_INTENT: _validate_transaction_intent,
+    ContractKind.AUDIT_ENTRY: _validate_audit_entry,
 }
 
 
