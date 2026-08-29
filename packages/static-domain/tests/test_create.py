@@ -130,6 +130,35 @@ def test_invalid_authoritative_inputs_are_rejected_before_generation(
     assert calls == []
 
 
+@pytest.mark.parametrize(
+    ("slug", "storage_mib", "entries", "error_code"),
+    [
+        ("hosting", 100, 5000, ErrorCode.RESERVED_SLUG),
+        ("duck-repair", 0, 5000, ErrorCode.SCHEMA_INVALID),
+        ("duck-repair", 101, 5000, ErrorCode.SCHEMA_INVALID),
+        ("duck-repair", 100, 0, ErrorCode.SCHEMA_INVALID),
+        ("duck-repair", 100, 5001, ErrorCode.SCHEMA_INVALID),
+    ],
+)
+def test_validated_create_values_enforce_their_pure_invariants(
+    slug: str,
+    storage_mib: int,
+    entries: int,
+    error_code: ErrorCode,
+) -> None:
+    with pytest.raises(ContractError) as captured:
+        ValidatedCreateRequest(slug, storage_mib, entries)
+
+    assert captured.value.code is error_code
+
+
+def test_validated_namespace_value_requires_the_pinned_tenant_suffix() -> None:
+    with pytest.raises(ContractError) as captured:
+        ValidatedPlatformNamespace("example.com")
+
+    assert captured.value.code is ErrorCode.INVALID_NAMESPACE
+
+
 def test_rejection_and_success_do_not_mutate_authoritative_inputs() -> None:
     request_document, namespace_document = _documents()
     request_document_before = deepcopy(request_document)
