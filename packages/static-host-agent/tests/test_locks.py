@@ -140,6 +140,17 @@ def test_lock_order_is_global_across_manager_instances(tmp_path: Path) -> None:
         pass
 
 
+def test_required_lock_mode_distinguishes_shared_from_exclusive(tmp_path: Path) -> None:
+    with LockManager.initialize(tmp_path, expected_owner=os.geteuid()) as manager:
+        with manager.acquire(LockName.EXPORT, mode=LockMode.SHARED):
+            manager.require_held(LockName.EXPORT)
+            manager.require_held(LockName.EXPORT, mode=LockMode.SHARED)
+            with pytest.raises(LockOrderError, match="exclusive mode"):
+                manager.require_held(LockName.EXPORT, mode=LockMode.EXCLUSIVE)
+        with manager.acquire(LockName.EXPORT, mode=LockMode.EXCLUSIVE):
+            manager.require_held(LockName.EXPORT, mode=LockMode.EXCLUSIVE)
+
+
 def test_nonblocking_exclusive_contention_returns_busy(tmp_path: Path) -> None:
     first = LockManager.initialize(tmp_path, expected_owner=os.geteuid())
     second = _manager(tmp_path)

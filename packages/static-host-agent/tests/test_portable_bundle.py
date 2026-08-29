@@ -13,6 +13,7 @@ from lowerduckpond_static_host_agent import (
     PORTABLE_BUNDLE_FORMAT,
     PORTABLE_ENVELOPE,
     LockManager,
+    LockMode,
     LockName,
     LockOrderError,
     PortableBundle,
@@ -33,6 +34,8 @@ _REGULAR_ATTRIBUTES = 0x81A40000
 _DIRECTORY_ATTRIBUTES = 0x41ED0010
 _PINNED_BUNDLE_BYTES = 2_346
 _PINNED_BUNDLE_SHA256 = "c949c78143843e2c867033e98d9ae8a43577250b0287aca63c0a95dde92a6f18"
+_HARDLINK_TREE_COUNT = 2
+_MAXIMUM_OBSERVED_DIRECTORY_DESCRIPTORS = 32
 
 
 def _manifest() -> dict[str, object]:
@@ -217,6 +220,28 @@ def test_builder_requires_export_lock_before_reading_the_snapshot(tmp_path: Path
     assert list(output_parent.iterdir()) == []
 
 
+def test_builder_requires_the_export_lock_exclusively(tmp_path: Path) -> None:
+    root = _populated_release(tmp_path)
+    lock_root = _private_directory(tmp_path, "locks")
+    output_parent = _private_directory(tmp_path, "output")
+
+    with (
+        LockManager.initialize(lock_root, expected_owner=_OWNER) as manager,
+        manager.acquire(LockName.EXPORT, mode=LockMode.SHARED),
+        pytest.raises(LockOrderError, match="exclusive mode"),
+    ):
+        build_portable_bundle(
+            root,
+            _manifest(),
+            output_parent=output_parent,
+            output_name="export.zip",
+            lock_manager=manager,
+            expected_owner=_OWNER,
+        )
+
+    assert list(output_parent.iterdir()) == []
+
+
 def test_builder_rejects_noncanonical_manifest_before_creating_output(tmp_path: Path) -> None:
     root = _populated_release(tmp_path)
     invalid = _manifest()
@@ -260,7 +285,7 @@ def test_builder_does_not_replace_or_remove_an_existing_output(tmp_path: Path) -
     with (
         LockManager.initialize(lock_root, expected_owner=_OWNER) as manager,
         manager.acquire(LockName.EXPORT),
-        pytest.raises(PortableBundleError, match="constructed safely"),
+        pytest.raises(PortableBundleError, match="must not replace"),
     ):
         build_portable_bundle(
             root,
@@ -272,6 +297,79 @@ def test_builder_does_not_replace_or_remove_an_existing_output(tmp_path: Path) -
         )
 
     assert output.read_bytes() == b"keep"
+
+
+def test_builder_does_not_publish_the_final_name_until_verification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _populated_release(tmp_path)
+    lock_root = _private_directory(tmp_path, "locks")
+    output_parent = _private_directory(tmp_path, "output")
+    output = output_parent / "export.zip"
+    real_write = os.write
+    observed_during_write = False
+
+    def observe_private_write(file_descriptor: int, content: bytes | memoryview) -> int:
+        nonlocal observed_during_write
+        assert not output.exists()
+        observed_during_write = True
+        return real_write(file_descriptor, content)
+
+    monkeypatch.setattr(
+        "lowerduckpond_static_host_agent.portable_bundle.os.write",
+        observe_private_write,
+    )
+
+    with (
+        LockManager.initialize(lock_root, expected_owner=_OWNER) as manager,
+        manager.acquire(LockName.EXPORT),
+    ):
+        build_portable_bundle(
+            root,
+            _manifest(),
+            output_parent=output_parent,
+            output_name=output.name,
+            lock_manager=manager,
+            expected_owner=_OWNER,
+        )
+
+    assert observed_during_write
+    assert output.is_file()
+    assert [path.name for path in output_parent.iterdir()] == [output.name]
+
+
+def test_interrupted_builder_leaves_no_final_or_temporary_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _populated_release(tmp_path)
+    lock_root = _private_directory(tmp_path, "locks")
+    output_parent = _private_directory(tmp_path, "output")
+
+    def interrupt_write(_file_descriptor: int, _content: bytes | memoryview) -> int:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(
+        "lowerduckpond_static_host_agent.portable_bundle.os.write",
+        interrupt_write,
+    )
+
+    with (
+        LockManager.initialize(lock_root, expected_owner=_OWNER) as manager,
+        manager.acquire(LockName.EXPORT),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        build_portable_bundle(
+            root,
+            _manifest(),
+            output_parent=output_parent,
+            output_name="export.zip",
+            lock_manager=manager,
+            expected_owner=_OWNER,
+        )
+
+    assert list(output_parent.iterdir()) == []
 
 
 def test_builder_removes_partial_output_when_the_source_changes(
@@ -314,6 +412,59 @@ def test_builder_removes_partial_output_when_the_source_changes(
         )
 
     assert list(output_parent.iterdir()) == []
+
+
+def test_builder_accepts_release_files_that_share_an_inode(tmp_path: Path) -> None:
+    root = _release(tmp_path)
+    index = _file(root, "index.html", b"shared")
+    os.link(index, root / "copy.html")
+
+    path, result = _build(tmp_path, root)
+
+    with zipfile.ZipFile(path) as archive:
+        assert archive.read(f"{PORTABLE_ENVELOPE}/content/index.html") == b"shared"
+        assert archive.read(f"{PORTABLE_ENVELOPE}/content/copy.html") == b"shared"
+    assert result.release_tree.entry_count == _HARDLINK_TREE_COUNT
+    assert len(result.release_tree.allocations) == _HARDLINK_TREE_COUNT
+
+
+def test_builder_bounds_open_descriptors_for_many_sibling_directories(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _release(tmp_path)
+    _file(root, "index.html", b"home")
+    for number in range(96):
+        _directory(root, f"directory-{number:03d}")
+    real_open = os.open
+    real_close = os.close
+    tracked: set[int] = set()
+    peak = 0
+
+    def track_open(
+        path: str | bytes | os.PathLike[str],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal peak
+        descriptor = real_open(path, flags, mode, dir_fd=dir_fd)
+        if flags & os.O_DIRECTORY:
+            tracked.add(descriptor)
+            peak = max(peak, len(tracked))
+        return descriptor
+
+    def track_close(descriptor: int) -> None:
+        tracked.discard(descriptor)
+        real_close(descriptor)
+
+    monkeypatch.setattr(os, "open", track_open)
+    monkeypatch.setattr(os, "close", track_close)
+
+    _build(tmp_path, root)
+
+    assert peak < _MAXIMUM_OBSERVED_DIRECTORY_DESCRIPTORS
 
 
 def test_builder_fails_closed_at_the_encoded_bundle_boundary(

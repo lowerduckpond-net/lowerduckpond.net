@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import secrets
 import stat
 import struct
 import unicodedata
@@ -20,7 +21,7 @@ from lowerduckpond_static_contracts import (
     validate_contract,
 )
 
-from lowerduckpond_static_host_agent.locks import LockManager, LockName
+from lowerduckpond_static_host_agent.locks import LockManager, LockMode, LockName
 from lowerduckpond_static_host_agent.release_tree import (
     DEFAULT_RELEASE_TREE_LIMITS,
     ReleaseTreeLimits,
@@ -136,7 +137,7 @@ def build_portable_bundle(  # noqa: PLR0912,PLR0913,PLR0915 - explicit trust wor
 ) -> PortableBundle:
     """Construct one byte-canonical stored ZIP while the export lock remains held."""
 
-    lock_manager.require_held(LockName.EXPORT)
+    lock_manager.require_held(LockName.EXPORT, mode=LockMode.EXCLUSIVE)
     _validate_output_name(output_name)
     validate_contract(manifest, expected_kind=ContractKind.SITE)
     manifest_bytes = canonical_json_bytes(manifest)
@@ -150,7 +151,9 @@ def build_portable_bundle(  # noqa: PLR0912,PLR0913,PLR0915 - explicit trust wor
     root_fd: int | None = None
     parent_fd: int | None = None
     output_fd: int | None = None
-    created = False
+    temporary_name: str | None = None
+    temporary_created = False
+    final_linked = False
     try:
         root_fd = os.open(release_root, _DIRECTORY_FLAGS)
         root_snapshot = _validate_root(
@@ -182,8 +185,10 @@ def build_portable_bundle(  # noqa: PLR0912,PLR0913,PLR0915 - explicit trust wor
             parent_fd,
             expected_owner=expected_owner,
         )
-        output_fd = os.open(output_name, _OUTPUT_FLAGS, _OUTPUT_MODE, dir_fd=parent_fd)
-        created = True
+        _require_output_absent(parent_fd, output_name)
+        temporary_name = f".m3-portable-{secrets.token_hex(16)}.partial"
+        output_fd = os.open(temporary_name, _OUTPUT_FLAGS, _OUTPUT_MODE, dir_fd=parent_fd)
+        temporary_created = True
         os.fchmod(output_fd, _OUTPUT_MODE)
         digest = hashlib.sha256()
         records: list[_CentralRecord] = []
@@ -239,8 +244,6 @@ def build_portable_bundle(  # noqa: PLR0912,PLR0913,PLR0915 - explicit trust wor
             or output_metadata.size != final_size
         ):
             raise PortableBundleError("portable output has an unsafe final inode shape")
-        os.fsync(parent_fd)
-
         final_measurement = measure_release_tree_snapshot(
             release_root,
             lock_manager=lock_manager,
@@ -250,6 +253,28 @@ def build_portable_bundle(  # noqa: PLR0912,PLR0913,PLR0915 - explicit trust wor
         if final_measurement != initial_measurement:
             raise PortableBundleError("portable source changed during bundle construction")
         _validate_root_generation(release_root, root_fd, root_snapshot)
+        os.link(
+            temporary_name,
+            output_name,
+            src_dir_fd=parent_fd,
+            dst_dir_fd=parent_fd,
+            follow_symlinks=False,
+        )
+        final_linked = True
+        os.unlink(temporary_name, dir_fd=parent_fd)
+        temporary_created = False
+        os.fsync(parent_fd)
+        published = _Snapshot.capture(os.fstat(output_fd))
+        named = _Snapshot.capture(os.stat(output_name, dir_fd=parent_fd, follow_symlinks=False))
+        if (
+            published != named
+            or not stat.S_ISREG(published.mode)
+            or published.owner != expected_owner
+            or stat.S_IMODE(published.mode) != _OUTPUT_MODE
+            or published.links != 1
+            or published.size != final_size
+        ):
+            raise PortableBundleError("portable output changed during atomic publication")
         return PortableBundle(
             output_name=output_name,
             bundle_size=final_size,
@@ -258,12 +283,18 @@ def build_portable_bundle(  # noqa: PLR0912,PLR0913,PLR0915 - explicit trust wor
             release_tree=initial_measurement,
         )
     except OSError as error:
-        if created and parent_fd is not None:
-            _remove_output(parent_fd, output_name)
+        if parent_fd is not None:
+            if final_linked:
+                _remove_output(parent_fd, output_name)
+            if temporary_created and temporary_name is not None:
+                _remove_output(parent_fd, temporary_name)
         raise PortableBundleError("portable bundle could not be constructed safely") from error
     except BaseException:
-        if created and parent_fd is not None:
-            _remove_output(parent_fd, output_name)
+        if parent_fd is not None:
+            if final_linked:
+                _remove_output(parent_fd, output_name)
+            if temporary_created and temporary_name is not None:
+                _remove_output(parent_fd, temporary_name)
         raise
     finally:
         for descriptor in (output_fd, parent_fd, root_fd):
@@ -326,6 +357,14 @@ def _validate_output_parent(
         raise PortableBundleError("portable output parent has an unsafe inode shape")
 
 
+def _require_output_absent(parent_fd: int, name: str) -> None:
+    try:
+        os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    raise PortableBundleError("portable output must not replace an existing path")
+
+
 def _scan_snapshot(
     root_fd: int,
     *,
@@ -334,60 +373,55 @@ def _scan_snapshot(
     limits: ReleaseTreeLimits,
 ) -> tuple[_SourceEntry, ...]:
     entries: list[_SourceEntry] = []
-    stack: list[tuple[int, tuple[str, ...]]] = [
-        (os.open(".", _DIRECTORY_FLAGS, dir_fd=root_fd), ())
-    ]
-    try:
-        while stack:
-            directory_fd, parent = stack.pop()
-            try:
-                with os.scandir(directory_fd) as iterator:
-                    children = sorted(iterator, key=lambda item: os.fsencode(item.name))
-                directories: list[tuple[int, tuple[str, ...]]] = []
-                for child in children:
-                    components = (*parent, child.name)
-                    path_bytes = _validate_source_path(components, limits=limits)
-                    snapshot = _Snapshot.capture(
-                        os.stat(child.name, dir_fd=directory_fd, follow_symlinks=False)
-                    )
-                    is_directory = stat.S_ISDIR(snapshot.mode)
-                    _validate_source_inode(
+    stack: list[tuple[tuple[str, ...], _Snapshot | None]] = [((), None)]
+    while stack:
+        parent, expected_directory = stack.pop()
+        directory_fd = _open_source_directory(root_fd, parent)
+        try:
+            if (
+                expected_directory is not None
+                and _Snapshot.capture(os.fstat(directory_fd)) != expected_directory
+            ):
+                raise PortableBundleError("portable source directory changed")
+            with os.scandir(directory_fd) as iterator:
+                children = sorted(iterator, key=lambda item: os.fsencode(item.name))
+            directories: list[tuple[tuple[str, ...], _Snapshot]] = []
+            for child in children:
+                components = (*parent, child.name)
+                path_bytes = _validate_source_path(components, limits=limits)
+                snapshot = _Snapshot.capture(
+                    os.stat(child.name, dir_fd=directory_fd, follow_symlinks=False)
+                )
+                is_directory = stat.S_ISDIR(snapshot.mode)
+                _validate_source_inode(
+                    snapshot,
+                    is_directory=is_directory,
+                    expected_owner=expected_owner,
+                    expected_device=expected_device,
+                )
+                if is_directory:
+                    directories.append((components, snapshot))
+                    entry = _SourceEntry(components, path_bytes, True, snapshot, 0, None)
+                else:
+                    crc32, sha256 = _hash_source_file(
+                        root_fd,
+                        components,
                         snapshot,
-                        is_directory=is_directory,
-                        expected_owner=expected_owner,
-                        expected_device=expected_device,
                     )
-                    if is_directory:
-                        child_fd = os.open(child.name, _DIRECTORY_FLAGS, dir_fd=directory_fd)
-                        if _Snapshot.capture(os.fstat(child_fd)) != snapshot:
-                            os.close(child_fd)
-                            raise PortableBundleError("portable source directory changed")
-                        directories.append((child_fd, components))
-                        entry = _SourceEntry(components, path_bytes, True, snapshot, 0, None)
-                    else:
-                        crc32, sha256 = _hash_source_file(
-                            root_fd,
-                            components,
-                            snapshot,
-                        )
-                        entry = _SourceEntry(
-                            components,
-                            path_bytes,
-                            False,
-                            snapshot,
-                            crc32,
-                            sha256,
-                        )
-                    entries.append(entry)
-                    if len(entries) > limits.maximum_entries:
-                        raise PortableBundleError("portable source crosses its entry boundary")
-                stack.extend(reversed(directories))
-            finally:
-                os.close(directory_fd)
-    except BaseException:
-        for descriptor, _path in stack:
-            os.close(descriptor)
-        raise
+                    entry = _SourceEntry(
+                        components,
+                        path_bytes,
+                        False,
+                        snapshot,
+                        crc32,
+                        sha256,
+                    )
+                entries.append(entry)
+                if len(entries) > limits.maximum_entries:
+                    raise PortableBundleError("portable source crosses its entry boundary")
+            stack.extend(reversed(directories))
+        finally:
+            os.close(directory_fd)
     return tuple(sorted(entries, key=lambda entry: entry.path_bytes))
 
 
@@ -430,7 +464,6 @@ def _validate_source_inode(
         not expected_type(snapshot.mode)
         or snapshot.owner != expected_owner
         or stat.S_IMODE(snapshot.mode) != expected_mode
-        or (not is_directory and snapshot.links != 1)
         or snapshot.device != expected_device
     ):
         raise PortableBundleError("portable source contains an unsafe inode")
@@ -447,6 +480,19 @@ def _open_source_file(root_fd: int, components: tuple[str, ...]) -> tuple[int, i
         return parent_fd, file_fd
     except BaseException:
         os.close(parent_fd)
+        raise
+
+
+def _open_source_directory(root_fd: int, components: tuple[str, ...]) -> int:
+    directory_fd = os.open(".", _DIRECTORY_FLAGS, dir_fd=root_fd)
+    try:
+        for component in components:
+            child = os.open(component, _DIRECTORY_FLAGS, dir_fd=directory_fd)
+            os.close(directory_fd)
+            directory_fd = child
+        return directory_fd
+    except BaseException:
+        os.close(directory_fd)
         raise
 
 
