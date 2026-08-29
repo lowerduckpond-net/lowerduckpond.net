@@ -5,6 +5,7 @@
   "tenantId": "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100",
   "correlationId": "0198d17f-6f4a-7000-8000-000000000001",
   "operation": "deploy",
+  "archiveRecovery": null,
   "sourceManifestDigest": {
     "format": "lowerduckpond-manifest-v1",
     "algorithm": "sha256",

@@ -1,6 +1,87 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://schemas.lowerduckpond.net/static-publication/v1alpha1/transaction-intent.schema.json",
+  "$defs": {
+    "archiveRecovery": {
+      "additionalProperties": false,
+      "properties": {
+        "candidateArchiveRecord": {
+          "$ref": "archive-record.schema.json"
+        },
+        "candidateManifest": {
+          "$ref": "site.schema.json",
+          "properties": {
+            "spec": {
+              "properties": {
+                "desiredState": {
+                  "const": "archived"
+                }
+              },
+              "required": [
+                "desiredState"
+              ]
+            }
+          }
+        },
+        "candidateRouteSet": {
+          "const": "absent"
+        },
+        "candidateRuntimeGenerationId": {
+          "$ref": "common.schema.json#/$defs/uuidv7"
+        },
+        "sourceManifest": {
+          "$ref": "site.schema.json",
+          "properties": {
+            "spec": {
+              "properties": {
+                "desiredState": {
+                  "enum": [
+                    "active",
+                    "suspended"
+                  ]
+                }
+              },
+              "required": [
+                "desiredState"
+              ]
+            }
+          }
+        },
+        "sourceObservedState": {
+          "$ref": "tenant-observed-state.schema.json",
+          "properties": {
+            "observedState": {
+              "enum": [
+                "active",
+                "suspended"
+              ]
+            }
+          }
+        },
+        "sourceRouteSet": {
+          "enum": [
+            "both",
+            "absent"
+          ],
+          "type": "string"
+        },
+        "sourceRuntimeGenerationId": {
+          "$ref": "common.schema.json#/$defs/uuidv7"
+        }
+      },
+      "required": [
+        "sourceManifest",
+        "sourceObservedState",
+        "sourceRuntimeGenerationId",
+        "sourceRouteSet",
+        "candidateManifest",
+        "candidateArchiveRecord",
+        "candidateRuntimeGenerationId",
+        "candidateRouteSet"
+      ],
+      "type": "object"
+    }
+  },
   "additionalProperties": false,
   "allOf": [
     {
@@ -54,11 +135,47 @@
           }
         }
       }
+    },
+    {
+      "else": {
+        "properties": {
+          "archiveRecovery": {
+            "type": "null"
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "archive"
+          }
+        },
+        "required": [
+          "operation"
+        ]
+      },
+      "then": {
+        "properties": {
+          "archiveRecovery": {
+            "$ref": "#/$defs/archiveRecovery"
+          }
+        }
+      }
     }
   ],
   "properties": {
     "apiVersion": {
       "$ref": "common.schema.json#/$defs/apiVersion"
+    },
+    "archiveRecovery": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/archiveRecovery"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "candidateManifestDigest": {
       "oneOf": [
@@ -114,6 +231,7 @@
     "tenantId",
     "correlationId",
     "operation",
+    "archiveRecovery",
     "sourceManifestDigest",
     "candidateManifestDigest",
     "phase",

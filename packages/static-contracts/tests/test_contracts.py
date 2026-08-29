@@ -17,6 +17,7 @@ from lowerduckpond_static_contracts import (
     canonical_json_bytes,
     decode_contract,
     decode_request,
+    manifest_digest,
     request_digest,
     validate_contract,
 )
@@ -643,6 +644,65 @@ def test_delete_intent_requires_an_absent_candidate_manifest() -> None:
     with pytest.raises(ContractError) as captured:
         validate_contract(intent)
 
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+def _archive_transaction_intent() -> dict[str, object]:
+    intent = _load_object(FIXTURE_ROOT / "accepted/transaction-intent.json")
+    source = _load_object(FIXTURE_ROOT / "accepted/site.json")
+    candidate = deepcopy(source)
+    candidate_spec = candidate["spec"]
+    assert type(candidate_spec) is dict
+    candidate_spec["desiredState"] = "archived"
+    source_digest = manifest_digest(source).to_dict()
+    candidate_digest = manifest_digest(candidate).to_dict()
+    observed = _load_object(FIXTURE_ROOT / "accepted/tenant-observed-state.json")
+    observed["desiredManifestDigest"] = source_digest
+    archive = _load_object(FIXTURE_ROOT / "accepted/archive-record.json")
+    archive["manifestDigest"] = candidate_digest
+    intent.update(
+        {
+            "operation": "archive",
+            "sourceManifestDigest": source_digest,
+            "candidateManifestDigest": candidate_digest,
+            "archiveRecovery": {
+                "sourceManifest": source,
+                "sourceObservedState": observed,
+                "sourceRuntimeGenerationId": observed["runtimeGenerationId"],
+                "sourceRouteSet": "both",
+                "candidateManifest": candidate,
+                "candidateArchiveRecord": archive,
+                "candidateRuntimeGenerationId": "0198d17f-6f4a-7000-8000-000000000006",
+                "candidateRouteSet": "absent",
+            },
+        }
+    )
+    return intent
+
+
+def test_archive_transaction_intent_binds_both_recovery_outcomes() -> None:
+    intent = _archive_transaction_intent()
+
+    assert validate_contract(intent) is ContractKind.TRANSACTION_INTENT
+
+    recovery = intent["archiveRecovery"]
+    assert type(recovery) is dict
+    recovery["sourceRouteSet"] = "absent"
+    with pytest.raises(ContractError) as captured:
+        validate_contract(intent)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+def test_archive_transaction_intent_binds_the_verified_archive_record() -> None:
+    intent = _archive_transaction_intent()
+    recovery = intent["archiveRecovery"]
+    assert type(recovery) is dict
+    archive = recovery["candidateArchiveRecord"]
+    assert type(archive) is dict
+    archive["manifestDigest"] = intent["sourceManifestDigest"]
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(intent)
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
 

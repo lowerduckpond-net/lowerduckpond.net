@@ -14,7 +14,11 @@ from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import ValidationError
 from referencing import Registry, Resource
 
-from lowerduckpond_static_contracts._digest import REQUEST_DIGEST_FORMAT, digest_bytes
+from lowerduckpond_static_contracts._digest import (
+    MANIFEST_DIGEST_FORMAT,
+    REQUEST_DIGEST_FORMAT,
+    digest_bytes,
+)
 from lowerduckpond_static_contracts.canonical import (
     MAX_CANONICAL_BYTES,
     MAX_RAW_REQUEST_BYTES,
@@ -234,6 +238,72 @@ def _validate_archive_construction_intent(document: dict[str, object]) -> None:
         )
 
 
+def _manifest_digest(document: dict[str, object]) -> dict[str, str]:
+    return digest_bytes(
+        canonical_json_bytes(document),
+        format_identifier=MANIFEST_DIGEST_FORMAT,
+    ).to_dict()
+
+
+def _validate_transaction_intent(document: dict[str, object]) -> None:
+    if document["operation"] != "archive":
+        return
+    recovery = cast(dict[str, object], document["archiveRecovery"])
+    source = cast(dict[str, object], recovery["sourceManifest"])
+    candidate = cast(dict[str, object], recovery["candidateManifest"])
+    observed = cast(dict[str, object], recovery["sourceObservedState"])
+    archive = cast(dict[str, object], recovery["candidateArchiveRecord"])
+    _validate_site(source)
+    _validate_site(candidate)
+
+    tenant_id = document["tenantId"]
+    source_metadata = cast(dict[str, object], source["metadata"])
+    candidate_metadata = cast(dict[str, object], candidate["metadata"])
+    if source_metadata["id"] != tenant_id or candidate_metadata != source_metadata:
+        raise ContractError(ErrorCode.SCHEMA_INVALID, "archive intent tenant identity drifted")
+    if document["sourceManifestDigest"] != _manifest_digest(source):
+        raise ContractError(ErrorCode.SCHEMA_INVALID, "archive source manifest binding is invalid")
+    if document["candidateManifestDigest"] != _manifest_digest(candidate):
+        raise ContractError(
+            ErrorCode.SCHEMA_INVALID, "archive candidate manifest binding is invalid"
+        )
+
+    source_spec = cast(dict[str, object], source["spec"])
+    candidate_spec = cast(dict[str, object], candidate["spec"])
+    source_state = source_spec["desiredState"]
+    expected_candidate_spec = deepcopy(source_spec)
+    expected_candidate_spec["desiredState"] = "archived"
+    if source_state not in {"active", "suspended"} or candidate_spec != expected_candidate_spec:
+        raise ContractError(ErrorCode.SCHEMA_INVALID, "archive candidate state is invalid")
+
+    source_deployment = cast(dict[str, object], source_spec["desiredDeployment"])
+    if (
+        observed["tenantId"] != tenant_id
+        or observed["desiredManifestDigest"] != document["sourceManifestDigest"]
+        or observed["observedState"] != source_state
+        or observed["activeDeploymentId"] != source_deployment["id"]
+    ):
+        raise ContractError(ErrorCode.SCHEMA_INVALID, "archive observed-state binding is invalid")
+    expected_routes = "both" if source_state == "active" else "absent"
+    if recovery["sourceRouteSet"] != expected_routes:
+        raise ContractError(ErrorCode.SCHEMA_INVALID, "archive source route binding is invalid")
+    if source_state == "active" and (
+        observed["runtimeGenerationId"] != recovery["sourceRuntimeGenerationId"]
+    ):
+        raise ContractError(ErrorCode.SCHEMA_INVALID, "archive source runtime binding is invalid")
+
+    if (
+        archive["tenantId"] != tenant_id
+        or archive["deploymentId"] != source_deployment["id"]
+        or archive["manifestDigest"] != document["candidateManifestDigest"]
+    ):
+        raise ContractError(ErrorCode.SCHEMA_INVALID, "archive record binding is invalid")
+    if recovery["candidateRuntimeGenerationId"] == recovery["sourceRuntimeGenerationId"]:
+        raise ContractError(
+            ErrorCode.SCHEMA_INVALID, "archive runtime generations are not distinct"
+        )
+
+
 _SEMANTIC_VALIDATORS: Final[dict[ContractKind, Callable[[dict[str, object]], None]]] = {
     ContractKind.PLATFORM_NAMESPACE: _validate_namespace,
     ContractKind.SITE: _validate_site,
@@ -241,6 +311,7 @@ _SEMANTIC_VALIDATORS: Final[dict[ContractKind, Callable[[dict[str, object]], Non
     ContractKind.AUTHORIZATION_JOB: _validate_job,
     ContractKind.OPERATION_RESULT: _validate_result,
     ContractKind.ARCHIVE_CONSTRUCTION_INTENT: _validate_archive_construction_intent,
+    ContractKind.TRANSACTION_INTENT: _validate_transaction_intent,
 }
 
 
