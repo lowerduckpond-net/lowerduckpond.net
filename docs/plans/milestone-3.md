@@ -1,7 +1,7 @@
 # Milestone 3 implementation plan
 
-- Status: implementation in progress; M3.0 qualification complete
-- Updated: 2026-08-27
+- Status: implementation in progress; M3.0 through M3.4 complete
+- Updated: 2026-08-29
 - Outcome: deliver the complete static-tenant lifecycle through the trusted
   workstation without enabling the Milestone 4 public control plane
 
@@ -220,7 +220,7 @@ four DNS records, four Authenticated Origin Pulls associations, six rulesets,
 ACME records, and four uploaded leaves absent. Both temporary Cloudflare tokens
 were revoked and disposable trusted-workstation material was removed. The
 backed-up CA roots remain retained pending the production-CA decision required
-before M3.12. M3.1 through M3.3 subsequently completed, and M3.4 is the next
+before M3.12. M3.1 through M3.4 subsequently completed, and M3.5 is the next
 implementation phase; the M3.0 result does not enable production or satisfy
 any later Milestone 3 gate.
 
@@ -316,7 +316,7 @@ and an independent version-aware and multipart-aware probe proved the entire
 archive bucket empty. Protected run `33219502391` then passed ordinary
 production policy and reported no changes with the migration flag disabled.
 The archive credential remains in operator custody and off the production host
-until M3.10. M3.2 and M3.3 subsequently completed, and M3.4 is the next
+until M3.10. M3.2 through M3.4 subsequently completed, and M3.5 is the next
 implementation phase; M3.1 does not enable production or satisfy any later
 Milestone 3 gate.
 
@@ -461,7 +461,7 @@ retain the greater absolute-or-10-percent free floors. Public policy overrides
 may tighten but cannot weaken the recorded ceilings. Exact and one-over
 boundaries, hostile names and inode types, hardlinks, sparse allocation
 accounting, metadata-independent digest fixtures, and mutations before, during,
-and after content hashing are executable tests. M3.4 will supply archive
+and after content hashing are executable tests. M3.4 supplies archive
 preflight's worst-case reservation to this inert M3.3 kernel; it will not change
 the accounting or digest contract.
 
@@ -552,6 +552,13 @@ state has been initialized.
 
 ### M3.4: implement the hostile ZIP and portable-bundle engine
 
+Implementation status: complete. Five independently reviewed slices deliver
+the structural hostile-ZIP gate, bounded descriptor-relative extraction,
+canonical portable-bundle export, provenance-only portable import, and the
+inert archive-worker sandbox contract. The complete engine remains
+library-only; M3.5 is the next implementation phase and will install the dark
+host boundary that consumes it.
+
 Build the bounded structural ZIP gate before calling a general decoder. Parse
 end records, central records, local headers, flags, methods, lengths, offsets,
 regions, names, extra fields, and comments with explicit integer and allocation
@@ -639,8 +646,9 @@ memory, swap, task, descriptor, CPU, effective runtime, and one-CPU ceilings;
 removes capabilities, child-process creation, socket, keyring, io_uring,
 cross-process signal, process-memory, descriptor-transfer, and same-UID
 resource-control calls; denies host-wide sync and UID-shared inotify quota
-operations; disables core dumps; discards all standard streams; makes `/proc`
-wholly inaccessible; and applies strict filesystem, home, device, kernel, IPC,
+operations; denies asynchronous-I/O ownership controls and POSIX timer creation;
+disables core dumps; discards all standard streams; makes `/proc` wholly
+inaccessible; and applies strict filesystem, home, device, kernel, IPC,
 namespace, and syscall controls. A read-only empty filesystem view
 with no independent temporary output then exposes only one self-contained
 runtime, one immutable artifact, and one writable staging parent through

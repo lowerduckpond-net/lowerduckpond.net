@@ -59,6 +59,8 @@ ARCHIVE_SANDBOX_STATIC_PROPERTIES: Final[tuple[tuple[str, str], ...]] = (
     ("SystemCallFilter", "~prlimit64"),
     ("SystemCallFilter", "~sync syncfs"),
     ("SystemCallFilter", "~inotify_init inotify_init1 inotify_add_watch"),
+    ("SystemCallFilter", "~fcntl fcntl64 ioctl"),
+    ("SystemCallFilter", "~timer_create"),
     ("SystemCallFilter", "~io_uring_setup io_uring_register io_uring_enter"),
     ("SystemCallFilter", "~clone clone3 fork vfork"),
     (

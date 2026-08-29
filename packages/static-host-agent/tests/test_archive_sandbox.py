@@ -52,6 +52,8 @@ _EXPECTED_SYSTEM_CALL_FILTERS = (
     "~prlimit64",
     "~sync syncfs",
     "~inotify_init inotify_init1 inotify_add_watch",
+    "~fcntl fcntl64 ioctl",
+    "~timer_create",
     "~io_uring_setup io_uring_register io_uring_enter",
     "~clone clone3 fork vfork",
     "~kill tkill tgkill rt_sigqueueinfo rt_tgsigqueueinfo pidfd_send_signal",
