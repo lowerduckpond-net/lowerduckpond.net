@@ -124,11 +124,13 @@ code; no request supplies a path component.
 /opt/lowerduckpond/static-host-agent/<version>/  # immutable installed code
 /opt/lowerduckpond/static-host-agent/current     # root-selected version ref
 /var/lib/lowerduckpond/static/
-├── platform/                 # namespace and launch records
+├── platform/
+│   ├── namespace.json
+│   └── launch.json
 ├── tenants/<uuid>/
 │   ├── desired.json
 │   ├── observed.json
-│   ├── deployments/
+│   ├── deployments/<deployment-uuid>.json
 │   └── archives/
 ├── authorization/
 │   ├── jobs/
@@ -422,10 +424,26 @@ publication, atomic replacement, file and parent-directory sync, durable
 removal, verified kernel lock inodes, nonblocking shared and exclusive locks,
 and executable `intake → export → publication → tenant-state` ordering across
 manager instances. Exception and process-exit injection proves that the file
-primitives expose only absence or one complete old or new state. The root state
-repository, strict readers and compare-and-swap layer, release-tree digests,
-capacity admission, hash-chained audit, correlation idempotency, and intent
-discovery remain in M3.3 and do not move to a later phase.
+primitives expose only absence or one complete old or new state.
+
+The second stacked review slice adds the root-owned record repository. Typed
+factories expose only the committed platform, desired, observed, and deployment
+paths and bind tenant and deployment identities back to those paths. Every
+reader performs descriptor-relative no-follow traversal; requires the expected
+owner, exact `0700` directory and `0600` record modes, and one-link regular
+files; bounds and stability-checks bytes; then requires the expected schema and
+the exact canonical representation. Repository reads take shared tenant-state;
+immutable creation and compare-and-swap take it exclusively. Transaction
+objects reject writes under shared locks and become unusable after their lock
+scope. The compare-and-swap revision is a storage-local, domain-separated
+digest of the contract kind and exact canonical bytes. It is deliberately not
+a manifest, deployment, archive, or other protocol digest and cannot be used in
+those fields. Thread and process races prove that two writers starting from one
+revision produce one commit and one conflict.
+
+Release-tree digests, capacity admission, hash-chained audit, correlation
+idempotency, the remaining record layouts, intent discovery and recovery remain
+in M3.3 and do not move to a later phase.
 
 Create the host-agent package around the root-domain constructor and add its
 root-only state repository. Implement

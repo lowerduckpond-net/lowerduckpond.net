@@ -18,6 +18,7 @@ from lowerduckpond_static_host_agent.durable import (
     StateAlreadyExistsError,
     StatePathError,
     validate_regular_state_file,
+    validate_state_directory,
 )
 
 _LOCK_OPEN_FLAGS: Final = os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -70,20 +71,41 @@ class _HeldLock:
 class LockManager:
     """Acquire verified lock inodes without allowing order inversions."""
 
-    def __init__(self, directory: Path, *, expected_owner: int) -> None:
-        try:
-            self._directory_fd = os.open(
-                directory,
-                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-            )
-        except OSError as error:
-            if error.errno in {errno.ELOOP, errno.ENOTDIR}:
-                raise StatePathError("lock root is not a no-follow directory") from error
-            raise
+    def __init__(
+        self,
+        directory: Path | DurableDirectory,
+        *,
+        expected_owner: int,
+        expected_directory_mode: int | None = None,
+    ) -> None:
+        if isinstance(directory, DurableDirectory):
+            self._directory_fd = directory.duplicate_descriptor()
+        else:
+            try:
+                self._directory_fd = os.open(
+                    directory,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                )
+            except OSError as error:
+                if error.errno in {errno.ELOOP, errno.ENOTDIR}:
+                    raise StatePathError("lock root is not a no-follow directory") from error
+                raise
         self._expected_owner = expected_owner
+        self._expected_directory_mode = expected_directory_mode
         self._token = object()
         self._active_count = 0
         self._state_guard = threading.Lock()
+        if expected_directory_mode is not None:
+            try:
+                validate_state_directory(
+                    self._directory_fd,
+                    expected_owner=expected_owner,
+                    expected_mode=expected_directory_mode,
+                )
+            except BaseException:
+                os.close(self._directory_fd)
+                self._directory_fd = -1
+                raise
 
     @classmethod
     def initialize(cls, directory: Path, *, expected_owner: int) -> LockManager:
@@ -130,6 +152,12 @@ class LockManager:
         with self._state_guard:
             if self._directory_fd < 0:
                 raise RuntimeError("lock manager is closed")
+            if self._expected_directory_mode is not None:
+                validate_state_directory(
+                    self._directory_fd,
+                    expected_owner=self._expected_owner,
+                    expected_mode=self._expected_directory_mode,
+                )
             return self._directory_fd
 
     def __enter__(self) -> LockManager:

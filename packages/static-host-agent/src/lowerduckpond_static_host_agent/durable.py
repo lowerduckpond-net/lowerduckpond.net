@@ -15,6 +15,7 @@ from typing import Final, Self
 
 _DIRECTORY_OPEN_FLAGS: Final = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 _FILE_CREATE_FLAGS: Final = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+_FILE_READ_FLAGS: Final = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC
 _RENAME_NOREPLACE: Final = 1
 _TEMP_NAME_PREFIX: Final = ".ldp-state-"
 
@@ -80,6 +81,23 @@ def _write_all(file_descriptor: int, data: bytes, hook: FailureHook | None) -> N
         _notify(hook, DurabilityBoundary.WRITE)
 
 
+def _read_bounded(file_descriptor: int, *, maximum_bytes: int, expected_size: int) -> bytes:
+    chunks: list[bytes] = []
+    remaining = maximum_bytes + 1
+    while remaining:
+        chunk = os.read(file_descriptor, min(remaining, 64 * 1024))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    data = b"".join(chunks)
+    if len(data) > maximum_bytes:
+        raise StatePathError("state object exceeds its read limit")
+    if len(data) != expected_size:
+        raise StatePathError("state object size changed while it was read")
+    return data
+
+
 def _rename_noreplace(directory_fd: int, source: str, destination: str) -> None:
     try:
         renameat2 = ctypes.CDLL(None, use_errno=True).renameat2
@@ -108,13 +126,30 @@ def _rename_noreplace(directory_fd: int, source: str, destination: str) -> None:
 class DurableDirectory:
     """An opened trusted root for fixed, descriptor-relative state paths."""
 
-    def __init__(self, directory_fd: int) -> None:
+    def __init__(
+        self,
+        directory_fd: int,
+        *,
+        expected_owner: int | None,
+        expected_directory_mode: int | None,
+    ) -> None:
         self._directory_fd = directory_fd
+        self._expected_owner = expected_owner
+        self._expected_directory_mode = expected_directory_mode
         self._closed = False
 
     @classmethod
-    def open(cls, path: Path) -> Self:
+    def open(
+        cls,
+        path: Path,
+        *,
+        expected_owner: int | None = None,
+        expected_directory_mode: int | None = None,
+    ) -> Self:
         """Open the fixed state root without following its final component."""
+
+        if (expected_owner is None) != (expected_directory_mode is None):
+            raise ValueError("directory owner and mode validation must be configured together")
 
         try:
             directory_fd = os.open(path, _DIRECTORY_OPEN_FLAGS)
@@ -122,7 +157,24 @@ class DurableDirectory:
             if error.errno in {errno.ELOOP, errno.ENOTDIR}:
                 raise StatePathError("state root is not a no-follow directory") from error
             raise
-        return cls(directory_fd)
+        try:
+            if expected_owner is not None and expected_directory_mode is not None:
+                opened = validate_state_directory(
+                    directory_fd,
+                    expected_owner=expected_owner,
+                    expected_mode=expected_directory_mode,
+                )
+                current = path.stat(follow_symlinks=False)
+                if (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
+                    raise StatePathError("state root changed while it was opened")
+        except BaseException:
+            os.close(directory_fd)
+            raise
+        return cls(
+            directory_fd,
+            expected_owner=expected_owner,
+            expected_directory_mode=expected_directory_mode,
+        )
 
     def __enter__(self) -> Self:
         self._require_open()
@@ -140,6 +192,24 @@ class DurableDirectory:
         if not self._closed:
             os.close(self._directory_fd)
             self._closed = True
+
+    def duplicate_descriptor(self) -> int:
+        """Return a caller-owned duplicate of this verified directory descriptor."""
+
+        self._require_open()
+        return os.dup(self._directory_fd)
+
+    def open_descendant(self, components: tuple[str, ...]) -> DurableDirectory:
+        """Open a verified descendant directory without resolving the root path again."""
+
+        if not components:
+            raise StatePathError("a descendant directory path must not be empty")
+        directory_fd = self._open_directory(components)
+        return DurableDirectory(
+            directory_fd,
+            expected_owner=self._expected_owner,
+            expected_directory_mode=self._expected_directory_mode,
+        )
 
     def create_immutable(
         self,
@@ -262,6 +332,62 @@ class DurableDirectory:
         finally:
             os.close(parent_fd)
 
+    def read_regular(
+        self,
+        components: tuple[str, ...],
+        *,
+        expected_owner: int,
+        expected_mode: int,
+        maximum_bytes: int,
+    ) -> bytes:
+        """Read one bounded, stable, no-follow regular file from the trusted root."""
+
+        if maximum_bytes < 0:
+            raise ValueError("maximum_bytes must not be negative")
+        parent_fd, filename = self._open_parent(components)
+        file_fd: int | None = None
+        try:
+            try:
+                file_fd = os.open(filename, _FILE_READ_FLAGS, dir_fd=parent_fd)
+            except OSError as error:
+                if error.errno in {errno.ELOOP, errno.ENOTDIR}:
+                    raise StatePathError(
+                        "state path does not end in a no-follow regular file"
+                    ) from error
+                raise
+            before = validate_regular_state_file(
+                file_fd,
+                expected_owner=expected_owner,
+                expected_mode=expected_mode,
+            )
+            current = os.stat(filename, dir_fd=parent_fd, follow_symlinks=False)
+            if (before.st_dev, before.st_ino) != (current.st_dev, current.st_ino):
+                raise StatePathError("state inode changed while it was opened")
+            if before.st_size > maximum_bytes:
+                raise StatePathError("state object exceeds its read limit")
+
+            data = _read_bounded(
+                file_fd,
+                maximum_bytes=maximum_bytes,
+                expected_size=before.st_size,
+            )
+
+            after = validate_regular_state_file(
+                file_fd,
+                expected_owner=expected_owner,
+                expected_mode=expected_mode,
+            )
+            if _state_file_generation(before) != _state_file_generation(after):
+                raise StatePathError("state object changed while it was read")
+            current = os.stat(filename, dir_fd=parent_fd, follow_symlinks=False)
+            if (after.st_dev, after.st_ino) != (current.st_dev, current.st_ino):
+                raise StatePathError("state inode changed while it was read")
+            return data
+        finally:
+            if file_fd is not None:
+                os.close(file_fd)
+            os.close(parent_fd)
+
     def _require_open(self) -> None:
         if self._closed:
             raise RuntimeError("durable directory is closed")
@@ -269,18 +395,53 @@ class DurableDirectory:
     def _open_parent(self, components: tuple[str, ...]) -> tuple[int, str]:
         self._require_open()
         _validate_components(components)
+        return self._open_directory(components[:-1]), components[-1]
+
+    def _open_directory(self, components: tuple[str, ...]) -> int:
+        self._require_open()
+        if components:
+            _validate_components(components)
         current_fd = os.dup(self._directory_fd)
         try:
-            for component in components[:-1]:
+            if self._expected_owner is not None and self._expected_directory_mode is not None:
+                validate_state_directory(
+                    current_fd,
+                    expected_owner=self._expected_owner,
+                    expected_mode=self._expected_directory_mode,
+                )
+            for component in components:
                 next_fd = os.open(component, _DIRECTORY_OPEN_FLAGS, dir_fd=current_fd)
+                try:
+                    if (
+                        self._expected_owner is not None
+                        and self._expected_directory_mode is not None
+                    ):
+                        opened = validate_state_directory(
+                            next_fd,
+                            expected_owner=self._expected_owner,
+                            expected_mode=self._expected_directory_mode,
+                        )
+                        current = os.stat(
+                            component,
+                            dir_fd=current_fd,
+                            follow_symlinks=False,
+                        )
+                        if (opened.st_dev, opened.st_ino) != (
+                            current.st_dev,
+                            current.st_ino,
+                        ):
+                            raise StatePathError("state directory changed while it was opened")
+                except BaseException:
+                    os.close(next_fd)
+                    raise
                 os.close(current_fd)
                 current_fd = next_fd
-        except OSError as error:
+        except BaseException as error:
             os.close(current_fd)
-            if error.errno in {errno.ELOOP, errno.ENOTDIR}:
+            if isinstance(error, OSError) and error.errno in {errno.ELOOP, errno.ENOTDIR}:
                 raise StatePathError("state path traverses a non-directory or link") from error
             raise
-        return current_fd, components[-1]
+        return current_fd
 
     @staticmethod
     def _remove_temporary(parent_fd: int, temporary_name: str) -> None:
@@ -309,3 +470,31 @@ def validate_regular_state_file(
     if metadata.st_nlink != 1:
         raise StatePathError("state object must have exactly one link")
     return metadata
+
+
+def validate_state_directory(
+    file_descriptor: int,
+    *,
+    expected_owner: int,
+    expected_mode: int,
+) -> os.stat_result:
+    """Validate one directory in the authoritative root-owned state tree."""
+
+    metadata = os.fstat(file_descriptor)
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise StatePathError("state path component is not a directory")
+    if metadata.st_uid != expected_owner:
+        raise StatePathError("state directory has an unexpected owner")
+    if stat.S_IMODE(metadata.st_mode) != expected_mode:
+        raise StatePathError("state directory has an unexpected mode")
+    return metadata
+
+
+def _state_file_generation(metadata: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
