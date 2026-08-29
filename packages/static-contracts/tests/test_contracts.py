@@ -14,6 +14,7 @@ from lowerduckpond_static_contracts import (
     Digest,
     ErrorCode,
     Operation,
+    TransactionPhase,
     canonical_json_bytes,
     decode_contract,
     decode_request,
@@ -372,6 +373,14 @@ def test_existing_tenant_intent_requires_a_source_manifest_digest() -> None:
         validate_contract(intent)
 
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+@pytest.mark.parametrize("phase", list(TransactionPhase))
+def test_transaction_intent_accepts_each_durable_phase(phase: TransactionPhase) -> None:
+    intent = _load_object(FIXTURE_ROOT / "accepted/transaction-intent.json")
+    intent["phase"] = phase.value
+
+    assert validate_contract(intent) is ContractKind.TRANSACTION_INTENT
 
 
 def test_export_intent_pins_one_unchanged_manifest_generation() -> None:

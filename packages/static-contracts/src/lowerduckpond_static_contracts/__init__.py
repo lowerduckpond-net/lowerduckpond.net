@@ -20,8 +20,10 @@ from lowerduckpond_static_contracts.identifiers import (
 )
 from lowerduckpond_static_contracts.lifecycle import (
     LIFECYCLE_MATRIX,
+    TRANSACTION_PHASE_TRANSITIONS,
     LifecycleState,
     Operation,
+    TransactionPhase,
 )
 from lowerduckpond_static_contracts.schema import (
     ContractKind,
@@ -36,6 +38,7 @@ __all__ = [
     "MAX_CANONICAL_BYTES",
     "MAX_RAW_REQUEST_BYTES",
     "RESERVED_SLUGS",
+    "TRANSACTION_PHASE_TRANSITIONS",
     "ContractError",
     "ContractKind",
     "Digest",
@@ -43,6 +46,7 @@ __all__ = [
     "LifecycleState",
     "Operation",
     "ResultErrorCode",
+    "TransactionPhase",
     "canonical_json_bytes",
     "decode_contract",
     "decode_json_object",

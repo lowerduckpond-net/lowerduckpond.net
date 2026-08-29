@@ -34,6 +34,18 @@ class Operation(StrEnum):
     RECONCILE = "reconcile"
 
 
+class TransactionPhase(StrEnum):
+    """Durable lifecycle and restart-recovery transaction phases."""
+
+    PREPARED = "prepared"
+    RUNTIME_SELECTED = "runtime-selected"
+    RESTART_REQUIRED = "restart-required"
+    CANDIDATE_STARTING = "candidate-starting"
+    ROLLBACK_RESTART_REQUIRED = "rollback-restart-required"
+    RECOVERY_STARTING = "recovery-starting"
+    STATE_COMMITTED = "state-committed"
+
+
 _MATRIX = {
     (Operation.CREATE, LifecycleState.ABSENT): LifecycleState.UNDEPLOYED,
     (Operation.DEPLOY, LifecycleState.UNDEPLOYED): LifecycleState.ACTIVE,
@@ -64,3 +76,31 @@ _MATRIX = {
     (Operation.RECONCILE, LifecycleState.ARCHIVED): LifecycleState.ARCHIVED,
 }
 LIFECYCLE_MATRIX: Final = MappingProxyType(_MATRIX)
+
+_TRANSACTION_PHASE_TRANSITIONS = {
+    TransactionPhase.PREPARED: frozenset(
+        {
+            TransactionPhase.RUNTIME_SELECTED,
+            TransactionPhase.RESTART_REQUIRED,
+            TransactionPhase.STATE_COMMITTED,
+        }
+    ),
+    TransactionPhase.RUNTIME_SELECTED: frozenset({TransactionPhase.STATE_COMMITTED}),
+    TransactionPhase.RESTART_REQUIRED: frozenset({TransactionPhase.CANDIDATE_STARTING}),
+    TransactionPhase.CANDIDATE_STARTING: frozenset(
+        {
+            TransactionPhase.CANDIDATE_STARTING,
+            TransactionPhase.ROLLBACK_RESTART_REQUIRED,
+            TransactionPhase.STATE_COMMITTED,
+        }
+    ),
+    TransactionPhase.ROLLBACK_RESTART_REQUIRED: frozenset({TransactionPhase.RECOVERY_STARTING}),
+    TransactionPhase.RECOVERY_STARTING: frozenset(
+        {
+            TransactionPhase.RECOVERY_STARTING,
+            TransactionPhase.STATE_COMMITTED,
+        }
+    ),
+    TransactionPhase.STATE_COMMITTED: frozenset(),
+}
+TRANSACTION_PHASE_TRANSITIONS: Final = MappingProxyType(_TRANSACTION_PHASE_TRANSITIONS)

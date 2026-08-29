@@ -299,6 +299,10 @@
       "enum": [
         "prepared",
         "runtime-selected",
+        "restart-required",
+        "candidate-starting",
+        "rollback-restart-required",
+        "recovery-starting",
         "state-committed"
       ],
       "type": "string"
