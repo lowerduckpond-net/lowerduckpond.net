@@ -303,50 +303,68 @@ def _scan_directory(
     context: _ScanContext,
 ) -> None:
     try:
-        names = os.listdir(directory_fd)
+        with os.scandir(directory_fd) as iterator:
+            for directory_entry in iterator:
+                _scan_entry(
+                    directory_fd,
+                    directory_entry.name,
+                    components,
+                    encoded,
+                    context,
+                )
+    except ReleaseTreeError:
+        raise
     except OSError as error:
         raise ReleaseTreeError("release directory could not be enumerated") from error
-    for name in names:
-        name_bytes = _validate_component(name, context.limits)
-        child_components = (*components, name)
-        child_encoded = (*encoded, name_bytes)
-        path_bytes = _validate_path(child_components, child_encoded, context.limits)
-        try:
-            snapshot = _Snapshot.capture(os.stat(name, dir_fd=directory_fd, follow_symlinks=False))
-        except OSError as error:
-            raise ReleaseTreeError("release entry changed while it was enumerated") from error
-        is_directory = stat.S_ISDIR(snapshot.mode)
-        _validate_snapshot(
-            snapshot,
-            expected_owner=context.expected_owner,
-            expected_mode=0o755 if is_directory else 0o644,
-            is_directory=is_directory,
+
+
+def _scan_entry(
+    directory_fd: int,
+    name: str,
+    components: tuple[str, ...],
+    encoded: tuple[bytes, ...],
+    context: _ScanContext,
+) -> None:
+    name_bytes = _validate_component(name, context.limits)
+    child_components = (*components, name)
+    child_encoded = (*encoded, name_bytes)
+    path_bytes = _validate_path(child_components, child_encoded, context.limits)
+    try:
+        snapshot = _Snapshot.capture(os.stat(name, dir_fd=directory_fd, follow_symlinks=False))
+    except OSError as error:
+        raise ReleaseTreeError("release entry changed while it was enumerated") from error
+    is_directory = stat.S_ISDIR(snapshot.mode)
+    _validate_snapshot(
+        snapshot,
+        expected_owner=context.expected_owner,
+        expected_mode=0o755 if is_directory else 0o644,
+        is_directory=is_directory,
+    )
+    if snapshot.device != context.expected_device:
+        raise ReleaseTreeError("release tree crosses a filesystem boundary")
+    folded = unicodedata.normalize("NFC", "/".join(child_components).casefold())
+    if folded in context.state.casefolded_paths:
+        raise ReleaseTreeError("release tree contains a case-folding collision")
+    context.state.casefolded_paths.add(folded)
+    entry = _Entry(child_components, path_bytes, is_directory, snapshot)
+    context.state.entries.append(entry)
+    if len(context.state.entries) > context.limits.maximum_entries:
+        raise ReleaseTreeError("release tree exceeds its entry limit")
+    _record_allocation(context.state.allocations, snapshot)
+    if is_directory:
+        _scan_child_directory(
+            directory_fd,
+            name,
+            entry,
+            child_encoded,
+            context,
         )
-        if snapshot.device != context.expected_device:
-            raise ReleaseTreeError("release tree crosses a filesystem boundary")
-        folded = unicodedata.normalize("NFC", "/".join(child_components).casefold())
-        if folded in context.state.casefolded_paths:
-            raise ReleaseTreeError("release tree contains a case-folding collision")
-        context.state.casefolded_paths.add(folded)
-        entry = _Entry(child_components, path_bytes, is_directory, snapshot)
-        context.state.entries.append(entry)
-        if len(context.state.entries) > context.limits.maximum_entries:
-            raise ReleaseTreeError("release tree exceeds its entry limit")
-        _record_allocation(context.state.allocations, snapshot)
-        if is_directory:
-            _scan_child_directory(
-                directory_fd,
-                name,
-                entry,
-                child_encoded,
-                context,
-            )
-        else:
-            if snapshot.size < 0 or snapshot.size > context.limits.maximum_file_bytes:
-                raise ReleaseTreeError("release file exceeds its byte limit")
-            context.state.logical_bytes += snapshot.size
-            if context.state.logical_bytes > context.limits.maximum_content_bytes:
-                raise ReleaseTreeError("release tree exceeds its content limit")
+    else:
+        if snapshot.size < 0 or snapshot.size > context.limits.maximum_file_bytes:
+            raise ReleaseTreeError("release file exceeds its byte limit")
+        context.state.logical_bytes += snapshot.size
+        if context.state.logical_bytes > context.limits.maximum_content_bytes:
+            raise ReleaseTreeError("release tree exceeds its content limit")
 
 
 def _scan_child_directory(

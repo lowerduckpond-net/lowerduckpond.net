@@ -15,6 +15,7 @@ from lowerduckpond_static_host_agent import (
 _OWNER = os.geteuid()
 _PINNED_ENTRY_COUNT = 5
 _HARDLINKED_ENTRY_COUNT = 2
+_FIRST_OVER_LIMIT_OBSERVATIONS = 2
 
 
 def _release_root(tmp_path: Path, name: str = "release") -> Path:
@@ -217,6 +218,38 @@ def test_every_tree_limit_fails_at_one_past_its_boundary(
 
     with pytest.raises(ReleaseTreeError, match=message):
         measure_release_tree(root, expected_owner=_OWNER, limits=limits)
+
+
+def test_entry_limit_stops_streaming_before_later_names_are_inspected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _release_root(tmp_path)
+    for name in ("one", "two", "three", "four"):
+        _file(root, name, b"content")
+    original_stat = os.stat
+    inspected = 0
+
+    def counted_stat(
+        path: os.PathLike[str] | str | bytes | int,
+        *,
+        dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ) -> os.stat_result:
+        nonlocal inspected
+        if dir_fd is not None:
+            inspected += 1
+        return original_stat(path, dir_fd=dir_fd, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(os, "stat", counted_stat)
+    with pytest.raises(ReleaseTreeError, match="entry limit"):
+        measure_release_tree(
+            root,
+            expected_owner=_OWNER,
+            limits=ReleaseTreeLimits(maximum_entries=1),
+        )
+
+    assert inspected == _FIRST_OVER_LIMIT_OBSERVATIONS
 
 
 @pytest.mark.parametrize("wrong_shape", ["root-mode", "directory-mode", "file-mode", "owner"])
