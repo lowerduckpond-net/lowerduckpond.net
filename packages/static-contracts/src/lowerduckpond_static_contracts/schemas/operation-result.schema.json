@@ -246,10 +246,40 @@
               }
             }
           }
+        },
+        "required": [
+          "exportBundle"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "exportBundle"
+          ]
         }
       }
     }
   ],
+  "$defs": {
+    "exportBundle": {
+      "additionalProperties": false,
+      "properties": {
+        "digest": {
+          "$ref": "common.schema.json#/$defs/archiveDigest"
+        },
+        "size": {
+          "maximum": 125829120,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "digest",
+        "size"
+      ],
+      "type": "object"
+    }
+  },
   "oneOf": [
     {
       "if": {
@@ -354,6 +384,9 @@
         "unavailable"
       ],
       "type": "string"
+    },
+    "exportBundle": {
+      "$ref": "#/$defs/exportBundle"
     },
     "jobId": {
       "$ref": "common.schema.json#/$defs/uuidv7"

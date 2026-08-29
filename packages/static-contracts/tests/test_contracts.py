@@ -586,12 +586,67 @@ def test_successful_source_dependent_result_manifest_stays_in_its_outcome_set(
     spec["desiredState"] = allowed_state
     result["operation"] = operation
     result["manifest"] = manifest
+    if operation == "export":
+        result["exportBundle"] = {
+            "digest": {
+                "format": "lowerduckpond-archive-v1",
+                "algorithm": "sha256",
+                "value": "a" * 64,
+            },
+            "size": 4096,
+        }
 
     assert validate_contract(result) is ContractKind.OPERATION_RESULT
 
     spec["desiredState"] = impossible_state
     if impossible_state == "undeployed":
         del spec["desiredDeployment"]
+    with pytest.raises(ContractError) as captured:
+        validate_contract(result)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+def test_successful_export_result_binds_the_returned_bundle() -> None:
+    result = _load_object(FIXTURE_ROOT / "accepted/operation-result.json")
+    result["operation"] = "export"
+    result["manifest"] = _load_object(FIXTURE_ROOT / "accepted/site.json")
+    result["exportBundle"] = {
+        "digest": {
+            "format": "lowerduckpond-archive-v1",
+            "algorithm": "sha256",
+            "value": "a" * 64,
+        },
+        "size": 4096,
+    }
+
+    assert validate_contract(result) is ContractKind.OPERATION_RESULT
+
+    del result["exportBundle"]
+    with pytest.raises(ContractError) as captured:
+        validate_contract(result)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+def test_failed_export_result_cannot_claim_bundle_evidence() -> None:
+    result = _load_object(FIXTURE_ROOT / "accepted/operation-result.json")
+    del result["canonicalOrigin"]
+    del result["manifest"]
+    result.update(
+        {
+            "operation": "export",
+            "status": "failed",
+            "errorCode": "unavailable",
+            "exportBundle": {
+                "digest": {
+                    "format": "lowerduckpond-archive-v1",
+                    "algorithm": "sha256",
+                    "value": "a" * 64,
+                },
+                "size": 4096,
+            },
+        }
+    )
+
     with pytest.raises(ContractError) as captured:
         validate_contract(result)
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
