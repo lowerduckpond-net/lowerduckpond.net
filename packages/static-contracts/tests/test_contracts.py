@@ -223,3 +223,24 @@ def test_authorization_job_request_digest_binds_the_embedded_request() -> None:
         validate_contract(job)
 
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+@pytest.mark.parametrize("field", ["tenantId", "canonicalOrigin", "manifest"])
+def test_successful_create_result_requires_generated_identity_fields(field: str) -> None:
+    result = _load_object(FIXTURE_ROOT / "accepted/operation-result.json")
+    del result[field]
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(result)
+
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+def test_successful_create_result_rejects_a_null_tenant_identity() -> None:
+    result = _load_object(FIXTURE_ROOT / "accepted/operation-result.json")
+    result["tenantId"] = None
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(result)
+
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
