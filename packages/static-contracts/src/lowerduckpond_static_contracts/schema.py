@@ -249,8 +249,14 @@ def _manifest_digest(document: dict[str, object]) -> dict[str, str]:
 def _validate_transaction_intent(document: dict[str, object]) -> None:
     operation = document["operation"]
     if operation != "archive":
-        if operation != "export":
-            _validate_lifecycle_recovery(document)
+        if operation == "export":
+            if document["sourceManifestDigest"] != document["candidateManifestDigest"]:
+                raise ContractError(
+                    ErrorCode.SCHEMA_INVALID,
+                    "export intent manifest generation drifted",
+                )
+            return
+        _validate_lifecycle_recovery(document)
         return
     recovery = cast(dict[str, object], document["archiveRecovery"])
     source = cast(dict[str, object], recovery["sourceManifest"])

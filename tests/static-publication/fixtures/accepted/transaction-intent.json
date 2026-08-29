@@ -15,7 +15,7 @@
   "candidateManifestDigest": {
     "format": "lowerduckpond-manifest-v1",
     "algorithm": "sha256",
-    "value": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   },
   "phase": "prepared",
   "createdAt": "2026-08-29T12:00:20Z"

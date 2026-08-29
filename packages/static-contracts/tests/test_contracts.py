@@ -365,6 +365,19 @@ def test_existing_tenant_intent_requires_a_source_manifest_digest() -> None:
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
 
+def test_export_intent_pins_one_unchanged_manifest_generation() -> None:
+    intent = _load_object(FIXTURE_ROOT / "accepted/transaction-intent.json")
+
+    assert validate_contract(intent) is ContractKind.TRANSACTION_INTENT
+
+    candidate = intent["candidateManifestDigest"]
+    assert type(candidate) is dict
+    candidate["value"] = "b" * 64
+    with pytest.raises(ContractError) as captured:
+        validate_contract(intent)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
 def test_create_intent_requires_an_absent_source_manifest() -> None:
     intent = _load_object(FIXTURE_ROOT / "accepted/transaction-intent.json")
     source_digest = intent["sourceManifestDigest"]
