@@ -20,7 +20,7 @@ format: _sync
     tofu fmt -recursive infra/opentofu
 
 # Run every validation required by CI.
-check: check-pre-commit check-links check-python check-m3-static-contracts check-m3-qualification check-m3-archive-storage check-cloudflare-networks check-opentofu check-ansible check-actions check-secrets
+check: check-pre-commit check-links check-python check-m3-contract-spine check-m3-qualification check-m3-archive-storage check-cloudflare-networks check-opentofu check-ansible check-actions check-secrets
 
 # Run file hygiene, Markdown, Python, secret, and OpenTofu format hooks.
 check-pre-commit: _sync
@@ -40,6 +40,13 @@ check-python: _sync
 # Prove the standalone M3.2 contract wheel carries and loads every strict schema.
 check-m3-static-contracts: _sync
     repo_root="$PWD"; build_dir="$(mktemp -d)"; trap 'find "$build_dir" -depth -delete' EXIT; uv build --package lowerduckpond-static-contracts --wheel --out-dir "$build_dir" >/dev/null; wheel=("$build_dir"/*.whl); extract_dir="$build_dir/extracted"; mkdir "$extract_dir"; uv run python -m zipfile -e "${wheel[0]}" "$extract_dir"; fixtures="$repo_root/tests/static-publication/fixtures/accepted"; cd "$build_dir"; PYTHONPATH="$extract_dir" uv run --project "$repo_root" --frozen python -c 'import sys; from pathlib import Path; import lowerduckpond_static_contracts as package; from lowerduckpond_static_contracts import ContractKind, decode_contract; assert Path(package.__file__).is_relative_to(Path(sys.argv[1])); decoded = [decode_contract(path.read_bytes()) for path in Path(sys.argv[2]).glob("*.json")]; assert {document["kind"] for document in decoded} == {kind.value for kind in ContractKind}' "$extract_dir" "$fixtures"
+
+# Prove the pure M3.2 root-domain wheel loads with the contract wheel.
+check-m3-static-domain: _sync
+    repo_root="$PWD"; build_dir="$(mktemp -d)"; trap 'find "$build_dir" -depth -delete' EXIT; uv build --package lowerduckpond-static-contracts --wheel --out-dir "$build_dir" >/dev/null; uv build --package lowerduckpond-static-domain --wheel --out-dir "$build_dir" >/dev/null; extract_dir="$build_dir/extracted"; mkdir "$extract_dir"; for wheel in "$build_dir"/*.whl; do uv run python -m zipfile -e "$wheel" "$extract_dir"; done; cd "$build_dir"; PYTHONPATH="$extract_dir" uv run --project "$repo_root" --frozen python -c 'import sys; from pathlib import Path; import lowerduckpond_static_contracts as contracts; import lowerduckpond_static_domain as domain; root = Path(sys.argv[1]); assert Path(contracts.__file__).is_relative_to(root); assert Path(domain.__file__).is_relative_to(root); assert domain.generate_uuid7(clock=lambda: 0, entropy=lambda length: bytes(length)) == "00000000-0000-7000-8000-000000000000"' "$extract_dir"
+
+# Run both independently packaged M3.2 proof obligations.
+check-m3-contract-spine: check-m3-static-contracts check-m3-static-domain
 
 # Exercise the local, no-cloud portion of the exact, no-skip M3.0 gate.
 check-m3-qualification: _sync

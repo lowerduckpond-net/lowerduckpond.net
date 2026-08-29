@@ -1,0 +1,31 @@
+{
+  "format": "lowerduckpond-root-domain-v1",
+  "uuidv7": [
+    {
+      "unixMilliseconds": 0,
+      "entropyHex": "00000000000000000000",
+      "id": "00000000-0000-7000-8000-000000000000"
+    },
+    {
+      "unixMilliseconds": 1724328000123,
+      "entropyHex": "0123456789abcdeffedc",
+      "id": "019179f5-3a7b-748d-8567-89abcdeffedc"
+    },
+    {
+      "unixMilliseconds": 281474976710655,
+      "entropyHex": "ffffffffffffffffffff",
+      "id": "ffffffff-ffff-7fff-bfff-ffffffffffff"
+    }
+  ],
+  "create": {
+    "requestFixture": "accepted/operation-request.json",
+    "namespaceFixture": "accepted/platform-namespace.json",
+    "unixMilliseconds": 1724328000123,
+    "entropyHex": "0123456789abcdeffedc",
+    "tenantId": "019179f5-3a7b-748d-8567-89abcdeffedc",
+    "canonicalOrigin": "t-019179f53a7b748d856789abcdeffedc.lowerduckpond.com",
+    "canonicalBytes": 316,
+    "canonicalSha256": "9d42603c8dd7e8121db3de0fc9263b74637909e275e173b422928836dd72ff4b",
+    "manifestDigest": "b2da778b304930ca5c9571ebf5995f73c820af3b68bd859ea6b93f915bf0b0a1"
+  }
+}
