@@ -55,6 +55,10 @@ class IntakeOccupiedError(IntakeError):
     """One admitted artifact already owns the bounded intake slot."""
 
 
+class IntakeArtifactUnavailableError(IntakeError):
+    """A committed job's exact admitted artifact is unavailable."""
+
+
 @dataclass(frozen=True, slots=True)
 class AdmittedArtifact:
     """One synced artifact published beneath the fixed intake root."""
@@ -78,6 +82,31 @@ class ArtifactLease:
     @property
     def committed(self) -> bool:
         return self._committed
+
+
+class ArtifactClaim:
+    """Hold the intake lock while one executor owns an admitted artifact."""
+
+    def __init__(self, artifact: AdmittedArtifact) -> None:
+        self.artifact = artifact
+        self._consumed = False
+
+    def consume(self) -> None:
+        """Remove the artifact after its terminal result is durable."""
+
+        self._consumed = True
+
+    @property
+    def consumed(self) -> bool:
+        return self._consumed
+
+
+@dataclass(frozen=True, slots=True)
+class IntakeReconciliation:
+    """One bounded startup reconciliation outcome."""
+
+    retained_filename: str | None
+    removed_entries: int
 
 
 class ArtifactIntake:
@@ -165,6 +194,72 @@ class ArtifactIntake:
                 if not retain:
                     self._remove(temporary if not published else filename)
 
+    def discard_retry(
+        self,
+        *,
+        declared: VerifiedArtifact,
+        read: Callable[[int], bytes],
+    ) -> None:
+        """Consume and verify retry bytes without allocating another slot."""
+
+        self._require_open()
+        self._verify_discarded_stream(declared=declared, read=read)
+
+    @contextmanager
+    def claim(
+        self,
+        *,
+        correlation_id: object,
+        declared: VerifiedArtifact,
+        blocking: bool = False,
+    ) -> Iterator[ArtifactClaim]:
+        """Validate and exclusively retain one admitted artifact for execution."""
+
+        self._require_open()
+        filename = f"{validate_uuid7(correlation_id)}.artifact"
+        with self._locks.acquire(LockName.INTAKE, mode=LockMode.EXCLUSIVE, blocking=blocking):
+            names = self._scan_slot()
+            if names != [filename]:
+                raise IntakeArtifactUnavailableError(
+                    "authorized artifact is absent from the intake slot"
+                )
+            self._validate_entry(filename)
+            self._verify_existing(filename, declared=declared)
+            claim = ArtifactClaim(AdmittedArtifact(filename, declared))
+            try:
+                yield claim
+            finally:
+                if claim.consumed:
+                    self._remove(filename)
+
+    def reconcile(
+        self,
+        *,
+        authorized: dict[str, VerifiedArtifact],
+        terminal: set[str],
+        blocking: bool = False,
+    ) -> IntakeReconciliation:
+        """Remove only safe abandoned intake and retain one authorized upload."""
+
+        self._require_open()
+        with self._locks.acquire(LockName.INTAKE, mode=LockMode.EXCLUSIVE, blocking=blocking):
+            names = self._scan_slot()
+            if not names:
+                return IntakeReconciliation(None, 0)
+            name = names[0]
+            self._validate_entry(name)
+            if _TEMPORARY.fullmatch(name) is not None:
+                self._remove(name)
+                return IntakeReconciliation(None, 1)
+            if _ADMITTED.fullmatch(name) is None:
+                raise IntakeError("intake contains an unrecognized object")
+            declared = authorized.get(name)
+            if name in terminal or declared is None:
+                self._remove(name)
+                return IntakeReconciliation(None, 1)
+            self._verify_existing(name, declared=declared)
+            return IntakeReconciliation(name, 0)
+
     def _reconcile_before_admission(
         self,
         *,
@@ -172,19 +267,7 @@ class ArtifactIntake:
         declared: VerifiedArtifact,
         allow_existing: bool,
     ) -> AdmittedArtifact | None:
-        names: list[str] = []
-        # A duplicated directory descriptor shares its enumeration offset with
-        # the original. Open a fresh descriptor so every admission rescans the
-        # complete fixed directory rather than inheriting an earlier EOF.
-        descriptor = os.open(".", _DIRECTORY_FLAGS, dir_fd=self._directory_fd)
-        try:
-            with os.scandir(descriptor) as entries:
-                for count, entry in enumerate(entries, start=1):
-                    if count > 1:
-                        raise IntakeError("intake contains more than its single slot")
-                    names.append(entry.name)
-        finally:
-            os.close(descriptor)
+        names = self._scan_slot()
         if not names:
             return None
         name = names[0]
@@ -198,6 +281,22 @@ class ArtifactIntake:
                 return AdmittedArtifact(name, declared)
             raise IntakeOccupiedError("intake slot contains an admitted artifact")
         raise IntakeError("intake contains an unrecognized object")
+
+    def _scan_slot(self) -> list[str]:
+        names: list[str] = []
+        # A duplicated directory descriptor shares its enumeration offset with
+        # the original. Open a fresh descriptor so every admission rescans the
+        # complete fixed directory rather than inheriting an earlier EOF.
+        descriptor = os.open(".", _DIRECTORY_FLAGS, dir_fd=self._directory_fd)
+        try:
+            with os.scandir(descriptor) as entries:
+                for count, entry in enumerate(entries, start=1):
+                    if count > 1:
+                        raise IntakeError("intake contains more than its single slot")
+                    names.append(entry.name)
+        finally:
+            os.close(descriptor)
+        return names
 
     def _verify_existing(self, name: str, *, declared: VerifiedArtifact) -> None:
         file_descriptor = os.open(name, _READ_FLAGS, dir_fd=self._directory_fd)

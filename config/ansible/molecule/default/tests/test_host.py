@@ -41,6 +41,7 @@ SYSTEMD_SYSTEM_UNIT_PATHS = (
     "/etc/systemd/system/lowerduckpond-backup-maintenance.timer",
     "/etc/systemd/system/lowerduckpond-health.service",
     "/etc/systemd/system/lowerduckpond-health.timer",
+    "/etc/systemd/system/lowerduckpond-static-reconcile.service",
     "/etc/systemd/system/lowerduckpond-static-worker@.service",
 )
 SYSTEMD_USER_UNIT_PATH = (
@@ -91,13 +92,16 @@ STATIC_STATE_ROOT = "/var/lib/lowerduckpond/static"
 STATIC_HOST_AGENT_DIRECTORY_MODE = 0o555
 STATIC_HOST_AGENT_FILE_MODE = 0o444
 STATIC_STATE_DIRECTORY_MODE = 0o700
+STATIC_STATE_LOCK_MODE = 0o600
 STATIC_CONFIGURATION_MODE = 0o400
 STATIC_PUBLICATION_DISABLED_STATUS = 78
-STATIC_OPERATOR_DISABLED_STATUS = 69
+STATIC_OPERATOR_DISABLED_STATUS = 78
 STATIC_OPERATOR_INVALID_REQUEST_STATUS = 65
 STATIC_OPERATOR_KEY_PATH = "/run/lowerduckpond-molecule/operator-key"
 STATIC_OPERATOR_AUTHORIZED_KEYS_PATH = "/etc/ssh/lowerduckpond/authorized_keys/ldp-operator"
-STATIC_OPERATOR_COMMAND = "/usr/local/libexec/lowerduckpond/static-operator-disabled"
+STATIC_OPERATOR_COMMAND = "/usr/local/libexec/lowerduckpond/static-operator-adapter"
+STATIC_JOB_EXECUTOR = "/usr/local/libexec/lowerduckpond/execute-authorized-job"
+STATIC_JOB_RECONCILER = "/usr/local/libexec/lowerduckpond/reconcile-authorized-jobs"
 STATIC_OPERATOR_REQUEST_DECODER = "/usr/local/libexec/lowerduckpond/static-request-decoder"
 STATIC_OPERATOR_COMMAND_MODE = 0o755
 STATIC_OPERATOR_KEY_DIRECTORY_MODE = 0o755
@@ -116,6 +120,12 @@ STATIC_STATE_DIRECTORIES = (
     "exports",
     "audit",
     "locks",
+)
+STATIC_STATE_LOCKS = (
+    "intake.lock",
+    "export.lock",
+    "publication.lock",
+    "tenant-state.lock",
 )
 
 
@@ -846,7 +856,16 @@ def test_static_state_migration_is_empty_root_owned_and_private(host: Host) -> N
         assert directory.user == "root"
         assert directory.group == "root"
         assert directory.mode == STATIC_STATE_DIRECTORY_MODE
-    assert host.run(f"find {STATIC_STATE_ROOT} -type f -print -quit").stdout == ""
+    for filename in STATIC_STATE_LOCKS:
+        lock = host.file(f"{STATIC_STATE_ROOT}/locks/{filename}")
+        assert lock.is_file
+        assert lock.user == "root"
+        assert lock.group == "root"
+        assert lock.mode == STATIC_STATE_LOCK_MODE
+        assert lock.size == 0
+    files = host.run(f"find {STATIC_STATE_ROOT} -type f -printf '%P\\n' | sort")
+    assert files.rc == 0
+    assert files.stdout.splitlines() == [f"locks/{name}" for name in sorted(STATIC_STATE_LOCKS)]
     denied = host.run(f"runuser --user ldp-provisioner -- test -x {STATIC_STATE_ROOT}")
     assert denied.rc != 0
 
@@ -921,7 +940,7 @@ def test_static_operator_identity_is_root_bound_and_has_no_writable_home(host: H
     ]
     assert len(key_lines) == 1
     assert key_lines[0].startswith(
-        'command="/usr/bin/env -i LANG=C.UTF-8 '
+        'command="/usr/bin/env -i LANG=C.UTF-8 /usr/bin/sudo -n '
         f'{STATIC_OPERATOR_COMMAND} --principal molecule-operator-v1",restrict ssh-ed25519 '
     )
     assert "environment=" not in key_lines[0]
@@ -992,12 +1011,12 @@ def test_static_operator_real_ssh_is_forced_and_allocation_free(host: Host) -> N
     before = host.run(f"find {STATIC_STATE_ROOT} -printf '%P %y %m %u %g\\n' | sort")
     shell = host.run(static_operator_ssh_command())
     assert shell.rc == STATIC_OPERATOR_DISABLED_STATUS
-    assert shell.stderr.strip() == "static_operator_protocol_unavailable"
+    assert shell.stderr.strip() == "publication_disabled"
 
     sentinel = "/tmp/lowerduckpond-static-operator-command-escape"  # noqa: S108
     arbitrary = host.run(static_operator_ssh_command("/usr/bin/touch", sentinel))
     assert arbitrary.rc == STATIC_OPERATOR_DISABLED_STATUS
-    assert arbitrary.stderr.strip() == "static_operator_protocol_unavailable"
+    assert arbitrary.stderr.strip() == "publication_disabled"
     assert not host.file(sentinel).exists
 
     environment = host.run(
@@ -1007,6 +1026,7 @@ def test_static_operator_real_ssh_is_forced_and_allocation_free(host: Host) -> N
         )
     )
     assert environment.rc == STATIC_OPERATOR_DISABLED_STATUS
+    assert environment.stderr.strip() == "publication_disabled"
     assert "M3_OPERATOR_SENTINEL" not in environment.stdout
 
     pty = host.run(static_operator_ssh_command("/usr/bin/id", options=("-tt",)))
@@ -1047,7 +1067,32 @@ def test_static_operator_real_ssh_denies_sftp_and_scp(host: Host) -> None:
     assert not host.file(destination).exists
 
 
-def test_static_worker_boundary_is_inert_and_hardened(host: Host) -> None:
+def test_static_job_commands_are_root_owned_and_uuid_only(host: Host) -> None:
+    for command_path in (STATIC_JOB_EXECUTOR, STATIC_JOB_RECONCILER):
+        command = host.file(command_path)
+        assert command.is_file
+        assert command.user == "root"
+        assert command.group == "root"
+        assert command.mode == STATIC_OPERATOR_COMMAND_MODE
+
+    sudoers = host.file("/etc/sudoers.d/lowerduckpond-static-jobs")
+    assert sudoers.is_file
+    assert sudoers.user == "root"
+    assert sudoers.group == "root"
+    assert sudoers.mode == QUALIFICATION_SUDOERS_MODE
+    assert sudoers.content_string == (
+        f"ldp-provisioner ALL=(root) NOPASSWD: {STATIC_JOB_EXECUTOR}\n"
+    )
+    prefix = ("runuser", "--user", "ldp-provisioner", "--", "sudo", "-n")
+    unknown = host.run(shlex.join((*prefix, STATIC_JOB_EXECUTOR, VALID_UUIDV7)))
+    assert unknown.rc != 0
+    for arguments in UUID_REJECTION_ARGUMENTS:
+        rejected = host.run(shlex.join((*prefix, STATIC_JOB_EXECUTOR, *arguments)))
+        assert rejected.rc != 0
+    assert host.run(shlex.join((*prefix, STATIC_JOB_RECONCILER))).rc != 0
+
+
+def test_static_worker_boundary_is_opaque_and_hardened(host: Host) -> None:
     unit = host.file("/etc/systemd/system/lowerduckpond-static-worker@.service")
     assert unit.contains("TemporaryFileSystem=/:ro")
     assert unit.contains("TemporaryFileSystem=/workspace:rw,size=64M,nr_inodes=4096,mode=0700")
@@ -1055,9 +1100,11 @@ def test_static_worker_boundary_is_inert_and_hardened(host: Host) -> None:
         "/usr",
         "/lib",
         "/lib64",
+        STATIC_HOST_AGENT_ROOT,
         "/etc/lowerduckpond/static-publication.json",
     ):
         assert unit.contains(f"BindReadOnlyPaths={bound_path}")
+    assert unit.contains(f"BindPaths={STATIC_STATE_ROOT}")
     for property_line in (
         "MemoryMax=256M",
         "MemorySwapMax=0",
@@ -1081,8 +1128,16 @@ def test_static_worker_boundary_is_inert_and_hardened(host: Host) -> None:
         f"timeout 5s bash -c 'until systemctl is-failed --quiet {instance}; do sleep 0.05; done'",
     )
     status = host.run(f"systemctl show --property=ExecMainStatus --value {instance}")
-    assert status.stdout.strip() == str(STATIC_PUBLICATION_DISABLED_STATUS)
+    assert status.stdout.strip() == "1"
     host.run_expect([0], f"systemctl reset-failed {instance}")
+
+    reconciler = host.file("/etc/systemd/system/lowerduckpond-static-reconcile.service")
+    assert reconciler.contains(f"ExecStart={STATIC_JOB_RECONCILER}")
+    assert host.run(
+        "systemctl is-enabled lowerduckpond-static-reconcile.service"
+    ).stdout.strip() == ("enabled")
+    host.run_expect([0], "systemctl start lowerduckpond-static-reconcile.service")
+    assert host.run(f"find {STATIC_HOST_AGENT_ROOT} -name __pycache__ -print -quit").stdout == ""
 
 
 def test_caddy_has_no_tenant_routes_while_publication_is_dark(host: Host) -> None:

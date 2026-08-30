@@ -6,4 +6,6 @@ static_host_agent_state_root: /var/lib/lowerduckpond/static
 static_host_agent_release_root: /srv/lowerduckpond/sites
 static_host_agent_caddy_generation_root: /etc/caddy/generations
 static_host_agent_caddy_intent_root: /etc/caddy/intents
+static_host_agent_executor: /usr/local/libexec/lowerduckpond/execute-authorized-job
+static_host_agent_reconciler: /usr/local/libexec/lowerduckpond/reconcile-authorized-jobs
 static_publication_enabled: false  # noqa var-naming[no-role-prefix]

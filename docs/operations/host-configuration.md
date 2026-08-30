@@ -191,10 +191,13 @@ requires explicit `--host`, `--identity`, and `--request` arguments, plus
 rejects an exposed private-key file, noncanonical or oversized request,
 artifact mismatch, response/request mismatch, unframed response, and export
 length or digest mismatch. The private key remains outside this repository.
-Until the final M3.6 execution boundary is installed and separately converged,
-production SSH still reaches the allocation-free forced-command denial adapter;
-the client therefore cannot issue production work merely because it is present
-in the checkout.
+The final M3.6 implementation replaces the initial denial adapter with a fixed
+root entry point, but production continues to reject independently of request
+bytes while `static_publication_enabled` is false. Production does not receive
+that implementation until the separately authorized M3.6 convergence. Even
+after convergence, the client cannot allocate a job while the flag remains
+false; hermetic enabled-path fixtures return only mutation-free terminal
+`not_implemented` results until the lifecycle handlers arrive in M3.8.
 
 The current retention policy keeps 7 daily, 5 weekly, and 12 monthly scheduled
 snapshots. A change to any of those counts invalidates the prior maintenance

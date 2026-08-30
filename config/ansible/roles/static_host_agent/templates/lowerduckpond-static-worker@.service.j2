@@ -1,11 +1,11 @@
 [Unit]
-Description=Lower Duck Pond dark static worker %i
+Description=Lower Duck Pond authorized static worker %i
 ConditionPathIsReadWrite={{ static_host_agent_state_root }}
 
 [Service]
 Type=exec
 UMask=0077
-ExecStart=/usr/local/libexec/lowerduckpond/static-publication-gate worker %i
+ExecStart={{ static_host_agent_executor }} %i
 MemoryMax=256M
 MemorySwapMax=0
 TasksMax=32
@@ -27,7 +27,9 @@ TemporaryFileSystem=/workspace:rw,size=64M,nr_inodes=4096,mode=0700
 BindReadOnlyPaths=/usr
 BindReadOnlyPaths=/lib
 BindReadOnlyPaths=/lib64
+BindReadOnlyPaths={{ static_host_agent_install_root }}
 BindReadOnlyPaths=/etc/lowerduckpond/static-publication.json
+BindPaths={{ static_host_agent_state_root }}
 ProtectHome=true
 ProtectHostname=true
 ProtectClock=true

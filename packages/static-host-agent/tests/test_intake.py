@@ -9,6 +9,7 @@ import pytest
 from lowerduckpond_static_host_agent import (
     ArtifactIntake,
     CapacityRejectedError,
+    IntakeArtifactUnavailableError,
     IntakeError,
     IntakeOccupiedError,
     LockManager,
@@ -245,3 +246,66 @@ def test_intake_preserves_capacity_rejection_without_partial_bytes(
         pass
 
     assert list((root / "intake").iterdir()) == []
+
+
+def test_claim_removes_only_a_consumed_exact_artifact(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    payload = b"bounded artifact"
+    binding = _binding(payload)
+    target = root / "intake" / f"{_CORRELATION_ID}.artifact"
+
+    with ArtifactIntake(root, expected_owner=os.geteuid()) as intake:
+        with intake.admit(
+            operation="deploy",
+            correlation_id=_CORRELATION_ID,
+            declared=binding,
+            read=BytesIO(payload).read,
+        ) as lease:
+            lease.commit()
+        with intake.claim(
+            correlation_id=_CORRELATION_ID,
+            declared=binding,
+        ):
+            pass
+        assert target.read_bytes() == payload
+        with intake.claim(
+            correlation_id=_CORRELATION_ID,
+            declared=binding,
+        ) as claim:
+            claim.consume()
+
+    assert not target.exists()
+
+
+def test_claim_rejects_missing_or_mismatched_authorized_artifact(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    with (
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+        pytest.raises(IntakeArtifactUnavailableError),
+        intake.claim(
+            correlation_id=_CORRELATION_ID,
+            declared=_binding(b"missing"),
+        ),
+    ):
+        pass
+
+
+def test_startup_reconcile_removes_uncommitted_intake_but_retains_authority(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    payload = b"bounded artifact"
+    binding = _binding(payload)
+    filename = f"{_CORRELATION_ID}.artifact"
+    target = root / "intake" / filename
+    target.write_bytes(payload)
+    target.chmod(0o600)
+
+    with ArtifactIntake(root, expected_owner=os.geteuid()) as intake:
+        retained = intake.reconcile(authorized={filename: binding}, terminal=set())
+        assert retained.retained_filename == filename
+        assert retained.removed_entries == 0
+        removed = intake.reconcile(authorized={}, terminal=set())
+
+    assert removed.removed_entries == 1
+    assert not target.exists()

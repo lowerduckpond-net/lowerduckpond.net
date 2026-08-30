@@ -96,12 +96,23 @@ class OperatorAdapter:
             operator_principal=operator_principal,
             artifact=artifact,
         )
+        if allow_existing:
+            self._intake.discard_retry(
+                declared=artifact,
+                read=lambda count: self._reader.read_exact(count, deadline=artifact_deadline),
+            )
+            self._reader.require_eof(deadline=artifact_deadline)
+            return self._issuer.issue(
+                canonical_request,
+                operator_principal=operator_principal,
+                now=now,
+                artifact=artifact,
+            )
         with self._intake.admit(
             operation=str(request["operation"]),
             correlation_id=request["correlationId"],
             declared=artifact,
             read=lambda count: self._reader.read_exact(count, deadline=artifact_deadline),
-            allow_existing=allow_existing,
         ) as lease:
             self._reader.require_eof(deadline=artifact_deadline)
             issued = self._issuer.issue(

@@ -1,0 +1,43 @@
+[Unit]
+Description=Reconcile Lower Duck Pond static authorization jobs
+After=local-fs.target
+Before=multi-user.target
+
+[Service]
+Type=oneshot
+UMask=0077
+ExecStart={{ static_host_agent_reconciler }}
+TimeoutStartSec=2min
+StandardInput=null
+StandardOutput=null
+StandardError=journal
+PrivateIPC=true
+PrivateDevices=true
+PrivateNetwork=true
+ProtectSystem=strict
+ReadWritePaths={{ static_host_agent_state_root }}
+ProtectHome=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectProc=invisible
+ProcSubset=pid
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@network-io @keyring @resources
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

@@ -63,6 +63,14 @@ class CorrelationResolution:
     repaired_records: int
 
 
+@dataclass(frozen=True, slots=True)
+class CorrelationReconciliation:
+    """The bounded, repaired authorization-job inventory at startup."""
+
+    jobs: tuple[StoredContract, ...]
+    repaired_records: int
+
+
 class _CorrelationTransaction(Protocol):
     def read(self, path: StateRecordPath) -> StoredContract: ...
 
@@ -174,6 +182,26 @@ class CorrelationAdmission:
                 created=True,
                 repaired_records=repaired_records,
             )
+
+    def reconcile(self, *, blocking: bool = False) -> CorrelationReconciliation:
+        """Repair interrupted pairs and return each validated current job."""
+
+        with self._repository.transaction(
+            mode=LockMode.EXCLUSIVE,
+            blocking=blocking,
+        ) as transaction:
+            inventory = transaction.measure_authorization_records(limits=self._limits)
+            correlations, repaired_records = _reconcile_pairs(
+                transaction,
+                inventory=inventory,
+                limits=self._limits,
+                capacity_limits=self._capacity_limits,
+            )
+            jobs = tuple(
+                transaction.read(StateRecordPath.authorization_job(_job_id(correlation)))
+                for _correlation_id, correlation in sorted(correlations.items())
+            )
+        return CorrelationReconciliation(jobs=jobs, repaired_records=repaired_records)
 
 
 def _validate_candidate(

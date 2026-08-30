@@ -51,13 +51,27 @@
     - path: "{{ static_operator_home }}"
       mode: "0555"
 
-- name: Install the fail-closed static-operator command
+- name: Install the bounded static-operator command
   ansible.builtin.copy:
-    src: static-operator-disabled
-    dest: "{{ static_operator_disabled_command }}"
+    src: static-operator-adapter
+    dest: "{{ static_operator_command }}"
     owner: root
     group: root
     mode: "0755"
+
+- name: Remove the superseded static-operator denial command
+  ansible.builtin.file:
+    path: /usr/local/libexec/lowerduckpond/static-operator-disabled
+    state: absent
+
+- name: Install the exact static-operator sudo rule
+  ansible.builtin.template:
+    src: sudoers.j2
+    dest: /etc/sudoers.d/lowerduckpond-static-operator
+    owner: root
+    group: root
+    mode: "0440"
+    validate: /usr/sbin/visudo --check --file=%s
 
 - name: Install the resource-limited static request decoder
   ansible.builtin.copy:

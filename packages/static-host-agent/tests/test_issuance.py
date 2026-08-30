@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -18,6 +19,7 @@ from lowerduckpond_static_host_agent import (
     AuthorizationIssuer,
     CapacityProjection,
     ClosedPublicationGate,
+    CommandPublicationGate,
     CorrelationConflictError,
     FilesystemCapacity,
     IssuanceError,
@@ -153,6 +155,39 @@ def test_closed_gate_rejects_before_state_access_or_allocation(tmp_path: Path) -
         inventory = repository.measure_authorization_records()
 
     assert inventory.record_count == 0
+
+
+def test_command_gate_accepts_only_the_fixed_success_or_disabled_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "static-publication-gate"
+    outcomes = iter(
+        (
+            subprocess.CompletedProcess([executable, "job-issuance"], 0, stderr=b""),
+            subprocess.CompletedProcess(
+                [executable, "job-issuance"],
+                78,
+                stderr=b"publication_disabled\n",
+            ),
+            subprocess.CompletedProcess(
+                [executable, "job-issuance"],
+                78,
+                stderr=b"changed_contract\n",
+            ),
+        )
+    )
+
+    def run(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        return next(outcomes)
+
+    monkeypatch.setattr("lowerduckpond_static_host_agent.issuance.subprocess.run", run)
+    gate = CommandPublicationGate(executable)
+    gate.require_enabled()
+    with pytest.raises(PublicationDisabledError, match="publication_disabled"):
+        gate.require_enabled()
+    with pytest.raises(IssuanceError, match="failed closed"):
+        gate.require_enabled()
 
 
 def test_create_issues_immutable_platform_bound_job_and_exact_retry(tmp_path: Path) -> None:

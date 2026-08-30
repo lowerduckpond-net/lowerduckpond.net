@@ -9,6 +9,6 @@ sys.dont_write_bytecode = True
 SITE_PACKAGES = pathlib.Path("/opt/lowerduckpond/static-host-agent/current/site-packages")
 sys.path.insert(0, str(SITE_PACKAGES))
 
-from lowerduckpond_static_host_agent import decoder_main  # noqa: E402
+from lowerduckpond_static_host_agent.entrypoints import executor_main  # noqa: E402
 
-raise SystemExit(decoder_main())
+raise SystemExit(executor_main())
