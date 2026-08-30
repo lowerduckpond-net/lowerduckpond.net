@@ -198,6 +198,10 @@ that implementation until the separately authorized M3.6 convergence. Even
 after convergence, the client cannot allocate a job while the flag remains
 false; hermetic enabled-path fixtures return only mutation-free terminal
 `not_implemented` results until the lifecycle handlers arrive in M3.8.
+Startup recovery starts at most two committed jobs per pass beneath one
+aggregate 512-MiB/64-task slice. Worker completion triggers the next pass, and
+a one-minute timer safely resumes any interrupted or coalesced handoff; stray
+intake bytes never create authority.
 
 The current retention policy keeps 7 daily, 5 weekly, and 12 monthly scheduled
 snapshots. A change to any of those counts invalidates the prior maintenance

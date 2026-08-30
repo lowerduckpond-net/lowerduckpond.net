@@ -97,17 +97,26 @@ class OperatorAdapter:
             artifact=artifact,
         )
         if allow_existing:
-            self._intake.discard_retry(
+            # A prior session may have committed the job and then unwound its
+            # intake lease before commit. Re-admit the exact retransmission so
+            # the retry repairs a missing slot while retaining an existing
+            # verified slot without allocating a second one.
+            with self._intake.admit(
+                operation=str(request["operation"]),
+                correlation_id=request["correlationId"],
                 declared=artifact,
                 read=lambda count: self._reader.read_exact(count, deadline=artifact_deadline),
-            )
-            self._reader.require_eof(deadline=artifact_deadline)
-            return self._issuer.issue(
-                canonical_request,
-                operator_principal=operator_principal,
-                now=now,
-                artifact=artifact,
-            )
+                allow_existing=True,
+            ) as lease:
+                self._reader.require_eof(deadline=artifact_deadline)
+                issued = self._issuer.issue(
+                    canonical_request,
+                    operator_principal=operator_principal,
+                    now=now,
+                    artifact=lease.artifact.verified,
+                )
+                lease.commit()
+                return issued
         with self._intake.admit(
             operation=str(request["operation"]),
             correlation_id=request["correlationId"],

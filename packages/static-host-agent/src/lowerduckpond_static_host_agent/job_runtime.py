@@ -34,6 +34,7 @@ _WORKER_UNIT: Final = "lowerduckpond-static-worker@{job_id}.service"
 _HANDOFF_SECONDS: Final = 15.0
 _RESULT_TOTAL_SECONDS: Final = 5.0 * 60.0
 _RESULT_POLL_SECONDS: Final = 0.05
+_RECOVERY_HANDOFF_LIMIT: Final = 2
 _WRITE_TOTAL_SECONDS: Final = 20.0 * 60.0
 _WRITE_IDLE_SECONDS: Final = 30.0
 _CHUNK_BYTES: Final = 64 * 1024
@@ -160,12 +161,16 @@ class DeadlineWriter:
             raise ValueError("writer deadlines must be positive")
         self._fd = file_descriptor
         self._clock = clock
-        started = clock()
-        self._total_deadline = started + total_seconds
-        self._idle_deadline = started + idle_seconds
+        self._total_seconds = total_seconds
+        self._total_deadline: float | None = None
+        self._idle_deadline: float | None = None
         self._idle_seconds = idle_seconds
 
     def write(self, data: bytes | memoryview) -> None:
+        if self._total_deadline is None or self._idle_deadline is None:
+            started = self._clock()
+            self._total_deadline = started + self._total_seconds
+            self._idle_deadline = started + self._idle_seconds
         remaining = memoryview(data)
         while remaining:
             now = self._clock()
@@ -190,6 +195,7 @@ class ReconciliationOutcome:
     repaired_pairs: int
     removed_intake_entries: int
     enqueued_jobs: tuple[str, ...]
+    deferred_jobs: int
 
 
 class StartupReconciler:
@@ -234,12 +240,14 @@ class StartupReconciler:
             terminal=terminal,
             blocking=True,
         )
-        for job_id in queued:
+        batch = queued[:_RECOVERY_HANDOFF_LIMIT]
+        for job_id in batch:
             self._handoff.enqueue(job_id)
         return ReconciliationOutcome(
             repaired_pairs=repaired.repaired_records,
             removed_intake_entries=intake.removed_entries,
-            enqueued_jobs=tuple(queued),
+            enqueued_jobs=tuple(batch),
+            deferred_jobs=len(queued) - len(batch),
         )
 
     def _result_exists(self, job_id: str) -> bool:

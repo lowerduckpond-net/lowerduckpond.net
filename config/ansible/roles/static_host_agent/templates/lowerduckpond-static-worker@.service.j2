@@ -1,9 +1,12 @@
 [Unit]
 Description=Lower Duck Pond authorized static worker %i
 ConditionPathIsReadWrite={{ static_host_agent_state_root }}
+OnSuccess=lowerduckpond-static-reconcile.service
+OnFailure=lowerduckpond-static-reconcile.service
 
 [Service]
 Type=exec
+Slice=lowerduckpond-static-workers.slice
 UMask=0077
 ExecStart={{ static_host_agent_executor }} %i
 MemoryMax=256M

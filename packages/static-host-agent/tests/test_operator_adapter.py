@@ -30,6 +30,7 @@ from lowerduckpond_static_host_agent import (
     StateRecordPath,
     StateRepository,
     StreamError,
+    VerifiedArtifact,
 )
 
 _FIXTURE_ROOT = Path(__file__).parents[3] / "tests/static-publication/fixtures/accepted"
@@ -272,6 +273,58 @@ def test_adapter_accepts_an_exact_artifact_retry_without_a_second_slot(
     assert [result.created for result in issued] == [True, False]
     assert issued[0].job_id == issued[1].job_id
     assert [entry.name for entry in (root / "intake").iterdir()] == [f"{correlation}.artifact"]
+
+
+def test_exact_artifact_retry_repairs_a_job_committed_before_lease_commit(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), _fixture("site.json"))
+    _write(
+        root,
+        StateRecordPath.tenant_deployment(_TENANT_ID, _DEPLOYMENT_ID),
+        _fixture("deployment-record.json"),
+    )
+    artifact = b"payload"
+    correlation = "0198d17f-6f4a-7000-8000-000000000003"
+    verified = VerifiedArtifact(
+        size=len(artifact),
+        sha256=hashlib.sha256(artifact).hexdigest(),
+    )
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "deploy",
+        "correlationId": correlation,
+        "tenantId": _TENANT_ID,
+        "artifact": {"size": verified.size, "sha256": verified.sha256},
+    }
+    with StateRepository(root, expected_owner=os.geteuid()) as repository:
+        first = AuthorizationIssuer(
+            repository,
+            gate=_OpenGate(),
+            entropy=_Entropy(),
+        ).issue(
+            canonical_json_bytes(request),
+            operator_principal="operator@example.test",
+            now=_NOW,
+            artifact=verified,
+        )
+    assert list((root / "intake").iterdir()) == []
+
+    read_fd, _ = _pipe(_frame(request, artifact))
+    adapter, intake, repository = _adapter(root, read_fd, gate=_OpenGate())
+    try:
+        retry = adapter.receive(operator_principal="operator@example.test", now=_NOW)
+    finally:
+        intake.close()
+        repository.close()
+        os.close(read_fd)
+
+    assert retry.created is False
+    assert retry.job_id == first.job_id
+    assert (root / "intake" / f"{correlation}.artifact").read_bytes() == artifact
 
 
 def test_adapter_rejects_trailing_byte_and_cleans_artifact(tmp_path: Path) -> None:

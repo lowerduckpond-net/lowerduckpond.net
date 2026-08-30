@@ -29,6 +29,7 @@ from lowerduckpond_static_host_agent.job_runtime import (
     StartupReconciler,
     SystemdJobHandoff,
 )
+from lowerduckpond_static_host_agent.locks import StateBusyError
 from lowerduckpond_static_host_agent.operator_adapter import OperatorAdapter, OperatorAdapterError
 from lowerduckpond_static_host_agent.operator_stream import DeadlineReader, StreamError
 from lowerduckpond_static_host_agent.repository import StateRecordError, StateRepository
@@ -54,6 +55,7 @@ _SAFE_ERRORS: Final = (
     RequestDecodeError,
     RuntimeBoundaryError,
     StateRecordError,
+    StateBusyError,
     StreamError,
 )
 

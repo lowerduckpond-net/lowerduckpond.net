@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol
 
@@ -89,6 +89,14 @@ class _AdvancingClock:
         return self._value
 
 
+class _ManualClock:
+    def __init__(self) -> None:
+        self.value = 0.0
+
+    def __call__(self) -> float:
+        return self.value
+
+
 class _CompletedRun(Protocol):
     returncode: int
 
@@ -162,6 +170,22 @@ def _issue(repository: StateRepository) -> IssuedAuthorization:
         canonical_json_bytes(_fixture("operation-request.json")),
         operator_principal="operator@example.test",
         now=_NOW,
+        artifact=None,
+    )
+
+
+def _issue_number(repository: StateRepository, number: int) -> IssuedAuthorization:
+    request = _fixture("operation-request.json")
+    request["correlationId"] = f"0198d17f-6f4a-7000-8000-{number:012d}"
+    request["slug"] = f"duck-repair-{number}"
+    return AuthorizationIssuer(
+        repository,
+        gate=_OpenGate(),
+        entropy=lambda length: bytes([number]) * length,
+    ).issue(
+        canonical_json_bytes(request),
+        operator_principal="operator@example.test",
+        now=_NOW + timedelta(milliseconds=number),
         artifact=None,
     )
 
@@ -267,6 +291,24 @@ def test_deadline_writer_reports_an_authenticated_disconnect() -> None:
         os.close(write_fd)
 
 
+def test_deadline_writer_starts_deadlines_at_the_first_response_byte() -> None:
+    read_fd, write_fd = os.pipe()
+    clock = _ManualClock()
+    writer = DeadlineWriter(
+        write_fd,
+        clock=clock,
+        total_seconds=20.0,
+        idle_seconds=5.0,
+    )
+    clock.value = 60.0
+    try:
+        writer.write(b"terminal result")
+        assert os.read(read_fd, 64) == b"terminal result"
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
+
+
 def test_startup_reconciliation_requeues_only_unfinished_authority(tmp_path: Path) -> None:
     root = _state_root(tmp_path)
     with StateRepository(root, expected_owner=os.geteuid()) as repository:
@@ -318,6 +360,29 @@ def test_startup_reconciliation_requeues_a_result_phase_repair(tmp_path: Path) -
 
     assert outcome.enqueued_jobs == (pending.job_id,)
     assert handoff.enqueued == [pending.job_id]
+
+
+def test_startup_reconciliation_batches_backlog_under_the_aggregate_limit(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    with StateRepository(root, expected_owner=os.geteuid()) as repository:
+        issued = [_issue_number(repository, number) for number in range(1, 5)]
+
+    handoff = _CaptureHandoff()
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        first = StartupReconciler(repository, intake, handoff).reconcile()
+        for accepted in issued[:2]:
+            AuthorizationExecutor(repository, intake).execute(accepted.job_id)
+        second = StartupReconciler(repository, intake, handoff).reconcile()
+
+    assert first.enqueued_jobs == tuple(accepted.job_id for accepted in issued[:2])
+    assert first.deferred_jobs == len(issued[2:])
+    assert second.enqueued_jobs == tuple(accepted.job_id for accepted in issued[2:])
+    assert second.deferred_jobs == 0
 
 
 def test_systemd_handoff_uses_one_fixed_template_instance(

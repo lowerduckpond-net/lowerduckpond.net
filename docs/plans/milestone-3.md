@@ -713,7 +713,10 @@ and immutable exact-retry issuance. The final boundary replaces the denial
 adapter with the same allocation-free publication precheck followed, only when
 enabled in hermetic fixtures, by fixed-UUID systemd handoff, opaque job claim,
 immutable terminal result retrieval, authenticated export delivery plumbing,
-and bounded startup repair. Real SSH and systemd acceptance prove that the
+and bounded startup repair. Recovery admits at most two workers per pass into
+a shared 512-MiB/64-task slice; worker completion continues the queue and a
+one-minute timer retries any coalesced or interrupted handoff. Real SSH and
+systemd acceptance prove that the
 installed production flag still rejects before input, intake, or durable
 allocation and that no shell, PTY, forwarding, environment, SFTP, SCP, raw
 operation, or caller-selected executor field crosses the boundary. M3.2 supplied
