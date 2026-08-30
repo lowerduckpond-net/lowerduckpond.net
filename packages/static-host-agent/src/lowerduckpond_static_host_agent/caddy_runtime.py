@@ -8,6 +8,7 @@ import os
 import re
 import secrets
 import stat
+import threading
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
@@ -96,6 +97,7 @@ class CaddyRuntime:
         self._owner = owner
         self._group = group
         self._creation_group = creation_group
+        self._context_mutex = threading.RLock()
         self._locked = False
         self._closed = False
 
@@ -203,34 +205,36 @@ class CaddyRuntime:
     def locked(self) -> Iterator[object]:
         """Hold the exact publication lock for one bounded runtime transition."""
 
-        self._require_open()
-        if self._locked:
-            raise CaddyRuntimeError("publication lock is not reentrant")
-        fcntl.flock(self._lock_fd, fcntl.LOCK_EX)
-        self._locked = True
-        try:
-            yield self
-        finally:
-            self._locked = False
-            fcntl.flock(self._lock_fd, fcntl.LOCK_UN)
+        with self._context_mutex:
+            self._require_open()
+            if self._locked:
+                raise CaddyRuntimeError("publication lock is not reentrant")
+            fcntl.flock(self._lock_fd, fcntl.LOCK_EX)
+            self._locked = True
+            try:
+                yield self
+            finally:
+                self._locked = False
+                fcntl.flock(self._lock_fd, fcntl.LOCK_UN)
 
     @contextmanager
     def using_held_publication_lock(self, lock_manager: LockManager) -> Iterator[object]:
         """Use this exact inode through a caller's already-held ordered lock."""
 
-        self._require_open()
-        if self._locked:
-            raise CaddyRuntimeError("publication lock is not reentrant")
-        lock_manager.require_held(
-            LockName.PUBLICATION,
-            mode=LockMode.EXCLUSIVE,
-            descriptor=self._lock_fd,
-        )
-        self._locked = True
-        try:
-            yield self
-        finally:
-            self._locked = False
+        with self._context_mutex:
+            self._require_open()
+            if self._locked:
+                raise CaddyRuntimeError("publication lock is not reentrant")
+            lock_manager.require_held(
+                LockName.PUBLICATION,
+                mode=LockMode.EXCLUSIVE,
+                descriptor=self._lock_fd,
+            )
+            self._locked = True
+            try:
+                yield self
+            finally:
+                self._locked = False
 
     def read_active(self) -> str:
         """Read the active reference exactly once while holding publication."""
@@ -366,12 +370,13 @@ class CaddyRuntime:
     def close(self) -> None:
         """Close the pinned runtime descriptors when no transition is active."""
 
-        if not self._closed:
-            if self._locked:
-                raise CaddyRuntimeError("cannot close a locked Caddy runtime")
-            os.close(self._lock_fd)
-            os.close(self._root_fd)
-            self._closed = True
+        with self._context_mutex:
+            if not self._closed:
+                if self._locked:
+                    raise CaddyRuntimeError("cannot close a locked Caddy runtime")
+                os.close(self._lock_fd)
+                os.close(self._root_fd)
+                self._closed = True
 
     def _open_generation_store(self) -> CaddyGenerationStore:
         generation_fd = os.open(

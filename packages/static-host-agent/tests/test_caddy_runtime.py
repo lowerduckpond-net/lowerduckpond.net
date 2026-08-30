@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import fcntl
 import os
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -119,6 +120,53 @@ def test_runtime_holds_the_exact_publication_lock_inode(
             fcntl.flock(competing_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     finally:
         os.close(competing_fd)
+
+
+def test_same_runtime_serializes_concurrent_in_process_callers(
+    runtime_fixture: RuntimeFixture,
+) -> None:
+    first_entered = threading.Event()
+    release_first = threading.Event()
+    second_started = threading.Event()
+    second_entered = threading.Event()
+    failures: list[BaseException] = []
+
+    with runtime_fixture.open() as runtime:
+
+        def first() -> None:
+            try:
+                with runtime.locked():
+                    first_entered.set()
+                    if not release_first.wait(2):
+                        raise RuntimeError("test did not release first caller")
+            except BaseException as error:
+                failures.append(error)
+
+        def second() -> None:
+            try:
+                if not first_entered.wait(2):
+                    raise RuntimeError("first caller did not enter")
+                second_started.set()
+                with runtime.locked():
+                    second_entered.set()
+            except BaseException as error:
+                failures.append(error)
+
+        first_thread = threading.Thread(target=first)
+        second_thread = threading.Thread(target=second)
+        first_thread.start()
+        second_thread.start()
+        assert first_entered.wait(2)
+        assert second_started.wait(2)
+        assert not second_entered.wait(0.1)
+        release_first.set()
+        first_thread.join(2)
+        second_thread.join(2)
+
+    assert not first_thread.is_alive()
+    assert not second_thread.is_alive()
+    assert not failures
+    assert second_entered.is_set()
 
 
 def test_runtime_composes_with_the_same_lock_already_held_by_lock_manager(
