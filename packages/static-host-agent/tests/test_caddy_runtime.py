@@ -107,6 +107,31 @@ def test_selection_requires_the_publication_lock(
             runtime.read_active()
 
 
+def test_publication_lock_authority_is_bound_to_the_owning_thread(
+    runtime_fixture: RuntimeFixture,
+) -> None:
+    failures: list[BaseException] = []
+
+    with runtime_fixture.open() as runtime, runtime.locked():
+        runtime.select_active(GENERATION_A)
+
+        def select_from_non_owner() -> None:
+            try:
+                runtime.select_active(GENERATION_B)
+            except BaseException as error:
+                failures.append(error)
+
+        thread = threading.Thread(target=select_from_non_owner)
+        thread.start()
+        thread.join(2)
+
+        assert not thread.is_alive()
+        assert len(failures) == 1
+        assert isinstance(failures[0], CaddyRuntimeError)
+        assert str(failures[0]) == "publication lock is required"
+        assert runtime.read_active() == GENERATION_A
+
+
 def test_runtime_holds_the_exact_publication_lock_inode(
     runtime_fixture: RuntimeFixture,
 ) -> None:
@@ -487,7 +512,7 @@ def test_launcher_executes_the_selected_binary_by_descriptor(
     assert os.waitstatus_to_exitcode(status) == 0
 
 
-def test_launcher_rejects_generation_attempt_to_override_systemd_environment(
+def test_selection_rejects_systemd_environment_override_and_preserves_active(
     runtime_fixture: RuntimeFixture,
 ) -> None:
     generations = runtime_fixture.root / "generations"
@@ -512,11 +537,11 @@ def test_launcher_rejects_generation_attempt_to_override_systemd_environment(
             ),
         )
 
-    with runtime_fixture.open() as runtime:
-        with runtime.locked():
-            runtime.select_active(generation_id)
+    with runtime_fixture.open() as runtime, runtime.locked():
+        runtime.select_active(GENERATION_A)
         with pytest.raises(CaddyRuntimeError, match="forbidden name"):
-            prepare_active_caddy_execution(runtime)
+            runtime.select_active(generation_id)
+        assert runtime.read_active() == GENERATION_A
 
 
 @pytest.mark.parametrize(

@@ -99,6 +99,7 @@ class CaddyRuntime:
         self._creation_group = creation_group
         self._context_mutex = threading.RLock()
         self._locked = False
+        self._lock_owner_thread: int | None = None
         self._closed = False
 
     @classmethod
@@ -211,9 +212,11 @@ class CaddyRuntime:
                 raise CaddyRuntimeError("publication lock is not reentrant")
             fcntl.flock(self._lock_fd, fcntl.LOCK_EX)
             self._locked = True
+            self._lock_owner_thread = threading.get_ident()
             try:
                 yield self
             finally:
+                self._lock_owner_thread = None
                 self._locked = False
                 fcntl.flock(self._lock_fd, fcntl.LOCK_UN)
 
@@ -233,9 +236,11 @@ class CaddyRuntime:
                 descriptor=self._lock_fd,
             )
             self._locked = True
+            self._lock_owner_thread = threading.get_ident()
             try:
                 yield self
             finally:
+                self._lock_owner_thread = None
                 self._locked = False
         finally:
             self._context_mutex.release()
@@ -281,8 +286,8 @@ class CaddyRuntime:
         canonical_id = _canonical_generation_id(generation_id)
         store = self._open_generation_store()
         try:
-            with store.open_verified(canonical_id):
-                pass
+            with store.open_verified(canonical_id) as generation:
+                _read_generation_environment(generation)
         finally:
             store.close()
         _validate_existing_reference_if_present(
@@ -411,7 +416,7 @@ class CaddyRuntime:
 
     def _require_locked(self) -> None:
         self._require_open()
-        if not self._locked:
+        if not self._locked or self._lock_owner_thread != threading.get_ident():
             raise CaddyRuntimeError("publication lock is required")
 
 
@@ -506,12 +511,9 @@ def prepare_active_caddy_execution(runtime: CaddyRuntime) -> PreparedCaddyExecut
             try:
                 configuration_fd = generation.duplicate_payload_descriptor(CADDY_CONFIGURATION_NAME)
                 environment_fd = generation.duplicate_payload_descriptor(CADDY_ENVIRONMENT_NAME)
-                environment_bytes = os.pread(
-                    environment_fd,
-                    MAX_CADDY_ENVIRONMENT_BYTES + 1,
-                    0,
+                environment = _parse_environment(
+                    os.pread(environment_fd, MAX_CADDY_ENVIRONMENT_BYTES + 1, 0)
                 )
-                environment = _parse_environment(environment_bytes)
             except BaseException:
                 if environment_fd is not None:
                     os.close(environment_fd)
@@ -711,6 +713,14 @@ def _parse_environment(data: bytes) -> dict[str, str]:
             raise CaddyRuntimeError("selected Caddy environment contains a forbidden name")
         result[name] = value
     return result
+
+
+def _read_generation_environment(generation: PinnedCaddyGeneration) -> dict[str, str]:
+    descriptor = generation.duplicate_payload_descriptor(CADDY_ENVIRONMENT_NAME)
+    try:
+        return _parse_environment(os.pread(descriptor, MAX_CADDY_ENVIRONMENT_BYTES + 1, 0))
+    finally:
+        os.close(descriptor)
 
 
 def _require_path_identity(path: Path, descriptor: int, *, label: str) -> None:
