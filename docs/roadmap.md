@@ -11,7 +11,7 @@ Status as of 2026-08-30:
 | 0: Repository foundation | Complete | The public repository, development workflow, CI gates, application boundaries, and architecture decisions are established. |
 | 1: DigitalOcean foundation | Complete | OpenTofu manages the production network, Droplet, reserved IP, firewall, DNS, state, and durable backup storage; the guarded rebuild drill succeeded. |
 | 2: Reproducible host configuration | Complete | One trusted-workstation command converges production idempotently and passes host, HTTPS, backup, restore, and post-reboot acceptance checks. |
-| 3: Static tenant MVP | Current | M3.0 through M3.4 are complete; M3.5 dark-host implementation and its fail-closed production preflight are ready for the separately authorized live convergence. |
+| 3: Static tenant MVP | Current | M3.0 through M3.5 are complete; M3.6 authenticated issuance and opaque job execution are next. Production publication remains disabled. |
 | 4: Control plane and lifecycle automation | Planned | Expose the static lifecycle through the FastAPI control plane with approvals, jobs, policy, and audit history. |
 | 5: Backup, observability, and operations | Planned | Complete platform-level recovery, central observability, alerting, and operator runbooks. Host backup and monitoring foundations arrived early in Milestone 2. |
 | 6: Dynamic PHP pilot | Planned | Introduce isolated PHP and tenant-scoped SQL only after the static platform and recovery path are proven. |
@@ -29,10 +29,12 @@ complete; it provides bounded release and record inventory, capacity
 admission, correlation idempotency, a hash-chained audit, and fail-closed
 intent discovery and recovery planning. M3.4's hostile-ZIP gate, bounded
 extractor, deterministic portable-bundle export/import engine, and inert
-archive-worker sandbox contract are complete. M3.5 installs its reviewed code
-only after the read-only production preflight and a separate operator go-ahead.
-Production publication remains disabled, and Milestone 3 remains incomplete until
-every phase gate through M3.12 passes.
+archive-worker sandbox contract are complete. M3.5's reproducible host agent,
+root-owned dark-host layout, disabled issuance and Caddy gates, private worker
+boundary, live production convergence, idempotence check, backup, and
+disposable restore passed. M3.6's authenticated issuance boundary is next.
+Production publication remains disabled, and Milestone 3 remains incomplete
+until every phase gate through M3.12 passes.
 
 ## 1. Proposed platform repository
 
