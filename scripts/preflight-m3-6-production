@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+export LC_ALL=C
+
+repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+required_environment=(
+    ANSIBLE_PRIVATE_KEY_FILE
+    STATIC_OPERATOR_PRINCIPAL
+    STATIC_OPERATOR_PUBLIC_KEY
+)
+
+for variable_name in "${required_environment[@]}"; do
+    if [[ -z ${!variable_name:-} ]]; then
+        echo "Required environment variable ${variable_name} is not set." >&2
+        exit 2
+    fi
+done
+
+"${repository_root}/scripts/check-m3-6-operator-identity" \
+    "${ANSIBLE_PRIVATE_KEY_FILE}"
+dark_host_preflight_output=$(
+    "${repository_root}/scripts/preflight-m3-dark-host-production"
+)
+printf '%s\n' "${dark_host_preflight_output}"
+artifact_digest=""
+while IFS= read -r output_line; do
+    case ${output_line} in
+        'Pinned host-agent artifact SHA-256: '*)
+            artifact_digest=${output_line##*: }
+            ;;
+    esac
+done <<<"${dark_host_preflight_output}"
+if [[ ! ${artifact_digest} =~ ^[0-9a-f]{64}$ ]]; then
+    echo "The M3.5 preflight did not report one valid artifact digest." >&2
+    exit 1
+fi
+
+ssh \
+    -o BatchMode=yes \
+    -o StrictHostKeyChecking=yes \
+    -i "${ANSIBLE_PRIVATE_KEY_FILE}" \
+    ldp-admin@lowerduckpond.net \
+    "sudo --non-interactive /bin/bash -s -- ${artifact_digest}" <<'REMOTE'
+set -euo pipefail
+export LC_ALL=C
+
+candidate_artifact_digest=$1
+previous_artifact_digest=3709daa0fd2465a73ae6b0c7dd0d6137cf0ec747e11e5e670df084113265d43b
+
+remote_fail() {
+    printf 'M3.6 production preflight failed: %s\n' "$1" >&2
+    exit 1
+}
+
+publication_configuration=/etc/lowerduckpond/static-publication.json
+[[ -f ${publication_configuration} && ! -L ${publication_configuration} ]] ||
+    remote_fail "the publication gate configuration has an unexpected type"
+[[ $(stat --format='%U:%G:%a:%s' -- "${publication_configuration}") == \
+    root:root:400:89 ]] ||
+    remote_fail "the publication gate configuration metadata drifted"
+[[ $(<"${publication_configuration}") == \
+    '{"format":"lowerduckpond-static-publication-gate-v1","static_publication_enabled":false}' ]] ||
+    remote_fail "static publication is not exactly disabled"
+
+set +e
+gate_output=$(
+    /usr/local/libexec/lowerduckpond/static-publication-gate job-issuance 2>&1
+)
+gate_status=$?
+set -e
+[[ ${gate_status} -eq 78 ]] ||
+    remote_fail "job issuance did not return the disabled status"
+[[ ${gate_output} == publication_disabled ]] ||
+    remote_fail "job issuance did not return the disabled reason"
+
+install_root=/opt/lowerduckpond/static-host-agent
+[[ -L ${install_root}/current ]] ||
+    remote_fail "the selected host-agent artifact is not a symbolic link"
+selected_artifact=$(readlink --canonicalize-existing -- "${install_root}/current") ||
+    remote_fail "the selected host-agent artifact cannot be resolved"
+selected_artifact_digest=${selected_artifact##*/}
+[[ ${selected_artifact} == "${install_root}/${selected_artifact_digest}" ]] ||
+    remote_fail "the selected host-agent artifact escaped its install root"
+if [[ ${selected_artifact_digest} != "${previous_artifact_digest}" &&
+      ${selected_artifact_digest} != "${candidate_artifact_digest}" ]]; then
+    remote_fail "the selected host-agent artifact has an unexpected identity"
+fi
+/usr/local/libexec/lowerduckpond/verify-static-host-agent-artifact \
+    "${selected_artifact}" >/dev/null ||
+    remote_fail "the selected M3.5 host-agent artifact is invalid"
+
+empty_directories=(
+    /var/lib/lowerduckpond/static/platform
+    /var/lib/lowerduckpond/static/tenants
+    /var/lib/lowerduckpond/static/authorization/jobs
+    /var/lib/lowerduckpond/static/authorization/results
+    /var/lib/lowerduckpond/static/authorization/correlations
+    /var/lib/lowerduckpond/static/intents
+    /var/lib/lowerduckpond/static/intake
+    /var/lib/lowerduckpond/static/exports
+    /var/lib/lowerduckpond/static/audit
+    /srv/lowerduckpond/sites
+    /etc/caddy/generations
+    /etc/caddy/intents
+)
+for path in "${empty_directories[@]}"; do
+    [[ -d ${path} && ! -L ${path} ]] ||
+        remote_fail "${path} has an unexpected type"
+    [[ -z $(find "${path}" -mindepth 1 -print -quit) ]] ||
+        remote_fail "${path} is not empty"
+done
+
+locks=/var/lib/lowerduckpond/static/locks
+[[ -d ${locks} && ! -L ${locks} ]] ||
+    remote_fail "the static lock directory has an unexpected type"
+expected_locks=$'export.lock\nintake.lock\npublication.lock\ntenant-state.lock'
+actual_locks=$(find "${locks}" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)
+[[ ${actual_locks} == "${expected_locks}" ]] ||
+    remote_fail "the static lock inventory drifted"
+while IFS= read -r lock; do
+    [[ $(stat --format='%F:%U:%G:%a:%h:%s' -- "${locks}/${lock}") == \
+        regular\ file:root:root:600:1:0 ]] ||
+        remote_fail "${lock} metadata drifted"
+done <<<"${expected_locks}"
+
+worker_units=$(systemctl list-units --all --plain --no-legend \
+    'lowerduckpond-static-worker@*.service')
+if [[ -n ${worker_units} ]]; then
+    remote_fail "a static authorization worker already exists"
+fi
+REMOTE
+
+printf 'M3.6 production preflight passed without changing host state.\n'
+printf 'Static publication remains disabled and authoritative state is empty.\n'

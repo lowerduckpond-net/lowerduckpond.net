@@ -34,10 +34,11 @@ root-owned dark-host layout, disabled issuance and Caddy gates, private worker
 boundary, live production convergence, idempotence check, backup, and
 disposable restore passed. M3.6's dedicated SSH identity, versioned framing,
 trusted client, resource-isolated decoder, bounded one-slot intake,
-expected-state binding, and immutable exact-retry issuance are complete. Its
-final implementation boundary adds fixed-UUID systemd handoff, immutable
-terminal-result delivery, authenticated export plumbing, and startup repair;
-production convergence and its live gate remain. Lifecycle handlers still
+expected-state binding, immutable exact-retry issuance, fixed-UUID systemd
+handoff, immutable terminal-result delivery, authenticated export plumbing,
+and startup repair are complete. Its read-only production starting gate is
+implemented; the live preflight and production convergence remain. Lifecycle
+handlers still
 return a versioned mutation-free `not_implemented` result until M3.8.
 Production publication remains disabled, and Milestone 3 remains incomplete
 until every phase gate through M3.12 passes.

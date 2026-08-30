@@ -101,6 +101,8 @@ check-opentofu:
 check-ansible: _sync
     bash -n scripts/configure-production
     bash -n scripts/preflight-m3-dark-host-production
+    bash -n scripts/preflight-m3-6-production
+    bash -n scripts/check-m3-6-operator-identity
     bash -n scripts/check-production-inventory
     bash -n config/ansible/roles/caddy/files/caddy-validate
     scripts/check-production-inventory
@@ -114,6 +116,10 @@ check-ansible: _sync
 # Prove the M3.5 production starting conditions without changing host state.
 preflight-m3-dark-host-production: _sync
     scripts/preflight-m3-dark-host-production
+
+# Prove the M3.6 operator identity and dark production state without mutation.
+preflight-m3-6-production: _sync
+    scripts/preflight-m3-6-production
 
 # Converge production twice and run host acceptance and restore checks.
 configure-production: _sync

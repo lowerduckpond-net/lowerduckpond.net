@@ -8,7 +8,7 @@ inventory="${repository_root}/config/ansible/inventories/production/hosts.yml"
 site_playbook="${repository_root}/config/ansible/playbooks/site.yml"
 acceptance_playbook="${repository_root}/config/ansible/playbooks/acceptance.yml"
 
-"${repository_root}/scripts/preflight-m3-dark-host-production"
+"${repository_root}/scripts/preflight-m3-6-production"
 
 required_environment=(
     ADMIN_SOURCE_CIDRS_JSON
