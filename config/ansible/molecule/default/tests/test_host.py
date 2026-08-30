@@ -94,9 +94,11 @@ STATIC_STATE_DIRECTORY_MODE = 0o700
 STATIC_CONFIGURATION_MODE = 0o400
 STATIC_PUBLICATION_DISABLED_STATUS = 78
 STATIC_OPERATOR_DISABLED_STATUS = 69
+STATIC_OPERATOR_INVALID_REQUEST_STATUS = 65
 STATIC_OPERATOR_KEY_PATH = "/run/lowerduckpond-molecule/operator-key"
 STATIC_OPERATOR_AUTHORIZED_KEYS_PATH = "/etc/ssh/lowerduckpond/authorized_keys/ldp-operator"
 STATIC_OPERATOR_COMMAND = "/usr/local/libexec/lowerduckpond/static-operator-disabled"
+STATIC_OPERATOR_REQUEST_DECODER = "/usr/local/libexec/lowerduckpond/static-request-decoder"
 STATIC_OPERATOR_COMMAND_MODE = 0o755
 STATIC_OPERATOR_KEY_DIRECTORY_MODE = 0o755
 STATIC_OPERATOR_KEY_FILE_MODE = 0o640
@@ -956,6 +958,34 @@ def test_static_operator_effective_sshd_policy_denies_side_channels(host: Host) 
     }
     for name, value in expected.items():
         assert settings[name] == value
+
+
+def test_static_operator_request_decoder_is_isolated_and_strict(host: Host) -> None:
+    decoder = host.file(STATIC_OPERATOR_REQUEST_DECODER)
+    assert decoder.is_file
+    assert decoder.user == "root"
+    assert decoder.group == "root"
+    assert decoder.mode == STATIC_OPERATOR_COMMAND_MODE
+    request = (
+        '{"apiVersion":"hosting.lowerduckpond.net/v1alpha1",'
+        '"correlationId":"0198d17f-6f4a-7000-8000-000000000001",'
+        '"kind":"OperationRequest","operation":"create",'
+        '"quotas":{"entries":5000,"storageMiB":100},"slug":"duck-repair"}'
+    )
+    accepted = host.run(
+        "printf %%s %s | %s",
+        request,
+        STATIC_OPERATOR_REQUEST_DECODER,
+    )
+    duplicate = host.run(
+        "printf %%s %s | %s",
+        request.replace('"slug":"duck-repair"', '"slug":"duck-repair","slug":"other"'),
+        STATIC_OPERATOR_REQUEST_DECODER,
+    )
+    assert accepted.rc == 0
+    assert accepted.stdout == f"{request}\n"
+    assert duplicate.rc == STATIC_OPERATOR_INVALID_REQUEST_STATUS
+    assert duplicate.stderr.strip() == "request_invalid"
 
 
 def test_static_operator_real_ssh_is_forced_and_allocation_free(host: Host) -> None:

@@ -185,6 +185,17 @@ active backup-scope tag, so convergence creates and restores from a new
 snapshot when the authoritative source or exclusion set changes rather than
 mistaking an older Milestone 2 snapshot for current evidence.
 
+The M3.6 trusted-workstation client is available as `just static-operator` and
+requires explicit `--host`, `--identity`, and `--request` arguments, plus
+`--artifact` for deploy/import and `--export` for an export destination. It
+rejects an exposed private-key file, noncanonical or oversized request,
+artifact mismatch, response/request mismatch, unframed response, and export
+length or digest mismatch. The private key remains outside this repository.
+Until the final M3.6 execution boundary is installed and separately converged,
+production SSH still reaches the allocation-free forced-command denial adapter;
+the client therefore cannot issue production work merely because it is present
+in the checkout.
+
 The current retention policy keeps 7 daily, 5 weekly, and 12 monthly scheduled
 snapshots. A change to any of those counts invalidates the prior maintenance
 evidence and causes convergence to apply the new policy immediately.
