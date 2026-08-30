@@ -1,0 +1,21 @@
+#!/bin/sh
+set -eu
+
+if [ "$#" -ne 2 ] || [ "$1" != "--principal" ]; then
+    exit 64
+fi
+
+principal=$2
+if [ "${#principal}" -gt 128 ]; then
+    exit 64
+fi
+case "${principal}" in
+    [A-Za-z0-9]*) ;;
+    *) exit 64 ;;
+esac
+case "${principal}" in
+    *[!A-Za-z0-9._@-]*) exit 64 ;;
+esac
+
+printf '%s\n' 'static_operator_protocol_unavailable' >&2
+exit 69

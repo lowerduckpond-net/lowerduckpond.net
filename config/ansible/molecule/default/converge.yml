@@ -52,6 +52,22 @@
           - m3_qualification_molecule_source.stat.mode == '0600'
         fail_msg: The Molecule controller source must reproduce a restrictive checkout.
 
+- name: Load the disposable Molecule operator identity
+  hosts: hosting_nodes
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read the disposable operator public key
+      ansible.builtin.slurp:
+        src: /run/lowerduckpond-molecule/operator-key.pub
+      register: static_operator_molecule_public_key
+
+    - name: Attach the operator identity to every hosting node
+      ansible.builtin.set_fact:
+        static_operator_public_key: >-
+          {{ static_operator_molecule_public_key.content | b64decode | trim }}
+        static_operator_principal: molecule-operator-v1
+
 - name: Import the hosting-node playbook
   ansible.builtin.import_playbook: ../../playbooks/site.yml
 

@@ -17,8 +17,13 @@ revocable and unable to turn a protocol or parsing defect into a general shell.
 
 ## Decision
 
-Create a dedicated, password-locked `ldp-operator` Unix account and a dedicated
-operator SSH key. Keep `ldp-admin` and its existing key for Ansible convergence,
+Create a dedicated, password-disabled `ldp-operator` Unix account and a
+dedicated operator SSH key. The account carries a syntactically valid hash for
+a randomly generated and immediately discarded password because Ubuntu's
+OpenSSH rejects literally locked shadow entries before public-key
+authentication. Password and keyboard-interactive authentication remain denied
+globally and in the account's `Match` policy, so no password credential exists
+or can be used. Keep `ldp-admin` and its existing key for Ansible convergence,
 host maintenance, and emergency administration only.
 
 Store the operator authorized key in a root-owned system path outside any

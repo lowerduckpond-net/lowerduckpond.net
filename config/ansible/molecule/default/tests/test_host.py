@@ -93,6 +93,15 @@ STATIC_HOST_AGENT_FILE_MODE = 0o444
 STATIC_STATE_DIRECTORY_MODE = 0o700
 STATIC_CONFIGURATION_MODE = 0o400
 STATIC_PUBLICATION_DISABLED_STATUS = 78
+STATIC_OPERATOR_DISABLED_STATUS = 69
+STATIC_OPERATOR_KEY_PATH = "/run/lowerduckpond-molecule/operator-key"
+STATIC_OPERATOR_AUTHORIZED_KEYS_PATH = "/etc/ssh/lowerduckpond/authorized_keys/ldp-operator"
+STATIC_OPERATOR_COMMAND = "/usr/local/libexec/lowerduckpond/static-operator-disabled"
+STATIC_OPERATOR_COMMAND_MODE = 0o755
+STATIC_OPERATOR_KEY_DIRECTORY_MODE = 0o755
+STATIC_OPERATOR_KEY_FILE_MODE = 0o640
+STATIC_OPERATOR_HOME_MODE = 0o555
+SSHD_SETTING_FIELD_COUNT = 2
 STATIC_STATE_DIRECTORIES = (
     "platform",
     "tenants",
@@ -106,6 +115,25 @@ STATIC_STATE_DIRECTORIES = (
     "audit",
     "locks",
 )
+
+
+def static_operator_ssh_command(
+    *arguments: str,
+    options: tuple[str, ...] = (),
+) -> str:
+    base = (
+        "/usr/bin/ssh -F /dev/null "
+        f"-i {shlex.quote(STATIC_OPERATOR_KEY_PATH)} "
+        "-o BatchMode=yes -o IdentitiesOnly=yes "
+        "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+        "-o LogLevel=ERROR -o ConnectTimeout=5"
+    )
+    if options:
+        base = f"{base} {shlex.join(options)}"
+    base = f"{base} ldp-operator@127.0.0.1"
+    if not arguments:
+        return base
+    return f"{base} {shlex.join(arguments)}"
 
 
 def read_status_scope(host: Host, variable_name: str) -> str:
@@ -844,6 +872,149 @@ def test_static_publication_gate_rejects_before_allocation(host: Host) -> None:
     assert empty_candidate.rc == 0
     assert tenant_candidate.rc == STATIC_PUBLICATION_DISABLED_STATUS
     assert tenant_candidate.stderr.strip() == "publication_disabled"
+
+
+def test_static_operator_identity_is_root_bound_and_has_no_writable_home(host: Host) -> None:
+    account = host.user("ldp-operator")
+    assert account.exists
+    assert account.group == "ldp-operator"
+    assert account.home == "/var/empty/lowerduckpond-static-operator"
+    assert account.shell == "/bin/sh"
+    assert host.run("id -Gn ldp-operator").stdout.strip() == "ldp-operator"
+
+    home = host.file(account.home)
+    assert home.is_directory
+    assert home.user == "root"
+    assert home.group == "root"
+    assert home.mode == STATIC_OPERATOR_HOME_MODE
+    assert host.run(f"find {account.home} -mindepth 1 -print -quit").stdout == ""
+    assert host.run(f"runuser -u ldp-operator -- touch {account.home}/escape").rc != 0
+
+    shadow = host.run("getent shadow ldp-operator")
+    assert shadow.rc == 0
+    password_field = shadow.stdout.split(":", maxsplit=2)[1]
+    assert password_field.startswith("$6$LdPM3Op20260830$")
+    assert not password_field.startswith(("!", "*"))
+
+    command = host.file(STATIC_OPERATOR_COMMAND)
+    assert command.is_file
+    assert command.user == "root"
+    assert command.group == "root"
+    assert command.mode == STATIC_OPERATOR_COMMAND_MODE
+
+    key_directory = host.file("/etc/ssh/lowerduckpond/authorized_keys")
+    assert key_directory.is_directory
+    assert key_directory.user == "root"
+    assert key_directory.group == "root"
+    assert key_directory.mode == STATIC_OPERATOR_KEY_DIRECTORY_MODE
+    authorized_keys = host.file(STATIC_OPERATOR_AUTHORIZED_KEYS_PATH)
+    assert authorized_keys.is_file
+    assert authorized_keys.user == "root"
+    assert authorized_keys.group == "ldp-operator"
+    assert authorized_keys.mode == STATIC_OPERATOR_KEY_FILE_MODE
+    key_lines = [
+        line
+        for line in authorized_keys.content_string.splitlines()
+        if line and not line.startswith("#")
+    ]
+    assert len(key_lines) == 1
+    assert key_lines[0].startswith(
+        'command="/usr/bin/env -i LANG=C.UTF-8 '
+        f'{STATIC_OPERATOR_COMMAND} --principal molecule-operator-v1",restrict ssh-ed25519 '
+    )
+    assert "environment=" not in key_lines[0]
+    assert "permitopen=" not in key_lines[0]
+    assert host.run(f"ssh-keygen -l -f {STATIC_OPERATOR_AUTHORIZED_KEYS_PATH}").rc == 0
+
+
+def test_static_operator_effective_sshd_policy_denies_side_channels(host: Host) -> None:
+    result = host.run("/usr/sbin/sshd -T -C user=ldp-operator,host=localhost,addr=127.0.0.1")
+    assert result.rc == 0
+    settings = {
+        fields[0]: fields[1]
+        for line in result.stdout.splitlines()
+        if len(fields := line.split(maxsplit=1)) == SSHD_SETTING_FIELD_COUNT
+    }
+    expected = {
+        "allowagentforwarding": "no",
+        "allowstreamlocalforwarding": "no",
+        "allowtcpforwarding": "no",
+        "authenticationmethods": "publickey",
+        "authorizedkeysfile": STATIC_OPERATOR_AUTHORIZED_KEYS_PATH,
+        "disableforwarding": "yes",
+        "gatewayports": "no",
+        "kbdinteractiveauthentication": "no",
+        "maxsessions": "1",
+        "passwordauthentication": "no",
+        "permitlisten": "none",
+        "permitopen": "none",
+        "permittty": "no",
+        "permituserenvironment": "no",
+        "permituserrc": "no",
+        "pubkeyauthentication": "yes",
+        "x11forwarding": "no",
+    }
+    for name, value in expected.items():
+        assert settings[name] == value
+
+
+def test_static_operator_real_ssh_is_forced_and_allocation_free(host: Host) -> None:
+    before = host.run(f"find {STATIC_STATE_ROOT} -printf '%P %y %m %u %g\\n' | sort")
+    shell = host.run(static_operator_ssh_command())
+    assert shell.rc == STATIC_OPERATOR_DISABLED_STATUS
+    assert shell.stderr.strip() == "static_operator_protocol_unavailable"
+
+    sentinel = "/tmp/lowerduckpond-static-operator-command-escape"  # noqa: S108
+    arbitrary = host.run(static_operator_ssh_command("/usr/bin/touch", sentinel))
+    assert arbitrary.rc == STATIC_OPERATOR_DISABLED_STATUS
+    assert arbitrary.stderr.strip() == "static_operator_protocol_unavailable"
+    assert not host.file(sentinel).exists
+
+    environment = host.run(
+        static_operator_ssh_command(
+            "/usr/bin/env",
+            options=("-o", "SetEnv=M3_OPERATOR_SENTINEL=attacker"),
+        )
+    )
+    assert environment.rc == STATIC_OPERATOR_DISABLED_STATUS
+    assert "M3_OPERATOR_SENTINEL" not in environment.stdout
+
+    pty = host.run(static_operator_ssh_command("/usr/bin/id", options=("-tt",)))
+    assert pty.rc != 0
+    assert not host.file(sentinel).exists
+
+    forwarding = host.run(
+        "timeout 8s "
+        + static_operator_ssh_command(
+            options=(
+                "-N",
+                "-o",
+                "ExitOnForwardFailure=yes",
+                "-L",
+                "127.0.0.1:45876:127.0.0.1:22",
+            )
+        )
+    )
+    assert forwarding.rc != 0
+
+    after = host.run(f"find {STATIC_STATE_ROOT} -printf '%P %y %m %u %g\\n' | sort")
+    assert before.stdout == after.stdout
+
+
+def test_static_operator_real_ssh_denies_sftp_and_scp(host: Host) -> None:
+    common = (
+        f"-F /dev/null -i {STATIC_OPERATOR_KEY_PATH} "
+        "-o BatchMode=yes -o IdentitiesOnly=yes "
+        "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+        "-o LogLevel=ERROR -o ConnectTimeout=5"
+    )
+    sftp = host.run(f"/usr/bin/sftp {common} -b /dev/null ldp-operator@127.0.0.1")
+    assert sftp.rc != 0
+
+    destination = "/tmp/lowerduckpond-static-operator-scp-escape"  # noqa: S108
+    scp = host.run(f"/usr/bin/scp {common} /etc/hostname ldp-operator@127.0.0.1:{destination}")
+    assert scp.rc != 0
+    assert not host.file(destination).exists
 
 
 def test_static_worker_boundary_is_inert_and_hardened(host: Host) -> None:

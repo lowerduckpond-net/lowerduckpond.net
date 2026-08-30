@@ -1,0 +1,5 @@
+---
+- name: Reload OpenSSH for the static operator
+  ansible.builtin.systemd_service:
+    name: ssh.service
+    state: reloaded

@@ -20,6 +20,8 @@ required_environment=(
     OPENTOFU_STATE_SECRET_ACCESS_KEY
     RESTIC_PASSWORD
     SPACES_REGION
+    STATIC_OPERATOR_PRINCIPAL
+    STATIC_OPERATOR_PUBLIC_KEY
 )
 
 for variable_name in "${required_environment[@]}"; do

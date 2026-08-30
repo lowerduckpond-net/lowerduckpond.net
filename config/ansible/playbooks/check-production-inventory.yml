@@ -17,6 +17,12 @@
           - backup_spaces_access_key_id == 'inventory-test-access-key'
           - backup_spaces_secret_access_key == 'inventory-test-secret-key'
           - backup_spaces_region == 'inventory-test-region'
+          - static_operator_principal == 'inventory-operator-v1'
+          - >-
+            static_operator_public_key ==
+            'ssh-ed25519
+            AAAAC3NzaC1lZDI1NTE5AAAAIKvQO3bKFnR6F0kAAbB+2c5F5HLpS36uGnYS0xV9mO4O
+            inventory-test'
           - acceptance_caddy_domain == 'lowerduckpond.net'
           - acceptance_caddy_tls_mode == 'cloudflare'
           - acceptance_podman_service_user == 'ldp-runtime'
