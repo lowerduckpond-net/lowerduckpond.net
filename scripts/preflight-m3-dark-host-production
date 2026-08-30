@@ -77,19 +77,37 @@ ssh \
     'sudo --non-interactive /bin/bash -s' <<'REMOTE'
 set -euo pipefail
 
-[[ $(uname -m) == x86_64 ]]
+remote_fail() {
+    printf 'M3.5 production preflight failed: %s\n' "$1" >&2
+    exit 1
+}
+
+[[ $(uname -m) == x86_64 ]] || remote_fail "host architecture is not x86-64"
 provisioner_home=/var/lib/lowerduckpond/provisioner
 if [[ -e ${provisioner_home} || -L ${provisioner_home} ]]; then
-    [[ -d ${provisioner_home} && ! -L ${provisioner_home} ]]
+    [[ -d ${provisioner_home} && ! -L ${provisioner_home} ]] ||
+        remote_fail "retired provisioner home has an unexpected type"
     while IFS= read -r -d '' entry; do
         name=${entry##*/}
         case ${name} in
             .bash_logout | .bashrc | .profile) ;;
-            *) exit 1 ;;
+            .cloud-locale-test.skip)
+                [[ -f ${entry} && ! -L ${entry} ]] ||
+                    remote_fail "cloud-init locale marker has an unexpected type"
+                [[ $(stat --format='%U:%G:%a:%s' -- "${entry}") == \
+                    ldp-provisioner:ldp-provisioner:644:0 ]] ||
+                    remote_fail "cloud-init locale marker metadata drifted"
+                continue
+                ;;
+            *) remote_fail "retired provisioner home contains an unexpected object" ;;
         esac
-        [[ -f ${entry} && ! -L ${entry} ]]
-        [[ $(stat --format='%U:%G:%a' -- "${entry}") == ldp-provisioner:ldp-provisioner:644 ]]
-        cmp --silent -- "${entry}" "/etc/skel/${name}"
+        [[ -f ${entry} && ! -L ${entry} ]] ||
+            remote_fail "retired provisioner skeleton file has an unexpected type"
+        [[ $(stat --format='%U:%G:%a' -- "${entry}") == \
+            ldp-provisioner:ldp-provisioner:644 ]] ||
+            remote_fail "retired provisioner skeleton file metadata drifted"
+        cmp --silent -- "${entry}" "/etc/skel/${name}" ||
+            remote_fail "retired provisioner skeleton file content drifted"
     done < <(find "${provisioner_home}" -mindepth 1 -maxdepth 1 -print0)
 fi
 
@@ -99,16 +117,21 @@ for path in \
     /var/lib/lowerduckpond/audit
 do
     if [[ -e ${path} || -L ${path} ]]; then
-        [[ -d ${path} && ! -L ${path} ]]
-        [[ -z $(find "${path}" -mindepth 1 -print -quit) ]]
+        [[ -d ${path} && ! -L ${path} ]] ||
+            remote_fail "${path} has an unexpected type"
+        [[ -z $(find "${path}" -mindepth 1 -print -quit) ]] ||
+            remote_fail "${path} contains tenant history or an unexpected object"
     fi
 done
-[[ -z $(find /etc/caddy/routes.d -mindepth 1 -print -quit) ]]
-systemctl is-active --quiet caddy.service
+[[ -z $(find /etc/caddy/routes.d -mindepth 1 -print -quit) ]] ||
+    remote_fail "Caddy has a tenant route input"
+systemctl is-active --quiet caddy.service ||
+    remote_fail "Caddy is not active"
 curl --silent --show-error --fail \
     --connect-timeout 5 --max-time 15 \
     --resolve lowerduckpond.net:443:127.0.0.1 \
-    https://lowerduckpond.net/ >/dev/null
+    https://lowerduckpond.net/ >/dev/null ||
+    remote_fail "the local HTTPS fixture failed"
 REMOTE
 
 printf 'M3.5 production preflight passed without changing host state.\n'

@@ -81,6 +81,14 @@
         system: true
         create_home: true
 
+    - name: Seed the cloud-init locale marker from the production baseline
+      ansible.builtin.copy:
+        content: ""
+        dest: /var/lib/lowerduckpond/provisioner/.cloud-locale-test.skip
+        owner: ldp-provisioner
+        group: ldp-provisioner
+        mode: "0644"
+
     - name: Seed the empty retired Milestone 2 writable layout
       ansible.builtin.file:
         path: "{{ item }}"
