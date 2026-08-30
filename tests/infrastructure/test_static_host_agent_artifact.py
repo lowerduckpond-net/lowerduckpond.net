@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import os
 import subprocess
@@ -38,6 +39,9 @@ def run(*arguments: str | os.PathLike[str]) -> subprocess.CompletedProcess[str]:
 
 
 def test_host_agent_artifact_is_locked_reproducible_and_installable(tmp_path: Path) -> None:
+    for helper in (INSTALLER, VERIFIER):
+        ast.parse(helper.read_text(encoding="utf-8"), feature_version=(3, 12))
+
     first = tmp_path / "first.tar"
     second = tmp_path / "second.tar"
     first_build = run(BUILDER, first)

@@ -140,7 +140,9 @@ def select_current(install_root: pathlib.Path, destination: pathlib.Path) -> boo
         fail("host-agent current selector is not a symbolic link")
     try:
         selected = current.resolve(strict=True)
-    except FileNotFoundError, RuntimeError:
+    except FileNotFoundError:
+        selected = None
+    except RuntimeError:
         selected = None
     if selected == destination:
         return False
