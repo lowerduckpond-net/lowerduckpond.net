@@ -632,7 +632,7 @@ def _safe_temporary_reference(
         and 0 <= metadata.st_size <= _REFERENCE_BYTES
         and (
             (
-                metadata.st_gid == creation_group
+                metadata.st_gid in {creation_group, group}
                 and stat.S_IMODE(metadata.st_mode) == _REFERENCE_TEMPORARY_CREATION_MODE
             )
             or (
