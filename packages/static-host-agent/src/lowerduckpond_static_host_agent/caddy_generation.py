@@ -242,7 +242,7 @@ class PinnedCaddyGeneration:
         """Return a caller-owned descriptor for the verified generation directory."""
 
         self._require_open()
-        return os.dup(self._directory_fd)
+        return _reopen_directory(self._directory_fd)
 
     def duplicate_payload_descriptor(self, name: str) -> int:
         """Return a caller-owned descriptor for one verified payload."""
@@ -250,9 +250,18 @@ class PinnedCaddyGeneration:
         self._require_open()
         if name not in _PAYLOAD_NAMES:
             raise ValueError("payload name is not part of a complete Caddy generation")
-        duplicate = os.dup(self._payload_fds[name])
-        os.lseek(duplicate, 0, os.SEEK_SET)
-        return duplicate
+        try:
+            reopened = os.open(name, _FILE_READ_FLAGS, dir_fd=self._directory_fd)
+        except OSError as error:
+            if error.errno in {errno.ELOOP, errno.ENXIO}:
+                raise CaddyGenerationError(
+                    "verified generation payload is no longer a regular file"
+                ) from error
+            raise
+        if _snapshot(os.fstat(reopened)) != _snapshot(os.fstat(self._payload_fds[name])):
+            os.close(reopened)
+            raise CaddyGenerationError("verified generation payload changed before reopening")
+        return reopened
 
     def close(self) -> None:
         """Close all pinned generation descriptors."""
@@ -330,22 +339,30 @@ class CaddyGenerationStore:
         if type(maximum_entries) is not int or maximum_entries < 0:
             raise ValueError("generation recovery bound must be a nonnegative integer")
         names: list[str] = []
-        with os.scandir(os.dup(self._root_fd)) as iterator:
-            for entry_count, entry in enumerate(iterator, start=1):
-                if entry_count > maximum_entries:
-                    raise CaddyGenerationError("generation root exceeds its recovery scan bound")
-                if entry.name.startswith(_TEMPORARY_PREFIX):
-                    if _TEMPORARY_PATTERN.fullmatch(entry.name) is None:
+        scan_fd = _reopen_directory(self._root_fd)
+        try:
+            iterator = os.scandir(scan_fd)
+            with iterator:
+                for entry_count, entry in enumerate(iterator, start=1):
+                    if entry_count > maximum_entries:
                         raise CaddyGenerationError(
-                            "reserved generation temporary name is malformed"
+                            "generation root exceeds its recovery scan bound"
                         )
-                    names.append(entry.name)
+                    if entry.name.startswith(_TEMPORARY_PREFIX):
+                        if _TEMPORARY_PATTERN.fullmatch(entry.name) is None:
+                            raise CaddyGenerationError(
+                                "reserved generation temporary name is malformed"
+                            )
+                        names.append(entry.name)
+        finally:
+            os.close(scan_fd)
         for name in sorted(names):
             _remove_temporary_generation(
                 self._root_fd,
                 name,
                 owner=self._owner,
                 group=self._group,
+                creation_group=os.getegid(),
             )
         return len(names)
 
@@ -472,6 +489,7 @@ class CaddyGenerationStore:
                     temporary_name,
                     owner=self._owner,
                     group=self._group,
+                    creation_group=os.getegid(),
                 )
 
     def open_verified(self, generation_id: str) -> PinnedCaddyGeneration:
@@ -665,6 +683,20 @@ def _open_directory_path(path: Path, *, label: str) -> int:
         raise
 
 
+def _reopen_directory(directory_fd: int) -> int:
+    reopened = os.open(".", _DIRECTORY_OPEN_FLAGS, dir_fd=directory_fd)
+    if (
+        os.fstat(reopened).st_dev,
+        os.fstat(reopened).st_ino,
+    ) != (
+        os.fstat(directory_fd).st_dev,
+        os.fstat(directory_fd).st_ino,
+    ):
+        os.close(reopened)
+        raise CaddyGenerationError("directory changed while reopening its descriptor")
+    return reopened
+
+
 def _validate_directory_metadata(
     metadata: os.stat_result,
     *,
@@ -848,6 +880,7 @@ def _remove_temporary_generation(
     *,
     owner: int,
     group: int,
+    creation_group: int,
 ) -> None:
     if _TEMPORARY_PATTERN.fullmatch(name) is None:
         raise CaddyGenerationError("refusing to remove an unrecognized generation temporary")
@@ -857,11 +890,12 @@ def _remove_temporary_generation(
         return
     try:
         directory_metadata = os.fstat(directory_fd)
+        directory_mode = stat.S_IMODE(directory_metadata.st_mode)
         if (
             not stat.S_ISDIR(directory_metadata.st_mode)
             or directory_metadata.st_uid != owner
-            or directory_metadata.st_gid != group
-            or stat.S_IMODE(directory_metadata.st_mode) not in {0o700, CADDY_GENERATION_MODE}
+            or directory_metadata.st_gid not in {group, creation_group}
+            or (directory_mode != CADDY_GENERATION_MODE and directory_mode & ~0o700)
         ):
             raise CaddyGenerationError("generation temporary directory metadata is unsafe")
         with os.scandir(os.dup(directory_fd)) as iterator:
@@ -873,11 +907,12 @@ def _remove_temporary_generation(
             expected_mode = (
                 CADDY_BINARY_MODE if entry_name == CADDY_BINARY_NAME else CADDY_PRIVATE_FILE_MODE
             )
+            actual_mode = stat.S_IMODE(metadata.st_mode)
             if (
                 not stat.S_ISREG(metadata.st_mode)
                 or metadata.st_uid != owner
-                or metadata.st_gid != group
-                or stat.S_IMODE(metadata.st_mode) != expected_mode
+                or metadata.st_gid not in {group, creation_group}
+                or actual_mode & ~expected_mode
                 or metadata.st_nlink != 1
             ):
                 raise CaddyGenerationError("generation temporary contains an unsafe entry")
@@ -892,8 +927,12 @@ def _remove_temporary_generation(
 
 
 def _validate_exact_inventory(directory_fd: int) -> None:
-    with os.scandir(os.dup(directory_fd)) as iterator:
-        names = {entry.name for entry in iterator}
+    scan_fd = _reopen_directory(directory_fd)
+    try:
+        with os.scandir(scan_fd) as iterator:
+            names = {entry.name for entry in iterator}
+    finally:
+        os.close(scan_fd)
     if names != _INVENTORY_NAMES:
         raise CaddyGenerationError("Caddy generation inventory is not exact")
 
@@ -947,7 +986,7 @@ def _open_and_hash_payload(  # noqa: PLR0913
             or before.st_uid != owner
             or before.st_gid != group
             or stat.S_IMODE(before.st_mode) != mode
-            or before.st_nlink < 1
+            or before.st_nlink != 1
             or before.st_size > maximum_bytes
             or (expected_size is not None and before.st_size != expected_size)
         ):

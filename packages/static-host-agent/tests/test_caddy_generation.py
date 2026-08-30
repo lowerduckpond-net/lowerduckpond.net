@@ -184,6 +184,23 @@ def test_pinned_payload_survives_later_namespace_replacement(tmp_path: Path) -> 
                 os.close(descriptor)
 
 
+def test_each_payload_descriptor_has_an_independent_file_offset(tmp_path: Path) -> None:
+    root = _make_root(tmp_path)
+    with _open_store(root) as store:
+        store.publish(_GENERATION_ID, _payload(tmp_path))
+        with store.open_verified(_GENERATION_ID) as pinned:
+            first = pinned.duplicate_payload_descriptor(CADDY_BINARY_NAME)
+            second = pinned.duplicate_payload_descriptor(CADDY_BINARY_NAME)
+            try:
+                assert os.read(first, 6) == b"pinned"
+                assert os.read(second, 6) == b"pinned"
+                assert os.read(first, 6) == b"-caddy"
+                assert os.read(second, 6) == b"-caddy"
+            finally:
+                os.close(first)
+                os.close(second)
+
+
 def test_publish_never_replaces_an_existing_generation(tmp_path: Path) -> None:
     root = _make_root(tmp_path)
     payload = _payload(tmp_path)
@@ -299,6 +316,35 @@ def test_abandoned_temporary_cleanup_is_bounded_and_fails_closed(tmp_path: Path)
         store.remove_abandoned_temporaries(maximum_entries=0)
 
 
+def test_abandoned_pre_normalization_modes_are_recoverable(tmp_path: Path) -> None:
+    root = _make_root(tmp_path)
+    temporary = root / f".ldp-generation-{'3' * 32}"
+    temporary.mkdir(mode=0o700)
+    partial = temporary / CADDY_BINARY_NAME
+    partial.write_bytes(b"partial")
+    partial.chmod(0o500)
+
+    with _open_store(root) as store:
+        assert store.remove_abandoned_temporaries() == 1
+
+    assert not temporary.exists()
+
+
+def test_generation_scans_do_not_leak_descriptors(tmp_path: Path) -> None:
+    root = _make_root(tmp_path)
+    descriptor_root = Path("/proc/self/fd")
+    with _open_store(root) as store:
+        store.publish(_GENERATION_ID, _payload(tmp_path))
+        before = len(list(descriptor_root.iterdir()))
+        for _ in range(100):
+            with store.open_verified(_GENERATION_ID):
+                pass
+            assert store.remove_abandoned_temporaries() == 0
+        after = len(list(descriptor_root.iterdir()))
+
+    assert after == before
+
+
 def test_tampered_payload_fails_manifest_verification(tmp_path: Path) -> None:
     root = _make_root(tmp_path)
     payload = _payload(tmp_path)
@@ -329,6 +375,22 @@ def test_generation_with_an_extra_entry_fails_closed(tmp_path: Path) -> None:
         pytest.raises(
             CaddyGenerationError,
             match="inventory is not exact",
+        ),
+    ):
+        store.open_verified(_GENERATION_ID)
+
+
+def test_multiply_linked_payload_fails_closed(tmp_path: Path) -> None:
+    root = _make_root(tmp_path)
+    with _open_store(root) as store:
+        store.publish(_GENERATION_ID, _payload(tmp_path))
+
+    os.link(root / _GENERATION_ID / CADDY_BINARY_NAME, tmp_path / "binary-alias")
+    with (
+        _open_store(root) as store,
+        pytest.raises(
+            CaddyGenerationError,
+            match="metadata is unsafe",
         ),
     ):
         store.open_verified(_GENERATION_ID)
