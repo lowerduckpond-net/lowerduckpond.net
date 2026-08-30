@@ -43,15 +43,17 @@ def verifier_for_test(tmp_path: Path) -> Path:
     """Run the production verifier with the artifact's pinned Python runtime."""
     verifier = tmp_path / "verify-static-host-agent-artifact"
     source = VERIFIER.read_text(encoding="utf-8")
-    verifier.write_text(
-        source.replace("#!/usr/bin/python3 -I", f"#!{sys.executable} -I", 1),
-        encoding="utf-8",
-    )
+    source = source.replace("#!/usr/bin/python3 -I", f"#!{sys.executable} -I", 1)
+    source = source.replace("EXPECTED_OWNER_UID = 0", f"EXPECTED_OWNER_UID = {os.getuid()}", 1)
+    source = source.replace("EXPECTED_OWNER_GID = 0", f"EXPECTED_OWNER_GID = {os.getgid()}", 1)
+    verifier.write_text(source, encoding="utf-8")
     verifier.chmod(0o755)
     return verifier
 
 
-def test_host_agent_artifact_is_locked_reproducible_and_installable(tmp_path: Path) -> None:
+def test_host_agent_artifact_is_locked_reproducible_and_installable(
+    tmp_path: Path,
+) -> None:
     for helper in (INSTALLER, VERIFIER):
         ast.parse(helper.read_text(encoding="utf-8"), feature_version=(3, 12))
 

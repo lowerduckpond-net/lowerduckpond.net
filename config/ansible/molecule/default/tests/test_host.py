@@ -593,7 +593,10 @@ def test_monitoring_is_local_and_healthy(host: Host) -> None:
     assert not health_script.contains(BACKUP_SCOPE_PATH)
     caddy_validator = host.file("/usr/local/libexec/lowerduckpond/caddy-validate")
     assert caddy_validator.contains("lowerduckpond-caddy-validate")
-    for qualification_log_path in (QUALIFICATION_LOG_PATH, QUALIFICATION_REPAIRED_LOG_PATH):
+    for qualification_log_path in (
+        QUALIFICATION_LOG_PATH,
+        QUALIFICATION_REPAIRED_LOG_PATH,
+    ):
         qualification_log = host.file(qualification_log_path)
         assert qualification_log.exists
         assert qualification_log.is_file
@@ -759,6 +762,25 @@ def test_static_host_agent_is_hash_pinned_and_immutable(host: Host) -> None:
         selected_root,
     )
     assert verification.rc == 0
+
+    ownership_victim = f"{selected_root}/site-packages/lowerduckpond_static_host_agent/__init__.py"
+    try:
+        assert host.run(f"chown ldp-provisioner:ldp-provisioner {ownership_victim}").rc == 0
+        refused = host.run(
+            "/usr/local/libexec/lowerduckpond/verify-static-host-agent-artifact %s",
+            selected_root,
+        )
+        assert refused.rc != 0
+        assert "not root-owned" in refused.stderr
+    finally:
+        assert host.run(f"chown root:root {ownership_victim}").rc == 0
+    assert (
+        host.run(
+            "/usr/local/libexec/lowerduckpond/verify-static-host-agent-artifact %s",
+            selected_root,
+        ).rc
+        == 0
+    )
     assert (
         host.run(rf"find {selected_root} \( ! -user root -o ! -group root \) -print -quit").stdout
         == ""
