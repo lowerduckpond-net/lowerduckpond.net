@@ -158,10 +158,12 @@ ssh-keygen -t ed25519 -a 100 \
   -f "$operator_key"
 
 export STATIC_OPERATOR_PUBLIC_KEY="$(<"${operator_key}.pub")"
-export STATIC_OPERATOR_PRINCIPAL='treyturner@lowerduckpond.net'
+export STATIC_OPERATOR_PRINCIPAL='production-static-operator'
 ```
 
-The example path and principal are suggestions, not protocol requirements.
+The example path and role-based principal are suggestions, not protocol
+requirements. Prefer a non-personal role alias so audit identity does not
+unnecessarily disclose an operator's real-world identity.
 After independently confirming the private-key backup, load the administrative
 identity and run the read-only gate from clean, current `main`:
 
@@ -189,6 +191,17 @@ authorized. The subsequent `just configure-production` repeats this M3.6 gate,
 then follows the existing two-converge, zero-change, acceptance, backup, and
 disposable-restore sequence. It installs the public operator identity and
 principal, never the private key. Publication remains disabled throughout.
+
+The M3.6 production convergence completed on 2026-08-30 from source revision
+`5c14355babbf6aab27db7c976b99f1ffe22e9c49` with pinned host-agent artifact
+SHA-256
+`ed1c2a95f1aa7b17dcd949c0efb5f815af59e6fae46e0edf3a1f08e3ea4da357`.
+The guarded runner passed its repeated preflight, idempotent second converge,
+production acceptance, backup, and disposable restore. A dedicated-key SSH
+probe returned status 78 and `publication_disabled` from the installed forced
+command. The private key and passphrase were separately backed up, the stable
+audit principal is `production-static-operator`, authoritative state remained
+empty, and publication remained disabled.
 
 ## Routine operations
 
@@ -250,10 +263,10 @@ artifact mismatch, response/request mismatch, unframed response, and export
 length or digest mismatch. The private key remains outside this repository.
 The final M3.6 implementation replaces the initial denial adapter with a fixed
 root entry point, but production continues to reject independently of request
-bytes while `static_publication_enabled` is false. Production does not receive
-that implementation until the separately authorized M3.6 convergence. Even
-after convergence, the client cannot allocate a job while the flag remains
-false; hermetic enabled-path fixtures return only mutation-free terminal
+bytes while `static_publication_enabled` is false. The separately authorized
+M3.6 convergence installed that implementation while retaining the disabled
+flag. The client cannot allocate a job while the flag remains false; hermetic
+enabled-path fixtures return only mutation-free terminal
 `not_implemented` results until the lifecycle handlers arrive in M3.8.
 Startup recovery starts at most two committed jobs per pass beneath one
 aggregate 512-MiB/64-task slice. Successful worker completion triggers the next

@@ -220,7 +220,7 @@ four DNS records, four Authenticated Origin Pulls associations, six rulesets,
 ACME records, and four uploaded leaves absent. Both temporary Cloudflare tokens
 were revoked and disposable trusted-workstation material was removed. The
 backed-up CA roots remain retained pending the production-CA decision required
-before M3.12. M3.1 through M3.5 subsequently completed, and M3.6 is the next
+before M3.12. M3.1 through M3.6 subsequently completed, and M3.7 is the next
 implementation phase; the M3.0 result does not enable production or satisfy
 any later Milestone 3 gate.
 
@@ -316,7 +316,7 @@ and an independent version-aware and multipart-aware probe proved the entire
 archive bucket empty. Protected run `33219502391` then passed ordinary
 production policy and reported no changes with the migration flag disabled.
 The archive credential remains in operator custody and off the production host
-until M3.10. M3.2 through M3.5 subsequently completed, and M3.6 is the next
+until M3.10. M3.2 through M3.6 subsequently completed, and M3.7 is the next
 implementation phase; M3.1 does not enable production or satisfy any later
 Milestone 3 gate.
 
@@ -701,9 +701,21 @@ provisioner-writable job store.
 
 ### M3.6: deliver authenticated issuance and opaque job execution
 
-Implementation status (2026-08-30): implementation complete and the read-only
-production starting gate is implemented; live preflight and production
-convergence remain pending. The first review boundary installed the dedicated,
+Implementation status (2026-08-30): complete. Production convergence from
+source revision `5c14355babbf6aab27db7c976b99f1ffe22e9c49` selected host-agent
+artifact SHA-256
+`ed1c2a95f1aa7b17dcd949c0efb5f815af59e6fae46e0edf3a1f08e3ea4da357`.
+The guarded runner repeated the read-only starting gate, converged twice with
+zero changes on the second pass, and passed host acceptance, encrypted backup,
+and disposable restore. A dedicated-key SSH probe then reached the installed
+forced command and returned status 78 with `publication_disabled`, proving the
+production flag rejected before request intake or state allocation. The
+private operator key and its passphrase are backed up separately, only its
+public half is installed, and the stable audit principal is the non-personal
+role alias `production-static-operator`. Production publication remains
+disabled, and M3.7 is the next implementation phase.
+
+The first review boundary installed the dedicated,
 password-disabled SSH identity, root-owned key binding and principal,
 forced-command denial adapter, and account-specific OpenSSH restrictions. The
 second added the trusted-workstation client, versioned network-order framing,
@@ -732,8 +744,7 @@ allocation and that no shell, PTY, forwarding, environment, SFTP, SCP, raw
 operation, or caller-selected executor field crosses the boundary. M3.2 supplied
 the strict contracts; M3.3 the durable state kernel; M3.4 bounded artifact
 handling; and M3.5 the root-owned dark-host layout and pinned host-agent
-selector. No architecture or product decision blocks the M3.6 convergence
-gate.
+selector.
 
 The final production-gate slice validates the dedicated public identity and
 stable audit principal, refuses administrative-key reuse, repeats the
@@ -742,9 +753,9 @@ disabled flag, empty authoritative and publication inventories, protected lock
 set (including the zero-lock M3.5 starting state or a safely materialized
 subset after interruption), the recorded M3.5 or exact current candidate
 artifact, and absence of an instantiated worker. The
-guarded production runner repeats this proof before mutation. It does not
-install the public key or run Ansible; those remain the separately authorized
-live convergence.
+guarded production runner repeats this proof before mutation. The separately
+authorized live convergence installed the public key and role alias while
+keeping the private key on the trusted workstation.
 
 Deliver M3.6 in three reviewable boundaries: first install and prove the
 dedicated SSH identity and forced-command denial surface; then add the bounded
@@ -762,9 +773,9 @@ convergence, the operator must create and separately back up a dedicated,
 passphrase-protected Ed25519 key, provide only its public half, and choose one
 stable audit principal matching the committed 1–128 character principal
 grammar. The private key remains only on the trusted workstation. That live
-installation and its public key are a later, separately authorized production
-boundary; no new Cloudflare, Spaces, database, or application credential is
-an M3.6 dependency.
+installation completed through the separately authorized production boundary;
+no new Cloudflare, Spaces, database, or application credential was an M3.6
+dependency.
 
 Add the `ldp-operator` account, root-owned authorized-key location, key-bound
 principal, forced command, exact issuer sudo rule, and SSH restrictions from ADR
