@@ -122,6 +122,14 @@ read; it never plans or applies infrastructure. It then:
 The initial converge places the first encrypted backup under
 `backups/lowerduckpond-production-01` in the existing production bucket.
 
+The first M3.5 production convergence completed on 2026-08-30 from source
+revision `73c76254cf3aba05c3b7ecf70a01a2cd8e158d44` with pinned host-agent
+artifact SHA-256
+`3709daa0fd2465a73ae6b0c7dd0d6137cf0ec747e11e5e670df084113265d43b`.
+The guarded runner passed its repeated preflight, idempotent second converge,
+production acceptance, backup, and disposable restore. Static publication
+remained disabled.
+
 ## Routine operations
 
 After reviewed configuration changes merge, repeat `just

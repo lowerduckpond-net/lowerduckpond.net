@@ -220,7 +220,7 @@ four DNS records, four Authenticated Origin Pulls associations, six rulesets,
 ACME records, and four uploaded leaves absent. Both temporary Cloudflare tokens
 were revoked and disposable trusted-workstation material was removed. The
 backed-up CA roots remain retained pending the production-CA decision required
-before M3.12. M3.1 through M3.4 subsequently completed, and M3.5 is the next
+before M3.12. M3.1 through M3.5 subsequently completed, and M3.6 is the next
 implementation phase; the M3.0 result does not enable production or satisfy
 any later Milestone 3 gate.
 
@@ -316,7 +316,7 @@ and an independent version-aware and multipart-aware probe proved the entire
 archive bucket empty. Protected run `33219502391` then passed ordinary
 production policy and reported no changes with the migration flag disabled.
 The archive credential remains in operator custody and off the production host
-until M3.10. M3.2 through M3.4 subsequently completed, and M3.5 is the next
+until M3.10. M3.2 through M3.5 subsequently completed, and M3.6 is the next
 implementation phase; M3.1 does not enable production or satisfy any later
 Milestone 3 gate.
 
@@ -556,8 +556,8 @@ Implementation status: complete. Five independently reviewed slices deliver
 the structural hostile-ZIP gate, bounded descriptor-relative extraction,
 canonical portable-bundle export, provenance-only portable import, and the
 inert archive-worker sandbox contract. The complete engine remains
-library-only; M3.5 is the next implementation phase and will install the dark
-host boundary that consumes it.
+library-only; M3.5 subsequently installed the dark-host boundary that consumes
+it, while real lifecycle handlers remain deferred to their later phases.
 
 Build the bounded structural ZIP gate before calling a general decoder. Parse
 end records, central records, local headers, flags, methods, lengths, offsets,
@@ -657,18 +657,23 @@ runtime, one immutable artifact, and one writable staging parent through
 explicit bind mounts. Descriptor-walked validation rejects relative,
 ambiguous, missing, symlinked, mount-crossing, overlapping, and inode-aliased
 paths before emitting those bindings. Executable tests pass a generated unit
-through `systemd-analyze verify` without hiding runtime-limit warnings. The
-policy has no launcher or executable and is not installed or enabled; M3.5
-consumes this reviewed contract when it creates the dark host boundary.
+through `systemd-analyze verify` without hiding runtime-limit warnings. At
+M3.4 completion the policy had no launcher or executable and was not installed
+or enabled; M3.5 subsequently consumed that reviewed contract when it created
+the dark-host boundary.
 
 ### M3.5: install the dark host boundary
 
-Implementation status (2026-08-30): the locked artifact builder, atomic
-installer, root-owned layout migration, disabled issuance and Caddy gates,
-private worker boundary, scoped backup/restore changes, and production
-preflight are implemented and covered by the installed-host gate. Live
-production convergence is deliberately a separate operator-authorized step;
-publication remains disabled before and after it.
+Implementation and live-gate status (2026-08-30): complete. At source revision
+`73c76254cf3aba05c3b7ecf70a01a2cd8e158d44`, the read-only production
+preflight passed and pinned host-agent artifact SHA-256
+`3709daa0fd2465a73ae6b0c7dd0d6137cf0ec747e11e5e670df084113265d43b`.
+The separately authorized `just configure-production` run repeated that
+preflight, installed the reproducible artifact and dark-host boundary,
+required a zero-change second converge, and completed production acceptance,
+backup, and disposable restore with exit status zero. Its final acceptance
+recap reported `ok=21`, `changed=0`, `unreachable=0`, and `failed=0`.
+Publication remained disabled and no tenant route was installed.
 
 Ansible installs a hash-pinned host-agent artifact in a versioned root-owned
 path, creates the state layout, and adds the `static_host_agent` role. Package
@@ -685,16 +690,44 @@ Install the gate at both job issuance and Caddy generation. Back up the new
 authoritative state, but exclude intake, export spool, Caddy runtime generations,
 and secrets.
 
-Gate: two Molecule converges plus installed Testinfra checks prove ownership,
-modes, mounts, unit hardening, backup inclusion/exclusion, zero tenant routes,
-and rejection before allocation while disabled. Production convergence remains
-idempotent and continues serving the Milestone 2 fixture.
+Gate result: two Molecule converges plus installed Testinfra checks proved
+ownership, modes, mounts, unit hardening, backup inclusion/exclusion, zero
+tenant routes, and rejection before allocation while disabled. Production
+convergence was idempotent and continued serving the Milestone 2 fixture.
 
 Rollback: select the preceding installed package and Ansible configuration. The
 empty migrated directories may remain root-owned; do not recreate a persistent
 provisioner-writable job store.
 
 ### M3.6: deliver authenticated issuance and opaque job execution
+
+Implementation status (2026-08-30): next. M3.2 supplied the strict request,
+job, result, and identifier contracts; M3.3 supplied immutable job and
+correlation admission, capacity and rate limits, audit, and restart-safe state;
+M3.4 supplied bounded artifact handling; and the completed M3.5 live gate
+supplied the installed, root-owned dark-host layout, disabled issuance gate,
+inert worker boundary, and pinned host-agent selector. No architecture or
+product decision blocks hermetic M3.6 implementation.
+
+Deliver M3.6 in three reviewable boundaries: first install and prove the
+dedicated SSH identity and forced-command denial surface; then add the bounded
+operator protocol, client, intake, immutable issuance, and exact retry path;
+finally add fixed-UUID systemd handoff, opaque execution, result retrieval, and
+startup reconciliation. Keep the public flag false throughout. On production,
+every tenant-bearing request must therefore fail before intake or durable
+allocation; hermetic unit and process fixtures exercise the successful
+job-envelope paths without a production-visible override. Real tenant
+lifecycle mutation remains M3.8 work, and Caddy generation and edge changes
+remain M3.7 work.
+
+Hermetic implementation requires no new secret. Before M3.6 production
+convergence, the operator must create and separately back up a dedicated,
+passphrase-protected Ed25519 key, provide only its public half, and choose one
+stable audit principal matching the committed 1–128 character principal
+grammar. The private key remains only on the trusted workstation. That live
+installation and its public key are a later, separately authorized production
+boundary; no new Cloudflare, Spaces, database, or application credential is
+an M3.6 dependency.
 
 Add the `ldp-operator` account, root-owned authorized-key location, key-bound
 principal, forced command, exact issuer sudo rule, and SSH restrictions from ADR
@@ -1123,8 +1156,12 @@ actions:
    place its generated sensitive outputs only in the established production
    secret path; OpenTofu creates this durable, service-lifetime bucket, so do
    not create it manually or treat it as an expendable qualification resource;
-3. create and back up the dedicated `ldp-operator` Ed25519 key on the trusted
-   workstation, then provide only its public key and chosen audit principal;
+3. before M3.6 production convergence, create and back up the dedicated,
+   passphrase-protected `ldp-operator` Ed25519 key on the trusted workstation,
+   then provide only its public key and one stable audit principal using one
+   leading ASCII alphanumeric followed by at most 127 ASCII alphanumeric or
+   `._@-` characters; hermetic M3.6 implementation uses fixture credentials and
+   does not require this operator material;
 4. before the revised M3.0 live gate, create and back up the project
    origin-pull CA only on the trusted workstation, authorize the short-lived
    disposable DigitalOcean host and Cloudflare records, and use a separate
