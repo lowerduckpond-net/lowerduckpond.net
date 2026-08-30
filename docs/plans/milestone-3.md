@@ -758,11 +758,12 @@ selects only the fixed `execute-authorized-job` executable, and that root-owned
 parser accepts only one canonical UUIDv7 argument. Neither the provisioner nor
 operator can list state. The worker unit starts as `ldp-provisioner`; its one
 explicit no-new-privileges exception exists only so the fixed sudo transition
-can enter that root-owned executor. The remaining namespace, capability,
-resource, device, network, and syscall restrictions stay active, and future
-untrusted archive helpers retain their separate no-new-privileges boundary. All
-lifecycle handlers remain disabled or return a versioned not-implemented result
-without state mutation until their phases land.
+can enter that root-owned executor. Its capability bounding set retains only
+`CAP_SETUID` and `CAP_SETGID`, neither capability is ambient, and the remaining
+namespace, resource, device, network, and syscall restrictions stay active.
+Future untrusted archive helpers retain their separate no-new-privileges
+boundary. All lifecycle handlers remain disabled or return a versioned
+not-implemented result without state mutation until their phases land.
 
 Gate: use a real SSH daemon in the installed-host suite. Prove shell, command,
 PTY, forwarding, SFTP/SCP, environment, and path restrictions, and prove that

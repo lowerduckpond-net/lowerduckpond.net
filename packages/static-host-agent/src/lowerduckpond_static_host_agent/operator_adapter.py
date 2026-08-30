@@ -126,7 +126,10 @@ class OperatorAdapter:
                     now=self._wall_clock(),
                     artifact=lease.artifact.verified,
                 )
-                lease.commit()
+                if self._issuer.retry_requires_artifact(issued):
+                    lease.commit()
+                else:
+                    lease.discard()
                 return issued
         with self._intake.admit(
             operation=str(request["operation"]),

@@ -204,9 +204,13 @@ pass; failures fall back to a running one-minute timer, which also safely
 resumes interrupted or coalesced handoffs without a zero-delay retry loop.
 Each worker begins as `ldp-provisioner` and crosses exactly the installed
 UUID-only sudo rule into the root-owned executor. Its no-new-privileges
-exception exists only for that transition; the remaining unit sandbox stays in
-force, and untrusted archive helpers keep their own no-new-privileges policy.
-Stray intake bytes never create authority.
+exception exists only for that transition; its capability bounding set retains
+only `CAP_SETUID` and `CAP_SETGID`, neither is ambient, and the remaining unit
+sandbox stays in force. Untrusted archive helpers keep their own
+no-new-privileges policy. Startup repair snapshots authorization state only
+after it owns the intake lock, so an upload committed while repair waits cannot
+be mistaken for abandoned bytes. Exact retries of terminal jobs discard any
+redundant upload immediately. Stray intake bytes never create authority.
 
 The current retention policy keeps 7 daily, 5 weekly, and 12 monthly scheduled
 snapshots. A change to any of those counts invalidates the prior maintenance

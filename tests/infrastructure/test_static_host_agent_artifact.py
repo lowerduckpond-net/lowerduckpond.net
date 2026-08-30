@@ -169,6 +169,8 @@ def test_dark_worker_unit_consumes_the_reviewed_sandbox_contract() -> None:
     # archive helper itself retains the reviewed no-new-privileges policy.
     expected["NoNewPrivileges=true"] -= 1
     expected["NoNewPrivileges=false"] += 1
+    expected["CapabilityBoundingSet="] -= 1
+    expected["CapabilityBoundingSet=CAP_SETGID CAP_SETUID"] += 1
     for property_line, count in expected.items():
         assert lines[property_line] == count
     assert lines["TemporaryFileSystem=/workspace:rw,size=64M,nr_inodes=4096,mode=0700"] == 1

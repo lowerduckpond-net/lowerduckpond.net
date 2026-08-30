@@ -1088,6 +1088,7 @@ def test_static_job_commands_are_root_owned_and_uuid_only(host: Host) -> None:
     prefix = ("runuser", "--user", "ldp-provisioner", "--", "sudo", "-n")
     unknown = host.run(shlex.join((*prefix, STATIC_JOB_EXECUTOR, VALID_UUIDV7)))
     assert unknown.rc != 0
+    assert unknown.stderr.strip() == "authorized_job_failed:FileNotFoundError"
     for arguments in UUID_REJECTION_ARGUMENTS:
         rejected = host.run(shlex.join((*prefix, STATIC_JOB_EXECUTOR, *arguments)))
         assert rejected.rc != 0
@@ -1122,6 +1123,7 @@ def test_static_worker_boundary_is_opaque_and_hardened(host: Host) -> None:
         "TasksMax=32",
         "PrivateNetwork=true",
         "NoNewPrivileges=false",
+        "CapabilityBoundingSet=CAP_SETGID CAP_SETUID",
         "CapabilityBoundingSet=",
         "ProtectSystem=strict",
         "ProtectHome=true",

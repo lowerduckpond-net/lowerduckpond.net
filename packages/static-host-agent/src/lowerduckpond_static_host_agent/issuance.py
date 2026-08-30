@@ -201,6 +201,21 @@ class AuthorizationIssuer:
             )
         return True
 
+    def retry_requires_artifact(self, issued: IssuedAuthorization) -> bool:
+        """Return whether an exact retry still needs its bound intake bytes."""
+
+        if issued.created:
+            raise IssuanceError("new authorization is not an exact retry")
+        job_id = validate_uuid7(issued.job_id)
+        try:
+            self._repository.read(StateRecordPath.authorization_result(job_id))
+        except FileNotFoundError:
+            job = self._repository.read(StateRecordPath.authorization_job(job_id)).document
+            if job["phase"] in {"pending", "claimed"}:
+                return True
+            raise IssuanceError("terminal authorization job has no immutable result") from None
+        return False
+
 
 def _validate_principal(value: object) -> str:
     if type(value) is not str or _PRINCIPAL.fullmatch(value) is None:

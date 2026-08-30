@@ -73,15 +73,29 @@ class ArtifactLease:
     def __init__(self, artifact: AdmittedArtifact) -> None:
         self.artifact = artifact
         self._committed = False
+        self._discarded = False
 
     def commit(self) -> None:
         """Retain the admitted artifact after its immutable job is durable."""
 
+        if self._discarded:
+            raise RuntimeError("discarded artifact lease cannot be committed")
         self._committed = True
+
+    def discard(self) -> None:
+        """Remove an existing or newly admitted retry artifact on context exit."""
+
+        if self._committed:
+            raise RuntimeError("committed artifact lease cannot be discarded")
+        self._discarded = True
 
     @property
     def committed(self) -> bool:
         return self._committed
+
+    @property
+    def discarded(self) -> bool:
+        return self._discarded
 
 
 class ArtifactClaim:
@@ -177,7 +191,12 @@ class ArtifactIntake:
             )
             if existing is not None:
                 self._verify_discarded_stream(declared=declared, read=read)
-                yield ArtifactLease(existing)
+                existing_lease = ArtifactLease(existing)
+                try:
+                    yield existing_lease
+                finally:
+                    if existing_lease.discarded:
+                        self._remove(filename)
                 return
             temporary = f".ldp-intake-{secrets.token_hex(16)}"
             published = False
@@ -190,7 +209,7 @@ class ArtifactIntake:
                 lease = ArtifactLease(AdmittedArtifact(filename, verified))
                 yield lease
             finally:
-                retain = published and lease is not None and lease.committed
+                retain = published and lease is not None and lease.committed and not lease.discarded
                 if not retain:
                     self._remove(temporary if not published else filename)
 
@@ -235,14 +254,14 @@ class ArtifactIntake:
     def reconcile(
         self,
         *,
-        authorized: dict[str, VerifiedArtifact],
-        terminal: set[str],
+        authority: Callable[[], tuple[dict[str, VerifiedArtifact], set[str]]],
         blocking: bool = False,
     ) -> IntakeReconciliation:
-        """Remove only safe abandoned intake and retain one authorized upload."""
+        """Snapshot authority while holding intake, then reconcile its one slot."""
 
         self._require_open()
         with self._locks.acquire(LockName.INTAKE, mode=LockMode.EXCLUSIVE, blocking=blocking):
+            authorized, terminal = authority()
             names = self._scan_slot()
             if not names:
                 return IntakeReconciliation(None, 0)

@@ -75,14 +75,14 @@ def operator_main(arguments: list[str] | None = None) -> int:
         return _fail("invalid_operator_adapter_invocation", 64)
     principal = values[1]
     try:
+        gate = CommandPublicationGate(_PUBLICATION_GATE)
+        # Preserve the disabled boundary even if durable state is absent,
+        # partially restored, or unsafe: no state descriptor is opened first.
+        gate.require_enabled()
         with (
             StateRepository(_STATE_ROOT, expected_owner=_EXPECTED_OWNER) as repository,
             ArtifactIntake(_STATE_ROOT, expected_owner=_EXPECTED_OWNER) as intake,
         ):
-            gate = CommandPublicationGate(_PUBLICATION_GATE)
-            # Production stays allocation-free and input-independent while the
-            # root-owned publication boundary is closed.
-            gate.require_enabled()
             issuer = AuthorizationIssuer(
                 repository,
                 gate=gate,

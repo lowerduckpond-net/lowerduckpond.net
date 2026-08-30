@@ -213,39 +213,46 @@ class StartupReconciler:
         self._handoff = handoff
 
     def reconcile(self) -> ReconciliationOutcome:
-        repaired = CorrelationAdmission(self._repository).reconcile(blocking=True)
-        authorized: dict[str, VerifiedArtifact] = {}
-        terminal: set[str] = set()
+        repaired_pairs: int | None = None
         queued: list[str] = []
-        for stored in repaired.jobs:
-            job = stored.document
-            job_id = validate_uuid7(job["jobId"])
-            correlation_id = _correlation_id(job)
-            filename = f"{correlation_id}.artifact"
-            result_exists = self._result_exists(job_id)
-            artifact = _artifact_binding(job)
-            if result_exists or job["phase"] in {"completed", "failed"}:
-                terminal.add(filename)
-            elif artifact is not None:
-                authorized[filename] = artifact
-            if result_exists:
-                if job["phase"] not in {"completed", "failed"}:
+
+        def load_authority() -> tuple[dict[str, VerifiedArtifact], set[str]]:
+            nonlocal repaired_pairs
+            repaired = CorrelationAdmission(self._repository).reconcile(blocking=True)
+            repaired_pairs = repaired.repaired_records
+            authorized: dict[str, VerifiedArtifact] = {}
+            terminal: set[str] = set()
+            for stored in repaired.jobs:
+                job = stored.document
+                job_id = validate_uuid7(job["jobId"])
+                correlation_id = _correlation_id(job)
+                filename = f"{correlation_id}.artifact"
+                result_exists = self._result_exists(job_id)
+                artifact = _artifact_binding(job)
+                if result_exists or job["phase"] in {"completed", "failed"}:
+                    terminal.add(filename)
+                elif artifact is not None:
+                    authorized[filename] = artifact
+                if result_exists:
+                    if job["phase"] not in {"completed", "failed"}:
+                        queued.append(job_id)
+                elif job["phase"] in {"pending", "claimed"}:
                     queued.append(job_id)
-            elif job["phase"] in {"pending", "claimed"}:
-                queued.append(job_id)
-            else:
-                raise ExecutionError("terminal authorization job has no immutable result")
+                else:
+                    raise ExecutionError("terminal authorization job has no immutable result")
+            return authorized, terminal
 
         intake = self._intake.reconcile(
-            authorized=authorized,
-            terminal=terminal,
+            authority=load_authority,
             blocking=True,
         )
+        if repaired_pairs is None:  # pragma: no cover - intake always invokes authority
+            raise RuntimeBoundaryError("authorization reconciliation did not load authority")
         batch = queued[:_RECOVERY_HANDOFF_LIMIT]
         for job_id in batch:
             self._handoff.enqueue(job_id)
         return ReconciliationOutcome(
-            repaired_pairs=repaired.repaired_records,
+            repaired_pairs=repaired_pairs,
             removed_intake_entries=intake.removed_entries,
             enqueued_jobs=tuple(batch),
             deferred_jobs=len(queued) - len(batch),

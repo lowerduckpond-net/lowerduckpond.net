@@ -113,6 +113,13 @@ provisioner-created file or request into authority. Job envelopes, phases, and
 results consume the existing bounded correlation-record count and byte
 allowance rather than a second unbounded store.
 
+Reconciliation acquires the intake lock before it snapshots authoritative jobs
+and results. An upload that completes while reconciliation is waiting is
+therefore present in both the intake slot and the later authority snapshot;
+reconciliation cannot delete it using stale authority. An exact artifact retry
+for a terminal job returns the immutable result and removes the redundant
+uploaded bytes before releasing the same intake lock.
+
 The `create` request supplies a slug and quotas but no tenant ID. The root
 activator generates that immutable ID and returns the resulting canonical
 manifest and UUID-derived tenant origin from the pinned platform namespace.
