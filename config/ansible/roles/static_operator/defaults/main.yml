@@ -12,3 +12,4 @@ static_operator_principal: ""
 static_operator_authorized_keys_directory: /etc/ssh/lowerduckpond/authorized_keys
 static_operator_authorized_keys_path: /etc/ssh/lowerduckpond/authorized_keys/ldp-operator
 static_operator_disabled_command: /usr/local/libexec/lowerduckpond/static-operator-disabled
+static_operator_request_decoder: /usr/local/libexec/lowerduckpond/static-request-decoder

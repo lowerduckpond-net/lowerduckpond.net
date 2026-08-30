@@ -33,7 +33,10 @@ archive-worker sandbox contract are complete. M3.5's reproducible host agent,
 root-owned dark-host layout, disabled issuance and Caddy gates, private worker
 boundary, live production convergence, idempotence check, backup, and
 disposable restore passed. M3.6's dedicated SSH identity and forced-command
-denial boundary are implemented; bounded issuance and opaque execution remain.
+denial boundary are implemented. Versioned framing, the trusted client,
+resource-isolated decoding, bounded one-slot intake, expected-state binding,
+and immutable exact-retry issuance are in review; opaque systemd execution and
+terminal result retrieval remain.
 Production publication remains disabled, and Milestone 3 remains incomplete
 until every phase gate through M3.12 passes.
 

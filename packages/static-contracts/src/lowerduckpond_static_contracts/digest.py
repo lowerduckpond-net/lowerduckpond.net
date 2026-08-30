@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from lowerduckpond_static_contracts._digest import (
+    ARCHIVE_RECORD_DIGEST_FORMAT,
     AUDIT_ENTRY_DIGEST_FORMAT,
+    DEPLOYMENT_RECORD_DIGEST_FORMAT,
     MANIFEST_DIGEST_FORMAT,
+    PLATFORM_STATE_DIGEST_FORMAT,
     REQUEST_DIGEST_FORMAT,
     RESULT_DIGEST_FORMAT,
     Digest,
@@ -16,11 +19,60 @@ from lowerduckpond_static_contracts.schema import ContractKind, validate_contrac
 
 __all__ = [
     "Digest",
+    "archive_record_digest",
     "audit_entry_digest",
+    "deployment_record_digest",
     "manifest_digest",
+    "platform_state_digest",
     "request_digest",
     "result_digest",
 ]
+
+
+def _contract_digest(
+    document: object,
+    *,
+    kind: ContractKind,
+    format_identifier: str,
+    label: str,
+) -> Digest:
+    if type(document) is not dict:
+        raise ContractError(ErrorCode.SCHEMA_INVALID, f"{label} must be a contract object")
+    validate_contract(document, expected_kind=kind)
+    return digest_bytes(canonical_json_bytes(document), format_identifier=format_identifier)
+
+
+def platform_state_digest(namespace: object) -> Digest:
+    """Bind one exact canonical platform-namespace generation."""
+
+    return _contract_digest(
+        namespace,
+        kind=ContractKind.PLATFORM_NAMESPACE,
+        format_identifier=PLATFORM_STATE_DIGEST_FORMAT,
+        label="platform namespace",
+    )
+
+
+def deployment_record_digest(deployment: object) -> Digest:
+    """Bind one exact canonical deployment-record generation."""
+
+    return _contract_digest(
+        deployment,
+        kind=ContractKind.DEPLOYMENT_RECORD,
+        format_identifier=DEPLOYMENT_RECORD_DIGEST_FORMAT,
+        label="deployment record",
+    )
+
+
+def archive_record_digest(archive: object) -> Digest:
+    """Bind one exact canonical archive-record generation."""
+
+    return _contract_digest(
+        archive,
+        kind=ContractKind.ARCHIVE_RECORD,
+        format_identifier=ARCHIVE_RECORD_DIGEST_FORMAT,
+        label="archive record",
+    )
 
 
 def audit_entry_digest(entry: object) -> Digest:

@@ -35,6 +35,7 @@ members = [
   "services/provisioner",
   "tools/m3-archive-qualification",
   "tools/m3-qualification",
+  "tools/static-operator",
 ]
 
 [tool.pytest.ini_options]
@@ -50,6 +51,7 @@ testpaths = [
   "tests/infrastructure",
   "tools/m3-archive-qualification/tests",
   "tools/m3-qualification/tests",
+  "tools/static-operator/tests",
 ]
 
 [tool.ruff]
@@ -101,4 +103,6 @@ files = [
   "tools/m3-archive-qualification/tests",
   "tools/m3-qualification/src",
   "tools/m3-qualification/tests",
+  "tools/static-operator/src",
+  "tools/static-operator/tests",
 ]

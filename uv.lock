@@ -17,6 +17,7 @@ members = [
     "lowerduckpond-static-contracts",
     "lowerduckpond-static-domain",
     "lowerduckpond-static-host-agent",
+    "lowerduckpond-static-operator",
 ]
 
 [[package]]
@@ -833,6 +834,17 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 test = [{ name = "hypothesis", specifier = ">=6.165.5,<7" }]
+
+[[package]]
+name = "lowerduckpond-static-operator"
+version = "0.0.0"
+source = { editable = "tools/static-operator" }
+dependencies = [
+    { name = "lowerduckpond-static-contracts" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "lowerduckpond-static-contracts", editable = "packages/static-contracts" }]
 
 [[package]]
 name = "markdown-it-py"

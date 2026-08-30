@@ -87,6 +87,10 @@ m3-use-primary:
 m3-use-replacement:
     scripts/set-m3-origin-pull-generation replacement
 
+# Submit one strict static-publication operation from the trusted workstation.
+static-operator *arguments: _sync
+    uv run ldp-static-operator {{ arguments }}
+
 # Format, validate, lint, and security-scan every OpenTofu root and module.
 check-opentofu:
     tofu fmt -check -recursive infra/opentofu

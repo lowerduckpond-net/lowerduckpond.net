@@ -1,0 +1,304 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import time
+from datetime import UTC, datetime
+from pathlib import Path
+
+import pytest
+from lowerduckpond_static_contracts import (
+    ContractError,
+    FrameHeader,
+    FrameKind,
+    canonical_json_bytes,
+    encode_header,
+)
+from lowerduckpond_static_host_agent import (
+    ArtifactIntake,
+    AuthorizationIssuer,
+    CapacityProjection,
+    ClosedPublicationGate,
+    DeadlineReader,
+    FilesystemCapacity,
+    LocalRequestDecoder,
+    LockManager,
+    OperatorAdapter,
+    OperatorAdapterError,
+    PublicationDisabledError,
+    StateRecordPath,
+    StateRepository,
+    StreamError,
+)
+
+_FIXTURE_ROOT = Path(__file__).parents[3] / "tests/static-publication/fixtures/accepted"
+_NOW = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+_TENANT_ID = "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100"
+_DEPLOYMENT_ID = "0191e2ca-49f2-7608-8cf3-f80ab2cab151"
+
+
+class _OpenGate:
+    def require_enabled(self) -> None:
+        return
+
+
+class _Entropy:
+    def __call__(self, length: int) -> bytes:
+        return b"\x01" * length
+
+
+@pytest.fixture(autouse=True)
+def _capacity_isolated(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "lowerduckpond_static_host_agent.intake.admit_release_capacity",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "lowerduckpond_static_host_agent.repository._StateTransaction.measure_filesystem_capacity",
+        lambda _transaction: FilesystemCapacity(
+            device=1,
+            fragment_size=4096,
+            total_blocks=100_000_000,
+            available_blocks=80_000_000,
+            total_inodes=1_000_000,
+            available_inodes=900_000,
+        ),
+    )
+    monkeypatch.setattr(
+        "lowerduckpond_static_host_agent.correlations.admit_release_capacity",
+        lambda *_args, **_kwargs: CapacityProjection(
+            projected_allocated_bytes=0,
+            projected_unique_inodes=0,
+            remaining_available_bytes=1,
+            remaining_available_inodes=1,
+            required_available_bytes=0,
+            required_available_inodes=0,
+        ),
+    )
+
+
+def _fixture(name: str) -> dict[str, object]:
+    value = json.loads((_FIXTURE_ROOT / name).read_text(encoding="utf-8"))
+    assert type(value) is dict
+    return value
+
+
+def _mkdir(path: Path) -> None:
+    path.mkdir()
+    path.chmod(0o700)
+
+
+def _state_root(tmp_path: Path) -> Path:
+    root = tmp_path / "state"
+    _mkdir(root)
+    for components in (
+        ("platform",),
+        ("tenants",),
+        ("authorization",),
+        ("authorization", "correlations"),
+        ("authorization", "jobs"),
+        ("authorization", "results"),
+        ("intents",),
+        ("intake",),
+        ("locks",),
+    ):
+        _mkdir(root.joinpath(*components))
+    manager = LockManager.initialize(root / "locks", expected_owner=os.geteuid())
+    manager.close()
+    return root
+
+
+def _write(root: Path, path: StateRecordPath, document: dict[str, object]) -> None:
+    target = root.joinpath(*path.components)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.parent.chmod(0o700)
+    target.write_bytes(canonical_json_bytes(document))
+    target.chmod(0o600)
+
+
+def _frame(request: dict[str, object], artifact: bytes | None = None) -> bytes:
+    raw = canonical_json_bytes(request)
+    return (
+        encode_header(
+            FrameHeader(
+                FrameKind.REQUEST,
+                len(raw),
+                len(artifact) if artifact is not None else None,
+            )
+        )
+        + raw
+        + (artifact or b"")
+    )
+
+
+def _pipe(payload: bytes) -> tuple[int, int]:
+    read_fd, write_fd = os.pipe()
+    os.write(write_fd, payload)
+    os.close(write_fd)
+    return read_fd, -1
+
+
+def _adapter(
+    root: Path,
+    read_fd: int,
+    *,
+    gate: _OpenGate | ClosedPublicationGate,
+) -> tuple[OperatorAdapter, ArtifactIntake, StateRepository]:
+    repository = StateRepository(root, expected_owner=os.geteuid())
+    intake = ArtifactIntake(root, expected_owner=os.geteuid())
+    issuer = AuthorizationIssuer(repository, gate=gate, entropy=_Entropy())
+    return (
+        OperatorAdapter(
+            reader=DeadlineReader(read_fd),
+            intake=intake,
+            issuer=issuer,
+            decoder=LocalRequestDecoder(),
+            clock=time.monotonic,
+        ),
+        intake,
+        repository,
+    )
+
+
+def test_disabled_adapter_stops_before_artifact_or_state_allocation(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    artifact = b"payload"
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "deploy",
+        "correlationId": "0198d17f-6f4a-7000-8000-000000000001",
+        "tenantId": _TENANT_ID,
+        "artifact": {"size": len(artifact), "sha256": hashlib.sha256(artifact).hexdigest()},
+    }
+    read_fd, _ = _pipe(_frame(request, artifact))
+    adapter, intake, repository = _adapter(root, read_fd, gate=ClosedPublicationGate())
+    try:
+        with pytest.raises(PublicationDisabledError, match="publication_disabled"):
+            adapter.receive(operator_principal="operator@example.test", now=_NOW)
+        assert repository.measure_authorization_records().record_count == 0
+        assert list((root / "intake").iterdir()) == []
+    finally:
+        intake.close()
+        repository.close()
+        os.close(read_fd)
+
+
+def test_adapter_issues_nonartifact_job_after_exact_eof(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    read_fd, _ = _pipe(_frame(_fixture("operation-request.json")))
+    adapter, intake, repository = _adapter(root, read_fd, gate=_OpenGate())
+    try:
+        issued = adapter.receive(operator_principal="operator@example.test", now=_NOW)
+    finally:
+        intake.close()
+        repository.close()
+        os.close(read_fd)
+
+    assert issued.created is True
+    assert issued.document["artifact"] is None
+
+
+def test_adapter_syncs_artifact_before_immutable_job(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    namespace = _fixture("platform-namespace.json")
+    desired = _fixture("site.json")
+    deployment = _fixture("deployment-record.json")
+    _write(root, StateRecordPath.platform_namespace(), namespace)
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), desired)
+    _write(
+        root,
+        StateRecordPath.tenant_deployment(_TENANT_ID, _DEPLOYMENT_ID),
+        deployment,
+    )
+    artifact = b"payload"
+    correlation = "0198d17f-6f4a-7000-8000-000000000003"
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "deploy",
+        "correlationId": correlation,
+        "tenantId": _TENANT_ID,
+        "artifact": {"size": len(artifact), "sha256": hashlib.sha256(artifact).hexdigest()},
+    }
+    read_fd, _ = _pipe(_frame(request, artifact))
+    adapter, intake, repository = _adapter(root, read_fd, gate=_OpenGate())
+    try:
+        issued = adapter.receive(operator_principal="operator@example.test", now=_NOW)
+    finally:
+        intake.close()
+        repository.close()
+        os.close(read_fd)
+
+    assert issued.created is True
+    assert (root / "intake" / f"{correlation}.artifact").read_bytes() == artifact
+
+
+def test_adapter_rejects_trailing_byte_and_cleans_artifact(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    namespace = _fixture("platform-namespace.json")
+    desired = _fixture("site.json")
+    deployment = _fixture("deployment-record.json")
+    _write(root, StateRecordPath.platform_namespace(), namespace)
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), desired)
+    _write(
+        root,
+        StateRecordPath.tenant_deployment(_TENANT_ID, _DEPLOYMENT_ID),
+        deployment,
+    )
+    artifact = b"payload"
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "deploy",
+        "correlationId": "0198d17f-6f4a-7000-8000-000000000003",
+        "tenantId": _TENANT_ID,
+        "artifact": {"size": len(artifact), "sha256": hashlib.sha256(artifact).hexdigest()},
+    }
+    read_fd, _ = _pipe(_frame(request, artifact) + b"x")
+    adapter, intake, repository = _adapter(root, read_fd, gate=_OpenGate())
+    try:
+        with pytest.raises(StreamError, match="trailing_bytes"):
+            adapter.receive(operator_principal="operator@example.test", now=_NOW)
+        assert list((root / "intake").iterdir()) == []
+        assert repository.measure_authorization_records().record_count == 0
+    finally:
+        intake.close()
+        repository.close()
+        os.close(read_fd)
+
+
+def test_adapter_rejects_header_request_artifact_mismatch_before_gate(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "create",
+        "correlationId": "0198d17f-6f4a-7000-8000-000000000001",
+        "slug": "duck-repair",
+        "quotas": {"storageMiB": 100, "entries": 5000},
+    }
+    read_fd, _ = _pipe(_frame(request, b"x"))
+    adapter, intake, repository = _adapter(root, read_fd, gate=ClosedPublicationGate())
+    try:
+        with pytest.raises(OperatorAdapterError, match="does not accept"):
+            adapter.receive(operator_principal="operator@example.test", now=_NOW)
+    finally:
+        intake.close()
+        repository.close()
+        os.close(read_fd)
+
+
+def test_adapter_rejects_standalone_manifest_before_gate(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    read_fd, _ = _pipe(_frame(_fixture("site.json")))
+    adapter, intake, repository = _adapter(root, read_fd, gate=ClosedPublicationGate())
+    try:
+        with pytest.raises(ContractError):
+            adapter.receive(operator_principal="operator@example.test", now=_NOW)
+    finally:
+        intake.close()
+        repository.close()
+        os.close(read_fd)

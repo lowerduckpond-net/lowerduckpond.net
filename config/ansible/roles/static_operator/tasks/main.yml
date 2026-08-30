@@ -59,6 +59,14 @@
     group: root
     mode: "0755"
 
+- name: Install the resource-limited static request decoder
+  ansible.builtin.copy:
+    src: static-request-decoder
+    dest: "{{ static_operator_request_decoder }}"
+    owner: root
+    group: root
+    mode: "0755"
+
 - name: Create the root-owned OpenSSH policy directory
   ansible.builtin.file:
     path: /etc/ssh/lowerduckpond
