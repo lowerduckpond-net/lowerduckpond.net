@@ -21,10 +21,12 @@ for variable_name in "${required_environment[@]}"; do
     fi
 done
 
-if ! command -v ssh-keygen >/dev/null 2>&1; then
-    echo "Required command ssh-keygen is not installed." >&2
-    exit 2
-fi
+for command_name in grep ssh-keygen; do
+    if ! command -v "${command_name}" >/dev/null 2>&1; then
+        echo "Required command ${command_name} is not installed." >&2
+        exit 2
+    fi
+done
 if [[ ! -f ${admin_private_key} || -L ${admin_private_key} ]]; then
     echo "The administrative SSH identity must be a regular, non-linked file." >&2
     exit 2
@@ -32,7 +34,9 @@ fi
 if [[ ${#STATIC_OPERATOR_PUBLIC_KEY} -gt 512 ]] ||
    [[ ${STATIC_OPERATOR_PUBLIC_KEY} == *$'\n'* ]] ||
    [[ ${STATIC_OPERATOR_PUBLIC_KEY} == *$'\r'* ]] ||
-   [[ ! ${STATIC_OPERATOR_PUBLIC_KEY} =~ ^ssh-ed25519[[:space:]][A-Za-z0-9+/]+={0,2}([[:space:]][[:print:]]{1,128})?$ ]]; then
+   ! grep --extended-regexp --quiet \
+       '^ssh-ed25519 [A-Za-z0-9+/]+={0,2}( [ -~]{1,128})?$' \
+       <<<"${STATIC_OPERATOR_PUBLIC_KEY}"; then
     echo "STATIC_OPERATOR_PUBLIC_KEY must be one bounded Ed25519 public key." >&2
     exit 2
 fi

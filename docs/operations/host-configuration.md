@@ -177,10 +177,12 @@ installed-artifact, SSH-host-key, Caddy, and local-HTTPS proofs. Its additional
 remote checks require the exact disabled publication configuration and status,
 the selected artifact to be either the recorded M3.5 identity or the exact
 current reproducible candidate (so an interrupted converge remains repairable),
-an empty platform, tenant, authorization, intent, intake, export, audit,
-release, and Caddy-generation inventory, the four exact protected lock inodes,
-and no instantiated static worker. The command only reads local and production
-state.
+exact and empty platform, tenant, authorization, intent, intake, export, audit,
+release, and Caddy-generation inventories; the exact authoritative-state and
+authorization parent inventories; zero to four safely materialized protected
+lock inodes with no unknown lock name; and no instantiated static worker. The
+zero-lock M3.5 starting state and safe subsets left by an interrupted M3.6
+converge are accepted. The command only reads local and production state.
 
 Stop after the successful preflight until production convergence is explicitly
 authorized. The subsequent `just configure-production` repeats this M3.6 gate,

@@ -38,6 +38,7 @@ fi
 
 ssh \
     -o BatchMode=yes \
+    -o IdentitiesOnly=yes \
     -o StrictHostKeyChecking=yes \
     -i "${ANSIBLE_PRIVATE_KEY_FILE}" \
     ldp-admin@lowerduckpond.net \
@@ -90,39 +91,72 @@ fi
     "${selected_artifact}" >/dev/null ||
     remote_fail "the selected M3.5 host-agent artifact is invalid"
 
-empty_directories=(
-    /var/lib/lowerduckpond/static/platform
-    /var/lib/lowerduckpond/static/tenants
-    /var/lib/lowerduckpond/static/authorization/jobs
-    /var/lib/lowerduckpond/static/authorization/results
-    /var/lib/lowerduckpond/static/authorization/correlations
-    /var/lib/lowerduckpond/static/intents
-    /var/lib/lowerduckpond/static/intake
-    /var/lib/lowerduckpond/static/exports
-    /var/lib/lowerduckpond/static/audit
-    /srv/lowerduckpond/sites
-    /etc/caddy/generations
-    /etc/caddy/intents
+state_root=/var/lib/lowerduckpond/static
+[[ -d ${state_root} && ! -L ${state_root} ]] ||
+    remote_fail "the authoritative state root has an unexpected type"
+[[ $(stat --format='%U:%G:%a' -- "${state_root}") == root:root:700 ]] ||
+    remote_fail "the authoritative state root metadata drifted"
+expected_state_inventory=$'audit\nauthorization\nexports\nintake\nintents\nlocks\nplatform\ntenants'
+actual_state_inventory=$(find "${state_root}" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)
+[[ ${actual_state_inventory} == "${expected_state_inventory}" ]] ||
+    remote_fail "the authoritative state-root inventory drifted"
+
+authorization_root=${state_root}/authorization
+expected_authorization_inventory=$'correlations\njobs\nresults'
+actual_authorization_inventory=$(
+    find "${authorization_root}" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort
 )
-for path in "${empty_directories[@]}"; do
+[[ ${actual_authorization_inventory} == "${expected_authorization_inventory}" ]] ||
+    remote_fail "the authorization inventory drifted"
+
+empty_directory_contracts=(
+    /var/lib/lowerduckpond/static/platform\|root:root:700
+    /var/lib/lowerduckpond/static/tenants\|root:root:700
+    /var/lib/lowerduckpond/static/authorization/jobs\|root:root:700
+    /var/lib/lowerduckpond/static/authorization/results\|root:root:700
+    /var/lib/lowerduckpond/static/authorization/correlations\|root:root:700
+    /var/lib/lowerduckpond/static/intents\|root:root:700
+    /var/lib/lowerduckpond/static/intake\|root:root:700
+    /var/lib/lowerduckpond/static/exports\|root:root:700
+    /var/lib/lowerduckpond/static/audit\|root:root:700
+    /srv/lowerduckpond/sites\|root:caddy:710
+    /etc/caddy/generations\|root:caddy:750
+    /etc/caddy/intents\|root:root:700
+)
+for contract in "${empty_directory_contracts[@]}"; do
+    path=${contract%%|*}
+    expected_metadata=${contract#*|}
     [[ -d ${path} && ! -L ${path} ]] ||
         remote_fail "${path} has an unexpected type"
+    [[ $(stat --format='%U:%G:%a' -- "${path}") == "${expected_metadata}" ]] ||
+        remote_fail "${path} metadata drifted"
     [[ -z $(find "${path}" -mindepth 1 -print -quit) ]] ||
         remote_fail "${path} is not empty"
 done
 
-locks=/var/lib/lowerduckpond/static/locks
-[[ -d ${locks} && ! -L ${locks} ]] ||
-    remote_fail "the static lock directory has an unexpected type"
-expected_locks=$'export.lock\nintake.lock\npublication.lock\ntenant-state.lock'
+state_parent_directories=(
+    /var/lib/lowerduckpond/static/authorization
+    /var/lib/lowerduckpond/static/locks
+)
+for path in "${state_parent_directories[@]}"; do
+    [[ -d ${path} && ! -L ${path} ]] ||
+        remote_fail "${path} has an unexpected type"
+    [[ $(stat --format='%U:%G:%a' -- "${path}") == root:root:700 ]] ||
+        remote_fail "${path} metadata drifted"
+done
+
+locks=${state_root}/locks
 actual_locks=$(find "${locks}" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)
-[[ ${actual_locks} == "${expected_locks}" ]] ||
-    remote_fail "the static lock inventory drifted"
 while IFS= read -r lock; do
+    [[ -n ${lock} ]] || continue
+    case ${lock} in
+        export.lock | intake.lock | publication.lock | tenant-state.lock) ;;
+        *) remote_fail "the static lock inventory contains ${lock}" ;;
+    esac
     [[ $(stat --format='%F:%U:%G:%a:%h:%s' -- "${locks}/${lock}") == \
         regular\ file:root:root:600:1:0 ]] ||
         remote_fail "${lock} metadata drifted"
-done <<<"${expected_locks}"
+done <<<"${actual_locks}"
 
 worker_units=$(systemctl list-units --all --plain --no-legend \
     'lowerduckpond-static-worker@*.service')

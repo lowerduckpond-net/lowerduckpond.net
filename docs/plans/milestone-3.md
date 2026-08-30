@@ -739,8 +739,9 @@ The final production-gate slice validates the dedicated public identity and
 stable audit principal, refuses administrative-key reuse, repeats the
 reproducible artifact proof, and reads the production host to require the exact
 disabled flag, empty authoritative and publication inventories, protected lock
-set, the recorded M3.5 or exact current candidate artifact, and absence of an
-instantiated worker. The
+set (including the zero-lock M3.5 starting state or a safely materialized
+subset after interruption), the recorded M3.5 or exact current candidate
+artifact, and absence of an instantiated worker. The
 guarded production runner repeats this proof before mutation. It does not
 install the public key or run Ansible; those remain the separately authorized
 live convergence.

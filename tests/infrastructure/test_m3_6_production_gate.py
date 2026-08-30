@@ -10,6 +10,7 @@ import pytest
 REPOSITORY_ROOT = Path(__file__).parents[2]
 IDENTITY_CHECKER = (REPOSITORY_ROOT / "scripts/check-m3-6-operator-identity").resolve()
 PREFLIGHT = (REPOSITORY_ROOT / "scripts/preflight-m3-6-production").resolve()
+DARK_HOST_PREFLIGHT = (REPOSITORY_ROOT / "scripts/preflight-m3-dark-host-production").resolve()
 CONFIGURE = (REPOSITORY_ROOT / "scripts/configure-production").resolve()
 SSH_KEYGEN = shutil.which("ssh-keygen")
 INPUT_ERROR_STATUS = 2
@@ -106,11 +107,28 @@ def test_operator_identity_gate_refuses_non_ed25519_keys(tmp_path: Path) -> None
     assert "STATIC_OPERATOR_PUBLIC_KEY" in result.stderr
 
 
+def test_operator_identity_gate_refuses_tab_separated_key(tmp_path: Path) -> None:
+    admin_key, _ = create_key(tmp_path, "admin")
+    _, operator_public_key = create_key(tmp_path, "operator")
+
+    result = check_identity(admin_key, operator_public_key.replace(" ", "\t", 1))
+
+    assert result.returncode == INPUT_ERROR_STATUS
+    assert "STATIC_OPERATOR_PUBLIC_KEY" in result.stderr
+
+
 def test_production_convergence_repeats_the_m3_6_preflight() -> None:
     preflight = PREFLIGHT.read_text(encoding="utf-8")
+    dark_host_preflight = DARK_HOST_PREFLIGHT.read_text(encoding="utf-8")
     configure = CONFIGURE.read_text(encoding="utf-8")
 
     assert '"${repository_root}/scripts/preflight-m3-dark-host-production"' in preflight
     assert '"${repository_root}/scripts/check-m3-6-operator-identity"' in preflight
     assert '"${repository_root}/scripts/preflight-m3-6-production"' in configure
     assert '"${repository_root}/scripts/preflight-m3-dark-host-production"' not in configure
+    assert "-o IdentitiesOnly=yes" in preflight
+    assert "-o IdentitiesOnly=yes" in dark_host_preflight
+    assert "expected_state_inventory=" in preflight
+    assert "expected_authorization_inventory=" in preflight
+    assert "export.lock | intake.lock | publication.lock | tenant-state.lock" in preflight
+    assert "expected_locks=" not in preflight
