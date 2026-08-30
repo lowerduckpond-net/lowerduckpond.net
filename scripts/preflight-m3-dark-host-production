@@ -56,7 +56,7 @@ if [[ ${first_digest} != "${second_digest}" ]] ||
     exit 1
 fi
 mkdir "${working_directory}/extracted"
-tar --extract --file "${first_artifact}" \
+tar --extract --same-permissions --file "${first_artifact}" \
     --directory "${working_directory}/extracted" --strip-components=1
 chmod 0555 "${working_directory}/extracted"
 uv run \
