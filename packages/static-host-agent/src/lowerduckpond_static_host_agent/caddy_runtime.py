@@ -28,18 +28,20 @@ from lowerduckpond_static_host_agent.caddy_generation import (
     CaddyGenerationStore,
     PinnedCaddyGeneration,
 )
+from lowerduckpond_static_host_agent.locks import LockManager, LockMode, LockName
 
 CADDY_ACTIVE_REFERENCE_NAME: Final = "active"
 CADDY_GENERATIONS_DIRECTORY_NAME: Final = "generations"
 CADDY_ACTIVE_REFERENCE_MODE: Final = 0o640
 CADDY_RUNTIME_ROOT_MODE: Final = 0o750
-CADDY_PUBLICATION_LOCK_MODE: Final = 0o660
+CADDY_PUBLICATION_LOCK_MODE: Final = 0o600
 
 _DIRECTORY_FLAGS: Final = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 _REFERENCE_FLAGS: Final = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC
 _REFERENCE_CREATE_FLAGS: Final = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
 _LOCK_FLAGS: Final = os.O_RDWR | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC
 _REFERENCE_BYTES: Final = 37
+_REFERENCE_TEMPORARY_CREATION_MODE: Final = 0o600
 _REFERENCE_TEMPORARY_PREFIX: Final = ".ldp-active-"
 _REFERENCE_TEMPORARY_PATTERN: Final = re.compile(r"\.ldp-active-[0-9a-f]{32}")
 _ENVIRONMENT_NAME_PATTERN: Final = re.compile(r"[A-Z_][A-Z0-9_]*", flags=re.ASCII)
@@ -90,11 +92,13 @@ class CaddyRuntime:
         *,
         owner: int,
         group: int,
+        creation_group: int,
     ) -> None:
         self._root_fd = root_fd
         self._lock_fd = lock_fd
         self._owner = owner
         self._group = group
+        self._creation_group = creation_group
         self._locked = False
         self._closed = False
 
@@ -106,27 +110,26 @@ class CaddyRuntime:
         *,
         expected_owner: int,
         expected_group: int,
+        expected_lock_owner: int | None = None,
+        expected_lock_group: int | None = None,
         root_mode: int = CADDY_RUNTIME_ROOT_MODE,
         lock_mode: int = CADDY_PUBLICATION_LOCK_MODE,
     ) -> Self:
         """Pin the trusted runtime root and publication-lock inode."""
 
-        root_fd = _open_directory(root, label="Caddy runtime root")
+        root_fd = _open_runtime_root(
+            root,
+            owner=expected_owner,
+            group=expected_group,
+            mode=root_mode,
+        )
         lock_fd: int | None = None
         try:
-            _validate_directory(
-                os.fstat(root_fd),
-                owner=expected_owner,
-                group=expected_group,
-                mode=root_mode,
-                label="Caddy runtime root",
-            )
-            _require_path_identity(root, root_fd, label="Caddy runtime root")
             lock_fd = _open_lock(publication_lock)
             _validate_lock(
                 os.fstat(lock_fd),
-                owner=expected_owner,
-                group=expected_group,
+                owner=(expected_owner if expected_lock_owner is None else expected_lock_owner),
+                group=(expected_owner if expected_lock_group is None else expected_lock_group),
                 mode=lock_mode,
             )
             _require_path_identity(publication_lock, lock_fd, label="publication lock")
@@ -140,6 +143,50 @@ class CaddyRuntime:
             lock_fd,
             owner=expected_owner,
             group=expected_group,
+            creation_group=os.getegid(),
+        )
+
+    @classmethod
+    def from_lock_descriptor(  # noqa: PLR0913
+        cls,
+        root: Path,
+        publication_lock_fd: int,
+        *,
+        expected_owner: int,
+        expected_group: int,
+        expected_lock_owner: int,
+        expected_lock_group: int,
+        root_mode: int = CADDY_RUNTIME_ROOT_MODE,
+        lock_mode: int = CADDY_PUBLICATION_LOCK_MODE,
+    ) -> Self:
+        """Pin a systemd-opened global publication lock without path traversal."""
+
+        root_fd = _open_runtime_root(
+            root,
+            owner=expected_owner,
+            group=expected_group,
+            mode=root_mode,
+        )
+        lock_fd: int | None = None
+        try:
+            lock_fd = fcntl.fcntl(publication_lock_fd, fcntl.F_DUPFD_CLOEXEC, 0)
+            _validate_lock(
+                os.fstat(lock_fd),
+                owner=expected_lock_owner,
+                group=expected_lock_group,
+                mode=lock_mode,
+            )
+        except BaseException:
+            if lock_fd is not None:
+                os.close(lock_fd)
+            os.close(root_fd)
+            raise
+        return cls(
+            root_fd,
+            lock_fd,
+            owner=expected_owner,
+            group=expected_group,
+            creation_group=os.getegid(),
         )
 
     def __enter__(self) -> Self:
@@ -168,6 +215,24 @@ class CaddyRuntime:
         finally:
             self._locked = False
             fcntl.flock(self._lock_fd, fcntl.LOCK_UN)
+
+    @contextmanager
+    def using_held_publication_lock(self, lock_manager: LockManager) -> Iterator[object]:
+        """Use this exact inode through a caller's already-held ordered lock."""
+
+        self._require_open()
+        if self._locked:
+            raise CaddyRuntimeError("publication lock is not reentrant")
+        lock_manager.require_held(
+            LockName.PUBLICATION,
+            mode=LockMode.EXCLUSIVE,
+            descriptor=self._lock_fd,
+        )
+        self._locked = True
+        try:
+            yield self
+        finally:
+            self._locked = False
 
     def read_active(self) -> str:
         """Read the active reference exactly once while holding publication."""
@@ -206,6 +271,7 @@ class CaddyRuntime:
         """Verify and durably select one complete immutable generation."""
 
         self._require_locked()
+        self.remove_abandoned_reference_temporaries()
         canonical_id = _canonical_generation_id(generation_id)
         store = self._open_generation_store()
         try:
@@ -226,7 +292,7 @@ class CaddyRuntime:
             temporary_fd = os.open(
                 temporary_name,
                 _REFERENCE_CREATE_FLAGS,
-                mode=0o600,
+                mode=_REFERENCE_TEMPORARY_CREATION_MODE,
                 dir_fd=self._root_fd,
             )
             created = True
@@ -253,6 +319,51 @@ class CaddyRuntime:
             if created and not renamed:
                 with suppress(FileNotFoundError):
                     os.unlink(temporary_name, dir_fd=self._root_fd)
+                    os.fsync(self._root_fd)
+
+    def remove_abandoned_reference_temporaries(
+        self,
+        *,
+        maximum_entries: int = 4_096,
+    ) -> int:
+        """Bound, validate, remove, and sync crash-left active-reference staging."""
+
+        self._require_locked()
+        if type(maximum_entries) is not int or maximum_entries < 0:
+            raise ValueError("active-reference recovery bound must be nonnegative")
+        scan_fd = os.open(".", _DIRECTORY_FLAGS, dir_fd=self._root_fd)
+        names: list[str] = []
+        try:
+            with os.scandir(scan_fd) as iterator:
+                for entry_count, entry in enumerate(iterator, start=1):
+                    if entry_count > maximum_entries:
+                        raise CaddyRuntimeError(
+                            "Caddy runtime root exceeds its recovery scan bound"
+                        )
+                    if entry.name.startswith(_REFERENCE_TEMPORARY_PREFIX):
+                        if _REFERENCE_TEMPORARY_PATTERN.fullmatch(entry.name) is None:
+                            raise CaddyRuntimeError(
+                                "reserved active-reference temporary name is malformed"
+                            )
+                        names.append(entry.name)
+            for name in sorted(names):
+                metadata = os.stat(name, dir_fd=self._root_fd, follow_symlinks=False)
+                if not _safe_temporary_reference(
+                    metadata,
+                    owner=self._owner,
+                    group=self._group,
+                    creation_group=self._creation_group,
+                ):
+                    raise CaddyRuntimeError(
+                        "reserved active-reference temporary metadata is unsafe"
+                    )
+            for name in sorted(names):
+                os.unlink(name, dir_fd=self._root_fd)
+            if names:
+                os.fsync(self._root_fd)
+            return len(names)
+        finally:
+            os.close(scan_fd)
 
     def close(self) -> None:
         """Close the pinned runtime descriptors when no transition is active."""
@@ -420,6 +531,23 @@ def _open_directory(path: Path, *, label: str) -> int:
         raise
 
 
+def _open_runtime_root(path: Path, *, owner: int, group: int, mode: int) -> int:
+    descriptor = _open_directory(path, label="Caddy runtime root")
+    try:
+        _validate_directory(
+            os.fstat(descriptor),
+            owner=owner,
+            group=group,
+            mode=mode,
+            label="Caddy runtime root",
+        )
+        _require_path_identity(path, descriptor, label="Caddy runtime root")
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
 def _open_lock(path: Path) -> int:
     try:
         return os.open(path, _LOCK_FLAGS)
@@ -488,6 +616,31 @@ def _validate_reference(
         or metadata.st_size != _REFERENCE_BYTES
     ):
         raise CaddyRuntimeError("active reference metadata is unsafe")
+
+
+def _safe_temporary_reference(
+    metadata: os.stat_result,
+    *,
+    owner: int,
+    group: int,
+    creation_group: int,
+) -> bool:
+    return (
+        stat.S_ISREG(metadata.st_mode)
+        and metadata.st_uid == owner
+        and metadata.st_nlink == 1
+        and 0 <= metadata.st_size <= _REFERENCE_BYTES
+        and (
+            (
+                metadata.st_gid == creation_group
+                and stat.S_IMODE(metadata.st_mode) == _REFERENCE_TEMPORARY_CREATION_MODE
+            )
+            or (
+                metadata.st_gid == group
+                and stat.S_IMODE(metadata.st_mode) == CADDY_ACTIVE_REFERENCE_MODE
+            )
+        )
+    )
 
 
 def _validate_existing_reference_if_present(

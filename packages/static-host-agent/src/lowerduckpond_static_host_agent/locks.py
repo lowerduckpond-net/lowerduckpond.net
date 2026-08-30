@@ -67,6 +67,7 @@ class _HeldLock:
     manager_token: object
     name: LockName
     mode: LockMode
+    inode: tuple[int, int]
 
 
 class LockManager:
@@ -197,7 +198,13 @@ class LockManager:
                     raise StateBusyError(f"{name.filename} is busy") from error
                 raise
             held = self._held()
-            held_lock = _HeldLock(self._token, name, mode)
+            metadata = os.fstat(lock_fd)
+            held_lock = _HeldLock(
+                self._token,
+                name,
+                mode,
+                (metadata.st_dev, metadata.st_ino),
+            )
             held.append(held_lock)
             try:
                 yield
@@ -248,17 +255,32 @@ class LockManager:
         if held and name <= held[-1].name:
             raise LockOrderError("host locks must follow intake, export, publication, tenant-state")
 
-    def require_held(self, name: LockName, *, mode: LockMode | None = None) -> None:
+    def require_held(
+        self,
+        name: LockName,
+        *,
+        mode: LockMode | None = None,
+        descriptor: int | None = None,
+    ) -> None:
         """Require this manager's named lock in the current execution context."""
 
-        if not any(
-            lock.manager_token is self._token
-            and lock.name is name
-            and (mode is None or lock.mode is mode)
-            for lock in self._held()
-        ):
+        matching = next(
+            (
+                lock
+                for lock in self._held()
+                if lock.manager_token is self._token
+                and lock.name is name
+                and (mode is None or lock.mode is mode)
+            ),
+            None,
+        )
+        if matching is None:
             requirement = "" if mode is None else f" in {mode.value} mode"
             raise LockOrderError(f"{name.filename} must already be held{requirement}")
+        if descriptor is not None:
+            metadata = os.fstat(descriptor)
+            if matching.inode != (metadata.st_dev, metadata.st_ino):
+                raise LockOrderError(f"{name.filename} held inode does not match")
 
     def _assert_sequence(self, requests: Sequence[LockRequest]) -> None:
         previous = self._held()[-1].name if self._held() else None

@@ -21,6 +21,10 @@ from lowerduckpond_static_host_agent import (
     CaddyRuntime,
     CaddyRuntimeError,
     CaddySelectionBoundary,
+    LockManager,
+    LockMode,
+    LockName,
+    LockOrderError,
     build_platform_only_caddy_routes,
     prepare_active_caddy_execution,
 )
@@ -117,6 +121,61 @@ def test_runtime_holds_the_exact_publication_lock_inode(
         os.close(competing_fd)
 
 
+def test_runtime_composes_with_the_same_lock_already_held_by_lock_manager(
+    runtime_fixture: RuntimeFixture,
+) -> None:
+    with (
+        LockManager(runtime_fixture.lock.parent, expected_owner=runtime_fixture.owner) as locks,
+        runtime_fixture.open() as runtime,
+        locks.acquire(LockName.PUBLICATION, mode=LockMode.EXCLUSIVE, blocking=True),
+        runtime.using_held_publication_lock(locks),
+    ):
+        runtime.select_active(GENERATION_A)
+        assert runtime.read_active() == GENERATION_A
+
+
+def test_runtime_refuses_a_different_managers_held_publication_inode(
+    runtime_fixture: RuntimeFixture,
+    tmp_path: Path,
+) -> None:
+    other = tmp_path / "other-locks"
+    other.mkdir(mode=0o700)
+    for name in LockName:
+        path = other / name.filename
+        path.write_bytes(b"")
+        path.chmod(0o600)
+    with (
+        LockManager(other, expected_owner=runtime_fixture.owner) as locks,
+        runtime_fixture.open() as runtime,
+        locks.acquire(LockName.PUBLICATION, mode=LockMode.EXCLUSIVE, blocking=True),
+        pytest.raises(LockOrderError, match="held inode does not match"),
+        runtime.using_held_publication_lock(locks),
+    ):
+        pass
+
+
+def test_runtime_accepts_a_preopened_root_owned_publication_lock_descriptor(
+    runtime_fixture: RuntimeFixture,
+) -> None:
+    descriptor = os.open(runtime_fixture.lock, os.O_RDWR | os.O_CLOEXEC)
+    try:
+        with (
+            CaddyRuntime.from_lock_descriptor(
+                runtime_fixture.root,
+                descriptor,
+                expected_owner=runtime_fixture.owner,
+                expected_group=runtime_fixture.group,
+                expected_lock_owner=runtime_fixture.owner,
+                expected_lock_group=runtime_fixture.group,
+            ) as runtime,
+            runtime.locked(),
+        ):
+            runtime.select_active(GENERATION_A)
+            assert runtime.read_active() == GENERATION_A
+    finally:
+        os.close(descriptor)
+
+
 def test_selection_verifies_and_durably_replaces_one_regular_reference(
     runtime_fixture: RuntimeFixture,
 ) -> None:
@@ -182,6 +241,58 @@ def test_failed_pre_rename_reselection_preserves_the_preceding_reference(
             runtime.select_active(GENERATION_B, failure_hook=fail)
         with runtime.locked():
             assert runtime.read_active() == GENERATION_A
+
+
+def test_selection_reconciles_and_syncs_safe_crash_left_reference_staging(
+    runtime_fixture: RuntimeFixture,
+) -> None:
+    abandoned = runtime_fixture.root / (".ldp-active-" + "a" * 32)
+    abandoned.write_bytes(f"{GENERATION_B}\n".encode())
+    abandoned.chmod(CADDY_ACTIVE_REFERENCE_MODE)
+
+    with runtime_fixture.open() as runtime, runtime.locked():
+        runtime.select_active(GENERATION_A)
+        assert runtime.read_active() == GENERATION_A
+
+    assert not abandoned.exists()
+
+
+@pytest.mark.parametrize("kind", ["malformed", "symlink", "hardlink"])
+def test_reference_recovery_refuses_unsafe_reserved_temporaries(
+    runtime_fixture: RuntimeFixture,
+    kind: str,
+) -> None:
+    name = ".ldp-active-malformed" if kind == "malformed" else ".ldp-active-" + "b" * 32
+    temporary = runtime_fixture.root / name
+    if kind == "symlink":
+        temporary.symlink_to("generations")
+    else:
+        temporary.write_bytes(b"")
+        temporary.chmod(0o600)
+        if kind == "hardlink":
+            os.link(temporary, runtime_fixture.root / "temporary-alias")
+
+    with (
+        runtime_fixture.open() as runtime,
+        runtime.locked(),
+        pytest.raises(CaddyRuntimeError, match="temporary"),
+    ):
+        runtime.remove_abandoned_reference_temporaries()
+
+
+def test_reference_recovery_scan_is_bounded_before_removal(
+    runtime_fixture: RuntimeFixture,
+) -> None:
+    abandoned = runtime_fixture.root / (".ldp-active-" + "c" * 32)
+    abandoned.write_bytes(b"")
+    abandoned.chmod(0o600)
+    with (
+        runtime_fixture.open() as runtime,
+        runtime.locked(),
+        pytest.raises(CaddyRuntimeError, match="recovery scan bound"),
+    ):
+        runtime.remove_abandoned_reference_temporaries(maximum_entries=0)
+    assert abandoned.exists()
 
 
 def test_active_reference_rejects_symlinks_and_multiply_linked_files(
@@ -322,7 +433,7 @@ def test_launcher_rejects_generation_attempt_to_override_systemd_environment(
 @pytest.mark.parametrize(
     ("mutate", "message"),
     [
-        (lambda path: path.chmod(0o600), "publication lock metadata"),
+        (lambda path: path.chmod(0o660), "publication lock metadata"),
         (lambda path: path.write_bytes(b"occupied"), "publication lock metadata"),
         (
             lambda path: os.link(path, path.with_name("lock-alias")),
