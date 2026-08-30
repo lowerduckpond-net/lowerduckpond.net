@@ -4,6 +4,7 @@ import ast
 import json
 import os
 import subprocess
+import sys
 import tarfile
 from collections import Counter
 from pathlib import Path
@@ -38,6 +39,18 @@ def run(*arguments: str | os.PathLike[str]) -> subprocess.CompletedProcess[str]:
     )
 
 
+def verifier_for_test(tmp_path: Path) -> Path:
+    """Run the production verifier with the artifact's pinned Python runtime."""
+    verifier = tmp_path / "verify-static-host-agent-artifact"
+    source = VERIFIER.read_text(encoding="utf-8")
+    verifier.write_text(
+        source.replace("#!/usr/bin/python3 -I", f"#!{sys.executable} -I", 1),
+        encoding="utf-8",
+    )
+    verifier.chmod(0o755)
+    return verifier
+
+
 def test_host_agent_artifact_is_locked_reproducible_and_installable(tmp_path: Path) -> None:
     for helper in (INSTALLER, VERIFIER):
         ast.parse(helper.read_text(encoding="utf-8"), feature_version=(3, 12))
@@ -67,10 +80,11 @@ def test_host_agent_artifact_is_locked_reproducible_and_installable(tmp_path: Pa
 
     install_root = tmp_path / "install"
     install_root.mkdir()
-    installed = run(INSTALLER, first, digest, install_root, VERIFIER)
+    verifier = verifier_for_test(tmp_path)
+    installed = run(INSTALLER, first, digest, install_root, verifier)
     assert installed.returncode == 0, installed.stderr
     assert installed.stdout == "changed\n"
-    repeated = run(INSTALLER, first, digest, install_root, VERIFIER)
+    repeated = run(INSTALLER, first, digest, install_root, verifier)
     assert repeated.returncode == 0, repeated.stderr
     assert repeated.stdout == "unchanged\n"
 
@@ -79,7 +93,7 @@ def test_host_agent_artifact_is_locked_reproducible_and_installable(tmp_path: Pa
     manifest = json.loads((selected / "artifact-manifest.json").read_bytes())
     assert manifest["format"] == "lowerduckpond-static-host-agent-artifact-v1"
     assert manifest["python"] == "3.14"
-    assert run(VERIFIER, selected).returncode == 0
+    assert run(verifier, selected).returncode == 0
 
 
 def test_installer_refuses_drift_in_an_existing_version(tmp_path: Path) -> None:
@@ -89,7 +103,8 @@ def test_installer_refuses_drift_in_an_existing_version(tmp_path: Path) -> None:
     digest = build.stdout.strip()
     install_root = tmp_path / "install"
     install_root.mkdir()
-    assert run(INSTALLER, artifact, digest, install_root, VERIFIER).returncode == 0
+    verifier = verifier_for_test(tmp_path)
+    assert run(INSTALLER, artifact, digest, install_root, verifier).returncode == 0
 
     selected = install_root / digest
     victim = next((selected / "site-packages").rglob("*.py"))
@@ -97,7 +112,7 @@ def test_installer_refuses_drift_in_an_existing_version(tmp_path: Path) -> None:
     victim.write_bytes(victim.read_bytes() + b"\n")
     victim.chmod(ARCHIVE_FILE_MODE)
 
-    refused = run(INSTALLER, artifact, digest, install_root, VERIFIER)
+    refused = run(INSTALLER, artifact, digest, install_root, verifier)
     assert refused.returncode != 0
     assert "content drifted" in refused.stderr
 
