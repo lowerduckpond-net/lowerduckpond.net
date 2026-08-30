@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tarfile
@@ -41,12 +42,17 @@ def run(*arguments: str | os.PathLike[str]) -> subprocess.CompletedProcess[str]:
 
 def verifier_for_test(tmp_path: Path) -> Path:
     """Run the production verifier with the artifact's pinned Python runtime."""
-    verifier = tmp_path / "verify-static-host-agent-artifact"
+    implementation = tmp_path / "verify-static-host-agent-artifact-implementation"
     source = VERIFIER.read_text(encoding="utf-8")
     source = source.replace("#!/usr/bin/python3 -I", f"#!{sys.executable} -I", 1)
-    source = source.replace("EXPECTED_OWNER_UID = 0", f"EXPECTED_OWNER_UID = {os.getuid()}", 1)
-    source = source.replace("EXPECTED_OWNER_GID = 0", f"EXPECTED_OWNER_GID = {os.getgid()}", 1)
-    verifier.write_text(source, encoding="utf-8")
+    implementation.write_text(source, encoding="utf-8")
+    implementation.chmod(0o755)
+
+    verifier = tmp_path / "verify-static-host-agent-artifact"
+    verifier.write_text(
+        f'#!/bin/sh\nexec {shlex.quote(os.fspath(implementation))} --current-owner "$@"\n',
+        encoding="utf-8",
+    )
     verifier.chmod(0o755)
     return verifier
 

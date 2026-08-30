@@ -100,6 +100,49 @@
   loop_control:
     label: "{{ item.item }}"
 
+- name: Inspect the retired provisioner home
+  ansible.builtin.find:
+    paths: /var/lib/lowerduckpond/provisioner
+    hidden: true
+    recurse: false
+    file_type: any
+  when: static_host_agent_legacy_directories.results[0].stat.exists
+  register: static_host_agent_retired_home_contents
+
+- name: Require only unchanged Ubuntu skeleton files in the retired home
+  ansible.builtin.assert:
+    that:
+      - >-
+        item.path in [
+        '/var/lib/lowerduckpond/provisioner/.bash_logout',
+        '/var/lib/lowerduckpond/provisioner/.bashrc',
+        '/var/lib/lowerduckpond/provisioner/.profile'
+        ]
+      - item.isreg
+      - not item.islnk
+      - item.pw_name == provisioner_user
+      - item.gr_name == provisioner_group
+      - item.mode == '0644'
+    fail_msg: >-
+      {{ item.path }} is not a recognized retired provisioner skeleton file;
+      refusing to discard possible tenant history.
+  loop: "{{ static_host_agent_retired_home_contents.files | default([]) }}"
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Compare retired provisioner files with the current Ubuntu skeleton
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/cmp
+      - --silent
+      - --
+      - "{{ item.path }}"
+      - "/etc/skel/{{ item.path | basename }}"
+  changed_when: false
+  loop: "{{ static_host_agent_retired_home_contents.files | default([]) }}"
+  loop_control:
+    label: "{{ item.path }}"
+
 - name: Prove retired Milestone 2 directories contain no tenant history
   ansible.builtin.find:
     paths: "{{ item.item }}"
@@ -109,7 +152,9 @@
   loop: "{{ static_host_agent_legacy_directories.results }}"
   loop_control:
     label: "{{ item.item }}"
-  when: item.stat.exists
+  when:
+    - item.stat.exists
+    - item.item != '/var/lib/lowerduckpond/provisioner'
   register: static_host_agent_legacy_contents
 
 - name: Require every retired Milestone 2 directory to be empty
@@ -135,6 +180,14 @@
   loop_control:
     label: "{{ item.item }}"
   when: item.stat.exists
+
+- name: Remove validated retired provisioner skeleton files
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ static_host_agent_retired_home_contents.files | default([]) }}"
+  loop_control:
+    label: "{{ item.path }}"
 
 - name: Remove empty retired Milestone 2 directories
   ansible.builtin.command:

@@ -55,10 +55,11 @@ It fetches `origin/main`, refuses any branch or working-tree drift, builds the
 locked Linux x86-64/Python 3.14 host-agent artifact twice and requires
 byte-identical output, verifies it with the pinned Python 3.14 runtime, and then
 reads the production host to prove its architecture,
-the emptiness and shape of the retired Milestone 2 directories, zero tenant
-route inputs, active Caddy service, and the existing HTTPS fixture. It makes no
-production change. Record the reported artifact SHA-256 and stop here until
-the live convergence is explicitly authorized.
+the absence of tenant history from the retired Milestone 2 directories (while
+recognizing only byte-identical Ubuntu skeleton files in the old provisioner
+home), zero tenant route inputs, active Caddy service, and the existing HTTPS
+fixture. It makes no production change. Record the reported artifact SHA-256
+and stop here until the live convergence is explicitly authorized.
 
 The subsequent `just configure-production` repeats this preflight before its
 first mutation. Its first converge installs that exact artifact beneath its
@@ -69,9 +70,23 @@ workspace. Caddy contains no tenant import, and both job issuance and any
 tenant-bearing Caddy candidate fail closed while
 `static_publication_enabled` is false.
 
-Rollback selects the preceding reviewed Ansible configuration and artifact.
-The empty new directories may remain root-owned. Do not recreate the retired
-provisioner-writable home or job, manifest, or audit trees.
+Configuration rollback is forward-only across this ownership migration. Keep
+the current M3.5 Ansible roles, reproduce a preceding reviewed M3.5 artifact in
+a separate clean x86-64 Linux worktree, and require its digest to equal the
+SHA-256 recorded for that convergence. Then select it with the current roles:
+
+```console
+M3_DARK_HOST_ROLLBACK_ARTIFACT_PATH=/absolute/path/to/static-host-agent.tar \
+M3_DARK_HOST_ROLLBACK_ARTIFACT_SHA256=<recorded-sha256> \
+just configure-production
+```
+
+The command rejects a missing, relative, linked, partially specified, or
+digest-mismatched artifact before convergence. The first M3.5 convergence has
+no preceding host-agent artifact, so a failure remains dark and is repaired by
+a reviewed forward fix; do not reconverge M3.4. In every case, retain the
+root-owned state layout and do not recreate the retired provisioner-writable
+home or job, manifest, or audit trees.
 
 ## First convergence
 

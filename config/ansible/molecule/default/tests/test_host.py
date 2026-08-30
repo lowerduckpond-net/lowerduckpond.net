@@ -771,7 +771,7 @@ def test_static_host_agent_is_hash_pinned_and_immutable(host: Host) -> None:
             selected_root,
         )
         assert refused.rc != 0
-        assert "not root-owned" in refused.stderr
+        assert "unexpected owner" in refused.stderr
     finally:
         assert host.run(f"chown root:root {ownership_victim}").rc == 0
     assert (

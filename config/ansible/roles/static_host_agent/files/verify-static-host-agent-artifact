@@ -20,7 +20,8 @@ EXPECTED_OWNER_GID = 0
 EXPECTED_MANIFEST_KEYS = {"files", "format", "python", "uv_lock_sha256"}
 EXPECTED_RECORD_KEYS = {"mode", "path", "sha256", "size"}
 DIGEST_LENGTH = 64
-ARGUMENT_COUNT = 2
+DEFAULT_ARGUMENT_COUNT = 2
+CURRENT_OWNER_ARGUMENT_COUNT = 3
 
 
 def fail(message: str) -> None:
@@ -36,15 +37,24 @@ def require_digest(value: object, *, label: str) -> str:
     return value
 
 
-def require_root_ownership(metadata: os.stat_result, *, label: str) -> None:
-    if metadata.st_uid != EXPECTED_OWNER_UID or metadata.st_gid != EXPECTED_OWNER_GID:
-        fail(f"{label} is not root-owned")
+def require_ownership(
+    metadata: os.stat_result,
+    *,
+    label: str,
+    expected_owner: tuple[int, int],
+) -> None:
+    if (metadata.st_uid, metadata.st_gid) != expected_owner:
+        fail(f"{label} has an unexpected owner")
 
 
-def read_manifest(root: pathlib.Path) -> dict[str, Any]:
+def read_manifest(root: pathlib.Path, expected_owner: tuple[int, int]) -> dict[str, Any]:
     manifest_path = root / "artifact-manifest.json"
     manifest_metadata = manifest_path.lstat()
-    require_root_ownership(manifest_metadata, label="artifact manifest")
+    require_ownership(
+        manifest_metadata,
+        label="artifact manifest",
+        expected_owner=expected_owner,
+    )
     if not stat.S_ISREG(manifest_metadata.st_mode):
         fail("artifact manifest is not a regular file")
     try:
@@ -88,13 +98,21 @@ def parse_inventory(manifest: dict[str, Any]) -> dict[str, tuple[int, str]]:
     return expected
 
 
-def verify_tree(root: pathlib.Path, expected: dict[str, tuple[int, str]]) -> None:
+def verify_tree(
+    root: pathlib.Path,
+    expected: dict[str, tuple[int, str]],
+    expected_owner: tuple[int, int],
+) -> None:
 
     actual: set[str] = set()
     for path in root.rglob("*"):
         relative = path.relative_to(root).as_posix()
         metadata = path.lstat()
-        require_root_ownership(metadata, label=f"artifact entry {relative}")
+        require_ownership(
+            metadata,
+            label=f"artifact entry {relative}",
+            expected_owner=expected_owner,
+        )
         if stat.S_ISLNK(metadata.st_mode):
             fail(f"artifact contains a symbolic link: {relative}")
         if stat.S_ISDIR(metadata.st_mode):
@@ -133,21 +151,31 @@ def verify_imports(root: pathlib.Path) -> None:
 
 
 def main() -> None:
-    if len(sys.argv) != ARGUMENT_COUNT:
-        fail("usage: verify-static-host-agent-artifact ARTIFACT_ROOT")
-    root = pathlib.Path(sys.argv[1])
+    if len(sys.argv) == DEFAULT_ARGUMENT_COUNT:
+        expected_owner = (EXPECTED_OWNER_UID, EXPECTED_OWNER_GID)
+        root_argument = sys.argv[1]
+    elif len(sys.argv) == CURRENT_OWNER_ARGUMENT_COUNT and sys.argv[1] == "--current-owner":
+        expected_owner = (os.geteuid(), os.getegid())
+        root_argument = sys.argv[2]
+    else:
+        fail("usage: verify-static-host-agent-artifact [--current-owner] ARTIFACT_ROOT")
+    root = pathlib.Path(root_argument)
     if not root.is_absolute():
         fail("artifact root must be absolute")
     root_metadata = root.lstat()
-    require_root_ownership(root_metadata, label="artifact root")
+    require_ownership(
+        root_metadata,
+        label="artifact root",
+        expected_owner=expected_owner,
+    )
     if (
         not stat.S_ISDIR(root_metadata.st_mode)
         or stat.S_IMODE(root_metadata.st_mode) != EXPECTED_DIRECTORY_MODE
     ):
         fail("artifact root is not an immutable directory")
-    manifest = read_manifest(root)
+    manifest = read_manifest(root, expected_owner)
     expected = parse_inventory(manifest)
-    verify_tree(root, expected)
+    verify_tree(root, expected, expected_owner)
     verify_imports(root)
 
 

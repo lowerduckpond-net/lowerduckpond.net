@@ -79,7 +79,7 @@
         home: /var/lib/lowerduckpond/provisioner
         shell: /usr/sbin/nologin
         system: true
-        create_home: false
+        create_home: true
 
     - name: Seed the empty retired Milestone 2 writable layout
       ansible.builtin.file:

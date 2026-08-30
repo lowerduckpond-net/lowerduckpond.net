@@ -29,7 +29,7 @@ for variable_name in "${required_environment[@]}"; do
     fi
 done
 
-for command_name in ssh-keygen tofu uv; do
+for command_name in sha256sum ssh-keygen tofu uv; do
     if ! command -v "${command_name}" >/dev/null 2>&1; then
         echo "Required command ${command_name} is not installed." >&2
         exit 2
@@ -82,12 +82,33 @@ cleanup() {
 trap cleanup EXIT
 second_converge_output="${temporary_directory}/second-converge.log"
 
-export STATIC_HOST_AGENT_ARTIFACT_PATH="${temporary_directory}/static-host-agent.tar"
-export STATIC_HOST_AGENT_ARTIFACT_SHA256
-STATIC_HOST_AGENT_ARTIFACT_SHA256=$(
-    "${repository_root}/scripts/build-static-host-agent" \
-        "${STATIC_HOST_AGENT_ARTIFACT_PATH}"
-)
+rollback_artifact_path=${M3_DARK_HOST_ROLLBACK_ARTIFACT_PATH:-}
+rollback_artifact_sha256=${M3_DARK_HOST_ROLLBACK_ARTIFACT_SHA256:-}
+if [[ -n ${rollback_artifact_path} || -n ${rollback_artifact_sha256} ]]; then
+    rollback_artifact_actual_sha256=""
+    if [[ -f ${rollback_artifact_path} && ! -L ${rollback_artifact_path} ]]; then
+        rollback_artifact_actual_sha256=$(sha256sum -- "${rollback_artifact_path}")
+        rollback_artifact_actual_sha256=${rollback_artifact_actual_sha256%% *}
+    fi
+    if [[ -z ${rollback_artifact_path} || -z ${rollback_artifact_sha256} ]] ||
+       [[ ${rollback_artifact_path} != /* ]] ||
+       [[ ! -f ${rollback_artifact_path} || -L ${rollback_artifact_path} ]] ||
+       [[ ! ${rollback_artifact_sha256} =~ ^[0-9a-f]{64}$ ]] ||
+       [[ ${rollback_artifact_actual_sha256} != "${rollback_artifact_sha256}" ]]; then
+        echo "The explicit M3.5 rollback artifact is incomplete or invalid." >&2
+        exit 2
+    fi
+    export STATIC_HOST_AGENT_ARTIFACT_PATH=${rollback_artifact_path}
+    export STATIC_HOST_AGENT_ARTIFACT_SHA256=${rollback_artifact_sha256}
+    echo "Selecting the explicitly pinned M3.5 rollback artifact."
+else
+    export STATIC_HOST_AGENT_ARTIFACT_PATH="${temporary_directory}/static-host-agent.tar"
+    export STATIC_HOST_AGENT_ARTIFACT_SHA256
+    STATIC_HOST_AGENT_ARTIFACT_SHA256=$(
+        "${repository_root}/scripts/build-static-host-agent" \
+            "${STATIC_HOST_AGENT_ARTIFACT_PATH}"
+    )
+fi
 
 export ANSIBLE_CONFIG="${repository_root}/config/ansible/ansible.cfg"
 export ANSIBLE_PRIVATE_KEY_FILE

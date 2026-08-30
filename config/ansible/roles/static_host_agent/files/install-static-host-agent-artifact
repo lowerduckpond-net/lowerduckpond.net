@@ -63,7 +63,13 @@ def extract_archive(
 ) -> None:
     directories: list[pathlib.Path] = []
     for member in members:
-        target = destination.joinpath(*pathlib.PurePosixPath(member.name).parts)
+        relative_parts = pathlib.PurePosixPath(member.name).parts[1:]
+        if not relative_parts:
+            if not member.isdir():
+                fail("host-agent archive root is not a directory")
+            directories.append(destination)
+            continue
+        target = destination.joinpath(*relative_parts)
         if member.isdir():
             target.mkdir(mode=0o700)
             directories.append(target)
@@ -185,20 +191,19 @@ def main() -> None:
             with tarfile.open(archive_path, mode="r:") as archive:
                 members = validate_archive(archive)
                 extract_archive(archive, members, staging)
-            staged_artifact = staging / "artifact"
+            staged_artifact = staging
             verify(verifier, staged_artifact)
             sync_tree(staged_artifact)
-            staged_artifact.chmod(0o755)
             try:
                 staged_artifact.rename(destination)
             except FileExistsError:
                 verify(verifier, destination)
             else:
-                destination.chmod(0o555)
                 sync_directory(install_root)
                 changed = True
         finally:
-            discard_staging(staging)
+            if staging.exists() or staging.is_symlink():
+                discard_staging(staging)
 
     if select_current(install_root, destination):
         changed = True

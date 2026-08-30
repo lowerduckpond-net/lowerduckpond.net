@@ -66,6 +66,7 @@ uv run \
     --python 3.14 \
     python -I \
     "${repository_root}/config/ansible/roles/static_host_agent/files/verify-static-host-agent-artifact" \
+    --current-owner \
     "${working_directory}/extracted"
 
 ssh \
@@ -77,8 +78,22 @@ ssh \
 set -euo pipefail
 
 [[ $(uname -m) == x86_64 ]]
+provisioner_home=/var/lib/lowerduckpond/provisioner
+if [[ -e ${provisioner_home} || -L ${provisioner_home} ]]; then
+    [[ -d ${provisioner_home} && ! -L ${provisioner_home} ]]
+    while IFS= read -r -d '' entry; do
+        name=${entry##*/}
+        case ${name} in
+            .bash_logout | .bashrc | .profile) ;;
+            *) exit 1 ;;
+        esac
+        [[ -f ${entry} && ! -L ${entry} ]]
+        [[ $(stat --format='%U:%G:%a' -- "${entry}") == ldp-provisioner:ldp-provisioner:644 ]]
+        cmp --silent -- "${entry}" "/etc/skel/${name}"
+    done < <(find "${provisioner_home}" -mindepth 1 -maxdepth 1 -print0)
+fi
+
 for path in \
-    /var/lib/lowerduckpond/provisioner \
     /var/lib/lowerduckpond/jobs \
     /var/lib/lowerduckpond/manifests \
     /var/lib/lowerduckpond/audit
