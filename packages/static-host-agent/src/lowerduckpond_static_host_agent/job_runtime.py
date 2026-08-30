@@ -215,9 +215,10 @@ class StartupReconciler:
     def reconcile(self) -> ReconciliationOutcome:
         repaired_pairs: int | None = None
         queued: list[str] = []
+        batch: tuple[str, ...] | None = None
 
         def load_authority() -> tuple[dict[str, VerifiedArtifact], set[str]]:
-            nonlocal repaired_pairs
+            nonlocal batch, repaired_pairs
             repaired = CorrelationAdmission(self._repository).reconcile(blocking=True)
             repaired_pairs = repaired.repaired_records
             authorized: dict[str, VerifiedArtifact] = {}
@@ -240,6 +241,11 @@ class StartupReconciler:
                     queued.append(job_id)
                 else:
                     raise ExecutionError("terminal authorization job has no immutable result")
+            batch = self._repository.select_recovery_batch(
+                tuple(queued),
+                limit=_RECOVERY_HANDOFF_LIMIT,
+                blocking=True,
+            )
             return authorized, terminal
 
         intake = self._intake.reconcile(
@@ -248,7 +254,8 @@ class StartupReconciler:
         )
         if repaired_pairs is None:  # pragma: no cover - intake always invokes authority
             raise RuntimeBoundaryError("authorization reconciliation did not load authority")
-        batch = queued[:_RECOVERY_HANDOFF_LIMIT]
+        if batch is None:  # pragma: no cover - intake always invokes authority
+            raise RuntimeBoundaryError("authorization reconciliation did not select a batch")
         for job_id in batch:
             self._handoff.enqueue(job_id)
         return ReconciliationOutcome(

@@ -119,6 +119,14 @@ provisioner-created file or request into authority. Job envelopes, phases, and
 results consume the existing bounded correlation-record count and byte
 allowance rather than a second unbounded store.
 
+Recovery selects at most two jobs per pass and atomically advances a
+root-owned cursor before the non-blocking handoffs. Selection wraps through the
+sorted pending inventory. A job that repeatedly cannot publish a result can be
+retried on later wraps, but it cannot remain at the head of every batch and
+starve other committed jobs. If the process stops after the cursor commit but
+before a handoff, that job is deferred for one bounded rotation rather than
+lost; its immutable authority remains pending.
+
 Reconciliation acquires the intake lock before it snapshots authoritative jobs
 and results. An upload that completes while reconciliation is waiting is
 therefore present in both the intake slot and the later authority snapshot;

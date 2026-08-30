@@ -259,6 +259,28 @@ def test_state_revision_has_a_pinned_domain_separated_representation(tmp_path: P
     assert revision.sha256 == hashlib.sha256(framed).hexdigest()
 
 
+def test_recovery_batch_rejects_an_invalid_durable_cursor(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    cursor = root / "locks" / "authorization-recovery.cursor"
+    cursor.write_bytes(b"not-a-job-id")
+    cursor.chmod(_RECORD_MODE)
+
+    with (
+        _repository(root) as repository,
+        pytest.raises(StateRecordError, match="recovery cursor is invalid"),
+    ):
+        repository.select_recovery_batch((_JOB_ID,), limit=1)
+
+
+def test_empty_recovery_batch_does_not_allocate_a_cursor(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+
+    with _repository(root) as repository:
+        assert repository.select_recovery_batch((), limit=2) == ()
+
+    assert not (root / "locks" / "authorization-recovery.cursor").exists()
+
+
 def test_emergency_result_binds_its_correlation_identity_to_the_result_path(
     tmp_path: Path,
 ) -> None:

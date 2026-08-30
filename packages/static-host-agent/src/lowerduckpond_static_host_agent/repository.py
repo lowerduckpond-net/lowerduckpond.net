@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+from bisect import bisect_right
 from collections.abc import Iterator
 from contextlib import contextmanager
 from copy import deepcopy
@@ -59,6 +60,8 @@ from lowerduckpond_static_host_agent.state_inventory import (
 
 _STATE_REVISION_FORMAT: Final = b"lowerduckpond-state-revision-v1"
 _SHA256_PATTERN: Final = re.compile(r"[0-9a-f]{64}", flags=re.ASCII)
+_RECOVERY_CURSOR_COMPONENTS: Final = ("locks", "authorization-recovery.cursor")
+_RECOVERY_CURSOR_MAXIMUM_BYTES: Final = 36
 
 
 class StateRecordError(RuntimeError):
@@ -535,6 +538,48 @@ class StateRepository:
 
         with self.transaction(mode=LockMode.EXCLUSIVE, blocking=blocking) as transaction:
             return transaction.measure_authorization_records(limits=limits)
+
+    def select_recovery_batch(
+        self,
+        job_ids: tuple[str, ...],
+        *,
+        limit: int,
+        blocking: bool = False,
+    ) -> tuple[str, ...]:
+        """Durably rotate one bounded batch through committed job IDs."""
+
+        if type(limit) is not int or limit <= 0:
+            raise ValueError("recovery batch limit must be a positive integer")
+        canonical = tuple(sorted(validate_uuid7(job_id) for job_id in job_ids))
+        if len(canonical) != len(set(canonical)):
+            raise StateRecordError("recovery inventory contains duplicate job IDs")
+        if not canonical:
+            return ()
+        with self.transaction(mode=LockMode.EXCLUSIVE, blocking=blocking):
+            try:
+                raw_cursor = self._durable.read_regular(
+                    _RECOVERY_CURSOR_COMPONENTS,
+                    expected_owner=self._expected_owner,
+                    expected_mode=self._expected_record_mode,
+                    maximum_bytes=_RECOVERY_CURSOR_MAXIMUM_BYTES,
+                )
+            except FileNotFoundError:
+                cursor = None
+            else:
+                try:
+                    cursor = validate_uuid7(raw_cursor.decode("ascii"))
+                except (UnicodeDecodeError, TypeError, ValueError) as error:
+                    raise StateRecordError("recovery cursor is invalid") from error
+
+            start = 0 if cursor is None else bisect_right(canonical, cursor) % len(canonical)
+            count = min(limit, len(canonical))
+            batch = tuple(canonical[(start + offset) % len(canonical)] for offset in range(count))
+            self._durable.replace(
+                _RECOVERY_CURSOR_COMPONENTS,
+                batch[-1].encode("ascii"),
+                mode=self._expected_record_mode,
+            )
+            return batch
 
     def measure_intent_records(
         self,

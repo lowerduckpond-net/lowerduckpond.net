@@ -201,7 +201,12 @@ false; hermetic enabled-path fixtures return only mutation-free terminal
 Startup recovery starts at most two committed jobs per pass beneath one
 aggregate 512-MiB/64-task slice. Successful worker completion triggers the next
 pass; failures fall back to a running one-minute timer, which also safely
-resumes interrupted or coalesced handoffs without a zero-delay retry loop.
+resumes interrupted or coalesced handoffs without a zero-delay retry loop. A
+root-owned, atomically replaced recovery cursor rotates each pass through the
+sorted pending inventory, so a persistently failing prefix cannot consume every
+batch or starve later stranded jobs. The cursor advances before non-blocking
+handoff; a lost handoff therefore defers that job only until the bounded queue
+wraps rather than pinning recovery to it.
 Each worker begins as `ldp-provisioner` and crosses exactly the installed
 UUID-only sudo rule into the root-owned executor. Its no-new-privileges
 exception exists only for that transition; its capability bounding set retains

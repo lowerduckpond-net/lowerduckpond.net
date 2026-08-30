@@ -435,6 +435,28 @@ def test_startup_reconciliation_batches_backlog_under_the_aggregate_limit(
     assert second.deferred_jobs == 0
 
 
+def test_startup_reconciliation_durably_rotates_past_a_failing_prefix(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    with StateRepository(root, expected_owner=os.geteuid()) as repository:
+        issued = [_issue_number(repository, number) for number in range(1, 5)]
+
+    handoff = _CaptureHandoff()
+    batches: list[tuple[str, ...]] = []
+    for _attempt in range(3):
+        with (
+            StateRepository(root, expected_owner=os.geteuid()) as repository,
+            ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+        ):
+            batches.append(StartupReconciler(repository, intake, handoff).reconcile().enqueued_jobs)
+
+    first = tuple(accepted.job_id for accepted in issued[:2])
+    second = tuple(accepted.job_id for accepted in issued[2:])
+    assert batches == [first, second, first]
+    assert handoff.enqueued == [*first, *second, *first]
+
+
 def test_systemd_handoff_uses_one_fixed_template_instance(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

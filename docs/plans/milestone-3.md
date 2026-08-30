@@ -140,7 +140,7 @@ code; no request supplies a path component.
 ├── intake/                   # one bounded root-owned artifact slot
 ├── exports/                  # bounded authenticated-delivery spool
 ├── audit/                    # hash-chained segments and protected index
-└── locks/                    # export, publication, tenant-state, intake
+└── locks/                    # four fixed locks; bounded recovery cursor metadata
 /srv/lowerduckpond/sites/<uuid>/releases/<deployment-uuid>/
 /etc/caddy/
 ├── generations/<generation-uuid>/
@@ -716,7 +716,10 @@ immutable terminal result retrieval, authenticated export delivery plumbing,
 and bounded startup repair. Recovery admits at most two workers per pass into
 a shared 512-MiB/64-task slice; successful worker completion continues the
 queue, while a running one-minute timer retries failed, coalesced, or
-interrupted handoffs without an immediate failure loop. Real SSH and
+interrupted handoffs without an immediate failure loop. A durable root-owned
+cursor rotates the two-job batch through sorted pending authority before each
+handoff, preventing a permanently failing prefix from starving later jobs while
+still bounding concurrent recovery. Real SSH and
 systemd acceptance prove that the
 installed production flag still rejects before input, intake, or durable
 allocation and that no shell, PTY, forwarding, environment, SFTP, SCP, raw
