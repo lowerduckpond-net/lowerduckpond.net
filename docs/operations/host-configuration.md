@@ -40,6 +40,54 @@ is an availability dependency. Rotate it annually by issuing an overlapping
 replacement, rerunning configuration with the replacement, confirming an ACME
 operation, and then revoking the old token.
 
+## M3.5 dark-host starting gate
+
+M3.5 changes ownership and backup scope but intentionally cannot publish a
+tenant. From clean, current `main`, with the administrative key loaded and
+`ANSIBLE_PRIVATE_KEY_FILE` set, use the supported x86-64 Linux trusted
+workstation and run the read-only gate first:
+
+```console
+just preflight-m3-dark-host-production
+```
+
+It fetches `origin/main`, refuses any branch or working-tree drift, builds the
+locked Linux x86-64/Python 3.14 host-agent artifact twice and requires
+byte-identical output, verifies it with the pinned Python 3.14 runtime, and then
+reads the production host to prove its architecture,
+the absence of tenant history from the retired Milestone 2 directories (while
+recognizing only byte-identical Ubuntu skeleton files in the old provisioner
+home), zero tenant route inputs, active Caddy service, and the existing HTTPS
+fixture. It makes no production change. Record the reported artifact SHA-256
+and stop here until the live convergence is explicitly authorized.
+
+The subsequent `just configure-production` repeats this preflight before its
+first mutation. Its first converge installs that exact artifact beneath its
+SHA-256, atomically selects it, removes only proven-empty retired directories,
+creates the root-owned static state and release layout, and installs a disabled
+issuance gate plus an inert worker unit with a private 64-MiB/4,096-inode
+workspace. Caddy contains no tenant import, and both job issuance and any
+tenant-bearing Caddy candidate fail closed while
+`static_publication_enabled` is false.
+
+Configuration rollback is forward-only across this ownership migration. Keep
+the current M3.5 Ansible roles, reproduce a preceding reviewed M3.5 artifact in
+a separate clean x86-64 Linux worktree, and require its digest to equal the
+SHA-256 recorded for that convergence. Then select it with the current roles:
+
+```console
+M3_DARK_HOST_ROLLBACK_ARTIFACT_PATH=/absolute/path/to/static-host-agent.tar \
+M3_DARK_HOST_ROLLBACK_ARTIFACT_SHA256=<recorded-sha256> \
+just configure-production
+```
+
+The command rejects a missing, relative, linked, partially specified, or
+digest-mismatched artifact before convergence. The first M3.5 convergence has
+no preceding host-agent artifact, so a failure remains dark and is repaired by
+a reviewed forward fix; do not reconverge M3.4. In every case, retain the
+root-owned state layout and do not recreate the retired provisioner-writable
+home or job, manifest, or audit trees.
+
 ## First convergence
 
 Before connecting, independently verify the current SSH host fingerprint from
@@ -111,11 +159,18 @@ rather than consuming the small development Droplet now.
 
 Scheduled snapshots contain:
 
-- site content under `/srv/lowerduckpond`;
+- immutable site releases and the platform fixture under `/srv/lowerduckpond`;
 - Caddy state under `/var/lib/caddy`;
-- provisioner state under `/var/lib/lowerduckpond/manifests` and
-  `/var/lib/lowerduckpond/audit`; and
+- authoritative static platform, tenant, authorization, intent, audit, and lock
+  state under `/var/lib/lowerduckpond/static`; and
 - a staged, compressed dump of all MariaDB databases.
+
+The static intake and authenticated-delivery export spool are explicitly
+excluded. Caddy runtime generations and its secret environment are also
+excluded and are not backup sources. Every scheduled snapshot carries the
+active backup-scope tag, so convergence creates and restores from a new
+snapshot when the authoritative source or exclusion set changes rather than
+mistaking an older Milestone 2 snapshot for current evidence.
 
 The current retention policy keeps 7 daily, 5 weekly, and 12 monthly scheduled
 snapshots. A change to any of those counts invalidates the prior maintenance

@@ -67,6 +67,33 @@
             GRANT INSERT, FILE ON *.* TO 'ldp-backup'@'localhost';
       changed_when: true
 
+    - name: Create the retired Milestone 2 provisioner identity
+      ansible.builtin.group:
+        name: ldp-provisioner
+        system: true
+
+    - name: Create the retired Milestone 2 provisioner account
+      ansible.builtin.user:
+        name: ldp-provisioner
+        group: ldp-provisioner
+        home: /var/lib/lowerduckpond/provisioner
+        shell: /usr/sbin/nologin
+        system: true
+        create_home: true
+
+    - name: Seed the empty retired Milestone 2 writable layout
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: ldp-provisioner
+        group: ldp-provisioner
+        mode: "0750"
+      loop:
+        - /var/lib/lowerduckpond/provisioner
+        - /var/lib/lowerduckpond/jobs
+        - /var/lib/lowerduckpond/manifests
+        - /var/lib/lowerduckpond/audit
+
     - name: Create the legacy backup status fixture directories
       ansible.builtin.file:
         path: "{{ item.path }}"

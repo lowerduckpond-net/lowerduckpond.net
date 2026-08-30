@@ -70,6 +70,10 @@ export RESTIC_PASSWORD RESTIC_REPOSITORY RESTIC_CACHE_DIR
 restic backup \
     --host "${LOWERDUCKPOND_BACKUP_NODE_NAME}" \
     --tag scheduled \
+    --tag "scope-${status_scope}" \
+{% for exclude_path in backup_exclude_paths %}
+    --exclude {{ exclude_path | quote }} \
+{% endfor %}
 {% for source_path in backup_source_paths %}
     {{ source_path | quote }} \
 {% endfor %}

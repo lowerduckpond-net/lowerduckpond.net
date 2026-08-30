@@ -1,0 +1,9 @@
+---
+static_host_agent_artifact_path: ""
+static_host_agent_artifact_sha256: ""
+static_host_agent_install_root: /opt/lowerduckpond/static-host-agent
+static_host_agent_state_root: /var/lib/lowerduckpond/static
+static_host_agent_release_root: /srv/lowerduckpond/sites
+static_host_agent_caddy_generation_root: /etc/caddy/generations
+static_host_agent_caddy_intent_root: /etc/caddy/intents
+static_publication_enabled: false  # noqa var-naming[no-role-prefix]

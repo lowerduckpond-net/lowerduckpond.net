@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+if (( $# != 1 )); then
+    echo "Usage: $0 OUTPUT.tar" >&2
+    exit 2
+fi
+
+repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+output=$1
+output_parent=$(dirname "${output}")
+output_name=$(basename "${output}")
+
+if [[ ${output_name} != *.tar ]]; then
+    echo "The static host-agent artifact must use a .tar filename." >&2
+    exit 2
+fi
+mkdir -p -- "${output_parent}"
+output_parent=$(realpath --canonicalize-existing -- "${output_parent}")
+output="${output_parent}/${output_name}"
+
+for candidate in "${output}" "${output}.sha256"; do
+    if [[ -e ${candidate} || -L ${candidate} ]]; then
+        if [[ ! -f ${candidate} || -L ${candidate} ]]; then
+            echo "Refusing to replace non-regular artifact output ${candidate}." >&2
+            exit 2
+        fi
+    fi
+done
+
+for command_name in sha256sum tar uname uv; do
+    if ! command -v "${command_name}" >/dev/null 2>&1; then
+        echo "Required command ${command_name} is not installed." >&2
+        exit 2
+    fi
+done
+if [[ $(uname -s) != Linux || $(uname -m) != x86_64 ]]; then
+    echo "Static host-agent artifacts must be built on x86-64 Linux." >&2
+    exit 2
+fi
+
+working_directory=$(mktemp -d)
+cleanup() {
+    chmod --recursive u+w "${working_directory}" 2>/dev/null || true
+    find "${working_directory}" -depth -delete
+}
+trap cleanup EXIT
+
+artifact_root="${working_directory}/artifact"
+site_packages="${artifact_root}/site-packages"
+requirements="${artifact_root}/requirements.lock"
+mkdir -p -- "${site_packages}"
+
+uv export \
+    --quiet \
+    --directory "${repository_root}" \
+    --frozen \
+    --package lowerduckpond-static-host-agent \
+    --no-dev \
+    --format requirements-txt \
+    --no-emit-workspace \
+    --no-header > "${requirements}"
+
+UV_LINK_MODE=copy uv pip install \
+    --quiet \
+    --target "${site_packages}" \
+    --requirements "${requirements}" \
+    --require-hashes \
+    --no-deps \
+    --python-version 3.14 \
+    --python-platform x86_64-manylinux_2_39
+
+for package_path in \
+    packages/static-contracts/src/lowerduckpond_static_contracts \
+    packages/static-domain/src/lowerduckpond_static_domain \
+    packages/static-host-agent/src/lowerduckpond_static_host_agent
+do
+    cp --archive -- "${repository_root}/${package_path}" "${site_packages}/"
+done
+
+find "${artifact_root}" -type d -name __pycache__ -prune -exec find {} -depth -delete \;
+find "${artifact_root}" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
+
+if find "${artifact_root}" -type l -print -quit | grep --quiet .; then
+    echo "The static host-agent artifact contains a symbolic link." >&2
+    exit 1
+fi
+if find "${artifact_root}" ! -type d ! -type f -print -quit | grep --quiet .; then
+    echo "The static host-agent artifact contains a special filesystem object." >&2
+    exit 1
+fi
+
+find "${artifact_root}" -type f -exec chmod 0444 {} +
+
+uv_lock_digest=$(sha256sum "${repository_root}/uv.lock" | awk '{print $1}')
+python3 - "${artifact_root}" "${uv_lock_digest}" <<'PY'
+import hashlib
+import json
+import os
+import pathlib
+import stat
+import sys
+
+root = pathlib.Path(sys.argv[1])
+records = []
+for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()):
+    relative = path.relative_to(root).as_posix()
+    metadata = path.lstat()
+    if stat.S_ISDIR(metadata.st_mode):
+        continue
+    if not stat.S_ISREG(metadata.st_mode):
+        raise SystemExit(f"unsupported artifact object: {relative}")
+    content = path.read_bytes()
+    records.append(
+        {
+            "mode": format(stat.S_IMODE(metadata.st_mode), "04o"),
+            "path": relative,
+            "sha256": hashlib.sha256(content).hexdigest(),
+            "size": len(content),
+        }
+    )
+manifest = {
+    "files": records,
+    "format": "lowerduckpond-static-host-agent-artifact-v1",
+    "python": "3.14",
+    "uv_lock_sha256": sys.argv[2],
+}
+(root / "artifact-manifest.json").write_text(
+    json.dumps(manifest, ensure_ascii=True, separators=(",", ":"), sort_keys=True) + "\n",
+    encoding="ascii",
+)
+os.chmod(root / "artifact-manifest.json", 0o444)
+PY
+
+find "${artifact_root}" -type d -exec chmod 0555 {} +
+
+uv run \
+    --quiet \
+    --directory "${repository_root}" \
+    --frozen \
+    --python 3.14 \
+    python -I - "${site_packages}" <<'PY'
+import pathlib
+import sys
+
+site_packages = pathlib.Path(sys.argv[1]).resolve()
+sys.path.insert(0, str(site_packages))
+import lowerduckpond_static_contracts as contracts
+import lowerduckpond_static_domain as domain
+import lowerduckpond_static_host_agent as agent
+
+for package in (contracts, domain, agent):
+    if not pathlib.Path(package.__file__).resolve().is_relative_to(site_packages):
+        raise SystemExit("artifact import escaped the staged site-packages tree")
+PY
+
+temporary_archive="${working_directory}/artifact.tar"
+tar \
+    --create \
+    --file "${temporary_archive}" \
+    --directory "${working_directory}" \
+    --sort=name \
+    --mtime='UTC 1970-01-01' \
+    --owner=0 \
+    --group=0 \
+    --numeric-owner \
+    --format=gnu \
+    artifact
+
+artifact_digest=$(sha256sum "${temporary_archive}" | awk '{print $1}')
+temporary_digest="${working_directory}/artifact.sha256"
+printf '%s\n' "${artifact_digest}" > "${temporary_digest}"
+chmod 0600 "${temporary_archive}" "${temporary_digest}"
+mv --force --no-target-directory "${temporary_archive}" "${output}"
+mv --force --no-target-directory "${temporary_digest}" "${output}.sha256"
+printf '%s\n' "${artifact_digest}"

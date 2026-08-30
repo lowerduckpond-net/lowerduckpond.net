@@ -3,7 +3,8 @@
 # the inputs themselves out of the status files while retaining stable,
 # non-secret identities for the active backup and maintenance scopes.
 backup_status_scope: >-
-  {{ [backup_repository, backup_node_name] | to_json | hash('sha256') }}
+  {{ [backup_repository, backup_node_name, backup_source_paths,
+      backup_exclude_paths] | to_json | hash('sha256') }}
 backup_maintenance_status_scope: >-
   {{ [backup_repository, backup_node_name,
       backup_keep_daily | string, backup_keep_weekly | string,
@@ -11,5 +12,9 @@ backup_maintenance_status_scope: >-
 backup_source_paths:
   - /srv/lowerduckpond
   - /var/lib/caddy
-  - /var/lib/lowerduckpond/manifests
-  - /var/lib/lowerduckpond/audit
+  - /var/lib/lowerduckpond/static
+backup_exclude_paths:
+  - /var/lib/lowerduckpond/static/intake
+  - /var/lib/lowerduckpond/static/exports
+  - /etc/caddy/generations
+  - /etc/caddy/environment

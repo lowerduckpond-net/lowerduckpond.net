@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+required_environment=(
+    ANSIBLE_PRIVATE_KEY_FILE
+)
+
+for variable_name in "${required_environment[@]}"; do
+    if [[ -z ${!variable_name:-} ]]; then
+        echo "Required environment variable ${variable_name} is not set." >&2
+        exit 2
+    fi
+done
+
+for command_name in cmp git ssh ssh-keygen tar; do
+    if ! command -v "${command_name}" >/dev/null 2>&1; then
+        echo "Required command ${command_name} is not installed." >&2
+        exit 2
+    fi
+done
+
+if [[ ! -f ${ANSIBLE_PRIVATE_KEY_FILE} ]]; then
+    echo "ANSIBLE_PRIVATE_KEY_FILE must name a regular file." >&2
+    exit 2
+fi
+git -C "${repository_root}" fetch --quiet origin main
+if [[ $(git -C "${repository_root}" branch --show-current) != main ]] ||
+   [[ -n $(git -C "${repository_root}" status --short) ]] ||
+   ! git -C "${repository_root}" show-ref --verify --quiet refs/remotes/origin/main ||
+   [[ $(git -C "${repository_root}" rev-parse HEAD) != \
+      $(git -C "${repository_root}" rev-parse origin/main) ]]; then
+    echo "Production convergence requires clean, current main." >&2
+    exit 2
+fi
+if ! ssh-keygen -F lowerduckpond.net >/dev/null; then
+    echo "lowerduckpond.net is absent from the verified SSH known_hosts file." >&2
+    exit 2
+fi
+
+working_directory=$(mktemp -d)
+cleanup() {
+    chmod --recursive u+w "${working_directory}" 2>/dev/null || true
+    find "${working_directory}" -depth -delete
+}
+trap cleanup EXIT
+
+first_artifact="${working_directory}/static-host-agent-first.tar"
+second_artifact="${working_directory}/static-host-agent-second.tar"
+first_digest=$("${repository_root}/scripts/build-static-host-agent" "${first_artifact}")
+second_digest=$("${repository_root}/scripts/build-static-host-agent" "${second_artifact}")
+if [[ ${first_digest} != "${second_digest}" ]] ||
+   ! cmp --silent "${first_artifact}" "${second_artifact}"; then
+    echo "The locked host-agent build was not reproducible." >&2
+    exit 1
+fi
+mkdir "${working_directory}/extracted"
+tar --extract --file "${first_artifact}" \
+    --directory "${working_directory}/extracted" --strip-components=1
+chmod 0555 "${working_directory}/extracted"
+uv run \
+    --quiet \
+    --directory "${repository_root}" \
+    --frozen \
+    --python 3.14 \
+    python -I \
+    "${repository_root}/config/ansible/roles/static_host_agent/files/verify-static-host-agent-artifact" \
+    --current-owner \
+    "${working_directory}/extracted"
+
+ssh \
+    -o BatchMode=yes \
+    -o StrictHostKeyChecking=yes \
+    -i "${ANSIBLE_PRIVATE_KEY_FILE}" \
+    ldp-admin@lowerduckpond.net \
+    'sudo --non-interactive /bin/bash -s' <<'REMOTE'
+set -euo pipefail
+
+[[ $(uname -m) == x86_64 ]]
+provisioner_home=/var/lib/lowerduckpond/provisioner
+if [[ -e ${provisioner_home} || -L ${provisioner_home} ]]; then
+    [[ -d ${provisioner_home} && ! -L ${provisioner_home} ]]
+    while IFS= read -r -d '' entry; do
+        name=${entry##*/}
+        case ${name} in
+            .bash_logout | .bashrc | .profile) ;;
+            *) exit 1 ;;
+        esac
+        [[ -f ${entry} && ! -L ${entry} ]]
+        [[ $(stat --format='%U:%G:%a' -- "${entry}") == ldp-provisioner:ldp-provisioner:644 ]]
+        cmp --silent -- "${entry}" "/etc/skel/${name}"
+    done < <(find "${provisioner_home}" -mindepth 1 -maxdepth 1 -print0)
+fi
+
+for path in \
+    /var/lib/lowerduckpond/jobs \
+    /var/lib/lowerduckpond/manifests \
+    /var/lib/lowerduckpond/audit
+do
+    if [[ -e ${path} || -L ${path} ]]; then
+        [[ -d ${path} && ! -L ${path} ]]
+        [[ -z $(find "${path}" -mindepth 1 -print -quit) ]]
+    fi
+done
+[[ -z $(find /etc/caddy/routes.d -mindepth 1 -print -quit) ]]
+systemctl is-active --quiet caddy.service
+curl --silent --show-error --fail \
+    --connect-timeout 5 --max-time 15 \
+    --resolve lowerduckpond.net:443:127.0.0.1 \
+    https://lowerduckpond.net/ >/dev/null
+REMOTE
+
+printf 'M3.5 production preflight passed without changing host state.\n'
+printf 'Pinned host-agent artifact SHA-256: %s\n' "${first_digest}"

@@ -71,6 +71,62 @@
         XDG_RUNTIME_DIR: "/run/user/{{ acceptance_podman_service_uid }}"
       changed_when: false
 
+    - name: Resolve the selected static host-agent artifact
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/readlink
+          - --canonicalize-existing
+          - /opt/lowerduckpond/static-host-agent/current
+      register: acceptance_static_host_agent
+      changed_when: false
+      failed_when: >-
+        acceptance_static_host_agent.stdout | trim !=
+        '/opt/lowerduckpond/static-host-agent/' ~
+        static_host_agent_artifact_sha256
+
+    - name: Verify the selected static host-agent artifact
+      ansible.builtin.command:
+        argv:
+          - /usr/local/libexec/lowerduckpond/verify-static-host-agent-artifact
+          - >-
+            /opt/lowerduckpond/static-host-agent/{{
+            static_host_agent_artifact_sha256 }}
+      changed_when: false
+
+    - name: Verify static job issuance remains disabled
+      ansible.builtin.command:
+        argv:
+          - /usr/local/libexec/lowerduckpond/static-publication-gate
+          - job-issuance
+      register: acceptance_static_job_gate
+      changed_when: false
+      failed_when: >-
+        acceptance_static_job_gate.rc != 78 or
+        acceptance_static_job_gate.stderr | trim != 'publication_disabled'
+
+    - name: Inspect active tenant route inputs
+      ansible.builtin.find:
+        paths: /etc/caddy/routes.d
+        hidden: true
+        recurse: true
+        file_type: any
+      register: acceptance_static_routes
+
+    - name: Verify static publication remains dark
+      ansible.builtin.assert:
+        that:
+          - acceptance_static_routes.matched == 0
+          - not static_publication_enabled | bool
+
+    - name: Verify the static worker unit contract
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/systemd-analyze
+          - verify
+          - --recursive-errors=no
+          - /etc/systemd/system/lowerduckpond-static-worker@.service
+      changed_when: false
+
     - name: Verify the encrypted Restic repository
       ansible.builtin.command:
         cmd: /usr/local/libexec/lowerduckpond/restic-check

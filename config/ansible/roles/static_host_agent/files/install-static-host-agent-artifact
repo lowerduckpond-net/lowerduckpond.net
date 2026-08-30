@@ -1,0 +1,214 @@
+#!/usr/bin/python3 -I
+from __future__ import annotations
+
+import hashlib
+import os
+import pathlib
+import secrets
+import shutil
+import stat
+import subprocess
+import sys
+import tarfile
+
+ARGUMENT_COUNT = 5
+DIGEST_LENGTH = 64
+COPY_BUFFER_SIZE = 1024 * 1024
+
+
+def fail(message: str) -> None:
+    print(message, file=sys.stderr)
+    raise SystemExit(1)
+
+
+def digest_file(path: pathlib.Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(COPY_BUFFER_SIZE):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def validate_archive(archive: tarfile.TarFile) -> list[tarfile.TarInfo]:
+    names: set[str] = set()
+    members = archive.getmembers()
+    for member in members:
+        parsed = pathlib.PurePosixPath(member.name)
+        canonical_name = member.name.removesuffix("/") if member.isdir() else member.name
+        if (
+            parsed.is_absolute()
+            or not parsed.parts
+            or parsed.parts[0] != "artifact"
+            or any(part in {"", ".", ".."} for part in parsed.parts)
+            or parsed.as_posix() != canonical_name
+            or canonical_name in names
+            or not (member.isdir() or member.isreg())
+            or member.uid != 0
+            or member.gid != 0
+        ):
+            fail("host-agent archive has an unsafe member")
+        expected_mode = 0o555 if member.isdir() else 0o444
+        if stat.S_IMODE(member.mode) != expected_mode:
+            fail("host-agent archive member mode is invalid")
+        names.add(canonical_name)
+    if "artifact" not in names or "artifact/artifact-manifest.json" not in names:
+        fail("host-agent archive is incomplete")
+    return members
+
+
+def extract_archive(
+    archive: tarfile.TarFile,
+    members: list[tarfile.TarInfo],
+    destination: pathlib.Path,
+) -> None:
+    directories: list[pathlib.Path] = []
+    for member in members:
+        relative_parts = pathlib.PurePosixPath(member.name).parts[1:]
+        if not relative_parts:
+            if not member.isdir():
+                fail("host-agent archive root is not a directory")
+            directories.append(destination)
+            continue
+        target = destination.joinpath(*relative_parts)
+        if member.isdir():
+            target.mkdir(mode=0o700)
+            directories.append(target)
+            continue
+        source = archive.extractfile(member)
+        if source is None:
+            fail("host-agent archive file could not be read")
+        descriptor = os.open(
+            target,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o400,
+        )
+        try:
+            with os.fdopen(descriptor, "wb") as output:
+                shutil.copyfileobj(source, output, length=COPY_BUFFER_SIZE)
+        finally:
+            source.close()
+        target.chmod(0o444)
+    for directory in reversed(directories):
+        directory.chmod(0o555)
+
+
+def verify(verifier: pathlib.Path, root: pathlib.Path) -> None:
+    result = subprocess.run(  # noqa: S603 - Ansible installs the fixed verifier path.
+        [os.fspath(verifier), os.fspath(root)],
+        check=False,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if result.returncode != 0:
+        fail(result.stderr.strip() or "installed host-agent artifact failed verification")
+
+
+def sync_directory(path: pathlib.Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def sync_tree(path: pathlib.Path) -> None:
+    directories: list[pathlib.Path] = []
+    for root, directory_names, file_names in os.walk(path):
+        root_path = pathlib.Path(root)
+        directories.append(root_path)
+        for name in file_names:
+            descriptor = os.open(
+                root_path / name,
+                os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+            )
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        directories.extend(root_path / name for name in directory_names)
+    for directory in reversed(list(dict.fromkeys(directories))):
+        sync_directory(directory)
+
+
+def discard_staging(path: pathlib.Path) -> None:
+    for directory, directory_names, _ in os.walk(path):
+        pathlib.Path(directory).chmod(0o700)
+        for name in directory_names:
+            (pathlib.Path(directory) / name).chmod(0o700)
+    shutil.rmtree(path)
+
+
+def select_current(install_root: pathlib.Path, destination: pathlib.Path) -> bool:
+    current = install_root / "current"
+    if (current.exists() or current.is_symlink()) and not current.is_symlink():
+        fail("host-agent current selector is not a symbolic link")
+    try:
+        selected = current.resolve(strict=True)
+    except FileNotFoundError:
+        selected = None
+    except RuntimeError:
+        selected = None
+    if selected == destination:
+        return False
+    temporary = install_root / f".current-{secrets.token_hex(8)}"
+    temporary.symlink_to(destination, target_is_directory=True)
+    temporary.replace(current)
+    sync_directory(install_root)
+    return True
+
+
+def main() -> None:
+    if len(sys.argv) != ARGUMENT_COUNT:
+        fail("usage: install-static-host-agent-artifact ARCHIVE SHA256 INSTALL_ROOT VERIFIER")
+    archive_path = pathlib.Path(sys.argv[1])
+    expected_digest = sys.argv[2]
+    install_root = pathlib.Path(sys.argv[3])
+    verifier = pathlib.Path(sys.argv[4])
+    if (
+        len(expected_digest) != DIGEST_LENGTH
+        or any(character not in "0123456789abcdef" for character in expected_digest)
+        or not archive_path.is_absolute()
+        or not install_root.is_absolute()
+        or not verifier.is_absolute()
+    ):
+        fail("host-agent installer arguments are invalid")
+    if digest_file(archive_path) != expected_digest:
+        fail("host-agent archive digest does not match its pinned identity")
+
+    destination = install_root / expected_digest
+    changed = False
+    if destination.exists() or destination.is_symlink():
+        metadata = destination.lstat()
+        if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+            fail("host-agent version path is not a directory")
+        verify(verifier, destination)
+    else:
+        staging = install_root / f".install-{expected_digest}-{secrets.token_hex(8)}"
+        staging.mkdir(mode=0o700)
+        try:
+            with tarfile.open(archive_path, mode="r:") as archive:
+                members = validate_archive(archive)
+                extract_archive(archive, members, staging)
+            staged_artifact = staging
+            verify(verifier, staged_artifact)
+            sync_tree(staged_artifact)
+            try:
+                staged_artifact.rename(destination)
+            except FileExistsError:
+                verify(verifier, destination)
+            else:
+                sync_directory(install_root)
+                changed = True
+        finally:
+            if staging.exists() or staging.is_symlink():
+                discard_staging(staging)
+
+    if select_current(install_root, destination):
+        changed = True
+    print("changed" if changed else "unchanged")
+
+
+if __name__ == "__main__":
+    main()

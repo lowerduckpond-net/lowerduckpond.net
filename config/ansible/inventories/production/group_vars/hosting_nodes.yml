@@ -13,3 +13,9 @@ backup_spaces_access_key_id: >-
 backup_spaces_secret_access_key: >-
   {{ lookup('ansible.builtin.env', 'SPACES_BACKUP_SECRET_ACCESS_KEY') }}
 backup_spaces_region: "{{ lookup('ansible.builtin.env', 'SPACES_REGION') }}"
+
+static_host_agent_artifact_path: >-
+  {{ lookup('ansible.builtin.env', 'STATIC_HOST_AGENT_ARTIFACT_PATH') }}
+static_host_agent_artifact_sha256: >-
+  {{ lookup('ansible.builtin.env', 'STATIC_HOST_AGENT_ARTIFACT_SHA256') }}
+static_publication_enabled: false

@@ -24,8 +24,13 @@ LOCAL_BACKUP_REPOSITORY_MODE = 0o700
 BACKUP_SOURCE_PATHS = (
     "/srv/lowerduckpond",
     "/var/lib/caddy",
-    "/var/lib/lowerduckpond/manifests",
-    "/var/lib/lowerduckpond/audit",
+    "/var/lib/lowerduckpond/static",
+)
+BACKUP_EXCLUDE_PATHS = (
+    "/var/lib/lowerduckpond/static/intake",
+    "/var/lib/lowerduckpond/static/exports",
+    "/etc/caddy/generations",
+    "/etc/caddy/environment",
 )
 SYSTEMD_SYSTEM_UNIT_PATHS = (
     "/etc/systemd/system/caddy.service",
@@ -36,6 +41,7 @@ SYSTEMD_SYSTEM_UNIT_PATHS = (
     "/etc/systemd/system/lowerduckpond-backup-maintenance.timer",
     "/etc/systemd/system/lowerduckpond-health.service",
     "/etc/systemd/system/lowerduckpond-health.timer",
+    "/etc/systemd/system/lowerduckpond-static-worker@.service",
 )
 SYSTEMD_USER_UNIT_PATH = (
     "/var/lib/lowerduckpond/runtime/.config/systemd/user/lowerduckpond-podman-ready.service"
@@ -79,6 +85,26 @@ UUID_REJECTION_ARGUMENTS = (
     (VALID_UUIDV7.replace("-", "_"),),
     (f"{VALID_UUIDV7}\nlookalike",),
     (),
+)
+STATIC_HOST_AGENT_ROOT = "/opt/lowerduckpond/static-host-agent"
+STATIC_STATE_ROOT = "/var/lib/lowerduckpond/static"
+STATIC_HOST_AGENT_DIRECTORY_MODE = 0o555
+STATIC_HOST_AGENT_FILE_MODE = 0o444
+STATIC_STATE_DIRECTORY_MODE = 0o700
+STATIC_CONFIGURATION_MODE = 0o400
+STATIC_PUBLICATION_DISABLED_STATUS = 78
+STATIC_STATE_DIRECTORIES = (
+    "platform",
+    "tenants",
+    "authorization",
+    "authorization/jobs",
+    "authorization/results",
+    "authorization/correlations",
+    "intents",
+    "intake",
+    "exports",
+    "audit",
+    "locks",
 )
 
 
@@ -459,6 +485,18 @@ def test_backup_configuration_is_atomic_and_sandboxed(host: Host) -> None:
     assert maintenance_unit.contains("ProtectHome=true")
 
 
+def test_backup_scope_excludes_ephemeral_static_state(host: Host) -> None:
+    backup_script = host.file("/usr/local/libexec/lowerduckpond/backup")
+    for exclude_path in BACKUP_EXCLUDE_PATHS:
+        assert backup_script.contains(f"--exclude {exclude_path}")
+    assert backup_script.contains('--tag "scope-${status_scope}"')
+    scoped_filter = '--tag "scheduled,scope-${LOWERDUCKPOND_BACKUP_STATUS_SCOPE}"'
+    assert host.file("/usr/local/libexec/lowerduckpond/latest-backup-snapshot").contains(
+        scoped_filter
+    )
+    assert host.file("/usr/local/libexec/lowerduckpond/restore-smoke-test").contains(scoped_filter)
+
+
 def test_backup_repository_and_restore(host: Host) -> None:
     lock_path = "/var/cache/lowerduckpond-backup/repository.lock"
     backup = host.run("systemctl start lowerduckpond-backup.service")
@@ -486,7 +524,7 @@ def test_backup_repository_and_restore(host: Host) -> None:
     assert diagnostic_backup.rc == 0
 
     restore_script = host.file("/usr/local/libexec/lowerduckpond/restore-smoke-test")
-    assert restore_script.contains("--tag scheduled")
+    assert restore_script.contains('--tag "scheduled,scope-${LOWERDUCKPOND_BACKUP_STATUS_SCOPE}"')
     restore = host.run("/usr/local/libexec/lowerduckpond/restore-smoke-test")
     assert restore.rc == 0
 
@@ -555,7 +593,10 @@ def test_monitoring_is_local_and_healthy(host: Host) -> None:
     assert not health_script.contains(BACKUP_SCOPE_PATH)
     caddy_validator = host.file("/usr/local/libexec/lowerduckpond/caddy-validate")
     assert caddy_validator.contains("lowerduckpond-caddy-validate")
-    for qualification_log_path in (QUALIFICATION_LOG_PATH, QUALIFICATION_REPAIRED_LOG_PATH):
+    for qualification_log_path in (
+        QUALIFICATION_LOG_PATH,
+        QUALIFICATION_REPAIRED_LOG_PATH,
+    ):
         qualification_log = host.file(qualification_log_path)
         assert qualification_log.exists
         assert qualification_log.is_file
@@ -677,6 +718,7 @@ def test_provisioner_privilege_is_narrow(host: Host) -> None:
     account = host.user("ldp-provisioner")
     assert account.exists
     assert account.shell == "/usr/sbin/nologin"
+    assert account.home == "/nonexistent"
 
     content_root = host.file("/srv/lowerduckpond")
     assert content_root.user == "root"
@@ -693,8 +735,165 @@ def test_provisioner_privilege_is_narrow(host: Host) -> None:
 
     live_write = host.run("runuser --user ldp-provisioner -- test -w /etc/caddy/routes.d")
     assert live_write.rc != 0
-    content_write = host.run("runuser --user ldp-provisioner -- mkdir /srv/lowerduckpond/sites")
+    content_write = host.run(
+        "runuser --user ldp-provisioner -- mkdir /srv/lowerduckpond/sites/denied"
+    )
     assert content_write.rc != 0
 
     assert not host.file("/usr/local/libexec/lowerduckpond/publish-caddy-routes").exists
     assert not host.file("/etc/sudoers.d/lowerduckpond-provisioner").exists
+
+
+def test_static_host_agent_is_hash_pinned_and_immutable(host: Host) -> None:
+    selected = host.run(f"readlink --canonicalize {STATIC_HOST_AGENT_ROOT}/current")
+    assert selected.rc == 0
+    selected_root = selected.stdout.strip()
+    digest = selected_root.rsplit("/", 1)[-1]
+    assert len(digest) == BACKUP_SCOPE_LENGTH
+    assert all(character in "0123456789abcdef" for character in digest)
+
+    root = host.file(selected_root)
+    assert root.is_directory
+    assert root.user == "root"
+    assert root.group == "root"
+    assert root.mode == STATIC_HOST_AGENT_DIRECTORY_MODE
+    verification = host.run(
+        "/usr/local/libexec/lowerduckpond/verify-static-host-agent-artifact %s",
+        selected_root,
+    )
+    assert verification.rc == 0
+
+    ownership_victim = f"{selected_root}/site-packages/lowerduckpond_static_host_agent/__init__.py"
+    try:
+        assert host.run(f"chown ldp-provisioner:ldp-provisioner {ownership_victim}").rc == 0
+        refused = host.run(
+            "/usr/local/libexec/lowerduckpond/verify-static-host-agent-artifact %s",
+            selected_root,
+        )
+        assert refused.rc != 0
+        assert "unexpected owner" in refused.stderr
+    finally:
+        assert host.run(f"chown root:root {ownership_victim}").rc == 0
+    assert (
+        host.run(
+            "/usr/local/libexec/lowerduckpond/verify-static-host-agent-artifact %s",
+            selected_root,
+        ).rc
+        == 0
+    )
+    assert (
+        host.run(rf"find {selected_root} \( ! -user root -o ! -group root \) -print -quit").stdout
+        == ""
+    )
+    assert host.run(f"find {selected_root} -type d ! -perm 0555 -print -quit").stdout == ""
+    assert host.run(f"find {selected_root} -type f ! -perm 0444 -print -quit").stdout == ""
+    assert host.file(f"{selected_root}/artifact-manifest.json").mode == STATIC_HOST_AGENT_FILE_MODE
+    imports = host.run(
+        "PYTHONPATH=%s/site-packages /usr/bin/python3 -I -B -c %s",
+        selected_root,
+        shlex.quote(
+            "import sys; "
+            f"sys.path.insert(0, {selected_root!r} + '/site-packages'); "
+            "import lowerduckpond_static_contracts, lowerduckpond_static_domain, "
+            "lowerduckpond_static_host_agent"
+        ),
+    )
+    assert imports.rc == 0
+    assert host.run(f"find {STATIC_HOST_AGENT_ROOT} -maxdepth 1 -name '.install-*'").stdout == ""
+
+
+def test_static_state_migration_is_empty_root_owned_and_private(host: Host) -> None:
+    for legacy in ("provisioner", "jobs", "manifests", "audit"):
+        assert not host.file(f"/var/lib/lowerduckpond/{legacy}").exists
+    root = host.file(STATIC_STATE_ROOT)
+    assert root.is_directory
+    assert root.user == "root"
+    assert root.group == "root"
+    assert root.mode == STATIC_STATE_DIRECTORY_MODE
+    for relative in STATIC_STATE_DIRECTORIES:
+        directory = host.file(f"{STATIC_STATE_ROOT}/{relative}")
+        assert directory.is_directory
+        assert directory.user == "root"
+        assert directory.group == "root"
+        assert directory.mode == STATIC_STATE_DIRECTORY_MODE
+    assert host.run(f"find {STATIC_STATE_ROOT} -type f -print -quit").stdout == ""
+    denied = host.run(f"runuser --user ldp-provisioner -- test -x {STATIC_STATE_ROOT}")
+    assert denied.rc != 0
+
+
+def test_static_publication_gate_rejects_before_allocation(host: Host) -> None:
+    configuration = host.file("/etc/lowerduckpond/static-publication.json")
+    assert configuration.user == "root"
+    assert configuration.group == "root"
+    assert configuration.mode == STATIC_CONFIGURATION_MODE
+    assert configuration.content_string == (
+        '{"format":"lowerduckpond-static-publication-gate-v1","static_publication_enabled":false}\n'
+    )
+    before = host.run(f"find {STATIC_STATE_ROOT} -printf '%P %y %m %u %g\\n'")
+    rejected = host.run("/usr/local/libexec/lowerduckpond/static-publication-gate job-issuance")
+    after = host.run(f"find {STATIC_STATE_ROOT} -printf '%P %y %m %u %g\\n'")
+    assert rejected.rc == STATIC_PUBLICATION_DISABLED_STATUS
+    assert rejected.stderr.strip() == "publication_disabled"
+    assert before.stdout == after.stdout
+    empty_candidate = host.run(
+        "/usr/local/libexec/lowerduckpond/static-publication-gate caddy-generation 0"
+    )
+    tenant_candidate = host.run(
+        "/usr/local/libexec/lowerduckpond/static-publication-gate caddy-generation 1"
+    )
+    assert empty_candidate.rc == 0
+    assert tenant_candidate.rc == STATIC_PUBLICATION_DISABLED_STATUS
+    assert tenant_candidate.stderr.strip() == "publication_disabled"
+
+
+def test_static_worker_boundary_is_inert_and_hardened(host: Host) -> None:
+    unit = host.file("/etc/systemd/system/lowerduckpond-static-worker@.service")
+    assert unit.contains("TemporaryFileSystem=/:ro")
+    assert unit.contains("TemporaryFileSystem=/workspace:rw,size=64M,nr_inodes=4096,mode=0700")
+    for bound_path in (
+        "/usr",
+        "/lib",
+        "/lib64",
+        "/etc/lowerduckpond/static-publication.json",
+    ):
+        assert unit.contains(f"BindReadOnlyPaths={bound_path}")
+    for property_line in (
+        "MemoryMax=256M",
+        "MemorySwapMax=0",
+        "TasksMax=32",
+        "PrivateNetwork=true",
+        "NoNewPrivileges=true",
+        "CapabilityBoundingSet=",
+        "ProtectSystem=strict",
+        "ProtectHome=true",
+        "DevicePolicy=closed",
+        "IPAddressDeny=any",
+    ):
+        assert unit.contains(property_line)
+    assert host.run("systemctl is-enabled lowerduckpond-static-worker@.service").stdout.strip() == (
+        "static"
+    )
+    instance = "lowerduckpond-static-worker@0198d17f-6f4a-7000-8000-000000000001.service"
+    host.run_expect([0], f"systemctl start {instance}")
+    host.run_expect(
+        [0],
+        f"timeout 5s bash -c 'until systemctl is-failed --quiet {instance}; do sleep 0.05; done'",
+    )
+    status = host.run(f"systemctl show --property=ExecMainStatus --value {instance}")
+    assert status.stdout.strip() == str(STATIC_PUBLICATION_DISABLED_STATUS)
+    host.run_expect([0], f"systemctl reset-failed {instance}")
+
+
+def test_caddy_has_no_tenant_routes_while_publication_is_dark(host: Host) -> None:
+    routes = host.run("find /etc/caddy/routes.d -mindepth 1 -print -quit")
+    assert routes.rc == 0
+    assert routes.stdout == ""
+    configuration = host.file("/etc/caddy/Caddyfile")
+    assert not configuration.contains("import {$CADDY_ROUTES_GLOB}")
+    unknown = host.run(
+        "curl --silent --output /dev/null --write-out '%{http_code}' --insecure "
+        "--resolve unknown.lowerduckpond.test:443:127.0.0.1 "
+        "https://unknown.lowerduckpond.test/"
+    )
+    assert unknown.rc == 0
+    assert unknown.stdout == "404"

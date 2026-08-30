@@ -1,0 +1,76 @@
+#!/usr/bin/python3 -I
+from __future__ import annotations
+
+import json
+import pathlib
+import re
+import stat
+import sys
+
+CONFIGURATION = pathlib.Path("/etc/lowerduckpond/static-publication.json")
+EXPECTED_KEYS = {"format", "static_publication_enabled"}
+PROTECTED_FILE_MODE = 0o400
+TWO_ARGUMENTS = 2
+UUIDV7 = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}",
+    flags=re.ASCII,
+)
+
+
+def fail(message: str, status: int = 1) -> None:
+    print(message, file=sys.stderr)
+    raise SystemExit(status)
+
+
+def publication_enabled() -> bool:
+    metadata = CONFIGURATION.lstat()
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or stat.S_IMODE(metadata.st_mode) != PROTECTED_FILE_MODE
+        or metadata.st_uid != 0
+        or metadata.st_gid != 0
+        or metadata.st_nlink != 1
+    ):
+        fail("static publication configuration is not protected")
+    try:
+        payload = json.loads(CONFIGURATION.read_bytes())
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        fail(f"static publication configuration is invalid: {type(error).__name__}")
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != EXPECTED_KEYS
+        or payload["format"] != "lowerduckpond-static-publication-gate-v1"
+        or not isinstance(payload["static_publication_enabled"], bool)
+    ):
+        fail("static publication configuration has an invalid shape")
+    return payload["static_publication_enabled"]
+
+
+def main() -> None:
+    arguments = sys.argv[1:]
+    if arguments == ["job-issuance"]:
+        pass
+    elif (
+        len(arguments) == TWO_ARGUMENTS
+        and arguments[0] == "caddy-generation"
+        and arguments[1].isascii()
+        and arguments[1].isdigit()
+    ):
+        if int(arguments[1]) == 0 and not publication_enabled():
+            return
+    elif (
+        len(arguments) == TWO_ARGUMENTS
+        and arguments[0] == "worker"
+        and UUIDV7.fullmatch(arguments[1]) is not None
+    ):
+        pass
+    else:
+        fail("invalid static publication gate invocation", 64)
+
+    if not publication_enabled():
+        fail("publication_disabled", 78)
+    fail("static publication enablement is not implemented in this boundary", 69)
+
+
+if __name__ == "__main__":
+    main()

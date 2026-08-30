@@ -19,7 +19,7 @@ trap cleanup EXIT
 set +e
 restic snapshots \
     --host "${LOWERDUCKPOND_BACKUP_NODE_NAME}" \
-    --tag scheduled \
+    --tag "scheduled,scope-${LOWERDUCKPOND_BACKUP_STATUS_SCOPE}" \
     --json > "${snapshot_file}"
 restic_result=$?
 set -e
