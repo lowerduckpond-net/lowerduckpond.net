@@ -1,0 +1,145 @@
+#!/usr/bin/python3 -I
+from __future__ import annotations
+
+import hashlib
+import importlib
+import json
+import os
+import pathlib
+import stat
+import sys
+from typing import Any
+
+sys.dont_write_bytecode = True
+
+EXPECTED_FORMAT = "lowerduckpond-static-host-agent-artifact-v1"
+EXPECTED_FILE_MODE = 0o444
+EXPECTED_DIRECTORY_MODE = 0o555
+EXPECTED_MANIFEST_KEYS = {"files", "format", "python", "uv_lock_sha256"}
+EXPECTED_RECORD_KEYS = {"mode", "path", "sha256", "size"}
+DIGEST_LENGTH = 64
+ARGUMENT_COUNT = 2
+
+
+def fail(message: str) -> None:
+    print(message, file=sys.stderr)
+    raise SystemExit(1)
+
+
+def require_digest(value: object, *, label: str) -> str:
+    if not isinstance(value, str) or len(value) != DIGEST_LENGTH:
+        fail(f"invalid {label}")
+    if any(character not in "0123456789abcdef" for character in value):
+        fail(f"invalid {label}")
+    return value
+
+
+def read_manifest(root: pathlib.Path) -> dict[str, Any]:
+    manifest_path = root / "artifact-manifest.json"
+    manifest_metadata = manifest_path.lstat()
+    if not stat.S_ISREG(manifest_metadata.st_mode):
+        fail("artifact manifest is not a regular file")
+    try:
+        manifest: Any = json.loads(manifest_path.read_bytes())
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        fail(f"artifact manifest is invalid: {type(error).__name__}")
+    if not isinstance(manifest, dict) or set(manifest) != EXPECTED_MANIFEST_KEYS:
+        fail("artifact manifest has an invalid shape")
+    if manifest["format"] != EXPECTED_FORMAT or manifest["python"] != "3.14":
+        fail("artifact manifest identifies an unsupported runtime")
+    require_digest(manifest["uv_lock_sha256"], label="uv.lock digest")
+    if not isinstance(manifest["files"], list):
+        fail("artifact file inventory is invalid")
+    return manifest
+
+
+def parse_inventory(manifest: dict[str, Any]) -> dict[str, tuple[int, str]]:
+    expected: dict[str, tuple[int, str]] = {}
+
+    for record in manifest["files"]:
+        if not isinstance(record, dict) or set(record) != EXPECTED_RECORD_KEYS:
+            fail("artifact file record has an invalid shape")
+        relative = record["path"]
+        if not isinstance(relative, str):
+            fail("artifact file path is invalid")
+        parsed = pathlib.PurePosixPath(relative)
+        unsafe_part = any(part in {"", ".", ".."} for part in parsed.parts)
+        if parsed.is_absolute() or not parsed.parts or unsafe_part:
+            fail("artifact file path is unsafe")
+        if relative in expected or parsed.as_posix() != relative:
+            fail("artifact file path is duplicate or non-canonical")
+        if record["mode"] != "0444":
+            fail("artifact file mode is invalid")
+        size = record["size"]
+        if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+            fail("artifact file size is invalid")
+        expected[relative] = (
+            size,
+            require_digest(record["sha256"], label="file digest"),
+        )
+    return expected
+
+
+def verify_tree(root: pathlib.Path, expected: dict[str, tuple[int, str]]) -> None:
+
+    actual: set[str] = set()
+    for path in root.rglob("*"):
+        relative = path.relative_to(root).as_posix()
+        metadata = path.lstat()
+        if stat.S_ISLNK(metadata.st_mode):
+            fail(f"artifact contains a symbolic link: {relative}")
+        if stat.S_ISDIR(metadata.st_mode):
+            if stat.S_IMODE(metadata.st_mode) != EXPECTED_DIRECTORY_MODE:
+                fail(f"artifact directory mode drifted: {relative}")
+            continue
+        if not stat.S_ISREG(metadata.st_mode):
+            fail(f"artifact contains a special object: {relative}")
+        if stat.S_IMODE(metadata.st_mode) != EXPECTED_FILE_MODE:
+            fail(f"artifact file mode drifted: {relative}")
+        if relative == "artifact-manifest.json":
+            continue
+        actual.add(relative)
+        if relative not in expected:
+            fail(f"artifact contains an unrecorded file: {relative}")
+        content = path.read_bytes()
+        size, digest = expected[relative]
+        if len(content) != size or hashlib.sha256(content).hexdigest() != digest:
+            fail(f"artifact file content drifted: {relative}")
+    if actual != set(expected):
+        fail("artifact is missing a recorded file")
+
+
+def verify_imports(root: pathlib.Path) -> None:
+    site_packages = root / "site-packages"
+    sys.path.insert(0, os.fspath(site_packages))
+    package_names = (
+        "lowerduckpond_static_contracts",
+        "lowerduckpond_static_domain",
+        "lowerduckpond_static_host_agent",
+    )
+    for package_name in package_names:
+        package = importlib.import_module(package_name)
+        if not pathlib.Path(package.__file__).resolve().is_relative_to(site_packages):
+            fail("artifact import escaped the installed site-packages tree")
+
+
+def main() -> None:
+    if len(sys.argv) != ARGUMENT_COUNT:
+        fail("usage: verify-static-host-agent-artifact ARTIFACT_ROOT")
+    root = pathlib.Path(sys.argv[1])
+    if not root.is_absolute():
+        fail("artifact root must be absolute")
+    root_metadata = root.lstat()
+    if (
+        not stat.S_ISDIR(root_metadata.st_mode)
+        or stat.S_IMODE(root_metadata.st_mode) != EXPECTED_DIRECTORY_MODE
+    ):
+        fail("artifact root is not an immutable directory")
+    manifest = read_manifest(root)
+    expected = parse_inventory(manifest)
+    verify_tree(root, expected)
+    verify_imports(root)
+
+
+if __name__ == "__main__":
+    main()

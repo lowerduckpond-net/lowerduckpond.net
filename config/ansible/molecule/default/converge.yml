@@ -6,7 +6,26 @@
   gather_facts: false
   vars:
     m3_qualification_molecule_source_root: /tmp/lowerduckpond-m3-controller-source
+    static_host_agent_molecule_artifact: /tmp/lowerduckpond-static-host-agent-molecule.tar
   tasks:
+    - name: Build the locked static host-agent artifact
+      ansible.builtin.command:
+        argv:
+          - "{{ playbook_dir }}/../../../../scripts/build-static-host-agent"
+          - "{{ static_host_agent_molecule_artifact }}"
+      register: static_host_agent_molecule_build
+      changed_when: false
+
+    - name: Attach the pinned artifact to every hosting node
+      ansible.builtin.add_host:
+        name: "{{ item }}"
+        static_host_agent_artifact_path: "{{ static_host_agent_molecule_artifact }}"
+        static_host_agent_artifact_sha256: >-
+          {{ static_host_agent_molecule_build.stdout | trim }}
+        static_publication_enabled: false
+      loop: "{{ groups['hosting_nodes'] }}"
+      changed_when: false
+
     - name: Create the restrictive controller source directory
       ansible.builtin.file:
         path: "{{ m3_qualification_molecule_source_root }}"

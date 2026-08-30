@@ -15,3 +15,4 @@ caddy_build_root: /usr/local/lib/lowerduckpond
 caddy_binary_path: >-
   {{ caddy_build_root }}/caddy-{{ caddy_version }}-xcaddy-{{ caddy_xcaddy_version
   }}-cloudflare-{{ caddy_cloudflare_module_version }}
+static_publication_enabled: false  # noqa var-naming[no-role-prefix]

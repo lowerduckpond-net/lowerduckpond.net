@@ -8,6 +8,8 @@ inventory="${repository_root}/config/ansible/inventories/production/hosts.yml"
 site_playbook="${repository_root}/config/ansible/playbooks/site.yml"
 acceptance_playbook="${repository_root}/config/ansible/playbooks/acceptance.yml"
 
+"${repository_root}/scripts/preflight-m3-dark-host-production"
+
 required_environment=(
     ADMIN_SOURCE_CIDRS_JSON
     ANSIBLE_PRIVATE_KEY_FILE
@@ -79,6 +81,13 @@ cleanup() {
 }
 trap cleanup EXIT
 second_converge_output="${temporary_directory}/second-converge.log"
+
+export STATIC_HOST_AGENT_ARTIFACT_PATH="${temporary_directory}/static-host-agent.tar"
+export STATIC_HOST_AGENT_ARTIFACT_SHA256
+STATIC_HOST_AGENT_ARTIFACT_SHA256=$(
+    "${repository_root}/scripts/build-static-host-agent" \
+        "${STATIC_HOST_AGENT_ARTIFACT_PATH}"
+)
 
 export ANSIBLE_CONFIG="${repository_root}/config/ansible/ansible.cfg"
 export ANSIBLE_PRIVATE_KEY_FILE

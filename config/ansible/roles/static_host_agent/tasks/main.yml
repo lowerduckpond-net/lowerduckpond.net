@@ -1,0 +1,237 @@
+---
+- name: Require the fixed static host-agent artifact contract
+  ansible.builtin.assert:
+    that:
+      - static_host_agent_artifact_path | length > 0
+      - static_host_agent_artifact_path is ansible.builtin.match('^/')
+      - static_host_agent_artifact_sha256 is ansible.builtin.match('^[0-9a-f]{64}$')
+      - not static_publication_enabled | bool
+    fail_msg: >-
+      M3.5 requires one absolute hash-pinned host-agent artifact and keeps
+      static publication disabled.
+
+- name: Inspect the controller host-agent artifact
+  ansible.builtin.stat:
+    path: "{{ static_host_agent_artifact_path }}"
+    checksum_algorithm: sha256
+    follow: false
+  register: static_host_agent_controller_artifact
+  delegate_to: localhost
+  become: false
+
+- name: Verify the controller host-agent artifact identity
+  ansible.builtin.assert:
+    that:
+      - static_host_agent_controller_artifact.stat.exists
+      - static_host_agent_controller_artifact.stat.isreg
+      - not static_host_agent_controller_artifact.stat.islnk
+      - static_host_agent_controller_artifact.stat.checksum == static_host_agent_artifact_sha256
+    fail_msg: The controller host-agent artifact does not match its pinned SHA-256.
+
+- name: Install host-agent artifact commands
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/usr/local/libexec/lowerduckpond/{{ item }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - install-static-host-agent-artifact
+    - static-publication-gate
+    - verify-static-host-agent-artifact
+
+- name: Create the versioned host-agent installation root
+  ansible.builtin.file:
+    path: "{{ static_host_agent_install_root }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Create the protected host-agent artifact cache
+  ansible.builtin.file:
+    path: /var/cache/lowerduckpond-static-host-agent
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Stage the pinned host-agent artifact on the node
+  ansible.builtin.copy:
+    src: "{{ static_host_agent_artifact_path }}"
+    dest: >-
+      /var/cache/lowerduckpond-static-host-agent/{{
+      static_host_agent_artifact_sha256 }}.tar
+    owner: root
+    group: root
+    mode: "0400"
+
+- name: Install and atomically select the pinned host-agent artifact
+  ansible.builtin.command:
+    argv:
+      - /usr/local/libexec/lowerduckpond/install-static-host-agent-artifact
+      - >-
+        /var/cache/lowerduckpond-static-host-agent/{{
+        static_host_agent_artifact_sha256 }}.tar
+      - "{{ static_host_agent_artifact_sha256 }}"
+      - "{{ static_host_agent_install_root }}"
+      - /usr/local/libexec/lowerduckpond/verify-static-host-agent-artifact
+  register: static_host_agent_installation
+  changed_when: static_host_agent_installation.stdout | trim == 'changed'
+
+- name: Inspect retired writable Milestone 2 directories
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+  loop:
+    - /var/lib/lowerduckpond/provisioner
+    - /var/lib/lowerduckpond/jobs
+    - /var/lib/lowerduckpond/manifests
+    - /var/lib/lowerduckpond/audit
+  register: static_host_agent_legacy_directories
+
+- name: Refuse non-directory retired Milestone 2 paths
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists or (item.stat.isdir | default(false))
+      - not item.stat.exists or not (item.stat.islnk | default(false))
+    fail_msg: "Refusing unexpected legacy state object {{ item.item }}."
+  loop: "{{ static_host_agent_legacy_directories.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Prove retired Milestone 2 directories contain no tenant history
+  ansible.builtin.find:
+    paths: "{{ item.item }}"
+    hidden: true
+    recurse: true
+    file_type: any
+  loop: "{{ static_host_agent_legacy_directories.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: item.stat.exists
+  register: static_host_agent_legacy_contents
+
+- name: Require every retired Milestone 2 directory to be empty
+  ansible.builtin.assert:
+    that:
+      - item.matched == 0
+    fail_msg: >-
+      {{ item.item.item }} contains tenant history or an unexpected object;
+      refusing the M3.5 ownership migration.
+  loop: "{{ static_host_agent_legacy_contents.results }}"
+  loop_control:
+    label: "{{ item.item.item | default('skipped absent path') }}"
+  when: not (item.skipped | default(false))
+
+- name: Revoke provisioner ownership of empty retired directories
+  ansible.builtin.file:
+    path: "{{ item.item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  loop: "{{ static_host_agent_legacy_directories.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: item.stat.exists
+
+- name: Remove empty retired Milestone 2 directories
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/rmdir
+      - --
+      - "{{ item.item }}"
+  loop: "{{ static_host_agent_legacy_directories.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: item.stat.exists
+  changed_when: true
+
+- name: Create the root-owned static state layout
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  loop:
+    - "{{ static_host_agent_state_root }}"
+    - "{{ static_host_agent_state_root }}/platform"
+    - "{{ static_host_agent_state_root }}/tenants"
+    - "{{ static_host_agent_state_root }}/authorization"
+    - "{{ static_host_agent_state_root }}/authorization/jobs"
+    - "{{ static_host_agent_state_root }}/authorization/results"
+    - "{{ static_host_agent_state_root }}/authorization/correlations"
+    - "{{ static_host_agent_state_root }}/intents"
+    - "{{ static_host_agent_state_root }}/intake"
+    - "{{ static_host_agent_state_root }}/exports"
+    - "{{ static_host_agent_state_root }}/audit"
+    - "{{ static_host_agent_state_root }}/locks"
+
+- name: Create the protected platform configuration directory
+  ansible.builtin.file:
+    path: /etc/lowerduckpond
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Install the disabled static publication configuration atomically
+  ansible.builtin.template:
+    src: static-publication.json.j2
+    dest: /etc/lowerduckpond/static-publication.json
+    owner: root
+    group: root
+    mode: "0400"
+
+- name: Install the inert static worker boundary
+  ansible.builtin.template:
+    src: lowerduckpond-static-worker@.service.j2
+    dest: /etc/systemd/system/lowerduckpond-static-worker@.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd for the static host agent
+
+- name: Prove an empty Caddy candidate passes the disabled boundary
+  ansible.builtin.command:
+    argv:
+      - /usr/local/libexec/lowerduckpond/static-publication-gate
+      - caddy-generation
+      - "0"
+  changed_when: false
+
+- name: Prove job issuance rejects before allocation while disabled
+  ansible.builtin.command:
+    argv:
+      - /usr/local/libexec/lowerduckpond/static-publication-gate
+      - job-issuance
+  register: static_host_agent_disabled_issuance
+  changed_when: false
+  failed_when: >-
+    static_host_agent_disabled_issuance.rc != 78 or
+    static_host_agent_disabled_issuance.stderr | trim != 'publication_disabled'
+
+- name: Create the unpublished release root
+  ansible.builtin.file:
+    path: "{{ static_host_agent_release_root }}"
+    state: directory
+    owner: root
+    group: caddy
+    mode: "0710"
+
+- name: Create inert Caddy generation storage
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - path: "{{ static_host_agent_caddy_generation_root }}"
+      group: caddy
+      mode: "0750"
+    - path: "{{ static_host_agent_caddy_intent_root }}"
+      group: root
+      mode: "0700"

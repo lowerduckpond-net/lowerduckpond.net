@@ -146,6 +146,22 @@
     group: caddy
     mode: "0640"
 
+- name: Inspect tenant route inputs before rendering Caddy
+  ansible.builtin.find:
+    paths: "{{ caddy_routes_active_path }}"
+    hidden: true
+    recurse: true
+    file_type: any
+  register: caddy_tenant_route_inputs
+
+- name: Keep tenant Caddy generation dark during Milestone 3.5
+  ansible.builtin.assert:
+    that:
+      - not static_publication_enabled | bool
+      - caddy_tenant_route_inputs.matched == 0
+    fail_msg: >-
+      M3.5 refuses static publication and any tenant-bearing Caddy candidate.
+
 - name: Install the Caddy configuration atomically after validation
   ansible.builtin.template:
     src: Caddyfile.j2

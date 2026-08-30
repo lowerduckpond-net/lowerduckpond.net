@@ -11,10 +11,13 @@
         that:
           - ansible_facts.distribution == platform_versions.host_os_distribution
           - ansible_facts.distribution_version == platform_versions.host_os_release
+          - ansible_facts.architecture == platform_versions.host_architecture
         fail_msg: >-
-          Milestone 2 supports only {{ platform_versions.host_os_distribution }}
-          {{ platform_versions.host_os_release }} LTS; refusing to configure
-          {{ ansible_facts.distribution }} {{ ansible_facts.distribution_version }}.
+          The host playbook supports only {{ platform_versions.host_os_distribution }}
+          {{ platform_versions.host_os_release }} LTS on
+          {{ platform_versions.host_architecture }}; refusing to configure
+          {{ ansible_facts.distribution }} {{ ansible_facts.distribution_version }}
+          on {{ ansible_facts.architecture }}.
 
     - name: Verify required production inputs
       ansible.builtin.assert:
@@ -40,5 +43,6 @@
     - role: podman
     - role: database
     - role: provisioner
+    - role: static_host_agent
     - role: backup
     - role: monitoring

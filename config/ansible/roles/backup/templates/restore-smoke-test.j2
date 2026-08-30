@@ -18,11 +18,19 @@ trap finish EXIT
 
 restic restore latest \
     --host "${LOWERDUCKPOND_BACKUP_NODE_NAME}" \
-    --tag scheduled \
+    --tag "scheduled,scope-${LOWERDUCKPOND_BACKUP_STATUS_SCOPE}" \
     --target "${restore_directory}"
 test -s "${restore_directory}{{ caddy_fixture_root }}/index.html"
-test -d "${restore_directory}/var/lib/lowerduckpond/manifests"
-test -d "${restore_directory}/var/lib/lowerduckpond/audit"
+test -d "${restore_directory}/var/lib/lowerduckpond/static/platform"
+test -d "${restore_directory}/var/lib/lowerduckpond/static/tenants"
+test -d "${restore_directory}/var/lib/lowerduckpond/static/authorization"
+test -d "${restore_directory}/var/lib/lowerduckpond/static/intents"
+test -d "${restore_directory}/var/lib/lowerduckpond/static/audit"
+test -d "${restore_directory}/var/lib/lowerduckpond/static/locks"
+test ! -e "${restore_directory}/var/lib/lowerduckpond/static/intake"
+test ! -e "${restore_directory}/var/lib/lowerduckpond/static/exports"
+test ! -e "${restore_directory}/etc/caddy/generations"
+test ! -e "${restore_directory}/etc/caddy/environment"
 test -s \
     "${restore_directory}/var/cache/lowerduckpond-backup/staging/mariadb.sql.gz"
 grep --quiet "Lower Duck Pond Hosting" \

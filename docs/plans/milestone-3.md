@@ -663,6 +663,13 @@ consumes this reviewed contract when it creates the dark host boundary.
 
 ### M3.5: install the dark host boundary
 
+Implementation status (2026-08-30): the locked artifact builder, atomic
+installer, root-owned layout migration, disabled issuance and Caddy gates,
+private worker boundary, scoped backup/restore changes, and production
+preflight are implemented and covered by the installed-host gate. Live
+production convergence is deliberately a separate operator-authorized step;
+publication remains disabled before and after it.
+
 Ansible installs a hash-pinned host-agent artifact in a versioned root-owned
 path, creates the state layout, and adds the `static_host_agent` role. Package
 installation must be reproducible from the lockfile and may not resolve mutable

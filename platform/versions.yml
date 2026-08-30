@@ -4,6 +4,7 @@ platform_versions:
   caddy_cloudflare_module: "0.2.4"
   host_os_distribution: Ubuntu
   host_os_release: "26.04"
+  host_architecture: x86_64
   mariadb_package_minimum: "1:11.8"
   mariadb_package_maximum_exclusive: "1:11.9"
   podman_package_minimum: "5.7"

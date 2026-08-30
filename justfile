@@ -96,6 +96,7 @@ check-opentofu:
 # Lint, syntax-check, and acceptance-test the Ansible configuration.
 check-ansible: _sync
     bash -n scripts/configure-production
+    bash -n scripts/preflight-m3-dark-host-production
     bash -n scripts/check-production-inventory
     bash -n config/ansible/roles/caddy/files/caddy-validate
     scripts/check-production-inventory
@@ -105,6 +106,10 @@ check-ansible: _sync
     ANSIBLE_CONFIG=config/ansible/ansible.cfg uv run ansible-playbook --inventory config/ansible/inventories/development/hosts.yml --syntax-check config/ansible/playbooks/acceptance.yml
     M3_QUALIFICATION_EXPECTED_IPV4=192.0.2.1 M3_QUALIFICATION_EXPECTED_DROPLET_ID=123456789 M3_QUALIFICATION_EXPECTED_RUN_ID=0198d17f-6f4a-7000-8000-000000000001 M3_QUALIFICATION_EXPECTED_SOURCE_REVISION=0000000000000000000000000000000000000000 M3_QUALIFICATION_EXPECTED_ADMIN_SOURCE_CIDRS_JSON='["192.0.2.1/32"]' M3_QUALIFICATION_CLOUDFLARE_API_TOKEN=syntax-only-placeholder-token M3_QUALIFICATION_ORIGIN_PULL_TRUST=dual M3_QUALIFICATION_PRIMARY_CA_PATH=/tmp/primary-ca.pem M3_QUALIFICATION_REPLACEMENT_CA_PATH=/tmp/replacement-ca.pem ANSIBLE_CONFIG=config/ansible/ansible.cfg uv run ansible-playbook --inventory config/ansible/inventories/qualification/hosts.yml --syntax-check config/ansible/playbooks/m3-qualification.yml
     cd config/ansible && ANSIBLE_CONFIG="$(pwd)/ansible.cfg" uv run molecule test --scenario-name default
+
+# Prove the M3.5 production starting conditions without changing host state.
+preflight-m3-dark-host-production: _sync
+    scripts/preflight-m3-dark-host-production
 
 # Converge production twice and run host acceptance and restore checks.
 configure-production: _sync
