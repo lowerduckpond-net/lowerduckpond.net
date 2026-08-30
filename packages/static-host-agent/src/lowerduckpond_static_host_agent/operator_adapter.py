@@ -91,11 +91,17 @@ class OperatorAdapter:
             idle_seconds=_ARTIFACT_IDLE_SECONDS,
             clock=self._clock,
         )
+        allow_existing = self._issuer.recognize_exact_retry(
+            canonical_request,
+            operator_principal=operator_principal,
+            artifact=artifact,
+        )
         with self._intake.admit(
             operation=str(request["operation"]),
             correlation_id=request["correlationId"],
             declared=artifact,
             read=lambda count: self._reader.read_exact(count, deadline=artifact_deadline),
+            allow_existing=allow_existing,
         ) as lease:
             self._reader.require_eof(deadline=artifact_deadline)
             issued = self._issuer.issue(

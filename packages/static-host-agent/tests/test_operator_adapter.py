@@ -236,6 +236,44 @@ def test_adapter_syncs_artifact_before_immutable_job(tmp_path: Path) -> None:
     assert (root / "intake" / f"{correlation}.artifact").read_bytes() == artifact
 
 
+def test_adapter_accepts_an_exact_artifact_retry_without_a_second_slot(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), _fixture("site.json"))
+    _write(
+        root,
+        StateRecordPath.tenant_deployment(_TENANT_ID, _DEPLOYMENT_ID),
+        _fixture("deployment-record.json"),
+    )
+    artifact = b"payload"
+    correlation = "0198d17f-6f4a-7000-8000-000000000003"
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "deploy",
+        "correlationId": correlation,
+        "tenantId": _TENANT_ID,
+        "artifact": {"size": len(artifact), "sha256": hashlib.sha256(artifact).hexdigest()},
+    }
+
+    issued = []
+    for _attempt in range(2):
+        read_fd, _ = _pipe(_frame(request, artifact))
+        adapter, intake, repository = _adapter(root, read_fd, gate=_OpenGate())
+        try:
+            issued.append(adapter.receive(operator_principal="operator@example.test", now=_NOW))
+        finally:
+            intake.close()
+            repository.close()
+            os.close(read_fd)
+
+    assert [result.created for result in issued] == [True, False]
+    assert issued[0].job_id == issued[1].job_id
+    assert [entry.name for entry in (root / "intake").iterdir()] == [f"{correlation}.artifact"]
+
+
 def test_adapter_rejects_trailing_byte_and_cleans_artifact(tmp_path: Path) -> None:
     root = _state_root(tmp_path)
     namespace = _fixture("platform-namespace.json")

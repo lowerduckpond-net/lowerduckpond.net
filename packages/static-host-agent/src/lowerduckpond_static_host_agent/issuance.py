@@ -20,6 +20,7 @@ from lowerduckpond_static_domain import EntropySource, generate_uuid7
 
 from lowerduckpond_static_host_agent.correlations import (
     CorrelationAdmission,
+    CorrelationConflictError,
     CorrelationResolution,
 )
 from lowerduckpond_static_host_agent.repository import StateRecordPath, StateRepository
@@ -121,6 +122,38 @@ class AuthorizationIssuer:
         """Check the same gate before artifact intake begins."""
 
         self._gate.require_enabled()
+
+    def recognize_exact_retry(
+        self,
+        raw_request: bytes,
+        *,
+        operator_principal: str,
+        artifact: VerifiedArtifact | None,
+    ) -> bool:
+        """Recognize only a durable correlation with the same caller binding."""
+
+        request = decode_request(raw_request)
+        principal = _validate_principal(operator_principal)
+        _validate_artifact_binding(request, artifact)
+        self._gate.require_enabled()
+        correlation_id = validate_uuid7(request["correlationId"])
+        try:
+            established = self._repository.read(
+                StateRecordPath.authorization_correlation(correlation_id)
+            ).document
+        except FileNotFoundError:
+            return False
+        binding_matches = (
+            established["operatorPrincipal"] == principal
+            and established["request"] == request
+            and established["requestDigest"] == request_digest(request).to_dict()
+            and established["artifact"] == request.get("artifact")
+        )
+        if not binding_matches:
+            raise CorrelationConflictError(
+                "correlation ID is already bound to another authorized request"
+            )
+        return True
 
     def _expected_source(self, request: dict[str, object]) -> dict[str, object]:
         namespace = self._repository.read(StateRecordPath.platform_namespace()).document

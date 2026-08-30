@@ -7,6 +7,8 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+from lowerduckpond_static_contracts import ContractError, ProtocolError
+
 from lowerduckpond_static_operator.client import OperatorClientError, print_result, submit
 
 
@@ -26,7 +28,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
             artifact_path=options.artifact,
             export_path=options.export_path,
         )
-    except (OSError, OperatorClientError) as error:
+    except (OSError, ContractError, ProtocolError, OperatorClientError) as error:
         print(str(error), file=sys.stderr)
         return 1
     print_result(result)

@@ -34,6 +34,7 @@ from lowerduckpond_static_host_agent.issuance import VerifiedArtifact
 from lowerduckpond_static_host_agent.locks import LockManager, LockMode, LockName
 
 _CREATE_FLAGS: Final = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+_READ_FLAGS: Final = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
 _DIRECTORY_FLAGS: Final = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 _TEMPORARY: Final = re.compile(r"\.ldp-intake-[0-9a-f]{32}", flags=re.ASCII)
 _ADMITTED: Final = re.compile(
@@ -123,7 +124,7 @@ class ArtifactIntake:
             self._closed = True
 
     @contextmanager
-    def admit(
+    def admit(  # noqa: PLR0913 - each argument is an explicit intake boundary
         self,
         *,
         operation: str,
@@ -131,6 +132,7 @@ class ArtifactIntake:
         declared: VerifiedArtifact,
         read: Callable[[int], bytes],
         blocking: bool = False,
+        allow_existing: bool = False,
     ) -> Iterator[ArtifactLease]:
         """Publish exact bytes and retain the lock through immutable job commit."""
 
@@ -138,8 +140,16 @@ class ArtifactIntake:
         canonical_id = validate_uuid7(correlation_id)
         _validate_declared(operation, declared)
         with self._locks.acquire(LockName.INTAKE, mode=LockMode.EXCLUSIVE, blocking=blocking):
-            self._reconcile_before_admission()
             filename = f"{canonical_id}.artifact"
+            existing = self._reconcile_before_admission(
+                filename=filename,
+                declared=declared,
+                allow_existing=allow_existing,
+            )
+            if existing is not None:
+                self._verify_discarded_stream(declared=declared, read=read)
+                yield ArtifactLease(existing)
+                return
             temporary = f".ldp-intake-{secrets.token_hex(16)}"
             published = False
             lease: ArtifactLease | None = None
@@ -155,9 +165,18 @@ class ArtifactIntake:
                 if not retain:
                     self._remove(temporary if not published else filename)
 
-    def _reconcile_before_admission(self) -> None:
+    def _reconcile_before_admission(
+        self,
+        *,
+        filename: str,
+        declared: VerifiedArtifact,
+        allow_existing: bool,
+    ) -> AdmittedArtifact | None:
         names: list[str] = []
-        descriptor = os.dup(self._directory_fd)
+        # A duplicated directory descriptor shares its enumeration offset with
+        # the original. Open a fresh descriptor so every admission rescans the
+        # complete fixed directory rather than inheriting an earlier EOF.
+        descriptor = os.open(".", _DIRECTORY_FLAGS, dir_fd=self._directory_fd)
         try:
             with os.scandir(descriptor) as entries:
                 for count, entry in enumerate(entries, start=1):
@@ -167,15 +186,56 @@ class ArtifactIntake:
         finally:
             os.close(descriptor)
         if not names:
-            return
+            return None
         name = names[0]
         self._validate_entry(name)
         if _TEMPORARY.fullmatch(name) is not None:
             self._remove(name)
-            return
+            return None
         if _ADMITTED.fullmatch(name) is not None:
+            if allow_existing and name == filename:
+                self._verify_existing(name, declared=declared)
+                return AdmittedArtifact(name, declared)
             raise IntakeOccupiedError("intake slot contains an admitted artifact")
         raise IntakeError("intake contains an unrecognized object")
+
+    def _verify_existing(self, name: str, *, declared: VerifiedArtifact) -> None:
+        file_descriptor = os.open(name, _READ_FLAGS, dir_fd=self._directory_fd)
+        try:
+            before = os.fstat(file_descriptor)
+            if (
+                not stat.S_ISREG(before.st_mode)
+                or before.st_uid != self._expected_owner
+                or stat.S_IMODE(before.st_mode) != _ARTIFACT_MODE
+                or before.st_nlink != 1
+                or before.st_size != declared.size
+            ):
+                raise IntakeError("admitted retry artifact has unsafe metadata")
+            digest = hashlib.sha256()
+            while chunk := os.read(file_descriptor, _CHUNK_BYTES):
+                digest.update(chunk)
+            after = os.fstat(file_descriptor)
+            if _generation(before) != _generation(after) or digest.hexdigest() != declared.sha256:
+                raise IntakeError("admitted retry artifact does not match its binding")
+        finally:
+            os.close(file_descriptor)
+
+    def _verify_discarded_stream(
+        self,
+        *,
+        declared: VerifiedArtifact,
+        read: Callable[[int], bytes],
+    ) -> None:
+        digest = hashlib.sha256()
+        remaining = declared.size
+        while remaining:
+            chunk = read(min(remaining, _CHUNK_BYTES))
+            if type(chunk) is not bytes or not chunk or len(chunk) > remaining:
+                raise IntakeError("artifact retry ended outside its declared length")
+            digest.update(chunk)
+            remaining -= len(chunk)
+        if digest.hexdigest() != declared.sha256:
+            raise IntakeError("artifact retry does not match its request binding")
 
     def _validate_entry(self, name: str) -> os.stat_result:
         metadata = os.stat(name, dir_fd=self._directory_fd, follow_symlinks=False)
@@ -273,6 +333,20 @@ def _write_all(file_descriptor: int, data: bytes) -> None:
         if written <= 0:
             raise OSError(errno.EIO, "artifact write made no progress")
         remaining = remaining[written:]
+
+
+def _generation(metadata: os.stat_result) -> tuple[int, ...]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_uid,
+        metadata.st_gid,
+        metadata.st_nlink,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
 
 
 def _rename_no_replace(directory_fd: int, source: str, destination: str) -> None:

@@ -191,6 +191,59 @@ def test_create_issues_immutable_platform_bound_job_and_exact_retry(tmp_path: Pa
     }
 
 
+def test_exact_retry_recognition_requires_the_original_full_binding(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    raw_request = _create_request()
+
+    with _repository(root) as repository:
+        issuer = AuthorizationIssuer(repository, gate=_OpenGate(), entropy=_Entropy())
+        assert (
+            issuer.recognize_exact_retry(
+                raw_request,
+                operator_principal="operator@example.test",
+                artifact=None,
+            )
+            is False
+        )
+        issuer.issue(
+            raw_request,
+            operator_principal="operator@example.test",
+            now=_NOW,
+            artifact=None,
+        )
+        assert (
+            issuer.recognize_exact_retry(
+                raw_request,
+                operator_principal="operator@example.test",
+                artifact=None,
+            )
+            is True
+        )
+        with pytest.raises(CorrelationConflictError, match="another"):
+            issuer.recognize_exact_retry(
+                raw_request,
+                operator_principal="another@example.test",
+                artifact=None,
+            )
+
+
+def test_exact_retry_recognition_checks_the_gate_before_state(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    with _repository(root) as repository:
+        issuer = AuthorizationIssuer(
+            repository,
+            gate=ClosedPublicationGate(),
+            entropy=_Entropy(),
+        )
+        with pytest.raises(PublicationDisabledError, match="publication_disabled"):
+            issuer.recognize_exact_retry(
+                _create_request(),
+                operator_principal="operator@example.test",
+                artifact=None,
+            )
+
+
 def test_noncreate_job_binds_manifest_and_current_deployment(tmp_path: Path) -> None:
     root = _state_root(tmp_path)
     namespace = _fixture("platform-namespace.json")

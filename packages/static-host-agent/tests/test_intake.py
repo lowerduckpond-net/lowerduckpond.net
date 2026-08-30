@@ -68,6 +68,57 @@ def test_intake_publishes_only_after_sync_and_commit(tmp_path: Path) -> None:
     assert target.read_bytes() == payload
 
 
+def test_intake_accepts_only_an_exact_retry_of_its_admitted_artifact(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    payload = b"bounded artifact"
+    binding = _binding(payload)
+    with ArtifactIntake(root, expected_owner=os.geteuid()) as intake:
+        with intake.admit(
+            operation="deploy",
+            correlation_id=_CORRELATION_ID,
+            declared=binding,
+            read=BytesIO(payload).read,
+        ) as lease:
+            lease.commit()
+
+        target = root / "intake" / f"{_CORRELATION_ID}.artifact"
+        with intake.admit(
+            operation="deploy",
+            correlation_id=_CORRELATION_ID,
+            declared=binding,
+            read=BytesIO(payload).read,
+            allow_existing=True,
+        ) as retry:
+            retry.commit()
+        assert target.read_bytes() == payload
+
+        with (
+            pytest.raises(IntakeError, match="binding"),
+            intake.admit(
+                operation="deploy",
+                correlation_id=_CORRELATION_ID,
+                declared=binding,
+                read=BytesIO(b"changed artifact").read,
+                allow_existing=True,
+            ),
+        ):
+            pass
+        assert target.read_bytes() == payload
+
+        with (
+            pytest.raises(IntakeOccupiedError),
+            intake.admit(
+                operation="deploy",
+                correlation_id=_CORRELATION_ID,
+                declared=binding,
+                read=BytesIO(payload).read,
+            ),
+        ):
+            pass
+
+
 def test_intake_removes_uncommitted_or_failed_upload_and_syncs_slot(tmp_path: Path) -> None:
     root = _state_root(tmp_path)
     payload = b"bounded artifact"

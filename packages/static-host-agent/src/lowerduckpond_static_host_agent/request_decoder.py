@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import os
 import resource
+import select
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Final, Protocol
 
@@ -53,22 +55,20 @@ class SubprocessRequestDecoder:
         try:
             # The constructor accepts only one absolute, administrator-selected
             # executable and passes no peer-controlled argument or environment.
-            completed = subprocess.run(  # noqa: S603
+            process = subprocess.Popen(  # noqa: S603
                 [os.fspath(self._executable)],
-                input=raw_request,
+                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
-                check=False,
                 close_fds=True,
                 cwd="/",
                 env={},
-                timeout=_HELPER_TIMEOUT_SECONDS,
             )
-        except (OSError, subprocess.TimeoutExpired) as error:
+            canonical = _bounded_exchange(process, raw_request)
+        except OSError as error:
             raise RequestDecodeError("request_decoder_failed") from error
-        if completed.returncode != 0:
+        if process.returncode != 0:
             raise RequestDecodeError("request_invalid")
-        canonical = completed.stdout
         if not canonical or len(canonical) > MAX_CANONICAL_BYTES:
             raise RequestDecodeError("request_decoder_failed")
         try:
@@ -78,6 +78,59 @@ class SubprocessRequestDecoder:
         if canonical_json_bytes(request) != canonical:
             raise RequestDecodeError("request_decoder_failed")
         return canonical, request
+
+
+def _bounded_exchange(  # noqa: PLR0912 - duplex process I/O is one bounded state machine
+    process: subprocess.Popen[bytes], raw_request: bytes
+) -> bytes:
+    """Exchange one bounded document without ever buffering unbounded output."""
+
+    if process.stdin is None or process.stdout is None:  # pragma: no cover - PIPE contract
+        raise RequestDecodeError("request_decoder_failed")
+    input_fd = process.stdin.fileno()
+    output_fd = process.stdout.fileno()
+    os.set_blocking(input_fd, False)
+    os.set_blocking(output_fd, False)
+    deadline = time.monotonic() + _HELPER_TIMEOUT_SECONDS
+    sent = 0
+    output = bytearray()
+    output_eof = False
+    if not raw_request:
+        process.stdin.close()
+    try:
+        while not output_eof:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RequestDecodeError("request_decoder_failed")
+            readable, writable, _ = select.select(
+                [output_fd],
+                [input_fd] if sent < len(raw_request) else [],
+                [],
+                remaining,
+            )
+            if input_fd in writable:
+                written = os.write(input_fd, raw_request[sent:])
+                if written <= 0:  # pragma: no cover - defensive kernel boundary
+                    raise RequestDecodeError("request_decoder_failed")
+                sent += written
+                if sent == len(raw_request):
+                    process.stdin.close()
+            if output_fd in readable:
+                chunk = os.read(output_fd, MAX_CANONICAL_BYTES + 1 - len(output))
+                if not chunk:
+                    output_eof = True
+                else:
+                    output.extend(chunk)
+                    if len(output) > MAX_CANONICAL_BYTES:
+                        raise RequestDecodeError("request_decoder_failed")
+        process.wait(timeout=max(0.001, deadline - time.monotonic()))
+        return bytes(output)
+    except (BrokenPipeError, subprocess.TimeoutExpired) as error:
+        raise RequestDecodeError("request_decoder_failed") from error
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
 
 
 def decoder_main() -> int:
