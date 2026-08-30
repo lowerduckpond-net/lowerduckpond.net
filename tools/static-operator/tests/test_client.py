@@ -46,6 +46,7 @@ def _fake_ssh(
     *,
     trailing: bytes = b"",
     return_code: int = 0,
+    response_delay_seconds: float = 0.0,
 ) -> tuple[Path, Path]:
     capture = tmp_path / "captured-frame"
     executable = tmp_path / "ssh"
@@ -53,8 +54,9 @@ def _fake_ssh(
     encoded_trailing = base64.b64encode(trailing).decode("ascii")
     executable.write_text(
         f"#!{sys.executable}\n"
-        "import base64, pathlib, sys\n"
+        "import base64, pathlib, sys, time\n"
         f"pathlib.Path({str(capture)!r}).write_bytes(sys.stdin.buffer.read())\n"
+        f"time.sleep({response_delay_seconds!r})\n"
         f"sys.stdout.buffer.write(base64.b64decode({encoded!r}))\n"
         f"sys.stdout.buffer.write(base64.b64decode({encoded_trailing!r}))\n"
         f"raise SystemExit({return_code})\n",
@@ -289,6 +291,7 @@ def test_client_times_out_a_stalled_ssh_peer(
         canonical_json_bytes(_fixture("operation-request.json")),
     )
     monkeypatch.setattr(client_module, "_TRANSFER_IDLE_SECONDS", 0.05)
+    monkeypatch.setattr(client_module, "_RESULT_WAIT_SECONDS", 0.05)
     started = time.monotonic()
 
     with pytest.raises(OperatorClientError, match="timed out"):
@@ -300,6 +303,34 @@ def test_client_times_out_a_stalled_ssh_peer(
         )
 
     assert time.monotonic() - started < _TEST_TIMEOUT_CEILING_SECONDS
+
+
+def test_client_allows_the_bounded_silent_server_execution_window(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response, expected = _response()
+    ssh, _capture = _fake_ssh(
+        tmp_path,
+        response,
+        response_delay_seconds=0.1,
+    )
+    identity = _regular(tmp_path / "identity", b"private")
+    request_path = _regular(
+        tmp_path / "request.json",
+        canonical_json_bytes(_fixture("operation-request.json")),
+    )
+    monkeypatch.setattr(client_module, "_TRANSFER_IDLE_SECONDS", 0.05)
+    monkeypatch.setattr(client_module, "_RESULT_WAIT_SECONDS", 0.5)
+
+    result = submit(
+        host="hosting.lowerduckpond.net",
+        identity_path=identity,
+        request_path=request_path,
+        ssh_executable=ssh,
+    )
+
+    assert result == expected
 
 
 def test_artifact_changed_during_transmission_cannot_succeed(tmp_path: Path) -> None:

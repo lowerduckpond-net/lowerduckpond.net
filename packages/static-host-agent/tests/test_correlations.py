@@ -241,6 +241,31 @@ def test_interrupted_pair_is_repaired_before_retry(
     assert len(inventory.job_ids) == len(inventory.correlation_ids) == 1
 
 
+@pytest.mark.parametrize("survivor", ["correlation", "job"])
+def test_startup_reconciliation_repairs_and_returns_only_committed_jobs(
+    tmp_path: Path,
+    survivor: str,
+) -> None:
+    root = _state_root(tmp_path)
+    candidate = _candidate(1)
+    request = candidate["request"]
+    assert type(request) is dict
+    path = (
+        StateRecordPath.authorization_correlation(request["correlationId"])
+        if survivor == "correlation"
+        else StateRecordPath.authorization_job(candidate["jobId"])
+    )
+
+    with _repository(root) as repository:
+        repository.create_immutable(path, candidate)
+        outcome = CorrelationAdmission(repository).reconcile()
+        inventory = repository.measure_authorization_records()
+
+    assert outcome.repaired_records == 1
+    assert tuple(job.document for job in outcome.jobs) == (candidate,)
+    assert len(inventory.job_ids) == len(inventory.correlation_ids) == 1
+
+
 def test_pair_repair_respects_the_shared_record_ceiling(tmp_path: Path) -> None:
     root = _state_root(tmp_path)
     candidate = _candidate(1)

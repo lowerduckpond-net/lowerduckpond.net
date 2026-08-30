@@ -39,6 +39,8 @@
     - install-static-host-agent-artifact
     - static-publication-gate
     - verify-static-host-agent-artifact
+    - execute-authorized-job
+    - reconcile-authorized-jobs
 
 - name: Create the versioned host-agent installation root
   ansible.builtin.file:
@@ -227,6 +229,48 @@
     - "{{ static_host_agent_state_root }}/audit"
     - "{{ static_host_agent_state_root }}/locks"
 
+- name: Inspect the fixed static state lock inodes
+  ansible.builtin.stat:
+    path: "{{ static_host_agent_state_root }}/locks/{{ item }}"
+    follow: false
+  loop:
+    - intake.lock
+    - export.lock
+    - publication.lock
+    - tenant-state.lock
+  register: static_host_agent_lock_inodes
+
+- name: Refuse unsafe static state lock inodes
+  ansible.builtin.assert:
+    that:
+      - >-
+        not item.stat.exists or
+        (item.stat.isreg and
+         not item.stat.islnk and
+         item.stat.uid == 0 and
+         item.stat.gid == 0 and
+         item.stat.mode == '0600' and
+         item.stat.nlink == 1 and
+         item.stat.size == 0)
+    quiet: true
+  loop: "{{ static_host_agent_lock_inodes.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Create the fixed static state lock inodes
+  ansible.builtin.file:
+    path: "{{ static_host_agent_state_root }}/locks/{{ item.item }}"
+    state: touch
+    owner: root
+    group: root
+    mode: "0600"
+    access_time: preserve
+    modification_time: preserve
+  loop: "{{ static_host_agent_lock_inodes.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: not item.stat.exists
+
 - name: Create the protected platform configuration directory
   ansible.builtin.file:
     path: /etc/lowerduckpond
@@ -251,6 +295,58 @@
     group: root
     mode: "0644"
   notify: Reload systemd for the static host agent
+
+- name: Install the static authorization startup reconciler
+  ansible.builtin.template:
+    src: lowerduckpond-static-reconcile.service.j2
+    dest: /etc/systemd/system/lowerduckpond-static-reconcile.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd for the static host agent
+
+- name: Install the aggregate static worker slice
+  ansible.builtin.template:
+    src: lowerduckpond-static-workers.slice.j2
+    dest: /etc/systemd/system/lowerduckpond-static-workers.slice
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd for the static host agent
+
+- name: Install the bounded static reconciliation timer
+  ansible.builtin.template:
+    src: lowerduckpond-static-reconcile.timer.j2
+    dest: /etc/systemd/system/lowerduckpond-static-reconcile.timer
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd for the static host agent
+
+- name: Install the exact provisioner execution sudo rule
+  ansible.builtin.template:
+    src: sudoers.j2
+    dest: /etc/sudoers.d/lowerduckpond-static-jobs
+    owner: root
+    group: root
+    mode: "0440"
+    validate: /usr/sbin/visudo --check --file=%s
+
+- name: Load the installed static authorization units
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable static authorization startup reconciliation
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+  loop:
+    - lowerduckpond-static-reconcile.service
+    - lowerduckpond-static-reconcile.timer
+
+- name: Start bounded static authorization reconciliation
+  ansible.builtin.systemd_service:
+    name: lowerduckpond-static-reconcile.timer
+    state: started
 
 - name: Prove an empty Caddy candidate passes the disabled boundary
   ansible.builtin.command:

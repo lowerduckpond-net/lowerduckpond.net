@@ -1,0 +1,11 @@
+[Unit]
+Description=Continue bounded Lower Duck Pond static authorization reconciliation
+
+[Timer]
+OnBootSec=30s
+OnUnitInactiveSec=1min
+AccuracySec=5s
+Unit=lowerduckpond-static-reconcile.service
+
+[Install]
+WantedBy=timers.target

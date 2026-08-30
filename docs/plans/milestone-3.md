@@ -140,7 +140,7 @@ code; no request supplies a path component.
 ├── intake/                   # one bounded root-owned artifact slot
 ├── exports/                  # bounded authenticated-delivery spool
 ├── audit/                    # hash-chained segments and protected index
-└── locks/                    # export, publication, tenant-state, intake
+└── locks/                    # four fixed locks; bounded recovery cursor metadata
 /srv/lowerduckpond/sites/<uuid>/releases/<deployment-uuid>/
 /etc/caddy/
 ├── generations/<generation-uuid>/
@@ -701,26 +701,38 @@ provisioner-writable job store.
 
 ### M3.6: deliver authenticated issuance and opaque job execution
 
-Implementation status (2026-08-30): in progress. The first review boundary is
-complete: it installs the dedicated, password-disabled SSH identity, root-owned
-key binding and principal, forced-command denial adapter, and account-specific
-OpenSSH restrictions. Its installed-host acceptance suite uses a real SSH
-daemon to prove public-key entry reaches only the disabled adapter while shell
-commands, PTY, forwarding, environment injection, SFTP, and SCP remain
-unavailable and the static state tree remains unchanged. The second review
-boundary adds the trusted-workstation client, versioned network-order framing,
+Implementation status (2026-08-30): implementation complete; production
+convergence pending. The first review boundary installed the dedicated,
+password-disabled SSH identity, root-owned key binding and principal,
+forced-command denial adapter, and account-specific OpenSSH restrictions. The
+second added the trusted-workstation client, versioned network-order framing,
 monotonic read deadlines, resource-isolated strict request decoder, serialized
-and durable one-artifact intake, operation-specific byte ceilings, independently
-verified artifact bindings, expected-source digest construction, and immutable
-exact-retry issuance. The installed forced command stays on the allocation-free
-denial adapter until the final boundary can return terminal results rather than
-exposing a partial protocol. M3.2 supplied the strict request, job, result, and
-identifier contracts; M3.3 supplied immutable job and correlation admission,
-capacity and rate limits, audit, and restart-safe state; M3.4 supplied bounded
-artifact handling; and the completed M3.5 live gate supplied the installed,
-root-owned dark-host layout, disabled issuance gate, inert worker boundary, and
-pinned host-agent selector. No architecture or product decision blocks the
-remaining hermetic M3.6 implementation.
+and durable one-artifact intake, operation-specific byte ceilings,
+independently verified artifact bindings, expected-source digest construction,
+and immutable exact-retry issuance. The final boundary replaces the denial
+adapter with the same allocation-free publication precheck followed, only when
+enabled in hermetic fixtures, by fixed-UUID systemd handoff, opaque job claim,
+immutable terminal result retrieval, authenticated export delivery plumbing,
+and bounded startup repair. Recovery admits at most two workers per pass into
+a shared 512-MiB/64-task slice; successful worker completion continues the
+queue, while a running one-minute timer retries failed, coalesced, or
+interrupted handoffs without an immediate failure loop. A durable root-owned
+cursor rotates the two-job batch through sorted pending authority before each
+handoff, preventing a permanently failing prefix from starving later jobs while
+still bounding concurrent recovery. The worker's command-specific sudo policy
+disables pseudo-terminal allocation only for the fixed executor, and the root
+reconciler and worker retain `AF_UNIX` access only inside private network
+namespaces. Fixed cgroup/rlimit ceilings and the worker's capability boundary
+contain the local-socket, pipe, and resource-limit operations required by
+`sudo`/PAM. Real SSH and
+systemd acceptance prove that the
+installed production flag still rejects before input, intake, or durable
+allocation and that no shell, PTY, forwarding, environment, SFTP, SCP, raw
+operation, or caller-selected executor field crosses the boundary. M3.2 supplied
+the strict contracts; M3.3 the durable state kernel; M3.4 bounded artifact
+handling; and M3.5 the root-owned dark-host layout and pinned host-agent
+selector. No architecture or product decision blocks the M3.6 convergence
+gate.
 
 Deliver M3.6 in three reviewable boundaries: first install and prove the
 dedicated SSH identity and forced-command denial surface; then add the bounded
@@ -752,8 +764,17 @@ authenticated export delivery plumbing.
 The installed provisioner command accepts only one job UUID. The sudo rule
 selects only the fixed `execute-authorized-job` executable, and that root-owned
 parser accepts only one canonical UUIDv7 argument. Neither the provisioner nor
-operator can list state. All lifecycle handlers remain disabled or return a
-versioned not-implemented result without state mutation until their phases land.
+operator can list state. The worker unit starts as `ldp-provisioner`; its one
+explicit no-new-privileges exception exists only so the fixed sudo transition
+can enter that root-owned executor. Its capability bounding set retains only
+`CAP_SETUID` and `CAP_SETGID`, neither capability is ambient, and the remaining
+namespace, resource, device, network, and syscall restrictions stay active.
+Process creation remains available because `sudo` must spawn the fixed
+executor, with every descendant bounded by the shared slice and per-unit task
+ceiling. Future untrusted archive helpers retain their separate
+no-new-privileges and no-child-process boundary. All lifecycle handlers remain
+disabled or return a versioned not-implemented result without state mutation
+until their phases land.
 
 Gate: use a real SSH daemon in the installed-host suite. Prove shell, command,
 PTY, forwarding, SFTP/SCP, environment, and path restrictions, and prove that

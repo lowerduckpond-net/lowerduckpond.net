@@ -40,6 +40,7 @@ _CHUNK_BYTES: Final = 64 * 1024
 _ERROR_BYTES: Final = 4096
 _TRANSFER_TOTAL_SECONDS: Final = 20.0 * 60.0
 _TRANSFER_IDLE_SECONDS: Final = 30.0
+_RESULT_WAIT_SECONDS: Final = 5.0 * 60.0 + 30.0
 _RENAME_NOREPLACE: Final = 1
 
 
@@ -62,9 +63,14 @@ class _Deadline:
     last_progress: float
 
     @classmethod
-    def start(cls) -> _Deadline:
+    def start(
+        cls,
+        *,
+        total_seconds: float = _TRANSFER_TOTAL_SECONDS,
+        idle_seconds: float = _TRANSFER_IDLE_SECONDS,
+    ) -> _Deadline:
         now = time.monotonic()
-        return cls(now + _TRANSFER_TOTAL_SECONDS, _TRANSFER_IDLE_SECONDS, now)
+        return cls(now + total_seconds, idle_seconds, now)
 
     def timeout(self) -> float:
         now = time.monotonic()
@@ -108,6 +114,19 @@ class _ProcessChannel:
 
     def close_input(self) -> None:
         self.process.stdin.close()  # type: ignore[union-attr]
+
+    def begin_result_wait(self) -> None:
+        """Allow the server's bounded silent execution window after intake."""
+
+        self.deadline = _Deadline.start(
+            total_seconds=_RESULT_WAIT_SECONDS,
+            idle_seconds=_RESULT_WAIT_SECONDS,
+        )
+
+    def begin_response_transfer(self) -> None:
+        """Restore progress-sensitive bounds once response bytes begin."""
+
+        self.deadline = _Deadline.start()
 
     def read_exact(self, byte_count: int) -> bytes:
         chunks: list[bytes] = []
@@ -248,7 +267,7 @@ class _PendingExport:
             self.file_descriptor = -1
 
 
-def submit(  # noqa: PLR0912,PLR0913 - explicit trusted-workstation boundaries
+def submit(  # noqa: PLR0912,PLR0913,PLR0915 - explicit trusted-workstation boundaries
     *,
     host: str,
     identity_path: Path,
@@ -309,12 +328,14 @@ def submit(  # noqa: PLR0912,PLR0913 - explicit trusted-workstation boundaries
             if artifact is not None:
                 _copy_artifact(artifact, channel)
             channel.close_input()
+            channel.begin_result_wait()
             response_header = channel.read_exact(HEADER_SIZE)
             if len(response_header) != HEADER_SIZE:
                 return_code = channel.wait()
                 raise OperatorClientError(
                     f"operator transport failed: {channel.error_message(return_code)}"
                 )
+            channel.begin_response_transfer()
             header = decode_header(response_header, expected_kind=FrameKind.RESPONSE)
             raw_result = channel.read_exact(header.document_length)
             if len(raw_result) != header.document_length:

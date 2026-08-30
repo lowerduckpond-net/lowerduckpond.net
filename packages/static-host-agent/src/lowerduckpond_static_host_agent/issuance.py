@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import re
+import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Final, Protocol, cast
 
 from lowerduckpond_static_contracts import (
@@ -20,12 +22,16 @@ from lowerduckpond_static_domain import EntropySource, generate_uuid7
 
 from lowerduckpond_static_host_agent.correlations import (
     CorrelationAdmission,
-    CorrelationConflictError,
     CorrelationResolution,
 )
-from lowerduckpond_static_host_agent.repository import StateRecordPath, StateRepository
+from lowerduckpond_static_host_agent.repository import (
+    StateRecordPath,
+    StateRepository,
+    StoredContract,
+)
 
 _PRINCIPAL: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@-]{0,127}", flags=re.ASCII)
+_DISABLED_STATUS: Final = 78
 
 
 class IssuanceError(RuntimeError):
@@ -42,11 +48,50 @@ class PublicationGate(Protocol):
     def require_enabled(self) -> None: ...
 
 
+class StateReader(Protocol):
+    """Read validated state through either a repository or held transaction."""
+
+    def read(self, path: StateRecordPath) -> StoredContract: ...
+
+
 class ClosedPublicationGate:
     """The production-inert M3 gate used until publication is separately enabled."""
 
     def require_enabled(self) -> None:
         raise PublicationDisabledError("publication_disabled")
+
+
+class CommandPublicationGate:
+    """Delegate enablement to one fixed root-owned installed gate executable."""
+
+    def __init__(self, executable: Path) -> None:
+        if not executable.is_absolute():
+            raise ValueError("publication gate executable must be absolute")
+        self._executable = executable
+
+    def require_enabled(self) -> None:
+        try:
+            completed = subprocess.run(  # noqa: S603
+                [self._executable, "job-issuance"],
+                check=False,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                close_fds=True,
+                cwd="/",
+                env={"LANG": "C.UTF-8"},
+                timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise IssuanceError("publication gate failed closed") from error
+        if completed.returncode == 0:
+            return
+        if (
+            completed.returncode == _DISABLED_STATUS
+            and completed.stderr == b"publication_disabled\n"
+        ):
+            raise PublicationDisabledError("publication_disabled")
+        raise IssuanceError("publication gate failed closed")
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,7 +156,7 @@ class AuthorizationIssuer:
             "request": request,
             "requestDigest": request_digest(request).to_dict(),
             "artifact": request.get("artifact"),
-            "expectedSource": self._expected_source(request),
+            "expectedSource": build_expected_source(self._repository, request),
             "acceptedAt": accepted_at.isoformat().replace("+00:00", "Z"),
             "phase": "pending",
         }
@@ -129,71 +174,40 @@ class AuthorizationIssuer:
         *,
         operator_principal: str,
         artifact: VerifiedArtifact | None,
-    ) -> bool:
-        """Recognize only a durable correlation with the same caller binding."""
+        blocking: bool = False,
+    ) -> IssuedAuthorization | None:
+        """Resolve only durable authority with the same original caller binding."""
 
         request = decode_request(raw_request)
         principal = _validate_principal(operator_principal)
         _validate_artifact_binding(request, artifact)
         self._gate.require_enabled()
-        correlation_id = validate_uuid7(request["correlationId"])
-        try:
-            established = self._repository.read(
-                StateRecordPath.authorization_correlation(correlation_id)
-            ).document
-        except FileNotFoundError:
-            return False
-        binding_matches = (
-            established["operatorPrincipal"] == principal
-            and established["request"] == request
-            and established["requestDigest"] == request_digest(request).to_dict()
-            and established["artifact"] == request.get("artifact")
+        resolution = self._admission.find_retry(
+            request["correlationId"],
+            binding={
+                "operatorPrincipal": principal,
+                "request": request,
+                "requestDigest": request_digest(request).to_dict(),
+                "artifact": request.get("artifact"),
+            },
+            blocking=blocking,
         )
-        if not binding_matches:
-            raise CorrelationConflictError(
-                "correlation ID is already bound to another authorized request"
-            )
-        return True
+        return None if resolution is None else _issued(resolution)
 
-    def _expected_source(self, request: dict[str, object]) -> dict[str, object]:
-        namespace = self._repository.read(StateRecordPath.platform_namespace()).document
-        platform_digest = platform_state_digest(namespace).to_dict()
-        if request["operation"] == "create":
-            return {
-                "expectsTenantAbsent": True,
-                "lifecycle": None,
-                "manifestDigest": None,
-                "deploymentDigest": None,
-                "archiveRecordDigest": None,
-                "platformStateDigest": platform_digest,
-            }
+    def retry_requires_artifact(self, issued: IssuedAuthorization) -> bool:
+        """Return whether an exact retry still needs its bound intake bytes."""
 
-        tenant_id = validate_uuid7(request["tenantId"])
-        desired = self._repository.read(StateRecordPath.tenant_desired(tenant_id)).document
-        spec = cast(dict[str, object], desired["spec"])
-        lifecycle = cast(str, spec["desiredState"])
-        deployment_digest: dict[str, str] | None = None
-        archive_digest: dict[str, str] | None = None
-        if lifecycle != "undeployed":
-            reference = cast(dict[str, object], spec["desiredDeployment"])
-            deployment_id = validate_uuid7(reference["id"])
-            deployment = self._repository.read(
-                StateRecordPath.tenant_deployment(tenant_id, deployment_id)
-            ).document
-            deployment_digest = deployment_record_digest(deployment).to_dict()
-            if lifecycle == "archived":
-                archive = self._repository.read(
-                    StateRecordPath.tenant_archive(tenant_id, deployment_id)
-                ).document
-                archive_digest = archive_record_digest(archive).to_dict()
-        return {
-            "expectsTenantAbsent": False,
-            "lifecycle": lifecycle,
-            "manifestDigest": manifest_digest(desired).to_dict(),
-            "deploymentDigest": deployment_digest,
-            "archiveRecordDigest": archive_digest,
-            "platformStateDigest": platform_digest,
-        }
+        if issued.created:
+            raise IssuanceError("new authorization is not an exact retry")
+        job_id = validate_uuid7(issued.job_id)
+        try:
+            self._repository.read(StateRecordPath.authorization_result(job_id))
+        except FileNotFoundError:
+            job = self._repository.read(StateRecordPath.authorization_job(job_id)).document
+            if job["phase"] in {"pending", "claimed"}:
+                return True
+            raise IssuanceError("terminal authorization job has no immutable result") from None
+        return False
 
 
 def _validate_principal(value: object) -> str:
@@ -236,3 +250,47 @@ def _issued(resolution: CorrelationResolution) -> IssuedAuthorization:
         repaired_records=resolution.repaired_records,
         document=document,
     )
+
+
+def build_expected_source(
+    reader: StateReader,
+    request: dict[str, object],
+) -> dict[str, object]:
+    """Derive the complete expected-source binding from one trusted reader."""
+
+    namespace = reader.read(StateRecordPath.platform_namespace()).document
+    platform_digest = platform_state_digest(namespace).to_dict()
+    if request["operation"] == "create":
+        return {
+            "expectsTenantAbsent": True,
+            "lifecycle": None,
+            "manifestDigest": None,
+            "deploymentDigest": None,
+            "archiveRecordDigest": None,
+            "platformStateDigest": platform_digest,
+        }
+
+    tenant_id = validate_uuid7(request["tenantId"])
+    desired = reader.read(StateRecordPath.tenant_desired(tenant_id)).document
+    spec = cast(dict[str, object], desired["spec"])
+    lifecycle = cast(str, spec["desiredState"])
+    deployment_digest: dict[str, str] | None = None
+    archive_digest: dict[str, str] | None = None
+    if lifecycle != "undeployed":
+        reference = cast(dict[str, object], spec["desiredDeployment"])
+        deployment_id = validate_uuid7(reference["id"])
+        deployment = reader.read(
+            StateRecordPath.tenant_deployment(tenant_id, deployment_id)
+        ).document
+        deployment_digest = deployment_record_digest(deployment).to_dict()
+        if lifecycle == "archived":
+            archive = reader.read(StateRecordPath.tenant_archive(tenant_id, deployment_id)).document
+            archive_digest = archive_record_digest(archive).to_dict()
+    return {
+        "expectsTenantAbsent": False,
+        "lifecycle": lifecycle,
+        "manifestDigest": manifest_digest(desired).to_dict(),
+        "deploymentDigest": deployment_digest,
+        "archiveRecordDigest": archive_digest,
+        "platformStateDigest": platform_digest,
+    }

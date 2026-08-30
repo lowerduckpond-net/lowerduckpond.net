@@ -63,6 +63,14 @@ class CorrelationResolution:
     repaired_records: int
 
 
+@dataclass(frozen=True, slots=True)
+class CorrelationReconciliation:
+    """The bounded, repaired authorization-job inventory at startup."""
+
+    jobs: tuple[StoredContract, ...]
+    repaired_records: int
+
+
 class _CorrelationTransaction(Protocol):
     def read(self, path: StateRecordPath) -> StoredContract: ...
 
@@ -172,6 +180,60 @@ class CorrelationAdmission:
             return CorrelationResolution(
                 job=job,
                 created=True,
+                repaired_records=repaired_records,
+            )
+
+    def reconcile(self, *, blocking: bool = False) -> CorrelationReconciliation:
+        """Repair interrupted pairs and return each validated current job."""
+
+        with self._repository.transaction(
+            mode=LockMode.EXCLUSIVE,
+            blocking=blocking,
+        ) as transaction:
+            inventory = transaction.measure_authorization_records(limits=self._limits)
+            correlations, repaired_records = _reconcile_pairs(
+                transaction,
+                inventory=inventory,
+                limits=self._limits,
+                capacity_limits=self._capacity_limits,
+            )
+            jobs = tuple(
+                transaction.read(StateRecordPath.authorization_job(_job_id(correlation)))
+                for _correlation_id, correlation in sorted(correlations.items())
+            )
+        return CorrelationReconciliation(jobs=jobs, repaired_records=repaired_records)
+
+    def find_retry(
+        self,
+        correlation_id: object,
+        *,
+        binding: dict[str, object],
+        blocking: bool = False,
+    ) -> CorrelationResolution | None:
+        """Resolve one caller binding from durable authority without rebuilding it."""
+
+        canonical_id = validate_uuid7(correlation_id)
+        with self._repository.transaction(
+            mode=LockMode.EXCLUSIVE,
+            blocking=blocking,
+        ) as transaction:
+            inventory = transaction.measure_authorization_records(limits=self._limits)
+            correlations, repaired_records = _reconcile_pairs(
+                transaction,
+                inventory=inventory,
+                limits=self._limits,
+                capacity_limits=self._capacity_limits,
+            )
+            established = correlations.get(canonical_id)
+            if established is None:
+                return None
+            if _caller_retry_binding(established) != canonical_json_bytes(binding):
+                raise CorrelationConflictError(
+                    "correlation ID is already bound to another authorized request"
+                )
+            return CorrelationResolution(
+                job=transaction.read(StateRecordPath.authorization_job(_job_id(established))),
+                created=False,
                 repaired_records=repaired_records,
             )
 
@@ -301,6 +363,17 @@ def _retry_binding(document: dict[str, object]) -> bytes:
     for field in ("jobId", "acceptedAt", "phase"):
         del binding[field]
     return canonical_json_bytes(binding)
+
+
+def _caller_retry_binding(document: dict[str, object]) -> bytes:
+    return canonical_json_bytes(
+        {
+            "operatorPrincipal": document["operatorPrincipal"],
+            "request": document["request"],
+            "requestDigest": document["requestDigest"],
+            "artifact": document["artifact"],
+        }
+    )
 
 
 def _durable_binding(document: dict[str, object]) -> bytes:

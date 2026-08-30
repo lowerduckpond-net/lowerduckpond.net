@@ -4,11 +4,13 @@ import hashlib
 import os
 from io import BytesIO
 from pathlib import Path
+from threading import Event, Thread
 
 import pytest
 from lowerduckpond_static_host_agent import (
     ArtifactIntake,
     CapacityRejectedError,
+    IntakeArtifactUnavailableError,
     IntakeError,
     IntakeOccupiedError,
     LockManager,
@@ -245,3 +247,114 @@ def test_intake_preserves_capacity_rejection_without_partial_bytes(
         pass
 
     assert list((root / "intake").iterdir()) == []
+
+
+def test_claim_removes_only_a_consumed_exact_artifact(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    payload = b"bounded artifact"
+    binding = _binding(payload)
+    target = root / "intake" / f"{_CORRELATION_ID}.artifact"
+
+    with ArtifactIntake(root, expected_owner=os.geteuid()) as intake:
+        with intake.admit(
+            operation="deploy",
+            correlation_id=_CORRELATION_ID,
+            declared=binding,
+            read=BytesIO(payload).read,
+        ) as lease:
+            lease.commit()
+        with intake.claim(
+            correlation_id=_CORRELATION_ID,
+            declared=binding,
+        ):
+            pass
+        assert target.read_bytes() == payload
+        with intake.claim(
+            correlation_id=_CORRELATION_ID,
+            declared=binding,
+        ) as claim:
+            claim.consume()
+
+    assert not target.exists()
+
+
+def test_claim_rejects_missing_or_mismatched_authorized_artifact(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    with (
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+        pytest.raises(IntakeArtifactUnavailableError),
+        intake.claim(
+            correlation_id=_CORRELATION_ID,
+            declared=_binding(b"missing"),
+        ),
+    ):
+        pass
+
+
+def test_startup_reconcile_removes_uncommitted_intake_but_retains_authority(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    payload = b"bounded artifact"
+    binding = _binding(payload)
+    filename = f"{_CORRELATION_ID}.artifact"
+    target = root / "intake" / filename
+    target.write_bytes(payload)
+    target.chmod(0o600)
+
+    with ArtifactIntake(root, expected_owner=os.geteuid()) as intake:
+        retained = intake.reconcile(authority=lambda: ({filename: binding}, set()))
+        assert retained.retained_filename == filename
+        assert retained.removed_entries == 0
+        removed = intake.reconcile(authority=lambda: ({}, set()))
+
+    assert removed.removed_entries == 1
+    assert not target.exists()
+
+
+def test_reconcile_snapshots_authority_only_after_acquiring_the_intake_lock(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    payload = b"bounded artifact"
+    binding = _binding(payload)
+    filename = f"{_CORRELATION_ID}.artifact"
+    started = Event()
+    authority_loaded = Event()
+    outcomes = []
+    errors: list[BaseException] = []
+
+    def reconcile() -> None:
+        try:
+            with ArtifactIntake(root, expected_owner=os.geteuid()) as intake:
+                started.set()
+
+                def authority() -> tuple[dict[str, VerifiedArtifact], set[str]]:
+                    authority_loaded.set()
+                    return {filename: binding}, set()
+
+                outcomes.append(intake.reconcile(authority=authority, blocking=True))
+        except BaseException as error:  # pragma: no cover - surfaced below
+            errors.append(error)
+
+    with (
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+        intake.admit(
+            operation="deploy",
+            correlation_id=_CORRELATION_ID,
+            declared=binding,
+            read=BytesIO(payload).read,
+        ) as lease,
+    ):
+        lease.commit()
+        thread = Thread(target=reconcile)
+        thread.start()
+        assert started.wait(timeout=1.0)
+        assert not authority_loaded.wait(timeout=0.1)
+
+    thread.join(timeout=2.0)
+    assert not thread.is_alive()
+    assert errors == []
+    assert authority_loaded.is_set()
+    assert outcomes[0].retained_filename == filename
+    assert (root / "intake" / filename).read_bytes() == payload

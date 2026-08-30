@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Final
+from datetime import UTC, datetime
+from typing import Final, Protocol
 
 from lowerduckpond_static_contracts import (
     HEADER_SIZE,
@@ -35,10 +35,20 @@ class OperatorAdapterError(RuntimeError):
     """The authenticated peer supplied an inconsistent operator frame."""
 
 
+class WallClock(Protocol):
+    """Supply an aware acceptance timestamp after the complete frame arrives."""
+
+    def __call__(self) -> datetime: ...
+
+
+def _utc_now() -> datetime:
+    return datetime.now(tz=UTC)
+
+
 class OperatorAdapter:
     """Keep framing, intake, and issuance ordered across one SSH stream."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         *,
         reader: DeadlineReader,
@@ -46,18 +56,19 @@ class OperatorAdapter:
         issuer: AuthorizationIssuer,
         decoder: RequestDecoder,
         clock: MonotonicClock,
+        wall_clock: WallClock = _utc_now,
     ) -> None:
         self._reader = reader
         self._intake = intake
         self._issuer = issuer
         self._decoder = decoder
         self._clock = clock
+        self._wall_clock = wall_clock
 
     def receive(
         self,
         *,
         operator_principal: str,
-        now: datetime,
     ) -> IssuedAuthorization:
         """Receive exactly one frame and commit no artifact before the gate."""
 
@@ -79,10 +90,17 @@ class OperatorAdapter:
         self._issuer.require_enabled()
         if artifact is None:
             self._reader.require_eof(deadline=document_deadline)
+            established = self._issuer.recognize_exact_retry(
+                canonical_request,
+                operator_principal=operator_principal,
+                artifact=None,
+            )
+            if established is not None:
+                return established
             return self._issuer.issue(
                 canonical_request,
                 operator_principal=operator_principal,
-                now=now,
+                now=self._wall_clock(),
                 artifact=None,
             )
 
@@ -91,23 +109,33 @@ class OperatorAdapter:
             idle_seconds=_ARTIFACT_IDLE_SECONDS,
             clock=self._clock,
         )
-        allow_existing = self._issuer.recognize_exact_retry(
-            canonical_request,
-            operator_principal=operator_principal,
-            artifact=artifact,
-        )
+        # Resolve durable authority only while intake remains locked. A prior
+        # session may have left the exact bytes before or after its job commit;
+        # the retransmission repairs either case without admitting a second
+        # slot or rebuilding the original expected-source binding.
         with self._intake.admit(
             operation=str(request["operation"]),
             correlation_id=request["correlationId"],
             declared=artifact,
             read=lambda count: self._reader.read_exact(count, deadline=artifact_deadline),
-            allow_existing=allow_existing,
+            allow_existing=True,
         ) as lease:
             self._reader.require_eof(deadline=artifact_deadline)
+            established = self._issuer.recognize_exact_retry(
+                canonical_request,
+                operator_principal=operator_principal,
+                artifact=lease.artifact.verified,
+            )
+            if established is not None:
+                if self._issuer.retry_requires_artifact(established):
+                    lease.commit()
+                else:
+                    lease.discard()
+                return established
             issued = self._issuer.issue(
                 canonical_request,
                 operator_principal=operator_principal,
-                now=now,
+                now=self._wall_clock(),
                 artifact=lease.artifact.verified,
             )
             lease.commit()

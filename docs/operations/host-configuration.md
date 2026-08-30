@@ -191,10 +191,41 @@ requires explicit `--host`, `--identity`, and `--request` arguments, plus
 rejects an exposed private-key file, noncanonical or oversized request,
 artifact mismatch, response/request mismatch, unframed response, and export
 length or digest mismatch. The private key remains outside this repository.
-Until the final M3.6 execution boundary is installed and separately converged,
-production SSH still reaches the allocation-free forced-command denial adapter;
-the client therefore cannot issue production work merely because it is present
-in the checkout.
+The final M3.6 implementation replaces the initial denial adapter with a fixed
+root entry point, but production continues to reject independently of request
+bytes while `static_publication_enabled` is false. Production does not receive
+that implementation until the separately authorized M3.6 convergence. Even
+after convergence, the client cannot allocate a job while the flag remains
+false; hermetic enabled-path fixtures return only mutation-free terminal
+`not_implemented` results until the lifecycle handlers arrive in M3.8.
+Startup recovery starts at most two committed jobs per pass beneath one
+aggregate 512-MiB/64-task slice. Successful worker completion triggers the next
+pass; failures fall back to a running one-minute timer, which also safely
+resumes interrupted or coalesced handoffs without a zero-delay retry loop. A
+root-owned, atomically replaced recovery cursor rotates each pass through the
+sorted pending inventory, so a persistently failing prefix cannot consume every
+batch or starve later stranded jobs. The cursor advances before non-blocking
+handoff; a lost handoff therefore defers that job only until the bounded queue
+wraps rather than pinning recovery to it.
+Each worker begins as `ldp-provisioner` and crosses exactly the installed
+UUID-only sudo rule into the root-owned executor. Its no-new-privileges
+exception exists only for that transition; its capability bounding set retains
+only `CAP_SETUID` and `CAP_SETGID`, neither is ambient, and the remaining unit
+sandbox stays in force. Command-specific sudo policy disables Ubuntu's default
+pseudo-terminal allocation only for the fixed executor, so the worker keeps its
+PTY devices masked. The worker permits process creation, pipes, resource-limit
+inspection/setup, and local sockets because `sudo` and PAM require them to spawn
+the fixed executor. Its private network namespace permits only `AF_UNIX`, its
+capability set cannot raise hard resource limits, and its shared slice and
+per-unit cgroup/rlimit ceilings bound all descendants. The root reconciler also
+retains only `AF_UNIX` socket access for its non-blocking systemd handoff inside
+a private network namespace. Untrusted
+archive helpers keep their own no-new-privileges and no-child-process policy.
+Startup repair snapshots authorization state only after
+it owns the intake lock, so an upload committed while repair waits cannot be
+mistaken for abandoned bytes. Exact retries resolve against the original
+immutable source binding and discard redundant terminal-job uploads
+immediately. Stray intake bytes never create authority.
 
 The current retention policy keeps 7 daily, 5 weekly, and 12 monthly scheduled
 snapshots. A change to any of those counts invalidates the prior maintenance

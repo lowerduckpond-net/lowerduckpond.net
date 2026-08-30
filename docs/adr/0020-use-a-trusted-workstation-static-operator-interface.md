@@ -95,6 +95,12 @@ the SSH response or queue handoff is lost. Root reconciliation may requeue a
 committed pending job by its stored ID; it never reconstructs authority from an
 intake artifact or provisioner request.
 
+After the client closes request input, its transport permits the server's
+bounded five-minute silent execution window plus handoff allowance. Once the
+first authenticated response header arrives, ordinary 30-second idle and
+20-minute total transfer bounds resume for the result and any export bytes.
+SSH keepalives are not treated as application progress.
+
 The activator opens the root-owned job without following links, verifies its
 ownership, mode, link count, schema, request and artifact bindings, and exact
 expected source state, then claims it through a durable phase transition before
@@ -112,6 +118,21 @@ pending jobs, resumes claimed jobs idempotently, and never converts a
 provisioner-created file or request into authority. Job envelopes, phases, and
 results consume the existing bounded correlation-record count and byte
 allowance rather than a second unbounded store.
+
+Recovery selects at most two jobs per pass and atomically advances a
+root-owned cursor before the non-blocking handoffs. Selection wraps through the
+sorted pending inventory. A job that repeatedly cannot publish a result can be
+retried on later wraps, but it cannot remain at the head of every batch and
+starve other committed jobs. If the process stops after the cursor commit but
+before a handoff, that job is deferred for one bounded rotation rather than
+lost; its immutable authority remains pending.
+
+Reconciliation acquires the intake lock before it snapshots authoritative jobs
+and results. An upload that completes while reconciliation is waiting is
+therefore present in both the intake slot and the later authority snapshot;
+reconciliation cannot delete it using stale authority. An exact artifact retry
+for a terminal job returns the immutable result and removes the redundant
+uploaded bytes before releasing the same intake lock.
 
 The `create` request supplies a slug and quotas but no tenant ID. The root
 activator generates that immutable ID and returns the resulting canonical

@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from lowerduckpond_static_contracts import (
 )
 from lowerduckpond_static_host_agent import (
     ArtifactIntake,
+    AuthorizationExecutor,
     AuthorizationIssuer,
     CapacityProjection,
     ClosedPublicationGate,
@@ -30,6 +32,7 @@ from lowerduckpond_static_host_agent import (
     StateRecordPath,
     StateRepository,
     StreamError,
+    VerifiedArtifact,
 )
 
 _FIXTURE_ROOT = Path(__file__).parents[3] / "tests/static-publication/fixtures/accepted"
@@ -144,6 +147,7 @@ def _adapter(
     read_fd: int,
     *,
     gate: _OpenGate | ClosedPublicationGate,
+    wall_clock: Callable[[], datetime] | None = None,
 ) -> tuple[OperatorAdapter, ArtifactIntake, StateRepository]:
     repository = StateRepository(root, expected_owner=os.geteuid())
     intake = ArtifactIntake(root, expected_owner=os.geteuid())
@@ -155,6 +159,7 @@ def _adapter(
             issuer=issuer,
             decoder=LocalRequestDecoder(),
             clock=time.monotonic,
+            wall_clock=wall_clock or (lambda: _NOW),
         ),
         intake,
         repository,
@@ -176,7 +181,7 @@ def test_disabled_adapter_stops_before_artifact_or_state_allocation(tmp_path: Pa
     adapter, intake, repository = _adapter(root, read_fd, gate=ClosedPublicationGate())
     try:
         with pytest.raises(PublicationDisabledError, match="publication_disabled"):
-            adapter.receive(operator_principal="operator@example.test", now=_NOW)
+            adapter.receive(operator_principal="operator@example.test")
         assert repository.measure_authorization_records().record_count == 0
         assert list((root / "intake").iterdir()) == []
     finally:
@@ -191,7 +196,7 @@ def test_adapter_issues_nonartifact_job_after_exact_eof(tmp_path: Path) -> None:
     read_fd, _ = _pipe(_frame(_fixture("operation-request.json")))
     adapter, intake, repository = _adapter(root, read_fd, gate=_OpenGate())
     try:
-        issued = adapter.receive(operator_principal="operator@example.test", now=_NOW)
+        issued = adapter.receive(operator_principal="operator@example.test")
     finally:
         intake.close()
         repository.close()
@@ -224,15 +229,29 @@ def test_adapter_syncs_artifact_before_immutable_job(tmp_path: Path) -> None:
         "artifact": {"size": len(artifact), "sha256": hashlib.sha256(artifact).hexdigest()},
     }
     read_fd, _ = _pipe(_frame(request, artifact))
-    adapter, intake, repository = _adapter(root, read_fd, gate=_OpenGate())
+    timestamp_calls = 0
+
+    def accepted_at() -> datetime:
+        nonlocal timestamp_calls
+        timestamp_calls += 1
+        assert os.read(read_fd, 1) == b""
+        return _NOW
+
+    adapter, intake, repository = _adapter(
+        root,
+        read_fd,
+        gate=_OpenGate(),
+        wall_clock=accepted_at,
+    )
     try:
-        issued = adapter.receive(operator_principal="operator@example.test", now=_NOW)
+        issued = adapter.receive(operator_principal="operator@example.test")
     finally:
         intake.close()
         repository.close()
         os.close(read_fd)
 
     assert issued.created is True
+    assert timestamp_calls == 1
     assert (root / "intake" / f"{correlation}.artifact").read_bytes() == artifact
 
 
@@ -263,7 +282,7 @@ def test_adapter_accepts_an_exact_artifact_retry_without_a_second_slot(
         read_fd, _ = _pipe(_frame(request, artifact))
         adapter, intake, repository = _adapter(root, read_fd, gate=_OpenGate())
         try:
-            issued.append(adapter.receive(operator_principal="operator@example.test", now=_NOW))
+            issued.append(adapter.receive(operator_principal="operator@example.test"))
         finally:
             intake.close()
             repository.close()
@@ -272,6 +291,106 @@ def test_adapter_accepts_an_exact_artifact_retry_without_a_second_slot(
     assert [result.created for result in issued] == [True, False]
     assert issued[0].job_id == issued[1].job_id
     assert [entry.name for entry in (root / "intake").iterdir()] == [f"{correlation}.artifact"]
+
+
+def test_exact_artifact_retry_repairs_a_job_committed_before_lease_commit(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), _fixture("site.json"))
+    _write(
+        root,
+        StateRecordPath.tenant_deployment(_TENANT_ID, _DEPLOYMENT_ID),
+        _fixture("deployment-record.json"),
+    )
+    artifact = b"payload"
+    correlation = "0198d17f-6f4a-7000-8000-000000000003"
+    verified = VerifiedArtifact(
+        size=len(artifact),
+        sha256=hashlib.sha256(artifact).hexdigest(),
+    )
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "deploy",
+        "correlationId": correlation,
+        "tenantId": _TENANT_ID,
+        "artifact": {"size": verified.size, "sha256": verified.sha256},
+    }
+    with StateRepository(root, expected_owner=os.geteuid()) as repository:
+        first = AuthorizationIssuer(
+            repository,
+            gate=_OpenGate(),
+            entropy=_Entropy(),
+        ).issue(
+            canonical_json_bytes(request),
+            operator_principal="operator@example.test",
+            now=_NOW,
+            artifact=verified,
+        )
+    assert list((root / "intake").iterdir()) == []
+
+    read_fd, _ = _pipe(_frame(request, artifact))
+    adapter, intake, repository = _adapter(root, read_fd, gate=_OpenGate())
+    try:
+        retry = adapter.receive(operator_principal="operator@example.test")
+    finally:
+        intake.close()
+        repository.close()
+        os.close(read_fd)
+
+    assert retry.created is False
+    assert retry.job_id == first.job_id
+    assert (root / "intake" / f"{correlation}.artifact").read_bytes() == artifact
+
+
+def test_exact_terminal_retry_does_not_recreate_consumed_artifact(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), _fixture("site.json"))
+    _write(
+        root,
+        StateRecordPath.tenant_deployment(_TENANT_ID, _DEPLOYMENT_ID),
+        _fixture("deployment-record.json"),
+    )
+    artifact = b"payload"
+    correlation = "0198d17f-6f4a-7000-8000-000000000003"
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "deploy",
+        "correlationId": correlation,
+        "tenantId": _TENANT_ID,
+        "artifact": {"size": len(artifact), "sha256": hashlib.sha256(artifact).hexdigest()},
+    }
+
+    first_fd, _ = _pipe(_frame(request, artifact))
+    adapter, intake, repository = _adapter(root, first_fd, gate=_OpenGate())
+    try:
+        issued = adapter.receive(operator_principal="operator@example.test")
+    finally:
+        intake.close()
+        repository.close()
+        os.close(first_fd)
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        AuthorizationExecutor(repository, intake).execute(issued.job_id)
+    assert list((root / "intake").iterdir()) == []
+
+    retry_fd, _ = _pipe(_frame(request, artifact))
+    adapter, intake, repository = _adapter(root, retry_fd, gate=_OpenGate())
+    try:
+        retry = adapter.receive(operator_principal="operator@example.test")
+    finally:
+        intake.close()
+        repository.close()
+        os.close(retry_fd)
+
+    assert retry.created is False
+    assert list((root / "intake").iterdir()) == []
 
 
 def test_adapter_rejects_trailing_byte_and_cleans_artifact(tmp_path: Path) -> None:
@@ -299,7 +418,7 @@ def test_adapter_rejects_trailing_byte_and_cleans_artifact(tmp_path: Path) -> No
     adapter, intake, repository = _adapter(root, read_fd, gate=_OpenGate())
     try:
         with pytest.raises(StreamError, match="trailing_bytes"):
-            adapter.receive(operator_principal="operator@example.test", now=_NOW)
+            adapter.receive(operator_principal="operator@example.test")
         assert list((root / "intake").iterdir()) == []
         assert repository.measure_authorization_records().record_count == 0
     finally:
@@ -322,7 +441,7 @@ def test_adapter_rejects_header_request_artifact_mismatch_before_gate(tmp_path: 
     adapter, intake, repository = _adapter(root, read_fd, gate=ClosedPublicationGate())
     try:
         with pytest.raises(OperatorAdapterError, match="does not accept"):
-            adapter.receive(operator_principal="operator@example.test", now=_NOW)
+            adapter.receive(operator_principal="operator@example.test")
     finally:
         intake.close()
         repository.close()
@@ -335,7 +454,7 @@ def test_adapter_rejects_standalone_manifest_before_gate(tmp_path: Path) -> None
     adapter, intake, repository = _adapter(root, read_fd, gate=ClosedPublicationGate())
     try:
         with pytest.raises(ContractError):
-            adapter.receive(operator_principal="operator@example.test", now=_NOW)
+            adapter.receive(operator_principal="operator@example.test")
     finally:
         intake.close()
         repository.close()

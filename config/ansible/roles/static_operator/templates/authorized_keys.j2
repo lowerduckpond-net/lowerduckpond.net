@@ -1,2 +1,2 @@
 # Managed by Ansible. The command and principal are root-owned authority.
-command="/usr/bin/env -i LANG=C.UTF-8 {{ static_operator_disabled_command }} --principal {{ static_operator_principal }}",restrict {{ static_operator_public_key }}
+command="/usr/bin/env -i LANG=C.UTF-8 /usr/bin/sudo -n {{ static_operator_command }} --principal {{ static_operator_principal }}",restrict {{ static_operator_public_key }}

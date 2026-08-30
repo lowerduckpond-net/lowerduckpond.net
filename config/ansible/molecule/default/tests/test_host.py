@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import shlex
+from pathlib import Path
 
 from testinfra.host import Host
 
@@ -41,7 +43,10 @@ SYSTEMD_SYSTEM_UNIT_PATHS = (
     "/etc/systemd/system/lowerduckpond-backup-maintenance.timer",
     "/etc/systemd/system/lowerduckpond-health.service",
     "/etc/systemd/system/lowerduckpond-health.timer",
+    "/etc/systemd/system/lowerduckpond-static-reconcile.service",
+    "/etc/systemd/system/lowerduckpond-static-reconcile.timer",
     "/etc/systemd/system/lowerduckpond-static-worker@.service",
+    "/etc/systemd/system/lowerduckpond-static-workers.slice",
 )
 SYSTEMD_USER_UNIT_PATH = (
     "/var/lib/lowerduckpond/runtime/.config/systemd/user/lowerduckpond-podman-ready.service"
@@ -91,13 +96,16 @@ STATIC_STATE_ROOT = "/var/lib/lowerduckpond/static"
 STATIC_HOST_AGENT_DIRECTORY_MODE = 0o555
 STATIC_HOST_AGENT_FILE_MODE = 0o444
 STATIC_STATE_DIRECTORY_MODE = 0o700
+STATIC_STATE_LOCK_MODE = 0o600
 STATIC_CONFIGURATION_MODE = 0o400
 STATIC_PUBLICATION_DISABLED_STATUS = 78
-STATIC_OPERATOR_DISABLED_STATUS = 69
+STATIC_OPERATOR_DISABLED_STATUS = 78
 STATIC_OPERATOR_INVALID_REQUEST_STATUS = 65
 STATIC_OPERATOR_KEY_PATH = "/run/lowerduckpond-molecule/operator-key"
 STATIC_OPERATOR_AUTHORIZED_KEYS_PATH = "/etc/ssh/lowerduckpond/authorized_keys/ldp-operator"
-STATIC_OPERATOR_COMMAND = "/usr/local/libexec/lowerduckpond/static-operator-disabled"
+STATIC_OPERATOR_COMMAND = "/usr/local/libexec/lowerduckpond/static-operator-adapter"
+STATIC_JOB_EXECUTOR = "/usr/local/libexec/lowerduckpond/execute-authorized-job"
+STATIC_JOB_RECONCILER = "/usr/local/libexec/lowerduckpond/reconcile-authorized-jobs"
 STATIC_OPERATOR_REQUEST_DECODER = "/usr/local/libexec/lowerduckpond/static-request-decoder"
 STATIC_OPERATOR_COMMAND_MODE = 0o755
 STATIC_OPERATOR_KEY_DIRECTORY_MODE = 0o755
@@ -116,6 +124,15 @@ STATIC_STATE_DIRECTORIES = (
     "exports",
     "audit",
     "locks",
+)
+STATIC_STATE_LOCKS = (
+    "intake.lock",
+    "export.lock",
+    "publication.lock",
+    "tenant-state.lock",
+)
+STATIC_ACCEPTED_FIXTURES = (
+    Path(__file__).resolve().parents[5] / "tests/static-publication/fixtures/accepted"
 )
 
 
@@ -136,6 +153,58 @@ def static_operator_ssh_command(
     if not arguments:
         return base
     return f"{base} {shlex.join(arguments)}"
+
+
+def seed_static_authorization(host: Host, selected_root: str) -> str:
+    """Seed one accepted job/result pair without opening publication."""
+
+    job = json.loads(
+        (STATIC_ACCEPTED_FIXTURES / "authorization-job.json").read_text(encoding="utf-8")
+    )
+    result = json.loads(
+        (STATIC_ACCEPTED_FIXTURES / "operation-result.json").read_text(encoding="utf-8")
+    )
+    job_id = job["jobId"]
+    correlation_id = job["request"]["correlationId"]
+    documents = json.dumps({"job": job, "result": result}, separators=(",", ":"))
+
+    seed = host.run(
+        "/usr/bin/python3 -I -B -c %s",
+        "from pathlib import Path; "
+        "import json, sys; "
+        f"sys.path.insert(0, {selected_root!r} + '/site-packages'); "
+        "from lowerduckpond_static_host_agent import StateRecordPath, StateRepository; "
+        f"documents = json.loads({documents!r}); "
+        f"repository = StateRepository(Path({STATIC_STATE_ROOT!r}), expected_owner=0); "
+        "job = documents['job']; "
+        "repository.create_immutable("
+        f"StateRecordPath.authorization_correlation({correlation_id!r}), job); "
+        "repository.create_immutable("
+        f"StateRecordPath.authorization_job({job_id!r}), job); "
+        "repository.create_immutable("
+        f"StateRecordPath.authorization_result({job_id!r}), documents['result']); "
+        "repository.close()",
+    )
+    assert seed.rc == 0, seed.stderr
+    assert host.file(f"{STATIC_STATE_ROOT}/authorization/jobs/{job_id}.json").exists
+    return job_id
+
+
+def assert_static_worker_sudo_compatibility(host: Host) -> None:
+    """Require only the sandbox operations needed by sudo and PAM."""
+
+    unit = host.file("/etc/systemd/system/lowerduckpond-static-worker@.service")
+    assert unit.contains("RestrictAddressFamilies=AF_UNIX")
+    assert all(
+        not unit.contains(required_sudo_operation)
+        for required_sudo_operation in (
+            "SystemCallFilter=~@network-io",
+            "SystemCallFilter=~@resources",
+            "SystemCallFilter=~prlimit64",
+            "SystemCallFilter=~pipe pipe2",
+        )
+    )
+    assert unit.contains("SystemCallFilter=~mknod mknodat")
 
 
 def read_status_scope(host: Host, variable_name: str) -> str:
@@ -821,12 +890,10 @@ def test_static_host_agent_is_hash_pinned_and_immutable(host: Host) -> None:
     imports = host.run(
         "PYTHONPATH=%s/site-packages /usr/bin/python3 -I -B -c %s",
         selected_root,
-        shlex.quote(
-            "import sys; "
-            f"sys.path.insert(0, {selected_root!r} + '/site-packages'); "
-            "import lowerduckpond_static_contracts, lowerduckpond_static_domain, "
-            "lowerduckpond_static_host_agent"
-        ),
+        "import sys; "
+        f"sys.path.insert(0, {selected_root!r} + '/site-packages'); "
+        "import lowerduckpond_static_contracts, lowerduckpond_static_domain, "
+        "lowerduckpond_static_host_agent",
     )
     assert imports.rc == 0
     assert host.run(f"find {STATIC_HOST_AGENT_ROOT} -maxdepth 1 -name '.install-*'").stdout == ""
@@ -846,7 +913,16 @@ def test_static_state_migration_is_empty_root_owned_and_private(host: Host) -> N
         assert directory.user == "root"
         assert directory.group == "root"
         assert directory.mode == STATIC_STATE_DIRECTORY_MODE
-    assert host.run(f"find {STATIC_STATE_ROOT} -type f -print -quit").stdout == ""
+    for filename in STATIC_STATE_LOCKS:
+        lock = host.file(f"{STATIC_STATE_ROOT}/locks/{filename}")
+        assert lock.is_file
+        assert lock.user == "root"
+        assert lock.group == "root"
+        assert lock.mode == STATIC_STATE_LOCK_MODE
+        assert lock.size == 0
+    files = host.run(f"find {STATIC_STATE_ROOT} -type f -printf '%P\\n' | sort")
+    assert files.rc == 0
+    assert files.stdout.splitlines() == [f"locks/{name}" for name in sorted(STATIC_STATE_LOCKS)]
     denied = host.run(f"runuser --user ldp-provisioner -- test -x {STATIC_STATE_ROOT}")
     assert denied.rc != 0
 
@@ -921,7 +997,7 @@ def test_static_operator_identity_is_root_bound_and_has_no_writable_home(host: H
     ]
     assert len(key_lines) == 1
     assert key_lines[0].startswith(
-        'command="/usr/bin/env -i LANG=C.UTF-8 '
+        'command="/usr/bin/env -i LANG=C.UTF-8 /usr/bin/sudo -n '
         f'{STATIC_OPERATOR_COMMAND} --principal molecule-operator-v1",restrict ssh-ed25519 '
     )
     assert "environment=" not in key_lines[0]
@@ -992,12 +1068,12 @@ def test_static_operator_real_ssh_is_forced_and_allocation_free(host: Host) -> N
     before = host.run(f"find {STATIC_STATE_ROOT} -printf '%P %y %m %u %g\\n' | sort")
     shell = host.run(static_operator_ssh_command())
     assert shell.rc == STATIC_OPERATOR_DISABLED_STATUS
-    assert shell.stderr.strip() == "static_operator_protocol_unavailable"
+    assert shell.stderr.strip() == "publication_disabled"
 
     sentinel = "/tmp/lowerduckpond-static-operator-command-escape"  # noqa: S108
     arbitrary = host.run(static_operator_ssh_command("/usr/bin/touch", sentinel))
     assert arbitrary.rc == STATIC_OPERATOR_DISABLED_STATUS
-    assert arbitrary.stderr.strip() == "static_operator_protocol_unavailable"
+    assert arbitrary.stderr.strip() == "publication_disabled"
     assert not host.file(sentinel).exists
 
     environment = host.run(
@@ -1007,6 +1083,7 @@ def test_static_operator_real_ssh_is_forced_and_allocation_free(host: Host) -> N
         )
     )
     assert environment.rc == STATIC_OPERATOR_DISABLED_STATUS
+    assert environment.stderr.strip() == "publication_disabled"
     assert "M3_OPERATOR_SENTINEL" not in environment.stdout
 
     pty = host.run(static_operator_ssh_command("/usr/bin/id", options=("-tt",)))
@@ -1047,23 +1124,63 @@ def test_static_operator_real_ssh_denies_sftp_and_scp(host: Host) -> None:
     assert not host.file(destination).exists
 
 
-def test_static_worker_boundary_is_inert_and_hardened(host: Host) -> None:
+def test_static_job_commands_are_root_owned_and_uuid_only(host: Host) -> None:
+    for command_path in (STATIC_JOB_EXECUTOR, STATIC_JOB_RECONCILER):
+        command = host.file(command_path)
+        assert command.is_file
+        assert command.user == "root"
+        assert command.group == "root"
+        assert command.mode == STATIC_OPERATOR_COMMAND_MODE
+
+    sudoers = host.file("/etc/sudoers.d/lowerduckpond-static-jobs")
+    assert sudoers.is_file
+    assert sudoers.user == "root"
+    assert sudoers.group == "root"
+    assert sudoers.mode == QUALIFICATION_SUDOERS_MODE
+    assert sudoers.content_string == (
+        f"Defaults!{STATIC_JOB_EXECUTOR} !use_pty\n"
+        f"ldp-provisioner ALL=(root) NOPASSWD: {STATIC_JOB_EXECUTOR}\n"
+    )
+    prefix = ("runuser", "--user", "ldp-provisioner", "--", "sudo", "-n")
+    unknown = host.run(shlex.join((*prefix, STATIC_JOB_EXECUTOR, VALID_UUIDV7)))
+    assert unknown.rc != 0
+    assert unknown.stderr.strip() == "authorized_job_failed:FileNotFoundError"
+    for arguments in UUID_REJECTION_ARGUMENTS:
+        rejected = host.run(shlex.join((*prefix, STATIC_JOB_EXECUTOR, *arguments)))
+        assert rejected.rc != 0
+    assert host.run(shlex.join((*prefix, STATIC_JOB_RECONCILER))).rc != 0
+
+
+def test_static_worker_boundary_is_opaque_and_hardened(host: Host) -> None:
     unit = host.file("/etc/systemd/system/lowerduckpond-static-worker@.service")
     assert unit.contains("TemporaryFileSystem=/:ro")
+    assert unit.contains("User=ldp-provisioner")
+    assert unit.contains("Group=ldp-provisioner")
+    assert unit.contains(f"ExecStart=/usr/bin/sudo --non-interactive {STATIC_JOB_EXECUTOR} %i")
+    assert unit.contains("Slice=lowerduckpond-static-workers.slice")
+    assert unit.contains("OnSuccess=lowerduckpond-static-reconcile.service")
+    assert not unit.contains("OnFailure=")
+    assert not unit.contains("SystemCallFilter=~clone clone3 fork vfork")
     assert unit.contains("TemporaryFileSystem=/workspace:rw,size=64M,nr_inodes=4096,mode=0700")
     for bound_path in (
         "/usr",
         "/lib",
         "/lib64",
+        "/etc/passwd",
+        "/etc/sudoers",
+        "/etc/sudoers.d",
+        STATIC_HOST_AGENT_ROOT,
         "/etc/lowerduckpond/static-publication.json",
     ):
         assert unit.contains(f"BindReadOnlyPaths={bound_path}")
+    assert unit.contains(f"BindPaths={STATIC_STATE_ROOT}")
     for property_line in (
         "MemoryMax=256M",
         "MemorySwapMax=0",
         "TasksMax=32",
         "PrivateNetwork=true",
-        "NoNewPrivileges=true",
+        "NoNewPrivileges=false",
+        "CapabilityBoundingSet=CAP_SETGID CAP_SETUID",
         "CapabilityBoundingSet=",
         "ProtectSystem=strict",
         "ProtectHome=true",
@@ -1071,6 +1188,7 @@ def test_static_worker_boundary_is_inert_and_hardened(host: Host) -> None:
         "IPAddressDeny=any",
     ):
         assert unit.contains(property_line)
+    assert_static_worker_sudo_compatibility(host)
     assert host.run("systemctl is-enabled lowerduckpond-static-worker@.service").stdout.strip() == (
         "static"
     )
@@ -1081,8 +1199,51 @@ def test_static_worker_boundary_is_inert_and_hardened(host: Host) -> None:
         f"timeout 5s bash -c 'until systemctl is-failed --quiet {instance}; do sleep 0.05; done'",
     )
     status = host.run(f"systemctl show --property=ExecMainStatus --value {instance}")
-    assert status.stdout.strip() == str(STATIC_PUBLICATION_DISABLED_STATUS)
+    assert status.stdout.strip() == "1"
     host.run_expect([0], f"systemctl reset-failed {instance}")
+
+    reconciler = host.file("/etc/systemd/system/lowerduckpond-static-reconcile.service")
+    assert reconciler.contains(f"ExecStart={STATIC_JOB_RECONCILER}")
+    assert reconciler.contains("PrivateNetwork=true")
+    assert reconciler.contains("RestrictAddressFamilies=AF_UNIX")
+    assert not reconciler.contains("SystemCallFilter=~@network-io")
+    assert host.run(
+        "systemctl is-enabled lowerduckpond-static-reconcile.service"
+    ).stdout.strip() == ("enabled")
+    host.run_expect([0], "systemctl start lowerduckpond-static-reconcile.service")
+    assert host.run("systemctl is-enabled lowerduckpond-static-reconcile.timer").stdout.strip() == (
+        "enabled"
+    )
+    assert host.run("systemctl is-active lowerduckpond-static-reconcile.timer").stdout.strip() == (
+        "active"
+    )
+
+    selected = host.run(f"readlink --canonicalize {STATIC_HOST_AGENT_ROOT}/current")
+    assert selected.rc == 0
+    selected_root = selected.stdout.strip()
+    job_id = seed_static_authorization(host, selected_root)
+    host.run_expect([0], "systemctl start lowerduckpond-static-reconcile.service")
+    job_path = f"{STATIC_STATE_ROOT}/authorization/jobs/{job_id}.json"
+    result_path = f"{STATIC_STATE_ROOT}/authorization/results/{job_id}.json"
+    host.run_expect(
+        [0],
+        f"timeout 10s bash -c 'until grep --fixed-strings --quiet completed {job_path}; "
+        "do sleep 0.05; done'",
+    )
+    assert '"phase":"completed"' in host.file(job_path).content_string
+    assert '"status":"succeeded"' in host.file(result_path).content_string
+    cursor = host.file(f"{STATIC_STATE_ROOT}/locks/authorization-recovery.cursor")
+    assert cursor.user == "root"
+    assert cursor.group == "root"
+    assert cursor.mode == STATIC_STATE_LOCK_MODE
+    assert cursor.content_string == job_id
+
+    timer = host.file("/etc/systemd/system/lowerduckpond-static-reconcile.timer")
+    assert timer.contains("OnUnitInactiveSec=1min")
+    worker_slice = host.file("/etc/systemd/system/lowerduckpond-static-workers.slice")
+    for property_line in ("MemoryMax=512M", "MemorySwapMax=0", "TasksMax=64"):
+        assert worker_slice.contains(property_line)
+    assert host.run(f"find {STATIC_HOST_AGENT_ROOT} -name __pycache__ -print -quit").stdout == ""
 
 
 def test_caddy_has_no_tenant_routes_while_publication_is_dark(host: Host) -> None:
