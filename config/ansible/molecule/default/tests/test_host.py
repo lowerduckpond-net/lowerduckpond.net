@@ -1097,14 +1097,20 @@ def test_static_job_commands_are_root_owned_and_uuid_only(host: Host) -> None:
 def test_static_worker_boundary_is_opaque_and_hardened(host: Host) -> None:
     unit = host.file("/etc/systemd/system/lowerduckpond-static-worker@.service")
     assert unit.contains("TemporaryFileSystem=/:ro")
+    assert unit.contains("User=ldp-provisioner")
+    assert unit.contains("Group=ldp-provisioner")
+    assert unit.contains(f"ExecStart=/usr/bin/sudo --non-interactive {STATIC_JOB_EXECUTOR} %i")
     assert unit.contains("Slice=lowerduckpond-static-workers.slice")
     assert unit.contains("OnSuccess=lowerduckpond-static-reconcile.service")
-    assert unit.contains("OnFailure=lowerduckpond-static-reconcile.service")
+    assert not unit.contains("OnFailure=")
     assert unit.contains("TemporaryFileSystem=/workspace:rw,size=64M,nr_inodes=4096,mode=0700")
     for bound_path in (
         "/usr",
         "/lib",
         "/lib64",
+        "/etc/passwd",
+        "/etc/sudoers",
+        "/etc/sudoers.d",
         STATIC_HOST_AGENT_ROOT,
         "/etc/lowerduckpond/static-publication.json",
     ):
@@ -1115,7 +1121,7 @@ def test_static_worker_boundary_is_opaque_and_hardened(host: Host) -> None:
         "MemorySwapMax=0",
         "TasksMax=32",
         "PrivateNetwork=true",
-        "NoNewPrivileges=true",
+        "NoNewPrivileges=false",
         "CapabilityBoundingSet=",
         "ProtectSystem=strict",
         "ProtectHome=true",
@@ -1144,6 +1150,9 @@ def test_static_worker_boundary_is_opaque_and_hardened(host: Host) -> None:
     host.run_expect([0], "systemctl start lowerduckpond-static-reconcile.service")
     assert host.run("systemctl is-enabled lowerduckpond-static-reconcile.timer").stdout.strip() == (
         "enabled"
+    )
+    assert host.run("systemctl is-active lowerduckpond-static-reconcile.timer").stdout.strip() == (
+        "active"
     )
     timer = host.file("/etc/systemd/system/lowerduckpond-static-reconcile.timer")
     assert timer.contains("OnUnitInactiveSec=1min")

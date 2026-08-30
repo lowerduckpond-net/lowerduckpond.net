@@ -284,3 +284,31 @@ def test_executor_repairs_a_terminal_result_published_before_job_phase(
 
     assert outcome.created is False
     assert phase == "failed"
+
+
+def test_executor_repairs_a_successful_create_with_its_generated_tenant(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    with StateRepository(root, expected_owner=os.geteuid()) as repository:
+        issued = _issue_create(repository)
+        request = issued.document["request"]
+        assert type(request) is dict
+        result = _fixture("operation-result.json")
+        provenance = result["provenance"]
+        assert type(provenance) is dict
+        provenance["jobId"] = issued.job_id
+        result["correlationId"] = request["correlationId"]
+        repository.create_immutable(StateRecordPath.authorization_result(issued.job_id), result)
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        outcome = AuthorizationExecutor(repository, intake).execute(issued.job_id)
+        phase = repository.read(StateRecordPath.authorization_job(issued.job_id)).document["phase"]
+
+    assert outcome.created is False
+    assert outcome.result["status"] == "succeeded"
+    assert phase == "completed"

@@ -6,12 +6,12 @@ import os
 import secrets
 import sys
 import time
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
 
 from lowerduckpond_static_contracts import ContractError, ProtocolError, validate_uuid7
 
+from lowerduckpond_static_host_agent.capacity import CapacityError
 from lowerduckpond_static_host_agent.correlations import CorrelationError
 from lowerduckpond_static_host_agent.execution import AuthorizationExecutor, ExecutionError
 from lowerduckpond_static_host_agent.intake import ArtifactIntake, IntakeError
@@ -37,6 +37,7 @@ from lowerduckpond_static_host_agent.request_decoder import (
     RequestDecodeError,
     SubprocessRequestDecoder,
 )
+from lowerduckpond_static_host_agent.state_inventory import StateInventoryError
 
 _STATE_ROOT: Final = Path("/var/lib/lowerduckpond/static")
 _DECODER: Final = Path("/usr/local/libexec/lowerduckpond/static-request-decoder")
@@ -46,6 +47,7 @@ _PRINCIPAL_ARGUMENTS: Final = 2
 
 _SAFE_ERRORS: Final = (
     ContractError,
+    CapacityError,
     ProtocolError,
     CorrelationError,
     ExecutionError,
@@ -56,6 +58,7 @@ _SAFE_ERRORS: Final = (
     RuntimeBoundaryError,
     StateRecordError,
     StateBusyError,
+    StateInventoryError,
     StreamError,
 )
 
@@ -99,7 +102,7 @@ def operator_main(arguments: list[str] | None = None) -> int:
                 state_root=_STATE_ROOT,
                 expected_owner=_EXPECTED_OWNER,
                 writer=DeadlineWriter(sys.stdout.fileno()),
-            ).run(operator_principal=principal, now=datetime.now(tz=UTC))
+            ).run(operator_principal=principal)
     except PublicationDisabledError:
         return _fail("publication_disabled", 78)
     except _SAFE_ERRORS as error:
@@ -122,7 +125,15 @@ def executor_main(arguments: list[str] | None = None) -> int:
             ArtifactIntake(_STATE_ROOT, expected_owner=_EXPECTED_OWNER) as intake,
         ):
             AuthorizationExecutor(repository, intake).execute(job_id, blocking=True)
-    except ContractError, ExecutionError, IntakeError, StateRecordError:
+    except (
+        CapacityError,
+        ContractError,
+        ExecutionError,
+        IntakeError,
+        StateBusyError,
+        StateInventoryError,
+        StateRecordError,
+    ):
         return _fail("authorized_job_failed", 1)
     except (OSError, ValueError) as error:
         return _fail(f"authorized_job_failed:{type(error).__name__}", 1)
@@ -141,7 +152,16 @@ def reconcile_main(arguments: list[str] | None = None) -> int:
             ArtifactIntake(_STATE_ROOT, expected_owner=_EXPECTED_OWNER) as intake,
         ):
             StartupReconciler(repository, intake, SystemdJobHandoff()).reconcile()
-    except CorrelationError, ExecutionError, IntakeError, RuntimeBoundaryError, StateRecordError:
+    except (
+        CapacityError,
+        CorrelationError,
+        ExecutionError,
+        IntakeError,
+        RuntimeBoundaryError,
+        StateBusyError,
+        StateInventoryError,
+        StateRecordError,
+    ):
         return _fail("authorization_reconcile_failed", 1)
     except (OSError, ValueError) as error:
         return _fail(f"authorization_reconcile_failed:{type(error).__name__}", 1)

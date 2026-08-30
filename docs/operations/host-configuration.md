@@ -199,9 +199,14 @@ after convergence, the client cannot allocate a job while the flag remains
 false; hermetic enabled-path fixtures return only mutation-free terminal
 `not_implemented` results until the lifecycle handlers arrive in M3.8.
 Startup recovery starts at most two committed jobs per pass beneath one
-aggregate 512-MiB/64-task slice. Worker completion triggers the next pass, and
-a one-minute timer safely resumes any interrupted or coalesced handoff; stray
-intake bytes never create authority.
+aggregate 512-MiB/64-task slice. Successful worker completion triggers the next
+pass; failures fall back to a running one-minute timer, which also safely
+resumes interrupted or coalesced handoffs without a zero-delay retry loop.
+Each worker begins as `ldp-provisioner` and crosses exactly the installed
+UUID-only sudo rule into the root-owned executor. Its no-new-privileges
+exception exists only for that transition; the remaining unit sandbox stays in
+force, and untrusted archive helpers keep their own no-new-privileges policy.
+Stray intake bytes never create authority.
 
 The current retention policy keeps 7 daily, 5 weekly, and 12 monthly scheduled
 snapshots. A change to any of those counts invalidates the prior maintenance

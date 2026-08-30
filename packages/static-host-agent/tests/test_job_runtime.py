@@ -73,10 +73,8 @@ class _IssuedAdapter:
         self,
         *,
         operator_principal: str,
-        now: datetime,
     ) -> IssuedAuthorization:
         assert operator_principal == "operator@example.test"
-        assert now == _NOW
         return self._issued
 
 
@@ -226,7 +224,7 @@ def test_operator_session_returns_one_bound_versioned_response_frame(tmp_path: P
                 state_root=root,
                 expected_owner=os.geteuid(),
                 writer=DeadlineWriter(write_fd),
-            ).run(operator_principal="operator@example.test", now=_NOW)
+            ).run(operator_principal="operator@example.test")
         os.close(write_fd)
         write_fd = -1
         response = os.read(read_fd, 64 * 1024)
@@ -281,6 +279,31 @@ def test_result_waiter_rejects_a_result_with_another_correlation(tmp_path: Path)
     assert handoff.enqueued == []
 
 
+def test_result_waiter_accepts_the_generated_tenant_from_a_successful_create(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    handoff = _CaptureHandoff()
+    with StateRepository(root, expected_owner=os.geteuid()) as repository:
+        issued = _issue(repository)
+        request = issued.document["request"]
+        assert type(request) is dict
+        result = _fixture("operation-result.json")
+        provenance = result["provenance"]
+        assert type(provenance) is dict
+        provenance["jobId"] = issued.job_id
+        result["correlationId"] = request["correlationId"]
+        repository.create_immutable(
+            StateRecordPath.authorization_result(issued.job_id),
+            result,
+        )
+        retrieved = ResultWaiter(repository, handoff).retrieve(issued)
+
+    assert retrieved["status"] == "succeeded"
+    assert retrieved["tenantId"] == _fixture("operation-result.json")["tenantId"]
+    assert handoff.enqueued == []
+
+
 def test_deadline_writer_reports_an_authenticated_disconnect() -> None:
     read_fd, write_fd = os.pipe()
     os.close(read_fd)
@@ -300,6 +323,7 @@ def test_deadline_writer_starts_deadlines_at_the_first_response_byte() -> None:
         total_seconds=20.0,
         idle_seconds=5.0,
     )
+    assert os.get_blocking(write_fd) is False
     clock.value = 60.0
     try:
         writer.write(b"terminal result")
@@ -307,6 +331,32 @@ def test_deadline_writer_starts_deadlines_at_the_first_response_byte() -> None:
     finally:
         os.close(read_fd)
         os.close(write_fd)
+
+
+def test_deadline_writer_retries_a_nonblocking_write_race(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    read_fd, write_fd = os.pipe()
+    real_write = os.write
+    attempts = 0
+    expected_attempts = 2
+
+    def write_once_blocked(file_descriptor: int, data: bytes | memoryview) -> int:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise BlockingIOError
+        return real_write(file_descriptor, data)
+
+    monkeypatch.setattr(os, "write", write_once_blocked)
+    try:
+        DeadlineWriter(write_fd).write(b"terminal result")
+        assert os.read(read_fd, 64) == b"terminal result"
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
+
+    assert attempts == expected_attempts
 
 
 def test_startup_reconciliation_requeues_only_unfinished_authority(tmp_path: Path) -> None:

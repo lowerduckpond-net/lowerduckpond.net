@@ -343,6 +343,11 @@
     - lowerduckpond-static-reconcile.service
     - lowerduckpond-static-reconcile.timer
 
+- name: Start bounded static authorization reconciliation
+  ansible.builtin.systemd_service:
+    name: lowerduckpond-static-reconcile.timer
+    state: started
+
 - name: Prove an empty Caddy candidate passes the disabled boundary
   ansible.builtin.command:
     argv:

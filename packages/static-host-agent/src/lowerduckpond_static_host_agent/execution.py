@@ -437,7 +437,7 @@ def _validate_result_binding(job: dict[str, object], result: dict[str, object]) 
     provenance = result["provenance"]
     if type(request) is not dict or type(provenance) is not dict:
         raise ExecutionError("terminal result binding is malformed")
-    tenant_id = None if request["operation"] == "create" else request["tenantId"]
+    tenant_id = _expected_result_tenant(request, result)
     if (
         provenance != {"kind": "authorization-job", "jobId": job["jobId"]}
         or result["correlationId"] != request["correlationId"]
@@ -445,3 +445,17 @@ def _validate_result_binding(job: dict[str, object], result: dict[str, object]) 
         or result["tenantId"] != tenant_id
     ):
         raise ExecutionError("terminal result does not match its authorization job")
+
+
+def _expected_result_tenant(
+    request: dict[str, object],
+    result: dict[str, object],
+) -> object:
+    if request["operation"] != "create":
+        return request["tenantId"]
+    if result["status"] == "failed":
+        return None
+    try:
+        return validate_uuid7(result["tenantId"])
+    except (TypeError, ValueError) as error:
+        raise ExecutionError("successful create result has no generated tenant") from error

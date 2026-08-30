@@ -2,13 +2,14 @@
 Description=Lower Duck Pond authorized static worker %i
 ConditionPathIsReadWrite={{ static_host_agent_state_root }}
 OnSuccess=lowerduckpond-static-reconcile.service
-OnFailure=lowerduckpond-static-reconcile.service
 
 [Service]
 Type=exec
+User={{ provisioner_user }}
+Group={{ provisioner_group }}
 Slice=lowerduckpond-static-workers.slice
 UMask=0077
-ExecStart={{ static_host_agent_executor }} %i
+ExecStart=/usr/bin/sudo --non-interactive {{ static_host_agent_executor }} %i
 MemoryMax=256M
 MemorySwapMax=0
 TasksMax=32
@@ -30,6 +31,16 @@ TemporaryFileSystem=/workspace:rw,size=64M,nr_inodes=4096,mode=0700
 BindReadOnlyPaths=/usr
 BindReadOnlyPaths=/lib
 BindReadOnlyPaths=/lib64
+BindReadOnlyPaths=/etc/group
+BindReadOnlyPaths=/etc/login.defs
+BindReadOnlyPaths=/etc/nsswitch.conf
+BindReadOnlyPaths=/etc/pam.d
+BindReadOnlyPaths=/etc/passwd
+BindReadOnlyPaths=/etc/security
+BindReadOnlyPaths=/etc/shadow
+BindReadOnlyPaths=/etc/sudo.conf
+BindReadOnlyPaths=/etc/sudoers
+BindReadOnlyPaths=/etc/sudoers.d
 BindReadOnlyPaths={{ static_host_agent_install_root }}
 BindReadOnlyPaths=/etc/lowerduckpond/static-publication.json
 BindPaths={{ static_host_agent_state_root }}
@@ -46,7 +57,7 @@ InaccessiblePaths=/proc
 InaccessiblePaths=/dev/tty
 InaccessiblePaths=/dev/ptmx
 InaccessiblePaths=/dev/pts
-NoNewPrivileges=true
+NoNewPrivileges=false
 CapabilityBoundingSet=
 AmbientCapabilities=
 RestrictAddressFamilies=~AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_PACKET

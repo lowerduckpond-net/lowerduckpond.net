@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Final
+from datetime import UTC, datetime
+from typing import Final, Protocol
 
 from lowerduckpond_static_contracts import (
     HEADER_SIZE,
@@ -35,10 +35,20 @@ class OperatorAdapterError(RuntimeError):
     """The authenticated peer supplied an inconsistent operator frame."""
 
 
+class WallClock(Protocol):
+    """Supply an aware acceptance timestamp after the complete frame arrives."""
+
+    def __call__(self) -> datetime: ...
+
+
+def _utc_now() -> datetime:
+    return datetime.now(tz=UTC)
+
+
 class OperatorAdapter:
     """Keep framing, intake, and issuance ordered across one SSH stream."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         *,
         reader: DeadlineReader,
@@ -46,18 +56,19 @@ class OperatorAdapter:
         issuer: AuthorizationIssuer,
         decoder: RequestDecoder,
         clock: MonotonicClock,
+        wall_clock: WallClock = _utc_now,
     ) -> None:
         self._reader = reader
         self._intake = intake
         self._issuer = issuer
         self._decoder = decoder
         self._clock = clock
+        self._wall_clock = wall_clock
 
     def receive(
         self,
         *,
         operator_principal: str,
-        now: datetime,
     ) -> IssuedAuthorization:
         """Receive exactly one frame and commit no artifact before the gate."""
 
@@ -82,7 +93,7 @@ class OperatorAdapter:
             return self._issuer.issue(
                 canonical_request,
                 operator_principal=operator_principal,
-                now=now,
+                now=self._wall_clock(),
                 artifact=None,
             )
 
@@ -112,7 +123,7 @@ class OperatorAdapter:
                 issued = self._issuer.issue(
                     canonical_request,
                     operator_principal=operator_principal,
-                    now=now,
+                    now=self._wall_clock(),
                     artifact=lease.artifact.verified,
                 )
                 lease.commit()
@@ -127,7 +138,7 @@ class OperatorAdapter:
             issued = self._issuer.issue(
                 canonical_request,
                 operator_principal=operator_principal,
-                now=now,
+                now=self._wall_clock(),
                 artifact=lease.artifact.verified,
             )
             lease.commit()

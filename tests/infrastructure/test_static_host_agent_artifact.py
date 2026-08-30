@@ -164,6 +164,11 @@ def test_preflight_extraction_preserves_reviewed_modes_under_restrictive_umask(
 def test_dark_worker_unit_consumes_the_reviewed_sandbox_contract() -> None:
     lines = Counter(WORKER_UNIT_TEMPLATE.read_text(encoding="utf-8").splitlines())
     expected = Counter(f"{key}={value}" for key, value in ARCHIVE_SANDBOX_STATIC_PROPERTIES)
+    # This trusted root-owned entry point begins as ldp-provisioner and needs
+    # exactly one sudo transition into the fixed UUID-only executor. The
+    # archive helper itself retains the reviewed no-new-privileges policy.
+    expected["NoNewPrivileges=true"] -= 1
+    expected["NoNewPrivileges=false"] += 1
     for property_line, count in expected.items():
         assert lines[property_line] == count
     assert lines["TemporaryFileSystem=/workspace:rw,size=64M,nr_inodes=4096,mode=0700"] == 1

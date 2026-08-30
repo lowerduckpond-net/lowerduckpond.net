@@ -714,8 +714,9 @@ adapter with the same allocation-free publication precheck followed, only when
 enabled in hermetic fixtures, by fixed-UUID systemd handoff, opaque job claim,
 immutable terminal result retrieval, authenticated export delivery plumbing,
 and bounded startup repair. Recovery admits at most two workers per pass into
-a shared 512-MiB/64-task slice; worker completion continues the queue and a
-one-minute timer retries any coalesced or interrupted handoff. Real SSH and
+a shared 512-MiB/64-task slice; successful worker completion continues the
+queue, while a running one-minute timer retries failed, coalesced, or
+interrupted handoffs without an immediate failure loop. Real SSH and
 systemd acceptance prove that the
 installed production flag still rejects before input, intake, or durable
 allocation and that no shell, PTY, forwarding, environment, SFTP, SCP, raw
@@ -755,8 +756,13 @@ authenticated export delivery plumbing.
 The installed provisioner command accepts only one job UUID. The sudo rule
 selects only the fixed `execute-authorized-job` executable, and that root-owned
 parser accepts only one canonical UUIDv7 argument. Neither the provisioner nor
-operator can list state. All lifecycle handlers remain disabled or return a
-versioned not-implemented result without state mutation until their phases land.
+operator can list state. The worker unit starts as `ldp-provisioner`; its one
+explicit no-new-privileges exception exists only so the fixed sudo transition
+can enter that root-owned executor. The remaining namespace, capability,
+resource, device, network, and syscall restrictions stay active, and future
+untrusted archive helpers retain their separate no-new-privileges boundary. All
+lifecycle handlers remain disabled or return a versioned not-implemented result
+without state mutation until their phases land.
 
 Gate: use a real SSH daemon in the installed-host suite. Prove shell, command,
 PTY, forwarding, SFTP/SCP, environment, and path restrictions, and prove that

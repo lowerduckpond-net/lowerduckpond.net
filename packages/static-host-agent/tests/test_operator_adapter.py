@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -145,6 +146,7 @@ def _adapter(
     read_fd: int,
     *,
     gate: _OpenGate | ClosedPublicationGate,
+    wall_clock: Callable[[], datetime] | None = None,
 ) -> tuple[OperatorAdapter, ArtifactIntake, StateRepository]:
     repository = StateRepository(root, expected_owner=os.geteuid())
     intake = ArtifactIntake(root, expected_owner=os.geteuid())
@@ -156,6 +158,7 @@ def _adapter(
             issuer=issuer,
             decoder=LocalRequestDecoder(),
             clock=time.monotonic,
+            wall_clock=wall_clock or (lambda: _NOW),
         ),
         intake,
         repository,
@@ -177,7 +180,7 @@ def test_disabled_adapter_stops_before_artifact_or_state_allocation(tmp_path: Pa
     adapter, intake, repository = _adapter(root, read_fd, gate=ClosedPublicationGate())
     try:
         with pytest.raises(PublicationDisabledError, match="publication_disabled"):
-            adapter.receive(operator_principal="operator@example.test", now=_NOW)
+            adapter.receive(operator_principal="operator@example.test")
         assert repository.measure_authorization_records().record_count == 0
         assert list((root / "intake").iterdir()) == []
     finally:
@@ -192,7 +195,7 @@ def test_adapter_issues_nonartifact_job_after_exact_eof(tmp_path: Path) -> None:
     read_fd, _ = _pipe(_frame(_fixture("operation-request.json")))
     adapter, intake, repository = _adapter(root, read_fd, gate=_OpenGate())
     try:
-        issued = adapter.receive(operator_principal="operator@example.test", now=_NOW)
+        issued = adapter.receive(operator_principal="operator@example.test")
     finally:
         intake.close()
         repository.close()
@@ -225,15 +228,29 @@ def test_adapter_syncs_artifact_before_immutable_job(tmp_path: Path) -> None:
         "artifact": {"size": len(artifact), "sha256": hashlib.sha256(artifact).hexdigest()},
     }
     read_fd, _ = _pipe(_frame(request, artifact))
-    adapter, intake, repository = _adapter(root, read_fd, gate=_OpenGate())
+    timestamp_calls = 0
+
+    def accepted_at() -> datetime:
+        nonlocal timestamp_calls
+        timestamp_calls += 1
+        assert os.read(read_fd, 1) == b""
+        return _NOW
+
+    adapter, intake, repository = _adapter(
+        root,
+        read_fd,
+        gate=_OpenGate(),
+        wall_clock=accepted_at,
+    )
     try:
-        issued = adapter.receive(operator_principal="operator@example.test", now=_NOW)
+        issued = adapter.receive(operator_principal="operator@example.test")
     finally:
         intake.close()
         repository.close()
         os.close(read_fd)
 
     assert issued.created is True
+    assert timestamp_calls == 1
     assert (root / "intake" / f"{correlation}.artifact").read_bytes() == artifact
 
 
@@ -264,7 +281,7 @@ def test_adapter_accepts_an_exact_artifact_retry_without_a_second_slot(
         read_fd, _ = _pipe(_frame(request, artifact))
         adapter, intake, repository = _adapter(root, read_fd, gate=_OpenGate())
         try:
-            issued.append(adapter.receive(operator_principal="operator@example.test", now=_NOW))
+            issued.append(adapter.receive(operator_principal="operator@example.test"))
         finally:
             intake.close()
             repository.close()
@@ -316,7 +333,7 @@ def test_exact_artifact_retry_repairs_a_job_committed_before_lease_commit(
     read_fd, _ = _pipe(_frame(request, artifact))
     adapter, intake, repository = _adapter(root, read_fd, gate=_OpenGate())
     try:
-        retry = adapter.receive(operator_principal="operator@example.test", now=_NOW)
+        retry = adapter.receive(operator_principal="operator@example.test")
     finally:
         intake.close()
         repository.close()
@@ -352,7 +369,7 @@ def test_adapter_rejects_trailing_byte_and_cleans_artifact(tmp_path: Path) -> No
     adapter, intake, repository = _adapter(root, read_fd, gate=_OpenGate())
     try:
         with pytest.raises(StreamError, match="trailing_bytes"):
-            adapter.receive(operator_principal="operator@example.test", now=_NOW)
+            adapter.receive(operator_principal="operator@example.test")
         assert list((root / "intake").iterdir()) == []
         assert repository.measure_authorization_records().record_count == 0
     finally:
@@ -375,7 +392,7 @@ def test_adapter_rejects_header_request_artifact_mismatch_before_gate(tmp_path: 
     adapter, intake, repository = _adapter(root, read_fd, gate=ClosedPublicationGate())
     try:
         with pytest.raises(OperatorAdapterError, match="does not accept"):
-            adapter.receive(operator_principal="operator@example.test", now=_NOW)
+            adapter.receive(operator_principal="operator@example.test")
     finally:
         intake.close()
         repository.close()
@@ -388,7 +405,7 @@ def test_adapter_rejects_standalone_manifest_before_gate(tmp_path: Path) -> None
     adapter, intake, repository = _adapter(root, read_fd, gate=ClosedPublicationGate())
     try:
         with pytest.raises(ContractError):
-            adapter.receive(operator_principal="operator@example.test", now=_NOW)
+            adapter.receive(operator_principal="operator@example.test")
     finally:
         intake.close()
         repository.close()

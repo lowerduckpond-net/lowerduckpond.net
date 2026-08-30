@@ -9,7 +9,6 @@ import stat
 import subprocess
 import time
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Final, Protocol
 
@@ -60,7 +59,6 @@ class _AuthorizationReceiver(Protocol):
         self,
         *,
         operator_principal: str,
-        now: datetime,
     ) -> IssuedAuthorization: ...
 
 
@@ -160,6 +158,7 @@ class DeadlineWriter:
         if total_seconds <= 0 or idle_seconds <= 0:
             raise ValueError("writer deadlines must be positive")
         self._fd = file_descriptor
+        os.set_blocking(self._fd, False)
         self._clock = clock
         self._total_seconds = total_seconds
         self._total_deadline: float | None = None
@@ -182,6 +181,8 @@ class DeadlineWriter:
                 raise RuntimeBoundaryError("authenticated result delivery timed out")
             try:
                 written = os.write(self._fd, remaining)
+            except BlockingIOError, InterruptedError:
+                continue
             except BrokenPipeError as error:
                 raise RuntimeBoundaryError("authenticated result delivery disconnected") from error
             if written <= 0:
@@ -279,8 +280,8 @@ class OperatorSession:
         self._expected_owner = expected_owner
         self._writer = writer
 
-    def run(self, *, operator_principal: str, now: datetime) -> dict[str, object]:
-        issued = self._adapter.receive(operator_principal=operator_principal, now=now)
+    def run(self, *, operator_principal: str) -> dict[str, object]:
+        issued = self._adapter.receive(operator_principal=operator_principal)
         result = self._waiter.retrieve(issued)
         canonical = canonical_json_bytes(result)
         export = _ExportSource.open(
@@ -393,7 +394,7 @@ def _validate_result_for_job(job: dict[str, object], result: dict[str, object]) 
     provenance = result["provenance"]
     if type(request) is not dict or type(provenance) is not dict:
         raise RuntimeBoundaryError("terminal result binding is malformed")
-    tenant_id = None if request["operation"] == "create" else request["tenantId"]
+    tenant_id = _expected_result_tenant(request, result)
     if (
         provenance != {"kind": "authorization-job", "jobId": job["jobId"]}
         or result["correlationId"] != request["correlationId"]
@@ -401,6 +402,20 @@ def _validate_result_for_job(job: dict[str, object], result: dict[str, object]) 
         or result["tenantId"] != tenant_id
     ):
         raise RuntimeBoundaryError("terminal result does not match its authenticated job")
+
+
+def _expected_result_tenant(
+    request: dict[str, object],
+    result: dict[str, object],
+) -> object:
+    if request["operation"] != "create":
+        return request["tenantId"]
+    if result["status"] == "failed":
+        return None
+    try:
+        return validate_uuid7(result["tenantId"])
+    except (TypeError, ValueError) as error:
+        raise RuntimeBoundaryError("successful create result has no generated tenant") from error
 
 
 def _artifact_binding(job: dict[str, object]) -> VerifiedArtifact | None:
