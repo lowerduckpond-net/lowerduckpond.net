@@ -221,7 +221,9 @@ class CaddyRuntime:
     def using_held_publication_lock(self, lock_manager: LockManager) -> Iterator[object]:
         """Use this exact inode through a caller's already-held ordered lock."""
 
-        with self._context_mutex:
+        if not self._context_mutex.acquire(blocking=False):
+            raise CaddyRuntimeError("Caddy runtime is busy in this process")
+        try:
             self._require_open()
             if self._locked:
                 raise CaddyRuntimeError("publication lock is not reentrant")
@@ -235,6 +237,8 @@ class CaddyRuntime:
                 yield self
             finally:
                 self._locked = False
+        finally:
+            self._context_mutex.release()
 
     def read_active(self) -> str:
         """Read the active reference exactly once while holding publication."""

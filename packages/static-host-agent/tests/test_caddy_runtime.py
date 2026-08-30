@@ -182,6 +182,42 @@ def test_runtime_composes_with_the_same_lock_already_held_by_lock_manager(
         assert runtime.read_active() == GENERATION_A
 
 
+def test_held_lock_context_fails_busy_instead_of_inverting_the_process_mutex(
+    runtime_fixture: RuntimeFixture,
+) -> None:
+    contender_started = threading.Event()
+    contender_entered = threading.Event()
+    failures: list[BaseException] = []
+    with (
+        LockManager(runtime_fixture.lock.parent, expected_owner=runtime_fixture.owner) as locks,
+        runtime_fixture.open() as runtime,
+        locks.acquire(LockName.PUBLICATION, mode=LockMode.EXCLUSIVE, blocking=True),
+    ):
+
+        def contender() -> None:
+            try:
+                contender_started.set()
+                with runtime.locked():
+                    contender_entered.set()
+            except BaseException as error:
+                failures.append(error)
+
+        thread = threading.Thread(target=contender)
+        thread.start()
+        assert contender_started.wait(2)
+        assert not contender_entered.wait(0.1)
+        with (
+            pytest.raises(CaddyRuntimeError, match="busy in this process"),
+            runtime.using_held_publication_lock(locks),
+        ):
+            pass
+
+    thread.join(2)
+    assert not thread.is_alive()
+    assert not failures
+    assert contender_entered.is_set()
+
+
 def test_runtime_refuses_a_different_managers_held_publication_inode(
     runtime_fixture: RuntimeFixture,
     tmp_path: Path,
