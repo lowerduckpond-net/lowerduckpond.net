@@ -30,9 +30,12 @@
           - backup_restic_password | length >= 32
           - backup_spaces_access_key_id | length > 0
           - backup_spaces_secret_access_key | length > 0
+          - static_operator_public_key | length > 0
+          - static_operator_principal | length > 0
         fail_msg: >-
-          Supply the administrative CIDRs, Caddy token, Restic password, and
-          bucket-scoped Spaces credentials through the documented environment variables.
+          Supply the administrative CIDRs, Caddy token, Restic password,
+          bucket-scoped Spaces credentials, and static-operator public identity
+          through the documented environment variables.
         quiet: true
       no_log: true
 
@@ -44,5 +47,6 @@
     - role: database
     - role: provisioner
     - role: static_host_agent
+    - role: static_operator
     - role: backup
     - role: monitoring

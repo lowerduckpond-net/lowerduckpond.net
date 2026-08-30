@@ -28,6 +28,10 @@ paste them into chat:
 - `OPENTOFU_ENCRYPTION_PASSPHRASE`: the production state passphrase, not the
   bootstrap passphrase.
 - `OPENTOFU_STATE_BUCKET` and `SPACES_REGION` (`nyc3`).
+- `STATIC_OPERATOR_PUBLIC_KEY` and `STATIC_OPERATOR_PRINCIPAL`: beginning with
+  M3.6, the public half of the separately backed-up dedicated Ed25519 operator
+  key and its stable audit principal. The private key never enters the
+  repository, Ansible variables, or the production host.
 
 The runner reads the backup bucket name and its bucket-scoped runtime key
 directly from encrypted production state. Those values remain in child-process

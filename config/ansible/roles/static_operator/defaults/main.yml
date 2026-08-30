@@ -1,0 +1,14 @@
+---
+static_operator_user: ldp-operator
+static_operator_group: ldp-operator
+static_operator_home: /var/empty/lowerduckpond-static-operator
+# The generating password was random and discarded. This syntactically valid
+# shadow hash lets OpenSSH reach public-key authentication on Ubuntu while no
+# password credential exists to recover or distribute.
+static_operator_unusable_password_hash: >-
+  $6$LdPM3Op20260830$jqnuSyKRCqPqQbw637tw0L8YNek.p7qo8IrOWmikRc5.rzuWiS6d0nYvZm/yXYXgU3NhPHiJ/6wr/Pwo2u45o/
+static_operator_public_key: ""
+static_operator_principal: ""
+static_operator_authorized_keys_directory: /etc/ssh/lowerduckpond/authorized_keys
+static_operator_authorized_keys_path: /etc/ssh/lowerduckpond/authorized_keys/ldp-operator
+static_operator_disabled_command: /usr/local/libexec/lowerduckpond/static-operator-disabled

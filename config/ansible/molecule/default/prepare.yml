@@ -56,6 +56,30 @@
         name: mariadb.service
         state: started
 
+    - name: Create the private Molecule operator-key directory
+      ansible.builtin.file:
+        path: /run/lowerduckpond-molecule
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Generate the disposable Molecule operator key
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/ssh-keygen
+          - -q
+          - -t
+          - ed25519
+          - -N
+          - ""
+          - -C
+          - lowerduckpond-molecule-operator
+          - -f
+          - /run/lowerduckpond-molecule/operator-key
+      args:
+        creates: /run/lowerduckpond-molecule/operator-key
+
     - name: Seed an over-privileged database backup account
       ansible.builtin.command:
         argv:

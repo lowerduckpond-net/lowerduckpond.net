@@ -12,6 +12,8 @@ export RESTIC_PASSWORD=inventory-test-restic-password
 export SPACES_BACKUP_ACCESS_KEY_ID=inventory-test-access-key
 export SPACES_BACKUP_SECRET_ACCESS_KEY=inventory-test-secret-key
 export SPACES_REGION=inventory-test-region
+export STATIC_OPERATOR_PRINCIPAL=inventory-operator-v1
+export STATIC_OPERATOR_PUBLIC_KEY='ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKvQO3bKFnR6F0kAAbB+2c5F5HLpS36uGnYS0xV9mO4O inventory-test'
 
 export ANSIBLE_CONFIG="${repository_root}/config/ansible/ansible.cfg"
 uv run ansible-playbook --inventory "${inventory}" "${playbook}"

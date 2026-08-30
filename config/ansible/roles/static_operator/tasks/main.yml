@@ -1,0 +1,101 @@
+---
+- name: Require the disabled static-operator installation contract
+  ansible.builtin.assert:
+    that:
+      - not static_publication_enabled | bool
+      - static_operator_user == 'ldp-operator'
+      - static_operator_group == 'ldp-operator'
+      - static_operator_home == '/var/empty/lowerduckpond-static-operator'
+      - static_operator_public_key | length <= 512
+      - static_operator_public_key is ansible.builtin.match(
+          '^ssh-ed25519 [A-Za-z0-9+/]+={0,2}( [ -~]{1,128})?$'
+        )
+      - "'\n' not in static_operator_public_key"
+      - "'\r' not in static_operator_public_key"
+      - static_operator_principal | length <= 128
+      - static_operator_principal is ansible.builtin.match(
+          '^[A-Za-z0-9][A-Za-z0-9._@-]{0,127}$'
+        )
+      - static_operator_authorized_keys_path ==
+        static_operator_authorized_keys_directory ~ '/' ~ static_operator_user
+    fail_msg: >-
+      M3.6 requires one Ed25519 public key, one bounded audit principal, and a
+      disabled publication boundary.
+
+- name: Create the static-operator group
+  ansible.builtin.group:
+    name: "{{ static_operator_group }}"
+    system: true
+
+- name: Create the password-disabled static-operator account
+  ansible.builtin.user:
+    name: "{{ static_operator_user }}"
+    group: "{{ static_operator_group }}"
+    home: "{{ static_operator_home }}"
+    shell: /bin/sh
+    password: "{{ static_operator_unusable_password_hash }}"
+    update_password: always
+    create_home: false
+    system: true
+
+- name: Create an empty root-owned static-operator home
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - path: /var/empty
+      mode: "0755"
+    - path: "{{ static_operator_home }}"
+      mode: "0555"
+
+- name: Install the fail-closed static-operator command
+  ansible.builtin.copy:
+    src: static-operator-disabled
+    dest: "{{ static_operator_disabled_command }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Create the root-owned OpenSSH policy directory
+  ansible.builtin.file:
+    path: /etc/ssh/lowerduckpond
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Create the root-owned static-operator key directory
+  ansible.builtin.file:
+    path: "{{ static_operator_authorized_keys_directory }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the key-bound static-operator principal
+  ansible.builtin.template:
+    src: authorized_keys.j2
+    dest: "{{ static_operator_authorized_keys_path }}"
+    owner: root
+    group: "{{ static_operator_group }}"
+    mode: "0640"
+    validate: /usr/bin/ssh-keygen -l -f %s
+
+- name: Install the static-operator OpenSSH policy
+  ansible.builtin.template:
+    src: sshd-static-operator.conf.j2
+    dest: /etc/ssh/sshd_config.d/60-lowerduckpond-static-operator.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload OpenSSH for the static operator
+
+- name: Validate the complete OpenSSH configuration
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/sshd
+      - -t
+  changed_when: false

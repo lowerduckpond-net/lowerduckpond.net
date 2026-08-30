@@ -1,0 +1,21 @@
+# Managed by Ansible.
+Match User {{ static_operator_user }}
+    AuthenticationMethods publickey
+    PubkeyAuthentication yes
+    PasswordAuthentication no
+    KbdInteractiveAuthentication no
+    AuthorizedKeysFile {{ static_operator_authorized_keys_path }}
+    DisableForwarding yes
+    AllowAgentForwarding no
+    AllowStreamLocalForwarding no
+    AllowTcpForwarding no
+    GatewayPorts no
+    PermitListen none
+    PermitOpen none
+    PermitTunnel no
+    PermitTTY no
+    PermitUserRC no
+    X11Forwarding no
+    MaxSessions 1
+
+Match all
