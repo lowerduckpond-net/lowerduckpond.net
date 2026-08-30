@@ -22,7 +22,7 @@ from lowerduckpond_static_host_agent import (
     caddy_route_state_digest,
 )
 
-_PLATFORM_ONLY_ROUTE_COUNT = 4
+_PLATFORM_ONLY_ROUTE_COUNT = 5
 
 
 def _routes() -> list[dict[str, object]]:
@@ -37,10 +37,19 @@ def _routes() -> list[dict[str, object]]:
     return routes
 
 
+def _production_server() -> dict[str, object]:
+    generated = build_platform_only_caddy_routes()
+    servers = generated.http_app["servers"]
+    assert type(servers) is dict
+    production = servers["production"]
+    assert type(production) is dict
+    return production
+
+
 def _route_for(host: str) -> dict[str, object]:
     matches: list[dict[str, object]] = []
     for route in _routes():
-        raw_matchers = route["match"]
+        raw_matchers = route.get("match", [])
         assert type(raw_matchers) is list
         for matcher in raw_matchers:
             assert type(matcher) is dict
@@ -60,7 +69,7 @@ def _handlers(route: dict[str, object]) -> list[dict[str, object]]:
     return handlers
 
 
-def test_platform_only_generation_has_one_fixed_server_and_four_terminal_routes() -> None:
+def test_platform_only_generation_has_one_fixed_server_and_five_terminal_routes() -> None:
     generated = build_platform_only_caddy_routes()
 
     assert generated.http_app.keys() == {"servers"}
@@ -137,6 +146,53 @@ def test_entire_tenant_namespace_is_dark_and_scrubs_cookies() -> None:
             "handler": "static_response",
             "status_code": 404,
         },
+    ]
+
+
+def test_unmatched_hosts_receive_the_same_non_cacheable_cookie_scrubbed_rejection() -> None:
+    route = _routes()[-1]
+
+    assert "match" not in route
+    assert _handlers(route) == [
+        {"handler": "headers", "request": {"delete": ["Cookie"]}},
+        {
+            "handler": "headers",
+            "response": {
+                "deferred": True,
+                "delete": ["Set-Cookie"],
+                "set": {"Cache-Control": [NO_STORE_NO_TRANSFORM]},
+            },
+        },
+        {
+            "body": GENERIC_NOT_FOUND_BODY,
+            "handler": "static_response",
+            "status_code": 404,
+        },
+    ]
+
+
+def test_file_server_and_other_handler_errors_are_generic_and_non_cacheable() -> None:
+    errors = _production_server()["errors"]
+    assert type(errors) is dict
+    routes = errors["routes"]
+    assert routes == [
+        {
+            "handle": [
+                {
+                    "handler": "headers",
+                    "response": {
+                        "deferred": True,
+                        "delete": ["Set-Cookie"],
+                        "set": {"Cache-Control": [NO_STORE_NO_TRANSFORM]},
+                    },
+                },
+                {
+                    "body": GENERIC_NOT_FOUND_BODY,
+                    "handler": "static_response",
+                    "status_code": "{http.error.status_code}",
+                },
+            ]
+        }
     ]
 
 

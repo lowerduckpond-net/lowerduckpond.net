@@ -50,7 +50,9 @@ def build_platform_only_caddy_routes() -> PlatformOnlyCaddyRoutes:
                         _platform_apex_route(),
                         _platform_unknown_route(),
                         _tenant_namespace_dark_route(),
+                        _catch_all_unknown_route(),
                     ],
+                    "errors": {"routes": [_error_route()]},
                 }
             }
         },
@@ -95,7 +97,20 @@ def _route_state() -> dict[str, object]:
                 "requestCookie": "remove",
                 "responseSetCookie": "remove",
             },
+            {
+                "behavior": "generic-not-found",
+                "cacheControl": NO_STORE_NO_TRANSFORM,
+                "class": "unmatched-host",
+                "match": "otherwise",
+                "requestCookie": "remove",
+                "responseSetCookie": "remove",
+            },
         ],
+        "errorPolicy": {
+            "behavior": "generic-status-preserving-error",
+            "cacheControl": NO_STORE_NO_TRANSFORM,
+            "responseSetCookie": "remove",
+        },
         "tenantDomain": TENANT_DOMAIN,
         "tenantRouteCount": 0,
     }
@@ -162,6 +177,41 @@ def _tenant_namespace_dark_route() -> dict[str, object]:
         ],
         "match": [{"host": [TENANT_APEX, TENANT_WILDCARD]}],
         "terminal": True,
+    }
+
+
+def _catch_all_unknown_route() -> dict[str, object]:
+    return {
+        "handle": [
+            {"handler": "headers", "request": {"delete": ["Cookie"]}},
+            _non_cacheable_response_headers(),
+            _not_found_response(),
+        ],
+        "terminal": True,
+    }
+
+
+def _error_route() -> dict[str, object]:
+    return {
+        "handle": [
+            _non_cacheable_response_headers(),
+            {
+                "body": GENERIC_NOT_FOUND_BODY,
+                "handler": "static_response",
+                "status_code": "{http.error.status_code}",
+            },
+        ]
+    }
+
+
+def _non_cacheable_response_headers() -> dict[str, object]:
+    return {
+        "handler": "headers",
+        "response": {
+            "deferred": True,
+            "delete": ["Set-Cookie"],
+            "set": {"Cache-Control": [NO_STORE_NO_TRANSFORM]},
+        },
     }
 
 
