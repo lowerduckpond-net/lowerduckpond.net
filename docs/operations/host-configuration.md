@@ -211,10 +211,17 @@ Each worker begins as `ldp-provisioner` and crosses exactly the installed
 UUID-only sudo rule into the root-owned executor. Its no-new-privileges
 exception exists only for that transition; its capability bounding set retains
 only `CAP_SETUID` and `CAP_SETGID`, neither is ambient, and the remaining unit
-sandbox stays in force. The worker permits process creation because `sudo` must
-spawn the fixed executor; its shared slice and per-unit task ceiling bound all
-descendants. Untrusted archive helpers keep their own no-new-privileges and
-no-child-process policy. Startup repair snapshots authorization state only after
+sandbox stays in force. Command-specific sudo policy disables Ubuntu's default
+pseudo-terminal allocation only for the fixed executor, so the worker keeps its
+PTY devices masked. The worker permits process creation, pipes, resource-limit
+inspection/setup, and local sockets because `sudo` and PAM require them to spawn
+the fixed executor. Its private network namespace permits only `AF_UNIX`, its
+capability set cannot raise hard resource limits, and its shared slice and
+per-unit cgroup/rlimit ceilings bound all descendants. The root reconciler also
+retains only `AF_UNIX` socket access for its non-blocking systemd handoff inside
+a private network namespace. Untrusted
+archive helpers keep their own no-new-privileges and no-child-process policy.
+Startup repair snapshots authorization state only after
 it owns the intake lock, so an upload committed while repair waits cannot be
 mistaken for abandoned bytes. Exact retries resolve against the original
 immutable source binding and discard redundant terminal-job uploads

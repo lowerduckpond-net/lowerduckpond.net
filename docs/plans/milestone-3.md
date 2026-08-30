@@ -719,7 +719,12 @@ queue, while a running one-minute timer retries failed, coalesced, or
 interrupted handoffs without an immediate failure loop. A durable root-owned
 cursor rotates the two-job batch through sorted pending authority before each
 handoff, preventing a permanently failing prefix from starving later jobs while
-still bounding concurrent recovery. Real SSH and
+still bounding concurrent recovery. The worker's command-specific sudo policy
+disables pseudo-terminal allocation only for the fixed executor, and the root
+reconciler and worker retain `AF_UNIX` access only inside private network
+namespaces. Fixed cgroup/rlimit ceilings and the worker's capability boundary
+contain the local-socket, pipe, and resource-limit operations required by
+`sudo`/PAM. Real SSH and
 systemd acceptance prove that the
 installed production flag still rejects before input, intake, or durable
 allocation and that no shell, PTY, forwarding, environment, SFTP, SCP, raw

@@ -165,12 +165,21 @@ def test_dark_worker_unit_consumes_the_reviewed_sandbox_contract() -> None:
     lines = Counter(WORKER_UNIT_TEMPLATE.read_text(encoding="utf-8").splitlines())
     expected = Counter(f"{key}={value}" for key, value in ARCHIVE_SANDBOX_STATIC_PROPERTIES)
     # This trusted root-owned entry point begins as ldp-provisioner and needs
-    # exactly one sudo transition into the fixed UUID-only executor. The
+    # exactly one sudo transition into the fixed UUID-only executor. Sudo/PAM
+    # needs AF_UNIX sockets, pipe2, and resource-limit operations, while the
+    # private network namespace and cgroup/rlimit ceilings remain fixed. The
     # archive helper itself retains the reviewed no-new-privileges policy.
     expected["NoNewPrivileges=true"] -= 1
     expected["NoNewPrivileges=false"] += 1
     expected["CapabilityBoundingSet="] -= 1
     expected["CapabilityBoundingSet=CAP_SETGID CAP_SETUID"] += 1
+    expected["RestrictAddressFamilies=~AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_PACKET"] -= 1
+    expected["RestrictAddressFamilies=AF_UNIX"] += 1
+    expected["SystemCallFilter=~@network-io"] -= 1
+    expected["SystemCallFilter=~@resources"] -= 1
+    expected["SystemCallFilter=~prlimit64"] -= 1
+    expected["SystemCallFilter=~pipe pipe2 mknod mknodat"] -= 1
+    expected["SystemCallFilter=~mknod mknodat"] += 1
     expected["SystemCallFilter=~clone clone3 fork vfork"] -= 1
     for property_line, count in expected.items():
         assert lines[property_line] == count
