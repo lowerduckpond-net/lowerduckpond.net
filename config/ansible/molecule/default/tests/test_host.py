@@ -1104,6 +1104,7 @@ def test_static_worker_boundary_is_opaque_and_hardened(host: Host) -> None:
     assert unit.contains("Slice=lowerduckpond-static-workers.slice")
     assert unit.contains("OnSuccess=lowerduckpond-static-reconcile.service")
     assert not unit.contains("OnFailure=")
+    assert not unit.contains("SystemCallFilter=~clone clone3 fork vfork")
     assert unit.contains("TemporaryFileSystem=/workspace:rw,size=64M,nr_inodes=4096,mode=0700")
     for bound_path in (
         "/usr",

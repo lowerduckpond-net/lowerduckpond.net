@@ -761,9 +761,12 @@ explicit no-new-privileges exception exists only so the fixed sudo transition
 can enter that root-owned executor. Its capability bounding set retains only
 `CAP_SETUID` and `CAP_SETGID`, neither capability is ambient, and the remaining
 namespace, resource, device, network, and syscall restrictions stay active.
-Future untrusted archive helpers retain their separate no-new-privileges
-boundary. All lifecycle handlers remain disabled or return a versioned
-not-implemented result without state mutation until their phases land.
+Process creation remains available because `sudo` must spawn the fixed
+executor, with every descendant bounded by the shared slice and per-unit task
+ceiling. Future untrusted archive helpers retain their separate
+no-new-privileges and no-child-process boundary. All lifecycle handlers remain
+disabled or return a versioned not-implemented result without state mutation
+until their phases land.
 
 Gate: use a real SSH daemon in the installed-host suite. Prove shell, command,
 PTY, forwarding, SFTP/SCP, environment, and path restrictions, and prove that

@@ -77,7 +77,6 @@ SystemCallFilter=~inotify_init inotify_init1 inotify_add_watch
 SystemCallFilter=~pipe pipe2 mknod mknodat
 SystemCallFilter=~timer_create
 SystemCallFilter=~io_uring_setup io_uring_register io_uring_enter
-SystemCallFilter=~clone clone3 fork vfork
 SystemCallFilter=~kill tkill tgkill rt_sigqueueinfo rt_tgsigqueueinfo pidfd_send_signal
 SystemCallFilter=~ptrace process_vm_readv process_vm_writev pidfd_getfd process_madvise process_mrelease
 SystemCallErrorNumber=EPERM

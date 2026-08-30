@@ -22,7 +22,6 @@ from lowerduckpond_static_domain import EntropySource, generate_uuid7
 
 from lowerduckpond_static_host_agent.correlations import (
     CorrelationAdmission,
-    CorrelationConflictError,
     CorrelationResolution,
 )
 from lowerduckpond_static_host_agent.repository import (
@@ -175,31 +174,25 @@ class AuthorizationIssuer:
         *,
         operator_principal: str,
         artifact: VerifiedArtifact | None,
-    ) -> bool:
-        """Recognize only a durable correlation with the same caller binding."""
+        blocking: bool = False,
+    ) -> IssuedAuthorization | None:
+        """Resolve only durable authority with the same original caller binding."""
 
         request = decode_request(raw_request)
         principal = _validate_principal(operator_principal)
         _validate_artifact_binding(request, artifact)
         self._gate.require_enabled()
-        correlation_id = validate_uuid7(request["correlationId"])
-        try:
-            established = self._repository.read(
-                StateRecordPath.authorization_correlation(correlation_id)
-            ).document
-        except FileNotFoundError:
-            return False
-        binding_matches = (
-            established["operatorPrincipal"] == principal
-            and established["request"] == request
-            and established["requestDigest"] == request_digest(request).to_dict()
-            and established["artifact"] == request.get("artifact")
+        resolution = self._admission.find_retry(
+            request["correlationId"],
+            binding={
+                "operatorPrincipal": principal,
+                "request": request,
+                "requestDigest": request_digest(request).to_dict(),
+                "artifact": request.get("artifact"),
+            },
+            blocking=blocking,
         )
-        if not binding_matches:
-            raise CorrelationConflictError(
-                "correlation ID is already bound to another authorized request"
-            )
-        return True
+        return None if resolution is None else _issued(resolution)
 
     def retry_requires_artifact(self, issued: IssuedAuthorization) -> bool:
         """Return whether an exact retry still needs its bound intake bytes."""

@@ -239,22 +239,21 @@ def test_exact_retry_recognition_requires_the_original_full_binding(tmp_path: Pa
                 operator_principal="operator@example.test",
                 artifact=None,
             )
-            is False
+            is None
         )
-        issuer.issue(
+        issued = issuer.issue(
             raw_request,
             operator_principal="operator@example.test",
             now=_NOW,
             artifact=None,
         )
-        assert (
-            issuer.recognize_exact_retry(
-                raw_request,
-                operator_principal="operator@example.test",
-                artifact=None,
-            )
-            is True
+        retry = issuer.recognize_exact_retry(
+            raw_request,
+            operator_principal="operator@example.test",
+            artifact=None,
         )
+        assert retry is not None
+        assert retry.job_id == issued.job_id
         with pytest.raises(CorrelationConflictError, match="another"):
             issuer.recognize_exact_retry(
                 raw_request,
@@ -277,6 +276,49 @@ def test_exact_retry_recognition_checks_the_gate_before_state(tmp_path: Path) ->
                 operator_principal="operator@example.test",
                 artifact=None,
             )
+
+
+def test_exact_retry_uses_the_original_source_after_authoritative_state_changes(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    namespace = _fixture("platform-namespace.json")
+    desired = _fixture("site.json")
+    deployment = _fixture("deployment-record.json")
+    _write(root, StateRecordPath.platform_namespace(), namespace)
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), desired)
+    _write(
+        root,
+        StateRecordPath.tenant_deployment(_TENANT_ID, _DEPLOYMENT_ID),
+        deployment,
+    )
+    raw_request, artifact = _deploy_request()
+
+    with _repository(root) as repository:
+        issuer = AuthorizationIssuer(repository, gate=_OpenGate(), entropy=_Entropy())
+        issued = issuer.issue(
+            raw_request,
+            operator_principal="operator@example.test",
+            now=_NOW,
+            artifact=artifact,
+        )
+        changed = deepcopy(desired)
+        spec = changed["spec"]
+        assert type(spec) is dict
+        quotas = spec["quotas"]
+        assert type(quotas) is dict
+        quotas["storageMiB"] = 99
+        _write(root, StateRecordPath.tenant_desired(_TENANT_ID), changed)
+
+        retry = issuer.recognize_exact_retry(
+            raw_request,
+            operator_principal="operator@example.test",
+            artifact=artifact,
+        )
+
+    assert retry is not None
+    assert retry.job_id == issued.job_id
+    assert retry.document["expectedSource"] == issued.document["expectedSource"]
 
 
 def test_noncreate_job_binds_manifest_and_current_deployment(tmp_path: Path) -> None:

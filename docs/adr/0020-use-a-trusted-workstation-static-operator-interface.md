@@ -95,6 +95,12 @@ the SSH response or queue handoff is lost. Root reconciliation may requeue a
 committed pending job by its stored ID; it never reconstructs authority from an
 intake artifact or provisioner request.
 
+After the client closes request input, its transport permits the server's
+bounded five-minute silent execution window plus handoff allowance. Once the
+first authenticated response header arrives, ordinary 30-second idle and
+20-minute total transfer bounds resume for the result and any export bytes.
+SSH keepalives are not treated as application progress.
+
 The activator opens the root-owned job without following links, verifies its
 ownership, mode, link count, schema, request and artifact bindings, and exact
 expected source state, then claims it through a durable phase transition before

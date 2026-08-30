@@ -206,11 +206,14 @@ Each worker begins as `ldp-provisioner` and crosses exactly the installed
 UUID-only sudo rule into the root-owned executor. Its no-new-privileges
 exception exists only for that transition; its capability bounding set retains
 only `CAP_SETUID` and `CAP_SETGID`, neither is ambient, and the remaining unit
-sandbox stays in force. Untrusted archive helpers keep their own
-no-new-privileges policy. Startup repair snapshots authorization state only
-after it owns the intake lock, so an upload committed while repair waits cannot
-be mistaken for abandoned bytes. Exact retries of terminal jobs discard any
-redundant upload immediately. Stray intake bytes never create authority.
+sandbox stays in force. The worker permits process creation because `sudo` must
+spawn the fixed executor; its shared slice and per-unit task ceiling bound all
+descendants. Untrusted archive helpers keep their own no-new-privileges and
+no-child-process policy. Startup repair snapshots authorization state only after
+it owns the intake lock, so an upload committed while repair waits cannot be
+mistaken for abandoned bytes. Exact retries resolve against the original
+immutable source binding and discard redundant terminal-job uploads
+immediately. Stray intake bytes never create authority.
 
 The current retention policy keeps 7 daily, 5 weekly, and 12 monthly scheduled
 snapshots. A change to any of those counts invalidates the prior maintenance

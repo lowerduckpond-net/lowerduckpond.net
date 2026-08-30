@@ -90,6 +90,13 @@ class OperatorAdapter:
         self._issuer.require_enabled()
         if artifact is None:
             self._reader.require_eof(deadline=document_deadline)
+            established = self._issuer.recognize_exact_retry(
+                canonical_request,
+                operator_principal=operator_principal,
+                artifact=None,
+            )
+            if established is not None:
+                return established
             return self._issuer.issue(
                 canonical_request,
                 operator_principal=operator_principal,
@@ -102,42 +109,29 @@ class OperatorAdapter:
             idle_seconds=_ARTIFACT_IDLE_SECONDS,
             clock=self._clock,
         )
-        allow_existing = self._issuer.recognize_exact_retry(
-            canonical_request,
-            operator_principal=operator_principal,
-            artifact=artifact,
-        )
-        if allow_existing:
-            # A prior session may have committed the job and then unwound its
-            # intake lease before commit. Re-admit the exact retransmission so
-            # the retry repairs a missing slot while retaining an existing
-            # verified slot without allocating a second one.
-            with self._intake.admit(
-                operation=str(request["operation"]),
-                correlation_id=request["correlationId"],
-                declared=artifact,
-                read=lambda count: self._reader.read_exact(count, deadline=artifact_deadline),
-                allow_existing=True,
-            ) as lease:
-                self._reader.require_eof(deadline=artifact_deadline)
-                issued = self._issuer.issue(
-                    canonical_request,
-                    operator_principal=operator_principal,
-                    now=self._wall_clock(),
-                    artifact=lease.artifact.verified,
-                )
-                if self._issuer.retry_requires_artifact(issued):
-                    lease.commit()
-                else:
-                    lease.discard()
-                return issued
+        # Resolve durable authority only while intake remains locked. A prior
+        # session may have left the exact bytes before or after its job commit;
+        # the retransmission repairs either case without admitting a second
+        # slot or rebuilding the original expected-source binding.
         with self._intake.admit(
             operation=str(request["operation"]),
             correlation_id=request["correlationId"],
             declared=artifact,
             read=lambda count: self._reader.read_exact(count, deadline=artifact_deadline),
+            allow_existing=True,
         ) as lease:
             self._reader.require_eof(deadline=artifact_deadline)
+            established = self._issuer.recognize_exact_retry(
+                canonical_request,
+                operator_principal=operator_principal,
+                artifact=lease.artifact.verified,
+            )
+            if established is not None:
+                if self._issuer.retry_requires_artifact(established):
+                    lease.commit()
+                else:
+                    lease.discard()
+                return established
             issued = self._issuer.issue(
                 canonical_request,
                 operator_principal=operator_principal,
