@@ -14,6 +14,7 @@ from lowerduckpond_static_host_agent import ARCHIVE_SANDBOX_STATIC_PROPERTIES
 
 REPOSITORY_ROOT = Path(__file__).parents[2]
 BUILDER = (REPOSITORY_ROOT / "scripts/build-static-host-agent").resolve()
+PREFLIGHT = (REPOSITORY_ROOT / "scripts/preflight-m3-dark-host-production").resolve()
 INSTALLER = (
     REPOSITORY_ROOT
     / "config/ansible/roles/static_host_agent/files/install-static-host-agent-artifact"
@@ -123,6 +124,41 @@ def test_installer_refuses_drift_in_an_existing_version(tmp_path: Path) -> None:
     refused = run(INSTALLER, artifact, digest, install_root, verifier)
     assert refused.returncode != 0
     assert "content drifted" in refused.stderr
+
+
+def test_preflight_extraction_preserves_reviewed_modes_under_restrictive_umask(
+    tmp_path: Path,
+) -> None:
+    artifact = tmp_path / "artifact.tar"
+    build = run(BUILDER, artifact)
+    assert build.returncode == 0, build.stderr
+
+    preflight = PREFLIGHT.read_text(encoding="utf-8")
+    assert 'tar --extract --same-permissions --file "${first_artifact}"' in preflight
+
+    extracted = tmp_path / "extracted"
+    extracted.mkdir()
+    original_umask = os.umask(0o077)
+    try:
+        extraction = run(
+            "tar",
+            "--extract",
+            "--same-permissions",
+            "--file",
+            artifact,
+            "--directory",
+            extracted,
+            "--strip-components=1",
+        )
+    finally:
+        os.umask(original_umask)
+    assert extraction.returncode == 0, extraction.stderr
+    assert (extracted / "site-packages").stat().st_mode & 0o777 == ARCHIVE_ROOT_MODE
+
+    extracted.chmod(ARCHIVE_ROOT_MODE)
+    verifier = verifier_for_test(tmp_path)
+    verified = run(verifier, extracted)
+    assert verified.returncode == 0, verified.stderr
 
 
 def test_dark_worker_unit_consumes_the_reviewed_sandbox_contract() -> None:
