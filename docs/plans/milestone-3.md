@@ -701,8 +701,9 @@ provisioner-writable job store.
 
 ### M3.6: deliver authenticated issuance and opaque job execution
 
-Implementation status (2026-08-30): implementation complete; production
-convergence pending. The first review boundary installed the dedicated,
+Implementation status (2026-08-30): implementation complete and the read-only
+production starting gate is implemented; live preflight and production
+convergence remain pending. The first review boundary installed the dedicated,
 password-disabled SSH identity, root-owned key binding and principal,
 forced-command denial adapter, and account-specific OpenSSH restrictions. The
 second added the trusted-workstation client, versioned network-order framing,
@@ -733,6 +734,17 @@ the strict contracts; M3.3 the durable state kernel; M3.4 bounded artifact
 handling; and M3.5 the root-owned dark-host layout and pinned host-agent
 selector. No architecture or product decision blocks the M3.6 convergence
 gate.
+
+The final production-gate slice validates the dedicated public identity and
+stable audit principal, refuses administrative-key reuse, repeats the
+reproducible artifact proof, and reads the production host to require the exact
+disabled flag, empty authoritative and publication inventories, protected lock
+set (including the zero-lock M3.5 starting state or a safely materialized
+subset after interruption), the recorded M3.5 or exact current candidate
+artifact, and absence of an instantiated worker. The
+guarded production runner repeats this proof before mutation. It does not
+install the public key or run Ansible; those remain the separately authorized
+live convergence.
 
 Deliver M3.6 in three reviewable boundaries: first install and prove the
 dedicated SSH identity and forced-command denial surface; then add the bounded

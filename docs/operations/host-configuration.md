@@ -134,10 +134,67 @@ The guarded runner passed its repeated preflight, idempotent second converge,
 production acceptance, backup, and disposable restore. Static publication
 remained disabled.
 
+## M3.6 authenticated-execution starting gate
+
+M3.6 installs a separate SSH identity for routine static operations and the
+bounded systemd handoff that consumes its opaque authorization jobs. It still
+cannot publish a tenant: production inventory keeps
+`static_publication_enabled: false`, the forced command checks that flag before
+reading a request, and every lifecycle handler remains mutation-free until its
+later phase.
+
+Before the live converge, create a dedicated passphrase-protected Ed25519 key
+on the trusted workstation. Do not reuse the administrative key. Back up the
+private key and its passphrase separately before proceeding; only the public
+half is supplied to Ansible. Choose one stable audit principal that matches
+`[A-Za-z0-9][A-Za-z0-9._@-]{0,127}` and does not change merely because the key
+is later rotated. For example:
+
+```console
+operator_key="$HOME/private/lowerduckpond.net/static-operator"
+install -d -m 0700 -- "$(dirname "$operator_key")"
+ssh-keygen -t ed25519 -a 100 \
+  -C 'lowerduckpond.net-static-operator' \
+  -f "$operator_key"
+
+export STATIC_OPERATOR_PUBLIC_KEY="$(<"${operator_key}.pub")"
+export STATIC_OPERATOR_PRINCIPAL='treyturner@lowerduckpond.net'
+```
+
+The example path and principal are suggestions, not protocol requirements.
+After independently confirming the private-key backup, load the administrative
+identity and run the read-only gate from clean, current `main`:
+
+```console
+export ANSIBLE_PRIVATE_KEY_FILE=/absolute/path/to/lowerduckpond.net-admin
+ssh-add "$ANSIBLE_PRIVATE_KEY_FILE"
+just preflight-m3-6-production
+```
+
+The gate rejects a missing, linked, malformed, non-Ed25519, or reused operator
+identity and an invalid principal. It then repeats the M3.5 reproducible-build,
+installed-artifact, SSH-host-key, Caddy, and local-HTTPS proofs. Its additional
+remote checks require the exact disabled publication configuration and status,
+the selected artifact to be either the recorded M3.5 identity or the exact
+current reproducible candidate (so an interrupted converge remains repairable),
+exact and empty platform, tenant, authorization, intent, intake, export, audit,
+release, and Caddy-generation inventories; the exact authoritative-state and
+authorization parent inventories; zero to four safely materialized protected
+lock inodes with no unknown lock name; and no instantiated static worker. The
+zero-lock M3.5 starting state and safe subsets left by an interrupted M3.6
+converge are accepted. The command only reads local and production state.
+
+Stop after the successful preflight until production convergence is explicitly
+authorized. The subsequent `just configure-production` repeats this M3.6 gate,
+then follows the existing two-converge, zero-change, acceptance, backup, and
+disposable-restore sequence. It installs the public operator identity and
+principal, never the private key. Publication remains disabled throughout.
+
 ## Routine operations
 
 After reviewed configuration changes merge, repeat `just
-configure-production`. Ansible validates a candidate Caddyfile before its
+configure-production`. Ansible first repeats the current M3.6 production gate
+and validates a candidate Caddyfile before its
 atomic rename, and systemd validates the live configuration before every
 reload.
 

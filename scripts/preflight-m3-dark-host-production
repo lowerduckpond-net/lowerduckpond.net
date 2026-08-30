@@ -71,6 +71,7 @@ uv run \
 
 ssh \
     -o BatchMode=yes \
+    -o IdentitiesOnly=yes \
     -o StrictHostKeyChecking=yes \
     -i "${ANSIBLE_PRIVATE_KEY_FILE}" \
     ldp-admin@lowerduckpond.net \

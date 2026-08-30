@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+export LC_ALL=C
+
+if [[ $# -ne 1 ]]; then
+    echo "usage: check-m3-6-operator-identity ADMIN_PRIVATE_KEY" >&2
+    exit 64
+fi
+
+admin_private_key=$1
+required_environment=(
+    STATIC_OPERATOR_PRINCIPAL
+    STATIC_OPERATOR_PUBLIC_KEY
+)
+
+for variable_name in "${required_environment[@]}"; do
+    if [[ -z ${!variable_name:-} ]]; then
+        echo "Required environment variable ${variable_name} is not set." >&2
+        exit 2
+    fi
+done
+
+for command_name in grep ssh-keygen; do
+    if ! command -v "${command_name}" >/dev/null 2>&1; then
+        echo "Required command ${command_name} is not installed." >&2
+        exit 2
+    fi
+done
+if [[ ! -f ${admin_private_key} || -L ${admin_private_key} ]]; then
+    echo "The administrative SSH identity must be a regular, non-linked file." >&2
+    exit 2
+fi
+if [[ ${#STATIC_OPERATOR_PUBLIC_KEY} -gt 512 ]] ||
+   [[ ${STATIC_OPERATOR_PUBLIC_KEY} == *$'\n'* ]] ||
+   [[ ${STATIC_OPERATOR_PUBLIC_KEY} == *$'\r'* ]] ||
+   ! grep --extended-regexp --quiet \
+       '^ssh-ed25519 [A-Za-z0-9+/]+={0,2}( [ -~]{1,128})?$' \
+       <<<"${STATIC_OPERATOR_PUBLIC_KEY}"; then
+    echo "STATIC_OPERATOR_PUBLIC_KEY must be one bounded Ed25519 public key." >&2
+    exit 2
+fi
+if [[ ${#STATIC_OPERATOR_PRINCIPAL} -gt 128 ]] ||
+   [[ ! ${STATIC_OPERATOR_PRINCIPAL} =~ ^[A-Za-z0-9][A-Za-z0-9._@-]{0,127}$ ]]; then
+    echo "STATIC_OPERATOR_PRINCIPAL does not match the committed audit grammar." >&2
+    exit 2
+fi
+
+working_directory=$(mktemp -d)
+cleanup() {
+    find "${working_directory}" -depth -delete
+}
+trap cleanup EXIT
+
+operator_public_key_file="${working_directory}/operator.pub"
+printf '%s\n' "${STATIC_OPERATOR_PUBLIC_KEY}" >"${operator_public_key_file}"
+
+operator_identity=$(ssh-keygen -E sha256 -l -f "${operator_public_key_file}") || {
+    echo "STATIC_OPERATOR_PUBLIC_KEY is not a valid OpenSSH public key." >&2
+    exit 2
+}
+if [[ ${operator_identity} != *' (ED25519)' ]]; then
+    echo "STATIC_OPERATOR_PUBLIC_KEY is not an Ed25519 identity." >&2
+    exit 2
+fi
+
+admin_identity=$(ssh-keygen -E sha256 -l -f "${admin_private_key}") || {
+    echo "The administrative SSH identity could not be fingerprinted." >&2
+    exit 2
+}
+operator_fingerprint=${operator_identity#* }
+operator_fingerprint=${operator_fingerprint%% *}
+admin_fingerprint=${admin_identity#* }
+admin_fingerprint=${admin_fingerprint%% *}
+if [[ ${operator_fingerprint} == "${admin_fingerprint}" ]]; then
+    echo "The static operator must not reuse the administrative SSH identity." >&2
+    exit 2
+fi
+
+echo "M3.6 dedicated operator identity inputs passed."
