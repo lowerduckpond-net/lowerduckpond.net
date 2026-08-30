@@ -51,7 +51,7 @@ _EXPECTED_SYSTEM_CALL_FILTERS = (
     "~prlimit64",
     "~sync syncfs",
     "~inotify_init inotify_init1 inotify_add_watch",
-    "~pipe pipe2 mknod mknodat ioctl",
+    "~pipe pipe2 mknod mknodat",
     "~timer_create",
     "~io_uring_setup io_uring_register io_uring_enter",
     "~clone clone3 fork vfork",

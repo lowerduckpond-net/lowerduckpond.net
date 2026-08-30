@@ -828,6 +828,13 @@ def test_static_worker_boundary_is_inert_and_hardened(host: Host) -> None:
     unit = host.file("/etc/systemd/system/lowerduckpond-static-worker@.service")
     assert unit.contains("TemporaryFileSystem=/:ro")
     assert unit.contains("TemporaryFileSystem=/workspace:rw,size=64M,nr_inodes=4096,mode=0700")
+    for bound_path in (
+        "/usr",
+        "/lib",
+        "/lib64",
+        "/etc/lowerduckpond/static-publication.json",
+    ):
+        assert unit.contains(f"BindReadOnlyPaths={bound_path}")
     for property_line in (
         "MemoryMax=256M",
         "MemorySwapMax=0",
@@ -844,6 +851,15 @@ def test_static_worker_boundary_is_inert_and_hardened(host: Host) -> None:
     assert host.run("systemctl is-enabled lowerduckpond-static-worker@.service").stdout.strip() == (
         "static"
     )
+    instance = "lowerduckpond-static-worker@0198d17f-6f4a-7000-8000-000000000001.service"
+    host.run_expect([0], f"systemctl start {instance}")
+    host.run_expect(
+        [0],
+        f"timeout 5s bash -c 'until systemctl is-failed --quiet {instance}; do sleep 0.05; done'",
+    )
+    status = host.run(f"systemctl show --property=ExecMainStatus --value {instance}")
+    assert status.stdout.strip() == str(STATIC_PUBLICATION_DISABLED_STATUS)
+    host.run_expect([0], f"systemctl reset-failed {instance}")
 
 
 def test_caddy_has_no_tenant_routes_while_publication_is_dark(host: Host) -> None:

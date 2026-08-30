@@ -29,12 +29,16 @@ for candidate in "${output}" "${output}.sha256"; do
     fi
 done
 
-for command_name in sha256sum tar uv; do
+for command_name in sha256sum tar uname uv; do
     if ! command -v "${command_name}" >/dev/null 2>&1; then
         echo "Required command ${command_name} is not installed." >&2
         exit 2
     fi
 done
+if [[ $(uname -s) != Linux || $(uname -m) != x86_64 ]]; then
+    echo "Static host-agent artifacts must be built on x86-64 Linux." >&2
+    exit 2
+fi
 
 working_directory=$(mktemp -d)
 cleanup() {
@@ -131,7 +135,12 @@ PY
 
 find "${artifact_root}" -type d -exec chmod 0555 {} +
 
-PYTHONPATH="${site_packages}" python3 -I - "${site_packages}" <<'PY'
+uv run \
+    --quiet \
+    --directory "${repository_root}" \
+    --frozen \
+    --python 3.14 \
+    python -I - "${site_packages}" <<'PY'
 import pathlib
 import sys
 

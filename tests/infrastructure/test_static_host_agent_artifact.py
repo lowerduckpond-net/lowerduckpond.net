@@ -123,3 +123,7 @@ def test_dark_worker_unit_consumes_the_reviewed_sandbox_contract() -> None:
     for property_line, count in expected.items():
         assert lines[property_line] == count
     assert lines["TemporaryFileSystem=/workspace:rw,size=64M,nr_inodes=4096,mode=0700"] == 1
+    assert lines["BindReadOnlyPaths=/usr"] == 1
+    assert lines["BindReadOnlyPaths=/lib"] == 1
+    assert lines["BindReadOnlyPaths=/lib64"] == 1
+    assert lines["BindReadOnlyPaths=/etc/lowerduckpond/static-publication.json"] == 1

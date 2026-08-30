@@ -59,7 +59,13 @@ mkdir "${working_directory}/extracted"
 tar --extract --file "${first_artifact}" \
     --directory "${working_directory}/extracted" --strip-components=1
 chmod 0555 "${working_directory}/extracted"
-"${repository_root}/config/ansible/roles/static_host_agent/files/verify-static-host-agent-artifact" \
+uv run \
+    --quiet \
+    --directory "${repository_root}" \
+    --frozen \
+    --python 3.14 \
+    python -I \
+    "${repository_root}/config/ansible/roles/static_host_agent/files/verify-static-host-agent-artifact" \
     "${working_directory}/extracted"
 
 ssh \

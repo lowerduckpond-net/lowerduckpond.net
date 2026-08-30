@@ -44,15 +44,17 @@ operation, and then revoking the old token.
 
 M3.5 changes ownership and backup scope but intentionally cannot publish a
 tenant. From clean, current `main`, with the administrative key loaded and
-`ANSIBLE_PRIVATE_KEY_FILE` set, run the read-only gate first:
+`ANSIBLE_PRIVATE_KEY_FILE` set, use the supported x86-64 Linux trusted
+workstation and run the read-only gate first:
 
 ```console
 just preflight-m3-dark-host-production
 ```
 
 It fetches `origin/main`, refuses any branch or working-tree drift, builds the
-locked host-agent artifact twice and requires byte-identical output, verifies
-the artifact, and then reads the production host to prove its architecture,
+locked Linux x86-64/Python 3.14 host-agent artifact twice and requires
+byte-identical output, verifies it with the pinned Python 3.14 runtime, and then
+reads the production host to prove its architecture,
 the emptiness and shape of the retired Milestone 2 directories, zero tenant
 route inputs, active Caddy service, and the existing HTTPS fixture. It makes no
 production change. Record the reported artifact SHA-256 and stop here until
