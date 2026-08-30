@@ -109,13 +109,14 @@
   when: static_host_agent_legacy_directories.results[0].stat.exists
   register: static_host_agent_retired_home_contents
 
-- name: Require only unchanged Ubuntu skeleton files in the retired home
+- name: Require only recognized Ubuntu baseline files in the retired home
   ansible.builtin.assert:
     that:
       - >-
         item.path in [
         '/var/lib/lowerduckpond/provisioner/.bash_logout',
         '/var/lib/lowerduckpond/provisioner/.bashrc',
+        '/var/lib/lowerduckpond/provisioner/.cloud-locale-test.skip',
         '/var/lib/lowerduckpond/provisioner/.profile'
         ]
       - item.isreg
@@ -123,8 +124,11 @@
       - item.pw_name == provisioner_user
       - item.gr_name == provisioner_group
       - item.mode == '0644'
+      - >-
+        item.path != '/var/lib/lowerduckpond/provisioner/.cloud-locale-test.skip'
+        or item.size == 0
     fail_msg: >-
-      {{ item.path }} is not a recognized retired provisioner skeleton file;
+      {{ item.path }} is not a recognized retired provisioner baseline file;
       refusing to discard possible tenant history.
   loop: "{{ static_host_agent_retired_home_contents.files | default([]) }}"
   loop_control:
@@ -142,6 +146,7 @@
   loop: "{{ static_host_agent_retired_home_contents.files | default([]) }}"
   loop_control:
     label: "{{ item.path }}"
+  when: item.path != '/var/lib/lowerduckpond/provisioner/.cloud-locale-test.skip'
 
 - name: Prove retired Milestone 2 directories contain no tenant history
   ansible.builtin.find:

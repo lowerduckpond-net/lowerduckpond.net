@@ -56,10 +56,11 @@ locked Linux x86-64/Python 3.14 host-agent artifact twice and requires
 byte-identical output, verifies it with the pinned Python 3.14 runtime, and then
 reads the production host to prove its architecture,
 the absence of tenant history from the retired Milestone 2 directories (while
-recognizing only byte-identical Ubuntu skeleton files in the old provisioner
-home), zero tenant route inputs, active Caddy service, and the existing HTTPS
-fixture. It makes no production change. Record the reported artifact SHA-256
-and stop here until the live convergence is explicitly authorized.
+recognizing only byte-identical Ubuntu skeleton files and the exact empty
+cloud-init locale marker in the old provisioner home), zero tenant route
+inputs, active Caddy service, and the existing HTTPS fixture. It makes no
+production change. Record the reported artifact SHA-256 and stop here until
+the live convergence is explicitly authorized.
 
 The subsequent `just configure-production` repeats this preflight before its
 first mutation. Its first converge installs that exact artifact beneath its
