@@ -158,6 +158,7 @@ def test_runtime_accepts_a_preopened_root_owned_publication_lock_descriptor(
     runtime_fixture: RuntimeFixture,
 ) -> None:
     descriptor = os.open(runtime_fixture.lock, os.O_RDWR | os.O_CLOEXEC)
+    os.set_inheritable(descriptor, True)
     try:
         with (
             CaddyRuntime.from_lock_descriptor(
@@ -172,6 +173,7 @@ def test_runtime_accepts_a_preopened_root_owned_publication_lock_descriptor(
         ):
             runtime.select_active(GENERATION_A)
             assert runtime.read_active() == GENERATION_A
+            assert not os.get_inheritable(descriptor)
     finally:
         os.close(descriptor)
 
@@ -360,6 +362,9 @@ def test_launcher_executes_open_binary_and_configuration_with_bounded_environmen
             prepared.execute(
                 inherited_environment={
                     "HOME": "/should/not/pass",
+                    "LISTEN_FDNAMES": "publication-lock",
+                    "LISTEN_FDS": "1",
+                    "LISTEN_PID": str(os.getpid()),
                     "NOTIFY_SOCKET": "/run/systemd/notify",
                     "INVOCATION_ID": "a" * 32,
                 },

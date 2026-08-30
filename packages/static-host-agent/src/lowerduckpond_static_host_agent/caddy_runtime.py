@@ -48,9 +48,6 @@ _ENVIRONMENT_NAME_PATTERN: Final = re.compile(r"[A-Z_][A-Z0-9_]*", flags=re.ASCI
 _INHERITED_SYSTEMD_ENVIRONMENT: Final = frozenset(
     {
         "INVOCATION_ID",
-        "LISTEN_FDNAMES",
-        "LISTEN_FDS",
-        "LISTEN_PID",
         "NOTIFY_SOCKET",
         "WATCHDOG_PID",
         "WATCHDOG_USEC",
@@ -170,6 +167,7 @@ class CaddyRuntime:
         lock_fd: int | None = None
         try:
             lock_fd = fcntl.fcntl(publication_lock_fd, fcntl.F_DUPFD_CLOEXEC, 0)
+            os.set_inheritable(publication_lock_fd, False)
             _validate_lock(
                 os.fstat(lock_fd),
                 owner=expected_lock_owner,
