@@ -329,6 +329,90 @@ def test_direct_dns_rejects_competing_record_types() -> None:
         )
 
 
+@pytest.mark.parametrize("records_expected", (False, True))
+def test_direct_dns_accepts_safe_dns_only_records(records_expected: bool) -> None:
+    zone_name = "lowerduckpond.net" if records_expected else "lowerduckpond.com"
+    origin_ipv4 = "192.0.2.1"
+
+    class SafeDnsClient:
+        def get_collection(
+            self, _path: str, *, query: dict[str, str] | None = None
+        ) -> list[object]:
+            assert query is None
+            records: list[object] = [
+                {
+                    "name": zone_name,
+                    "type": "TXT",
+                    "content": "v=spf1 -all",
+                    "proxied": False,
+                },
+                {
+                    "name": zone_name,
+                    "type": "MX",
+                    "content": "mail.example.net",
+                    "proxied": False,
+                },
+                {
+                    "name": f"*.{zone_name}",
+                    "type": "CAA",
+                    "content": '0 issue "letsencrypt.org"',
+                    "proxied": False,
+                },
+            ]
+            if records_expected:
+                records.extend(
+                    {
+                        "name": hostname,
+                        "type": "A",
+                        "content": origin_ipv4,
+                        "proxied": False,
+                    }
+                    for hostname in (zone_name, f"*.{zone_name}")
+                )
+            return records
+
+    check_m3_7_production_edge._require_direct_dns(
+        SafeDnsClient(),  # type: ignore[arg-type]
+        zone_id="1" * 32,
+        zone_name=zone_name,
+        origin_ipv4=origin_ipv4,
+        records_expected=records_expected,
+    )
+
+
+@pytest.mark.parametrize(
+    ("record", "message"),
+    (
+        (
+            {"type": "NS", "content": "ns.example.net", "proxied": False},
+            "unsupported record type",
+        ),
+        (
+            {"type": "TXT", "content": "value", "proxied": None},
+            "is not DNS-only",
+        ),
+    ),
+)
+def test_direct_dns_rejects_unapproved_coexisting_records(
+    record: dict[str, object], message: str
+) -> None:
+    class UnsafeDnsClient:
+        def get_collection(
+            self, _path: str, *, query: dict[str, str] | None = None
+        ) -> list[object]:
+            assert query is None
+            return [{"name": "lowerduckpond.com", **record}]
+
+    with pytest.raises(ProductionEdgePreflightError, match=message):
+        check_m3_7_production_edge._require_direct_dns(
+            UnsafeDnsClient(),  # type: ignore[arg-type]
+            zone_id="1" * 32,
+            zone_name="lowerduckpond.com",
+            origin_ipv4="192.0.2.1",
+            records_expected=False,
+        )
+
+
 def test_account_token_policy_requires_exact_permissions_and_resources() -> None:
     token_id = "1" * 32
     zone_resources = frozenset(
