@@ -104,7 +104,7 @@ def test_snapshot_rejects_overlap_between_active_and_retiring_ranges(tmp_path: P
                 "reviewed_at": "2026-08-25",
                 "cloudflare_ipv4_cidrs": ["192.0.2.0/24"],
                 "cloudflare_ipv6_cidrs": ["2001:db8::/32"],
-                "retiring_ipv4_cidrs": ["192.0.2.0/24"],
+                "retiring_ipv4_cidrs": ["192.0.0.0/16"],
                 "retiring_ipv6_cidrs": [],
             }
         ),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 _ROOT = Path(__file__).parents[2]
@@ -19,6 +20,31 @@ def test_production_web_ingress_is_not_restricted_before_edge_proxying() -> None
     assert "retiring_ipv4_cidrs + retiring_ipv6_cidrs" in playbook
     assert "if caddy_origin_pull_enforcement_enabled | bool" in playbook
     assert 'else ["0.0.0.0/0", "::/0"]' in playbook
+
+
+def test_edge_policy_is_installed_before_dns_becomes_proxied() -> None:
+    module = (_ROOT / "infra/opentofu/modules/cloudflare-public-edge/main.tf").read_text(
+        encoding="utf-8"
+    )
+    dependencies = {
+        "cloudflare_zone_setting.ssl",
+        "cloudflare_zone_setting.always_online",
+        "cloudflare_authenticated_origin_pulls_settings.zone",
+        "cloudflare_ruleset.cache_bypass",
+        "cloudflare_ruleset.transform_disable",
+        "cloudflare_ruleset.cdn_cgi_block",
+    }
+
+    for name in ("apex", "wildcard"):
+        match = re.search(
+            rf'resource "cloudflare_dns_record" "{name}" \{{(?P<body>.*?)\n\}}',
+            module,
+            flags=re.DOTALL,
+        )
+        assert match is not None
+        body = match.group("body")
+        assert "depends_on = [" in body
+        assert all(dependency in body for dependency in dependencies)
 
 
 def test_generation_bootstrap_binds_the_staged_or_required_origin_pull_mode() -> None:

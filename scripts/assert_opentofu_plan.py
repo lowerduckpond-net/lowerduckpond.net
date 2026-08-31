@@ -514,7 +514,12 @@ def _check_droplet(plan: dict[str, Any], errors: list[str]) -> None:
         errors.append(f"Droplet is missing required tags: {sorted(EXPECTED_TAGS - tags)}")
 
 
-def _check_firewall(plan: dict[str, Any], errors: list[str]) -> str | None:
+def _check_firewall(
+    plan: dict[str, Any],
+    errors: list[str],
+    *,
+    allow_historical_restricted: bool = False,
+) -> str | None:
     resource = _require_one(plan, "digitalocean_firewall", errors)
     if resource is None:
         return None
@@ -551,6 +556,8 @@ def _check_firewall(plan: dict[str, Any], errors: list[str]) -> str | None:
     if web_sources == WORLD_CIDRS:
         return "open"
     if web_sources == CLOUDFLARE_PROXY_CIDRS:
+        return "restricted"
+    if allow_historical_restricted and web_sources < CLOUDFLARE_PROXY_CIDRS:
         return "restricted"
     errors.append("web ingress must be exactly world-open or the reviewed Cloudflare CIDRs")
     return None
@@ -945,7 +952,7 @@ def _edge_changes(plan: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         if resource.get("address") == "module.host.digitalocean_firewall.host":
             changed_fields = _changed_top_level_fields(resource)
-            if changed_fields and "inbound_rule" in changed_fields:
+            if changed_fields == {"inbound_rule"}:
                 changes.append(resource)
     return changes
 
@@ -959,8 +966,17 @@ def _project_before(plan: dict[str, Any]) -> dict[str, Any]:
     return projected
 
 
-def _edge_phase(plan: dict[str, Any], errors: list[str]) -> str | None:
-    firewall_mode = _check_firewall(plan, errors)
+def _edge_phase(
+    plan: dict[str, Any],
+    errors: list[str],
+    *,
+    allow_historical_restricted: bool = False,
+) -> str | None:
+    firewall_mode = _check_firewall(
+        plan,
+        errors,
+        allow_historical_restricted=allow_historical_restricted,
+    )
     dns_mode = _check_dns(plan, errors)
     _check_public_edge_resources(plan, errors, dns_mode=dns_mode)
     return "enforced" if dns_mode == "proxied" and firewall_mode == "restricted" else dns_mode
@@ -981,10 +997,18 @@ def _check_public_edge_transition(
     if requested_transition == "enforced":
         before_errors: list[str] = []
         before_phase = (
-            None if initial_foundation else _edge_phase(_project_before(plan), before_errors)
+            None
+            if initial_foundation
+            else _edge_phase(
+                _project_before(plan),
+                before_errors,
+                allow_historical_restricted=True,
+            )
         )
-        if before_errors or before_phase != "proxied":
-            errors.append("enforced ingress requires a fully proxied, world-open starting state")
+        if before_errors or before_phase not in {"proxied", "enforced"}:
+            errors.append(
+                "enforced ingress requires a fully proxied or already enforced starting state"
+            )
     if initial_foundation:
         return
     if not edge_changes:

@@ -18,6 +18,15 @@ resource "cloudflare_dns_record" "apex" {
   ttl     = local.edge_enabled ? 1 : 300
   proxied = local.edge_enabled
   comment = "Managed by OpenTofu for Lower Duck Pond Hosting"
+
+  depends_on = [
+    cloudflare_zone_setting.ssl,
+    cloudflare_zone_setting.always_online,
+    cloudflare_authenticated_origin_pulls_settings.zone,
+    cloudflare_ruleset.cache_bypass,
+    cloudflare_ruleset.transform_disable,
+    cloudflare_ruleset.cdn_cgi_block,
+  ]
 }
 
 resource "cloudflare_dns_record" "wildcard" {
@@ -30,6 +39,15 @@ resource "cloudflare_dns_record" "wildcard" {
   ttl     = local.edge_enabled ? 1 : 300
   proxied = local.edge_enabled
   comment = "Managed by OpenTofu for Lower Duck Pond Hosting"
+
+  depends_on = [
+    cloudflare_zone_setting.ssl,
+    cloudflare_zone_setting.always_online,
+    cloudflare_authenticated_origin_pulls_settings.zone,
+    cloudflare_ruleset.cache_bypass,
+    cloudflare_ruleset.transform_disable,
+    cloudflare_ruleset.cdn_cgi_block,
+  ]
 }
 
 data "cloudflare_authenticated_origin_pulls_certificate" "selected" {

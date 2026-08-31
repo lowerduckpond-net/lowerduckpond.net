@@ -209,6 +209,12 @@ then verify the edge before removing the retiring ranges in a later reviewed
 change. Active and retiring arrays must be disjoint, and live plans never fetch
 or trust ranges that were not committed for review.
 
+Dispatch that rotation with the explicit `enforced` public-edge phase. The plan
+policy accepts an enforced-to-enforced firewall update only when the previous
+source ranges are a strict subset of the newly reviewed active-plus-retiring
+union and no other firewall field changes. An ordinary `none` plan continues
+to reject edge mutations.
+
 The two certificate IDs are nonsecret object identifiers. Uploading or
 retiring the corresponding leaves remains a separate temporary-credential
 operation; neither PEM input files nor private keys enter OpenTofu variables or

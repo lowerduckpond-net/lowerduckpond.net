@@ -64,10 +64,8 @@ def load_snapshot(path: Path) -> NetworkSnapshot:
             value["retiring_ipv6_cidrs"], version=6, allow_empty=True
         ),
     )
-    if snapshot.active_ipv4 & snapshot.retiring_ipv4:
-        raise NetworkSnapshotError("active and retiring IPv4 networks overlap")
-    if snapshot.active_ipv6 & snapshot.retiring_ipv6:
-        raise NetworkSnapshotError("active and retiring IPv6 networks overlap")
+    _reject_overlapping_networks(snapshot.active_ipv4, snapshot.retiring_ipv4)
+    _reject_overlapping_networks(snapshot.active_ipv6, snapshot.retiring_ipv6)
     return snapshot
 
 
@@ -118,6 +116,13 @@ def _validated_networks(
     if not networks and not allow_empty:
         raise NetworkSnapshotError("network list cannot be empty")
     return frozenset(networks)
+
+
+def _reject_overlapping_networks(*groups: frozenset[str]) -> None:
+    networks = [ipaddress.ip_network(raw, strict=True) for group in groups for raw in group]
+    for index, network in enumerate(networks):
+        if any(network.overlaps(other) for other in networks[index + 1 :]):
+            raise NetworkSnapshotError("network entries overlap")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
