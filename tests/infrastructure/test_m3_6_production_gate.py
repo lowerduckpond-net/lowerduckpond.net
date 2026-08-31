@@ -125,6 +125,9 @@ def test_production_convergence_repeats_the_m3_6_preflight() -> None:
     assert '"${repository_root}/scripts/preflight-m3-dark-host-production"' in preflight
     assert '"${repository_root}/scripts/check-m3-6-operator-identity"' in preflight
     assert '"${repository_root}/scripts/preflight-m3-6-production"' in configure
+    assert "--allow-exact-failed-caddy-recovery" in configure
+    assert "--allow-exact-failed-caddy-recovery" in preflight
+    assert "--allow-exact-failed-caddy-recovery" in dark_host_preflight
     assert '"${repository_root}/scripts/preflight-m3-dark-host-production"' not in configure
     assert "-o IdentitiesOnly=yes" in preflight
     assert "-o IdentitiesOnly=yes" in dark_host_preflight
@@ -135,8 +138,31 @@ def test_production_convergence_repeats_the_m3_6_preflight() -> None:
     assert "expected_locks=" not in preflight
     assert "generation_root=/etc/caddy/generations" in preflight
     assert 'generation_status=$("${generation_check}")' in preflight
-    assert "ed1c2a95f1aa7b17dcd949c0efb5f815af59e6fae46e0edf3a1f08e3ea4da357" in preflight
+    assert "39f28840373363b9f3b4fa446f05d64b2a30d8904bbfbe7e989bd7f5bd9989fb" in preflight
     assert "3709daa0fd2465a73ae6b0c7dd0d6137cf0ec747e11e5e670df084113265d43b" in preflight
     assert "pending)" in preflight
     assert "the pending Caddy transaction has no durable intent" in preflight
     assert "/etc/caddy/generations\\|root:caddy:750" not in preflight
+    for property_name, expected_value in (
+        ("LoadState", "loaded"),
+        ("ActiveState", "failed"),
+        ("SubState", "failed"),
+        ("Result", "exit-code"),
+    ):
+        assert (
+            f"systemctl show --value --property={property_name} caddy.service) == {expected_value}"
+        ) in dark_host_preflight
+
+
+@pytest.mark.parametrize("script", [PREFLIGHT, DARK_HOST_PREFLIGHT])
+def test_production_preflights_refuse_unknown_recovery_modes(script: Path) -> None:
+    result = subprocess.run(  # noqa: S603 -- reviewed absolute repository helper.
+        [os.fspath(script), "--unknown-recovery-mode"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={"PATH": os.environ["PATH"]},
+    )
+
+    assert result.returncode == INPUT_ERROR_STATUS
+    assert "Usage:" in result.stderr
