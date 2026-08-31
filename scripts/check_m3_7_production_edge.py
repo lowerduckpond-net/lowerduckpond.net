@@ -25,6 +25,8 @@ MAXIMUM_API_RESPONSE_BYTES: Final = 2_000_000
 MAXIMUM_API_COLLECTION_ITEMS: Final = 5_000
 MAXIMUM_API_PAGES: Final = 100
 API_PAGE_SIZE: Final = 50
+DEFAULT_RESPONSE_STATUSES: Final = frozenset({HTTPStatus.OK})
+AOP_SETTING_RESPONSE_STATUSES: Final = frozenset({HTTPStatus.OK, HTTPStatus.ACCEPTED})
 MAXIMUM_CERTIFICATE_BYTES: Final = 20_000
 MINIMUM_TOKEN_LENGTH: Final = 20
 CERTIFICATE_IDENTITY_LINE_COUNT: Final = 2
@@ -87,7 +89,11 @@ class CloudflareClient:
         self._token = token
 
     def _get_response(
-        self, path: str, *, query: Mapping[str, str] | None = None
+        self,
+        path: str,
+        *,
+        query: Mapping[str, str] | None = None,
+        accepted_statuses: frozenset[HTTPStatus] = DEFAULT_RESPONSE_STATUSES,
     ) -> dict[str, object]:
         if not path.startswith("/") or ".." in path:
             raise ProductionEdgePreflightError("a Cloudflare API path is unsafe")
@@ -106,8 +112,10 @@ class CloudflareClient:
             with urllib.request.urlopen(  # noqa: S310 -- request is bound to API_ROOT.
                 request, timeout=API_TIMEOUT_SECONDS
             ) as response:
-                if response.status != HTTPStatus.OK:
-                    raise ProductionEdgePreflightError("Cloudflare did not return HTTP 200")
+                if response.status not in accepted_statuses:
+                    raise ProductionEdgePreflightError(
+                        "Cloudflare returned an unexpected HTTP status"
+                    )
                 raw = response.read(MAXIMUM_API_RESPONSE_BYTES + 1)
         except (OSError, TimeoutError, urllib.error.URLError) as error:
             raise ProductionEdgePreflightError("a Cloudflare API request failed") from error
@@ -126,6 +134,15 @@ class CloudflareClient:
     def get(self, path: str, *, query: Mapping[str, str] | None = None) -> object:
         """Return the result of one read-only Cloudflare request."""
         return self._get_response(path, query=query)["result"]
+
+    def get_aop_setting(self, zone_id: str) -> object:
+        """Read the one endpoint observed returning either 200 or 202."""
+        if ZONE_ID_PATTERN.fullmatch(zone_id) is None:
+            raise ProductionEdgePreflightError("a Cloudflare zone ID is malformed")
+        return self._get_response(
+            f"/zones/{zone_id}/origin_tls_client_auth/settings",
+            accepted_statuses=AOP_SETTING_RESPONSE_STATUSES,
+        )["result"]
 
     def get_collection(self, path: str, *, query: Mapping[str, str] | None = None) -> list[object]:
         """Return a complete, bounded page-paginated collection or fail closed."""
@@ -656,7 +673,7 @@ def _require_direct_dns(
 
 
 def _require_unconfigured_edge(client: CloudflareClient, zone_id: str, zone_name: str) -> None:
-    setting = client.get(f"/zones/{zone_id}/origin_tls_client_auth/settings")
+    setting = client.get_aop_setting(zone_id)
     if not isinstance(setting, dict) or setting.get("enabled") is not False:
         raise ProductionEdgePreflightError(
             f"zone-level origin pulls are already enabled for {zone_name}"

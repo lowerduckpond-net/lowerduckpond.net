@@ -21,8 +21,8 @@ INPUT_ERROR_STATUS = 2
 
 
 class _CloudflareResponse:
-    def __init__(self, payload: dict[str, object]) -> None:
-        self.status = 200
+    def __init__(self, payload: dict[str, object], *, status: int = 200) -> None:
+        self.status = status
         self._payload = json.dumps(payload).encode("utf-8")
 
     def __enter__(self) -> _CloudflareResponse:
@@ -197,6 +197,25 @@ def test_cloudflare_collection_accepts_proven_empty_inventory(
     client = check_m3_7_production_edge.CloudflareClient("x" * 20)
 
     assert client.get_collection("/zones/zone/origin_tls_client_auth") == []
+
+
+def test_aop_setting_alone_accepts_cloudflare_live_202(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {"success": True, "result": {"enabled": False}}
+
+    def fake_urlopen(_request: object, *, timeout: int) -> _CloudflareResponse:
+        assert timeout == check_m3_7_production_edge.API_TIMEOUT_SECONDS
+        return _CloudflareResponse(payload, status=202)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    client = check_m3_7_production_edge.CloudflareClient("x" * 20)
+    zone_id = "1" * 32
+
+    assert client.get_aop_setting(zone_id) == {"enabled": False}
+    with pytest.raises(ProductionEdgePreflightError, match="unexpected HTTP status"):
+        client.get(f"/zones/{zone_id}/origin_tls_client_auth/settings")
 
 
 def test_cloudflare_cursor_collection_follows_every_cursor(
