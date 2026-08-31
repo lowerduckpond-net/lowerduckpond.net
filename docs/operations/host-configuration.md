@@ -182,8 +182,8 @@ The gate rejects a missing, linked, malformed, non-Ed25519, or reused operator
 identity and an invalid principal. It then repeats the M3.5 reproducible-build,
 installed-artifact, SSH-host-key, Caddy, and local-HTTPS proofs. Its additional
 remote checks require the exact disabled publication configuration and status,
-the selected artifact to be either the recorded M3.5 identity or the exact
-current reproducible candidate (so an interrupted converge remains repairable),
+the selected artifact to be either the recorded M3.6 production identity or the
+exact current reproducible candidate (so an interrupted converge remains repairable),
 exact and empty platform, tenant, authorization, intent, intake, export, audit,
 release, and Caddy-generation inventories; the exact authoritative-state and
 authorization parent inventories; zero to four safely materialized protected
@@ -207,6 +207,20 @@ probe returned status 78 and `publication_disabled` from the installed forced
 command. The private key and passphrase were separately backed up, the stable
 audit principal is `production-static-operator`, authoritative state remained
 empty, and publication remained disabled.
+
+## M3.7 public-edge starting gate
+
+M3.7 keeps publication disabled while installing complete Caddy generations
+and adopting the reviewed two-zone Cloudflare edge in fail-safe stages. Follow
+[`m3-public-edge-rollout.md`](m3-public-edge-rollout.md) to prepare the external
+production CA and leaves, verify the protected workflow inputs, and run `just
+preflight-m3-7-production`. That command composes this M3.6 host proof with
+read-only production-state, Cloudflare, certificate, DNS, and GitHub
+environment checks. It performs no host or edge mutation.
+
+Stop after that gate until the first enforcement-disabled host convergence is
+explicitly authorized. The later proxied, host-enforced, and firewall-enforced
+boundaries each retain their own review and authorization requirement.
 
 ## Routine operations
 

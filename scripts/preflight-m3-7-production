@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+export LC_ALL=C
+
+repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+production_root="${repository_root}/infra/opentofu/environments/production"
+required_environment=(
+    ANSIBLE_PRIVATE_KEY_FILE
+    CADDY_CLOUDFLARE_API_TOKEN
+    CADDY_ORIGIN_PULL_CA_PATHS_JSON
+    CLOUDFLARE_API_TOKEN
+    CLOUDFLARE_ORIGIN_PULL_CERTIFICATE_ID
+    CLOUDFLARE_TENANT_ORIGIN_PULL_CERTIFICATE_ID
+    CLOUDFLARE_TENANT_ZONE_ID
+    CLOUDFLARE_ZONE_ID
+    M3_7_TOKEN_AUDIT_TOKEN
+    OPENTOFU_ENCRYPTION_PASSPHRASE
+    OPENTOFU_STATE_ACCESS_KEY_ID
+    OPENTOFU_STATE_BUCKET
+    OPENTOFU_STATE_SECRET_ACCESS_KEY
+    SPACES_REGION
+    STATIC_OPERATOR_PRINCIPAL
+    STATIC_OPERATOR_PUBLIC_KEY
+)
+
+for variable_name in "${required_environment[@]}"; do
+    if [[ -z ${!variable_name:-} ]]; then
+        echo "Required environment variable ${variable_name} is not set." >&2
+        exit 2
+    fi
+done
+
+for command_name in gh jq openssl tofu uv; do
+    if ! command -v "${command_name}" >/dev/null 2>&1; then
+        echo "Required command ${command_name} is not installed." >&2
+        exit 2
+    fi
+done
+
+fail() {
+    printf 'M3.7 production preflight failed: %s\n' "$1" >&2
+    exit 1
+}
+
+"${repository_root}/scripts/preflight-m3-6-production"
+
+export AWS_ACCESS_KEY_ID=${OPENTOFU_STATE_ACCESS_KEY_ID}
+export AWS_SECRET_ACCESS_KEY=${OPENTOFU_STATE_SECRET_ACCESS_KEY}
+export TF_VAR_state_encryption_passphrase=${OPENTOFU_ENCRYPTION_PASSPHRASE}
+
+tofu -chdir="${production_root}" init -input=false -reconfigure \
+    -backend-config="bucket=${OPENTOFU_STATE_BUCKET}" \
+    -backend-config="key=production/opentofu.tfstate" \
+    -backend-config="region=us-east-1" \
+    -backend-config="endpoints={s3=\"https://${SPACES_REGION}.digitaloceanspaces.com\"}" \
+    -backend-config="skip_credentials_validation=true" \
+    -backend-config="skip_requesting_account_id=true" \
+    -backend-config="skip_metadata_api_check=true" \
+    -backend-config="skip_region_validation=true" \
+    -backend-config="skip_s3_checksum=true" \
+    -backend-config="use_lockfile=false" >/dev/null
+
+state_inventory=$(tofu -chdir="${production_root}" state list)
+if grep --extended-regexp --quiet \
+    'cloudflare_(authenticated_origin_pulls_settings|ruleset|zone_setting)' \
+    <<<"${state_inventory}"; then
+    fail "production state already contains a managed M3.7 edge policy"
+fi
+
+if deployed_phase=$(tofu -chdir="${production_root}" output -raw edge_rollout_phase 2>/dev/null); then
+    [[ ${deployed_phase} == direct ]] ||
+        fail "production state is not in the direct edge phase"
+fi
+
+export M3_7_PRODUCTION_RESERVED_IPV4
+M3_7_PRODUCTION_RESERVED_IPV4=$(
+    tofu -chdir="${production_root}" output -raw reserved_ip_address
+)
+
+temporary_directory=$(mktemp -d)
+cleanup() {
+    find "${temporary_directory}" -depth -delete
+}
+trap cleanup EXIT
+
+environment_variables="${temporary_directory}/environment-variables.json"
+environment_secrets="${temporary_directory}/environment-secrets.json"
+repository_variables="${temporary_directory}/repository-variables.json"
+
+gh variable list --env production --json name,value >"${environment_variables}"
+gh secret list --env production --json name >"${environment_secrets}"
+gh variable list --json name,value >"${repository_variables}"
+
+require_environment_variable() {
+    local name=$1
+    local expected=$2
+    if ! jq --exit-status \
+        --arg name "${name}" \
+        --arg expected "${expected}" \
+        '[.[] | select(.name == $name and .value == $expected)] | length == 1' \
+        "${environment_variables}" >/dev/null; then
+        fail "GitHub production variable ${name} is absent or does not match"
+    fi
+}
+
+require_environment_variable CLOUDFLARE_ZONE_ID "${CLOUDFLARE_ZONE_ID}"
+require_environment_variable CLOUDFLARE_TENANT_ZONE_ID "${CLOUDFLARE_TENANT_ZONE_ID}"
+require_environment_variable \
+    CLOUDFLARE_ORIGIN_PULL_CERTIFICATE_ID \
+    "${CLOUDFLARE_ORIGIN_PULL_CERTIFICATE_ID}"
+require_environment_variable \
+    CLOUDFLARE_TENANT_ORIGIN_PULL_CERTIFICATE_ID \
+    "${CLOUDFLARE_TENANT_ORIGIN_PULL_CERTIFICATE_ID}"
+
+if ! jq --exit-status \
+    '[.[] | select(.name == "CLOUDFLARE_API_TOKEN")] | length == 1' \
+    "${environment_secrets}" >/dev/null; then
+    fail "the GitHub production environment has no CLOUDFLARE_API_TOKEN secret"
+fi
+if ! jq --exit-status \
+    '[.[] | select(.name == "INFRASTRUCTURE_PLANS_ENABLED" and .value == "true")]
+     | length == 1' \
+    "${repository_variables}" >/dev/null; then
+    fail "the repository has not enabled protected infrastructure plans"
+fi
+
+uv run python "${repository_root}/scripts/check_m3_7_production_edge.py"
+
+printf 'M3.7 production preflight passed without changing host or edge state.\n'
+printf 'Static publication remains disabled; the production edge remains direct.\n'
+printf 'The selected production leaves are the only active zone-level leaves.\n'
