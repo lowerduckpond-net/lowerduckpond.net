@@ -159,6 +159,8 @@ def test_proxy_networks_are_the_exact_reviewed_repository_snapshot() -> None:
     assert list(CLOUDFLARE_PROXY_CIDRS) == [
         *snapshot["cloudflare_ipv4_cidrs"],
         *snapshot["cloudflare_ipv6_cidrs"],
+        *snapshot["retiring_ipv4_cidrs"],
+        *snapshot["retiring_ipv6_cidrs"],
     ]
 
 

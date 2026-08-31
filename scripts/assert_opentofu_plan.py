@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Final
 
@@ -20,6 +21,8 @@ CLOUDFLARE_NETWORKS = json.loads(
 CLOUDFLARE_PROXY_CIDRS = {
     *CLOUDFLARE_NETWORKS["cloudflare_ipv4_cidrs"],
     *CLOUDFLARE_NETWORKS["cloudflare_ipv6_cidrs"],
+    *CLOUDFLARE_NETWORKS["retiring_ipv4_cidrs"],
+    *CLOUDFLARE_NETWORKS["retiring_ipv6_cidrs"],
 }
 DURABLE_TYPES = {"digitalocean_reserved_ip", "digitalocean_spaces_bucket"}
 MIN_MODULE_ADDRESS_PARTS = 3
@@ -517,6 +520,7 @@ def _check_firewall(plan: dict[str, Any], errors: list[str]) -> str | None:
         return None
     rules = _after(resource).get("inbound_rule") or []
     seen_ports: set[str] = set()
+    rule_counts = {"22": 0, "80": 0, "443": 0}
     web_sources_by_port: dict[str, set[str]] = {}
     for rule in rules:
         protocol = rule.get("protocol")
@@ -526,15 +530,22 @@ def _check_firewall(plan: dict[str, Any], errors: list[str]) -> str | None:
             errors.append(f"unexpected public inbound firewall rule: {protocol}/{port}")
             continue
         seen_ports.add(port)
+        rule_counts[port] += 1
         if port == "22" and (not sources or sources & WORLD_CIDRS):
             errors.append("SSH must use a non-empty explicit source allowlist")
         if port in {"80", "443"}:
             web_sources_by_port[port] = sources
+    structure_valid = True
     if seen_ports != {"22", "80", "443"}:
         errors.append(f"firewall inbound ports must be exactly 22, 80, and 443; found {seen_ports}")
-        return None
+        structure_valid = False
+    if any(count != 1 for count in rule_counts.values()):
+        errors.append("firewall must contain exactly one inbound rule for each reviewed port")
+        structure_valid = False
     if web_sources_by_port.get("80") != web_sources_by_port.get("443"):
         errors.append("TCP 80 and 443 must share one exact source policy")
+        structure_valid = False
+    if not structure_valid:
         return None
     web_sources = web_sources_by_port.get("80", set())
     if web_sources == WORLD_CIDRS:
@@ -939,6 +950,22 @@ def _edge_changes(plan: dict[str, Any]) -> list[dict[str, Any]]:
     return changes
 
 
+def _project_before(plan: dict[str, Any]) -> dict[str, Any]:
+    projected = deepcopy(plan)
+    for resource in projected.get("resource_changes", []):
+        change = resource.get("change", {})
+        change["after"] = change.get("before")
+        change["after_unknown"] = change.get("before_unknown", {})
+    return projected
+
+
+def _edge_phase(plan: dict[str, Any], errors: list[str]) -> str | None:
+    firewall_mode = _check_firewall(plan, errors)
+    dns_mode = _check_dns(plan, errors)
+    _check_public_edge_resources(plan, errors, dns_mode=dns_mode)
+    return "enforced" if dns_mode == "proxied" and firewall_mode == "restricted" else dns_mode
+
+
 def _check_public_edge_transition(
     plan: dict[str, Any],
     errors: list[str],
@@ -951,6 +978,13 @@ def _check_public_edge_transition(
     initial_foundation = droplet is not None and tuple(
         droplet.get("change", {}).get("actions", [])
     ) == ("create",)
+    if requested_transition == "enforced":
+        before_errors: list[str] = []
+        before_phase = (
+            None if initial_foundation else _edge_phase(_project_before(plan), before_errors)
+        )
+        if before_errors or before_phase != "proxied":
+            errors.append("enforced ingress requires a fully proxied, world-open starting state")
     if initial_foundation:
         return
     if not edge_changes:
@@ -1012,13 +1046,8 @@ def assert_plan(
     else:
         _reject_unapproved_archive_storage_migration(plan, errors)
     _check_droplet(plan, errors)
-    firewall_mode = _check_firewall(plan, errors)
     _check_spaces(plan, errors)
-    dns_mode = _check_dns(plan, errors)
-    _check_public_edge_resources(plan, errors, dns_mode=dns_mode)
-    desired_phase = (
-        "enforced" if dns_mode == "proxied" and firewall_mode == "restricted" else dns_mode
-    )
+    desired_phase = _edge_phase(plan, errors)
     _check_public_edge_transition(
         plan,
         errors,

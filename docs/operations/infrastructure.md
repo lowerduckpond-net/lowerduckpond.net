@@ -57,15 +57,18 @@ The workflow needs three distinct DigitalOcean credential roles:
    `OPENTOFU_STATE_SECRET_ACCESS_KEY` can read and write only the state bucket.
    The bootstrap root creates this pair.
 
-`CLOUDFLARE_API_TOKEN` should be an account-owned token with Zone DNS Edit for
-only the `lowerduckpond.net` and `lowerduckpond.com` zones. Their zone IDs are
-supplied separately, so the token does not need Zone Read. The `.com` scope and
-zone ID become required when the Milestone 3 tenant-namespace infrastructure
-lands; until then the existing `.net`-only token remains valid for the current
-stack. The production stack creates a separate Spaces key limited to read/write
-operations on the backup bucket. M3.1 adds an independently scoped archive key,
-retrieves and backs it up only from a trusted workstation, and defers host
-installation until the root-owned archive component lands in M3.10.
+`CLOUDFLARE_API_TOKEN` should be an account-owned token limited to the
+`lowerduckpond.net` and `lowerduckpond.com` zones with DNS Write, Zone Settings
+Write, Cache Settings Write, Config Settings Write, Zone WAF Write, and SSL and
+Certificates Write. Those grants cover the managed records, Full (strict),
+cache-bypass and transform rules, `/cdn-cgi/` block, origin-pull association,
+and public-certificate status read. The zone IDs are supplied separately, so
+the token does not need Zone Read. Do not substitute an account-wide ruleset or
+certificate grant. The production stack creates a separate Spaces key limited
+to read/write operations on the backup bucket. M3.1 adds an independently
+scoped archive key, retrieves and backs it up only from a trusted workstation,
+and defers host installation until the root-owned archive component lands in
+M3.10.
 
 This OpenTofu token is distinct from the Caddy runtime token documented in
 [`host-configuration.md`](host-configuration.md). Caddy needs both Zone Read
@@ -192,7 +195,19 @@ enables both reviewed zone policies while both origin firewalls remain open;
 has independently required origin pulls and adopted the same reviewed
 Cloudflare networks. Roll back `enforced` to `proxied` before selecting
 `direct`; the plan policy rejects an enforced-to-direct jump. `none` is the
-ordinary non-edge mode and resolves to the existing direct state.
+ordinary non-edge mode and retains the phase recorded in production state. It
+resolves to `direct` only for the one-time legacy state that predates this
+output and contains no managed edge policy.
+
+The committed Cloudflare network snapshot separates the currently published
+ranges from temporarily `retiring` ranges. Both the DigitalOcean and host
+firewalls and Caddy's trusted-proxy boundary use their union while enforcement
+is active. When Cloudflare changes its list, first replace the active arrays
+with the exact newly published sets and place every removed range in the
+retiring arrays; rebuild and converge the host artifact and both firewalls,
+then verify the edge before removing the retiring ranges in a later reviewed
+change. Active and retiring arrays must be disjoint, and live plans never fetch
+or trust ranges that were not committed for review.
 
 The two certificate IDs are nonsecret object identifiers. Uploading or
 retiring the corresponding leaves remains a separate temporary-credential

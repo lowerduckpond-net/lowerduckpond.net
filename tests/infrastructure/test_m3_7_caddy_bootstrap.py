@@ -14,6 +14,12 @@ def test_production_web_ingress_is_not_restricted_before_edge_proxying() -> None
     assert "firewall_web_source_cidrs:" not in production
     assert "caddy_origin_pull_enforcement_enabled: false" in production
 
+    playbook = (_ROOT / "config/ansible/playbooks/site.yml").read_text(encoding="utf-8")
+    assert "cloudflare_ipv4_cidrs + cloudflare_ipv6_cidrs" in playbook
+    assert "retiring_ipv4_cidrs + retiring_ipv6_cidrs" in playbook
+    assert "if caddy_origin_pull_enforcement_enabled | bool" in playbook
+    assert 'else ["0.0.0.0/0", "::/0"]' in playbook
+
 
 def test_generation_bootstrap_binds_the_staged_or_required_origin_pull_mode() -> None:
     tasks = (_CADDY_ROLE / "tasks/main.yml").read_text(encoding="utf-8")

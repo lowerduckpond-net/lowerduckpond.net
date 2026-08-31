@@ -622,6 +622,46 @@ def test_allows_exact_enforced_public_edge_transition() -> None:
     assert_plan(_valid_enforced_edge_plan(), public_edge_transition="enforced")
 
 
+def test_rejects_enforcement_directly_from_direct_state() -> None:
+    plan = _valid_public_edge_plan()
+    firewall = next(
+        resource
+        for resource in plan["resource_changes"]
+        if resource["address"] == "module.host.digitalocean_firewall.host"
+    )
+    enforced_firewall = next(
+        resource
+        for resource in _valid_enforced_edge_plan()["resource_changes"]
+        if resource["address"] == "module.host.digitalocean_firewall.host"
+    )
+    firewall["change"]["after"]["inbound_rule"] = deepcopy(
+        enforced_firewall["change"]["after"]["inbound_rule"]
+    )
+    firewall["change"]["actions"] = ["update"]
+
+    with pytest.raises(PlanPolicyError, match="fully proxied, world-open starting state"):
+        assert_plan(plan, public_edge_transition="enforced")
+
+
+def test_rejects_duplicate_web_ingress_rules() -> None:
+    plan = _valid_enforced_edge_plan()
+    firewall = next(
+        resource
+        for resource in plan["resource_changes"]
+        if resource["address"] == "module.host.digitalocean_firewall.host"
+    )
+    firewall["change"]["after"]["inbound_rule"].append(
+        {
+            "protocol": "tcp",
+            "port_range": "443",
+            "source_addresses": ["0.0.0.0/0", "::/0"],
+        }
+    )
+
+    with pytest.raises(PlanPolicyError, match="exactly one inbound rule"):
+        assert_plan(plan, public_edge_transition="enforced")
+
+
 def test_rejects_direct_rollback_that_skips_proxied_firewall_recovery() -> None:
     plan = _valid_enforced_edge_plan()
     for resource in plan["resource_changes"]:

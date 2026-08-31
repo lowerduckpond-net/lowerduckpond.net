@@ -9,6 +9,7 @@ import json
 import sys
 import urllib.request
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from datetime import date
 from http import HTTPStatus
 from pathlib import Path
@@ -25,13 +26,25 @@ class NetworkSnapshotError(RuntimeError):
     """Raised when the reviewed or published network set is unsafe."""
 
 
-def load_snapshot(path: Path) -> tuple[frozenset[str], frozenset[str]]:
-    """Read and validate the committed IPv4 and IPv6 network sets."""
+@dataclass(frozen=True)
+class NetworkSnapshot:
+    """Active provider ranges plus temporarily retained retiring ranges."""
+
+    active_ipv4: frozenset[str]
+    active_ipv6: frozenset[str]
+    retiring_ipv4: frozenset[str]
+    retiring_ipv6: frozenset[str]
+
+
+def load_snapshot(path: Path) -> NetworkSnapshot:
+    """Read and validate the committed active and retiring network sets."""
     value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict) or set(value) != {
         "reviewed_at",
         "cloudflare_ipv4_cidrs",
         "cloudflare_ipv6_cidrs",
+        "retiring_ipv4_cidrs",
+        "retiring_ipv6_cidrs",
     }:
         raise NetworkSnapshotError("reviewed snapshot shape is not recognized")
     reviewed_at = value["reviewed_at"]
@@ -41,10 +54,21 @@ def load_snapshot(path: Path) -> tuple[frozenset[str], frozenset[str]]:
         raise NetworkSnapshotError("review date is not canonical") from error
     if reviewed_at != reviewed_date.isoformat() or reviewed_date > date.today():
         raise NetworkSnapshotError("review date is not canonical")
-    return (
-        _validated_networks(value["cloudflare_ipv4_cidrs"], version=4),
-        _validated_networks(value["cloudflare_ipv6_cidrs"], version=6),
+    snapshot = NetworkSnapshot(
+        active_ipv4=_validated_networks(value["cloudflare_ipv4_cidrs"], version=4),
+        active_ipv6=_validated_networks(value["cloudflare_ipv6_cidrs"], version=6),
+        retiring_ipv4=_validated_networks(
+            value["retiring_ipv4_cidrs"], version=4, allow_empty=True
+        ),
+        retiring_ipv6=_validated_networks(
+            value["retiring_ipv6_cidrs"], version=6, allow_empty=True
+        ),
     )
+    if snapshot.active_ipv4 & snapshot.retiring_ipv4:
+        raise NetworkSnapshotError("active and retiring IPv4 networks overlap")
+    if snapshot.active_ipv6 & snapshot.retiring_ipv6:
+        raise NetworkSnapshotError("active and retiring IPv6 networks overlap")
+    return snapshot
 
 
 def fetch_networks(url: str, *, version: int) -> frozenset[str]:
@@ -64,16 +88,18 @@ def fetch_networks(url: str, *, version: int) -> frozenset[str]:
 
 def compare_snapshot(path: Path) -> None:
     """Require exact equality with both independently published lists."""
-    reviewed_ipv4, reviewed_ipv6 = load_snapshot(path)
+    reviewed = load_snapshot(path)
     published_ipv4 = fetch_networks(IPV4_URL, version=4)
     published_ipv6 = fetch_networks(IPV6_URL, version=6)
-    if reviewed_ipv4 != published_ipv4 or reviewed_ipv6 != published_ipv6:
+    if reviewed.active_ipv4 != published_ipv4 or reviewed.active_ipv6 != published_ipv6:
         raise NetworkSnapshotError(
             "Cloudflare proxy networks changed; review an additive two-phase firewall update"
         )
 
 
-def _validated_networks(value: object, *, version: int) -> frozenset[str]:
+def _validated_networks(
+    value: object, *, version: int, allow_empty: bool = False
+) -> frozenset[str]:
     if not isinstance(value, Iterable) or isinstance(value, (str, bytes)):
         raise NetworkSnapshotError("network list is malformed")
     networks: set[str] = set()
@@ -89,7 +115,7 @@ def _validated_networks(value: object, *, version: int) -> frozenset[str]:
         if raw in networks:
             raise NetworkSnapshotError("network list contains a duplicate")
         networks.add(raw)
-    if not networks:
+    if not networks and not allow_empty:
         raise NetworkSnapshotError("network list cannot be empty")
     return frozenset(networks)
 

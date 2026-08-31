@@ -149,8 +149,6 @@ jobs:
         ${{ vars.CLOUDFLARE_ORIGIN_PULL_CERTIFICATE_ID }}
       TF_VAR_cloudflare_tenant_origin_pull_certificate_id: >-
         ${{ vars.CLOUDFLARE_TENANT_ORIGIN_PULL_CERTIFICATE_ID }}
-      TF_VAR_edge_rollout_phase: >-
-        ${{ inputs.public_edge_phase == 'none' && 'direct' || inputs.public_edge_phase }}
       TF_VAR_digitalocean_project_id: ${{ vars.DIGITALOCEAN_PROJECT_ID }}
       TF_VAR_state_encryption_passphrase: ${{ secrets.OPENTOFU_ENCRYPTION_PASSPHRASE }}
     steps:
@@ -175,6 +173,34 @@ jobs:
             -backend-config="skip_region_validation=true" \
             -backend-config="skip_s3_checksum=true" \
             -backend-config="use_lockfile=false"
+      - name: Resolve the desired public-edge phase
+        id: edge_phase
+        working-directory: ${{ env.PRODUCTION_ROOT }}
+        env:
+          REQUESTED_EDGE_PHASE: ${{ inputs.public_edge_phase }}
+        run: |
+          phase="${REQUESTED_EDGE_PHASE}"
+          if [[ "${phase}" == "none" ]]; then
+            if phase="$(tofu output -raw edge_rollout_phase 2>/dev/null)"; then
+              :
+            else
+              state_resources="$(tofu state list)"
+              if grep -Eq \
+                'cloudflare_(authenticated_origin_pulls_settings|ruleset|zone_setting)' \
+                <<<"${state_resources}"; then
+                echo "Cannot infer the deployed edge phase from legacy state." >&2
+                exit 1
+              fi
+              phase=direct
+            fi
+          fi
+          if [[ ! "${phase}" =~ ^(direct|proxied|enforced)$ ]]; then
+            echo "Resolved public-edge phase is invalid: ${phase}" >&2
+            exit 1
+          fi
+          echo "TF_VAR_edge_rollout_phase=${phase}" >> "${GITHUB_ENV}"
+          echo "phase=${phase}" >> "${GITHUB_OUTPUT}"
+          echo "Production plan retains public-edge phase: ${phase}"
       - name: Create production plan
         id: plan
         working-directory: ${{ env.PRODUCTION_ROOT }}
@@ -239,12 +265,14 @@ jobs:
             --arg changes "${PLAN_CHANGES}" \
             --arg initialize_archive_storage "${{ inputs.initialize_archive_storage }}" \
             --arg public_edge_phase "${{ inputs.public_edge_phase }}" \
+            --arg resolved_public_edge_phase "${{ steps.edge_phase.outputs.phase }}" \
             --arg replace_droplet "${{ inputs.replace_droplet }}" \
             --arg sha256 "$(sha256sum production.tfplan | cut -d ' ' -f 1)" \
             '{commit: $commit, event: $event, ref: $ref, run_id: $run_id,
               changes: $changes,
               initialize_archive_storage: $initialize_archive_storage,
               public_edge_phase: $public_edge_phase,
+              resolved_public_edge_phase: $resolved_public_edge_phase,
               replace_droplet: $replace_droplet,
               plan_sha256: $sha256}' \
             > plan-metadata.json
@@ -300,8 +328,6 @@ jobs:
         ${{ vars.CLOUDFLARE_ORIGIN_PULL_CERTIFICATE_ID }}
       TF_VAR_cloudflare_tenant_origin_pull_certificate_id: >-
         ${{ vars.CLOUDFLARE_TENANT_ORIGIN_PULL_CERTIFICATE_ID }}
-      TF_VAR_edge_rollout_phase: >-
-        ${{ inputs.public_edge_phase == 'none' && 'direct' || inputs.public_edge_phase }}
       TF_VAR_digitalocean_project_id: ${{ vars.DIGITALOCEAN_PROJECT_ID }}
       TF_VAR_state_encryption_passphrase: ${{ secrets.OPENTOFU_ENCRYPTION_PASSPHRASE }}
     steps:
@@ -345,6 +371,14 @@ jobs:
             "${{ inputs.initialize_archive_storage }}"
           test "$(jq -r .public_edge_phase plan-metadata.json)" = \
             "${{ inputs.public_edge_phase }}"
+          jq -e '
+            .resolved_public_edge_phase
+            | IN("direct", "proxied", "enforced")
+          ' plan-metadata.json >/dev/null
+          if [[ "${{ inputs.public_edge_phase }}" != "none" ]]; then
+            test "$(jq -r .resolved_public_edge_phase plan-metadata.json)" = \
+              "${{ inputs.public_edge_phase }}"
+          fi
           test "$(jq -r .replace_droplet plan-metadata.json)" = \
             "${{ inputs.replace_droplet }}"
           test "$(jq -r .plan_sha256 plan-metadata.json)" = \

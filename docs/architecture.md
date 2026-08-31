@@ -274,8 +274,11 @@ Visitors terminate TLS at Cloudflare. Cloudflare then connects to Caddy using
 Full (strict), validates Caddy's independent origin certificate, and presents a
 project-issued origin-pull client certificate. The DigitalOcean and host
 firewalls allow web ingress only from a reviewed snapshot of Cloudflare's
-published networks. Caddy rejects unknown hosts and trusts forwarded visitor
-addresses only from that authenticated path. Administrative SSH continues to
+published networks. During a range rotation, both firewalls use the union of
+the current published ranges and explicit temporary retiring ranges until the
+new set has been verified. Caddy uses that same union for its trusted-proxy
+boundary, rejects unknown hosts, and trusts forwarded visitor addresses only
+from that authenticated path. Administrative SSH continues to
 use the reserved address and administrative CIDR directly.
 
 Caddy obtains and renews apex and wildcard origin certificates for both zones

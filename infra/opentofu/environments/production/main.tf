@@ -3,6 +3,8 @@ locals {
   cloudflare_proxy_cidrs = toset(concat(
     local.cloudflare_networks.cloudflare_ipv4_cidrs,
     local.cloudflare_networks.cloudflare_ipv6_cidrs,
+    local.cloudflare_networks.retiring_ipv4_cidrs,
+    local.cloudflare_networks.retiring_ipv6_cidrs,
   ))
   resource_tags = toset([
     "environment:production",

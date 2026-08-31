@@ -59,8 +59,10 @@ Lock the origin instead of relying on concealed DNS:
 - CI checks the pinned network snapshot against Cloudflare's published list and
   requires a reviewed firewall update when it changes. A live plan never
   downloads an unreviewed allowlist. Range changes use an additive two-phase
-  rotation: admit the new superset at both firewalls and verify it before
-  removing retired ranges from either boundary.
+  rotation: the committed active arrays follow the exact published set while
+  explicit temporary retiring arrays preserve removed ranges at both
+  firewalls. Verify the resulting union before removing those retiring ranges
+  from either boundary in a later reviewed change.
 
 Port 80 cannot use TLS client authentication. It therefore relies on the
 Cloudflare source allowlist and strict host and route handling, and may return

@@ -886,8 +886,10 @@ edge and origin behavior; then enforce client-certificate and Cloudflare-network
 ingress. CI compares the
 committed network set with Cloudflare's published ranges and reports drift, but
 a live plan never downloads and trusts an unreviewed replacement. Range changes
-first add the reviewed superset to both firewalls, verify edge reachability, and
-only then remove retired ranges from both boundaries.
+replace the active arrays with the exact newly published set while placing any
+removed ranges in explicit temporary retiring arrays. Both firewalls consume
+the union; verify edge reachability before removing retired ranges from both
+boundaries in a later reviewed change.
 
 Rotate the project CA as a second phased transaction: add the replacement CA to
 Caddy without removing the old one, move both zones to replacement-CA leaves,
