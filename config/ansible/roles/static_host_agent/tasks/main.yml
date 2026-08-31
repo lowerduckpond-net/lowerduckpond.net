@@ -1,4 +1,9 @@
 ---
+- name: Create the shared Caddy system group before generation storage
+  ansible.builtin.group:
+    name: caddy
+    system: true
+
 - name: Require the fixed static host-agent artifact contract
   ansible.builtin.assert:
     that:

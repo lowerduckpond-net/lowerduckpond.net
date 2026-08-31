@@ -8,11 +8,22 @@
       ansible.builtin.import_tasks: tasks/resolve-acceptance-contract.yml
 
   tasks:
-    - name: Validate the installed Caddy configuration
+    - name: Validate the installed legacy Caddy configuration
       ansible.builtin.command:
         cmd: /usr/local/libexec/lowerduckpond/caddy-validate /etc/caddy/Caddyfile
       changed_when: false
       no_log: true
+      when: not acceptance_caddy_generation_enabled | bool
+
+    - name: Validate the selected complete Caddy generation
+      ansible.builtin.command:
+        cmd: /usr/local/libexec/lowerduckpond/check-caddy-generation
+      register: acceptance_caddy_generation
+      changed_when: false
+      failed_when: >-
+        acceptance_caddy_generation.rc != 0 or
+        acceptance_caddy_generation.stdout | trim != 'unchanged'
+      when: acceptance_caddy_generation_enabled | bool
 
     - name: Verify the HTTPS fixture locally  # noqa command-instead-of-module
       ansible.builtin.command:
@@ -24,6 +35,7 @@
       register: acceptance_https_fixture
       changed_when: false
       failed_when: '"Lower Duck Pond Hosting" not in acceptance_https_fixture.stdout'
+      when: not acceptance_caddy_generation_enabled | bool
 
     - name: Read public TCP listeners
       ansible.builtin.command:
@@ -53,6 +65,15 @@
       register: acceptance_caddy_admin_tcp_listener
       changed_when: false
       failed_when: acceptance_caddy_admin_tcp_listener.stdout | length > 0
+
+    - name: Verify the installed Caddy unit contract
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/systemd-analyze
+          - verify
+          - --recursive-errors=no
+          - /etc/systemd/system/caddy.service
+      changed_when: false
 
     - name: Verify MariaDB accepts only local connections
       ansible.builtin.command:
@@ -111,11 +132,14 @@
         recurse: true
         file_type: any
       register: acceptance_static_routes
+      when: not acceptance_caddy_generation_enabled | bool
 
     - name: Verify static publication remains dark
       ansible.builtin.assert:
         that:
-          - acceptance_static_routes.matched == 0
+          - >-
+            acceptance_caddy_generation_enabled | bool or
+            acceptance_static_routes.matched == 0
           - not static_publication_enabled | bool
 
     - name: Verify the static worker unit contract

@@ -32,6 +32,9 @@ provisioner:
         caddy_cloudflare_api_token: "molecule-cloudflare-token-\u0024RANDOM-\u0024(false)-'example"
         caddy_domain: lowerduckpond.test
         caddy_tls_mode: internal
+        caddy_generation_enabled: false
+        caddy_origin_pull_ca_paths:
+          - /tmp/not-used-by-legacy-molecule.pem
         podman_cgroup_manager: cgroupfs
         backup_repository: /mnt/lowerduckpond-restic-test
         backup_restic_password: "molecule-restic-password-\u0024RANDOM-\u0024(false)-'0000000000"

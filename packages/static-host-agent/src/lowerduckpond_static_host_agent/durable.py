@@ -196,10 +196,20 @@ class DurableDirectory:
             self._closed = True
 
     def duplicate_descriptor(self) -> int:
-        """Return a caller-owned duplicate of this verified directory descriptor."""
+        """Return a caller-owned, independently positioned directory descriptor."""
 
         self._require_open()
-        return os.dup(self._directory_fd)
+        descriptor = os.open(".", _DIRECTORY_OPEN_FLAGS, dir_fd=self._directory_fd)
+        if (
+            os.fstat(descriptor).st_dev,
+            os.fstat(descriptor).st_ino,
+        ) != (
+            os.fstat(self._directory_fd).st_dev,
+            os.fstat(self._directory_fd).st_ino,
+        ):
+            os.close(descriptor)
+            raise StatePathError("state directory changed while reopening its descriptor")
+        return descriptor
 
     def remove_abandoned_publication_temporaries(
         self,
@@ -213,7 +223,7 @@ class DurableDirectory:
         self._require_open()
         if type(maximum_entries) is not int or maximum_entries < 0:
             raise ValueError("temporary scan bound must be a nonnegative integer")
-        descriptor = os.dup(self._directory_fd)
+        descriptor = self.duplicate_descriptor()
         removed = 0
         try:
             names: list[str] = []

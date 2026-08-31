@@ -50,6 +50,7 @@
   vars:
     caddy_domain: m3-qualification.lowerduckpond.net
     caddy_tls_mode: internal
+    caddy_generation_enabled: false
     firewall_admin_source_cidrs: "{{ m3_expected_admin_source_cidrs }}"
     firewall_web_source_cidrs: >-
       {{ cloudflare_ipv4_cidrs + cloudflare_ipv6_cidrs }}

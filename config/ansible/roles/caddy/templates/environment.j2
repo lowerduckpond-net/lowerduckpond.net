@@ -1,2 +1,6 @@
 CLOUDFLARE_API_TOKEN={{ caddy_cloudflare_api_token | quote }}
+XDG_CONFIG_HOME=/etc/caddy
+XDG_DATA_HOME=/var/lib/caddy
+{% if not caddy_generation_enabled | bool %}
 CADDY_ROUTES_GLOB={{ caddy_routes_glob | quote }}
+{% endif %}

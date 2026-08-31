@@ -5,6 +5,7 @@
   gather_facts: true
   vars_files:
     - ../../../platform/versions.yml
+    - ../../../platform/cloudflare-networks.json
   pre_tasks:
     - name: Verify the supported host operating system
       ansible.builtin.assert:
@@ -26,6 +27,12 @@
           - '"0.0.0.0/0" not in firewall_admin_source_cidrs'
           - '"::/0" not in firewall_admin_source_cidrs'
           - caddy_cloudflare_api_token | length >= 20
+          - >-
+            not caddy_generation_enabled | bool or
+            caddy_cloudflare_api_token is match('^[A-Za-z0-9_-]{20,256}$')
+          - caddy_origin_pull_ca_paths | length in [1, 2]
+          - caddy_origin_pull_ca_paths | select('match', '^/') | list | length == caddy_origin_pull_ca_paths | length
+          - caddy_origin_pull_enforcement_enabled is boolean
           - backup_repository | length > 0
           - backup_restic_password | length >= 32
           - backup_spaces_access_key_id | length > 0
@@ -34,7 +41,8 @@
           - static_operator_principal | length > 0
         fail_msg: >-
           Supply the administrative CIDRs, Caddy token, Restic password,
-          bucket-scoped Spaces credentials, and static-operator public identity
+          origin-pull CA trust, bucket-scoped Spaces credentials, and
+          static-operator public identity
           through the documented environment variables.
         quiet: true
       no_log: true
@@ -42,11 +50,18 @@
   roles:
     - role: base
     - role: firewall
-    - role: caddy
     - role: podman
     - role: database
     - role: provisioner
     - role: static_host_agent
     - role: static_operator
+    - role: caddy
     - role: backup
     - role: monitoring
+
+  post_tasks:
+    - name: Remove the retired mutable Caddy configuration
+      ansible.builtin.file:
+        path: /etc/caddy/Caddyfile
+        state: absent
+      when: caddy_generation_enabled | bool

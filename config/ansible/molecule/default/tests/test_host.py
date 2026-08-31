@@ -677,6 +677,10 @@ def test_monitoring_is_local_and_healthy(host: Host) -> None:
 
     health_unit = host.file("/etc/systemd/system/lowerduckpond-health.service")
     assert not health_unit.contains("ReadWritePaths=/var/lib/lowerduckpond/runtime")
+    assert health_unit.contains(
+        "ReadWritePaths=/var/lib/prometheus/node-exporter "
+        "/var/lib/lowerduckpond/static/locks/publication.lock"
+    )
     assert not health_unit.contains("BindReadOnlyPaths=/run/user/21000")
     readiness_unit = host.file(
         "/var/lib/lowerduckpond/runtime/.config/systemd/user/lowerduckpond-podman-ready.service"

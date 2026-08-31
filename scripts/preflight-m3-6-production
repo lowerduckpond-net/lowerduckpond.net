@@ -120,8 +120,6 @@ empty_directory_contracts=(
     /var/lib/lowerduckpond/static/exports\|root:root:700
     /var/lib/lowerduckpond/static/audit\|root:root:700
     /srv/lowerduckpond/sites\|root:caddy:710
-    /etc/caddy/generations\|root:caddy:750
-    /etc/caddy/intents\|root:root:700
 )
 for contract in "${empty_directory_contracts[@]}"; do
     path=${contract%%|*}
@@ -133,6 +131,51 @@ for contract in "${empty_directory_contracts[@]}"; do
     [[ -z $(find "${path}" -mindepth 1 -print -quit) ]] ||
         remote_fail "${path} is not empty"
 done
+
+caddy_intent_root=/etc/caddy/intents
+[[ -d ${caddy_intent_root} && ! -L ${caddy_intent_root} ]] ||
+    remote_fail "${caddy_intent_root} has an unexpected type"
+[[ $(stat --format='%U:%G:%a' -- "${caddy_intent_root}") == root:root:700 ]] ||
+    remote_fail "${caddy_intent_root} metadata drifted"
+caddy_intent_inventory=$(
+    find "${caddy_intent_root}" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort
+)
+if [[ -n ${caddy_intent_inventory} ]]; then
+    [[ ${caddy_intent_inventory} == start.json ]] ||
+        remote_fail "the Caddy startup-intent inventory is not resumable"
+    [[ $(stat --format='%F:%U:%G:%a:%h' -- \
+        "${caddy_intent_root}/start.json") == \
+        regular\ file:root:root:600:1 ]] ||
+        remote_fail "the Caddy startup intent metadata drifted"
+fi
+
+generation_root=/etc/caddy/generations
+[[ -d ${generation_root} && ! -L ${generation_root} ]] ||
+    remote_fail "${generation_root} has an unexpected type"
+[[ $(stat --format='%U:%G:%a' -- "${generation_root}") == root:caddy:750 ]] ||
+    remote_fail "${generation_root} metadata drifted"
+if [[ -n $(find "${generation_root}" -mindepth 1 -print -quit) ]]; then
+    generation_check=/usr/local/libexec/lowerduckpond/check-caddy-generation
+    [[ -f ${generation_check} && ! -L ${generation_check} ]] ||
+        remote_fail "the immutable Caddy generation check is absent"
+    [[ $(stat --format='%U:%G:%a' -- "${generation_check}") == root:root:755 ]] ||
+        remote_fail "the immutable Caddy generation check metadata drifted"
+    generation_status=$("${generation_check}") ||
+        remote_fail "the immutable Caddy generation check failed"
+    case ${generation_status} in
+        unchanged)
+            [[ -z ${caddy_intent_inventory} ]] ||
+                remote_fail "a current Caddy generation retains a startup intent"
+            ;;
+        pending)
+            [[ ${caddy_intent_inventory} == start.json ]] ||
+                remote_fail "the pending Caddy transaction has no durable intent"
+            ;;
+        *) remote_fail "the selected immutable Caddy generation is not current" ;;
+    esac
+elif [[ -n ${caddy_intent_inventory} ]]; then
+    remote_fail "a Caddy startup intent exists without a generation"
+fi
 
 state_parent_directories=(
     /var/lib/lowerduckpond/static/authorization

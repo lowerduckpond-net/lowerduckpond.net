@@ -8,6 +8,7 @@ playbook="${repository_root}/config/ansible/playbooks/check-production-inventory
 export ADMIN_SOURCE_CIDRS_JSON='["192.0.2.1/32"]'
 export BACKUP_REPOSITORY=inventory-test-repository
 export CADDY_CLOUDFLARE_API_TOKEN=inventory-test-caddy-token
+export CADDY_ORIGIN_PULL_CA_PATHS_JSON='["/private/origin-pull-ca.pem"]'
 export RESTIC_PASSWORD=inventory-test-restic-password
 export SPACES_BACKUP_ACCESS_KEY_ID=inventory-test-access-key
 export SPACES_BACKUP_SECRET_ACCESS_KEY=inventory-test-secret-key

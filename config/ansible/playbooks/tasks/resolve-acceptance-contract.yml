@@ -22,6 +22,9 @@
     acceptance_caddy_tls_mode: >-
       {{ caddy_tls_mode |
       default(acceptance_caddy_role_defaults.caddy_tls_mode) }}
+    acceptance_caddy_generation_enabled: >-
+      {{ caddy_generation_enabled |
+      default(acceptance_caddy_role_defaults.caddy_generation_enabled) }}
     acceptance_podman_service_user: >-
       {{ podman_service_user |
       default(acceptance_podman_role_defaults.podman_service_user) }}
