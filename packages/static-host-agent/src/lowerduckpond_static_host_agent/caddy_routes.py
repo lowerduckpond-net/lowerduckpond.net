@@ -23,6 +23,7 @@ TENANT_APEX: Final = TENANT_DOMAIN
 TENANT_WILDCARD: Final = f"*.{TENANT_DOMAIN}"
 PLATFORM_FIXTURE_ROOT: Final = "/srv/lowerduckpond/fixture"
 PLATFORM_CANONICAL_ORIGIN: Final = f"https://{PLATFORM_APEX}"
+CADDY_ADMIN_SOCKET: Final = "/run/caddy/admin.sock"
 GENERIC_NOT_FOUND_BODY: Final = "No Lower Duck Pond site has been provisioned for this name."
 NO_TRANSFORM: Final = "no-transform"
 NO_STORE_NO_TRANSFORM: Final = "no-store, no-transform"
@@ -30,8 +31,9 @@ NO_STORE_NO_TRANSFORM: Final = "no-store, no-transform"
 
 @dataclass(frozen=True, slots=True)
 class PlatformOnlyCaddyRoutes:
-    """The production-dark Caddy HTTP app and its exact semantic route state."""
+    """The complete production-dark Caddy config and its semantic route state."""
 
+    configuration: dict[str, object]
     http_app: dict[str, object]
     route_metadata: dict[str, object]
 
@@ -40,22 +42,27 @@ def build_platform_only_caddy_routes() -> PlatformOnlyCaddyRoutes:
     """Generate fixed platform routes with tenant publication unconditionally disabled."""
 
     route_state = _route_state()
-    return PlatformOnlyCaddyRoutes(
-        http_app={
-            "servers": {
-                "production": {
-                    "listen": [":443"],
-                    "routes": [
-                        _compatibility_redirect_route(),
-                        _platform_apex_route(),
-                        _platform_unknown_route(),
-                        _tenant_namespace_dark_route(),
-                        _catch_all_unknown_route(),
-                    ],
-                    "errors": {"routes": [_error_route()]},
-                }
+    http_app: dict[str, object] = {
+        "servers": {
+            "production": {
+                "listen": [":443"],
+                "routes": [
+                    _compatibility_redirect_route(),
+                    _platform_apex_route(),
+                    _platform_unknown_route(),
+                    _tenant_namespace_dark_route(),
+                    _catch_all_unknown_route(),
+                ],
+                "errors": {"routes": [_error_route()]},
             }
+        }
+    }
+    return PlatformOnlyCaddyRoutes(
+        configuration={
+            "admin": {"listen": f"unix/{CADDY_ADMIN_SOCKET}"},
+            "apps": {"http": http_app},
         },
+        http_app=http_app,
         route_metadata={
             "routeState": route_state,
             "routeStateDigest": caddy_route_state_digest(route_state).to_dict(),

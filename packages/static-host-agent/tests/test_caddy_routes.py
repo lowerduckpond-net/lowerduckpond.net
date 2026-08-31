@@ -212,6 +212,15 @@ def test_route_metadata_is_canonical_self_bound_and_publication_disabled() -> No
     assert canonical_json_bytes(json.loads(canonical)) == canonical
 
 
+def test_complete_configuration_exposes_only_the_unix_admin_and_http_app() -> None:
+    generated = build_platform_only_caddy_routes()
+
+    assert generated.configuration == {
+        "admin": {"listen": "unix//run/caddy/admin.sock"},
+        "apps": {"http": generated.http_app},
+    }
+
+
 def test_generated_routes_contain_no_tenant_content_or_redirect_input_surface() -> None:
     encoded = canonical_json_bytes(build_platform_only_caddy_routes().http_app)
 

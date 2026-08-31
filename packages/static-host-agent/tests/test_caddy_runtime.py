@@ -40,12 +40,8 @@ def _accept_candidate(_generation: object, _environment: object) -> None:
     pass
 
 
-def _configuration(marker: str) -> dict[str, object]:
-    routes = build_platform_only_caddy_routes()
-    return {
-        "admin": {"listen": f"unix//run/caddy/admin-{marker}.sock"},
-        "apps": {"http": routes.http_app},
-    }
+def _configuration() -> dict[str, object]:
+    return build_platform_only_caddy_routes().configuration
 
 
 @dataclass(frozen=True)
@@ -118,7 +114,7 @@ def runtime_fixture(tmp_path: Path) -> RuntimeFixture:
                         "XDG_CONFIG_HOME=/etc/caddy\n"
                         "XDG_DATA_HOME=/var/lib/caddy\n"
                     ).encode(),
-                    configuration=_configuration(marker),
+                    configuration=_configuration(),
                     route_metadata=routes.route_metadata,
                 ),
             )
@@ -468,7 +464,7 @@ def test_prepared_execution_stays_on_one_generation_after_reference_replacement(
                 runtime.select_active(GENERATION_B)
             descriptor = prepared.duplicate_configuration_descriptor()
             try:
-                assert os.read(descriptor, 65_536) == canonical_json_bytes(_configuration("a"))
+                assert os.read(descriptor, 65_536) == canonical_json_bytes(_configuration())
             finally:
                 os.close(descriptor)
             assert prepared.generation_id == GENERATION_A
@@ -512,7 +508,7 @@ def test_launcher_executes_open_binary_and_configuration_with_bounded_environmen
 
     assert captured["binary"] == runtime_fixture.binary.read_bytes()
     assert captured["arguments"][:3] == ["caddy", "run", "--config"]
-    assert captured["configuration"] == canonical_json_bytes(_configuration("a"))
+    assert captured["configuration"] == canonical_json_bytes(_configuration())
     assert captured["configuration_inheritable"] is True
     assert captured["environment"] == {
         "CLOUDFLARE_API_TOKEN": "token-a",
@@ -620,7 +616,6 @@ def test_root_candidate_validation_has_exact_descendant_resource_boundaries() ->
         "--fsize=16777216",
         "--memlock=0",
         "--nofile=64",
-        "--nproc=32",
         "--stack=16777216",
         "--",
         "/bin/bash",
@@ -689,7 +684,7 @@ def test_selection_rejects_configuration_that_disagrees_with_route_state(
 ) -> None:
     generation_id = "0198d17f-6f4a-7000-8000-000000000006"
     generated = build_platform_only_caddy_routes()
-    configuration = _configuration("inconsistent")
+    configuration = _configuration()
     apps = configuration["apps"]
     assert type(apps) is dict
     http = apps["http"]
@@ -708,6 +703,46 @@ def test_selection_rejects_configuration_that_disagrees_with_route_state(
             "terminal": True,
         },
     )
+    with CaddyGenerationStore.open(
+        runtime_fixture.root / "generations",
+        expected_owner=runtime_fixture.owner,
+        expected_group=runtime_fixture.group,
+    ) as store:
+        store.publish(
+            generation_id,
+            CaddyGenerationPayload(
+                binary=CaddyBinarySource(
+                    runtime_fixture.binary,
+                    owner=runtime_fixture.owner,
+                    group=runtime_fixture.group,
+                ),
+                environment=b"XDG_CONFIG_HOME=/etc/caddy\n",
+                configuration=configuration,
+                route_metadata=generated.route_metadata,
+            ),
+        )
+
+    with runtime_fixture.open() as runtime, runtime.locked():
+        runtime.select_active(GENERATION_A)
+        with pytest.raises(CaddyRuntimeError, match="route state disagree"):
+            runtime.select_active(generation_id)
+        assert runtime.read_active() == GENERATION_A
+
+
+@pytest.mark.parametrize("mismatch", ["tcp-admin", "additional-app"])
+def test_selection_rejects_non_allowlisted_control_plane_configuration(
+    runtime_fixture: RuntimeFixture,
+    mismatch: str,
+) -> None:
+    generation_id = "0198d17f-6f4a-7000-8000-000000000007"
+    generated = build_platform_only_caddy_routes()
+    configuration = _configuration()
+    if mismatch == "tcp-admin":
+        configuration["admin"] = {"listen": "0.0.0.0:2019"}
+    else:
+        apps = configuration["apps"]
+        assert type(apps) is dict
+        apps["tls"] = {"automation": {}}
     with CaddyGenerationStore.open(
         runtime_fixture.root / "generations",
         expected_owner=runtime_fixture.owner,
@@ -765,7 +800,7 @@ def test_selection_rejects_systemd_environment_override_and_preserves_active(
                     group=runtime_fixture.group,
                 ),
                 environment=f"{assignment}\n".encode(),
-                configuration=_configuration("invalid-environment"),
+                configuration=_configuration(),
                 route_metadata=routes.route_metadata,
             ),
         )

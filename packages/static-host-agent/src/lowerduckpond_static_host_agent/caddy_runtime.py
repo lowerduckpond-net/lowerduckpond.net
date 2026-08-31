@@ -86,7 +86,6 @@ _CADDY_VALIDATION_RESOURCE_LIMITS: Final = (
     "--fsize=16777216",
     "--memlock=0",
     "--nofile=64",
-    "--nproc=32",
     "--stack=16777216",
 )
 _INHERITED_SYSTEMD_ENVIRONMENT: Final = frozenset(
@@ -836,15 +835,9 @@ def _validate_platform_only_route_binding(generation: PinnedCaddyGeneration) -> 
         os.close(configuration_fd)
 
     expected = build_platform_only_caddy_routes()
-    apps = configuration.get("apps")
-    if (
-        type(apps) is not dict
-        or apps.get("http") != expected.http_app
-        or route_metadata
-        != canonical_json_bytes(
-            expected.route_metadata,
-            maximum_bytes=MAX_CADDY_ROUTE_METADATA_BYTES,
-        )
+    if configuration != expected.configuration or route_metadata != canonical_json_bytes(
+        expected.route_metadata,
+        maximum_bytes=MAX_CADDY_ROUTE_METADATA_BYTES,
     ):
         raise CaddyRuntimeError("selected Caddy configuration and declared route state disagree")
 
