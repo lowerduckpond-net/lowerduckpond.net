@@ -395,6 +395,19 @@
          caddy_generation_unit_probe.changed }}
   when: caddy_generation_enabled | bool
 
+- name: Inspect the existing Caddy unit before the bootstrap transaction
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - show
+      - --property=LoadState
+      - --value
+      - caddy.service
+  register: caddy_generation_existing_unit
+  changed_when: false
+  failed_when: caddy_generation_existing_unit.rc not in [0, 4]
+  when: caddy_generation_enabled | bool
+
 - name: Stop Caddy for the immutable bootstrap transaction
   ansible.builtin.systemd_service:
     name: caddy.service
@@ -402,6 +415,7 @@
   when:
     - caddy_generation_enabled | bool
     - caddy_generation_bootstrap_required | bool
+    - caddy_generation_existing_unit.stdout | trim == 'loaded'
 
 - name: Runtime-mask Caddy for the immutable bootstrap transaction
   ansible.builtin.command:
@@ -476,17 +490,16 @@
     - caddy_generation_enabled | bool
     - caddy_generation_bootstrap_required | bool
 
-- name: Remove the immutable-bootstrap runtime mask
+- name: Remove any immutable-bootstrap runtime mask
   ansible.builtin.command:
     argv:
       - /usr/bin/systemctl
       - unmask
       - --runtime
       - caddy.service
-  changed_when: true
-  when:
-    - caddy_generation_enabled | bool
-    - caddy_generation_bootstrap_required | bool
+  register: caddy_generation_unmask
+  changed_when: caddy_generation_unmask.stdout | trim != ''
+  when: caddy_generation_enabled | bool
 
 - name: Enable and start immutable Caddy
   ansible.builtin.systemd_service:

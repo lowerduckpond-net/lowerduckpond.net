@@ -2,6 +2,8 @@
 firewall_admin_source_cidrs: >-
   {{ lookup('ansible.builtin.env', 'ADMIN_SOURCE_CIDRS_JSON') |
   default('[]', true) | from_json }}
+firewall_web_source_cidrs: >-
+  {{ cloudflare_ipv4_cidrs + cloudflare_ipv6_cidrs }}
 
 caddy_cloudflare_api_token: >-
   {{ lookup('ansible.builtin.env', 'CADDY_CLOUDFLARE_API_TOKEN') }}

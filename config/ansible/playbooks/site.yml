@@ -5,6 +5,7 @@
   gather_facts: true
   vars_files:
     - ../../../platform/versions.yml
+    - ../../../platform/cloudflare-networks.json
   pre_tasks:
     - name: Verify the supported host operating system
       ansible.builtin.assert:
