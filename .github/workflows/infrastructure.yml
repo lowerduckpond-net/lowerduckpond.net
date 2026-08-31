@@ -68,7 +68,7 @@ jobs:
       DIGITALOCEAN_TOKEN: speculative-plan
       SPACES_ACCESS_KEY_ID: speculative-plan
       SPACES_SECRET_ACCESS_KEY: speculative-plan
-      SPECULATIVE_ROOT: /tmp/lowerduckpond-speculative/opentofu/environments/production
+      SPECULATIVE_ROOT: /tmp/lowerduckpond-speculative/infra/opentofu/environments/production
       TF_VAR_admin_source_cidrs: '["192.0.2.10/32"]'
       TF_VAR_admin_ssh_public_key: >-
         ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFakeExampleOnlyDoNotUse speculative-plan
@@ -89,7 +89,7 @@ jobs:
       - name: Prepare isolated local backend
         run: |
           mkdir -p /tmp/lowerduckpond-speculative
-          cp -R infra/opentofu /tmp/lowerduckpond-speculative/opentofu
+          cp -R infra platform /tmp/lowerduckpond-speculative/
           rm "${SPECULATIVE_ROOT}/backend.tf"
       - name: Initialize providers and modules
         working-directory: ${{ env.SPECULATIVE_ROOT }}
