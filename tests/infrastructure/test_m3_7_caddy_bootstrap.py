@@ -11,7 +11,10 @@ def test_production_unit_executes_only_the_descriptor_pinned_launcher() -> None:
 
     assert "OpenFile={{ caddy_publication_lock_path }}:publication-lock" in unit
     assert ":publication-lock:read-write" not in unit
-    assert "ExecStart=/usr/local/libexec/lowerduckpond/launch-caddy-generation" in unit
+    assert (
+        "ExecStart=/usr/local/libexec/lowerduckpond/launch-caddy-generation "
+        "{{ static_host_agent_artifact_sha256 }} {{ caddy_binary_sha256 }}"
+    ) in unit
     assert "Restart=on-failure" in unit
     assert "RestartSec=5s" in unit
     assert "StartLimitBurst=3" in unit
@@ -58,4 +61,5 @@ def test_production_acceptance_and_health_use_the_generation_check() -> None:
     assert "check-caddy-generation" in acceptance
     assert "check-caddy-generation" in health
     assert "bootstrap-caddy-generation" in check
+    assert "static_host_agent_artifact_sha256" in check
     assert "--check" in check
