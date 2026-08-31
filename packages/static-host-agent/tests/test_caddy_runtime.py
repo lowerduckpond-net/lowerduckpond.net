@@ -35,6 +35,7 @@ from lowerduckpond_static_host_agent import (
 
 GENERATION_A = "0198d17f-6f4a-7000-8000-000000000001"
 GENERATION_B = "0198d17f-6f4a-7000-8000-000000000002"
+_ORIGIN_PULL_CA_DER = b"review-only-origin-pull-ca"
 
 
 def _accept_candidate(_generation: object, _environment: object) -> None:
@@ -42,7 +43,7 @@ def _accept_candidate(_generation: object, _environment: object) -> None:
 
 
 def _configuration() -> dict[str, object]:
-    return build_platform_only_caddy_routes().configuration
+    return build_platform_only_caddy_routes(origin_pull_ca_der=(_ORIGIN_PULL_CA_DER,)).configuration
 
 
 @dataclass(frozen=True)
@@ -102,7 +103,7 @@ def runtime_fixture(tmp_path: Path) -> RuntimeFixture:
     binary.write_bytes(Path("/usr/bin/true").read_bytes())
     binary.chmod(0o755)
 
-    routes = build_platform_only_caddy_routes()
+    routes = build_platform_only_caddy_routes(origin_pull_ca_der=(_ORIGIN_PULL_CA_DER,))
     with CaddyGenerationStore.open(
         generations,
         expected_owner=owner,
@@ -570,7 +571,7 @@ def test_selection_authenticates_the_binary_before_candidate_execution(
     untrusted_binary = tmp_path / "untrusted-caddy"
     untrusted_binary.write_bytes(Path("/usr/bin/false").read_bytes())
     untrusted_binary.chmod(0o755)
-    routes = build_platform_only_caddy_routes()
+    routes = build_platform_only_caddy_routes(origin_pull_ca_der=(_ORIGIN_PULL_CA_DER,))
     with CaddyGenerationStore.open(
         runtime_fixture.root / "generations",
         expected_owner=runtime_fixture.owner,
@@ -850,7 +851,7 @@ def test_selection_and_launch_reject_configuration_that_disagrees_with_route_sta
     runtime_fixture: RuntimeFixture,
 ) -> None:
     generation_id = "0198d17f-6f4a-7000-8000-000000000006"
-    generated = build_platform_only_caddy_routes()
+    generated = build_platform_only_caddy_routes(origin_pull_ca_der=(_ORIGIN_PULL_CA_DER,))
     configuration = _configuration()
     apps = configuration["apps"]
     assert type(apps) is dict
@@ -910,7 +911,7 @@ def test_selection_rejects_non_allowlisted_control_plane_configuration(
     mismatch: str,
 ) -> None:
     generation_id = "0198d17f-6f4a-7000-8000-000000000007"
-    generated = build_platform_only_caddy_routes()
+    generated = build_platform_only_caddy_routes(origin_pull_ca_der=(_ORIGIN_PULL_CA_DER,))
     configuration = _configuration()
     if mismatch == "tcp-admin":
         configuration["admin"] = {"listen": "0.0.0.0:2019"}
@@ -959,7 +960,7 @@ def test_selection_rejects_systemd_environment_override_and_preserves_active(
     assignment: str,
 ) -> None:
     generations = runtime_fixture.root / "generations"
-    routes = build_platform_only_caddy_routes()
+    routes = build_platform_only_caddy_routes(origin_pull_ca_der=(_ORIGIN_PULL_CA_DER,))
     generation_id = "0198d17f-6f4a-7000-8000-000000000004"
     with CaddyGenerationStore.open(
         generations,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import errno
 import fcntl
 import os
@@ -864,12 +865,52 @@ def _validate_platform_only_route_binding(generation: PinnedCaddyGeneration) -> 
             os.close(route_metadata_fd)
         os.close(configuration_fd)
 
-    expected = build_platform_only_caddy_routes()
+    origin_pull_ca_der = _configured_origin_pull_ca_der(configuration)
+    expected = build_platform_only_caddy_routes(origin_pull_ca_der=origin_pull_ca_der)
     if configuration != expected.configuration or route_metadata != canonical_json_bytes(
         expected.route_metadata,
         maximum_bytes=MAX_CADDY_ROUTE_METADATA_BYTES,
     ):
         raise CaddyRuntimeError("selected Caddy configuration and declared route state disagree")
+
+
+def _configured_origin_pull_ca_der(configuration: dict[str, object]) -> tuple[bytes, ...]:
+    apps = configuration.get("apps")
+    if type(apps) is not dict:
+        raise CaddyRuntimeError("selected origin-pull trust is malformed")
+    http = apps.get("http")
+    if type(http) is not dict:
+        raise CaddyRuntimeError("selected origin-pull trust is malformed")
+    servers = http.get("servers")
+    if type(servers) is not dict:
+        raise CaddyRuntimeError("selected origin-pull trust is malformed")
+    production = servers.get("production")
+    if type(production) is not dict:
+        raise CaddyRuntimeError("selected origin-pull trust is malformed")
+    policies = production.get("tls_connection_policies")
+    if type(policies) is not list or len(policies) != 1:
+        raise CaddyRuntimeError("selected origin-pull trust is malformed")
+    policy = policies[0]
+    if type(policy) is not dict:
+        raise CaddyRuntimeError("selected origin-pull trust is malformed")
+    authentication = policy.get("client_authentication")
+    if type(authentication) is not dict:
+        raise CaddyRuntimeError("selected origin-pull trust is malformed")
+    pool = authentication.get("ca")
+    if type(pool) is not dict:
+        raise CaddyRuntimeError("selected origin-pull trust is malformed")
+    encoded_certificates = pool.get("trusted_ca_certs")
+    if type(encoded_certificates) is not list or any(
+        type(encoded) is not str for encoded in encoded_certificates
+    ):
+        raise CaddyRuntimeError("selected origin-pull trust is malformed")
+    try:
+        certificates = tuple(
+            base64.b64decode(encoded, validate=True) for encoded in encoded_certificates
+        )
+    except ValueError as error:
+        raise CaddyRuntimeError("selected origin-pull trust is malformed") from error
+    return certificates
 
 
 def _validate_generation_candidate(

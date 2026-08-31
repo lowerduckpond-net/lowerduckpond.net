@@ -35,6 +35,7 @@ from lowerduckpond_static_host_agent.caddy_generation import (
     caddy_route_state_digest,
 )
 from lowerduckpond_static_host_agent.caddy_routes import (
+    CLOUDFLARE_PROXY_CIDRS,
     GENERIC_NOT_FOUND_BODY,
     NO_STORE_NO_TRANSFORM,
     NO_TRANSFORM,
@@ -230,6 +231,7 @@ __all__ = [
     "CADDY_ROUTE_METADATA_NAME",
     "CADDY_ROUTE_METADATA_SCHEMA",
     "CADDY_RUNTIME_ROOT_MODE",
+    "CLOUDFLARE_PROXY_CIDRS",
     "DEFAULT_AUDIT_LIMITS",
     "DEFAULT_INTENT_INVENTORY_LIMITS",
     "DEFAULT_ZIP_LIMITS",
