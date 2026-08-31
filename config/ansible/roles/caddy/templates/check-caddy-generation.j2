@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+exec /usr/local/libexec/lowerduckpond/bootstrap-caddy-generation \
+    --check \
+    {{ caddy_binary_path | quote }} \
+    {{ caddy_generation_binary.stat.checksum | quote }} \
+    /etc/caddy/environment \
+{% for path in caddy_installed_origin_pull_ca_paths %}
+    {{ path | quote }}{{ ' \\' if not loop.last else '' }}
+{% endfor %}

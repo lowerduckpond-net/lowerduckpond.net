@@ -6,6 +6,7 @@ import pytest
 from lowerduckpond_static_host_agent import entrypoints
 
 _DISABLED_STATUS = 78
+_USAGE_STATUS = 64
 
 
 def test_disabled_operator_checks_the_gate_before_opening_state(
@@ -26,3 +27,14 @@ def test_disabled_operator_checks_the_gate_before_opening_state(
 
     assert status == _DISABLED_STATUS
     assert capfd.readouterr().err == "publication_disabled\n"
+
+
+def test_caddy_bootstrap_and_launcher_reject_unfixed_invocations(
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    assert entrypoints.caddy_launcher_main([]) == _USAGE_STATUS
+    assert entrypoints.caddy_bootstrap_main(["relative", "bad"]) == _USAGE_STATUS
+
+    assert capfd.readouterr().err == (
+        "invalid_caddy_launcher_invocation\ninvalid_caddy_bootstrap_invocation\n"
+    )

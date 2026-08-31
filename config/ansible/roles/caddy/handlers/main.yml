@@ -7,8 +7,10 @@
   ansible.builtin.systemd_service:
     name: caddy.service
     state: restarted
+  when: not caddy_generation_enabled | bool
 
 - name: Reload Caddy
   ansible.builtin.systemd_service:
     name: caddy.service
     state: reloaded
+  when: not caddy_generation_enabled | bool

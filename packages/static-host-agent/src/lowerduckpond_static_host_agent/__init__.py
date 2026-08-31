@@ -14,6 +14,12 @@ from lowerduckpond_static_host_agent.audit import (
     AuditLimits,
     AuditState,
 )
+from lowerduckpond_static_host_agent.caddy_bootstrap import (
+    digest_path,
+    ensure_platform_generation,
+    platform_generation_matches,
+    require_exact_file,
+)
 from lowerduckpond_static_host_agent.caddy_generation import (
     CADDY_BINARY_NAME,
     CADDY_CONFIGURATION_NAME,
@@ -380,6 +386,8 @@ __all__ = [
     "build_portable_bundle",
     "caddy_route_state_digest",
     "decoder_main",
+    "digest_path",
+    "ensure_platform_generation",
     "extract_deployment_zip",
     "import_portable_bundle",
     "inspect_deployment_zip",
@@ -387,5 +395,7 @@ __all__ = [
     "measure_filesystem_capacity",
     "measure_release_tree",
     "measure_release_tree_snapshot",
+    "platform_generation_matches",
     "prepare_active_caddy_execution",
+    "require_exact_file",
 ]

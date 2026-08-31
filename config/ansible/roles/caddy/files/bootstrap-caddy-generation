@@ -1,0 +1,14 @@
+#!/usr/bin/python3 -I
+from __future__ import annotations
+
+import pathlib
+import sys
+
+sys.dont_write_bytecode = True
+
+SITE_PACKAGES = pathlib.Path("/opt/lowerduckpond/static-host-agent/current/site-packages")
+sys.path.insert(0, str(SITE_PACKAGES))
+
+from lowerduckpond_static_host_agent.entrypoints import caddy_bootstrap_main  # noqa: E402
+
+raise SystemExit(caddy_bootstrap_main())

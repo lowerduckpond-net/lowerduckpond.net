@@ -50,8 +50,13 @@ check 'Caddy service is active' systemctl is-active --quiet caddy.service
 check 'MariaDB service is active' systemctl is-active --quiet mariadb.service
 check 'node exporter service is active' \
     systemctl is-active --quiet prometheus-node-exporter.service
+{% if caddy_generation_enabled | bool %}
+check 'Caddy generation is complete and current' \
+    /usr/local/libexec/lowerduckpond/check-caddy-generation
+{% else %}
 check 'Caddy configuration validates' \
     /usr/local/libexec/lowerduckpond/caddy-validate /etc/caddy/Caddyfile
+{% endif %}
 check 'Caddy metrics endpoint responds' \
     curl --fail --silent --show-error \
     --unix-socket {{ caddy_admin_socket_path | quote }} http://localhost/metrics

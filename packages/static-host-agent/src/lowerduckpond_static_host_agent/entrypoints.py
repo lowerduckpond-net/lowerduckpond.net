@@ -2,15 +2,40 @@
 
 from __future__ import annotations
 
+import base64
+import grp
+import hashlib
 import os
+import pwd
+import re
 import secrets
+import ssl
 import sys
 import time
 from pathlib import Path
 from typing import Final
 
 from lowerduckpond_static_contracts import ContractError, ProtocolError, validate_uuid7
+from lowerduckpond_static_domain import generate_uuid7
 
+from lowerduckpond_static_host_agent.caddy_bootstrap import (
+    ensure_platform_generation,
+    platform_generation_matches,
+    require_exact_file,
+)
+from lowerduckpond_static_host_agent.caddy_generation import (
+    CADDY_GENERATION_ROOT_MODE,
+    MAX_CADDY_ENVIRONMENT_BYTES,
+    CaddyBinarySource,
+    CaddyGenerationStore,
+)
+from lowerduckpond_static_host_agent.caddy_runtime import (
+    CADDY_PUBLICATION_LOCK_MODE,
+    CADDY_RUNTIME_ROOT_MODE,
+    CaddyRuntime,
+    CaddyRuntimeError,
+    prepare_active_caddy_execution,
+)
 from lowerduckpond_static_host_agent.capacity import CapacityError
 from lowerduckpond_static_host_agent.correlations import CorrelationError
 from lowerduckpond_static_host_agent.execution import AuthorizationExecutor, ExecutionError
@@ -44,6 +69,13 @@ _DECODER: Final = Path("/usr/local/libexec/lowerduckpond/static-request-decoder"
 _PUBLICATION_GATE: Final = Path("/usr/local/libexec/lowerduckpond/static-publication-gate")
 _EXPECTED_OWNER: Final = 0
 _PRINCIPAL_ARGUMENTS: Final = 2
+_CADDY_RUNTIME_ROOT: Final = Path("/etc/caddy")
+_CADDY_GENERATION_ROOT: Final = _CADDY_RUNTIME_ROOT / "generations"
+_PUBLICATION_LOCK: Final = _STATE_ROOT / "locks/publication.lock"
+_SYSTEMD_DESCRIPTOR_START: Final = 3
+_CADDY_ACCOUNT: Final = "caddy"
+_MAXIMUM_CA_PEM_BYTES: Final = 64 * 1024
+_CADDY_BOOTSTRAP_MINIMUM_ARGUMENTS: Final = 4
 
 _SAFE_ERRORS: Final = (
     ContractError,
@@ -166,6 +198,157 @@ def reconcile_main(arguments: list[str] | None = None) -> int:
     except (OSError, ValueError) as error:
         return _fail(f"authorization_reconcile_failed:{type(error).__name__}", 1)
     return 0
+
+
+def caddy_launcher_main(arguments: list[str] | None = None) -> int:
+    """Exec the manifest-verified active generation from systemd's lock descriptor."""
+
+    values = sys.argv[1:] if arguments is None else arguments
+    if len(values) != 1 or re.fullmatch(r"[0-9a-f]{64}", values[0]) is None:
+        return _fail("invalid_caddy_launcher_invocation", 64)
+    try:
+        lock_descriptor = _systemd_publication_lock_descriptor()
+        caddy_user = pwd.getpwnam(_CADDY_ACCOUNT)
+        caddy_group = grp.getgrnam(_CADDY_ACCOUNT)
+        with CaddyRuntime.from_lock_descriptor(
+            _CADDY_RUNTIME_ROOT,
+            lock_descriptor,
+            expected_owner=0,
+            expected_group=caddy_group.gr_gid,
+            validation_uid=caddy_user.pw_uid,
+            validation_gid=caddy_group.gr_gid,
+            expected_binary_sha256=values[0],
+            expected_lock_owner=0,
+            expected_lock_group=0,
+            root_mode=CADDY_RUNTIME_ROOT_MODE,
+            lock_mode=CADDY_PUBLICATION_LOCK_MODE,
+        ) as runtime:
+            execution = prepare_active_caddy_execution(runtime)
+        with execution:
+            execution.execute(inherited_environment=os.environ)
+    except CaddyRuntimeError, KeyError, OSError, ValueError:
+        return _fail("caddy_generation_launch_failed", 1)
+    return _fail("caddy_generation_launch_returned", 1)
+
+
+def caddy_bootstrap_main(arguments: list[str] | None = None) -> int:
+    """Create or verify the first production-dark complete generation."""
+
+    values = sys.argv[1:] if arguments is None else arguments
+    check_only = bool(values and values[0] == "--check")
+    if check_only:
+        values = values[1:]
+    if (
+        len(values) < _CADDY_BOOTSTRAP_MINIMUM_ARGUMENTS
+        or re.fullmatch(r"[0-9a-f]{64}", values[1]) is None
+    ):
+        return _fail("invalid_caddy_bootstrap_invocation", 64)
+    binary_path = Path(values[0])
+    expected_digest = values[1]
+    environment_path = Path(values[2])
+    ca_paths = tuple(Path(value) for value in values[3:])
+    if not all(path.is_absolute() for path in (binary_path, environment_path, *ca_paths)):
+        return _fail("invalid_caddy_bootstrap_invocation", 64)
+    try:
+        caddy_user = pwd.getpwnam(_CADDY_ACCOUNT)
+        caddy_group = grp.getgrnam(_CADDY_ACCOUNT)
+        binary = CaddyBinarySource(binary_path, owner=0, group=0, mode=0o755)
+        if (
+            _digest_bytes(
+                require_exact_file(
+                    binary_path,
+                    owner=0,
+                    group=0,
+                    modes=(0o755,),
+                    maximum_bytes=128 * 1024 * 1024,
+                )
+            )
+            != expected_digest
+        ):
+            raise CaddyRuntimeError("trusted Caddy binary digest disagrees")
+        environment = require_exact_file(
+            environment_path,
+            owner=0,
+            group=caddy_group.gr_gid,
+            modes=(0o640,),
+            maximum_bytes=MAX_CADDY_ENVIRONMENT_BYTES,
+        )
+        origin_pull_ca_der = tuple(
+            _pem_certificate_der(
+                require_exact_file(
+                    path,
+                    owner=0,
+                    group=caddy_group.gr_gid,
+                    modes=(0o440,),
+                    maximum_bytes=_MAXIMUM_CA_PEM_BYTES,
+                )
+            )
+            for path in ca_paths
+        )
+        with (
+            CaddyRuntime.open(
+                _CADDY_RUNTIME_ROOT,
+                _PUBLICATION_LOCK,
+                expected_owner=0,
+                expected_group=caddy_group.gr_gid,
+                validation_uid=caddy_user.pw_uid,
+                validation_gid=caddy_group.gr_gid,
+                expected_binary_sha256=expected_digest,
+                expected_lock_owner=0,
+                expected_lock_group=0,
+            ) as runtime,
+            CaddyGenerationStore.open(
+                _CADDY_GENERATION_ROOT,
+                expected_owner=0,
+                expected_group=caddy_group.gr_gid,
+                expected_mode=CADDY_GENERATION_ROOT_MODE,
+            ) as store,
+        ):
+            if check_only:
+                changed = not platform_generation_matches(
+                    runtime,
+                    binary=binary,
+                    environment=environment,
+                    origin_pull_ca_der=origin_pull_ca_der,
+                )
+            else:
+                changed = ensure_platform_generation(
+                    runtime,
+                    store,
+                    generation_id=generate_uuid7(
+                        clock=lambda: time.time_ns() // 1_000_000,
+                        entropy=_entropy,
+                    ),
+                    binary=binary,
+                    environment=environment,
+                    origin_pull_ca_der=origin_pull_ca_der,
+                )
+    except CaddyRuntimeError, ContractError, KeyError, OSError, RuntimeError, ValueError:
+        return _fail("caddy_generation_bootstrap_failed", 1)
+    os.write(sys.stdout.fileno(), b"changed\n" if changed else b"unchanged\n")
+    return 0
+
+
+def _systemd_publication_lock_descriptor() -> int:
+    if (
+        os.environ.get("LISTEN_PID") != str(os.getpid())
+        or os.environ.get("LISTEN_FDS") != "1"
+        or os.environ.get("LISTEN_FDNAMES") != "publication-lock"
+    ):
+        raise CaddyRuntimeError("systemd did not pass the exact publication lock")
+    return _SYSTEMD_DESCRIPTOR_START
+
+
+def _pem_certificate_der(data: bytes) -> bytes:
+    try:
+        encoded = ssl.PEM_cert_to_DER_cert(data.decode("ascii"))
+        return base64.b64decode(encoded, validate=True)
+    except (UnicodeError, ValueError) as error:
+        raise CaddyRuntimeError("origin-pull CA is not one PEM certificate") from error
+
+
+def _digest_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
 
 def _fail(message: str, status: int) -> int:

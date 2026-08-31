@@ -13,6 +13,7 @@
           - firewall_admin_source_cidrs == ['192.0.2.1/32']
           - backup_repository == 'inventory-test-repository'
           - caddy_cloudflare_api_token == 'inventory-test-caddy-token'
+          - caddy_origin_pull_ca_paths == ['/private/origin-pull-ca.pem']
           - backup_restic_password == 'inventory-test-restic-password'
           - backup_spaces_access_key_id == 'inventory-test-access-key'
           - backup_spaces_secret_access_key == 'inventory-test-secret-key'

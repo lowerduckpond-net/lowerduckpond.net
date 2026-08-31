@@ -5,6 +5,10 @@ firewall_admin_source_cidrs: >-
 
 caddy_cloudflare_api_token: >-
   {{ lookup('ansible.builtin.env', 'CADDY_CLOUDFLARE_API_TOKEN') }}
+caddy_origin_pull_ca_paths: >-
+  {{ lookup('ansible.builtin.env', 'CADDY_ORIGIN_PULL_CA_PATHS_JSON') |
+  default('[]', true) | from_json }}
+caddy_generation_enabled: true
 
 backup_repository: "{{ lookup('ansible.builtin.env', 'BACKUP_REPOSITORY') }}"
 backup_restic_password: "{{ lookup('ansible.builtin.env', 'RESTIC_PASSWORD') }}"

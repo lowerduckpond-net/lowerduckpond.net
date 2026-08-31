@@ -4,6 +4,7 @@
     name:
       - git
       - golang-go
+      - openssl
       - util-linux
     state: present
 
@@ -153,6 +154,7 @@
     recurse: true
     file_type: any
   register: caddy_tenant_route_inputs
+  when: not caddy_generation_enabled | bool
 
 - name: Keep tenant Caddy generation dark during Milestone 3.5
   ansible.builtin.assert:
@@ -161,6 +163,7 @@
       - caddy_tenant_route_inputs.matched == 0
     fail_msg: >-
       M3.5 refuses static publication and any tenant-bearing Caddy candidate.
+  when: not caddy_generation_enabled | bool
 
 - name: Install the Caddy configuration atomically after validation
   ansible.builtin.template:
@@ -172,6 +175,7 @@
     validate: /usr/local/libexec/lowerduckpond/caddy-validate %s
   no_log: true
   notify: Reload Caddy
+  when: not caddy_generation_enabled | bool
 
 - name: Install the hardened Caddy service
   ansible.builtin.template:
@@ -183,12 +187,286 @@
   notify:
     - Reload systemd for Caddy
     - Restart Caddy
+  when: not caddy_generation_enabled | bool
 
 - name: Flush Caddy handlers before starting the service
   ansible.builtin.meta: flush_handlers
+  when: not caddy_generation_enabled | bool
 
 - name: Enable and start Caddy
   ansible.builtin.systemd_service:
     name: caddy.service
     enabled: true
     state: started
+  when: not caddy_generation_enabled | bool
+
+- name: Inspect controller origin-pull CA inputs
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    checksum_algorithm: sha256
+    follow: false
+  loop: "{{ caddy_origin_pull_ca_paths }}"
+  register: caddy_controller_origin_pull_ca_inputs
+  delegate_to: localhost
+  become: false
+  when: caddy_generation_enabled | bool
+
+- name: Require one or two regular controller origin-pull CA inputs
+  ansible.builtin.assert:
+    that:
+      - caddy_origin_pull_ca_paths | length in [1, 2]
+      - item.stat.exists
+      - item.stat.isreg
+      - not item.stat.islnk
+      - item.stat.size > 0
+      - item.stat.size <= 65536
+    quiet: true
+  loop: "{{ caddy_controller_origin_pull_ca_inputs.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: caddy_generation_enabled | bool
+
+- name: Require distinct origin-pull CA inputs
+  ansible.builtin.assert:
+    that:
+      - >-
+        caddy_controller_origin_pull_ca_inputs.results |
+        map(attribute='stat.checksum') | unique | list | length ==
+        caddy_origin_pull_ca_paths | length
+    quiet: true
+  when: caddy_generation_enabled | bool
+
+- name: Stage generation-bound origin-pull CA inputs
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/etc/caddy/origin-pull-ca-{{ index }}.pem"
+    owner: root
+    group: caddy
+    mode: "0440"
+  no_log: true
+  loop: "{{ caddy_origin_pull_ca_paths }}"
+  loop_control:
+    index_var: index
+  register: caddy_origin_pull_ca_installation
+  when: caddy_generation_enabled | bool
+
+- name: Remove retired staged origin-pull CA inputs
+  ansible.builtin.file:
+    path: "/etc/caddy/origin-pull-ca-{{ item }}.pem"
+    state: absent
+  loop: "{{ range(caddy_origin_pull_ca_paths | length, 2) | list }}"
+  when: caddy_generation_enabled | bool
+
+- name: Record the installed origin-pull CA input paths
+  ansible.builtin.set_fact:
+    caddy_installed_origin_pull_ca_paths: >-
+      {{ caddy_origin_pull_ca_installation.results |
+      map(attribute='dest') | list }}
+  when: caddy_generation_enabled | bool
+
+- name: Verify each installed origin-pull CA certificate
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/openssl
+      - verify
+      - -x509_strict
+      - -CAfile
+      - "{{ item }}"
+      - "{{ item }}"
+  changed_when: false
+  loop: "{{ caddy_installed_origin_pull_ca_paths }}"
+  when: caddy_generation_enabled | bool
+
+- name: Read installed origin-pull CA constraints and expiry
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/openssl
+      - x509
+      - -in
+      - "{{ item }}"
+      - -noout
+      - -checkend
+      - "604800"
+      - -text
+  changed_when: false
+  loop: "{{ caddy_installed_origin_pull_ca_paths }}"
+  register: caddy_origin_pull_ca_constraints
+  when: caddy_generation_enabled | bool
+
+- name: Require CA signing constraints on origin-pull trust
+  ansible.builtin.assert:
+    that:
+      - "'CA:TRUE' in item.stdout"
+      - "'Certificate Sign' in item.stdout"
+    quiet: true
+  loop: "{{ caddy_origin_pull_ca_constraints.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: caddy_generation_enabled | bool
+
+- name: Read the trusted Caddy binary identity
+  ansible.builtin.stat:
+    path: "{{ caddy_binary_path }}"
+    checksum_algorithm: sha256
+    follow: false
+  register: caddy_generation_binary
+  when: caddy_generation_enabled | bool
+
+- name: Require the exact trusted Caddy binary metadata
+  ansible.builtin.assert:
+    that:
+      - caddy_generation_binary.stat.exists
+      - caddy_generation_binary.stat.isreg
+      - not caddy_generation_binary.stat.islnk
+      - caddy_generation_binary.stat.pw_name == 'root'
+      - caddy_generation_binary.stat.gr_name == 'root'
+      - caddy_generation_binary.stat.mode == '0755'
+      - caddy_generation_binary.stat.checksum is match('^[0-9a-f]{64}$')
+    quiet: true
+  when: caddy_generation_enabled | bool
+
+- name: Probe immutable Caddy bootstrap installation changes
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/usr/local/libexec/lowerduckpond/{{ item }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - bootstrap-caddy-generation
+    - launch-caddy-generation
+  check_mode: true
+  register: caddy_generation_bootstrap_probe
+  when: caddy_generation_enabled | bool
+
+- name: Probe the immutable Caddy generation check
+  ansible.builtin.template:
+    src: check-caddy-generation.j2
+    dest: /usr/local/libexec/lowerduckpond/check-caddy-generation
+    owner: root
+    group: root
+    mode: "0755"
+  check_mode: true
+  register: caddy_generation_check_probe
+  when: caddy_generation_enabled | bool
+
+- name: Probe the immutable Caddy unit change
+  ansible.builtin.template:
+    src: caddy-generation.service.j2
+    dest: /etc/systemd/system/caddy.service
+    owner: root
+    group: root
+    mode: "0644"
+  vars:
+    caddy_binary_sha256: "{{ caddy_generation_binary.stat.checksum }}"
+  check_mode: true
+  register: caddy_generation_unit_probe
+  when: caddy_generation_enabled | bool
+
+- name: Check whether the platform-only generation is current
+  ansible.builtin.command:
+    argv: >-
+      {{ ['/usr/local/libexec/lowerduckpond/bootstrap-caddy-generation',
+          '--check', caddy_binary_path,
+          caddy_generation_binary.stat.checksum,
+          '/etc/caddy/environment'] +
+         caddy_installed_origin_pull_ca_paths }}
+  register: caddy_generation_check
+  changed_when: false
+  failed_when: >-
+    caddy_generation_check.rc != 0 or
+    caddy_generation_check.stdout | trim not in ['changed', 'unchanged']
+  when:
+    - caddy_generation_enabled | bool
+    - >-
+      caddy_generation_bootstrap_probe.results |
+      selectattr('changed') | list | length == 0
+
+- name: Decide whether a stopped and masked bootstrap transaction is required
+  ansible.builtin.set_fact:
+    caddy_generation_bootstrap_required: >-
+      {{ caddy_generation_check.skipped | default(false) or
+         caddy_generation_check.stdout | default('changed') | trim == 'changed' or
+         static_host_agent_installation.changed | default(false) or
+         caddy_generation_bootstrap_probe.results |
+         selectattr('changed') | list | length > 0 or
+         caddy_generation_check_probe.changed or
+         caddy_generation_unit_probe.changed }}
+  when: caddy_generation_enabled | bool
+
+- name: Stop and mask Caddy for the immutable bootstrap transaction
+  ansible.builtin.systemd_service:
+    name: caddy.service
+    state: stopped
+    masked: true
+  when:
+    - caddy_generation_enabled | bool
+    - caddy_generation_bootstrap_required | bool
+
+- name: Install the frozen immutable Caddy bootstrap commands
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/usr/local/libexec/lowerduckpond/{{ item }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - bootstrap-caddy-generation
+    - launch-caddy-generation
+  when:
+    - caddy_generation_enabled | bool
+    - caddy_generation_bootstrap_required | bool
+
+- name: Install the frozen immutable Caddy generation check
+  ansible.builtin.template:
+    src: check-caddy-generation.j2
+    dest: /usr/local/libexec/lowerduckpond/check-caddy-generation
+    owner: root
+    group: root
+    mode: "0755"
+  when:
+    - caddy_generation_enabled | bool
+    - caddy_generation_bootstrap_required | bool
+
+- name: Install the immutable Caddy unit
+  ansible.builtin.template:
+    src: caddy-generation.service.j2
+    dest: /etc/systemd/system/caddy.service
+    owner: root
+    group: root
+    mode: "0644"
+  vars:
+    caddy_binary_sha256: "{{ caddy_generation_binary.stat.checksum }}"
+  when:
+    - caddy_generation_enabled | bool
+    - caddy_generation_bootstrap_required | bool
+
+- name: Reload systemd inside the immutable bootstrap transaction
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when:
+    - caddy_generation_enabled | bool
+    - caddy_generation_bootstrap_required | bool
+
+- name: Build, validate, and select the complete platform-only generation
+  ansible.builtin.command:
+    argv: >-
+      {{ ['/usr/local/libexec/lowerduckpond/bootstrap-caddy-generation',
+          caddy_binary_path, caddy_generation_binary.stat.checksum,
+          '/etc/caddy/environment'] + caddy_installed_origin_pull_ca_paths }}
+  register: caddy_generation_bootstrap
+  changed_when: caddy_generation_bootstrap.stdout | trim == 'changed'
+  failed_when: >-
+    caddy_generation_bootstrap.rc != 0 or
+    caddy_generation_bootstrap.stdout | trim not in ['changed', 'unchanged']
+  when:
+    - caddy_generation_enabled | bool
+    - caddy_generation_bootstrap_required | bool
+
+- name: Unmask, enable, and start immutable Caddy
+  ansible.builtin.systemd_service:
+    name: caddy.service
+    masked: false
+    enabled: true
+    state: started
+  when: caddy_generation_enabled | bool

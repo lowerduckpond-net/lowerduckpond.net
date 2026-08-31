@@ -843,6 +843,8 @@ def _parse_environment(data: bytes) -> dict[str, str]:
         ):
             raise CaddyRuntimeError("selected Caddy environment contains a forbidden name")
         result[name] = value
+    if not result.get("CLOUDFLARE_API_TOKEN"):
+        raise CaddyRuntimeError("selected Caddy environment has no DNS credential")
     return result
 
 

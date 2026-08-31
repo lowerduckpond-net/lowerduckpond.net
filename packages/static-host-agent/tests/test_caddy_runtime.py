@@ -884,7 +884,7 @@ def test_selection_and_launch_reject_configuration_that_disagrees_with_route_sta
                     owner=runtime_fixture.owner,
                     group=runtime_fixture.group,
                 ),
-                environment=b"XDG_CONFIG_HOME=/etc/caddy\n",
+                environment=b"CLOUDFLARE_API_TOKEN=token-a\nXDG_CONFIG_HOME=/etc/caddy\n",
                 configuration=configuration,
                 route_metadata=generated.route_metadata,
             ),
@@ -932,7 +932,7 @@ def test_selection_rejects_non_allowlisted_control_plane_configuration(
                     owner=runtime_fixture.owner,
                     group=runtime_fixture.group,
                 ),
-                environment=b"XDG_CONFIG_HOME=/etc/caddy\n",
+                environment=b"CLOUDFLARE_API_TOKEN=token-a\nXDG_CONFIG_HOME=/etc/caddy\n",
                 configuration=configuration,
                 route_metadata=generated.route_metadata,
             ),
@@ -984,6 +984,46 @@ def test_selection_rejects_systemd_environment_override_and_preserves_active(
     with runtime_fixture.open() as runtime, runtime.locked():
         runtime.select_active(GENERATION_A)
         with pytest.raises(CaddyRuntimeError, match="forbidden name"):
+            runtime.select_active(generation_id)
+        assert runtime.read_active() == GENERATION_A
+
+
+@pytest.mark.parametrize(
+    "environment",
+    [
+        b"XDG_CONFIG_HOME=/etc/caddy\n",
+        b"CLOUDFLARE_API_TOKEN=\nXDG_CONFIG_HOME=/etc/caddy\n",
+    ],
+)
+def test_selection_rejects_a_missing_or_empty_dns_credential(
+    runtime_fixture: RuntimeFixture,
+    environment: bytes,
+) -> None:
+    generations = runtime_fixture.root / "generations"
+    routes = build_platform_only_caddy_routes(origin_pull_ca_der=(_ORIGIN_PULL_CA_DER,))
+    generation_id = "0198d17f-6f4a-7000-8000-000000000005"
+    with CaddyGenerationStore.open(
+        generations,
+        expected_owner=runtime_fixture.owner,
+        expected_group=runtime_fixture.group,
+    ) as store:
+        store.publish(
+            generation_id,
+            CaddyGenerationPayload(
+                binary=CaddyBinarySource(
+                    runtime_fixture.binary,
+                    owner=runtime_fixture.owner,
+                    group=runtime_fixture.group,
+                ),
+                environment=environment,
+                configuration=_configuration(),
+                route_metadata=routes.route_metadata,
+            ),
+        )
+
+    with runtime_fixture.open() as runtime, runtime.locked():
+        runtime.select_active(GENERATION_A)
+        with pytest.raises(CaddyRuntimeError, match="no DNS credential"):
             runtime.select_active(generation_id)
         assert runtime.read_active() == GENERATION_A
 
