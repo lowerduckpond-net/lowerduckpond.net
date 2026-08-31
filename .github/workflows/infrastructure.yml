@@ -74,8 +74,8 @@ jobs:
         ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFakeExampleOnlyDoNotUse speculative-plan
       TF_VAR_archive_bucket_name: lowerduckpond-net-tenant-archives-speculative
       TF_VAR_backup_bucket_name: lowerduckpond-net-backups-speculative
-      TF_VAR_cloudflare_zone_id: 00000000000000000000000000000000
-      TF_VAR_cloudflare_tenant_zone_id: 11111111111111111111111111111111
+      TF_VAR_cloudflare_zone_id: "00000000000000000000000000000000"
+      TF_VAR_cloudflare_tenant_zone_id: "11111111111111111111111111111111"
       TF_VAR_digitalocean_project_id: 00000000-0000-0000-0000-000000000000
       TF_VAR_state_encryption_passphrase: speculative-plan-passphrase-000000000000
     steps:
@@ -97,6 +97,7 @@ jobs:
       - name: Create no-credential speculative plan
         working-directory: ${{ env.SPECULATIVE_ROOT }}
         run: |
+          set -o pipefail
           tofu plan -input=false -lock=false -no-color -refresh=false \
             -out=speculative.tfplan | tee plan.txt
       - name: Enforce plan policy
