@@ -24,18 +24,27 @@ from pathlib import Path
 from types import TracebackType
 from typing import Final, Self
 
-from lowerduckpond_static_contracts import ContractError, validate_uuid7
+from lowerduckpond_static_contracts import (
+    ContractError,
+    canonical_json_bytes,
+    decode_json_object,
+    validate_uuid7,
+)
 
 from lowerduckpond_static_host_agent.caddy_generation import (
     CADDY_BINARY_NAME,
     CADDY_CONFIGURATION_NAME,
     CADDY_ENVIRONMENT_NAME,
     CADDY_GENERATION_ROOT_MODE,
+    CADDY_ROUTE_METADATA_NAME,
+    MAX_CADDY_CONFIGURATION_BYTES,
     MAX_CADDY_ENVIRONMENT_BYTES,
+    MAX_CADDY_ROUTE_METADATA_BYTES,
     CaddyGenerationManifest,
     CaddyGenerationStore,
     PinnedCaddyGeneration,
 )
+from lowerduckpond_static_host_agent.caddy_routes import build_platform_only_caddy_routes
 from lowerduckpond_static_host_agent.locks import LockManager, LockMode, LockName
 
 CADDY_ACTIVE_REFERENCE_NAME: Final = "active"
@@ -56,8 +65,30 @@ _ENVIRONMENT_NAME_PATTERN: Final = re.compile(r"[A-Z_][A-Z0-9_]*", flags=re.ASCI
 _CADDY_VALIDATION_OUTPUT_BYTES: Final = 262_144
 _CADDY_VALIDATION_TIMEOUT_SECONDS: Final = 30
 _BASH: Final = "/bin/bash"
+_PRLIMIT: Final = "/usr/bin/prlimit"
 _SETPRIV: Final = "/usr/bin/setpriv"
+_SYSTEMCTL: Final = "/usr/bin/systemctl"
+_SYSTEMD_RUN: Final = "/usr/bin/systemd-run"
 _EXEC_PINNED_CADDY: Final = 'exec -a caddy "/proc/self/fd/$1" "${@:2}"'
+_CADDY_VALIDATION_SCOPE_PROPERTIES: Final = (
+    "MemoryMax=256M",
+    "MemorySwapMax=0",
+    "TasksMax=32",
+    "CPUQuota=100%",
+    "RuntimeMaxSec=30s",
+    "OOMPolicy=kill",
+    "KillMode=control-group",
+)
+_CADDY_VALIDATION_RESOURCE_LIMITS: Final = (
+    "--as=536870912",
+    "--core=0",
+    "--cpu=15",
+    "--fsize=16777216",
+    "--memlock=0",
+    "--nofile=64",
+    "--nproc=32",
+    "--stack=16777216",
+)
 _INHERITED_SYSTEMD_ENVIRONMENT: Final = frozenset(
     {
         "INVOCATION_ID",
@@ -109,6 +140,12 @@ class SelectedCaddyGeneration:
 class _ValidationResult:
     returncode: int
     stdout: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class _ValidationInvocation:
+    command: tuple[str, ...]
+    scope_unit: str | None
 
 
 class CaddyRuntime:
@@ -344,6 +381,7 @@ class CaddyRuntime:
         store = self._open_generation_store()
         try:
             with store.open_verified(canonical_id) as generation:
+                _validate_platform_only_route_binding(generation)
                 environment = _read_generation_environment(generation)
                 self._candidate_validator(generation, environment)
         finally:
@@ -778,6 +816,39 @@ def _parse_environment(data: bytes) -> dict[str, str]:
     return result
 
 
+def _validate_platform_only_route_binding(generation: PinnedCaddyGeneration) -> None:
+    configuration_fd = generation.duplicate_payload_descriptor(CADDY_CONFIGURATION_NAME)
+    route_metadata_fd: int | None = None
+    try:
+        route_metadata_fd = generation.duplicate_payload_descriptor(CADDY_ROUTE_METADATA_NAME)
+        configuration = decode_json_object(
+            os.pread(configuration_fd, MAX_CADDY_CONFIGURATION_BYTES + 1, 0),
+            maximum_bytes=MAX_CADDY_CONFIGURATION_BYTES,
+        )
+        route_metadata = os.pread(
+            route_metadata_fd,
+            MAX_CADDY_ROUTE_METADATA_BYTES + 1,
+            0,
+        )
+    finally:
+        if route_metadata_fd is not None:
+            os.close(route_metadata_fd)
+        os.close(configuration_fd)
+
+    expected = build_platform_only_caddy_routes()
+    apps = configuration.get("apps")
+    if (
+        type(apps) is not dict
+        or apps.get("http") != expected.http_app
+        or route_metadata
+        != canonical_json_bytes(
+            expected.route_metadata,
+            maximum_bytes=MAX_CADDY_ROUTE_METADATA_BYTES,
+        )
+    ):
+        raise CaddyRuntimeError("selected Caddy configuration and declared route state disagree")
+
+
 def _validate_generation_candidate(
     generation: PinnedCaddyGeneration,
     environment: Mapping[str, str],
@@ -837,7 +908,12 @@ def _create_validation_environment(
         os.geteuid() != 0 and os.getegid() != validation_gid
     ):
         raise CaddyRuntimeError("cannot enter the Caddy validation identity")
-    root = Path(tempfile.mkdtemp(prefix="lowerduckpond-caddy-validation-"))
+    root = Path(
+        tempfile.mkdtemp(
+            prefix="lowerduckpond-caddy-validation-",
+            dir="/dev/shm",
+        )
+    )
     try:
         data = root / "data"
         data.mkdir(mode=0o700)
@@ -855,6 +931,58 @@ def _create_validation_environment(
     return root, isolated
 
 
+def _validation_invocation(  # noqa: PLR0913
+    binary_fd: int,
+    arguments: list[str],
+    *,
+    validation_uid: int,
+    validation_gid: int,
+    root_execution: bool,
+    scope_suffix: str,
+) -> _ValidationInvocation:
+    identity_arguments: list[str] = []
+    capability_arguments = ["--inh-caps=-all", "--ambient-caps=-all"]
+    if root_execution:
+        identity_arguments = [
+            f"--reuid={validation_uid}",
+            f"--regid={validation_gid}",
+            "--clear-groups",
+        ]
+        capability_arguments.append("--bounding-set=-all")
+    sandboxed_command = [
+        _SETPRIV,
+        *identity_arguments,
+        *capability_arguments,
+        "--no-new-privs",
+        "--",
+        _PRLIMIT,
+        *_CADDY_VALIDATION_RESOURCE_LIMITS,
+        "--",
+        _BASH,
+        "-c",
+        _EXEC_PINNED_CADDY,
+        "lowerduckpond-caddy-validation",
+        str(binary_fd),
+        *arguments,
+    ]
+    if not root_execution:
+        return _ValidationInvocation(tuple(sandboxed_command), None)
+    if re.fullmatch(r"[0-9a-f]{16}", scope_suffix, flags=re.ASCII) is None:
+        raise ValueError("validation scope suffix must be 16 lowercase hexadecimal digits")
+    scope_stem = f"lowerduckpond-caddy-validation-{scope_suffix}"
+    command = [
+        _SYSTEMD_RUN,
+        "--quiet",
+        "--scope",
+        "--collect",
+        f"--unit={scope_stem}",
+    ]
+    for item in _CADDY_VALIDATION_SCOPE_PROPERTIES:
+        command.extend(("--property", item))
+    command.extend(("--", *sandboxed_command))
+    return _ValidationInvocation(tuple(command), f"{scope_stem}.scope")
+
+
 def _run_validation_command(  # noqa: PLR0913
     binary_fd: int,
     arguments: list[str],
@@ -864,32 +992,18 @@ def _run_validation_command(  # noqa: PLR0913
     validation_uid: int,
     validation_gid: int,
 ) -> _ValidationResult:
-    identity_arguments: list[str] = []
-    capability_arguments = ["--inh-caps=-all", "--ambient-caps=-all"]
-    if os.geteuid() == 0:
-        identity_arguments = [
-            f"--reuid={validation_uid}",
-            f"--regid={validation_gid}",
-            "--clear-groups",
-        ]
-        capability_arguments.append("--bounding-set=-all")
-    command = [
-        _SETPRIV,
-        *identity_arguments,
-        *capability_arguments,
-        "--no-new-privs",
-        "--",
-        _BASH,
-        "-c",
-        _EXEC_PINNED_CADDY,
-        "lowerduckpond-caddy-validation",
-        str(binary_fd),
-        *arguments,
-    ]
+    invocation = _validation_invocation(
+        binary_fd,
+        arguments,
+        validation_uid=validation_uid,
+        validation_gid=validation_gid,
+        root_execution=os.geteuid() == 0,
+        scope_suffix=secrets.token_hex(8),
+    )
     descriptors = (binary_fd, *inherited_descriptors)
     try:
         process = subprocess.Popen(  # noqa: S603 - fixed setpriv and pinned input
-            command,
+            invocation.command,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -900,7 +1014,7 @@ def _run_validation_command(  # noqa: PLR0913
     except OSError as error:
         raise CaddyRuntimeError("selected Caddy validation could not run") from error
     if process.stdout is None:
-        _kill_validation_process(process)
+        _kill_validation_process(process, scope_unit=invocation.scope_unit)
         raise CaddyRuntimeError("selected Caddy validation has no output boundary")
     output = bytearray()
     descriptor = process.stdout.fileno()
@@ -934,14 +1048,35 @@ def _run_validation_command(  # noqa: PLR0913
             raise CaddyRuntimeError("selected Caddy validation exceeded its deadline") from error
         return _ValidationResult(returncode, bytes(output))
     except BaseException:
-        _kill_validation_process(process)
+        _kill_validation_process(process, scope_unit=invocation.scope_unit)
         raise
     finally:
         selector.close()
         process.stdout.close()
 
 
-def _kill_validation_process(process: subprocess.Popen[bytes]) -> None:
+def _kill_validation_process(
+    process: subprocess.Popen[bytes],
+    *,
+    scope_unit: str | None,
+) -> None:
+    if scope_unit is not None:
+        with suppress(OSError, subprocess.TimeoutExpired):
+            subprocess.run(  # noqa: S603 - fixed systemd scope operation
+                [
+                    _SYSTEMCTL,
+                    "kill",
+                    "--kill-whom=all",
+                    "--signal=KILL",
+                    scope_unit,
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env={"PATH": "/usr/bin:/bin"},
+                check=False,
+                timeout=5,
+            )
     with suppress(ProcessLookupError):
         os.killpg(process.pid, signal.SIGKILL)
     with suppress(ProcessLookupError):
