@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TypedDict
 
+import lowerduckpond_static_host_agent.caddy_runtime as caddy_runtime_module
 import pytest
 from lowerduckpond_static_contracts import canonical_json_bytes
 from lowerduckpond_static_host_agent import (
@@ -53,6 +54,8 @@ class RuntimeFixture:
             self.lock,
             expected_owner=self.owner,
             expected_group=self.group,
+            validation_uid=self.owner,
+            validation_gid=self.group,
             candidate_validator=_accept_candidate,
         )
 
@@ -62,6 +65,8 @@ class RuntimeFixture:
             self.lock,
             expected_owner=self.owner,
             expected_group=self.group,
+            validation_uid=self.owner,
+            validation_gid=self.group,
         )
 
 
@@ -69,6 +74,7 @@ class CapturedExecution(TypedDict, total=False):
     binary: bytes
     arguments: list[str]
     configuration: bytes
+    configuration_fd: int
     configuration_inheritable: bool
     environment: dict[str, str]
 
@@ -289,6 +295,8 @@ def test_runtime_accepts_a_preopened_root_owned_publication_lock_descriptor(
                 descriptor,
                 expected_owner=runtime_fixture.owner,
                 expected_group=runtime_fixture.group,
+                validation_uid=runtime_fixture.owner,
+                validation_gid=runtime_fixture.group,
                 expected_lock_owner=runtime_fixture.owner,
                 expected_lock_group=runtime_fixture.group,
                 candidate_validator=_accept_candidate,
@@ -471,29 +479,28 @@ def test_launcher_executes_open_binary_and_configuration_with_bounded_environmen
         captured["binary"] = os.pread(binary_fd, os.fstat(binary_fd).st_size, 0)
         captured["arguments"] = arguments
         captured["configuration"] = Path(arguments[-1]).read_bytes()
-        captured["configuration_inheritable"] = os.get_inheritable(
-            int(arguments[-1].rsplit("/", 1)[1])
-        )
+        configuration_fd = int(arguments[-1].rsplit("/", 1)[1])
+        captured["configuration_fd"] = configuration_fd
+        captured["configuration_inheritable"] = os.get_inheritable(configuration_fd)
         captured["environment"] = environment
 
     with runtime_fixture.open() as runtime:
         with runtime.locked():
             runtime.select_active(GENERATION_A)
-        with (
-            prepare_active_caddy_execution(runtime) as prepared,
-            pytest.raises(CaddyRuntimeError, match="unexpectedly returned"),
-        ):
-            prepared.execute(
-                inherited_environment={
-                    "HOME": "/should/not/pass",
-                    "LISTEN_FDNAMES": "publication-lock",
-                    "LISTEN_FDS": "1",
-                    "LISTEN_PID": str(os.getpid()),
-                    "NOTIFY_SOCKET": "/run/systemd/notify",
-                    "INVOCATION_ID": "a" * 32,
-                },
-                execve=fake_execve,
-            )
+        with prepare_active_caddy_execution(runtime) as prepared:
+            with pytest.raises(CaddyRuntimeError, match="unexpectedly returned"):
+                prepared.execute(
+                    inherited_environment={
+                        "HOME": "/should/not/pass",
+                        "LISTEN_FDNAMES": "publication-lock",
+                        "LISTEN_FDS": "1",
+                        "LISTEN_PID": str(os.getpid()),
+                        "NOTIFY_SOCKET": "/run/systemd/notify",
+                        "INVOCATION_ID": "a" * 32,
+                    },
+                    execve=fake_execve,
+                )
+            assert not os.get_inheritable(captured["configuration_fd"])
 
     assert captured["binary"] == runtime_fixture.binary.read_bytes()
     assert captured["arguments"][:3] == ["caddy", "run", "--config"]
@@ -539,6 +546,24 @@ def test_selection_rejects_a_non_caddy_executable_and_preserves_active(
         assert runtime.read_active() == GENERATION_A
 
 
+def test_selection_bounds_output_from_an_invalid_candidate(
+    runtime_fixture: RuntimeFixture,
+) -> None:
+    descriptor = os.open("/usr/bin/python3", os.O_RDONLY | os.O_CLOEXEC)
+    try:
+        with pytest.raises(CaddyRuntimeError, match="output exceeded its limit"):
+            caddy_runtime_module._run_validation_command(
+                descriptor,
+                ["-c", "while True: print('unbounded candidate output')"],
+                environment={},
+                inherited_descriptors=(),
+                validation_uid=runtime_fixture.owner,
+                validation_gid=runtime_fixture.group,
+            )
+    finally:
+        os.close(descriptor)
+
+
 def test_selection_rejects_configuration_the_pinned_binary_cannot_load(
     runtime_fixture: RuntimeFixture,
     monkeypatch: pytest.MonkeyPatch,
@@ -546,11 +571,24 @@ def test_selection_rejects_configuration_the_pinned_binary_cannot_load(
     with runtime_fixture.open() as runtime, runtime.locked():
         runtime.select_active(GENERATION_A)
 
+    isolated_environments: list[dict[str, str]] = []
+
     def run(
+        _binary_fd: int,
         arguments: list[str],
-        **_options: object,
+        **options: object,
     ) -> subprocess.CompletedProcess[bytes]:
-        if arguments[1] == "list-modules":
+        environment = options["environment"]
+        assert type(environment) is dict
+        isolated_environments.append(environment)
+        data_roots = {
+            environment[name] for name in ("HOME", "TMPDIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME")
+        }
+        assert len(data_roots) == 1
+        assert Path(data_roots.pop()).is_dir()
+        assert options["validation_uid"] == runtime_fixture.owner
+        assert options["validation_gid"] == runtime_fixture.group
+        if arguments[0] == "list-modules":
             return subprocess.CompletedProcess(
                 arguments,
                 0,
@@ -559,7 +597,7 @@ def test_selection_rejects_configuration_the_pinned_binary_cannot_load(
         return subprocess.CompletedProcess(arguments, 1, stdout=b"")
 
     monkeypatch.setattr(
-        "lowerduckpond_static_host_agent.caddy_runtime.subprocess.run",
+        "lowerduckpond_static_host_agent.caddy_runtime._run_validation_command",
         run,
     )
 
@@ -567,10 +605,27 @@ def test_selection_rejects_configuration_the_pinned_binary_cannot_load(
         with pytest.raises(CaddyRuntimeError, match="configuration is invalid"):
             runtime.select_active(GENERATION_B)
         assert runtime.read_active() == GENERATION_A
+    validation_directory = isolated_environments[0]["TMPDIR"]
+    assert [item["TMPDIR"] for item in isolated_environments] == [
+        validation_directory,
+        validation_directory,
+    ]
+    assert not Path(validation_directory).exists()
 
 
+@pytest.mark.parametrize(
+    "assignment",
+    [
+        "NOTIFY_SOCKET=/attacker-controlled",
+        "LISTEN_FDS=1",
+        "LISTEN_FDNAMES=publication-lock",
+        f"LISTEN_PID={os.getpid()}",
+        "LD_PRELOAD=/attacker-controlled",
+    ],
+)
 def test_selection_rejects_systemd_environment_override_and_preserves_active(
     runtime_fixture: RuntimeFixture,
+    assignment: str,
 ) -> None:
     generations = runtime_fixture.root / "generations"
     routes = build_platform_only_caddy_routes()
@@ -588,7 +643,7 @@ def test_selection_rejects_systemd_environment_override_and_preserves_active(
                     owner=runtime_fixture.owner,
                     group=runtime_fixture.group,
                 ),
-                environment=b"NOTIFY_SOCKET=/attacker-controlled\n",
+                environment=f"{assignment}\n".encode(),
                 configuration={"apps": {}},
                 route_metadata=routes.route_metadata,
             ),

@@ -7,13 +7,19 @@ import fcntl
 import os
 import re
 import secrets
+import selectors
+import shutil
+import signal
 import stat
 import subprocess
+import tempfile
 import threading
+import time
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from enum import StrEnum
+from functools import partial
 from pathlib import Path
 from types import TracebackType
 from typing import Final, Self
@@ -47,6 +53,11 @@ _REFERENCE_TEMPORARY_CREATION_MODE: Final = 0o600
 _REFERENCE_TEMPORARY_PREFIX: Final = ".ldp-active-"
 _REFERENCE_TEMPORARY_PATTERN: Final = re.compile(r"\.ldp-active-[0-9a-f]{32}")
 _ENVIRONMENT_NAME_PATTERN: Final = re.compile(r"[A-Z_][A-Z0-9_]*", flags=re.ASCII)
+_CADDY_VALIDATION_OUTPUT_BYTES: Final = 262_144
+_CADDY_VALIDATION_TIMEOUT_SECONDS: Final = 30
+_BASH: Final = "/bin/bash"
+_SETPRIV: Final = "/usr/bin/setpriv"
+_EXEC_PINNED_CADDY: Final = 'exec -a caddy "/proc/self/fd/$1" "${@:2}"'
 _INHERITED_SYSTEMD_ENVIRONMENT: Final = frozenset(
     {
         "INVOCATION_ID",
@@ -55,6 +66,18 @@ _INHERITED_SYSTEMD_ENVIRONMENT: Final = frozenset(
         "WATCHDOG_USEC",
     }
 )
+_ALLOWED_GENERATION_ENVIRONMENT: Final = frozenset(
+    {
+        "CLOUDFLARE_API_TOKEN",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+    }
+)
+_FORBIDDEN_GENERATION_ENVIRONMENT: Final = _INHERITED_SYSTEMD_ENVIRONMENT | {
+    "LISTEN_FDNAMES",
+    "LISTEN_FDS",
+    "LISTEN_PID",
+}
 
 
 class CaddyRuntimeError(RuntimeError):
@@ -80,6 +103,12 @@ class SelectedCaddyGeneration:
 
     generation_id: str
     generation: PinnedCaddyGeneration
+
+
+@dataclass(frozen=True, slots=True)
+class _ValidationResult:
+    returncode: int
+    stdout: bytes
 
 
 class CaddyRuntime:
@@ -114,6 +143,8 @@ class CaddyRuntime:
         *,
         expected_owner: int,
         expected_group: int,
+        validation_uid: int,
+        validation_gid: int,
         expected_lock_owner: int | None = None,
         expected_lock_group: int | None = None,
         root_mode: int = CADDY_RUNTIME_ROOT_MODE,
@@ -149,7 +180,15 @@ class CaddyRuntime:
             owner=expected_owner,
             group=expected_group,
             creation_group=os.getegid(),
-            candidate_validator=candidate_validator or _validate_generation_candidate,
+            candidate_validator=(
+                partial(
+                    _validate_generation_candidate,
+                    validation_uid=validation_uid,
+                    validation_gid=validation_gid,
+                )
+                if candidate_validator is None
+                else candidate_validator
+            ),
         )
 
     @classmethod
@@ -160,6 +199,8 @@ class CaddyRuntime:
         *,
         expected_owner: int,
         expected_group: int,
+        validation_uid: int,
+        validation_gid: int,
         expected_lock_owner: int,
         expected_lock_group: int,
         root_mode: int = CADDY_RUNTIME_ROOT_MODE,
@@ -195,7 +236,15 @@ class CaddyRuntime:
             owner=expected_owner,
             group=expected_group,
             creation_group=os.getegid(),
-            candidate_validator=candidate_validator or _validate_generation_candidate,
+            candidate_validator=(
+                partial(
+                    _validate_generation_candidate,
+                    validation_uid=validation_uid,
+                    validation_gid=validation_gid,
+                )
+                if candidate_validator is None
+                else candidate_validator
+            ),
         )
 
     def __enter__(self) -> Self:
@@ -473,6 +522,7 @@ class PreparedCaddyExecution:
         for name in _INHERITED_SYSTEMD_ENVIRONMENT:
             if name in inherited_environment:
                 environment[name] = inherited_environment[name]
+        inherited_before = os.get_inheritable(self._configuration_fd)
         os.set_inheritable(self._configuration_fd, True)
         arguments = [
             "caddy",
@@ -480,7 +530,10 @@ class PreparedCaddyExecution:
             "--config",
             f"/proc/self/fd/{self._configuration_fd}",
         ]
-        result = execve(self._binary_fd, arguments, environment)
+        try:
+            result = execve(self._binary_fd, arguments, environment)
+        finally:
+            os.set_inheritable(self._configuration_fd, inherited_before)
         raise CaddyRuntimeError(f"Caddy exec unexpectedly returned: {result!r}")
 
     def duplicate_binary_descriptor(self) -> int:
@@ -717,7 +770,8 @@ def _parse_environment(data: bytes) -> dict[str, str]:
         if (
             _ENVIRONMENT_NAME_PATTERN.fullmatch(name) is None
             or name in result
-            or name in _INHERITED_SYSTEMD_ENVIRONMENT
+            or name not in _ALLOWED_GENERATION_ENVIRONMENT
+            or name in _FORBIDDEN_GENERATION_ENVIRONMENT
         ):
             raise CaddyRuntimeError("selected Caddy environment contains a forbidden name")
         result[name] = value
@@ -727,52 +781,173 @@ def _parse_environment(data: bytes) -> dict[str, str]:
 def _validate_generation_candidate(
     generation: PinnedCaddyGeneration,
     environment: Mapping[str, str],
+    *,
+    validation_uid: int,
+    validation_gid: int,
 ) -> None:
     binary_fd = generation.duplicate_payload_descriptor(CADDY_BINARY_NAME)
     configuration_fd: int | None = None
+    validation_root: Path | None = None
     try:
         configuration_fd = generation.duplicate_payload_descriptor(CADDY_CONFIGURATION_NAME)
-        executable = f"/proc/self/fd/{binary_fd}"
-        try:
-            modules = subprocess.run(  # noqa: S603 - descriptor-pinned root input
-                [executable, "list-modules"],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                env=dict(environment),
-                pass_fds=(binary_fd,),
-                check=False,
-                timeout=30,
-            )
-            if modules.returncode != 0 or b"dns.providers.cloudflare" not in {
-                line.strip() for line in modules.stdout.splitlines()
-            }:
-                raise CaddyRuntimeError(
-                    "selected Caddy binary does not provide the required module"
-                )
-            validated = subprocess.run(  # noqa: S603 - descriptor-pinned root input
-                [
-                    executable,
-                    "validate",
-                    "--config",
-                    f"/proc/self/fd/{configuration_fd}",
-                ],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                env=dict(environment),
-                pass_fds=(binary_fd, configuration_fd),
-                check=False,
-                timeout=30,
-            )
-        except (OSError, subprocess.TimeoutExpired) as error:
-            raise CaddyRuntimeError("selected Caddy validation could not run") from error
+        validation_root, isolated_environment = _create_validation_environment(
+            environment,
+            validation_uid=validation_uid,
+            validation_gid=validation_gid,
+        )
+        modules = _run_validation_command(
+            binary_fd,
+            ["list-modules"],
+            environment=isolated_environment,
+            inherited_descriptors=(),
+            validation_uid=validation_uid,
+            validation_gid=validation_gid,
+        )
+        if modules.returncode != 0 or b"dns.providers.cloudflare" not in {
+            line.strip() for line in modules.stdout.splitlines()
+        }:
+            raise CaddyRuntimeError("selected Caddy binary does not provide the required module")
+        validated = _run_validation_command(
+            binary_fd,
+            ["validate", "--config", f"/proc/self/fd/{configuration_fd}"],
+            environment=isolated_environment,
+            inherited_descriptors=(configuration_fd,),
+            validation_uid=validation_uid,
+            validation_gid=validation_gid,
+        )
         if validated.returncode != 0:
             raise CaddyRuntimeError("selected Caddy configuration is invalid")
     finally:
+        if validation_root is not None:
+            shutil.rmtree(validation_root)
         if configuration_fd is not None:
             os.close(configuration_fd)
         os.close(binary_fd)
+
+
+def _create_validation_environment(
+    environment: Mapping[str, str],
+    *,
+    validation_uid: int,
+    validation_gid: int,
+) -> tuple[Path, dict[str, str]]:
+    if min(validation_uid, validation_gid) < 0:
+        raise ValueError("validation identity must use nonnegative numeric IDs")
+    if os.geteuid() not in {0, validation_uid} or (
+        os.geteuid() != 0 and os.getegid() != validation_gid
+    ):
+        raise CaddyRuntimeError("cannot enter the Caddy validation identity")
+    root = Path(tempfile.mkdtemp(prefix="lowerduckpond-caddy-validation-"))
+    try:
+        data = root / "data"
+        data.mkdir(mode=0o700)
+        if os.geteuid() == 0:
+            os.chown(root, 0, validation_gid)
+            os.chown(data, validation_uid, validation_gid)
+        root.chmod(0o750)
+        data.chmod(0o700)
+    except BaseException:
+        shutil.rmtree(root)
+        raise
+    isolated = dict(environment)
+    for name in ("HOME", "TMPDIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME"):
+        isolated[name] = str(data)
+    return root, isolated
+
+
+def _run_validation_command(  # noqa: PLR0913
+    binary_fd: int,
+    arguments: list[str],
+    *,
+    environment: Mapping[str, str],
+    inherited_descriptors: tuple[int, ...],
+    validation_uid: int,
+    validation_gid: int,
+) -> _ValidationResult:
+    identity_arguments: list[str] = []
+    capability_arguments = ["--inh-caps=-all", "--ambient-caps=-all"]
+    if os.geteuid() == 0:
+        identity_arguments = [
+            f"--reuid={validation_uid}",
+            f"--regid={validation_gid}",
+            "--clear-groups",
+        ]
+        capability_arguments.append("--bounding-set=-all")
+    command = [
+        _SETPRIV,
+        *identity_arguments,
+        *capability_arguments,
+        "--no-new-privs",
+        "--",
+        _BASH,
+        "-c",
+        _EXEC_PINNED_CADDY,
+        "lowerduckpond-caddy-validation",
+        str(binary_fd),
+        *arguments,
+    ]
+    descriptors = (binary_fd, *inherited_descriptors)
+    try:
+        process = subprocess.Popen(  # noqa: S603 - fixed setpriv and pinned input
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            env=dict(environment),
+            pass_fds=descriptors,
+            start_new_session=True,
+        )
+    except OSError as error:
+        raise CaddyRuntimeError("selected Caddy validation could not run") from error
+    if process.stdout is None:
+        _kill_validation_process(process)
+        raise CaddyRuntimeError("selected Caddy validation has no output boundary")
+    output = bytearray()
+    descriptor = process.stdout.fileno()
+    os.set_blocking(descriptor, False)
+    selector = selectors.DefaultSelector()
+    selector.register(descriptor, selectors.EVENT_READ)
+    deadline = time.monotonic() + _CADDY_VALIDATION_TIMEOUT_SECONDS
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise CaddyRuntimeError("selected Caddy validation exceeded its deadline")
+            if not selector.select(remaining):
+                raise CaddyRuntimeError("selected Caddy validation exceeded its deadline")
+            try:
+                chunk = os.read(
+                    descriptor,
+                    min(65_536, _CADDY_VALIDATION_OUTPUT_BYTES + 1 - len(output)),
+                )
+            except BlockingIOError:
+                continue
+            if not chunk:
+                break
+            output.extend(chunk)
+            if len(output) > _CADDY_VALIDATION_OUTPUT_BYTES:
+                raise CaddyRuntimeError("selected Caddy validation output exceeded its limit")
+        remaining = max(0.0, deadline - time.monotonic())
+        try:
+            returncode = process.wait(timeout=remaining)
+        except subprocess.TimeoutExpired as error:
+            raise CaddyRuntimeError("selected Caddy validation exceeded its deadline") from error
+        return _ValidationResult(returncode, bytes(output))
+    except BaseException:
+        _kill_validation_process(process)
+        raise
+    finally:
+        selector.close()
+        process.stdout.close()
+
+
+def _kill_validation_process(process: subprocess.Popen[bytes]) -> None:
+    with suppress(ProcessLookupError):
+        os.killpg(process.pid, signal.SIGKILL)
+    with suppress(ProcessLookupError):
+        process.kill()
+    with suppress(subprocess.TimeoutExpired):
+        process.wait(timeout=5)
 
 
 def _read_generation_environment(generation: PinnedCaddyGeneration) -> dict[str, str]:
