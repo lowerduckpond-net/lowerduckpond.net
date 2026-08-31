@@ -43,6 +43,11 @@ on:
           - proxied
           - enforced
           - direct
+      confirm_origin_pull_host_enforced:
+        description: Confirm the production host already requires authenticated origin pulls
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   actions: read
@@ -207,6 +212,16 @@ jobs:
         run: |
           plan_arguments=()
           special_modes=0
+          if [[ "${{ inputs.public_edge_phase }}" == "enforced" &&
+                "${{ inputs.confirm_origin_pull_host_enforced }}" != "true" ]]; then
+            echo "The enforced edge phase requires host-side origin-pull confirmation." >&2
+            exit 1
+          fi
+          if [[ "${{ inputs.public_edge_phase }}" != "enforced" &&
+                "${{ inputs.confirm_origin_pull_host_enforced }}" == "true" ]]; then
+            echo "Host-side origin-pull confirmation is valid only for enforced plans." >&2
+            exit 1
+          fi
           [[ "${{ inputs.replace_droplet }}" == "true" ]] && ((special_modes += 1))
           [[ "${{ inputs.initialize_archive_storage }}" == "true" ]] && \
             ((special_modes += 1))
@@ -263,6 +278,8 @@ jobs:
             --arg ref "${GITHUB_REF}" \
             --arg run_id "${GITHUB_RUN_ID}" \
             --arg changes "${PLAN_CHANGES}" \
+            --arg confirm_origin_pull_host_enforced \
+              "${{ inputs.confirm_origin_pull_host_enforced }}" \
             --arg initialize_archive_storage "${{ inputs.initialize_archive_storage }}" \
             --arg public_edge_phase "${{ inputs.public_edge_phase }}" \
             --arg resolved_public_edge_phase "${{ steps.edge_phase.outputs.phase }}" \
@@ -270,6 +287,7 @@ jobs:
             --arg sha256 "$(sha256sum production.tfplan | cut -d ' ' -f 1)" \
             '{commit: $commit, event: $event, ref: $ref, run_id: $run_id,
               changes: $changes,
+              confirm_origin_pull_host_enforced: $confirm_origin_pull_host_enforced,
               initialize_archive_storage: $initialize_archive_storage,
               public_edge_phase: $public_edge_phase,
               resolved_public_edge_phase: $resolved_public_edge_phase,
@@ -369,6 +387,8 @@ jobs:
           test "$(jq -r .run_id plan-metadata.json)" = "${{ inputs.plan_run_id }}"
           test "$(jq -r .initialize_archive_storage plan-metadata.json)" = \
             "${{ inputs.initialize_archive_storage }}"
+          test "$(jq -r .confirm_origin_pull_host_enforced plan-metadata.json)" = \
+            "${{ inputs.confirm_origin_pull_host_enforced }}"
           test "$(jq -r .public_edge_phase plan-metadata.json)" = \
             "${{ inputs.public_edge_phase }}"
           jq -e '

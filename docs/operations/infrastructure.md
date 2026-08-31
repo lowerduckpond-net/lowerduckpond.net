@@ -193,7 +193,12 @@ both the plan and apply dispatches. `proxied` creates the `.com` records and
 enables both reviewed zone policies while both origin firewalls remain open;
 `enforced` narrows the DigitalOcean web-ingress allowlist only after the host
 has independently required origin pulls and adopted the same reviewed
-Cloudflare networks. Roll back `enforced` to `proxied` before selecting
+Cloudflare networks. An `enforced` plan additionally requires the explicit
+`confirm_origin_pull_host_enforced` dispatch confirmation, and the apply must
+repeat the value recorded with the reviewed plan. Set
+`CADDY_ORIGIN_PULL_ENFORCEMENT_ENABLED=true` only for the preceding reviewed
+production host convergence; use `false` for staging and rollback. Roll back
+`enforced` to `proxied` before selecting
 `direct`; the plan policy rejects an enforced-to-direct jump. `none` is the
 ordinary non-edge mode and retains the phase recorded in production state. It
 resolves to `direct` only for the one-time legacy state that predates this

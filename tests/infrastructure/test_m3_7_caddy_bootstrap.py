@@ -14,7 +14,8 @@ def test_production_web_ingress_is_not_restricted_before_edge_proxying() -> None
     ).read_text(encoding="utf-8")
 
     assert "firewall_web_source_cidrs:" not in production
-    assert "caddy_origin_pull_enforcement_enabled: false" in production
+    assert "CADDY_ORIGIN_PULL_ENFORCEMENT_ENABLED" in production
+    assert "caddy_origin_pull_enforcement_enabled: false" not in production
 
     playbook = (_ROOT / "config/ansible/playbooks/site.yml").read_text(encoding="utf-8")
     assert "cloudflare_ipv4_cidrs + cloudflare_ipv6_cidrs" in playbook
@@ -30,6 +31,7 @@ def test_edge_policy_is_installed_before_dns_becomes_proxied() -> None:
     dependencies = {
         "cloudflare_zone_setting.ssl",
         "cloudflare_zone_setting.always_online",
+        "cloudflare_authenticated_origin_pulls.hostname",
         "cloudflare_authenticated_origin_pulls_settings.zone",
         "cloudflare_ruleset.cache_bypass",
         "cloudflare_ruleset.transform_disable",
@@ -46,6 +48,18 @@ def test_edge_policy_is_installed_before_dns_becomes_proxied() -> None:
         body = match.group("body")
         assert "depends_on = [" in body
         assert all(dependency in body for dependency in dependencies)
+
+
+def test_selected_origin_pull_leaf_is_associated_with_both_zone_hostnames() -> None:
+    module = (_ROOT / "infra/opentofu/modules/cloudflare-public-edge/main.tf").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'resource "cloudflare_authenticated_origin_pulls" "hostname"' in module
+    assert "for_each = local.edge_enabled ? local.origin_pull_hostnames : toset([])" in module
+    assert "hostname = each.value" in module
+    assert "cert_id  = var.origin_pull_certificate_id" in module
+    assert "depends_on = [cloudflare_authenticated_origin_pulls.hostname]" in module
 
 
 def test_production_accepts_both_cloudflare_certificate_id_forms() -> None:

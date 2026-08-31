@@ -15,6 +15,7 @@ required_environment=(
     ANSIBLE_PRIVATE_KEY_FILE
     CADDY_CLOUDFLARE_API_TOKEN
     CADDY_ORIGIN_PULL_CA_PATHS_JSON
+    CADDY_ORIGIN_PULL_ENFORCEMENT_ENABLED
     OPENTOFU_ENCRYPTION_PASSPHRASE
     OPENTOFU_STATE_ACCESS_KEY_ID
     OPENTOFU_STATE_BUCKET
@@ -31,6 +32,12 @@ for variable_name in "${required_environment[@]}"; do
         exit 2
     fi
 done
+
+if [[ ${CADDY_ORIGIN_PULL_ENFORCEMENT_ENABLED} != "true" &&
+      ${CADDY_ORIGIN_PULL_ENFORCEMENT_ENABLED} != "false" ]]; then
+    echo "CADDY_ORIGIN_PULL_ENFORCEMENT_ENABLED must be exactly true or false." >&2
+    exit 2
+fi
 
 for command_name in sha256sum ssh-keygen tofu uv; do
     if ! command -v "${command_name}" >/dev/null 2>&1; then

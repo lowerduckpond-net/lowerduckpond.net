@@ -27,6 +27,8 @@ def _valid_plan() -> dict[str, Any]:
         "variables": {
             "cloudflare_zone_id": {"value": "0" * 32},
             "cloudflare_tenant_zone_id": {"value": "1" * 32},
+            "cloudflare_origin_pull_certificate_id": {"value": "2" * 32},
+            "cloudflare_tenant_origin_pull_certificate_id": {"value": "3" * 32},
         },
         "resource_changes": [
             _resource(
@@ -425,7 +427,30 @@ def _valid_public_edge_plan() -> dict[str, Any]:
 
     for zone in ("lowerduckpond_net", "lowerduckpond_com"):
         domain = "lowerduckpond.net" if zone == "lowerduckpond_net" else "lowerduckpond.com"
+        zone_id = "0" * 32 if zone == "lowerduckpond_net" else "1" * 32
+        certificate_id = "2" * 32 if zone == "lowerduckpond_net" else "3" * 32
         expression = f'(http.host eq "{domain}" or ends_with(http.host, ".{domain}"))'
+        for hostname in (domain, f"*.{domain}"):
+            plan["resource_changes"].append(
+                _resource(
+                    "cloudflare_authenticated_origin_pulls",
+                    "hostname",
+                    {
+                        "config": [
+                            {
+                                "cert_id": certificate_id,
+                                "enabled": True,
+                                "hostname": hostname,
+                            }
+                        ],
+                        "zone_id": zone_id,
+                    },
+                    address=(
+                        f'module.edge["{zone}"].cloudflare_authenticated_origin_pulls.'
+                        f'hostname["{hostname}"]'
+                    ),
+                )
+            )
         plan["resource_changes"].append(
             _resource(
                 "cloudflare_authenticated_origin_pulls_settings",
@@ -572,6 +597,29 @@ def test_rejects_public_edge_transition_with_unrelated_change() -> None:
         assert_plan(plan, public_edge_transition="proxied")
 
 
+def test_rejects_deleted_unreviewed_cloudflare_resource() -> None:
+    plan = _valid_public_edge_plan()
+    unreviewed = _resource(
+        "cloudflare_dns_record",
+        "mail",
+        {},
+        address='module.edge["lowerduckpond_net"].cloudflare_dns_record.mail[0]',
+    )
+    unreviewed["change"] = {
+        "actions": ["delete"],
+        "before": {
+            "name": "mail.lowerduckpond.net",
+            "type": "A",
+            "zone_id": "0" * 32,
+        },
+        "after": None,
+    }
+    plan["resource_changes"].append(unreviewed)
+
+    with pytest.raises(PlanPolicyError, match="exact reviewed resource addresses"):
+        assert_plan(plan, public_edge_transition="proxied")
+
+
 def test_rejects_public_edge_dns_target_outside_reserved_ip() -> None:
     plan = _valid_public_edge_plan()
     dns = next(
@@ -703,6 +751,7 @@ def test_rejects_direct_rollback_that_skips_proxied_firewall_recovery() -> None:
     for resource in plan["resource_changes"]:
         resource["change"]["before"] = deepcopy(resource["change"]["after"])
         if resource["type"] in {
+            "cloudflare_authenticated_origin_pulls",
             "cloudflare_authenticated_origin_pulls_settings",
             "cloudflare_ruleset",
             "cloudflare_zone_setting",

@@ -137,6 +137,7 @@ EXPECTED_SPACES_KEY_ADDRESSES = {
 }
 NON_MUTATING_ACTIONS = {("no-op",), ("read",)}
 PUBLIC_EDGE_RESOURCE_TYPES = {
+    "cloudflare_authenticated_origin_pulls",
     "cloudflare_authenticated_origin_pulls_settings",
     "cloudflare_dns_record",
     "cloudflare_ruleset",
@@ -153,6 +154,10 @@ EXPECTED_PROXIED_DNS_NAMES = EXPECTED_DIRECT_DNS_NAMES | {
 EXPECTED_EDGE_ZONE_IDS = {
     "lowerduckpond_net",
     "lowerduckpond_com",
+}
+EXPECTED_EDGE_DOMAINS = {
+    "lowerduckpond_net": "lowerduckpond.net",
+    "lowerduckpond_com": "lowerduckpond.com",
 }
 EXPECTED_EDGE_RULESET_PHASES = {
     "http_config_settings",
@@ -174,6 +179,13 @@ EXPECTED_EDGE_AOP_ADDRESSES = {
     f'module.edge["{zone}"].cloudflare_authenticated_origin_pulls_settings.zone[0]'
     for zone in EXPECTED_EDGE_ZONE_IDS
 }
+EXPECTED_EDGE_AOP_ASSOCIATIONS = {
+    f'module.edge["{zone}"].cloudflare_authenticated_origin_pulls.hostname["{hostname}"]': (
+        hostname
+    )
+    for zone, domain in EXPECTED_EDGE_DOMAINS.items()
+    for hostname in (domain, f"*.{domain}")
+}
 EXPECTED_EDGE_ZONE_SETTING_ADDRESSES = {
     f'module.edge["{zone}"].cloudflare_zone_setting.{setting}[0]'
     for zone in EXPECTED_EDGE_ZONE_IDS
@@ -184,6 +196,13 @@ EXPECTED_EDGE_RULESET_ADDRESSES = {
     for zone in EXPECTED_EDGE_ZONE_IDS
     for ruleset in ("cache_bypass", "cdn_cgi_block", "transform_disable")
 }
+EXPECTED_EDGE_RESOURCE_ADDRESSES = (
+    EXPECTED_PROXIED_DNS_ADDRESSES
+    | EXPECTED_EDGE_AOP_ADDRESSES
+    | EXPECTED_EDGE_AOP_ASSOCIATIONS.keys()
+    | EXPECTED_EDGE_ZONE_SETTING_ADDRESSES
+    | EXPECTED_EDGE_RULESET_ADDRESSES
+)
 EXPECTED_DNS_COMMENT = "Managed by OpenTofu for Lower Duck Pond Hosting"
 
 
@@ -404,6 +423,15 @@ def _expected_edge_zone_id(plan: dict[str, Any], address: str) -> object:
         return _plan_variable(plan, "cloudflare_zone_id")
     if zone_key == "lowerduckpond_com":
         return _plan_variable(plan, "cloudflare_tenant_zone_id")
+    return None
+
+
+def _expected_edge_certificate_id(plan: dict[str, Any], address: str) -> object:
+    zone_key = _edge_zone_key(address)
+    if zone_key == "lowerduckpond_net":
+        return _plan_variable(plan, "cloudflare_origin_pull_certificate_id")
+    if zone_key == "lowerduckpond_com":
+        return _plan_variable(plan, "cloudflare_tenant_origin_pull_certificate_id")
     return None
 
 
@@ -862,9 +890,53 @@ def _check_public_edge_rule(
         errors.append(f"{address} does not match its reviewed {phase} rule")
 
 
+def _check_public_edge_associations(
+    plan: dict[str, Any],
+    active_associations: list[dict[str, Any]],
+    errors: list[str],
+) -> None:
+    association_addresses = {str(resource.get("address", "")) for resource in active_associations}
+    associations_valid = True
+    for resource in active_associations:
+        address = str(resource.get("address", ""))
+        config = _after(resource).get("config") or []
+        if (
+            len(config) != 1
+            or config[0].get("hostname") != EXPECTED_EDGE_AOP_ASSOCIATIONS.get(address)
+            or config[0].get("cert_id") != _expected_edge_certificate_id(plan, address)
+            or config[0].get("enabled") is not True
+            or _after(resource).get("zone_id") != _expected_edge_zone_id(plan, address)
+        ):
+            associations_valid = False
+    if association_addresses != EXPECTED_EDGE_AOP_ASSOCIATIONS.keys() or not associations_valid:
+        errors.append(
+            "proxied edge must associate the selected leaf with both reviewed "
+            "hostnames in each zone"
+        )
+
+
 def _check_public_edge_resources(
     plan: dict[str, Any], errors: list[str], *, dns_mode: str | None
 ) -> None:
+    edge_resources = [
+        resource
+        for resource in plan.get("resource_changes", [])
+        if resource.get("type") in PUBLIC_EDGE_RESOURCE_TYPES
+    ]
+    unexpected_addresses = {str(resource.get("address", "")) for resource in edge_resources} - set(
+        EXPECTED_EDGE_RESOURCE_ADDRESSES
+    )
+    if unexpected_addresses:
+        errors.append(
+            "public edge may manage only the exact reviewed resource addresses; "
+            f"found {sorted(unexpected_addresses)}"
+        )
+
+    active_associations = [
+        resource
+        for resource in _changes_by_type(plan, "cloudflare_authenticated_origin_pulls")
+        if _after(resource)
+    ]
     active_settings = [
         resource
         for resource in _changes_by_type(plan, "cloudflare_authenticated_origin_pulls_settings")
@@ -879,7 +951,7 @@ def _check_public_edge_resources(
         resource for resource in _changes_by_type(plan, "cloudflare_ruleset") if _after(resource)
     ]
     if dns_mode == "direct":
-        if active_settings or active_zone_settings or active_rulesets:
+        if active_associations or active_settings or active_zone_settings or active_rulesets:
             errors.append("direct phase must not retain active Cloudflare edge policy resources")
         return
     if dns_mode != "proxied":
@@ -894,6 +966,8 @@ def _check_public_edge_resources(
         for resource in active_settings
     ):
         errors.append("proxied edge must enable zone-level origin pulls in exactly two zones")
+
+    _check_public_edge_associations(plan, active_associations, errors)
 
     zone_setting_addresses = {str(resource.get("address", "")) for resource in active_zone_settings}
     zone_settings_valid = all(

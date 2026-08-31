@@ -1,6 +1,10 @@
 locals {
   edge_enabled    = var.rollout_phase != "direct"
   records_enabled = var.direct_records_enabled || local.edge_enabled
+  origin_pull_hostnames = toset([
+    var.domain,
+    "*.${var.domain}",
+  ])
   zone_expression = format(
     "(http.host eq \"%s\" or ends_with(http.host, \".%s\"))",
     var.domain,
@@ -22,6 +26,7 @@ resource "cloudflare_dns_record" "apex" {
   depends_on = [
     cloudflare_zone_setting.ssl,
     cloudflare_zone_setting.always_online,
+    cloudflare_authenticated_origin_pulls.hostname,
     cloudflare_authenticated_origin_pulls_settings.zone,
     cloudflare_ruleset.cache_bypass,
     cloudflare_ruleset.transform_disable,
@@ -43,6 +48,7 @@ resource "cloudflare_dns_record" "wildcard" {
   depends_on = [
     cloudflare_zone_setting.ssl,
     cloudflare_zone_setting.always_online,
+    cloudflare_authenticated_origin_pulls.hostname,
     cloudflare_authenticated_origin_pulls_settings.zone,
     cloudflare_ruleset.cache_bypass,
     cloudflare_ruleset.transform_disable,
@@ -55,6 +61,24 @@ data "cloudflare_authenticated_origin_pulls_certificate" "selected" {
 
   zone_id        = var.zone_id
   certificate_id = var.origin_pull_certificate_id
+}
+
+resource "cloudflare_authenticated_origin_pulls" "hostname" {
+  for_each = local.edge_enabled ? local.origin_pull_hostnames : toset([])
+
+  zone_id = var.zone_id
+  config = [{
+    hostname = each.value
+    cert_id  = var.origin_pull_certificate_id
+    enabled  = true
+  }]
+
+  lifecycle {
+    precondition {
+      condition     = data.cloudflare_authenticated_origin_pulls_certificate.selected[0].status == "active"
+      error_message = "The selected zone-level origin-pull certificate must already be active."
+    }
+  }
 }
 
 resource "cloudflare_zone_setting" "ssl" {
@@ -78,6 +102,8 @@ resource "cloudflare_authenticated_origin_pulls_settings" "zone" {
 
   zone_id = var.zone_id
   enabled = true
+
+  depends_on = [cloudflare_authenticated_origin_pulls.hostname]
 
   lifecycle {
     precondition {

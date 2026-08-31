@@ -18,6 +18,11 @@ paste them into chat:
   token restricted to `lowerduckpond.net` and `lowerduckpond.com` with only
   Zone Read and DNS Edit. The current `.net`-only token must be replaced before
   Milestone 3 configures the tenant zone.
+- `CADDY_ORIGIN_PULL_ENFORCEMENT_ENABLED`: exactly `false` while the public
+  edge and origin-pull leaf associations are staged, then exactly `true` only
+  after both zones are proxied and verified. The latter selects required
+  client-certificate verification and the reviewed Cloudflare-only host
+  firewall in one convergence.
 - `RESTIC_PASSWORD`: a new high-entropy value of at least 32 characters,
   backed up separately from DigitalOcean. Restic cannot recover repository
   data without it.

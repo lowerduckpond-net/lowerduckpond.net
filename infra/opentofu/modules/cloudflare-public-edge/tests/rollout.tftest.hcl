@@ -25,6 +25,7 @@ run "direct" {
     condition = (
       length(cloudflare_dns_record.apex) == 1 &&
       cloudflare_dns_record.apex[0].proxied == false &&
+      length(cloudflare_authenticated_origin_pulls.hostname) == 0 &&
       length(cloudflare_authenticated_origin_pulls_settings.zone) == 0
     )
     error_message = "Direct mode must retain only unproxied DNS."
@@ -62,6 +63,12 @@ run "proxied" {
       cloudflare_dns_record.apex[0].ttl == 1 &&
       cloudflare_zone_setting.ssl[0].value == "strict" &&
       cloudflare_zone_setting.always_online[0].value == "off" &&
+      length(cloudflare_authenticated_origin_pulls.hostname) == 2 &&
+      alltrue([
+        for association in cloudflare_authenticated_origin_pulls.hostname :
+        association.config[0].cert_id == "11111111-1111-1111-1111-111111111111" &&
+        association.config[0].enabled == true
+      ]) &&
       cloudflare_authenticated_origin_pulls_settings.zone[0].enabled == true
     )
     error_message = "Proxied mode must install the reviewed public edge."
