@@ -115,6 +115,10 @@ def test_production_unit_executes_only_the_descriptor_pinned_launcher() -> None:
     assert "RestartSec=5s" in unit
     assert "StartLimitBurst=3" in unit
     assert "StartLimitIntervalSec=60s" in unit
+    assert (
+        "ReadWritePaths=/etc/caddy /var/lib/caddy /var/log/caddy {{ caddy_publication_lock_path }}"
+    ) in unit
+    assert "ReadWritePaths=/var/lib/lowerduckpond/static/locks" not in unit
     assert "/usr/local/bin/caddy" not in unit
     assert "/etc/caddy/Caddyfile" not in unit
     assert "ExecReload=" not in unit
