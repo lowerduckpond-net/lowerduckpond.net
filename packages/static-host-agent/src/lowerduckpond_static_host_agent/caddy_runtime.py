@@ -8,6 +8,7 @@ import os
 import re
 import secrets
 import stat
+import subprocess
 import threading
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager, suppress
@@ -70,6 +71,7 @@ class CaddySelectionBoundary(StrEnum):
 
 SelectionFailureHook = Callable[[CaddySelectionBoundary], None]
 Execve = Callable[[int, list[str], dict[str, str]], object]
+CandidateValidator = Callable[[PinnedCaddyGeneration, Mapping[str, str]], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,7 +85,7 @@ class SelectedCaddyGeneration:
 class CaddyRuntime:
     """One pinned runtime root and its exact shared publication lock."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         root_fd: int,
         lock_fd: int,
@@ -91,12 +93,14 @@ class CaddyRuntime:
         owner: int,
         group: int,
         creation_group: int,
+        candidate_validator: CandidateValidator,
     ) -> None:
         self._root_fd = root_fd
         self._lock_fd = lock_fd
         self._owner = owner
         self._group = group
         self._creation_group = creation_group
+        self._candidate_validator = candidate_validator
         self._context_mutex = threading.RLock()
         self._locked = False
         self._lock_owner_thread: int | None = None
@@ -114,6 +118,7 @@ class CaddyRuntime:
         expected_lock_group: int | None = None,
         root_mode: int = CADDY_RUNTIME_ROOT_MODE,
         lock_mode: int = CADDY_PUBLICATION_LOCK_MODE,
+        candidate_validator: CandidateValidator | None = None,
     ) -> Self:
         """Pin the trusted runtime root and publication-lock inode."""
 
@@ -144,6 +149,7 @@ class CaddyRuntime:
             owner=expected_owner,
             group=expected_group,
             creation_group=os.getegid(),
+            candidate_validator=candidate_validator or _validate_generation_candidate,
         )
 
     @classmethod
@@ -158,6 +164,7 @@ class CaddyRuntime:
         expected_lock_group: int,
         root_mode: int = CADDY_RUNTIME_ROOT_MODE,
         lock_mode: int = CADDY_PUBLICATION_LOCK_MODE,
+        candidate_validator: CandidateValidator | None = None,
     ) -> Self:
         """Pin a systemd-opened global publication lock without path traversal."""
 
@@ -188,6 +195,7 @@ class CaddyRuntime:
             owner=expected_owner,
             group=expected_group,
             creation_group=os.getegid(),
+            candidate_validator=candidate_validator or _validate_generation_candidate,
         )
 
     def __enter__(self) -> Self:
@@ -287,7 +295,8 @@ class CaddyRuntime:
         store = self._open_generation_store()
         try:
             with store.open_verified(canonical_id) as generation:
-                _read_generation_environment(generation)
+                environment = _read_generation_environment(generation)
+                self._candidate_validator(generation, environment)
         finally:
             store.close()
         _validate_existing_reference_if_present(
@@ -713,6 +722,57 @@ def _parse_environment(data: bytes) -> dict[str, str]:
             raise CaddyRuntimeError("selected Caddy environment contains a forbidden name")
         result[name] = value
     return result
+
+
+def _validate_generation_candidate(
+    generation: PinnedCaddyGeneration,
+    environment: Mapping[str, str],
+) -> None:
+    binary_fd = generation.duplicate_payload_descriptor(CADDY_BINARY_NAME)
+    configuration_fd: int | None = None
+    try:
+        configuration_fd = generation.duplicate_payload_descriptor(CADDY_CONFIGURATION_NAME)
+        executable = f"/proc/self/fd/{binary_fd}"
+        try:
+            modules = subprocess.run(  # noqa: S603 - descriptor-pinned root input
+                [executable, "list-modules"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                env=dict(environment),
+                pass_fds=(binary_fd,),
+                check=False,
+                timeout=30,
+            )
+            if modules.returncode != 0 or b"dns.providers.cloudflare" not in {
+                line.strip() for line in modules.stdout.splitlines()
+            }:
+                raise CaddyRuntimeError(
+                    "selected Caddy binary does not provide the required module"
+                )
+            validated = subprocess.run(  # noqa: S603 - descriptor-pinned root input
+                [
+                    executable,
+                    "validate",
+                    "--config",
+                    f"/proc/self/fd/{configuration_fd}",
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=dict(environment),
+                pass_fds=(binary_fd, configuration_fd),
+                check=False,
+                timeout=30,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise CaddyRuntimeError("selected Caddy validation could not run") from error
+        if validated.returncode != 0:
+            raise CaddyRuntimeError("selected Caddy configuration is invalid")
+    finally:
+        if configuration_fd is not None:
+            os.close(configuration_fd)
+        os.close(binary_fd)
 
 
 def _read_generation_environment(generation: PinnedCaddyGeneration) -> dict[str, str]:

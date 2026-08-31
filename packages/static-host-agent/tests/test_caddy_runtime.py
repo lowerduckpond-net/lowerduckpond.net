@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import fcntl
 import os
+import subprocess
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -34,6 +35,10 @@ GENERATION_A = "0198d17f-6f4a-7000-8000-000000000001"
 GENERATION_B = "0198d17f-6f4a-7000-8000-000000000002"
 
 
+def _accept_candidate(_generation: object, _environment: object) -> None:
+    pass
+
+
 @dataclass(frozen=True)
 class RuntimeFixture:
     root: Path
@@ -43,6 +48,15 @@ class RuntimeFixture:
     group: int
 
     def open(self) -> CaddyRuntime:
+        return CaddyRuntime.open(
+            self.root,
+            self.lock,
+            expected_owner=self.owner,
+            expected_group=self.group,
+            candidate_validator=_accept_candidate,
+        )
+
+    def open_validating(self) -> CaddyRuntime:
         return CaddyRuntime.open(
             self.root,
             self.lock,
@@ -277,6 +291,7 @@ def test_runtime_accepts_a_preopened_root_owned_publication_lock_descriptor(
                 expected_group=runtime_fixture.group,
                 expected_lock_owner=runtime_fixture.owner,
                 expected_lock_group=runtime_fixture.group,
+                candidate_validator=_accept_candidate,
             ) as runtime,
             runtime.locked(),
         ):
@@ -510,6 +525,48 @@ def test_launcher_executes_the_selected_binary_by_descriptor(
 
     assert waited == child
     assert os.waitstatus_to_exitcode(status) == 0
+
+
+def test_selection_rejects_a_non_caddy_executable_and_preserves_active(
+    runtime_fixture: RuntimeFixture,
+) -> None:
+    with runtime_fixture.open() as runtime, runtime.locked():
+        runtime.select_active(GENERATION_A)
+
+    with runtime_fixture.open_validating() as runtime, runtime.locked():
+        with pytest.raises(CaddyRuntimeError, match="required module"):
+            runtime.select_active(GENERATION_B)
+        assert runtime.read_active() == GENERATION_A
+
+
+def test_selection_rejects_configuration_the_pinned_binary_cannot_load(
+    runtime_fixture: RuntimeFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with runtime_fixture.open() as runtime, runtime.locked():
+        runtime.select_active(GENERATION_A)
+
+    def run(
+        arguments: list[str],
+        **_options: object,
+    ) -> subprocess.CompletedProcess[bytes]:
+        if arguments[1] == "list-modules":
+            return subprocess.CompletedProcess(
+                arguments,
+                0,
+                stdout=b"dns.providers.cloudflare\n",
+            )
+        return subprocess.CompletedProcess(arguments, 1, stdout=b"")
+
+    monkeypatch.setattr(
+        "lowerduckpond_static_host_agent.caddy_runtime.subprocess.run",
+        run,
+    )
+
+    with runtime_fixture.open_validating() as runtime, runtime.locked():
+        with pytest.raises(CaddyRuntimeError, match="configuration is invalid"):
+            runtime.select_active(GENERATION_B)
+        assert runtime.read_active() == GENERATION_A
 
 
 def test_selection_rejects_systemd_environment_override_and_preserves_active(
