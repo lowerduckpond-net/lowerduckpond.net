@@ -152,6 +152,12 @@ def test_production_convergence_repeats_the_m3_6_preflight() -> None:
         assert (
             f"systemctl show --value --property={property_name} caddy.service) == {expected_value}"
         ) in dark_host_preflight
+    assert "ActiveState=failed\\nSubState=failed\\nResult=start-limit-hit\\nNRestarts=0" in (
+        dark_host_preflight
+    )
+    assert "the Caddy recovery unit is not in its exact quiescent state" in dark_host_preflight
+    assert "systemctl list-jobs --no-legend --plain" in dark_host_preflight
+    assert 'caddy.service" || $2 == "caddy-recovery.service"' in dark_host_preflight
 
 
 @pytest.mark.parametrize("script", [PREFLIGHT, DARK_HOST_PREFLIGHT])
