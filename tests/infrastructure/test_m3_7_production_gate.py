@@ -252,6 +252,60 @@ def test_cloudflare_cursor_collection_follows_every_cursor(
     assert "cursor=next-page" in requested_urls[1]
 
 
+@pytest.mark.parametrize(
+    "terminal_metadata",
+    (
+        {},
+        {"result_info": {}},
+    ),
+)
+def test_cloudflare_cursor_collection_accepts_optional_terminal_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    terminal_metadata: dict[str, object],
+) -> None:
+    payload = {
+        "success": True,
+        "result": [{"id": "only"}],
+        **terminal_metadata,
+    }
+
+    def fake_urlopen(_request: object, *, timeout: int) -> _CloudflareResponse:
+        assert timeout == check_m3_7_production_edge.API_TIMEOUT_SECONDS
+        return _CloudflareResponse(payload)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    client = check_m3_7_production_edge.CloudflareClient("x" * 20)
+
+    assert client.get_cursor_collection("/zones/zone/rulesets") == [{"id": "only"}]
+
+
+@pytest.mark.parametrize(
+    "malformed_metadata",
+    (
+        {"result_info": None},
+        {"result_info": {"cursors": "not-an-object"}},
+        {"result_info": {"cursors": {"after": ""}}},
+    ),
+)
+def test_cloudflare_cursor_collection_rejects_malformed_present_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    malformed_metadata: dict[str, object],
+) -> None:
+    payload = {"success": True, "result": [], **malformed_metadata}
+
+    def fake_urlopen(_request: object, *, timeout: int) -> _CloudflareResponse:
+        assert timeout == check_m3_7_production_edge.API_TIMEOUT_SECONDS
+        return _CloudflareResponse(payload)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    client = check_m3_7_production_edge.CloudflareClient("x" * 20)
+
+    with pytest.raises(ProductionEdgePreflightError, match="metadata is malformed"):
+        client.get_cursor_collection("/zones/zone/rulesets")
+
+
 def test_direct_dns_rejects_competing_record_types() -> None:
     class CompetingDnsClient:
         def get_collection(

@@ -223,16 +223,20 @@ class CloudflareClient:
             response = self._get_response(path, query=page_query)
             result = response["result"]
             result_info = response.get("result_info")
-            if not isinstance(result, list) or not isinstance(result_info, dict):
+            if not isinstance(result, list):
                 raise ProductionEdgePreflightError(
                     "Cloudflare cursor pagination metadata is malformed"
                 )
-            cursors = result_info.get("cursors")
-            if not isinstance(cursors, dict):
+            if "result_info" in response and not isinstance(result_info, dict):
                 raise ProductionEdgePreflightError(
                     "Cloudflare cursor pagination metadata is malformed"
                 )
-            after = cursors.get("after")
+            cursors = result_info.get("cursors") if isinstance(result_info, dict) else None
+            if cursors is not None and not isinstance(cursors, dict):
+                raise ProductionEdgePreflightError(
+                    "Cloudflare cursor pagination metadata is malformed"
+                )
+            after = cursors.get("after") if isinstance(cursors, dict) else None
             if after is not None and (not isinstance(after, str) or not after):
                 raise ProductionEdgePreflightError(
                     "Cloudflare cursor pagination metadata is malformed"
