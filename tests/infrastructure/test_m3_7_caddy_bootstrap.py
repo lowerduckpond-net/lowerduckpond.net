@@ -143,6 +143,15 @@ def test_generation_migration_is_stopped_masked_and_defaults_on() -> None:
     assert tasks.index("Build, validate, and select the complete platform-only generation") < (
         tasks.index("Remove any immutable-bootstrap runtime mask")
     )
+    reset_limits = "Reset immutable Caddy startup limits after bootstrap"
+    assert reset_limits in tasks
+    assert "reset-failed\n      - caddy.service\n      - caddy-recovery.service" in tasks
+    assert (
+        "caddy_generation_bootstrap_required | bool"
+        in tasks[tasks.index(reset_limits) : tasks.index("Enable and start immutable Caddy")]
+    )
+    assert tasks.index("Remove any immutable-bootstrap runtime mask") < tasks.index(reset_limits)
+    assert tasks.index(reset_limits) < tasks.index("Enable and start immutable Caddy")
     assert "Remove the retired mutable Caddy configuration" in site
     assert "--check" in tasks
     assert site.index("- role: static_host_agent") < site.index("- role: caddy")

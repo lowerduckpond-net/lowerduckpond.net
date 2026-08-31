@@ -545,6 +545,18 @@
   changed_when: caddy_generation_unmask.stdout | trim != ''
   when: caddy_generation_enabled | bool
 
+- name: Reset immutable Caddy startup limits after bootstrap
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - reset-failed
+      - caddy.service
+      - caddy-recovery.service
+  changed_when: true
+  when:
+    - caddy_generation_enabled | bool
+    - caddy_generation_bootstrap_required | bool
+
 - name: Enable and start immutable Caddy
   ansible.builtin.systemd_service:
     name: caddy.service
