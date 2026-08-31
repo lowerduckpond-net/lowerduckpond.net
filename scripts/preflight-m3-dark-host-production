@@ -3,6 +3,21 @@ set -euo pipefail
 umask 077
 
 repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+allow_failed_caddy_recovery=false
+case ${1:-} in
+    "") ;;
+    --allow-exact-failed-caddy-recovery)
+        allow_failed_caddy_recovery=true
+        ;;
+    *)
+        echo "Usage: $0 [--allow-exact-failed-caddy-recovery]" >&2
+        exit 2
+        ;;
+esac
+[[ $# -le 1 ]] || {
+    echo "Usage: $0 [--allow-exact-failed-caddy-recovery]" >&2
+    exit 2
+}
 required_environment=(
     ANSIBLE_PRIVATE_KEY_FILE
 )
@@ -75,8 +90,10 @@ ssh \
     -o StrictHostKeyChecking=yes \
     -i "${ANSIBLE_PRIVATE_KEY_FILE}" \
     ldp-admin@lowerduckpond.net \
-    'sudo --non-interactive /bin/bash -s' <<'REMOTE'
+    "sudo --non-interactive /bin/bash -s -- ${allow_failed_caddy_recovery}" <<'REMOTE'
 set -euo pipefail
+
+allow_failed_caddy_recovery=$1
 
 remote_fail() {
     printf 'M3.5 production preflight failed: %s\n' "$1" >&2
@@ -126,13 +143,38 @@ do
 done
 [[ -z $(find /etc/caddy/routes.d -mindepth 1 -print -quit) ]] ||
     remote_fail "Caddy has a tenant route input"
-systemctl is-active --quiet caddy.service ||
+if systemctl is-active --quiet caddy.service; then
+    curl --silent --show-error --fail \
+        --connect-timeout 5 --max-time 15 \
+        --resolve lowerduckpond.net:443:127.0.0.1 \
+        https://lowerduckpond.net/ >/dev/null ||
+        remote_fail "the local HTTPS fixture failed"
+elif [[ ${allow_failed_caddy_recovery} == true ]]; then
+    [[ $(systemctl show --value --property=LoadState caddy.service) == loaded ]] ||
+        remote_fail "Caddy recovery state is not loaded"
+    [[ $(systemctl show --value --property=ActiveState caddy.service) == failed ]] ||
+        remote_fail "Caddy recovery state is not failed"
+    [[ $(systemctl show --value --property=SubState caddy.service) == failed ]] ||
+        remote_fail "Caddy recovery substate is not failed"
+    [[ $(systemctl show --value --property=Result caddy.service) == exit-code ]] ||
+        remote_fail "Caddy recovery result is not exit-code"
+    recovery_state=$(systemctl show \
+        --property=LoadState \
+        --property=ActiveState \
+        --property=SubState \
+        --property=Result \
+        --property=NRestarts \
+        caddy-recovery.service)
+    [[ ${recovery_state} == $'LoadState=loaded\nActiveState=failed\nSubState=failed\nResult=start-limit-hit\nNRestarts=0' ]] ||
+        remote_fail "the Caddy recovery unit is not in its exact quiescent state"
+    queued_caddy_job=$(systemctl list-jobs --no-legend --plain | awk \
+        '$2 == "caddy.service" || $2 == "caddy-recovery.service" { print; exit }')
+    [[ -z ${queued_caddy_job} ]] ||
+        remote_fail "a Caddy or Caddy-recovery systemd job remains queued"
+    printf 'Exact failed Caddy recovery state accepted for guarded convergence.\n'
+else
     remote_fail "Caddy is not active"
-curl --silent --show-error --fail \
-    --connect-timeout 5 --max-time 15 \
-    --resolve lowerduckpond.net:443:127.0.0.1 \
-    https://lowerduckpond.net/ >/dev/null ||
-    remote_fail "the local HTTPS fixture failed"
+fi
 REMOTE
 
 printf 'M3.5 production preflight passed without changing host state.\n'

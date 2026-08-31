@@ -4,6 +4,21 @@ umask 077
 export LC_ALL=C
 
 repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+allow_failed_caddy_recovery=false
+case ${1:-} in
+    "") ;;
+    --allow-exact-failed-caddy-recovery)
+        allow_failed_caddy_recovery=true
+        ;;
+    *)
+        echo "Usage: $0 [--allow-exact-failed-caddy-recovery]" >&2
+        exit 2
+        ;;
+esac
+[[ $# -le 1 ]] || {
+    echo "Usage: $0 [--allow-exact-failed-caddy-recovery]" >&2
+    exit 2
+}
 required_environment=(
     ANSIBLE_PRIVATE_KEY_FILE
     STATIC_OPERATOR_PRINCIPAL
@@ -19,8 +34,13 @@ done
 
 "${repository_root}/scripts/check-m3-6-operator-identity" \
     "${ANSIBLE_PRIVATE_KEY_FILE}"
+dark_host_preflight_arguments=()
+if [[ ${allow_failed_caddy_recovery} == true ]]; then
+    dark_host_preflight_arguments+=(--allow-exact-failed-caddy-recovery)
+fi
 dark_host_preflight_output=$(
-    "${repository_root}/scripts/preflight-m3-dark-host-production"
+    "${repository_root}/scripts/preflight-m3-dark-host-production" \
+        "${dark_host_preflight_arguments[@]}"
 )
 printf '%s\n' "${dark_host_preflight_output}"
 artifact_digest=""
@@ -47,7 +67,7 @@ set -euo pipefail
 export LC_ALL=C
 
 candidate_artifact_digest=$1
-previous_artifact_digest=ed1c2a95f1aa7b17dcd949c0efb5f815af59e6fae46e0edf3a1f08e3ea4da357
+previous_artifact_digest=39f28840373363b9f3b4fa446f05d64b2a30d8904bbfbe7e989bd7f5bd9989fb
 rollback_artifact_digest=3709daa0fd2465a73ae6b0c7dd0d6137cf0ec747e11e5e670df084113265d43b
 
 remote_fail() {

@@ -498,6 +498,7 @@ def test_production_gate_is_read_only_and_composes_existing_gate() -> None:
     runbook = RUNBOOK.read_text(encoding="utf-8")
 
     assert '"${repository_root}/scripts/preflight-m3-6-production"' in preflight
+    assert "--allow-exact-failed-caddy-recovery" not in preflight
     assert 'tofu -chdir="${production_root}" state list' in preflight
     assert "output -raw reserved_ip_address" in preflight
     assert "output -raw edge_rollout_phase" in preflight
