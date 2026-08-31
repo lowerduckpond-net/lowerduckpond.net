@@ -115,6 +115,10 @@ def test_production_unit_executes_only_the_descriptor_pinned_launcher() -> None:
     assert "RestartSec=5s" in unit
     assert "StartLimitBurst=3" in unit
     assert "StartLimitIntervalSec=60s" in unit
+    assert (
+        "ReadWritePaths=/etc/caddy /var/lib/caddy /var/log/caddy {{ caddy_publication_lock_path }}"
+    ) in unit
+    assert "ReadWritePaths=/var/lib/lowerduckpond/static/locks" not in unit
     assert "/usr/local/bin/caddy" not in unit
     assert "/etc/caddy/Caddyfile" not in unit
     assert "ExecReload=" not in unit
@@ -126,6 +130,13 @@ def test_generation_migration_is_stopped_masked_and_defaults_on() -> None:
     site = (_ROOT / "config/ansible/playbooks/site.yml").read_text(encoding="utf-8")
 
     assert "caddy_generation_enabled: true" in defaults
+    canonical_lock_assertion = "Require the canonical immutable Caddy publication lock"
+    assert canonical_lock_assertion in tasks
+    assert (
+        "caddy_publication_lock_path ==\n"
+        "        '/var/lib/lowerduckpond/static/locks/publication.lock'"
+    ) in tasks
+    assert tasks.index(canonical_lock_assertion) < tasks.index("Install Caddy build dependencies")
     assert "Stop Caddy for the immutable bootstrap transaction" in tasks
     assert "Runtime-mask Caddy for the immutable bootstrap transaction" in tasks
     assert "mask\n      - --runtime\n      - caddy.service" in tasks
@@ -136,6 +147,15 @@ def test_generation_migration_is_stopped_masked_and_defaults_on() -> None:
     assert tasks.index("Build, validate, and select the complete platform-only generation") < (
         tasks.index("Remove any immutable-bootstrap runtime mask")
     )
+    reset_limits = "Reset immutable Caddy startup limits after bootstrap"
+    assert reset_limits in tasks
+    assert "reset-failed\n      - caddy.service\n      - caddy-recovery.service" in tasks
+    assert (
+        "caddy_generation_bootstrap_required | bool"
+        in tasks[tasks.index(reset_limits) : tasks.index("Enable and start immutable Caddy")]
+    )
+    assert tasks.index("Remove any immutable-bootstrap runtime mask") < tasks.index(reset_limits)
+    assert tasks.index(reset_limits) < tasks.index("Enable and start immutable Caddy")
     assert "Remove the retired mutable Caddy configuration" in site
     assert "--check" in tasks
     assert site.index("- role: static_host_agent") < site.index("- role: caddy")

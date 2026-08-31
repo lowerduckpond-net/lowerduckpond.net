@@ -1,4 +1,16 @@
 ---
+- name: Require the canonical immutable Caddy publication lock
+  ansible.builtin.assert:
+    that:
+      - >-
+        caddy_publication_lock_path ==
+        '/var/lib/lowerduckpond/static/locks/publication.lock'
+    fail_msg: >-
+      Immutable Caddy startup is bound to the canonical publication lock;
+      refusing a divergent lock path.
+    quiet: true
+  when: caddy_generation_enabled | bool
+
 - name: Install Caddy build dependencies
   ansible.builtin.apt:
     name:
@@ -532,6 +544,18 @@
   register: caddy_generation_unmask
   changed_when: caddy_generation_unmask.stdout | trim != ''
   when: caddy_generation_enabled | bool
+
+- name: Reset immutable Caddy startup limits after bootstrap
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - reset-failed
+      - caddy.service
+      - caddy-recovery.service
+  changed_when: true
+  when:
+    - caddy_generation_enabled | bool
+    - caddy_generation_bootstrap_required | bool
 
 - name: Enable and start immutable Caddy
   ansible.builtin.systemd_service:

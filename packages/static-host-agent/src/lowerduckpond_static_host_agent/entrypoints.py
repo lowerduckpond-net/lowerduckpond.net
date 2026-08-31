@@ -264,7 +264,7 @@ def caddy_start_gate_main(arguments: list[str] | None = None) -> int:
         _require_no_arguments(values)
         invocation_id = _systemd_invocation_id()
         with (
-            _open_systemd_caddy_runtime() as runtime,
+            _open_caddy_control_runtime() as runtime,
             CaddyStartupStore.open(_CADDY_INTENT_ROOT, expected_owner=0) as startup,
             runtime.locked(),
         ):
@@ -288,7 +288,7 @@ def caddy_start_verifier_main(arguments: list[str] | None = None) -> int:
         _require_no_arguments(values)
         invocation_id = _systemd_invocation_id()
         with (
-            _open_systemd_caddy_runtime() as runtime,
+            _open_caddy_control_runtime() as runtime,
             CaddyStartupStore.open(_CADDY_INTENT_ROOT, expected_owner=0) as startup,
             runtime.locked(),
         ):
@@ -485,6 +485,32 @@ def _open_systemd_caddy_runtime() -> CaddyRuntime:
     return CaddyRuntime.from_lock_descriptor(
         _CADDY_RUNTIME_ROOT,
         lock_descriptor,
+        expected_owner=0,
+        expected_group=caddy_group.gr_gid,
+        validation_uid=caddy_user.pw_uid,
+        validation_gid=caddy_group.gr_gid,
+        expected_binary_sha256=None,
+        expected_lock_owner=0,
+        expected_lock_group=0,
+        root_mode=CADDY_RUNTIME_ROOT_MODE,
+        lock_mode=CADDY_PUBLICATION_LOCK_MODE,
+    )
+
+
+def _open_caddy_control_runtime() -> CaddyRuntime:
+    """Open the validated lock path for systemd pre-start and post-start hooks.
+
+    systemd supplies ``OpenFile=`` descriptors to the main ``ExecStart=`` process,
+    but not to the privileged ``ExecStartPre=`` and ``ExecStartPost=`` control
+    processes. The main launcher remains descriptor-pinned; these bounded hooks
+    open the root-owned lock with the same no-follow metadata contract.
+    """
+
+    caddy_user = pwd.getpwnam(_CADDY_ACCOUNT)
+    caddy_group = grp.getgrnam(_CADDY_ACCOUNT)
+    return CaddyRuntime.open(
+        _CADDY_RUNTIME_ROOT,
+        _PUBLICATION_LOCK,
         expected_owner=0,
         expected_group=caddy_group.gr_gid,
         validation_uid=caddy_user.pw_uid,
