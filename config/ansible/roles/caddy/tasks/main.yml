@@ -335,6 +335,9 @@
   loop:
     - bootstrap-caddy-generation
     - launch-caddy-generation
+    - prepare-caddy-generation-start
+    - recover-caddy-generation-start
+    - verify-caddy-generation-start
   check_mode: true
   register: caddy_generation_bootstrap_probe
   when: caddy_generation_enabled | bool
@@ -357,10 +360,19 @@
     owner: root
     group: root
     mode: "0644"
-  vars:
-    caddy_binary_sha256: "{{ caddy_generation_binary.stat.checksum }}"
   check_mode: true
   register: caddy_generation_unit_probe
+  when: caddy_generation_enabled | bool
+
+- name: Probe the immutable Caddy recovery unit change
+  ansible.builtin.template:
+    src: caddy-recovery.service.j2
+    dest: /etc/systemd/system/caddy-recovery.service
+    owner: root
+    group: root
+    mode: "0644"
+  check_mode: true
+  register: caddy_generation_recovery_unit_probe
   when: caddy_generation_enabled | bool
 
 - name: Check whether the platform-only generation is current
@@ -392,7 +404,8 @@
          caddy_generation_bootstrap_probe.results |
          selectattr('changed') | list | length > 0 or
          caddy_generation_check_probe.changed or
-         caddy_generation_unit_probe.changed }}
+         caddy_generation_unit_probe.changed or
+         caddy_generation_recovery_unit_probe.changed }}
   when: caddy_generation_enabled | bool
 
 - name: Inspect the existing Caddy unit before the bootstrap transaction
@@ -439,6 +452,9 @@
   loop:
     - bootstrap-caddy-generation
     - launch-caddy-generation
+    - prepare-caddy-generation-start
+    - recover-caddy-generation-start
+    - verify-caddy-generation-start
   when:
     - caddy_generation_enabled | bool
     - caddy_generation_bootstrap_required | bool
@@ -461,8 +477,17 @@
     owner: root
     group: root
     mode: "0644"
-  vars:
-    caddy_binary_sha256: "{{ caddy_generation_binary.stat.checksum }}"
+  when:
+    - caddy_generation_enabled | bool
+    - caddy_generation_bootstrap_required | bool
+
+- name: Install the immutable Caddy recovery unit
+  ansible.builtin.template:
+    src: caddy-recovery.service.j2
+    dest: /etc/systemd/system/caddy-recovery.service
+    owner: root
+    group: root
+    mode: "0644"
   when:
     - caddy_generation_enabled | bool
     - caddy_generation_bootstrap_required | bool

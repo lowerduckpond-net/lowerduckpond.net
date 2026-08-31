@@ -1,8 +1,9 @@
 [Unit]
 Description=Lower Duck Pond immutable Caddy edge
 Documentation=https://caddyserver.com/docs/
-After=network-online.target
-Wants=network-online.target
+After=network-online.target caddy-recovery.service
+Wants=network-online.target caddy-recovery.service
+OnFailure=caddy-recovery.service
 StartLimitBurst=3
 StartLimitIntervalSec=60s
 
@@ -13,7 +14,9 @@ Group=caddy
 OpenFile={{ caddy_publication_lock_path }}:publication-lock
 RuntimeDirectory={{ caddy_runtime_directory }}
 RuntimeDirectoryMode=0700
-ExecStart=/usr/local/libexec/lowerduckpond/launch-caddy-generation {{ static_host_agent_artifact_sha256 }} {{ caddy_binary_sha256 }}
+ExecStartPre=+/usr/local/libexec/lowerduckpond/prepare-caddy-generation-start {{ static_host_agent_artifact_sha256 }}
+ExecStart=/usr/local/libexec/lowerduckpond/launch-caddy-generation {{ static_host_agent_artifact_sha256 }}
+ExecStartPost=+/usr/local/libexec/lowerduckpond/verify-caddy-generation-start {{ static_host_agent_artifact_sha256 }}
 Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=5s
@@ -30,7 +33,7 @@ RestrictSUIDSGID=true
 LockPersonality=true
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 AmbientCapabilities=CAP_NET_BIND_SERVICE
-ReadWritePaths=/var/lib/caddy /var/log/caddy
+ReadWritePaths=/etc/caddy /var/lib/caddy /var/log/caddy
 UMask=0077
 
 [Install]

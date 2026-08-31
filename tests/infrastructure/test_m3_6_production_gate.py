@@ -132,3 +132,6 @@ def test_production_convergence_repeats_the_m3_6_preflight() -> None:
     assert "expected_authorization_inventory=" in preflight
     assert "export.lock | intake.lock | publication.lock | tenant-state.lock" in preflight
     assert "expected_locks=" not in preflight
+    assert "generation_root=/etc/caddy/generations" in preflight
+    assert '$("${generation_check}") == unchanged' in preflight
+    assert "/etc/caddy/generations\\|root:caddy:750" not in preflight

@@ -1,4 +1,6 @@
 #!/usr/bin/python3 -I
+"""Frozen root bootstrap for the pinned Caddy post-start verifier."""
+
 from __future__ import annotations
 
 import pathlib
@@ -8,15 +10,13 @@ import sys
 sys.dont_write_bytecode = True
 
 if len(sys.argv) != 2 or re.fullmatch(r"[0-9a-f]{64}", sys.argv[1]) is None:
-    print("invalid_caddy_launcher_artifact", file=sys.stderr)
     raise SystemExit(64)
-
 artifact_sha256 = sys.argv.pop(1)
 SITE_PACKAGES = pathlib.Path(
     f"/opt/lowerduckpond/static-host-agent/{artifact_sha256}/site-packages"
 )
 sys.path.insert(0, str(SITE_PACKAGES))
 
-from lowerduckpond_static_host_agent.entrypoints import caddy_launcher_main  # noqa: E402
+from lowerduckpond_static_host_agent.entrypoints import caddy_start_verifier_main  # noqa: E402
 
-raise SystemExit(caddy_launcher_main())
+raise SystemExit(caddy_start_verifier_main())

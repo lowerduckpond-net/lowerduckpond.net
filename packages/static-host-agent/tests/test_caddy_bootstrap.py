@@ -16,6 +16,8 @@ from lowerduckpond_static_host_agent import (
     CaddyBinarySource,
     CaddyGenerationStore,
     CaddyRuntime,
+    CaddyStartPhase,
+    CaddyStartupStore,
     FilesystemCapacity,
     ensure_platform_generation,
     require_exact_file,
@@ -57,8 +59,10 @@ def test_bootstrap_selects_once_and_is_idempotent_for_exact_inputs(tmp_path: Pat
     group = os.getegid()
     root = tmp_path / "runtime"
     generations = root / "generations"
+    intents = root / "intents"
     root.mkdir(mode=CADDY_RUNTIME_ROOT_MODE)
     generations.mkdir(mode=CADDY_GENERATION_ROOT_MODE)
+    intents.mkdir(mode=0o700)
     lock = tmp_path / "publication.lock"
     lock.write_bytes(b"")
     lock.chmod(CADDY_PUBLICATION_LOCK_MODE)
@@ -85,6 +89,7 @@ def test_bootstrap_selects_once_and_is_idempotent_for_exact_inputs(tmp_path: Pat
             expected_owner=owner,
             expected_group=group,
         ) as store,
+        CaddyStartupStore.open(intents, expected_owner=owner) as startup,
     ):
         assert ensure_platform_generation(
             runtime,
@@ -93,6 +98,7 @@ def test_bootstrap_selects_once_and_is_idempotent_for_exact_inputs(tmp_path: Pat
             binary=source,
             environment=environment,
             origin_pull_ca_der=(b"ca-a",),
+            startup=startup,
         )
         assert not ensure_platform_generation(
             runtime,
@@ -101,6 +107,7 @@ def test_bootstrap_selects_once_and_is_idempotent_for_exact_inputs(tmp_path: Pat
             binary=source,
             environment=environment,
             origin_pull_ca_der=(b"ca-a",),
+            startup=startup,
         )
         with runtime.locked():
             assert runtime.read_active() == _GENERATION_A
@@ -114,8 +121,10 @@ def test_bootstrap_selects_a_new_generation_when_bound_trust_changes(tmp_path: P
     group = os.getegid()
     root = tmp_path / "runtime"
     generations = root / "generations"
+    intents = root / "intents"
     root.mkdir(mode=CADDY_RUNTIME_ROOT_MODE)
     generations.mkdir(mode=CADDY_GENERATION_ROOT_MODE)
+    intents.mkdir(mode=0o700)
     lock = tmp_path / "publication.lock"
     lock.write_bytes(b"")
     lock.chmod(CADDY_PUBLICATION_LOCK_MODE)
@@ -141,6 +150,7 @@ def test_bootstrap_selects_a_new_generation_when_bound_trust_changes(tmp_path: P
             expected_owner=owner,
             expected_group=group,
         ) as store,
+        CaddyStartupStore.open(intents, expected_owner=owner) as startup,
     ):
         for generation_id, certificate in (
             (_GENERATION_A, b"ca-a"),
@@ -153,9 +163,16 @@ def test_bootstrap_selects_a_new_generation_when_bound_trust_changes(tmp_path: P
                 binary=source,
                 environment=b"CLOUDFLARE_API_TOKEN=real-token\n",
                 origin_pull_ca_der=(certificate,),
+                startup=startup,
             )
         with runtime.locked():
             assert runtime.read_active() == _GENERATION_B
+        intent = startup.read()
+        assert intent is not None
+        assert intent.phase is CaddyStartPhase.RESTART_REQUIRED
+        assert intent.candidate.generation_id == _GENERATION_B
+        assert intent.previous is not None
+        assert intent.previous.generation_id == _GENERATION_A
 
     assert sorted(path.name for path in generations.iterdir()) == [
         _GENERATION_A,

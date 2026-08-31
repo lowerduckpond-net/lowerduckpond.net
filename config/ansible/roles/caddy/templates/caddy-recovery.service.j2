@@ -1,0 +1,27 @@
+[Unit]
+Description=Lower Duck Pond bounded Caddy startup recovery
+Documentation=https://caddyserver.com/docs/
+Before=caddy.service
+StartLimitBurst=3
+StartLimitIntervalSec=60s
+
+[Service]
+Type=oneshot
+OpenFile={{ caddy_publication_lock_path }}:publication-lock
+ExecStart=/usr/local/libexec/lowerduckpond/recover-caddy-generation-start {{ static_host_agent_artifact_sha256 }}
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=30s
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+NoNewPrivileges=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+ReadWritePaths=/etc/caddy
+UMask=0077

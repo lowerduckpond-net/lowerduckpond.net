@@ -17,6 +17,12 @@ def test_production_web_ingress_uses_only_the_reviewed_cloudflare_ranges() -> No
     assert "cloudflare_ipv4_cidrs + cloudflare_ipv6_cidrs" in production
 
 
+def test_disposable_m3_qualification_keeps_its_own_caddy_runtime() -> None:
+    playbook = (_ROOT / "config/ansible/playbooks/m3-qualification.yml").read_text(encoding="utf-8")
+
+    assert "caddy_generation_enabled: false" in playbook
+
+
 def test_production_unit_executes_only_the_descriptor_pinned_launcher() -> None:
     unit = (_CADDY_ROLE / "templates/caddy-generation.service.j2").read_text(encoding="utf-8")
 
@@ -24,8 +30,19 @@ def test_production_unit_executes_only_the_descriptor_pinned_launcher() -> None:
     assert ":publication-lock:read-write" not in unit
     assert (
         "ExecStart=/usr/local/libexec/lowerduckpond/launch-caddy-generation "
-        "{{ static_host_agent_artifact_sha256 }} {{ caddy_binary_sha256 }}"
+        "{{ static_host_agent_artifact_sha256 }}"
     ) in unit
+    assert (
+        "ExecStartPre=+/usr/local/libexec/lowerduckpond/prepare-caddy-generation-start "
+        "{{ static_host_agent_artifact_sha256 }}"
+    ) in unit
+    assert (
+        "ExecStartPost=+/usr/local/libexec/lowerduckpond/verify-caddy-generation-start "
+        "{{ static_host_agent_artifact_sha256 }}"
+    ) in unit
+    assert "OnFailure=caddy-recovery.service" in unit
+    assert "After=network-online.target caddy-recovery.service" in unit
+    assert "Wants=network-online.target caddy-recovery.service" in unit
     assert "Restart=on-failure" in unit
     assert "RestartSec=5s" in unit
     assert "StartLimitBurst=3" in unit
@@ -72,6 +89,25 @@ def test_frozen_wrappers_enter_only_the_reviewed_host_agent_entrypoints() -> Non
     assert "static-host-agent/{artifact_sha256}/site-packages" in launcher
     assert "current/site-packages" not in bootstrap
     assert "current/site-packages" not in launcher
+    for command, entrypoint in (
+        ("prepare-caddy-generation-start", "caddy_start_gate_main"),
+        ("recover-caddy-generation-start", "caddy_start_recovery_main"),
+        ("verify-caddy-generation-start", "caddy_start_verifier_main"),
+    ):
+        wrapper = (_CADDY_ROLE / f"files/{command}").read_text(encoding="utf-8")
+        assert entrypoint in wrapper
+        assert "static-host-agent/{artifact_sha256}/site-packages" in wrapper
+        assert "current/site-packages" not in wrapper
+
+    recovery = (_CADDY_ROLE / "templates/caddy-recovery.service.j2").read_text(encoding="utf-8")
+    assert "Before=caddy.service" in recovery
+    assert "Restart=on-failure" in recovery
+    assert "StartLimitBurst=3" in recovery
+    assert "OpenFile={{ caddy_publication_lock_path }}:publication-lock" in recovery
+    assert (
+        "ExecStart=/usr/local/libexec/lowerduckpond/recover-caddy-generation-start "
+        "{{ static_host_agent_artifact_sha256 }}"
+    ) in recovery
 
 
 def test_production_acceptance_and_health_use_the_generation_check() -> None:

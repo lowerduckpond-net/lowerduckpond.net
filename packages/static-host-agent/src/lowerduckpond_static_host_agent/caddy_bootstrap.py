@@ -23,11 +23,18 @@ from lowerduckpond_static_host_agent.caddy_generation import (
 )
 from lowerduckpond_static_host_agent.caddy_routes import build_platform_only_caddy_routes
 from lowerduckpond_static_host_agent.caddy_runtime import CaddyRuntime
+from lowerduckpond_static_host_agent.caddy_startup import (
+    CaddyStartMode,
+    CaddyStartPhase,
+    CaddyStartupError,
+    CaddyStartupStore,
+    start_target,
+)
 
 _READ_CHUNK_BYTES: Final = 64 * 1024
 
 
-def ensure_platform_generation(  # noqa: PLR0913
+def ensure_platform_generation(  # noqa: PLR0912, PLR0913
     runtime: CaddyRuntime,
     store: CaddyGenerationStore,
     *,
@@ -35,38 +42,77 @@ def ensure_platform_generation(  # noqa: PLR0913
     binary: CaddyBinarySource,
     environment: bytes,
     origin_pull_ca_der: tuple[bytes, ...],
+    startup: CaddyStartupStore | None = None,
 ) -> bool:
     """Publish and select the exact platform-only generation only when needed."""
 
     payload = _platform_payload(binary, environment, origin_pull_ca_der)
+    transaction_intent = None
     with runtime.locked():
+        if startup is not None:
+            startup.reconcile_temporaries()
         try:
             previous = runtime.read_active()
         except FileNotFoundError:
             previous = None
+        if startup is not None and (intent := startup.read()) is not None:
+            if intent.mode is not CaddyStartMode.TRANSACTIONAL or intent.phase not in {
+                CaddyStartPhase.CANDIDATE_PREPARED,
+                CaddyStartPhase.RESTART_REQUIRED,
+            }:
+                raise CaddyStartupError("bootstrap encountered an unrelated startup intent")
+            if intent.previous is None:  # pragma: no cover - intent validation proves this
+                raise CaddyStartupError("bootstrap intent has no preceding generation")
+            with store.open_verified(intent.candidate.generation_id) as candidate:
+                if not _generation_matches(candidate, payload):
+                    raise CaddyStartupError("startup candidate disagrees with host inputs")
+            if previous == intent.previous.generation_id:
+                runtime.select_active(intent.candidate.generation_id)
+                previous = intent.candidate.generation_id
+            if previous != intent.candidate.generation_id:
+                raise CaddyStartupError("active generation disagrees with bootstrap intent")
+            if intent.phase is CaddyStartPhase.CANDIDATE_PREPARED:
+                startup.mark_restart_required(intent)
+            store.prune_unreferenced(
+                (intent.previous.generation_id, intent.candidate.generation_id)
+            )
+            return True
         retained = _prune_bootstrap_generations(store, previous)
         if _active_matches(runtime, payload):
             return False
         store.admit_candidate(payload, retained)
-        store.publish(generation_id, payload)
+        manifest = store.publish(generation_id, payload)
+        if startup is not None and previous is not None:
+            with store.open_verified(previous) as preceding:
+                transaction_intent = startup.begin_transaction(
+                    candidate=start_target(generation_id, manifest.to_bytes()),
+                    previous=start_target(previous, preceding.manifest.to_bytes()),
+                )
         runtime.select_active(generation_id)
+        if startup is not None and previous is not None:
+            if transaction_intent is None:  # pragma: no cover - branch proves this
+                raise CaddyStartupError("bootstrap failed to create startup intent")
+            startup.mark_restart_required(transaction_intent)
         selected = (generation_id,) if previous is None else (generation_id, previous)
         store.prune_unreferenced(selected)
     return True
 
 
-def platform_generation_matches(
+def platform_generation_matches(  # noqa: PLR0913
     runtime: CaddyRuntime,
     store: CaddyGenerationStore,
     *,
     binary: CaddyBinarySource,
     environment: bytes,
     origin_pull_ca_der: tuple[bytes, ...],
+    startup: CaddyStartupStore | None = None,
 ) -> bool:
     """Report whether active is the exact desired platform-only generation."""
 
     payload = _platform_payload(binary, environment, origin_pull_ca_der)
     with runtime.locked():
+        if startup is not None and not startup.inventory_is_empty():
+            return False
         if not _active_matches(runtime, payload):
             return False
         return store.bootstrap_retention_matches(runtime.read_active())

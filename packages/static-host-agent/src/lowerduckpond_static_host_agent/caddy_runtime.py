@@ -161,7 +161,7 @@ class CaddyRuntime:
         owner: int,
         group: int,
         creation_group: int,
-        expected_binary_sha256: str,
+        expected_binary_sha256: str | None,
         candidate_validator: CandidateValidator,
     ) -> None:
         self._root_fd = root_fd
@@ -169,7 +169,11 @@ class CaddyRuntime:
         self._owner = owner
         self._group = group
         self._creation_group = creation_group
-        self._expected_binary_sha256 = _validate_expected_binary_sha256(expected_binary_sha256)
+        self._expected_binary_sha256 = (
+            None
+            if expected_binary_sha256 is None
+            else _validate_expected_binary_sha256(expected_binary_sha256)
+        )
         self._candidate_validator = candidate_validator
         self._context_mutex = threading.RLock()
         self._locked = False
@@ -186,7 +190,7 @@ class CaddyRuntime:
         expected_group: int,
         validation_uid: int,
         validation_gid: int,
-        expected_binary_sha256: str,
+        expected_binary_sha256: str | None,
         expected_lock_owner: int | None = None,
         expected_lock_group: int | None = None,
         root_mode: int = CADDY_RUNTIME_ROOT_MODE,
@@ -244,7 +248,7 @@ class CaddyRuntime:
         expected_group: int,
         validation_uid: int,
         validation_gid: int,
-        expected_binary_sha256: str,
+        expected_binary_sha256: str | None,
         expected_lock_owner: int,
         expected_lock_group: int,
         root_mode: int = CADDY_RUNTIME_ROOT_MODE,
@@ -372,7 +376,8 @@ class CaddyRuntime:
         try:
             generation = store.open_verified(generation_id)
             try:
-                _validate_trusted_binary(generation, self._expected_binary_sha256)
+                if self._expected_binary_sha256 is not None:
+                    _validate_trusted_binary(generation, self._expected_binary_sha256)
                 _validate_platform_only_route_binding(generation)
             except BaseException:
                 generation.close()
@@ -395,7 +400,8 @@ class CaddyRuntime:
         store = self._open_generation_store()
         try:
             with store.open_verified(canonical_id) as generation:
-                _validate_trusted_binary(generation, self._expected_binary_sha256)
+                if self._expected_binary_sha256 is not None:
+                    _validate_trusted_binary(generation, self._expected_binary_sha256)
                 _validate_platform_only_route_binding(generation)
                 environment = _read_generation_environment(generation)
                 self._candidate_validator(generation, environment)

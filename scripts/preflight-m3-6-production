@@ -120,7 +120,6 @@ empty_directory_contracts=(
     /var/lib/lowerduckpond/static/exports\|root:root:700
     /var/lib/lowerduckpond/static/audit\|root:root:700
     /srv/lowerduckpond/sites\|root:caddy:710
-    /etc/caddy/generations\|root:caddy:750
     /etc/caddy/intents\|root:root:700
 )
 for contract in "${empty_directory_contracts[@]}"; do
@@ -133,6 +132,21 @@ for contract in "${empty_directory_contracts[@]}"; do
     [[ -z $(find "${path}" -mindepth 1 -print -quit) ]] ||
         remote_fail "${path} is not empty"
 done
+
+generation_root=/etc/caddy/generations
+[[ -d ${generation_root} && ! -L ${generation_root} ]] ||
+    remote_fail "${generation_root} has an unexpected type"
+[[ $(stat --format='%U:%G:%a' -- "${generation_root}") == root:caddy:750 ]] ||
+    remote_fail "${generation_root} metadata drifted"
+if [[ -n $(find "${generation_root}" -mindepth 1 -print -quit) ]]; then
+    generation_check=/usr/local/libexec/lowerduckpond/check-caddy-generation
+    [[ -f ${generation_check} && ! -L ${generation_check} ]] ||
+        remote_fail "the immutable Caddy generation check is absent"
+    [[ $(stat --format='%U:%G:%a' -- "${generation_check}") == root:root:755 ]] ||
+        remote_fail "the immutable Caddy generation check metadata drifted"
+    [[ $("${generation_check}") == unchanged ]] ||
+        remote_fail "the selected immutable Caddy generation is not current"
+fi
 
 state_parent_directories=(
     /var/lib/lowerduckpond/static/authorization
