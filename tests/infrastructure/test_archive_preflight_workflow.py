@@ -2,7 +2,7 @@ from pathlib import Path
 
 WORKFLOW_PATH = Path(".github/workflows/infrastructure.yml")
 ARCHIVE_PREFLIGHT_INVOCATION_COUNT = 2
-HOST_CONFIRMATION_REFERENCE_COUNT = 6
+HOST_STATE_REFERENCE_COUNT = 8
 
 
 def test_apply_installs_and_directly_invokes_the_locked_archive_preflight() -> None:
@@ -25,9 +25,11 @@ def test_ordinary_plan_retains_the_deployed_public_edge_phase() -> None:
     assert "resolved_public_edge_phase" in workflow
 
 
-def test_enforced_edge_plan_requires_host_origin_pull_confirmation() -> None:
+def test_edge_transitions_require_the_exact_reviewed_host_state() -> None:
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
 
-    assert "confirm_origin_pull_host_enforced:" in workflow
-    assert "The enforced edge phase requires host-side origin-pull confirmation." in workflow
-    assert workflow.count("confirm_origin_pull_host_enforced") >= HOST_CONFIRMATION_REFERENCE_COUNT
+    assert "origin_pull_host_state:" in workflow
+    assert "enforced) expected_host_state=required" in workflow
+    assert "direct) expected_host_state=staged" in workflow
+    assert "*) expected_host_state=unconfirmed" in workflow
+    assert workflow.count("origin_pull_host_state") >= HOST_STATE_REFERENCE_COUNT

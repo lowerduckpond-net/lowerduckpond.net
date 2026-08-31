@@ -27,5 +27,6 @@
     "2c0f:f248::/32"
   ],
   "retiring_ipv4_cidrs": [],
-  "retiring_ipv6_cidrs": []
+  "retiring_ipv6_cidrs": [],
+  "retiring_cidr_provenance": {}
 }

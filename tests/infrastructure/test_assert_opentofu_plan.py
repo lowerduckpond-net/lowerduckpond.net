@@ -427,30 +427,7 @@ def _valid_public_edge_plan() -> dict[str, Any]:
 
     for zone in ("lowerduckpond_net", "lowerduckpond_com"):
         domain = "lowerduckpond.net" if zone == "lowerduckpond_net" else "lowerduckpond.com"
-        zone_id = "0" * 32 if zone == "lowerduckpond_net" else "1" * 32
-        certificate_id = "2" * 32 if zone == "lowerduckpond_net" else "3" * 32
         expression = f'(http.host eq "{domain}" or ends_with(http.host, ".{domain}"))'
-        for hostname in (domain, f"*.{domain}"):
-            plan["resource_changes"].append(
-                _resource(
-                    "cloudflare_authenticated_origin_pulls",
-                    "hostname",
-                    {
-                        "config": [
-                            {
-                                "cert_id": certificate_id,
-                                "enabled": True,
-                                "hostname": hostname,
-                            }
-                        ],
-                        "zone_id": zone_id,
-                    },
-                    address=(
-                        f'module.edge["{zone}"].cloudflare_authenticated_origin_pulls.'
-                        f'hostname["{hostname}"]'
-                    ),
-                )
-            )
         plan["resource_changes"].append(
             _resource(
                 "cloudflare_authenticated_origin_pulls_settings",
@@ -464,7 +441,11 @@ def _valid_public_edge_plan() -> dict[str, Any]:
                 ),
             )
         )
-        for setting, value in (("always_online", "off"), ("ssl", "strict")):
+        for setting, value in (
+            ("always_online", "off"),
+            ("always_use_https", "off"),
+            ("ssl", "strict"),
+        ):
             plan["resource_changes"].append(
                 _resource(
                     "cloudflare_zone_setting",

@@ -43,11 +43,15 @@ on:
           - proxied
           - enforced
           - direct
-      confirm_origin_pull_host_enforced:
-        description: Confirm the production host already requires authenticated origin pulls
+      origin_pull_host_state:
+        description: Confirm the reviewed host state required before an enforced or direct transition
         required: false
-        default: false
-        type: boolean
+        default: unconfirmed
+        type: choice
+        options:
+          - unconfirmed
+          - staged
+          - required
 
 permissions:
   actions: read
@@ -212,16 +216,18 @@ jobs:
         run: |
           plan_arguments=()
           special_modes=0
-          if [[ "${{ inputs.public_edge_phase }}" == "enforced" &&
-                "${{ inputs.confirm_origin_pull_host_enforced }}" != "true" ]]; then
-            echo "The enforced edge phase requires host-side origin-pull confirmation." >&2
+          host_state="${{ inputs.origin_pull_host_state }}"
+          [[ -n "${host_state}" ]] || host_state=unconfirmed
+          case "${{ inputs.public_edge_phase }}" in
+            enforced) expected_host_state=required ;;
+            direct) expected_host_state=staged ;;
+            *) expected_host_state=unconfirmed ;;
+          esac
+          if [[ "${host_state}" != "${expected_host_state}" ]]; then
+            echo "The requested edge phase requires origin_pull_host_state=${expected_host_state}." >&2
             exit 1
           fi
-          if [[ "${{ inputs.public_edge_phase }}" != "enforced" &&
-                "${{ inputs.confirm_origin_pull_host_enforced }}" == "true" ]]; then
-            echo "Host-side origin-pull confirmation is valid only for enforced plans." >&2
-            exit 1
-          fi
+          echo "origin_pull_host_state=${host_state}" >> "${GITHUB_OUTPUT}"
           [[ "${{ inputs.replace_droplet }}" == "true" ]] && ((special_modes += 1))
           [[ "${{ inputs.initialize_archive_storage }}" == "true" ]] && \
             ((special_modes += 1))
@@ -278,8 +284,8 @@ jobs:
             --arg ref "${GITHUB_REF}" \
             --arg run_id "${GITHUB_RUN_ID}" \
             --arg changes "${PLAN_CHANGES}" \
-            --arg confirm_origin_pull_host_enforced \
-              "${{ inputs.confirm_origin_pull_host_enforced }}" \
+            --arg origin_pull_host_state \
+              "${{ steps.plan.outputs.origin_pull_host_state }}" \
             --arg initialize_archive_storage "${{ inputs.initialize_archive_storage }}" \
             --arg public_edge_phase "${{ inputs.public_edge_phase }}" \
             --arg resolved_public_edge_phase "${{ steps.edge_phase.outputs.phase }}" \
@@ -287,7 +293,7 @@ jobs:
             --arg sha256 "$(sha256sum production.tfplan | cut -d ' ' -f 1)" \
             '{commit: $commit, event: $event, ref: $ref, run_id: $run_id,
               changes: $changes,
-              confirm_origin_pull_host_enforced: $confirm_origin_pull_host_enforced,
+              origin_pull_host_state: $origin_pull_host_state,
               initialize_archive_storage: $initialize_archive_storage,
               public_edge_phase: $public_edge_phase,
               resolved_public_edge_phase: $resolved_public_edge_phase,
@@ -387,8 +393,8 @@ jobs:
           test "$(jq -r .run_id plan-metadata.json)" = "${{ inputs.plan_run_id }}"
           test "$(jq -r .initialize_archive_storage plan-metadata.json)" = \
             "${{ inputs.initialize_archive_storage }}"
-          test "$(jq -r .confirm_origin_pull_host_enforced plan-metadata.json)" = \
-            "${{ inputs.confirm_origin_pull_host_enforced }}"
+          test "$(jq -r .origin_pull_host_state plan-metadata.json)" = \
+            "${{ inputs.origin_pull_host_state }}"
           test "$(jq -r .public_edge_phase plan-metadata.json)" = \
             "${{ inputs.public_edge_phase }}"
           jq -e '

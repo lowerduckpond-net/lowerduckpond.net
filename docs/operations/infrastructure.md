@@ -61,7 +61,7 @@ The workflow needs three distinct DigitalOcean credential roles:
 `lowerduckpond.net` and `lowerduckpond.com` zones with DNS Write, Zone Settings
 Write, Cache Settings Write, Config Settings Write, Zone WAF Write, and SSL and
 Certificates Write. Those grants cover the managed records, Full (strict),
-cache-bypass and transform rules, `/cdn-cgi/` block, origin-pull association,
+cache-bypass and transform rules, `/cdn-cgi/` block, zone-level origin-pull setting,
 and public-certificate status read. The zone IDs are supplied separately, so
 the token does not need Zone Read. Do not substitute an account-wide ruleset or
 certificate grant. The production stack creates a separate Spaces key limited
@@ -193,23 +193,30 @@ both the plan and apply dispatches. `proxied` creates the `.com` records and
 enables both reviewed zone policies while both origin firewalls remain open;
 `enforced` narrows the DigitalOcean web-ingress allowlist only after the host
 has independently required origin pulls and adopted the same reviewed
-Cloudflare networks. An `enforced` plan additionally requires the explicit
-`confirm_origin_pull_host_enforced` dispatch confirmation, and the apply must
-repeat the value recorded with the reviewed plan. Set
-`CADDY_ORIGIN_PULL_ENFORCEMENT_ENABLED=true` only for the preceding reviewed
-production host convergence; use `false` for staging and rollback. Roll back
-`enforced` to `proxied` before selecting
-`direct`; the plan policy rejects an enforced-to-direct jump. `none` is the
+Cloudflare networks. An `enforced` plan additionally requires
+`origin_pull_host_state=required`, proving that the preceding reviewed host
+convergence used `CADDY_ORIGIN_PULL_ENFORCEMENT_ENABLED=true`. A `direct` plan
+requires `origin_pull_host_state=staged`, proving that a preceding reviewed
+host convergence used `CADDY_ORIGIN_PULL_ENFORCEMENT_ENABLED=false`. The apply
+must repeat the exact value recorded with the reviewed plan. `proxied` and
+ordinary `none` plans require `unconfirmed`, so a confirmation cannot be
+reused for the wrong transition. Roll back `enforced` to `proxied`, converge
+the relaxed host, and only then select `direct`; the plan policy rejects an
+enforced-to-direct jump. `none` is the
 ordinary non-edge mode and retains the phase recorded in production state. It
 resolves to `direct` only for the one-time legacy state that predates this
 output and contains no managed edge policy.
 
 The committed Cloudflare network snapshot separates the currently published
-ranges from temporarily `retiring` ranges. Both the DigitalOcean and host
+ranges from temporarily `retiring` ranges. Every retiring entry must cite an
+immutable ancestor commit whose reviewed snapshot contained that entry in its
+active set; CI verifies that provenance before allowing the range into either
+firewall. Both the DigitalOcean and host
 firewalls and Caddy's trusted-proxy boundary use their union while enforcement
 is active. When Cloudflare changes its list, first replace the active arrays
 with the exact newly published sets and place every removed range in the
-retiring arrays; rebuild and converge the host artifact and both firewalls,
+retiring arrays and record the preceding reviewed snapshot commit in
+`retiring_cidr_provenance`; rebuild and converge the host artifact and both firewalls,
 then verify the edge before removing the retiring ranges in a later reviewed
 change. Active and retiring arrays must be disjoint, and live plans never fetch
 or trust ranges that were not committed for review.
@@ -224,8 +231,16 @@ The two certificate IDs are nonsecret object identifiers. Uploading or
 retiring the corresponding leaves remains a separate temporary-credential
 operation; neither PEM input files nor private keys enter OpenTofu variables or
 GitHub variables. The provider reads the selected public leaf and its metadata
-into encrypted plans and state to prove it active. Its private key must never
-enter OpenTofu configuration, plans, or state.
+into encrypted plans and state to prove it active. It also lists the zone's
+uploaded leaves and refuses to enable zone-level authenticated origin pulls
+unless the selected ID is the newest active leaf, which is the leaf Cloudflare
+serves for every proxied hostname in that zone. Its private key must never enter
+OpenTofu configuration, plans, or state.
+
+Cloudflare's zone-wide `always_use_https` switch is explicitly managed as
+`off`. Port 80 must reach Caddy so reusable aliases keep their reviewed method,
+path, query, and root-generated redirect semantics; an edge-wide redirect is
+not an acceptable substitute.
 
 ## Rebuild drill
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,17 @@ from scripts.check_cloudflare_networks import NetworkSnapshotError, compare_snap
 IPV4_NETWORK_COUNT = 15
 IPV6_NETWORK_COUNT = 7
 IPV4_VERSION = 4
+GIT_EXECUTABLE = "/usr/bin/git"
+
+
+def _git(repository: Path, *arguments: str, capture_output: bool = False) -> str:
+    completed = subprocess.run(  # noqa: S603 - fixed test-only Git operations.
+        [GIT_EXECUTABLE, "-C", str(repository), *arguments],
+        check=True,
+        capture_output=capture_output,
+        text=True,
+    )
+    return completed.stdout.strip() if completed.stdout is not None else ""
 
 
 def test_committed_snapshot_contains_only_canonical_provider_networks() -> None:
@@ -25,6 +37,7 @@ def test_committed_snapshot_contains_only_canonical_provider_networks() -> None:
     assert snapshot.active_ipv4 | snapshot.active_ipv6 == frozenset(CLOUDFLARE_NETWORKS)
     assert not snapshot.retiring_ipv4
     assert not snapshot.retiring_ipv6
+    assert not snapshot.retiring_provenance
     assert snapshot.active_ipv4 | snapshot.active_ipv6 == REVIEWED_CLOUDFLARE_CIDRS
 
 
@@ -67,6 +80,7 @@ def test_snapshot_rejects_duplicate_networks(tmp_path: Path) -> None:
                 "cloudflare_ipv6_cidrs": ["2001:db8::/32"],
                 "retiring_ipv4_cidrs": [],
                 "retiring_ipv6_cidrs": [],
+                "retiring_cidr_provenance": {},
             }
         ),
         encoding="utf-8",
@@ -76,14 +90,33 @@ def test_snapshot_rejects_duplicate_networks(tmp_path: Path) -> None:
         load_snapshot(snapshot)
 
 
-def test_drift_check_accepts_reviewed_retiring_ranges(
+def test_drift_check_accepts_proven_reviewed_retiring_ranges(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    repository = tmp_path / "repository"
+    snapshot_path = repository / "platform/networks.json"
+    snapshot_path.parent.mkdir(parents=True)
     committed = json.loads(check_cloudflare_networks.DEFAULT_SNAPSHOT.read_text(encoding="utf-8"))
+    committed["cloudflare_ipv4_cidrs"].append("192.0.2.0/24")
+    committed["cloudflare_ipv6_cidrs"].append("2001:db8::/32")
+    snapshot_path.write_text(json.dumps(committed), encoding="utf-8")
+    _git(repository, "init", "-q")
+    _git(repository, "config", "user.name", "CI")
+    _git(repository, "config", "user.email", "ci@example.invalid")
+    _git(repository, "add", "platform/networks.json")
+    _git(repository, "commit", "-qm", "Reviewed snapshot")
+    provenance_commit = _git(repository, "rev-parse", "HEAD", capture_output=True)
+    committed["cloudflare_ipv4_cidrs"].remove("192.0.2.0/24")
+    committed["cloudflare_ipv6_cidrs"].remove("2001:db8::/32")
     committed["retiring_ipv4_cidrs"] = ["192.0.2.0/24"]
     committed["retiring_ipv6_cidrs"] = ["2001:db8::/32"]
-    snapshot_path = tmp_path / "networks.json"
+    committed["retiring_cidr_provenance"] = {
+        "192.0.2.0/24": provenance_commit,
+        "2001:db8::/32": provenance_commit,
+    }
     snapshot_path.write_text(json.dumps(committed), encoding="utf-8")
+    _git(repository, "add", "platform/networks.json")
+    _git(repository, "commit", "-qm", "Retire ranges")
     reviewed = load_snapshot(snapshot_path)
     monkeypatch.setattr(
         check_cloudflare_networks,
@@ -93,7 +126,27 @@ def test_drift_check_accepts_reviewed_retiring_ranges(
         ),
     )
 
-    compare_snapshot(snapshot_path)
+    compare_snapshot(snapshot_path, repository=repository, reviewed_ref="HEAD")
+
+    committed["retiring_ipv4_cidrs"] = ["198.51.100.0/24"]
+    committed["retiring_ipv6_cidrs"] = []
+    committed["retiring_cidr_provenance"] = {
+        "198.51.100.0/24": provenance_commit,
+    }
+    snapshot_path.write_text(json.dumps(committed), encoding="utf-8")
+
+    with pytest.raises(NetworkSnapshotError, match="was not active"):
+        compare_snapshot(snapshot_path, repository=repository, reviewed_ref="HEAD")
+
+
+def test_snapshot_rejects_a_retiring_range_without_provenance(tmp_path: Path) -> None:
+    committed = json.loads(check_cloudflare_networks.DEFAULT_SNAPSHOT.read_text(encoding="utf-8"))
+    committed["retiring_ipv4_cidrs"] = ["192.0.2.0/24"]
+    snapshot_path = tmp_path / "networks.json"
+    snapshot_path.write_text(json.dumps(committed), encoding="utf-8")
+
+    with pytest.raises(NetworkSnapshotError, match="cover exactly"):
+        load_snapshot(snapshot_path)
 
 
 def test_snapshot_rejects_overlap_between_active_and_retiring_ranges(tmp_path: Path) -> None:
@@ -106,6 +159,7 @@ def test_snapshot_rejects_overlap_between_active_and_retiring_ranges(tmp_path: P
                 "cloudflare_ipv6_cidrs": ["2001:db8::/32"],
                 "retiring_ipv4_cidrs": ["192.0.0.0/16"],
                 "retiring_ipv6_cidrs": [],
+                "retiring_cidr_provenance": {"192.0.0.0/16": "1" * 40},
             }
         ),
         encoding="utf-8",

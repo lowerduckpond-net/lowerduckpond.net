@@ -61,8 +61,10 @@ Lock the origin instead of relying on concealed DNS:
   downloads an unreviewed allowlist. Range changes use an additive two-phase
   rotation: the committed active arrays follow the exact published set while
   explicit temporary retiring arrays preserve removed ranges at both
-  firewalls. Verify the resulting union before removing those retiring ranges
-  from either boundary in a later reviewed change.
+  firewalls. Every retiring entry cites an immutable commit reachable from the
+  reviewed main line where that exact range was active. Verify the resulting
+  union before removing those retiring ranges from either boundary in a later
+  reviewed change.
 
 Port 80 cannot use TLS client authentication. It therefore relies on the
 Cloudflare source allowlist and strict host and route handling, and may return
@@ -81,8 +83,10 @@ the retired uploaded leaf and then revoke it. Neither the CA private key nor a
 leaf private key may enter the repository, OpenTofu configuration, saved plans,
 or state.
 
-OpenTofu receives the returned non-secret certificate ID and manages only its
-zone or hostname association and enforcement settings. Install only the CA
+OpenTofu receives the returned non-secret certificate ID and manages only the
+zone-level enforcement setting. Before enabling it, OpenTofu proves that the
+selected ID is the newest active zone leaf, which is the certificate Cloudflare
+presents for all proxied hostnames in the zone. Install only the CA
 certificate at the origin, overlap old and new leaves during rotation, and
 alert before expiration. Production uses zone-level certificates. Disposable
 qualification uses short-lived per-hostname certificates so teardown can
@@ -97,9 +101,9 @@ falling back to the global shared certificate.
 
 Rotate a project CA before it has less than one full production-leaf lifetime
 remaining. Generate and back up the replacement CA independently, install a
-combined old-and-new CA trust bundle at Caddy, upload and associate new leaves
-signed only by the replacement CA, and verify every edge hostname. Only then
-retire the old Cloudflare leaves and associations; remove the old CA from Caddy
+combined old-and-new CA trust bundle at Caddy, upload new leaves signed only by
+the replacement CA, prove they are the newest active zone leaves, and verify
+every edge hostname. Only then retire the old Cloudflare leaves; remove the old CA from Caddy
 in a later convergence after proving Cloudflare no longer presents it. Each
 phase preserves the preceding leaf and trust anchor as its rollback. No leaf
 may expire after the CA that issued it.
@@ -109,7 +113,7 @@ Keep Cloudflare credentials separated by capability:
 - Caddy's non-expiring token retains only the two-zone read and DNS-edit scope
   required for ACME;
 - the OpenTofu edge token receives only the two-zone DNS, zone-setting,
-  SSL-setting, origin-pull association, and ruleset permissions required by
+  SSL-setting, zone-level origin-pull, and ruleset permissions required by
   managed edge resources, but never receives an origin-pull private key;
 - a temporary operator credential uploads and later retires each origin-pull
   leaf, then is revoked after qualification teardown or production rotation; and
@@ -217,8 +221,8 @@ cloud toggle:
 
 1. install and validate the origin-pull CA and Caddy configuration without yet
    requiring a client certificate;
-2. configure Full (strict), edge cache bypass, Always Online disabled,
-   account-specific origin pulls, and proxied records through reviewed
+2. configure Full (strict), edge cache bypass, Always Online and Always Use
+   HTTPS disabled, account-specific origin pulls, and proxied records through reviewed
    OpenTofu;
 3. verify edge and origin paths, then require the client certificate and narrow
    both firewalls to Cloudflare networks; and

@@ -19,7 +19,7 @@ paste them into chat:
   Zone Read and DNS Edit. The current `.net`-only token must be replaced before
   Milestone 3 configures the tenant zone.
 - `CADDY_ORIGIN_PULL_ENFORCEMENT_ENABLED`: exactly `false` while the public
-  edge and origin-pull leaf associations are staged, then exactly `true` only
+  edge and zone-level origin-pull leaves are staged, then exactly `true` only
   after both zones are proxied and verified. The latter selects required
   client-certificate verification and the reviewed Cloudflare-only host
   firewall in one convergence.

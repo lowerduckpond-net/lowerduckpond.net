@@ -1,10 +1,13 @@
 locals {
   edge_enabled    = var.rollout_phase != "direct"
   records_enabled = var.direct_records_enabled || local.edge_enabled
-  origin_pull_hostnames = toset([
-    var.domain,
-    "*.${var.domain}",
-  ])
+  active_origin_pull_certificates = local.edge_enabled ? [
+    for certificate in data.cloudflare_authenticated_origin_pulls_certificates.zone[0].result :
+    certificate if certificate.status == "active"
+  ] : []
+  newest_active_origin_pull_uploaded_on = try(reverse(sort([
+    for certificate in local.active_origin_pull_certificates : certificate.uploaded_on
+  ]))[0], null)
   zone_expression = format(
     "(http.host eq \"%s\" or ends_with(http.host, \".%s\"))",
     var.domain,
@@ -26,7 +29,7 @@ resource "cloudflare_dns_record" "apex" {
   depends_on = [
     cloudflare_zone_setting.ssl,
     cloudflare_zone_setting.always_online,
-    cloudflare_authenticated_origin_pulls.hostname,
+    cloudflare_zone_setting.always_use_https,
     cloudflare_authenticated_origin_pulls_settings.zone,
     cloudflare_ruleset.cache_bypass,
     cloudflare_ruleset.transform_disable,
@@ -48,7 +51,7 @@ resource "cloudflare_dns_record" "wildcard" {
   depends_on = [
     cloudflare_zone_setting.ssl,
     cloudflare_zone_setting.always_online,
-    cloudflare_authenticated_origin_pulls.hostname,
+    cloudflare_zone_setting.always_use_https,
     cloudflare_authenticated_origin_pulls_settings.zone,
     cloudflare_ruleset.cache_bypass,
     cloudflare_ruleset.transform_disable,
@@ -63,22 +66,11 @@ data "cloudflare_authenticated_origin_pulls_certificate" "selected" {
   certificate_id = var.origin_pull_certificate_id
 }
 
-resource "cloudflare_authenticated_origin_pulls" "hostname" {
-  for_each = local.edge_enabled ? local.origin_pull_hostnames : toset([])
+data "cloudflare_authenticated_origin_pulls_certificates" "zone" {
+  count = local.edge_enabled ? 1 : 0
 
-  zone_id = var.zone_id
-  config = [{
-    hostname = each.value
-    cert_id  = var.origin_pull_certificate_id
-    enabled  = true
-  }]
-
-  lifecycle {
-    precondition {
-      condition     = data.cloudflare_authenticated_origin_pulls_certificate.selected[0].status == "active"
-      error_message = "The selected zone-level origin-pull certificate must already be active."
-    }
-  }
+  zone_id   = var.zone_id
+  max_items = 1000
 }
 
 resource "cloudflare_zone_setting" "ssl" {
@@ -97,18 +89,31 @@ resource "cloudflare_zone_setting" "always_online" {
   value      = "off"
 }
 
+resource "cloudflare_zone_setting" "always_use_https" {
+  count = local.edge_enabled ? 1 : 0
+
+  zone_id    = var.zone_id
+  setting_id = "always_use_https"
+  value      = "off"
+}
+
 resource "cloudflare_authenticated_origin_pulls_settings" "zone" {
   count = local.edge_enabled ? 1 : 0
 
   zone_id = var.zone_id
   enabled = true
 
-  depends_on = [cloudflare_authenticated_origin_pulls.hostname]
-
   lifecycle {
     precondition {
       condition     = data.cloudflare_authenticated_origin_pulls_certificate.selected[0].status == "active"
       error_message = "The selected zone-level origin-pull certificate must already be active."
+    }
+    precondition {
+      condition = (
+        data.cloudflare_authenticated_origin_pulls_certificate.selected[0].uploaded_on ==
+        local.newest_active_origin_pull_uploaded_on
+      )
+      error_message = "The selected zone-level origin-pull certificate must be the newest active leaf."
     }
   }
 }

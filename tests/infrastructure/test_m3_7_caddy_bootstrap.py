@@ -31,7 +31,7 @@ def test_edge_policy_is_installed_before_dns_becomes_proxied() -> None:
     dependencies = {
         "cloudflare_zone_setting.ssl",
         "cloudflare_zone_setting.always_online",
-        "cloudflare_authenticated_origin_pulls.hostname",
+        "cloudflare_zone_setting.always_use_https",
         "cloudflare_authenticated_origin_pulls_settings.zone",
         "cloudflare_ruleset.cache_bypass",
         "cloudflare_ruleset.transform_disable",
@@ -50,16 +50,16 @@ def test_edge_policy_is_installed_before_dns_becomes_proxied() -> None:
         assert all(dependency in body for dependency in dependencies)
 
 
-def test_selected_origin_pull_leaf_is_associated_with_both_zone_hostnames() -> None:
+def test_selected_origin_pull_leaf_is_bound_zone_wide() -> None:
     module = (_ROOT / "infra/opentofu/modules/cloudflare-public-edge/main.tf").read_text(
         encoding="utf-8"
     )
 
-    assert 'resource "cloudflare_authenticated_origin_pulls" "hostname"' in module
-    assert "for_each = local.edge_enabled ? local.origin_pull_hostnames : toset([])" in module
-    assert "hostname = each.value" in module
-    assert "cert_id  = var.origin_pull_certificate_id" in module
-    assert "depends_on = [cloudflare_authenticated_origin_pulls.hostname]" in module
+    assert 'resource "cloudflare_authenticated_origin_pulls" "hostname"' not in module
+    assert 'data "cloudflare_authenticated_origin_pulls_certificates" "zone"' in module
+    assert 'certificate.status == "active"' in module
+    assert "local.newest_active_origin_pull_uploaded_on" in module
+    assert 'resource "cloudflare_authenticated_origin_pulls_settings" "zone"' in module
 
 
 def test_production_accepts_both_cloudflare_certificate_id_forms() -> None:
