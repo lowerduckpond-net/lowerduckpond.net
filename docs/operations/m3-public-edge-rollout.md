@@ -211,8 +211,9 @@ just preflight-m3-7-production
 The command first repeats the full M3.6 dark-host gate. It then reads encrypted
 production state and requires the direct phase (including the compatible
 legacy state before that output is first materialized), no managed M3.7 edge
-policy, the exact direct `.net` apex and wildcard, and no `.com` apex or
-wildcard A record. It proves token separation and two-zone access, no enabled
+policy, exactly one direct A record (and no competing record type) at each
+`.net` apex and wildcard, and no record of any type at either `.com` rollout
+name. It proves token separation and two-zone access, no enabled
 zone-level or per-hostname origin-pull policy, no conflicting zone entrypoint,
 one safe public CA, and exactly one active, selected, CA-chained zone-level
 leaf per zone. It also requires the four GitHub production variables to match
