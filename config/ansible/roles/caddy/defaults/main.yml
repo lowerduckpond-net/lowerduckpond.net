@@ -4,6 +4,7 @@ caddy_xcaddy_version: "{{ platform_versions.xcaddy }}"
 caddy_cloudflare_module_version: "{{ platform_versions.caddy_cloudflare_module }}"
 caddy_cloudflare_api_token: ""
 caddy_origin_pull_ca_paths: []
+caddy_origin_pull_enforcement_enabled: false
 caddy_generation_enabled: true
 caddy_publication_lock_path: /var/lib/lowerduckpond/static/locks/publication.lock
 caddy_domain: lowerduckpond.net

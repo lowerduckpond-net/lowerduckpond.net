@@ -873,8 +873,11 @@ def _validate_platform_only_route_binding(generation: PinnedCaddyGeneration) -> 
             os.close(route_metadata_fd)
         os.close(configuration_fd)
 
-    origin_pull_ca_der = _configured_origin_pull_ca_der(configuration)
-    expected = build_platform_only_caddy_routes(origin_pull_ca_der=origin_pull_ca_der)
+    origin_pull_ca_der, origin_pull_required = _configured_origin_pull_policy(configuration)
+    expected = build_platform_only_caddy_routes(
+        origin_pull_ca_der=origin_pull_ca_der,
+        origin_pull_required=origin_pull_required,
+    )
     if configuration != expected.configuration or route_metadata != canonical_json_bytes(
         expected.route_metadata,
         maximum_bytes=MAX_CADDY_ROUTE_METADATA_BYTES,
@@ -882,7 +885,9 @@ def _validate_platform_only_route_binding(generation: PinnedCaddyGeneration) -> 
         raise CaddyRuntimeError("selected Caddy configuration and declared route state disagree")
 
 
-def _configured_origin_pull_ca_der(configuration: dict[str, object]) -> tuple[bytes, ...]:
+def _configured_origin_pull_policy(
+    configuration: dict[str, object],
+) -> tuple[tuple[bytes, ...], bool]:
     apps = configuration.get("apps")
     if type(apps) is not dict:
         raise CaddyRuntimeError("selected origin-pull trust is malformed")
@@ -904,6 +909,9 @@ def _configured_origin_pull_ca_der(configuration: dict[str, object]) -> tuple[by
     authentication = policy.get("client_authentication")
     if type(authentication) is not dict:
         raise CaddyRuntimeError("selected origin-pull trust is malformed")
+    mode = authentication.get("mode")
+    if mode not in {"verify_if_given", "require_and_verify"}:
+        raise CaddyRuntimeError("selected origin-pull trust is malformed")
     pool = authentication.get("ca")
     if type(pool) is not dict:
         raise CaddyRuntimeError("selected origin-pull trust is malformed")
@@ -918,7 +926,7 @@ def _configured_origin_pull_ca_der(configuration: dict[str, object]) -> tuple[by
         )
     except ValueError as error:
         raise CaddyRuntimeError("selected origin-pull trust is malformed") from error
-    return certificates
+    return certificates, mode == "require_and_verify"
 
 
 def _validate_generation_candidate(

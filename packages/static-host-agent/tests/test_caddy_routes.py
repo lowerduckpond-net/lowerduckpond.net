@@ -32,8 +32,11 @@ _REPOSITORY_ROOT = Path(__file__).parents[3]
 _ORIGIN_PULL_CA_DER = b"review-only-origin-pull-ca"
 
 
-def _generated() -> PlatformOnlyCaddyRoutes:
-    return build_platform_only_caddy_routes(origin_pull_ca_der=(_ORIGIN_PULL_CA_DER,))
+def _generated(*, origin_pull_required: bool = True) -> PlatformOnlyCaddyRoutes:
+    return build_platform_only_caddy_routes(
+        origin_pull_ca_der=(_ORIGIN_PULL_CA_DER,),
+        origin_pull_required=origin_pull_required,
+    )
 
 
 def _routes() -> list[dict[str, object]]:
@@ -121,6 +124,25 @@ def test_https_requires_account_origin_pull_and_trusts_only_reviewed_cloudflare_
     }
     assert production["trusted_proxies_strict"] == 1
     assert production["client_ip_headers"] == ["CF-Connecting-IP"]
+
+
+def test_staged_origin_pull_trust_verifies_present_certificates_without_requiring_one() -> None:
+    generated = _generated(origin_pull_required=False)
+    servers = generated.http_app["servers"]
+    assert type(servers) is dict
+    production = servers["production"]
+    assert type(production) is dict
+    policies = production["tls_connection_policies"]
+    assert type(policies) is list
+    policy = policies[0]
+    assert type(policy) is dict
+    authentication = policy["client_authentication"]
+    assert type(authentication) is dict
+    route_state = generated.route_metadata["routeState"]
+    assert type(route_state) is dict
+
+    assert authentication["mode"] == "verify_if_given"
+    assert route_state["originPullRequired"] is False
 
 
 def test_proxy_networks_are_the_exact_reviewed_repository_snapshot() -> None:
@@ -285,6 +307,7 @@ def test_route_metadata_is_canonical_self_bound_and_publication_disabled() -> No
     assert state["originPullCaSha256"] == [
         "a1f04d9d49b6cdd9bcf7c38a90e19cce4915b57798720cb98eec228153505513"
     ]
+    assert state["originPullRequired"] is True
     assert metadata["routeStateDigest"] == caddy_route_state_digest(state).to_dict()
 
     canonical = canonical_json_bytes(metadata)

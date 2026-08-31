@@ -100,6 +100,7 @@ def test_bootstrap_selects_once_and_is_idempotent_for_exact_inputs(tmp_path: Pat
             binary=source,
             environment=environment,
             origin_pull_ca_der=(b"ca-a",),
+            origin_pull_required=True,
             startup=startup,
         )
         assert not ensure_platform_generation(
@@ -109,6 +110,7 @@ def test_bootstrap_selects_once_and_is_idempotent_for_exact_inputs(tmp_path: Pat
             binary=source,
             environment=environment,
             origin_pull_ca_der=(b"ca-a",),
+            origin_pull_required=True,
             startup=startup,
         )
         with runtime.locked():
@@ -118,7 +120,9 @@ def test_bootstrap_selects_once_and_is_idempotent_for_exact_inputs(tmp_path: Pat
     assert (root / "active").stat().st_mode & 0o777 == CADDY_ACTIVE_REFERENCE_MODE
 
 
-def test_bootstrap_selects_a_new_generation_when_bound_trust_changes(tmp_path: Path) -> None:
+def test_bootstrap_selects_a_new_generation_when_bound_origin_pull_policy_changes(
+    tmp_path: Path,
+) -> None:
     owner = os.geteuid()
     group = os.getegid()
     root = tmp_path / "runtime"
@@ -154,9 +158,9 @@ def test_bootstrap_selects_a_new_generation_when_bound_trust_changes(tmp_path: P
         ) as store,
         CaddyStartupStore.open(intents, expected_owner=owner) as startup,
     ):
-        for generation_id, certificate in (
-            (_GENERATION_A, b"ca-a"),
-            (_GENERATION_B, b"ca-b"),
+        for generation_id, certificate, required in (
+            (_GENERATION_A, b"ca-a", False),
+            (_GENERATION_B, b"ca-a", True),
         ):
             assert ensure_platform_generation(
                 runtime,
@@ -165,6 +169,7 @@ def test_bootstrap_selects_a_new_generation_when_bound_trust_changes(tmp_path: P
                 binary=source,
                 environment=b"CLOUDFLARE_API_TOKEN=real-token\n",
                 origin_pull_ca_der=(certificate,),
+                origin_pull_required=required,
                 startup=startup,
             )
         with runtime.locked():
@@ -182,7 +187,8 @@ def test_bootstrap_selects_a_new_generation_when_bound_trust_changes(tmp_path: P
                 store,
                 binary=source,
                 environment=b"CLOUDFLARE_API_TOKEN=real-token\n",
-                origin_pull_ca_der=(b"ca-b",),
+                origin_pull_ca_der=(b"ca-a",),
+                origin_pull_required=True,
                 startup=startup,
             )
             is PlatformGenerationState.PENDING

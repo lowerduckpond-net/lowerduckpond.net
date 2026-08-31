@@ -12,6 +12,17 @@ def test_production_web_ingress_is_not_restricted_before_edge_proxying() -> None
     ).read_text(encoding="utf-8")
 
     assert "firewall_web_source_cidrs:" not in production
+    assert "caddy_origin_pull_enforcement_enabled: false" in production
+
+
+def test_generation_bootstrap_binds_the_staged_or_required_origin_pull_mode() -> None:
+    tasks = (_CADDY_ROLE / "tasks/main.yml").read_text(encoding="utf-8")
+    check = (_CADDY_ROLE / "templates/check-caddy-generation.j2").read_text(encoding="utf-8")
+
+    for source in (tasks, check):
+        assert "--origin-pull-staged" in source
+        assert "--origin-pull-required" in source
+        assert "caddy_origin_pull_enforcement_enabled" in source
 
 
 def test_disposable_m3_qualification_keeps_its_own_caddy_runtime() -> None:

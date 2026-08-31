@@ -67,12 +67,14 @@ class PlatformOnlyCaddyRoutes:
 
 
 def build_platform_only_caddy_routes(
-    *, origin_pull_ca_der: tuple[bytes, ...]
+    *, origin_pull_ca_der: tuple[bytes, ...], origin_pull_required: bool
 ) -> PlatformOnlyCaddyRoutes:
     """Generate fixed platform routes with tenant publication unconditionally disabled."""
 
     trusted_ca_certs = _origin_pull_ca_certificates(origin_pull_ca_der)
-    route_state = _route_state(origin_pull_ca_der)
+    if type(origin_pull_required) is not bool:
+        raise ValueError("origin-pull enforcement must be a boolean")
+    route_state = _route_state(origin_pull_ca_der, origin_pull_required=origin_pull_required)
     access_logger_name = "log0"
     certificate_subjects = sorted((PLATFORM_APEX, PLATFORM_WILDCARD, TENANT_APEX, TENANT_WILDCARD))
     http_app: dict[str, object] = {
@@ -96,7 +98,9 @@ def build_platform_only_caddy_routes(
                                 "provider": "inline",
                                 "trusted_ca_certs": trusted_ca_certs,
                             },
-                            "mode": "require_and_verify",
+                            "mode": (
+                                "require_and_verify" if origin_pull_required else "verify_if_given"
+                            ),
                         }
                     }
                 ],
@@ -171,7 +175,9 @@ def build_platform_only_caddy_routes(
     )
 
 
-def _route_state(origin_pull_ca_der: tuple[bytes, ...]) -> dict[str, object]:
+def _route_state(
+    origin_pull_ca_der: tuple[bytes, ...], *, origin_pull_required: bool
+) -> dict[str, object]:
     return {
         "generationClass": "platform-only",
         "platformDomain": PLATFORM_DOMAIN,
@@ -223,6 +229,7 @@ def _route_state(origin_pull_ca_der: tuple[bytes, ...]) -> dict[str, object]:
         "originPullCaSha256": [
             hashlib.sha256(certificate).hexdigest() for certificate in origin_pull_ca_der
         ],
+        "originPullRequired": origin_pull_required,
     }
 
 

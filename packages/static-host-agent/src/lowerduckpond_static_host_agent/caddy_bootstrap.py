@@ -52,11 +52,17 @@ def ensure_platform_generation(  # noqa: PLR0913
     binary: CaddyBinarySource,
     environment: bytes,
     origin_pull_ca_der: tuple[bytes, ...],
+    origin_pull_required: bool,
     startup: CaddyStartupStore | None = None,
 ) -> bool:
     """Publish and select the exact platform-only generation only when needed."""
 
-    payload = _platform_payload(binary, environment, origin_pull_ca_der)
+    payload = _platform_payload(
+        binary,
+        environment,
+        origin_pull_ca_der,
+        origin_pull_required=origin_pull_required,
+    )
     transaction_intent = None
     with runtime.locked():
         if startup is not None:
@@ -108,6 +114,7 @@ def platform_generation_matches(  # noqa: PLR0913
     binary: CaddyBinarySource,
     environment: bytes,
     origin_pull_ca_der: tuple[bytes, ...],
+    origin_pull_required: bool,
     startup: CaddyStartupStore | None = None,
 ) -> bool:
     """Report whether active is the exact desired platform-only generation."""
@@ -119,6 +126,7 @@ def platform_generation_matches(  # noqa: PLR0913
             binary=binary,
             environment=environment,
             origin_pull_ca_der=origin_pull_ca_der,
+            origin_pull_required=origin_pull_required,
             startup=startup,
         )
         is PlatformGenerationState.UNCHANGED
@@ -132,11 +140,17 @@ def platform_generation_state(  # noqa: PLR0913
     binary: CaddyBinarySource,
     environment: bytes,
     origin_pull_ca_der: tuple[bytes, ...],
+    origin_pull_required: bool,
     startup: CaddyStartupStore | None = None,
 ) -> PlatformGenerationState:
     """Classify exact current, safely resumable, and ordinary changed state."""
 
-    payload = _platform_payload(binary, environment, origin_pull_ca_der)
+    payload = _platform_payload(
+        binary,
+        environment,
+        origin_pull_ca_der,
+        origin_pull_required=origin_pull_required,
+    )
     with runtime.locked():
         if startup is not None and not startup.inventory_is_empty():
             intent = startup.read()
@@ -263,8 +277,13 @@ def _platform_payload(
     binary: CaddyBinarySource,
     environment: bytes,
     origin_pull_ca_der: tuple[bytes, ...],
+    *,
+    origin_pull_required: bool,
 ) -> CaddyGenerationPayload:
-    routes = build_platform_only_caddy_routes(origin_pull_ca_der=origin_pull_ca_der)
+    routes = build_platform_only_caddy_routes(
+        origin_pull_ca_der=origin_pull_ca_der,
+        origin_pull_required=origin_pull_required,
+    )
     return CaddyGenerationPayload(
         binary=binary,
         environment=environment,

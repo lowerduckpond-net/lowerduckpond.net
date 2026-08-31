@@ -5,6 +5,7 @@ umask 077
 exec /usr/local/libexec/lowerduckpond/bootstrap-caddy-generation \
     {{ static_host_agent_artifact_sha256 | quote }} \
     --check \
+    {{ ('--origin-pull-required' if caddy_origin_pull_enforcement_enabled | bool else '--origin-pull-staged') | quote }} \
     {{ caddy_binary_path | quote }} \
     {{ caddy_generation_binary.stat.checksum | quote }} \
     /etc/caddy/environment \

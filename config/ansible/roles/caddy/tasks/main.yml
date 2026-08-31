@@ -380,7 +380,11 @@
     argv: >-
       {{ ['/usr/local/libexec/lowerduckpond/bootstrap-caddy-generation',
           static_host_agent_artifact_sha256,
-          '--check', caddy_binary_path,
+          '--check',
+          ('--origin-pull-required'
+           if caddy_origin_pull_enforcement_enabled | bool
+           else '--origin-pull-staged'),
+          caddy_binary_path,
           caddy_generation_binary.stat.checksum,
           '/etc/caddy/environment'] +
          caddy_installed_origin_pull_ca_paths }}
@@ -504,6 +508,9 @@
     argv: >-
       {{ ['/usr/local/libexec/lowerduckpond/bootstrap-caddy-generation',
           static_host_agent_artifact_sha256,
+          ('--origin-pull-required'
+           if caddy_origin_pull_enforcement_enabled | bool
+           else '--origin-pull-staged'),
           caddy_binary_path, caddy_generation_binary.stat.checksum,
           '/etc/caddy/environment'] + caddy_installed_origin_pull_ca_paths }}
   register: caddy_generation_bootstrap

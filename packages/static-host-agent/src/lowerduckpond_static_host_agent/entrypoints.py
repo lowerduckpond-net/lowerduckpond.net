@@ -94,7 +94,11 @@ _PUBLICATION_LOCK: Final = _STATE_ROOT / "locks/publication.lock"
 _SYSTEMD_DESCRIPTOR_START: Final = 3
 _CADDY_ACCOUNT: Final = "caddy"
 _MAXIMUM_CA_PEM_BYTES: Final = 64 * 1024
-_CADDY_BOOTSTRAP_MINIMUM_ARGUMENTS: Final = 4
+_CADDY_BOOTSTRAP_MINIMUM_ARGUMENTS: Final = 5
+_CADDY_ORIGIN_PULL_MODES: Final = {
+    "--origin-pull-staged": False,
+    "--origin-pull-required": True,
+}
 _CADDY_ADMIN_SOCKET: Final = Path("/run/caddy/admin.sock")
 _CADDY_ADMIN_RESPONSE_BYTES: Final = MAX_CADDY_CONFIGURATION_BYTES + 64 * 1024
 
@@ -362,13 +366,15 @@ def caddy_bootstrap_main(arguments: list[str] | None = None) -> int:
         values = values[1:]
     if (
         len(values) < _CADDY_BOOTSTRAP_MINIMUM_ARGUMENTS
-        or re.fullmatch(r"[0-9a-f]{64}", values[1]) is None
+        or values[0] not in _CADDY_ORIGIN_PULL_MODES
+        or re.fullmatch(r"[0-9a-f]{64}", values[2]) is None
     ):
         return _fail("invalid_caddy_bootstrap_invocation", 64)
-    binary_path = Path(values[0])
-    expected_digest = values[1]
-    environment_path = Path(values[2])
-    ca_paths = tuple(Path(value) for value in values[3:])
+    origin_pull_required = _CADDY_ORIGIN_PULL_MODES[values[0]]
+    binary_path = Path(values[1])
+    expected_digest = values[2]
+    environment_path = Path(values[3])
+    ca_paths = tuple(Path(value) for value in values[4:])
     if not all(path.is_absolute() for path in (binary_path, environment_path, *ca_paths)):
         return _fail("invalid_caddy_bootstrap_invocation", 64)
     try:
@@ -434,6 +440,7 @@ def caddy_bootstrap_main(arguments: list[str] | None = None) -> int:
                     binary=binary,
                     environment=environment,
                     origin_pull_ca_der=origin_pull_ca_der,
+                    origin_pull_required=origin_pull_required,
                     startup=startup,
                 )
             else:
@@ -447,6 +454,7 @@ def caddy_bootstrap_main(arguments: list[str] | None = None) -> int:
                     binary=binary,
                     environment=environment,
                     origin_pull_ca_der=origin_pull_ca_der,
+                    origin_pull_required=origin_pull_required,
                     startup=startup,
                 )
     except CaddyRuntimeError, ContractError, KeyError, OSError, RuntimeError, ValueError:
