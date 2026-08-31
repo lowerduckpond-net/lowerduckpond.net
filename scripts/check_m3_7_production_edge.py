@@ -22,6 +22,9 @@ from typing import Final
 API_ROOT: Final = "https://api.cloudflare.com/client/v4"
 API_TIMEOUT_SECONDS: Final = 15
 MAXIMUM_API_RESPONSE_BYTES: Final = 2_000_000
+MAXIMUM_API_COLLECTION_ITEMS: Final = 5_000
+MAXIMUM_API_PAGES: Final = 100
+API_PAGE_SIZE: Final = 50
 MAXIMUM_CERTIFICATE_BYTES: Final = 20_000
 MINIMUM_TOKEN_LENGTH: Final = 20
 CERTIFICATE_IDENTITY_LINE_COUNT: Final = 2
@@ -69,7 +72,9 @@ class CloudflareClient:
             raise ProductionEdgePreflightError("a Cloudflare token is malformed")
         self._token = token
 
-    def get(self, path: str, *, query: Mapping[str, str] | None = None) -> object:
+    def _get_response(
+        self, path: str, *, query: Mapping[str, str] | None = None
+    ) -> dict[str, object]:
         if not path.startswith("/") or ".." in path:
             raise ProductionEdgePreflightError("a Cloudflare API path is unsafe")
         encoded_query = ""
@@ -102,7 +107,115 @@ class CloudflareClient:
             raise ProductionEdgePreflightError("Cloudflare rejected a read-only preflight request")
         if "result" not in value:
             raise ProductionEdgePreflightError("a Cloudflare API response omitted its result")
-        return value["result"]
+        return value
+
+    def get(self, path: str, *, query: Mapping[str, str] | None = None) -> object:
+        """Return the result of one read-only Cloudflare request."""
+        return self._get_response(path, query=query)["result"]
+
+    def get_collection(self, path: str, *, query: Mapping[str, str] | None = None) -> list[object]:
+        """Return a complete, bounded page-paginated collection or fail closed."""
+        base_query = dict(query or {})
+        if "page" in base_query or "per_page" in base_query:
+            raise ProductionEdgePreflightError("Cloudflare pagination is caller-controlled")
+        collection: list[object] = []
+        expected_total_pages: int | None = None
+        expected_total_count: int | None = None
+        for page in range(1, MAXIMUM_API_PAGES + 1):
+            page_query = {
+                **base_query,
+                "page": str(page),
+                "per_page": str(API_PAGE_SIZE),
+            }
+            response = self._get_response(path, query=page_query)
+            result = response["result"]
+            result_info = response.get("result_info")
+            if not isinstance(result, list) or not isinstance(result_info, dict):
+                raise ProductionEdgePreflightError(
+                    "Cloudflare collection pagination metadata is malformed"
+                )
+            current_page = result_info.get("page")
+            total_pages = result_info.get("total_pages")
+            total_count = result_info.get("total_count")
+            count = result_info.get("count")
+            if (
+                not isinstance(current_page, int)
+                or isinstance(current_page, bool)
+                or current_page != page
+                or not isinstance(total_pages, int)
+                or isinstance(total_pages, bool)
+                or not 0 <= total_pages <= MAXIMUM_API_PAGES
+                or not isinstance(total_count, int)
+                or isinstance(total_count, bool)
+                or not 0 <= total_count <= MAXIMUM_API_COLLECTION_ITEMS
+                or (total_count == 0 and total_pages not in (0, 1))
+                or (total_count > 0 and total_pages == 0)
+                or not isinstance(count, int)
+                or isinstance(count, bool)
+                or count != len(result)
+            ):
+                raise ProductionEdgePreflightError(
+                    "Cloudflare collection pagination metadata is malformed"
+                )
+            if expected_total_pages is None:
+                expected_total_pages = total_pages
+                expected_total_count = total_count
+            elif total_pages != expected_total_pages or total_count != expected_total_count:
+                raise ProductionEdgePreflightError(
+                    "Cloudflare collection pagination changed during preflight"
+                )
+            collection.extend(result)
+            if len(collection) > MAXIMUM_API_COLLECTION_ITEMS:
+                raise ProductionEdgePreflightError("a Cloudflare collection exceeded its bound")
+            if page == max(total_pages, 1):
+                if len(collection) != total_count:
+                    raise ProductionEdgePreflightError(
+                        "Cloudflare collection pagination is incomplete"
+                    )
+                return collection
+        raise ProductionEdgePreflightError("a Cloudflare collection exceeded its page bound")
+
+    def get_cursor_collection(
+        self, path: str, *, query: Mapping[str, str] | None = None
+    ) -> list[object]:
+        """Return a complete, bounded cursor-paginated collection or fail closed."""
+        base_query = dict(query or {})
+        if "cursor" in base_query or "per_page" in base_query:
+            raise ProductionEdgePreflightError("Cloudflare pagination is caller-controlled")
+        collection: list[object] = []
+        cursor: str | None = None
+        seen_cursors: set[str] = set()
+        for _page in range(1, MAXIMUM_API_PAGES + 1):
+            page_query = {**base_query, "per_page": str(API_PAGE_SIZE)}
+            if cursor is not None:
+                page_query["cursor"] = cursor
+            response = self._get_response(path, query=page_query)
+            result = response["result"]
+            result_info = response.get("result_info")
+            if not isinstance(result, list) or not isinstance(result_info, dict):
+                raise ProductionEdgePreflightError(
+                    "Cloudflare cursor pagination metadata is malformed"
+                )
+            cursors = result_info.get("cursors")
+            if not isinstance(cursors, dict):
+                raise ProductionEdgePreflightError(
+                    "Cloudflare cursor pagination metadata is malformed"
+                )
+            after = cursors.get("after")
+            if after is not None and (not isinstance(after, str) or not after):
+                raise ProductionEdgePreflightError(
+                    "Cloudflare cursor pagination metadata is malformed"
+                )
+            collection.extend(result)
+            if len(collection) > MAXIMUM_API_COLLECTION_ITEMS:
+                raise ProductionEdgePreflightError("a Cloudflare collection exceeded its bound")
+            if after is None:
+                return collection
+            if after in seen_cursors:
+                raise ProductionEdgePreflightError("Cloudflare cursor pagination repeated")
+            seen_cursors.add(after)
+            cursor = after
+        raise ProductionEdgePreflightError("a Cloudflare collection exceeded its page bound")
 
 
 def _required_environment(name: str) -> str:
@@ -299,35 +412,31 @@ def _require_direct_dns(
     origin_ipv4: str,
     records_expected: bool,
 ) -> None:
+    records = client.get_collection(f"/zones/{zone_id}/dns_records")
+    if any(not isinstance(record, dict) for record in records):
+        raise ProductionEdgePreflightError("Cloudflare DNS inventory is malformed")
     for hostname in (zone_name, f"*.{zone_name}"):
-        records = client.get(
-            f"/zones/{zone_id}/dns_records",
-            query={"name": hostname, "type": "A", "per_page": "100"},
-        )
-        if not isinstance(records, list):
-            raise ProductionEdgePreflightError("Cloudflare DNS inventory is malformed")
+        exact = [
+            record
+            for record in records
+            if isinstance(record, dict) and record.get("name") == hostname
+        ]
         if records_expected:
-            exact = [
-                record
-                for record in records
-                if isinstance(record, dict)
-                and record.get("name") == hostname
-                and record.get("type") == "A"
-            ]
-            if len(exact) != 1 or exact[0].get("content") != origin_ipv4:
-                raise ProductionEdgePreflightError(f"the direct {hostname} A record is not exact")
+            if (
+                len(exact) != 1
+                or exact[0].get("type") != "A"
+                or exact[0].get("content") != origin_ipv4
+            ):
+                raise ProductionEdgePreflightError(
+                    f"the direct {hostname} DNS inventory is not exact"
+                )
             if exact[0].get("proxied") is not False:
                 raise ProductionEdgePreflightError(
                     f"the pre-M3.7 {hostname} record is already proxied"
                 )
-        elif any(
-            isinstance(record, dict)
-            and record.get("name") == hostname
-            and record.get("type") == "A"
-            for record in records
-        ):
+        elif exact:
             raise ProductionEdgePreflightError(
-                f"the pre-M3.7 {hostname} A record unexpectedly exists"
+                f"the pre-M3.7 {hostname} DNS inventory is not empty"
             )
 
 
@@ -337,15 +446,17 @@ def _require_unconfigured_edge(client: CloudflareClient, zone_id: str, zone_name
         raise ProductionEdgePreflightError(
             f"zone-level origin pulls are already enabled for {zone_name}"
         )
-    hostnames = client.get(f"/zones/{zone_id}/origin_tls_client_auth/hostnames")
-    if not isinstance(hostnames, list) or any(
-        isinstance(item, dict) and item.get("enabled") is True for item in hostnames
-    ):
+    hostnames = client.get_collection(f"/zones/{zone_id}/origin_tls_client_auth/hostnames")
+    if any(not isinstance(item, dict) for item in hostnames):
+        raise ProductionEdgePreflightError("Cloudflare hostname inventory is malformed")
+    if any(isinstance(item, dict) and item.get("enabled") is True for item in hostnames):
         raise ProductionEdgePreflightError(
             f"an enabled per-hostname origin-pull override exists in {zone_name}"
         )
-    rulesets = client.get(f"/zones/{zone_id}/rulesets")
-    if not isinstance(rulesets, list) or any(
+    rulesets = client.get_cursor_collection(f"/zones/{zone_id}/rulesets")
+    if any(not isinstance(item, dict) for item in rulesets):
+        raise ProductionEdgePreflightError("Cloudflare ruleset inventory is malformed")
+    if any(
         isinstance(item, dict)
         and item.get("kind") == "zone"
         and item.get("phase") in MANAGED_RULESET_PHASES
@@ -365,8 +476,8 @@ def _require_selected_leaf(  # noqa: PLR0913 -- every certificate binding is exp
     ca_path: Path,
     now: datetime,
 ) -> None:
-    certificates = client.get(f"/zones/{zone_id}/origin_tls_client_auth")
-    if not isinstance(certificates, list):
+    certificates = client.get_collection(f"/zones/{zone_id}/origin_tls_client_auth")
+    if any(not isinstance(item, dict) for item in certificates):
         raise ProductionEdgePreflightError(
             f"zone-level origin-pull certificates are unavailable for {zone_name}"
         )

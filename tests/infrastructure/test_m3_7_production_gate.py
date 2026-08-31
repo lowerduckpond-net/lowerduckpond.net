@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
+import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -15,6 +17,21 @@ PREFLIGHT = (REPOSITORY_ROOT / "scripts/preflight-m3-7-production").resolve()
 JUSTFILE = (REPOSITORY_ROOT / "justfile").resolve()
 OPENSSL = "/usr/bin/openssl"
 INPUT_ERROR_STATUS = 2
+
+
+class _CloudflareResponse:
+    def __init__(self, payload: dict[str, object]) -> None:
+        self.status = 200
+        self._payload = json.dumps(payload).encode("utf-8")
+
+    def __enter__(self) -> _CloudflareResponse:
+        return self
+
+    def __exit__(self, *_arguments: object) -> None:
+        return None
+
+    def read(self, _maximum_bytes: int) -> bytes:
+        return self._payload
 
 
 def _run_openssl(*arguments: str) -> None:
@@ -124,6 +141,116 @@ def test_production_certificate_policy_rejects_short_remaining_leaf(tmp_path: Pa
             expected_zone="lowerduckpond.net",
             expected_id="2" * 32,
             now=datetime.now(UTC),
+        )
+
+
+def test_cloudflare_collection_follows_and_validates_every_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payloads = iter(
+        (
+            {
+                "success": True,
+                "result": [{"id": "first"}],
+                "result_info": {"page": 1, "count": 1, "total_pages": 2, "total_count": 2},
+            },
+            {
+                "success": True,
+                "result": [{"id": "second"}],
+                "result_info": {"page": 2, "count": 1, "total_pages": 2, "total_count": 2},
+            },
+        )
+    )
+    requested_urls: list[str] = []
+
+    def fake_urlopen(request: object, *, timeout: int) -> _CloudflareResponse:
+        assert timeout == check_m3_7_production_edge.API_TIMEOUT_SECONDS
+        requested_urls.append(request.full_url)  # type: ignore[attr-defined]
+        return _CloudflareResponse(next(payloads))
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    client = check_m3_7_production_edge.CloudflareClient("x" * 20)
+    collection = client.get_collection("/zones/zone/rulesets")
+
+    assert collection == [{"id": "first"}, {"id": "second"}]
+    assert "page=1" in requested_urls[0]
+    assert "page=2" in requested_urls[1]
+
+
+def test_cloudflare_collection_accepts_proven_empty_inventory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "success": True,
+        "result": [],
+        "result_info": {"page": 1, "count": 0, "total_pages": 0, "total_count": 0},
+    }
+
+    def fake_urlopen(_request: object, *, timeout: int) -> _CloudflareResponse:
+        assert timeout == check_m3_7_production_edge.API_TIMEOUT_SECONDS
+        return _CloudflareResponse(payload)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    client = check_m3_7_production_edge.CloudflareClient("x" * 20)
+
+    assert client.get_collection("/zones/zone/origin_tls_client_auth") == []
+
+
+def test_cloudflare_cursor_collection_follows_every_cursor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payloads = iter(
+        (
+            {
+                "success": True,
+                "result": [{"id": "first"}],
+                "result_info": {"cursors": {"after": "next-page"}},
+            },
+            {
+                "success": True,
+                "result": [{"id": "second"}],
+                "result_info": {"cursors": {}},
+            },
+        )
+    )
+    requested_urls: list[str] = []
+
+    def fake_urlopen(request: object, *, timeout: int) -> _CloudflareResponse:
+        assert timeout == check_m3_7_production_edge.API_TIMEOUT_SECONDS
+        requested_urls.append(request.full_url)  # type: ignore[attr-defined]
+        return _CloudflareResponse(next(payloads))
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    client = check_m3_7_production_edge.CloudflareClient("x" * 20)
+    collection = client.get_cursor_collection("/zones/zone/rulesets")
+
+    assert collection == [{"id": "first"}, {"id": "second"}]
+    assert "cursor=" not in requested_urls[0]
+    assert "cursor=next-page" in requested_urls[1]
+
+
+def test_direct_dns_rejects_competing_record_types() -> None:
+    class CompetingDnsClient:
+        def get_collection(
+            self, _path: str, *, query: dict[str, str] | None = None
+        ) -> list[object]:
+            assert query is None
+            hostname = "lowerduckpond.net"
+            return [
+                {"name": hostname, "type": "A", "content": "192.0.2.1", "proxied": False},
+                {"name": hostname, "type": "AAAA", "content": "2001:db8::1"},
+            ]
+
+    with pytest.raises(ProductionEdgePreflightError, match="DNS inventory is not exact"):
+        check_m3_7_production_edge._require_direct_dns(
+            CompetingDnsClient(),  # type: ignore[arg-type]
+            zone_id="1" * 32,
+            zone_name="lowerduckpond.net",
+            origin_ipv4="192.0.2.1",
+            records_expected=True,
         )
 
 
