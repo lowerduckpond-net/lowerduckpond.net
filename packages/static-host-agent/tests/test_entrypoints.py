@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ssl
+import subprocess
 from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
@@ -132,7 +133,7 @@ def test_caddy_recovery_selects_and_commits_before_queuing_restart(
 
     monkeypatch.setattr(entrypoints, "_open_systemd_caddy_runtime", Runtime)
     monkeypatch.setattr(entrypoints, "CaddyStartupStore", StartupType)
-    monkeypatch.setattr(entrypoints.subprocess, "run", run)
+    monkeypatch.setattr(subprocess, "run", run)
 
     assert entrypoints.caddy_start_recovery_main([]) == 0
     assert order == ["select", "commit", "reset", "start"]
