@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ssl
 from pathlib import Path
 
 import pytest
@@ -38,3 +39,10 @@ def test_caddy_bootstrap_and_launcher_reject_unfixed_invocations(
     assert capfd.readouterr().err == (
         "invalid_caddy_launcher_invocation\ninvalid_caddy_bootstrap_invocation\n"
     )
+
+
+def test_origin_pull_pem_conversion_returns_the_exact_der_bytes() -> None:
+    expected = b"review-only-DER-certificate"
+    pem = ssl.DER_cert_to_PEM_cert(expected).encode("ascii")
+
+    assert entrypoints._pem_certificate_der(pem) == expected

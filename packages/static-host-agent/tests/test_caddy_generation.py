@@ -7,6 +7,7 @@ from collections.abc import Callable
 from multiprocessing import get_context
 from pathlib import Path
 
+import lowerduckpond_static_host_agent.caddy_generation as caddy_generation_module
 import pytest
 from lowerduckpond_static_contracts import canonical_json_bytes
 from lowerduckpond_static_host_agent import (
@@ -24,11 +25,15 @@ from lowerduckpond_static_host_agent import (
     CaddyGenerationError,
     CaddyGenerationPayload,
     CaddyGenerationStore,
+    CapacityRejectedError,
+    FilesystemCapacity,
     caddy_route_state_digest,
 )
 
 _GENERATION_ID = "0198d17f-6f4a-7000-8000-000000000001"
 _SECOND_GENERATION_ID = "0198d17f-6f4a-7000-8000-000000000002"
+_THIRD_GENERATION_ID = "0198d17f-6f4a-7000-8000-000000000003"
+_FOURTH_GENERATION_ID = "0198d17f-6f4a-7000-8000-000000000004"
 _PAYLOAD_NAMES = {
     CADDY_BINARY_NAME,
     CADDY_ENVIRONMENT_NAME,
@@ -343,6 +348,83 @@ def test_generation_scans_do_not_leak_descriptors(tmp_path: Path) -> None:
         after = len(list(descriptor_root.iterdir()))
 
     assert after == before
+
+
+def test_retention_keeps_only_protected_and_newest_preceding_generation(
+    tmp_path: Path,
+) -> None:
+    root = _make_root(tmp_path)
+    payload = _payload(tmp_path)
+    with _open_store(root) as store:
+        for generation_id in (
+            _GENERATION_ID,
+            _SECOND_GENERATION_ID,
+            _THIRD_GENERATION_ID,
+            _FOURTH_GENERATION_ID,
+        ):
+            store.publish(generation_id, payload)
+        removed = store.prune_unreferenced(
+            {_FOURTH_GENERATION_ID},
+            keep_newest_unprotected=1,
+        )
+        assert removed == (_GENERATION_ID, _SECOND_GENERATION_ID)
+        assert store.list_verified() == (_THIRD_GENERATION_ID, _FOURTH_GENERATION_ID)
+
+
+def test_retired_generation_crash_staging_is_reconciled(tmp_path: Path) -> None:
+    root = _make_root(tmp_path)
+    with _open_store(root) as store:
+        store.publish(_GENERATION_ID, _payload(tmp_path))
+    (root / _GENERATION_ID).rename(root / f".ldp-retired-{_GENERATION_ID}")
+
+    with _open_store(root) as store:
+        assert store.remove_abandoned_temporaries() == 1
+        assert store.list_verified() == ()
+
+
+def test_candidate_admission_requires_one_of_three_slots(tmp_path: Path) -> None:
+    root = _make_root(tmp_path)
+    payload = _payload(tmp_path)
+    with _open_store(root) as store:
+        retained = (_GENERATION_ID, _SECOND_GENERATION_ID, _THIRD_GENERATION_ID)
+        for generation_id in retained:
+            store.publish(generation_id, payload)
+        with pytest.raises(CaddyGenerationError, match="slot remains"):
+            store.admit_candidate(payload, retained)
+
+
+def test_candidate_admission_enforces_the_aggregate_allocation_ceiling(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _make_root(tmp_path)
+    payload = _payload(tmp_path)
+    device = root.stat().st_dev
+    monkeypatch.setattr(
+        caddy_generation_module,
+        "measure_filesystem_capacity_descriptor",
+        lambda _descriptor: FilesystemCapacity(
+            device=device,
+            fragment_size=4096,
+            total_blocks=10_000_000,
+            available_blocks=9_000_000,
+            total_inodes=1_000_000,
+            available_inodes=900_000,
+        ),
+    )
+    monkeypatch.setattr(
+        caddy_generation_module,
+        "MAX_CADDY_GENERATION_ALLOCATED_BYTES",
+        1,
+    )
+    with (
+        _open_store(root) as store,
+        pytest.raises(
+            CapacityRejectedError,
+            match="byte ceiling",
+        ),
+    ):
+        store.admit_candidate(payload, ())
 
 
 def test_tampered_payload_fails_manifest_verification(tmp_path: Path) -> None:

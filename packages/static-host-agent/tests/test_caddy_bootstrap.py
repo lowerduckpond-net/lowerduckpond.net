@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import os
+from dataclasses import replace
 from pathlib import Path
 
+import lowerduckpond_static_host_agent.caddy_generation as caddy_generation_module
+import lowerduckpond_static_host_agent.capacity as capacity_module
 import pytest
 from lowerduckpond_static_host_agent import (
     CADDY_ACTIVE_REFERENCE_MODE,
@@ -13,6 +16,7 @@ from lowerduckpond_static_host_agent import (
     CaddyBinarySource,
     CaddyGenerationStore,
     CaddyRuntime,
+    FilesystemCapacity,
     ensure_platform_generation,
     require_exact_file,
 )
@@ -23,6 +27,29 @@ _GENERATION_B = "0198d17f-6f4a-7000-8000-000000000002"
 
 def _accept_candidate(_generation: object, _environment: object) -> None:
     pass
+
+
+@pytest.fixture(autouse=True)
+def _provide_inode_capacity_on_the_test_overlay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    measure = capacity_module.measure_filesystem_capacity_descriptor
+
+    def measure_with_inode_capacity(descriptor: int) -> FilesystemCapacity:
+        filesystem = measure(descriptor)
+        if filesystem.total_inodes == 0:
+            return replace(
+                filesystem,
+                total_inodes=1_000_000,
+                available_inodes=1_000_000,
+            )
+        return filesystem
+
+    monkeypatch.setattr(
+        caddy_generation_module,
+        "measure_filesystem_capacity_descriptor",
+        measure_with_inode_capacity,
+    )
 
 
 def test_bootstrap_selects_once_and_is_idempotent_for_exact_inputs(tmp_path: Path) -> None:
@@ -129,6 +156,11 @@ def test_bootstrap_selects_a_new_generation_when_bound_trust_changes(tmp_path: P
             )
         with runtime.locked():
             assert runtime.read_active() == _GENERATION_B
+
+    assert sorted(path.name for path in generations.iterdir()) == [
+        _GENERATION_A,
+        _GENERATION_B,
+    ]
 
 
 def test_exact_bootstrap_input_rejects_unsafe_metadata(tmp_path: Path) -> None:

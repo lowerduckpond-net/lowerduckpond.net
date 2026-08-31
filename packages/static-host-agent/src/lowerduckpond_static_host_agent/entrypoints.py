@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import grp
 import hashlib
 import os
@@ -307,6 +306,7 @@ def caddy_bootstrap_main(arguments: list[str] | None = None) -> int:
             if check_only:
                 changed = not platform_generation_matches(
                     runtime,
+                    store,
                     binary=binary,
                     environment=environment,
                     origin_pull_ca_der=origin_pull_ca_der,
@@ -341,8 +341,7 @@ def _systemd_publication_lock_descriptor() -> int:
 
 def _pem_certificate_der(data: bytes) -> bytes:
     try:
-        encoded = ssl.PEM_cert_to_DER_cert(data.decode("ascii"))
-        return base64.b64decode(encoded, validate=True)
+        return ssl.PEM_cert_to_DER_cert(data.decode("ascii"))
     except (UnicodeError, ValueError) as error:
         raise CaddyRuntimeError("origin-pull CA is not one PEM certificate") from error
 

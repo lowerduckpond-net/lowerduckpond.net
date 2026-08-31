@@ -9,7 +9,7 @@ import os
 import re
 import secrets
 import stat
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -23,6 +23,15 @@ from lowerduckpond_static_contracts import (
     decode_json_object,
     validate_uuid7,
 )
+
+from lowerduckpond_static_host_agent.capacity import (
+    CapacityReservation,
+    HostCapacityLimits,
+    ReleaseCapacityUsage,
+    admit_release_capacity,
+    measure_filesystem_capacity_descriptor,
+)
+from lowerduckpond_static_host_agent.release_tree import InodeAllocation
 
 CADDY_GENERATION_SCHEMA: Final = "lowerduckpond.caddy-generation/v1"
 CADDY_ROUTE_METADATA_SCHEMA: Final = "lowerduckpond.caddy-route-metadata/v1"
@@ -44,6 +53,11 @@ MAX_CADDY_ENVIRONMENT_BYTES: Final = 64 * 1024
 MAX_CADDY_CONFIGURATION_BYTES: Final = 2 * 1024 * 1024
 MAX_CADDY_ROUTE_METADATA_BYTES: Final = 2 * 1024 * 1024
 MAX_CADDY_MANIFEST_BYTES: Final = 32 * 1024
+MAX_CADDY_GENERATION_ALLOCATED_BYTES: Final = 256 * 1024 * 1024
+MAX_CADDY_GENERATION_UNIQUE_INODES: Final = 4_096
+MAX_CADDY_GENERATIONS: Final = 3
+MAX_CADDY_BOOTSTRAP_RETAINED_GENERATIONS: Final = 2
+MAX_CADDY_GENERATION_SCAN_ENTRIES: Final = 4_096
 
 _DIRECTORY_OPEN_FLAGS: Final = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 _FILE_READ_FLAGS: Final = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -52,6 +66,11 @@ _RENAME_NOREPLACE: Final = 1
 _COPY_CHUNK_BYTES: Final = 64 * 1024
 _TEMPORARY_PREFIX: Final = ".ldp-generation-"
 _TEMPORARY_PATTERN: Final = re.compile(r"\.ldp-generation-[0-9a-f]{32}", flags=re.ASCII)
+_RETIRED_PREFIX: Final = ".ldp-retired-"
+_RETIRED_PATTERN: Final = re.compile(
+    r"\.ldp-retired-[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}",
+    flags=re.ASCII,
+)
 _ENVIRONMENT_NAME_PATTERN: Final = re.compile(r"[A-Z_][A-Z0-9_]*", flags=re.ASCII)
 _MAXIMUM_PERMISSION_MODE: Final = 0o777
 _PAYLOAD_NAMES: Final = (
@@ -332,8 +351,12 @@ class CaddyGenerationStore:
             os.close(self._root_fd)
             self._closed = True
 
-    def remove_abandoned_temporaries(self, *, maximum_entries: int = 4_096) -> int:
-        """Remove only safely shaped generation staging left by interrupted builders."""
+    def remove_abandoned_temporaries(
+        self,
+        *,
+        maximum_entries: int = MAX_CADDY_GENERATION_SCAN_ENTRIES,
+    ) -> int:
+        """Remove safely shaped builder and retired-generation crash remnants."""
 
         self._require_open()
         if type(maximum_entries) is not int or maximum_entries < 0:
@@ -348,8 +371,8 @@ class CaddyGenerationStore:
                         raise CaddyGenerationError(
                             "generation root exceeds its recovery scan bound"
                         )
-                    if entry.name.startswith(_TEMPORARY_PREFIX):
-                        if _TEMPORARY_PATTERN.fullmatch(entry.name) is None:
+                    if entry.name.startswith((_TEMPORARY_PREFIX, _RETIRED_PREFIX)):
+                        if not _is_reserved_generation_temporary(entry.name):
                             raise CaddyGenerationError(
                                 "reserved generation temporary name is malformed"
                             )
@@ -357,7 +380,7 @@ class CaddyGenerationStore:
         finally:
             os.close(scan_fd)
         for name in sorted(names):
-            _remove_temporary_generation(
+            _remove_generation_temporary(
                 self._root_fd,
                 name,
                 owner=self._owner,
@@ -365,6 +388,215 @@ class CaddyGenerationStore:
                 creation_group=os.getegid(),
             )
         return len(names)
+
+    def list_verified(
+        self,
+        *,
+        maximum_entries: int = MAX_CADDY_GENERATION_SCAN_ENTRIES,
+    ) -> tuple[str, ...]:
+        """Return the sorted complete generation IDs in one bounded exact scan."""
+
+        self._require_open()
+        if type(maximum_entries) is not int or maximum_entries < 0:
+            raise ValueError("generation scan bound must be a nonnegative integer")
+        identifiers: list[str] = []
+        scan_fd = _reopen_directory(self._root_fd)
+        try:
+            with os.scandir(scan_fd) as iterator:
+                for entry_count, entry in enumerate(iterator, start=1):
+                    if entry_count > maximum_entries:
+                        raise CaddyGenerationError("generation root exceeds its scan bound")
+                    if entry.name.startswith((_TEMPORARY_PREFIX, _RETIRED_PREFIX)):
+                        raise CaddyGenerationError(
+                            "generation recovery must remove reserved temporaries first"
+                        )
+                    try:
+                        identifier = validate_uuid7(entry.name)
+                    except ContractError as error:
+                        raise CaddyGenerationError(
+                            "generation root contains an unrecognized entry"
+                        ) from error
+                    identifiers.append(identifier)
+        finally:
+            os.close(scan_fd)
+        identifiers.sort()
+        for identifier in identifiers:
+            with self.open_verified(identifier):
+                pass
+        return tuple(identifiers)
+
+    def bootstrap_retention_matches(self, active_generation_id: str) -> bool:
+        """Report whether bootstrap storage is active plus at most one predecessor."""
+
+        self._require_open()
+        active = validate_uuid7(active_generation_id)
+        scan_fd = _reopen_directory(self._root_fd)
+        identifiers: list[str] = []
+        cleanup_required = False
+        try:
+            with os.scandir(scan_fd) as iterator:
+                for entry_count, entry in enumerate(iterator, start=1):
+                    if entry_count > MAX_CADDY_GENERATION_SCAN_ENTRIES:
+                        raise CaddyGenerationError("generation root exceeds its scan bound")
+                    if entry.name.startswith((_TEMPORARY_PREFIX, _RETIRED_PREFIX)):
+                        if not _is_reserved_generation_temporary(entry.name):
+                            raise CaddyGenerationError(
+                                "reserved generation temporary name is malformed"
+                            )
+                        cleanup_required = True
+                        continue
+                    try:
+                        identifiers.append(validate_uuid7(entry.name))
+                    except ContractError as error:
+                        raise CaddyGenerationError(
+                            "generation root contains an unrecognized entry"
+                        ) from error
+        finally:
+            os.close(scan_fd)
+        identifiers.sort()
+        for identifier in identifiers:
+            with self.open_verified(identifier):
+                pass
+        return (
+            not cleanup_required
+            and active in identifiers
+            and len(identifiers) <= MAX_CADDY_BOOTSTRAP_RETAINED_GENERATIONS
+        )
+
+    def prune_unreferenced(
+        self,
+        protected_generation_ids: Collection[str],
+        *,
+        keep_newest_unprotected: int = 0,
+    ) -> tuple[str, ...]:
+        """Durably remove complete generations outside the bounded protected set."""
+
+        self._require_open()
+        if type(keep_newest_unprotected) is not int or keep_newest_unprotected < 0:
+            raise ValueError("retained unprotected count must be a nonnegative integer")
+        protected = {validate_uuid7(value) for value in protected_generation_ids}
+        if len(protected) + keep_newest_unprotected > MAX_CADDY_GENERATIONS:
+            raise CaddyGenerationError("generation retention set exceeds its maximum")
+        self.remove_abandoned_temporaries()
+        identifiers = self.list_verified()
+        missing = protected.difference(identifiers)
+        if missing:
+            raise CaddyGenerationError("a protected Caddy generation is absent")
+        unprotected = [value for value in identifiers if value not in protected]
+        retained = (
+            protected.union(unprotected[-keep_newest_unprotected:])
+            if keep_newest_unprotected
+            else protected
+        )
+        removed: list[str] = []
+        for identifier in identifiers:
+            if identifier not in retained:
+                self.remove_verified(identifier)
+                removed.append(identifier)
+        self._require_generation_bounds(tuple(sorted(retained)))
+        return tuple(removed)
+
+    def admit_candidate(
+        self,
+        payload: CaddyGenerationPayload,
+        retained_generation_ids: Collection[str],
+    ) -> None:
+        """Admit one worst-case complete candidate before any generation write."""
+
+        self._require_open()
+        retained = tuple(sorted({validate_uuid7(value) for value in retained_generation_ids}))
+        if len(retained) >= MAX_CADDY_GENERATIONS:
+            raise CaddyGenerationError("no Caddy generation slot remains for a candidate")
+        allocations = self._measure_allocations(retained)
+        filesystem = measure_filesystem_capacity_descriptor(self._root_fd)
+        reservation = _candidate_reservation(payload, filesystem.fragment_size)
+        admit_release_capacity(
+            ReleaseCapacityUsage(allocations),
+            reservation,
+            filesystem,
+            limits=HostCapacityLimits(
+                maximum_allocated_bytes=MAX_CADDY_GENERATION_ALLOCATED_BYTES,
+                maximum_unique_inodes=MAX_CADDY_GENERATION_UNIQUE_INODES,
+            ),
+        )
+
+    def remove_verified(self, generation_id: str) -> None:
+        """Rename one verified final generation aside, sync, and remove it safely."""
+
+        self._require_open()
+        canonical_id = validate_uuid7(generation_id)
+        retired_name = f"{_RETIRED_PREFIX}{canonical_id}"
+        try:
+            os.stat(retired_name, dir_fd=self._root_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise CaddyGenerationError("retired generation staging already exists")
+        with self.open_verified(canonical_id) as generation:
+            descriptor = generation.duplicate_directory_descriptor()
+            try:
+                pinned = os.fstat(descriptor)
+                current = os.stat(canonical_id, dir_fd=self._root_fd, follow_symlinks=False)
+                if _snapshot(pinned) != _snapshot(current):
+                    raise CaddyGenerationError("generation changed before retirement")
+                os.rename(
+                    canonical_id,
+                    retired_name,
+                    src_dir_fd=self._root_fd,
+                    dst_dir_fd=self._root_fd,
+                )
+                renamed = os.stat(retired_name, dir_fd=self._root_fd, follow_symlinks=False)
+                if (pinned.st_dev, pinned.st_ino) != (renamed.st_dev, renamed.st_ino):
+                    raise CaddyGenerationError("retired generation inode changed during rename")
+                os.fsync(self._root_fd)
+            finally:
+                os.close(descriptor)
+        _remove_generation_temporary(
+            self._root_fd,
+            retired_name,
+            owner=self._owner,
+            group=self._group,
+            creation_group=os.getegid(),
+        )
+
+    def _measure_allocations(
+        self,
+        generation_ids: Collection[str],
+    ) -> tuple[InodeAllocation, ...]:
+        allocations: dict[tuple[int, int], int] = {}
+        for generation_id in generation_ids:
+            with self.open_verified(generation_id) as generation:
+                descriptor = generation.duplicate_directory_descriptor()
+                try:
+                    metadata = [os.fstat(descriptor)]
+                    with os.scandir(os.dup(descriptor)) as iterator:
+                        names = sorted(entry.name for entry in iterator)
+                    metadata.extend(
+                        os.stat(name, dir_fd=descriptor, follow_symlinks=False) for name in names
+                    )
+                finally:
+                    os.close(descriptor)
+            for item in metadata:
+                identity = (item.st_dev, item.st_ino)
+                allocated_bytes = item.st_blocks * 512
+                established = allocations.setdefault(identity, allocated_bytes)
+                if established != allocated_bytes:
+                    raise CaddyGenerationError(
+                        "one generation inode has inconsistent allocation accounting"
+                    )
+        return tuple(
+            InodeAllocation(device, inode, allocated_bytes)
+            for (device, inode), allocated_bytes in sorted(allocations.items())
+        )
+
+    def _require_generation_bounds(self, generation_ids: Collection[str]) -> None:
+        if len(generation_ids) > MAX_CADDY_GENERATIONS:
+            raise CaddyGenerationError("generation count exceeds its maximum")
+        allocations = self._measure_allocations(generation_ids)
+        if sum(item.allocated_bytes for item in allocations) > MAX_CADDY_GENERATION_ALLOCATED_BYTES:
+            raise CaddyGenerationError("generation allocation exceeds its byte ceiling")
+        if len(allocations) > MAX_CADDY_GENERATION_UNIQUE_INODES:
+            raise CaddyGenerationError("generation allocation exceeds its inode ceiling")
 
     def publish(  # noqa: PLR0915
         self,
@@ -484,7 +716,7 @@ class CaddyGenerationStore:
             if temporary_fd is not None:
                 os.close(temporary_fd)
             if created and not published:
-                _remove_temporary_generation(
+                _remove_generation_temporary(
                     self._root_fd,
                     temporary_name,
                     owner=self._owner,
@@ -874,7 +1106,14 @@ def _rename_noreplace(directory_fd: int, source: str, destination: str) -> None:
         raise OSError(error_number, os.strerror(error_number), destination)
 
 
-def _remove_temporary_generation(
+def _is_reserved_generation_temporary(name: str) -> bool:
+    return (
+        _TEMPORARY_PATTERN.fullmatch(name) is not None
+        or _RETIRED_PATTERN.fullmatch(name) is not None
+    )
+
+
+def _remove_generation_temporary(
     root_fd: int,
     name: str,
     *,
@@ -882,7 +1121,7 @@ def _remove_temporary_generation(
     group: int,
     creation_group: int,
 ) -> None:
-    if _TEMPORARY_PATTERN.fullmatch(name) is None:
+    if not _is_reserved_generation_temporary(name):
         raise CaddyGenerationError("refusing to remove an unrecognized generation temporary")
     try:
         directory_fd = os.open(name, _DIRECTORY_OPEN_FLAGS, dir_fd=root_fd)
@@ -924,6 +1163,57 @@ def _remove_temporary_generation(
         os.close(directory_fd)
     os.rmdir(name, dir_fd=root_fd)
     os.fsync(root_fd)
+
+
+def _candidate_reservation(
+    payload: CaddyGenerationPayload,
+    fragment_size: int,
+) -> CapacityReservation:
+    if fragment_size <= 0:
+        raise CaddyGenerationError("generation filesystem fragment size is invalid")
+    binary_size = _binary_source_size(payload.binary)
+    payload_sizes = (
+        binary_size,
+        len(payload.environment),
+        len(canonical_json_bytes(payload.configuration)),
+        len(canonical_json_bytes(payload.route_metadata)),
+        MAX_CADDY_MANIFEST_BYTES,
+    )
+
+    def allocated(size: int) -> int:
+        return ((size + fragment_size - 1) // fragment_size) * fragment_size
+
+    # Charge the generation directory and worst-case root namespace growth for
+    # temporary creation plus same-directory publication rename.
+    return CapacityReservation(
+        allocated_bytes=(3 * fragment_size) + sum(allocated(size) for size in payload_sizes),
+        unique_inodes=len(payload_sizes) + 1,
+    )
+
+
+def _binary_source_size(source: CaddyBinarySource) -> int:
+    try:
+        descriptor = os.open(source.path, _FILE_READ_FLAGS)
+    except OSError as error:
+        if error.errno in {errno.ELOOP, errno.ENXIO}:
+            raise CaddyGenerationError(
+                "staged Caddy binary is not a no-follow regular file"
+            ) from error
+        raise
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != source.owner
+            or metadata.st_gid != source.group
+            or stat.S_IMODE(metadata.st_mode) != source.mode
+            or metadata.st_nlink != 1
+            or not 0 < metadata.st_size <= MAX_CADDY_BINARY_BYTES
+        ):
+            raise CaddyGenerationError("staged Caddy binary metadata is unsafe")
+        return metadata.st_size
+    finally:
+        os.close(descriptor)
 
 
 def _validate_exact_inventory(directory_fd: int) -> None:

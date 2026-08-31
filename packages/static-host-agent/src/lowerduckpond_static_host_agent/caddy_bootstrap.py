@@ -40,15 +40,24 @@ def ensure_platform_generation(  # noqa: PLR0913
 
     payload = _platform_payload(binary, environment, origin_pull_ca_der)
     with runtime.locked():
+        try:
+            previous = runtime.read_active()
+        except FileNotFoundError:
+            previous = None
+        retained = _prune_bootstrap_generations(store, previous)
         if _active_matches(runtime, payload):
             return False
+        store.admit_candidate(payload, retained)
         store.publish(generation_id, payload)
         runtime.select_active(generation_id)
+        selected = (generation_id,) if previous is None else (generation_id, previous)
+        store.prune_unreferenced(selected)
     return True
 
 
 def platform_generation_matches(
     runtime: CaddyRuntime,
+    store: CaddyGenerationStore,
     *,
     binary: CaddyBinarySource,
     environment: bytes,
@@ -58,7 +67,26 @@ def platform_generation_matches(
 
     payload = _platform_payload(binary, environment, origin_pull_ca_der)
     with runtime.locked():
-        return _active_matches(runtime, payload)
+        if not _active_matches(runtime, payload):
+            return False
+        return store.bootstrap_retention_matches(runtime.read_active())
+
+
+def _prune_bootstrap_generations(
+    store: CaddyGenerationStore,
+    active: str | None,
+) -> tuple[str, ...]:
+    store.remove_abandoned_temporaries()
+    identifiers = store.list_verified()
+    if active is None:
+        protected: tuple[str, ...] = ()
+    else:
+        if active not in identifiers:
+            raise RuntimeError("active Caddy generation is absent")
+        preceding = tuple(identifier for identifier in identifiers if identifier != active)[-1:]
+        protected = (*preceding, active)
+    store.prune_unreferenced(protected)
+    return tuple(sorted(protected))
 
 
 def digest_path(path: Path) -> str:
