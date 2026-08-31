@@ -111,6 +111,7 @@ def test_frozen_wrappers_enter_only_the_reviewed_host_agent_entrypoints() -> Non
     assert "Before=caddy.service" in recovery
     assert "Restart=on-failure" in recovery
     assert "StartLimitBurst=3" in recovery
+    assert "TimeoutStartSec=2min" in recovery
     assert "OpenFile={{ caddy_publication_lock_path }}:publication-lock" in recovery
     assert (
         "ExecStart=/usr/local/libexec/lowerduckpond/recover-caddy-generation-start "
@@ -131,6 +132,11 @@ def test_production_acceptance_and_health_use_the_generation_check() -> None:
     assert "bootstrap-caddy-generation" in check
     assert "static_host_agent_artifact_sha256" in check
     assert "--check" in check
+
+    health_unit = (
+        _ROOT / "config/ansible/roles/monitoring/templates/lowerduckpond-health.service.j2"
+    ).read_text(encoding="utf-8")
+    assert "monitoring_caddy_publication_lock_path" in health_unit
 
     preflight = (_ROOT / "scripts/preflight-m3-6-production").read_text(encoding="utf-8")
     assert "the Caddy startup-intent inventory is not resumable" in preflight

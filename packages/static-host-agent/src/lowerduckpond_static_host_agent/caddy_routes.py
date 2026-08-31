@@ -82,6 +82,11 @@ def build_platform_only_caddy_routes(
         "servers": {
             "http": {
                 "listen": [":80"],
+                "logs": {
+                    "logger_names": {
+                        subject: [access_logger_name] for subject in certificate_subjects
+                    }
+                },
                 "routes": [
                     _plain_http_platform_route(),
                     _plain_http_tenant_route(),

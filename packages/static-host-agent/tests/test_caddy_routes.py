@@ -94,6 +94,12 @@ def test_platform_only_generation_has_explicit_http_and_https_servers() -> None:
     plain_http = servers["http"]
     assert type(plain_http) is dict
     assert plain_http["listen"] == [":80"]
+    assert plain_http["logs"] == {
+        "logger_names": {
+            subject: ["log0"]
+            for subject in sorted((PLATFORM_APEX, PLATFORM_WILDCARD, TENANT_APEX, TENANT_WILDCARD))
+        }
+    }
     assert len(plain_http["routes"]) == _PLAIN_HTTP_ROUTE_COUNT
     production = servers["production"]
     assert type(production) is dict
@@ -369,12 +375,18 @@ def test_native_access_logging_is_structured_and_journal_bound() -> None:
             },
         }
     }
-    assert _production_server()["logs"] == {
+    expected_server_logs = {
         "logger_names": {
             subject: ["log0"]
             for subject in sorted((PLATFORM_APEX, PLATFORM_WILDCARD, TENANT_APEX, TENANT_WILDCARD))
         }
     }
+    assert _production_server()["logs"] == expected_server_logs
+    servers = generated.http_app["servers"]
+    assert type(servers) is dict
+    plain_http = servers["http"]
+    assert type(plain_http) is dict
+    assert plain_http["logs"] == expected_server_logs
     encoded = canonical_json_bytes(generated.configuration["logging"])
     assert b'"filename"' not in encoded
     assert b'"Cookie"' not in encoded
