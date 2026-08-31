@@ -198,9 +198,11 @@ while IFS= read -r lock; do
         export.lock | intake.lock | publication.lock | tenant-state.lock) ;;
         *) remote_fail "the static lock inventory contains ${lock}" ;;
     esac
-    [[ $(stat --format='%F:%U:%G:%a:%h:%s' -- "${locks}/${lock}") == \
-        regular\ file:root:root:600:1:0 ]] ||
-        remote_fail "${lock} metadata drifted"
+    lock_metadata=$(stat --format='%F:%U:%G:%a:%h:%s' -- "${locks}/${lock}")
+    case ${lock_metadata} in
+        regular\ empty\ file:root:root:600:1:0 | regular\ file:root:root:600:1:0) ;;
+        *) remote_fail "${lock} metadata drifted" ;;
+    esac
 done <<<"${actual_locks}"
 
 worker_units=$(systemctl list-units --all --plain --no-legend \
