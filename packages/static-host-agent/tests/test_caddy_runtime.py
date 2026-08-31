@@ -701,6 +701,7 @@ def test_scope_teardown_requires_an_inactive_or_removed_unit(
 ) -> None:
     class Process:
         pid = 999_999_999
+        returncode = 0
 
         @staticmethod
         def kill() -> None:
@@ -712,6 +713,7 @@ def test_scope_teardown_requires_an_inactive_or_removed_unit(
             return 0
 
     commands: list[list[str]] = []
+    process_groups: list[int] = []
 
     def run(arguments: list[str], **_options: object) -> subprocess.CompletedProcess[bytes]:
         commands.append(arguments)
@@ -719,7 +721,7 @@ def test_scope_teardown_requires_an_inactive_or_removed_unit(
         return subprocess.CompletedProcess(arguments, 0, stdout=stdout)
 
     monkeypatch.setattr(subprocess, "run", run)
-    monkeypatch.setattr(os, "killpg", lambda _pid, _signal: None)
+    monkeypatch.setattr(os, "killpg", lambda pid, _signal: process_groups.append(pid))
 
     caddy_runtime_module._kill_validation_process(
         cast("subprocess.Popen[bytes]", Process()),
@@ -727,6 +729,7 @@ def test_scope_teardown_requires_an_inactive_or_removed_unit(
     )
 
     assert [command[1] for command in commands] == ["kill", "stop", "show"]
+    assert process_groups == []
 
 
 def test_root_candidate_validation_has_exact_descendant_resource_boundaries() -> None:
@@ -745,6 +748,7 @@ def test_root_candidate_validation_has_exact_descendant_resource_boundaries() ->
         "--quiet",
         "--scope",
         "--collect",
+        "--expand-environment=no",
         "--unit=lowerduckpond-caddy-validation-0123456789abcdef",
         "--property",
         "MemoryMax=256M",
@@ -771,7 +775,6 @@ def test_root_candidate_validation_has_exact_descendant_resource_boundaries() ->
         "--no-new-privs",
         "--",
         "/usr/bin/prlimit",
-        "--as=536870912",
         "--core=0",
         "--cpu=15",
         "--fsize=16777216",
@@ -843,7 +846,7 @@ def test_selection_rejects_configuration_the_pinned_binary_cannot_load(
     assert not Path(validation_directory).exists()
 
 
-def test_selection_rejects_configuration_that_disagrees_with_route_state(
+def test_selection_and_launch_reject_configuration_that_disagrees_with_route_state(
     runtime_fixture: RuntimeFixture,
 ) -> None:
     generation_id = "0198d17f-6f4a-7000-8000-000000000006"
@@ -891,6 +894,14 @@ def test_selection_rejects_configuration_that_disagrees_with_route_state(
         with pytest.raises(CaddyRuntimeError, match="route state disagree"):
             runtime.select_active(generation_id)
         assert runtime.read_active() == GENERATION_A
+
+    reference = runtime_fixture.root / CADDY_ACTIVE_REFERENCE_NAME
+    reference.write_bytes(f"{generation_id}\n".encode())
+    with (
+        runtime_fixture.open() as runtime,
+        pytest.raises(CaddyRuntimeError, match="route state disagree"),
+    ):
+        prepare_active_caddy_execution(runtime)
 
 
 @pytest.mark.parametrize("mismatch", ["tcp-admin", "additional-app"])

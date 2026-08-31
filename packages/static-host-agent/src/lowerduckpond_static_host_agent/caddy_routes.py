@@ -49,6 +49,7 @@ def build_platform_only_caddy_routes() -> PlatformOnlyCaddyRoutes:
         "servers": {
             "production": {
                 "listen": [":443"],
+                "tls_connection_policies": [{}],
                 "routes": [
                     _compatibility_redirect_route(),
                     _platform_apex_route(),

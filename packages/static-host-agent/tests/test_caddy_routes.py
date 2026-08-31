@@ -80,6 +80,7 @@ def test_platform_only_generation_has_one_fixed_server_and_five_terminal_routes(
     production = servers["production"]
     assert type(production) is dict
     assert production["listen"] == [":443"]
+    assert production["tls_connection_policies"] == [{}]
     routes = _routes()
     assert len(routes) == _PLATFORM_ONLY_ROUTE_COUNT
     assert all(route["terminal"] is True for route in routes)

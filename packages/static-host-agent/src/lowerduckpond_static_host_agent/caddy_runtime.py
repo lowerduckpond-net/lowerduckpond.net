@@ -83,7 +83,6 @@ _CADDY_VALIDATION_SCOPE_PROPERTIES: Final = (
     "KillMode=control-group",
 )
 _CADDY_VALIDATION_RESOURCE_LIMITS: Final = (
-    "--as=536870912",
     "--core=0",
     "--cpu=15",
     "--fsize=16777216",
@@ -373,6 +372,7 @@ class CaddyRuntime:
             generation = store.open_verified(generation_id)
             try:
                 _validate_trusted_binary(generation, self._expected_binary_sha256)
+                _validate_platform_only_route_binding(generation)
             except BaseException:
                 generation.close()
                 raise
@@ -1002,6 +1002,7 @@ def _validation_invocation(  # noqa: PLR0913
         "--quiet",
         "--scope",
         "--collect",
+        "--expand-environment=no",
         f"--unit={scope_stem}",
     ]
     for item in _CADDY_VALIDATION_SCOPE_PROPERTIES:
@@ -1086,6 +1087,7 @@ def _kill_validation_process(
     scope_unit: str | None,
 ) -> None:
     scope_error: BaseException | None = None
+    process_is_unreaped = process.returncode is None
     if scope_unit is not None:
         try:
             for arguments in (
@@ -1140,10 +1142,11 @@ def _kill_validation_process(
             )
             scope_error.__cause__ = error
     try:
-        with suppress(ProcessLookupError):
-            os.killpg(process.pid, signal.SIGKILL)
-        with suppress(ProcessLookupError):
-            process.kill()
+        if process_is_unreaped:
+            with suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+            with suppress(ProcessLookupError):
+                process.kill()
         try:
             process.wait(timeout=5)
         except subprocess.TimeoutExpired as error:
