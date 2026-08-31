@@ -24,6 +24,10 @@ def _resource(
 
 def _valid_plan() -> dict[str, Any]:
     return {
+        "variables": {
+            "cloudflare_zone_id": {"value": "0" * 32},
+            "cloudflare_tenant_zone_id": {"value": "1" * 32},
+        },
         "resource_changes": [
             _resource(
                 "digitalocean_droplet",
@@ -72,6 +76,7 @@ def _valid_plan() -> dict[str, Any]:
                         }
                     ],
                 },
+                address="module.host.digitalocean_firewall.host",
             ),
             _resource(
                 "digitalocean_spaces_bucket",
@@ -123,7 +128,7 @@ def _valid_plan() -> dict[str, Any]:
             _resource(
                 "digitalocean_reserved_ip",
                 "host",
-                {"urn": "do:reservedip:203.0.113.10"},
+                {"ip_address": "203.0.113.10", "urn": "do:reservedip:203.0.113.10"},
                 address="module.host.digitalocean_reserved_ip.host",
             ),
             _resource(
@@ -158,12 +163,30 @@ def _valid_plan() -> dict[str, Any]:
             _resource(
                 "cloudflare_dns_record",
                 "apex",
-                {"name": "lowerduckpond.net", "type": "A", "proxied": False},
+                {
+                    "comment": "Managed by OpenTofu for Lower Duck Pond Hosting",
+                    "content": "203.0.113.10",
+                    "name": "lowerduckpond.net",
+                    "type": "A",
+                    "proxied": False,
+                    "ttl": 300,
+                    "zone_id": "0" * 32,
+                },
+                address=('module.edge["lowerduckpond_net"].cloudflare_dns_record.apex[0]'),
             ),
             _resource(
                 "cloudflare_dns_record",
                 "wildcard",
-                {"name": "*.lowerduckpond.net", "type": "A", "proxied": False},
+                {
+                    "comment": "Managed by OpenTofu for Lower Duck Pond Hosting",
+                    "content": "203.0.113.10",
+                    "name": "*.lowerduckpond.net",
+                    "type": "A",
+                    "proxied": False,
+                    "ttl": 300,
+                    "zone_id": "0" * 32,
+                },
+                address=('module.edge["lowerduckpond_net"].cloudflare_dns_record.wildcard[0]'),
             ),
         ],
         "configuration": {
@@ -361,8 +384,274 @@ def _valid_archive_storage_migration_plan() -> dict[str, Any]:
     return plan
 
 
+def _valid_public_edge_plan() -> dict[str, Any]:
+    plan = deepcopy(_valid_plan())
+    for resource in plan["resource_changes"]:
+        resource["change"]["before"] = deepcopy(resource["change"]["after"])
+        resource["change"]["after_unknown"] = {}
+        resource["change"]["actions"] = ["no-op"]
+
+    for resource in plan["resource_changes"]:
+        if resource["type"] == "cloudflare_dns_record":
+            resource["change"]["after"].update({"proxied": True, "ttl": 1})
+            resource["change"]["actions"] = ["update"]
+
+    for name, address in (
+        (
+            "lowerduckpond.com",
+            'module.edge["lowerduckpond_com"].cloudflare_dns_record.apex[0]',
+        ),
+        (
+            "*.lowerduckpond.com",
+            'module.edge["lowerduckpond_com"].cloudflare_dns_record.wildcard[0]',
+        ),
+    ):
+        plan["resource_changes"].append(
+            _resource(
+                "cloudflare_dns_record",
+                "tenant",
+                {
+                    "comment": "Managed by OpenTofu for Lower Duck Pond Hosting",
+                    "content": "203.0.113.10",
+                    "name": name,
+                    "type": "A",
+                    "proxied": True,
+                    "ttl": 1,
+                    "zone_id": "1" * 32,
+                },
+                address=address,
+            )
+        )
+
+    for zone in ("lowerduckpond_net", "lowerduckpond_com"):
+        domain = "lowerduckpond.net" if zone == "lowerduckpond_net" else "lowerduckpond.com"
+        expression = f'(http.host eq "{domain}" or ends_with(http.host, ".{domain}"))'
+        plan["resource_changes"].append(
+            _resource(
+                "cloudflare_authenticated_origin_pulls_settings",
+                "zone",
+                {
+                    "enabled": True,
+                    "zone_id": "0" * 32 if zone == "lowerduckpond_net" else "1" * 32,
+                },
+                address=(
+                    f'module.edge["{zone}"].cloudflare_authenticated_origin_pulls_settings.zone[0]'
+                ),
+            )
+        )
+        for setting, value in (("always_online", "off"), ("ssl", "strict")):
+            plan["resource_changes"].append(
+                _resource(
+                    "cloudflare_zone_setting",
+                    setting,
+                    {
+                        "setting_id": setting,
+                        "value": value,
+                        "zone_id": "0" * 32 if zone == "lowerduckpond_net" else "1" * 32,
+                    },
+                    address=f'module.edge["{zone}"].cloudflare_zone_setting.{setting}[0]',
+                )
+            )
+        rulesets = {
+            "cache_bypass": {
+                "phase": "http_request_cache_settings",
+                "action": "set_cache_settings",
+                "expression": expression,
+                "action_parameters": {"cache": False},
+            },
+            "transform_disable": {
+                "phase": "http_config_settings",
+                "action": "set_config",
+                "expression": expression,
+                "action_parameters": {
+                    "automatic_https_rewrites": False,
+                    "disable_rum": True,
+                    "disable_zaraz": True,
+                    "email_obfuscation": False,
+                    "fonts": False,
+                    "rocket_loader": False,
+                },
+            },
+            "cdn_cgi_block": {
+                "phase": "http_request_firewall_custom",
+                "action": "block",
+                "expression": (
+                    f'{expression} and (lower(http.request.uri.path) eq "/cdn-cgi" '
+                    'or starts_with(lower(http.request.uri.path), "/cdn-cgi/"))'
+                ),
+            },
+        }
+        for ruleset, contract in rulesets.items():
+            plan["resource_changes"].append(
+                _resource(
+                    "cloudflare_ruleset",
+                    ruleset,
+                    {
+                        "kind": "zone",
+                        "phase": contract["phase"],
+                        "zone_id": "0" * 32 if zone == "lowerduckpond_net" else "1" * 32,
+                        "rules": [
+                            {
+                                "action": contract["action"],
+                                "action_parameters": contract.get("action_parameters"),
+                                "enabled": True,
+                                "expression": contract["expression"],
+                            }
+                        ],
+                    },
+                    address=f'module.edge["{zone}"].cloudflare_ruleset.{ruleset}[0]',
+                )
+            )
+    return plan
+
+
+def _valid_enforced_edge_plan() -> dict[str, Any]:
+    plan = _valid_public_edge_plan()
+    for resource in plan["resource_changes"]:
+        resource["change"]["before"] = deepcopy(resource["change"]["after"])
+        resource["change"]["actions"] = ["no-op"]
+    firewall = next(
+        resource
+        for resource in plan["resource_changes"]
+        if resource["address"] == "module.host.digitalocean_firewall.host"
+    )
+    cloudflare_sources = [
+        "173.245.48.0/20",
+        "103.21.244.0/22",
+        "103.22.200.0/22",
+        "103.31.4.0/22",
+        "141.101.64.0/18",
+        "108.162.192.0/18",
+        "190.93.240.0/20",
+        "188.114.96.0/20",
+        "197.234.240.0/22",
+        "198.41.128.0/17",
+        "162.158.0.0/15",
+        "104.16.0.0/13",
+        "104.24.0.0/14",
+        "172.64.0.0/13",
+        "131.0.72.0/22",
+        "2400:cb00::/32",
+        "2606:4700::/32",
+        "2803:f800::/32",
+        "2405:b500::/32",
+        "2405:8100::/32",
+        "2a06:98c0::/29",
+        "2c0f:f248::/32",
+    ]
+    for rule in firewall["change"]["after"]["inbound_rule"]:
+        if rule["port_range"] in {"80", "443"}:
+            rule["source_addresses"] = cloudflare_sources
+    firewall["change"]["actions"] = ["update"]
+    return plan
+
+
 def test_accepts_expected_foundation() -> None:
     assert_plan(_valid_plan())
+
+
+def test_allows_exact_proxied_public_edge_transition() -> None:
+    assert_plan(_valid_public_edge_plan(), public_edge_transition="proxied")
+
+
+def test_rejects_public_edge_transition_without_explicit_mode() -> None:
+    with pytest.raises(PlanPolicyError, match="require --public-edge-transition"):
+        assert_plan(_valid_public_edge_plan())
+
+
+def test_rejects_public_edge_transition_with_unrelated_change() -> None:
+    plan = _valid_public_edge_plan()
+    bucket = next(
+        resource
+        for resource in plan["resource_changes"]
+        if resource["type"] == "digitalocean_spaces_bucket"
+    )
+    bucket["change"]["actions"] = ["update"]
+
+    with pytest.raises(PlanPolicyError, match="isolated from other infrastructure changes"):
+        assert_plan(plan, public_edge_transition="proxied")
+
+
+def test_rejects_public_edge_dns_target_outside_reserved_ip() -> None:
+    plan = _valid_public_edge_plan()
+    dns = next(
+        resource
+        for resource in plan["resource_changes"]
+        if resource["type"] == "cloudflare_dns_record"
+    )
+    dns["change"]["after"]["content"] = "198.51.100.7"
+
+    with pytest.raises(PlanPolicyError, match="production reserved IP"):
+        assert_plan(plan, public_edge_transition="proxied")
+
+
+def test_rejects_public_edge_resource_in_wrong_zone() -> None:
+    plan = _valid_public_edge_plan()
+    ruleset = next(
+        resource
+        for resource in plan["resource_changes"]
+        if resource["type"] == "cloudflare_ruleset"
+    )
+    ruleset["change"]["after"]["zone_id"] = "f" * 32
+
+    with pytest.raises(PlanPolicyError, match="reviewed Cloudflare zone"):
+        assert_plan(plan, public_edge_transition="proxied")
+
+
+def test_rejects_public_edge_transition_to_wrong_phase() -> None:
+    with pytest.raises(PlanPolicyError, match="plan selects proxied"):
+        assert_plan(_valid_public_edge_plan(), public_edge_transition="enforced")
+
+
+def test_rejects_swapped_public_edge_zone_settings() -> None:
+    plan = _valid_public_edge_plan()
+    settings = [
+        resource
+        for resource in plan["resource_changes"]
+        if resource["type"] == "cloudflare_zone_setting"
+        and "lowerduckpond_net" in resource["address"]
+    ]
+    settings[0]["change"]["after"] = {"setting_id": "ssl", "value": "strict"}
+    settings[1]["change"]["after"] = {"setting_id": "always_online", "value": "off"}
+
+    with pytest.raises(PlanPolicyError, match=r"Full \(strict\)"):
+        assert_plan(plan, public_edge_transition="proxied")
+
+
+def test_allows_exact_enforced_public_edge_transition() -> None:
+    assert_plan(_valid_enforced_edge_plan(), public_edge_transition="enforced")
+
+
+def test_rejects_direct_rollback_that_skips_proxied_firewall_recovery() -> None:
+    plan = _valid_enforced_edge_plan()
+    for resource in plan["resource_changes"]:
+        resource["change"]["before"] = deepcopy(resource["change"]["after"])
+        if resource["type"] in {
+            "cloudflare_authenticated_origin_pulls_settings",
+            "cloudflare_ruleset",
+            "cloudflare_zone_setting",
+        }:
+            resource["change"]["after"] = None
+            resource["change"]["actions"] = ["delete"]
+        elif resource["type"] == "cloudflare_dns_record":
+            if "lowerduckpond_com" in resource["address"]:
+                resource["change"]["after"] = None
+                resource["change"]["actions"] = ["delete"]
+            else:
+                resource["change"]["after"].update({"proxied": False, "ttl": 300})
+                resource["change"]["actions"] = ["update"]
+    firewall = next(
+        resource
+        for resource in plan["resource_changes"]
+        if resource["address"] == "module.host.digitalocean_firewall.host"
+    )
+    for rule in firewall["change"]["after"]["inbound_rule"]:
+        if rule["port_range"] in {"80", "443"}:
+            rule["source_addresses"] = ["0.0.0.0/0", "::/0"]
+    firewall["change"]["actions"] = ["update"]
+
+    with pytest.raises(PlanPolicyError, match="return to the proxied phase"):
+        assert_plan(plan, public_edge_transition="direct")
 
 
 def test_allows_exact_archive_storage_migration() -> None:

@@ -14,11 +14,18 @@ EXPECTED_TAGS = {
     "project:lowerduckpond",
 }
 WORLD_CIDRS = {"0.0.0.0/0", "::/0"}
+CLOUDFLARE_NETWORKS = json.loads(
+    (Path(__file__).parents[1] / "platform/cloudflare-networks.json").read_text(encoding="utf-8")
+)
+CLOUDFLARE_PROXY_CIDRS = {
+    *CLOUDFLARE_NETWORKS["cloudflare_ipv4_cidrs"],
+    *CLOUDFLARE_NETWORKS["cloudflare_ipv6_cidrs"],
+}
 DURABLE_TYPES = {"digitalocean_reserved_ip", "digitalocean_spaces_bucket"}
-EXPECTED_DNS_RECORD_COUNT = 2
 MIN_MODULE_ADDRESS_PARTS = 3
 BACKUP_MULTIPART_ABORT_DAYS = 7
 BACKUP_NONCURRENT_RETENTION_DAYS = 30
+DIRECT_DNS_TTL = 300
 ARCHIVE_MIGRATION_DURABLE_RESOURCE_COUNT = 3
 REBUILD_DRILL_ACTIONS = {
     "module.host.digitalocean_droplet.host": ("create", "delete"),
@@ -126,6 +133,55 @@ EXPECTED_SPACES_KEY_ADDRESSES = {
     "module.tenant_archives.digitalocean_spaces_key.runtime",
 }
 NON_MUTATING_ACTIONS = {("no-op",), ("read",)}
+PUBLIC_EDGE_RESOURCE_TYPES = {
+    "cloudflare_authenticated_origin_pulls_settings",
+    "cloudflare_dns_record",
+    "cloudflare_ruleset",
+    "cloudflare_zone_setting",
+}
+EXPECTED_DIRECT_DNS_NAMES = {
+    "lowerduckpond.net",
+    "*.lowerduckpond.net",
+}
+EXPECTED_PROXIED_DNS_NAMES = EXPECTED_DIRECT_DNS_NAMES | {
+    "lowerduckpond.com",
+    "*.lowerduckpond.com",
+}
+EXPECTED_EDGE_ZONE_IDS = {
+    "lowerduckpond_net",
+    "lowerduckpond_com",
+}
+EXPECTED_EDGE_RULESET_PHASES = {
+    "http_config_settings",
+    "http_request_cache_settings",
+    "http_request_firewall_custom",
+}
+EXPECTED_EDGE_RULESET_PHASES_BY_ZONE = dict.fromkeys(
+    EXPECTED_EDGE_ZONE_IDS, EXPECTED_EDGE_RULESET_PHASES
+)
+EXPECTED_DIRECT_DNS_ADDRESSES = {
+    'module.edge["lowerduckpond_net"].cloudflare_dns_record.apex[0]',
+    'module.edge["lowerduckpond_net"].cloudflare_dns_record.wildcard[0]',
+}
+EXPECTED_PROXIED_DNS_ADDRESSES = EXPECTED_DIRECT_DNS_ADDRESSES | {
+    'module.edge["lowerduckpond_com"].cloudflare_dns_record.apex[0]',
+    'module.edge["lowerduckpond_com"].cloudflare_dns_record.wildcard[0]',
+}
+EXPECTED_EDGE_AOP_ADDRESSES = {
+    f'module.edge["{zone}"].cloudflare_authenticated_origin_pulls_settings.zone[0]'
+    for zone in EXPECTED_EDGE_ZONE_IDS
+}
+EXPECTED_EDGE_ZONE_SETTING_ADDRESSES = {
+    f'module.edge["{zone}"].cloudflare_zone_setting.{setting}[0]'
+    for zone in EXPECTED_EDGE_ZONE_IDS
+    for setting in ("always_online", "ssl")
+}
+EXPECTED_EDGE_RULESET_ADDRESSES = {
+    f'module.edge["{zone}"].cloudflare_ruleset.{ruleset}[0]'
+    for zone in EXPECTED_EDGE_ZONE_IDS
+    for ruleset in ("cache_bypass", "cdn_cgi_block", "transform_disable")
+}
+EXPECTED_DNS_COMMENT = "Managed by OpenTofu for Lower Duck Pond Hosting"
 
 
 class PlanPolicyError(RuntimeError):
@@ -327,6 +383,27 @@ def _planned_attribute(resource: dict[str, Any], field: str) -> tuple[object, bo
     return value, unknown
 
 
+def _plan_variable(plan: dict[str, Any], name: str) -> object:
+    variable = plan.get("variables", {}).get(name, {})
+    return variable.get("value") if isinstance(variable, dict) else None
+
+
+def _edge_zone_key(address: str) -> str | None:
+    return next(
+        (key for key in EXPECTED_EDGE_ZONE_IDS if f'["{key}"]' in address),
+        None,
+    )
+
+
+def _expected_edge_zone_id(plan: dict[str, Any], address: str) -> object:
+    zone_key = _edge_zone_key(address)
+    if zone_key == "lowerduckpond_net":
+        return _plan_variable(plan, "cloudflare_zone_id")
+    if zone_key == "lowerduckpond_com":
+        return _plan_variable(plan, "cloudflare_tenant_zone_id")
+    return None
+
+
 def _expected_durable_member(
     resource: dict[str, Any], *, address: str, field: str
 ) -> tuple[object, bool]:
@@ -434,12 +511,13 @@ def _check_droplet(plan: dict[str, Any], errors: list[str]) -> None:
         errors.append(f"Droplet is missing required tags: {sorted(EXPECTED_TAGS - tags)}")
 
 
-def _check_firewall(plan: dict[str, Any], errors: list[str]) -> None:
+def _check_firewall(plan: dict[str, Any], errors: list[str]) -> str | None:
     resource = _require_one(plan, "digitalocean_firewall", errors)
     if resource is None:
-        return
+        return None
     rules = _after(resource).get("inbound_rule") or []
     seen_ports: set[str] = set()
+    web_sources_by_port: dict[str, set[str]] = {}
     for rule in rules:
         protocol = rule.get("protocol")
         port = str(rule.get("port_range", ""))
@@ -450,10 +528,21 @@ def _check_firewall(plan: dict[str, Any], errors: list[str]) -> None:
         seen_ports.add(port)
         if port == "22" and (not sources or sources & WORLD_CIDRS):
             errors.append("SSH must use a non-empty explicit source allowlist")
-        if port in {"80", "443"} and not WORLD_CIDRS.issubset(sources):
-            errors.append(f"TCP {port} must be reachable over IPv4 and IPv6")
+        if port in {"80", "443"}:
+            web_sources_by_port[port] = sources
     if seen_ports != {"22", "80", "443"}:
         errors.append(f"firewall inbound ports must be exactly 22, 80, and 443; found {seen_ports}")
+        return None
+    if web_sources_by_port.get("80") != web_sources_by_port.get("443"):
+        errors.append("TCP 80 and 443 must share one exact source policy")
+        return None
+    web_sources = web_sources_by_port.get("80", set())
+    if web_sources == WORLD_CIDRS:
+        return "open"
+    if web_sources == CLOUDFLARE_PROXY_CIDRS:
+        return "restricted"
+    errors.append("web ingress must be exactly world-open or the reviewed Cloudflare CIDRs")
+    return None
 
 
 def _check_spaces_buckets(plan: dict[str, Any], errors: list[str]) -> dict[str, dict[str, Any]]:
@@ -661,19 +750,240 @@ def _reject_unapproved_archive_storage_migration(plan: dict[str, Any], errors: l
         errors.append("archive-storage migration requires --allow-archive-storage-migration")
 
 
-def _check_dns(plan: dict[str, Any], errors: list[str]) -> None:
-    records = _changes_by_type(plan, "cloudflare_dns_record")
-    if len(records) != EXPECTED_DNS_RECORD_COUNT:
-        errors.append(f"expected apex and wildcard DNS records, found {len(records)}")
-        return
-    names = set()
+def _check_dns(plan: dict[str, Any], errors: list[str]) -> str | None:
+    records = [
+        resource for resource in _changes_by_type(plan, "cloudflare_dns_record") if _after(resource)
+    ]
+    names: set[object] = set()
+    addresses = {str(resource.get("address", "")) for resource in records}
+    proxy_values: set[object] = set()
+    reserved_ip = _change_by_address(plan, "module.host.digitalocean_reserved_ip.host")
+    expected_content, expected_content_unknown = (
+        _planned_attribute(reserved_ip, "ip_address") if reserved_ip is not None else (None, False)
+    )
     for resource in records:
         after = _after(resource)
+        address = str(resource.get("address", ""))
         names.add(after.get("name"))
-        if after.get("type") != "A" or after.get("proxied") is not False:
-            errors.append(f"{resource.get('address')} must be an unproxied A record")
-    if "lowerduckpond.net" not in names or "*.lowerduckpond.net" not in names:
-        errors.append("DNS records must include lowerduckpond.net and *.lowerduckpond.net")
+        proxy_values.add(after.get("proxied"))
+        if after.get("type") != "A":
+            errors.append(f"{address} must be an A record")
+        if after.get("comment") != EXPECTED_DNS_COMMENT:
+            errors.append(f"{address} must retain the reviewed management comment")
+        if after.get("zone_id") != _expected_edge_zone_id(plan, address):
+            errors.append(f"{address} must remain in its reviewed Cloudflare zone")
+        content, content_unknown = _planned_attribute(resource, "content")
+        if content_unknown != expected_content_unknown or (
+            not content_unknown and content != expected_content
+        ):
+            errors.append(f"{address} must target the production reserved IP")
+    if (
+        names == EXPECTED_DIRECT_DNS_NAMES
+        and addresses == EXPECTED_DIRECT_DNS_ADDRESSES
+        and proxy_values == {False}
+        and all(_after(resource).get("ttl") == DIRECT_DNS_TTL for resource in records)
+    ):
+        return "direct"
+    if (
+        names == EXPECTED_PROXIED_DNS_NAMES
+        and addresses == EXPECTED_PROXIED_DNS_ADDRESSES
+        and proxy_values == {True}
+        and all(_after(resource).get("ttl") == 1 for resource in records)
+    ):
+        return "proxied"
+    errors.append(
+        "DNS must be exactly the unproxied .net apex/wildcard or both proxied apex/wildcards"
+    )
+    return None
+
+
+def _check_public_edge_rule(
+    *,
+    address: str,
+    zone_key: str,
+    after: dict[str, Any],
+    errors: list[str],
+) -> None:
+    rules = after.get("rules") or []
+    if len(rules) != 1 or rules[0].get("enabled") is not True:
+        errors.append(f"{address} must contain exactly one enabled rule")
+        return
+    domain = "lowerduckpond.net" if zone_key == "lowerduckpond_net" else "lowerduckpond.com"
+    zone_expression = f'(http.host eq "{domain}" or ends_with(http.host, ".{domain}"))'
+    rule = rules[0]
+    phase = after.get("phase")
+    invalid = False
+    if phase == "http_request_cache_settings":
+        invalid = (
+            rule.get("action") != "set_cache_settings"
+            or rule.get("expression") != zone_expression
+            or rule.get("action_parameters") != {"cache": False}
+        )
+    elif phase == "http_config_settings":
+        invalid = (
+            rule.get("action") != "set_config"
+            or rule.get("expression") != zone_expression
+            or rule.get("action_parameters")
+            != {
+                "automatic_https_rewrites": False,
+                "disable_rum": True,
+                "disable_zaraz": True,
+                "email_obfuscation": False,
+                "fonts": False,
+                "rocket_loader": False,
+            }
+        )
+    elif phase == "http_request_firewall_custom":
+        invalid = rule.get("action") != "block" or rule.get("expression") != (
+            f'{zone_expression} and (lower(http.request.uri.path) eq "/cdn-cgi" '
+            'or starts_with(lower(http.request.uri.path), "/cdn-cgi/"))'
+        )
+    if invalid:
+        errors.append(f"{address} does not match its reviewed {phase} rule")
+
+
+def _check_public_edge_resources(
+    plan: dict[str, Any], errors: list[str], *, dns_mode: str | None
+) -> None:
+    active_settings = [
+        resource
+        for resource in _changes_by_type(plan, "cloudflare_authenticated_origin_pulls_settings")
+        if _after(resource)
+    ]
+    active_zone_settings = [
+        resource
+        for resource in _changes_by_type(plan, "cloudflare_zone_setting")
+        if _after(resource)
+    ]
+    active_rulesets = [
+        resource for resource in _changes_by_type(plan, "cloudflare_ruleset") if _after(resource)
+    ]
+    if dns_mode == "direct":
+        if active_settings or active_zone_settings or active_rulesets:
+            errors.append("direct phase must not retain active Cloudflare edge policy resources")
+        return
+    if dns_mode != "proxied":
+        return
+
+    if {
+        str(resource.get("address", "")) for resource in active_settings
+    } != EXPECTED_EDGE_AOP_ADDRESSES or any(
+        _after(resource).get("enabled") is not True
+        or _after(resource).get("zone_id")
+        != _expected_edge_zone_id(plan, str(resource.get("address", "")))
+        for resource in active_settings
+    ):
+        errors.append("proxied edge must enable zone-level origin pulls in exactly two zones")
+
+    zone_setting_addresses = {str(resource.get("address", "")) for resource in active_zone_settings}
+    zone_settings_valid = all(
+        (
+            (
+                address.endswith(".cloudflare_zone_setting.ssl[0]")
+                and _after(resource).get("setting_id") == "ssl"
+                and _after(resource).get("value") == "strict"
+            )
+            or (
+                address.endswith(".cloudflare_zone_setting.always_online[0]")
+                and _after(resource).get("setting_id") == "always_online"
+                and _after(resource).get("value") == "off"
+            )
+        )
+        and _after(resource).get("zone_id") == _expected_edge_zone_id(plan, address)
+        for resource in active_zone_settings
+        if (address := str(resource.get("address", "")))
+    )
+    if zone_setting_addresses != EXPECTED_EDGE_ZONE_SETTING_ADDRESSES or not zone_settings_valid:
+        errors.append("each proxied zone must use Full (strict) with Always Online disabled")
+
+    observed_rulesets: dict[str, set[str]] = {}
+    for resource in active_rulesets:
+        address = str(resource.get("address", ""))
+        zone_key = _edge_zone_key(address)
+        if zone_key is None:
+            errors.append(f"{address} is outside the two reviewed edge zones")
+            continue
+        after = _after(resource)
+        observed_rulesets.setdefault(zone_key, set()).add(str(after.get("phase", "")))
+        if after.get("kind") != "zone":
+            errors.append(f"{address} must be a zone ruleset")
+        if after.get("zone_id") != _expected_edge_zone_id(plan, address):
+            errors.append(f"{address} must remain in its reviewed Cloudflare zone")
+        _check_public_edge_rule(
+            address=address,
+            zone_key=zone_key,
+            after=after,
+            errors=errors,
+        )
+    if {
+        str(resource.get("address", "")) for resource in active_rulesets
+    } != EXPECTED_EDGE_RULESET_ADDRESSES or (
+        observed_rulesets != EXPECTED_EDGE_RULESET_PHASES_BY_ZONE
+    ):
+        errors.append("each proxied zone must own the three reviewed edge ruleset phases")
+
+
+def _edge_changes(plan: dict[str, Any]) -> list[dict[str, Any]]:
+    changes: list[dict[str, Any]] = []
+    for resource in plan.get("resource_changes", []):
+        actions = tuple(resource.get("change", {}).get("actions", []))
+        if actions in NON_MUTATING_ACTIONS:
+            continue
+        if resource.get("type") in PUBLIC_EDGE_RESOURCE_TYPES:
+            changes.append(resource)
+            continue
+        if resource.get("address") == "module.host.digitalocean_firewall.host":
+            changed_fields = _changed_top_level_fields(resource)
+            if changed_fields and "inbound_rule" in changed_fields:
+                changes.append(resource)
+    return changes
+
+
+def _check_public_edge_transition(
+    plan: dict[str, Any],
+    errors: list[str],
+    *,
+    requested_transition: str | None,
+    desired_phase: str | None,
+) -> None:
+    edge_changes = _edge_changes(plan)
+    droplet = _change_by_address(plan, "module.host.digitalocean_droplet.host")
+    initial_foundation = droplet is not None and tuple(
+        droplet.get("change", {}).get("actions", [])
+    ) == ("create",)
+    if initial_foundation:
+        return
+    if not edge_changes:
+        if requested_transition is not None:
+            errors.append(
+                "public-edge transition was requested but the plan contains no edge change"
+            )
+        return
+    if requested_transition is None:
+        errors.append("public-edge changes require --public-edge-transition")
+        return
+    if desired_phase != requested_transition:
+        errors.append(
+            f"public-edge transition requested {requested_transition}, but the plan selects "
+            f"{desired_phase or 'an invalid phase'}"
+        )
+    if requested_transition == "direct" and any(
+        resource.get("address") == "module.host.digitalocean_firewall.host"
+        for resource in edge_changes
+    ):
+        errors.append("enforced ingress must return to the proxied phase before a direct rollback")
+
+    unrelated = [
+        str(resource.get("address", ""))
+        for resource in plan.get("resource_changes", [])
+        if tuple(resource.get("change", {}).get("actions", [])) not in NON_MUTATING_ACTIONS
+        and resource not in edge_changes
+    ]
+    if unrelated:
+        errors.append(
+            "public-edge transitions must be isolated from other infrastructure changes; "
+            f"found {sorted(unrelated)}"
+        )
 
 
 def assert_plan(
@@ -681,11 +991,19 @@ def assert_plan(
     *,
     allow_droplet_replacement: bool = False,
     allow_archive_storage_migration: bool = False,
+    public_edge_transition: str | None = None,
 ) -> None:
     """Raise PlanPolicyError when a production plan violates policy."""
     errors: list[str] = []
-    if allow_droplet_replacement and allow_archive_storage_migration:
-        errors.append("Droplet replacement and archive-storage migration must be separate plans")
+    special_modes = sum(
+        (
+            allow_droplet_replacement,
+            allow_archive_storage_migration,
+            public_edge_transition is not None,
+        )
+    )
+    if special_modes > 1:
+        errors.append("Droplet, archive-storage, and public-edge changes require separate plans")
     _check_destructive_actions(plan, errors, allow_droplet_replacement=allow_droplet_replacement)
     if allow_droplet_replacement:
         _check_rebuild_drill_actions(plan, errors)
@@ -694,9 +1012,19 @@ def assert_plan(
     else:
         _reject_unapproved_archive_storage_migration(plan, errors)
     _check_droplet(plan, errors)
-    _check_firewall(plan, errors)
+    firewall_mode = _check_firewall(plan, errors)
     _check_spaces(plan, errors)
-    _check_dns(plan, errors)
+    dns_mode = _check_dns(plan, errors)
+    _check_public_edge_resources(plan, errors, dns_mode=dns_mode)
+    desired_phase = (
+        "enforced" if dns_mode == "proxied" and firewall_mode == "restricted" else dns_mode
+    )
+    _check_public_edge_transition(
+        plan,
+        errors,
+        requested_transition=public_edge_transition,
+        desired_phase=desired_phase,
+    )
     _check_project_resources(
         plan, errors, allow_archive_storage_migration=allow_archive_storage_migration
     )
@@ -716,6 +1044,11 @@ def _parse_args() -> argparse.Namespace:
         help="allow only the explicit Droplet rebuild and its required attachment changes",
     )
     parser.add_argument(
+        "--public-edge-transition",
+        choices=("direct", "proxied", "enforced"),
+        help="allow only one explicit fail-safe public-edge phase transition",
+    )
+    parser.add_argument(
         "--allow-archive-storage-migration",
         action="store_true",
         help="allow only the one-time isolated archive storage migration",
@@ -732,6 +1065,7 @@ def main() -> int:
             plan,
             allow_droplet_replacement=args.allow_droplet_replacement,
             allow_archive_storage_migration=args.allow_archive_storage_migration,
+            public_edge_transition=args.public_edge_transition,
         )
     except (OSError, json.JSONDecodeError, PlanPolicyError) as error:
         print(error)

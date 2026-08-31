@@ -144,6 +144,10 @@ Configure these environment variables:
 - `CLOUDFLARE_ZONE_ID`, the trusted `lowerduckpond.net` zone
 - `CLOUDFLARE_TENANT_ZONE_ID`, the untrusted `lowerduckpond.com` zone, required
   when the Milestone 3 tenant namespace lands
+- `CLOUDFLARE_ORIGIN_PULL_CERTIFICATE_ID`, the public ID of the separately
+  uploaded, active `.net` zone-level origin-pull leaf
+- `CLOUDFLARE_TENANT_ORIGIN_PULL_CERTIFICATE_ID`, the public ID of the
+  separately uploaded, active `.com` zone-level origin-pull leaf
 - `DIGITALOCEAN_PROJECT_ID`
 - `OPENTOFU_STATE_BUCKET`
 - `SPACES_REGION`, set to `nyc3`
@@ -180,6 +184,22 @@ The one-time M3.1 archive-storage migration has an additional exact-plan flag,
 preflight, credential-backup step, and live gate. Follow
 [`m3-archive-storage.md`](m3-archive-storage.md); do not treat it as an ordinary
 unflagged infrastructure apply.
+
+M3.7 public-edge changes likewise require an explicit `public_edge_phase` on
+both the plan and apply dispatches. `proxied` creates the `.com` records and
+enables both reviewed zone policies while both origin firewalls remain open;
+`enforced` narrows the DigitalOcean web-ingress allowlist only after the host
+has independently required origin pulls and adopted the same reviewed
+Cloudflare networks. Roll back `enforced` to `proxied` before selecting
+`direct`; the plan policy rejects an enforced-to-direct jump. `none` is the
+ordinary non-edge mode and resolves to the existing direct state.
+
+The two certificate IDs are nonsecret object identifiers. Uploading or
+retiring the corresponding leaves remains a separate temporary-credential
+operation; neither PEM input files nor private keys enter OpenTofu variables or
+GitHub variables. The provider reads the selected public leaf and its metadata
+into encrypted plans and state to prove it active. Its private key must never
+enter OpenTofu configuration, plans, or state.
 
 ## Rebuild drill
 

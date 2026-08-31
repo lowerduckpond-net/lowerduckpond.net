@@ -71,11 +71,25 @@ variable "admin_source_cidrs" {
   validation {
     condition = (
       length(var.admin_source_cidrs) > 0 &&
-      alltrue([for cidr in var.admin_source_cidrs : can(cidrnetmask(cidr))]) &&
+      alltrue([for cidr in var.admin_source_cidrs : can(cidrhost(cidr, 0))]) &&
       !contains(var.admin_source_cidrs, "0.0.0.0/0") &&
       !contains(var.admin_source_cidrs, "::/0")
     )
     error_message = "admin_source_cidrs must contain valid explicit CIDRs and may not allow the whole Internet."
+  }
+}
+
+variable "web_source_cidrs" {
+  description = "Explicit IPv4 and IPv6 CIDRs allowed to reach public HTTP and HTTPS."
+  type        = set(string)
+  default     = ["0.0.0.0/0", "::/0"]
+
+  validation {
+    condition = (
+      length(var.web_source_cidrs) > 0 &&
+      alltrue([for cidr in var.web_source_cidrs : can(cidrhost(cidr, 0))])
+    )
+    error_message = "web_source_cidrs must contain valid explicit CIDRs."
   }
 }
 
