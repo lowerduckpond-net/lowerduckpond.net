@@ -90,42 +90,73 @@ then upload exactly one leaf to each zone-level endpoint. The pipeline keeps
 the private-key-bearing request in memory and prints only the public ID.
 
 ```bash
+set -euo pipefail
+
 export M3_7_CERTIFICATE_UPLOAD_TOKEN='temporary-seven-day-token'
 export CLOUDFLARE_ZONE_ID='lowerduckpond-net-zone-id'
 export CLOUDFLARE_TENANT_ZONE_ID='lowerduckpond-com-zone-id'
+
+upload_response_directory=$(mktemp -d)
+chmod 0700 "$upload_response_directory"
 
 upload_zone_leaf() {
   local zone_id=$1
   local certificate_path=$2
   local private_key_path=$3
+  local response_path=$4
 
-  jq --null-input \
-    --rawfile certificate "$certificate_path" \
-    --rawfile private_key "$private_key_path" \
-    '{certificate: $certificate, private_key: $private_key}' | \
-    curl --silent --show-error --fail-with-body \
-      --request POST \
-      --header "Authorization: Bearer $M3_7_CERTIFICATE_UPLOAD_TOKEN" \
-      --header 'Content-Type: application/json' \
-      --data-binary @- \
-      "https://api.cloudflare.com/client/v4/zones/${zone_id}/origin_tls_client_auth" | \
-    jq --exit-status --raw-output \
-      'if .success == true and (.result.id | type) == "string"
-       then .result.id else error("zone-level leaf upload failed") end'
+  if ! jq --null-input \
+      --rawfile certificate "$certificate_path" \
+      --rawfile private_key "$private_key_path" \
+      '{certificate: $certificate, private_key: $private_key}' | \
+      curl --silent --show-error --fail-with-body \
+        --request POST \
+        --header "Authorization: Bearer $M3_7_CERTIFICATE_UPLOAD_TOKEN" \
+        --header 'Content-Type: application/json' \
+        --data-binary @- \
+        --output "$response_path" \
+        "https://api.cloudflare.com/client/v4/zones/${zone_id}/origin_tls_client_auth"
+  then
+    return 1
+  fi
+  chmod 0600 "$response_path"
+  jq --exit-status --raw-output \
+    'if .success == true
+        and (.result.id | type) == "string"
+        and (.result.id | test("^[0-9a-f]{32}$"))
+     then .result.id else error("zone-level leaf upload failed") end' \
+    "$response_path"
 }
 
-export CLOUDFLARE_ORIGIN_PULL_CERTIFICATE_ID="$(
-  upload_zone_leaf \
+if ! lowerduckpond_net_certificate_id=$(
+    upload_zone_leaf \
     "$CLOUDFLARE_ZONE_ID" \
     production-lowerduckpond.net.pem \
-    production-lowerduckpond.net.key
-)"
-export CLOUDFLARE_TENANT_ORIGIN_PULL_CERTIFICATE_ID="$(
-  upload_zone_leaf \
+    production-lowerduckpond.net.key \
+    "$upload_response_directory/lowerduckpond-net.json"
+); then
+  printf 'STOP: .net upload failed; retain secured response directory: %s\n' \
+    "$upload_response_directory" >&2
+  exit 1
+fi
+if ! lowerduckpond_com_certificate_id=$(
+    upload_zone_leaf \
     "$CLOUDFLARE_TENANT_ZONE_ID" \
     production-lowerduckpond.com.pem \
-    production-lowerduckpond.com.key
-)"
+    production-lowerduckpond.com.key \
+    "$upload_response_directory/lowerduckpond-com.json"
+); then
+  printf 'STOP: .com upload failed; retain secured response directory: %s\n' \
+    "$upload_response_directory" >&2
+  exit 1
+fi
+
+export CLOUDFLARE_ORIGIN_PULL_CERTIFICATE_ID="$lowerduckpond_net_certificate_id"
+export CLOUDFLARE_TENANT_ORIGIN_PULL_CERTIFICATE_ID="$lowerduckpond_com_certificate_id"
+
+rm -- "$upload_response_directory/lowerduckpond-net.json" \
+  "$upload_response_directory/lowerduckpond-com.json"
+rmdir -- "$upload_response_directory"
 
 jq --null-input \
   --arg lowerduckpond_net "$CLOUDFLARE_ORIGIN_PULL_CERTIFICATE_ID" \
@@ -147,7 +178,15 @@ The production OpenTofu edge token is an account-owned token limited to both
 zones with DNS Write, Zone Settings Write, Cache Settings Write, Config
 Settings Write, Zone WAF Write, and SSL and Certificates Write. It does not
 need Zone Read and must not receive a leaf key. The Caddy runtime token remains
-separate and retains only Zone Read and DNS Edit for the two zones.
+separate and retains only Zone Read and DNS Write for the two zones.
+
+Create one additional, temporary account-owned token for the read-only starting
+gate. Give it only Account API Tokens Read on the single Lower Duck Pond
+account, set a lifetime of no more than seven days, and name it for the M3.7
+token audit and creation date. Do not install or back up this token. The gate
+uses it only to read the two target tokens' Cloudflare policy documents, bind
+them to their self-verified token IDs, and prove the exact permission and zone
+resource sets above. Revoke it after the gate passes.
 
 After locally exporting the verified OpenTofu edge token as
 `CLOUDFLARE_API_TOKEN`, set the four public identifiers and replace the opaque
@@ -197,6 +236,7 @@ export SPACES_REGION='nyc3'
 
 export CADDY_CLOUDFLARE_API_TOKEN='two-zone-caddy-dns-token'
 export CLOUDFLARE_API_TOKEN='two-zone-opentofu-edge-token'
+export M3_7_TOKEN_AUDIT_TOKEN='temporary-account-token-read-token'
 export CADDY_ORIGIN_PULL_CA_PATHS_JSON="$(
   jq --compact-output --null-input \
     --arg path "$production_pki/production-origin-pull-ca.pem" \
@@ -213,7 +253,8 @@ production state and requires the direct phase (including the compatible
 legacy state before that output is first materialized), no managed M3.7 edge
 policy, exactly one direct A record (and no competing record type) at each
 `.net` apex and wildcard, and no record of any type at either `.com` rollout
-name. It proves token separation and two-zone access, no enabled
+name. It proves all three token roles are distinct, the two durable tokens have
+exactly their reviewed write/read permissions and two-zone resources, no enabled
 zone-level or per-hostname origin-pull policy, no conflicting zone entrypoint,
 one safe public CA, and exactly one active, selected, CA-chained zone-level
 leaf per zone. It also requires the four GitHub production variables to match

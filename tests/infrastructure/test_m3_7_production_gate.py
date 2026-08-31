@@ -15,6 +15,7 @@ from scripts.check_m3_7_production_edge import ProductionEdgePreflightError
 REPOSITORY_ROOT = Path(__file__).parents[2]
 PREFLIGHT = (REPOSITORY_ROOT / "scripts/preflight-m3-7-production").resolve()
 JUSTFILE = (REPOSITORY_ROOT / "justfile").resolve()
+RUNBOOK = (REPOSITORY_ROOT / "docs/operations/m3-public-edge-rollout.md").resolve()
 OPENSSL = "/usr/bin/openssl"
 INPUT_ERROR_STATUS = 2
 
@@ -254,9 +255,61 @@ def test_direct_dns_rejects_competing_record_types() -> None:
         )
 
 
+def test_account_token_policy_requires_exact_permissions_and_resources() -> None:
+    token_id = "1" * 32
+    zone_resources = frozenset(
+        {
+            f"com.cloudflare.api.account.zone.{'2' * 32}",
+            f"com.cloudflare.api.account.zone.{'3' * 32}",
+        }
+    )
+    token = {
+        "id": token_id,
+        "status": "active",
+        "policies": [
+            {
+                "effect": "allow",
+                "permission_groups": [
+                    {"id": "4" * 32, "name": "Zone Read"},
+                    {"id": "5" * 32, "name": "DNS Write"},
+                ],
+                "resources": dict.fromkeys(zone_resources, "*"),
+            }
+        ],
+    }
+
+    check_m3_7_production_edge.validate_account_token_policy(
+        token,
+        expected_id=token_id,
+        expected_permissions={"4" * 32: "Zone Read", "5" * 32: "DNS Write"},
+        expected_resources=zone_resources,
+        label="test",
+    )
+
+    insufficient_token = {
+        **token,
+        "policies": [
+            {
+                "effect": "allow",
+                "permission_groups": [{"id": "4" * 32, "name": "Zone Read"}],
+                "resources": dict.fromkeys(zone_resources, "*"),
+            }
+        ],
+    }
+    with pytest.raises(ProductionEdgePreflightError, match="exact reviewed policy"):
+        check_m3_7_production_edge.validate_account_token_policy(
+            insufficient_token,
+            expected_id=token_id,
+            expected_permissions={"4" * 32: "Zone Read", "5" * 32: "DNS Write"},
+            expected_resources=zone_resources,
+            label="test",
+        )
+
+
 def test_production_gate_is_read_only_and_composes_existing_gate() -> None:
     preflight = PREFLIGHT.read_text(encoding="utf-8")
     justfile = JUSTFILE.read_text(encoding="utf-8")
+    runbook = RUNBOOK.read_text(encoding="utf-8")
 
     assert '"${repository_root}/scripts/preflight-m3-6-production"' in preflight
     assert 'tofu -chdir="${production_root}" state list' in preflight
@@ -264,6 +317,7 @@ def test_production_gate_is_read_only_and_composes_existing_gate() -> None:
     assert "output -raw edge_rollout_phase" in preflight
     assert "gh variable list --env production" in preflight
     assert "gh secret list --env production" in preflight
+    assert "M3_7_TOKEN_AUDIT_TOKEN" in preflight
     assert "tofu plan" not in preflight
     assert "tofu apply" not in preflight
     assert "ansible-playbook" not in preflight
@@ -271,6 +325,9 @@ def test_production_gate_is_read_only_and_composes_existing_gate() -> None:
     assert "--request PUT" not in preflight
     assert "--request DELETE" not in preflight
     assert "preflight-m3-7-production:" in justfile
+    assert "if ! lowerduckpond_net_certificate_id=$(" in runbook
+    assert "if ! lowerduckpond_com_certificate_id=$(" in runbook
+    assert '--output "$response_path"' in runbook
 
 
 def test_production_gate_rejects_missing_inputs_before_network_access() -> None:

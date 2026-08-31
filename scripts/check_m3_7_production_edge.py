@@ -28,11 +28,13 @@ API_PAGE_SIZE: Final = 50
 MAXIMUM_CERTIFICATE_BYTES: Final = 20_000
 MINIMUM_TOKEN_LENGTH: Final = 20
 CERTIFICATE_IDENTITY_LINE_COUNT: Final = 2
+CLOUDFLARE_TOKEN_ROLE_COUNT: Final = 3
 IPV4_VERSION: Final = 4
 MAXIMUM_CA_LIFETIME: Final = timedelta(days=1826)
 MINIMUM_CA_REMAINING: Final = timedelta(days=366)
 MAXIMUM_LEAF_LIFETIME: Final = timedelta(days=366)
 MINIMUM_LEAF_REMAINING: Final = timedelta(days=60)
+MAXIMUM_AUDIT_TOKEN_LIFETIME: Final = timedelta(days=7)
 CERTIFICATE_ID_PATTERN: Final = re.compile(
     r"^(?:[0-9a-f]{32}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$"
 )
@@ -58,6 +60,18 @@ ZONE_INPUTS: Final = (
         False,
     ),
 )
+CADDY_TOKEN_PERMISSIONS: Final = frozenset({"Zone Read", "DNS Write"})
+EDGE_TOKEN_PERMISSIONS: Final = frozenset(
+    {
+        "DNS Write",
+        "Zone Settings Write",
+        "Cache Settings Write",
+        "Config Settings Write",
+        "Zone WAF Write",
+        "SSL and Certificates Write",
+    }
+)
+AUDIT_TOKEN_PERMISSIONS: Final = frozenset({"Account API Tokens Read"})
 
 
 class ProductionEdgePreflightError(RuntimeError):
@@ -391,16 +405,201 @@ def validate_leaf_certificate(
         )
 
 
-def _require_zone_identity(client: CloudflareClient, zone_id: str, zone_name: str) -> None:
+def _require_zone_identity(client: CloudflareClient, zone_id: str, zone_name: str) -> str:
     zone = client.get(f"/zones/{zone_id}")
+    account = zone.get("account") if isinstance(zone, dict) else None
+    account_id = account.get("id") if isinstance(account, dict) else None
     if (
         not isinstance(zone, dict)
         or zone.get("id") != zone_id
         or zone.get("name") != zone_name
         or zone.get("status") != "active"
+        or not isinstance(account_id, str)
+        or ZONE_ID_PATTERN.fullmatch(account_id) is None
     ):
         raise ProductionEdgePreflightError(
             f"the Caddy token did not identify the active {zone_name} zone"
+        )
+    return account_id
+
+
+def validate_account_token_policy(
+    token: Mapping[str, object],
+    *,
+    expected_id: str,
+    expected_permissions: Mapping[str, str],
+    expected_resources: frozenset[str],
+    label: str,
+) -> None:
+    """Prove an account token has exactly the reviewed grants and resources."""
+    if token.get("id") != expected_id or token.get("status") != "active":
+        raise ProductionEdgePreflightError(f"the {label} token is not active")
+    policies = token.get("policies")
+    if not isinstance(policies, list) or not policies:
+        raise ProductionEdgePreflightError(f"the {label} token policy is malformed")
+    permissions: dict[str, str] = {}
+    resource_names: set[str] = set()
+    for policy in policies:
+        if not isinstance(policy, dict) or policy.get("effect") != "allow":
+            raise ProductionEdgePreflightError(f"the {label} token policy is malformed")
+        permission_groups = policy.get("permission_groups")
+        resources = policy.get("resources")
+        if (
+            not isinstance(permission_groups, list)
+            or not permission_groups
+            or not isinstance(resources, dict)
+            or not resources
+        ):
+            raise ProductionEdgePreflightError(f"the {label} token policy is malformed")
+        for permission_group in permission_groups:
+            name = permission_group.get("name") if isinstance(permission_group, dict) else None
+            identifier = permission_group.get("id") if isinstance(permission_group, dict) else None
+            if (
+                not isinstance(name, str)
+                or not name
+                or not isinstance(identifier, str)
+                or ZONE_ID_PATTERN.fullmatch(identifier) is None
+            ):
+                raise ProductionEdgePreflightError(f"the {label} token policy is malformed")
+            if identifier in permissions and permissions[identifier] != name:
+                raise ProductionEdgePreflightError(f"the {label} token policy is malformed")
+            permissions[identifier] = name
+        if any(not isinstance(key, str) or value != "*" for key, value in resources.items()):
+            raise ProductionEdgePreflightError(f"the {label} token policy is malformed")
+        resource_names.update(resources)
+    if permissions != expected_permissions or resource_names != expected_resources:
+        raise ProductionEdgePreflightError(
+            f"the {label} token does not have the exact reviewed policy"
+        )
+
+
+def _resolve_permission_groups(
+    client: CloudflareClient,
+    *,
+    account_id: str,
+    names: frozenset[str],
+    expected_scope: str,
+) -> dict[str, str]:
+    resolved: dict[str, str] = {}
+    for name in sorted(names):
+        result = client.get(
+            f"/accounts/{account_id}/tokens/permission_groups",
+            query={"name": name},
+        )
+        if not isinstance(result, list) or len(result) != 1 or not isinstance(result[0], dict):
+            raise ProductionEdgePreflightError(
+                "Cloudflare token permission-group metadata is malformed"
+            )
+        group = result[0]
+        identifier = group.get("id")
+        scopes = group.get("scopes")
+        if (
+            group.get("name") != name
+            or not isinstance(identifier, str)
+            or ZONE_ID_PATTERN.fullmatch(identifier) is None
+            or not isinstance(scopes, list)
+            or expected_scope not in scopes
+            or identifier in resolved
+        ):
+            raise ProductionEdgePreflightError(
+                "Cloudflare token permission-group metadata is malformed"
+            )
+        resolved[identifier] = name
+    return resolved
+
+
+def _account_token_details(
+    audit_client: CloudflareClient,
+    target_client: CloudflareClient,
+    *,
+    account_id: str,
+    label: str,
+) -> Mapping[str, object]:
+    verification = target_client.get(f"/accounts/{account_id}/tokens/verify")
+    token_id = verification.get("id") if isinstance(verification, dict) else None
+    if (
+        not isinstance(verification, dict)
+        or verification.get("status") != "active"
+        or not isinstance(token_id, str)
+        or ZONE_ID_PATTERN.fullmatch(token_id) is None
+    ):
+        raise ProductionEdgePreflightError(f"the {label} token did not verify as active")
+    details = audit_client.get(f"/accounts/{account_id}/tokens/{token_id}")
+    if not isinstance(details, dict) or details.get("id") != token_id:
+        raise ProductionEdgePreflightError(f"the {label} token details are malformed")
+    return details
+
+
+def _require_account_token_policies(  # noqa: PLR0913 -- all credential roles are explicit.
+    *,
+    audit_client: CloudflareClient,
+    caddy_client: CloudflareClient,
+    edge_client: CloudflareClient,
+    account_id: str,
+    zone_ids: frozenset[str],
+    now: datetime,
+) -> None:
+    audit_details = _account_token_details(
+        audit_client,
+        audit_client,
+        account_id=account_id,
+        label="temporary token-audit",
+    )
+    audit_id = audit_details.get("id")
+    if not isinstance(audit_id, str):
+        raise ProductionEdgePreflightError("the temporary token-audit details are malformed")
+    audit_permissions = _resolve_permission_groups(
+        audit_client,
+        account_id=account_id,
+        names=AUDIT_TOKEN_PERMISSIONS,
+        expected_scope="com.cloudflare.api.account",
+    )
+    validate_account_token_policy(
+        audit_details,
+        expected_id=audit_id,
+        expected_permissions=audit_permissions,
+        expected_resources=frozenset({f"com.cloudflare.api.account.{account_id}"}),
+        label="temporary token-audit",
+    )
+    issued_on = _timestamp(audit_details.get("issued_on"))
+    expires_on = _timestamp(audit_details.get("expires_on"))
+    if (
+        issued_on > now
+        or expires_on <= now
+        or expires_on - issued_on > MAXIMUM_AUDIT_TOKEN_LIFETIME
+    ):
+        raise ProductionEdgePreflightError("the temporary token-audit lifetime is outside policy")
+
+    zone_resources = frozenset(f"com.cloudflare.api.account.zone.{zone_id}" for zone_id in zone_ids)
+    zone_permissions = _resolve_permission_groups(
+        audit_client,
+        account_id=account_id,
+        names=CADDY_TOKEN_PERMISSIONS | EDGE_TOKEN_PERMISSIONS,
+        expected_scope="com.cloudflare.api.account.zone",
+    )
+    for client, permissions, label in (
+        (caddy_client, CADDY_TOKEN_PERMISSIONS, "Caddy runtime"),
+        (edge_client, EDGE_TOKEN_PERMISSIONS, "OpenTofu edge"),
+    ):
+        details = _account_token_details(
+            audit_client,
+            client,
+            account_id=account_id,
+            label=label,
+        )
+        token_id = details.get("id")
+        if not isinstance(token_id, str):
+            raise ProductionEdgePreflightError(f"the {label} token details are malformed")
+        validate_account_token_policy(
+            details,
+            expected_id=token_id,
+            expected_permissions={
+                identifier: name
+                for identifier, name in zone_permissions.items()
+                if name in permissions
+            },
+            expected_resources=zone_resources,
+            label=label,
         )
 
 
@@ -509,15 +708,19 @@ def run_preflight() -> None:
 
     edge_token = _required_environment("CLOUDFLARE_API_TOKEN")
     caddy_token = _required_environment("CADDY_CLOUDFLARE_API_TOKEN")
-    if edge_token == caddy_token:
-        raise ProductionEdgePreflightError("the Caddy and OpenTofu tokens are not separated")
+    audit_token = _required_environment("M3_7_TOKEN_AUDIT_TOKEN")
+    if len({edge_token, caddy_token, audit_token}) != CLOUDFLARE_TOKEN_ROLE_COUNT:
+        raise ProductionEdgePreflightError("the Cloudflare token roles are not separated")
 
     ca_path, ca_pem = _read_ca_path()
     now = datetime.now(UTC)
     validate_ca_certificate(ca_path, ca_pem, now=now)
     edge_client = CloudflareClient(edge_token)
     caddy_client = CloudflareClient(caddy_token)
+    audit_client = CloudflareClient(audit_token)
 
+    zones: list[tuple[str, str, str, bool]] = []
+    account_ids: set[str] = set()
     for zone_name, zone_variable, certificate_variable, records_expected in ZONE_INPUTS:
         zone_id = _required_environment(zone_variable)
         certificate_id = _required_environment(certificate_variable)
@@ -525,7 +728,21 @@ def run_preflight() -> None:
             raise ProductionEdgePreflightError(f"{zone_variable} is malformed")
         if CERTIFICATE_ID_PATTERN.fullmatch(certificate_id) is None:
             raise ProductionEdgePreflightError(f"{certificate_variable} is malformed")
-        _require_zone_identity(caddy_client, zone_id, zone_name)
+        account_ids.add(_require_zone_identity(caddy_client, zone_id, zone_name))
+        zones.append((zone_name, zone_id, certificate_id, records_expected))
+    if len(account_ids) != 1:
+        raise ProductionEdgePreflightError("the production zones do not share one account")
+    account_id = account_ids.pop()
+    _require_account_token_policies(
+        audit_client=audit_client,
+        caddy_client=caddy_client,
+        edge_client=edge_client,
+        account_id=account_id,
+        zone_ids=frozenset(zone_id for _, zone_id, _, _ in zones),
+        now=now,
+    )
+
+    for zone_name, zone_id, certificate_id, records_expected in zones:
         _require_direct_dns(
             edge_client,
             zone_id=zone_id,
