@@ -1,4 +1,16 @@
 ---
+- name: Require the canonical immutable Caddy publication lock
+  ansible.builtin.assert:
+    that:
+      - >-
+        caddy_publication_lock_path ==
+        '/var/lib/lowerduckpond/static/locks/publication.lock'
+    fail_msg: >-
+      Immutable Caddy startup is bound to the canonical publication lock;
+      refusing a divergent lock path.
+    quiet: true
+  when: caddy_generation_enabled | bool
+
 - name: Install Caddy build dependencies
   ansible.builtin.apt:
     name:

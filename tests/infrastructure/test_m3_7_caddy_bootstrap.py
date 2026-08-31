@@ -126,6 +126,13 @@ def test_generation_migration_is_stopped_masked_and_defaults_on() -> None:
     site = (_ROOT / "config/ansible/playbooks/site.yml").read_text(encoding="utf-8")
 
     assert "caddy_generation_enabled: true" in defaults
+    canonical_lock_assertion = "Require the canonical immutable Caddy publication lock"
+    assert canonical_lock_assertion in tasks
+    assert (
+        "caddy_publication_lock_path ==\n"
+        "        '/var/lib/lowerduckpond/static/locks/publication.lock'"
+    ) in tasks
+    assert tasks.index(canonical_lock_assertion) < tasks.index("Install Caddy build dependencies")
     assert "Stop Caddy for the immutable bootstrap transaction" in tasks
     assert "Runtime-mask Caddy for the immutable bootstrap transaction" in tasks
     assert "mask\n      - --runtime\n      - caddy.service" in tasks
