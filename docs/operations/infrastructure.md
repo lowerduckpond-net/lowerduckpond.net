@@ -207,6 +207,12 @@ ordinary non-edge mode and retains the phase recorded in production state. It
 resolves to `direct` only for the one-time legacy state that predates this
 output and contains no managed edge policy.
 
+Before the first M3.7 host or edge mutation, complete the external certificate
+preparation and read-only gate in
+[`m3-public-edge-rollout.md`](m3-public-edge-rollout.md). That gate proves the
+current direct state and protected inputs but does not replace the protected
+plan, its environment approval, or the phase-specific host-state confirmation.
+
 The committed Cloudflare network snapshot separates the currently published
 ranges from temporarily `retiring` ranges. Every retiring entry must cite an
 immutable ancestor commit whose reviewed snapshot contained that entry in its

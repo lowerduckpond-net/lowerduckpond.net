@@ -102,6 +102,7 @@ check-ansible: _sync
     bash -n scripts/configure-production
     bash -n scripts/preflight-m3-dark-host-production
     bash -n scripts/preflight-m3-6-production
+    bash -n scripts/preflight-m3-7-production
     bash -n scripts/check-m3-6-operator-identity
     bash -n scripts/check-production-inventory
     bash -n config/ansible/roles/caddy/files/caddy-validate
@@ -120,6 +121,10 @@ preflight-m3-dark-host-production: _sync
 # Prove the M3.6 operator identity and dark production state without mutation.
 preflight-m3-6-production: _sync
     scripts/preflight-m3-6-production
+
+# Prove the M3.7 CA, edge inputs, and direct production state without mutation.
+preflight-m3-7-production: _sync
+    scripts/preflight-m3-7-production
 
 # Converge production twice and run host acceptance and restore checks.
 configure-production: _sync

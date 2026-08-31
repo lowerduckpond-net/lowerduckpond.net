@@ -47,7 +47,7 @@ set -euo pipefail
 export LC_ALL=C
 
 candidate_artifact_digest=$1
-previous_artifact_digest=3709daa0fd2465a73ae6b0c7dd0d6137cf0ec747e11e5e670df084113265d43b
+previous_artifact_digest=ed1c2a95f1aa7b17dcd949c0efb5f815af59e6fae46e0edf3a1f08e3ea4da357
 
 remote_fail() {
     printf 'M3.6 production preflight failed: %s\n' "$1" >&2

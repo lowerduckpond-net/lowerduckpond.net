@@ -815,6 +815,14 @@ state stays intact and `ldp-admin` remains usable.
 
 ### M3.7: replace mutable Caddy inputs with complete generations
 
+Implementation status: the immutable-generation, platform-only route,
+bootstrap, two-zone public-edge, reviewed-network, protected workflow, and
+read-only production-preflight boundaries are implemented. Production remains
+direct, origin-pull enforcement remains disabled, and static publication
+remains disabled. Complete the external CA/leaf custody steps and the M3.7
+read-only starting gate before separately authorizing any production
+convergence or protected edge transition.
+
 Extend the production OpenTofu stack with a second instance of the existing
 Cloudflare DNS module for the `lowerduckpond.com` apex and wildcard, then evolve
 both instances into the reviewed public-edge module. Add a separately named
