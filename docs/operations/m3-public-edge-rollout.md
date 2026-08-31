@@ -252,9 +252,13 @@ just preflight-m3-7-production
 The command first repeats the full M3.6 dark-host gate. It then reads encrypted
 production state and requires the direct phase (including the compatible
 legacy state before that output is first materialized), no managed M3.7 edge
-policy, exactly one direct A record (and no competing record type) at each
-`.net` apex and wildcard, and no record of any type at either `.com` rollout
-name. It proves all three token roles are distinct, the two durable tokens have
+policy, exactly one direct A record (and no competing web-routing record) at
+each `.net` apex and wildcard, and no web-routing record at either `.com`
+rollout name. DNS-only `TXT`, `MX`, and `CAA` records may coexist at those
+names; this preserves the restrictive `.com` apex SPF record and the
+architecture's explicitly non-HTTP mail, verification, and certificate-policy
+records. Every other coexisting record type fails closed. The gate proves all
+three token roles are distinct, the two durable tokens have
 exactly their reviewed write/read permissions and two-zone resources, no enabled
 zone-level or per-hostname origin-pull policy, no conflicting zone entrypoint,
 one safe public CA, and exactly one active, selected, CA-chained zone-level

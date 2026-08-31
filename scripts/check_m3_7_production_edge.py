@@ -74,6 +74,8 @@ EDGE_TOKEN_PERMISSIONS: Final = frozenset(
     }
 )
 AUDIT_TOKEN_PERMISSIONS: Final = frozenset({"Account API Tokens Read"})
+WEB_ROUTING_DNS_RECORD_TYPES: Final = frozenset({"A", "AAAA", "CNAME", "HTTPS", "SVCB"})
+SAFE_COEXISTING_DNS_RECORD_TYPES: Final = frozenset({"CAA", "MX", "TXT"})
 
 
 class ProductionEdgePreflightError(RuntimeError):
@@ -658,22 +660,37 @@ def _require_direct_dns(
             for record in records
             if isinstance(record, dict) and record.get("name") == hostname
         ]
+        if any(
+            record.get("type")
+            not in WEB_ROUTING_DNS_RECORD_TYPES | SAFE_COEXISTING_DNS_RECORD_TYPES
+            for record in exact
+        ):
+            raise ProductionEdgePreflightError(
+                f"the {hostname} DNS inventory contains an unsupported record type"
+            )
+        if any(
+            record.get("type") in SAFE_COEXISTING_DNS_RECORD_TYPES
+            and record.get("proxied") is not False
+            for record in exact
+        ):
+            raise ProductionEdgePreflightError(f"a non-HTTP {hostname} DNS record is not DNS-only")
+        routing = [record for record in exact if record.get("type") in WEB_ROUTING_DNS_RECORD_TYPES]
         if records_expected:
             if (
-                len(exact) != 1
-                or exact[0].get("type") != "A"
-                or exact[0].get("content") != origin_ipv4
+                len(routing) != 1
+                or routing[0].get("type") != "A"
+                or routing[0].get("content") != origin_ipv4
             ):
                 raise ProductionEdgePreflightError(
                     f"the direct {hostname} DNS inventory is not exact"
                 )
-            if exact[0].get("proxied") is not False:
+            if routing[0].get("proxied") is not False:
                 raise ProductionEdgePreflightError(
                     f"the pre-M3.7 {hostname} record is already proxied"
                 )
-        elif exact:
+        elif routing:
             raise ProductionEdgePreflightError(
-                f"the pre-M3.7 {hostname} DNS inventory is not empty"
+                f"the pre-M3.7 {hostname} web-routing DNS inventory is not empty"
             )
 
 
