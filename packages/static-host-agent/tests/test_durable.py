@@ -79,6 +79,20 @@ def test_immutable_create_publishes_exact_bytes_and_mode(tmp_path: Path) -> None
     assert list(tmp_path.glob(".ldp-state-*")) == []
 
 
+def test_reopened_directory_descriptors_have_independent_scan_positions(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "record.json").write_bytes(b"state")
+    with DurableDirectory.open(tmp_path) as directory:
+        for _scan in range(2):
+            descriptor = directory.duplicate_descriptor()
+            try:
+                with os.scandir(descriptor) as entries:
+                    assert [entry.name for entry in entries] == ["record.json"]
+            finally:
+                os.close(descriptor)
+
+
 def test_immutable_create_never_replaces_an_existing_record(tmp_path: Path) -> None:
     record = tmp_path / "record.json"
     record.write_bytes(b"established")

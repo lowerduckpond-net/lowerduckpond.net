@@ -6,6 +6,7 @@ import hashlib
 import os
 import stat
 from collections.abc import Sequence
+from enum import StrEnum
 from pathlib import Path
 from typing import Final
 
@@ -24,6 +25,7 @@ from lowerduckpond_static_host_agent.caddy_generation import (
 from lowerduckpond_static_host_agent.caddy_routes import build_platform_only_caddy_routes
 from lowerduckpond_static_host_agent.caddy_runtime import CaddyRuntime
 from lowerduckpond_static_host_agent.caddy_startup import (
+    CaddyStartIntent,
     CaddyStartMode,
     CaddyStartPhase,
     CaddyStartupError,
@@ -34,7 +36,15 @@ from lowerduckpond_static_host_agent.caddy_startup import (
 _READ_CHUNK_BYTES: Final = 64 * 1024
 
 
-def ensure_platform_generation(  # noqa: PLR0912, PLR0913
+class PlatformGenerationState(StrEnum):
+    """Read-only disposition of the complete platform generation."""
+
+    CHANGED = "changed"
+    PENDING = "pending"
+    UNCHANGED = "unchanged"
+
+
+def ensure_platform_generation(  # noqa: PLR0913
     runtime: CaddyRuntime,
     store: CaddyGenerationStore,
     *,
@@ -56,20 +66,13 @@ def ensure_platform_generation(  # noqa: PLR0912, PLR0913
         except FileNotFoundError:
             previous = None
         if startup is not None and (intent := startup.read()) is not None:
-            if intent.mode is not CaddyStartMode.TRANSACTIONAL or intent.phase not in {
-                CaddyStartPhase.CANDIDATE_PREPARED,
-                CaddyStartPhase.RESTART_REQUIRED,
-            }:
-                raise CaddyStartupError("bootstrap encountered an unrelated startup intent")
-            if intent.previous is None:  # pragma: no cover - intent validation proves this
+            active = _require_resumable_transaction(runtime, store, payload, intent)
+            if intent.previous is None:  # pragma: no cover - validation proves this
                 raise CaddyStartupError("bootstrap intent has no preceding generation")
-            with store.open_verified(intent.candidate.generation_id) as candidate:
-                if not _generation_matches(candidate, payload):
-                    raise CaddyStartupError("startup candidate disagrees with host inputs")
-            if previous == intent.previous.generation_id:
+            if active == intent.previous.generation_id:
                 runtime.select_active(intent.candidate.generation_id)
-                previous = intent.candidate.generation_id
-            if previous != intent.candidate.generation_id:
+                active = intent.candidate.generation_id
+            if active != intent.candidate.generation_id:
                 raise CaddyStartupError("active generation disagrees with bootstrap intent")
             if intent.phase is CaddyStartPhase.CANDIDATE_PREPARED:
                 startup.mark_restart_required(intent)
@@ -109,13 +112,95 @@ def platform_generation_matches(  # noqa: PLR0913
 ) -> bool:
     """Report whether active is the exact desired platform-only generation."""
 
+    return (
+        platform_generation_state(
+            runtime,
+            store,
+            binary=binary,
+            environment=environment,
+            origin_pull_ca_der=origin_pull_ca_der,
+            startup=startup,
+        )
+        is PlatformGenerationState.UNCHANGED
+    )
+
+
+def platform_generation_state(  # noqa: PLR0913
+    runtime: CaddyRuntime,
+    store: CaddyGenerationStore,
+    *,
+    binary: CaddyBinarySource,
+    environment: bytes,
+    origin_pull_ca_der: tuple[bytes, ...],
+    startup: CaddyStartupStore | None = None,
+) -> PlatformGenerationState:
+    """Classify exact current, safely resumable, and ordinary changed state."""
+
     payload = _platform_payload(binary, environment, origin_pull_ca_der)
     with runtime.locked():
         if startup is not None and not startup.inventory_is_empty():
-            return False
+            intent = startup.read()
+            if intent is None:
+                raise CaddyStartupError("startup intent namespace is not resumable")
+            _require_resumable_transaction(runtime, store, payload, intent)
+            return PlatformGenerationState.PENDING
         if not _active_matches(runtime, payload):
-            return False
-        return store.bootstrap_retention_matches(runtime.read_active())
+            return PlatformGenerationState.CHANGED
+        return (
+            PlatformGenerationState.UNCHANGED
+            if store.bootstrap_retention_matches(runtime.read_active())
+            else PlatformGenerationState.CHANGED
+        )
+
+
+def _require_resumable_transaction(
+    runtime: CaddyRuntime,
+    store: CaddyGenerationStore,
+    payload: CaddyGenerationPayload,
+    intent: CaddyStartIntent,
+) -> str:
+    if intent.mode is not CaddyStartMode.TRANSACTIONAL or intent.phase not in {
+        CaddyStartPhase.CANDIDATE_PREPARED,
+        CaddyStartPhase.RESTART_REQUIRED,
+    }:
+        raise CaddyStartupError("bootstrap encountered an unrelated startup intent")
+    if intent.previous is None:  # pragma: no cover - intent validation proves this
+        raise CaddyStartupError("bootstrap intent has no preceding generation")
+    with store.open_verified(intent.candidate.generation_id) as candidate:
+        if (
+            start_target(
+                intent.candidate.generation_id,
+                candidate.manifest.to_bytes(),
+            )
+            != intent.candidate
+        ):
+            raise CaddyStartupError("startup candidate manifest disagrees with intent")
+        if not _generation_matches(candidate, payload):
+            raise CaddyStartupError("startup candidate disagrees with host inputs")
+    with store.open_verified(intent.previous.generation_id) as previous:
+        if (
+            start_target(
+                intent.previous.generation_id,
+                previous.manifest.to_bytes(),
+            )
+            != intent.previous
+        ):
+            raise CaddyStartupError("startup predecessor manifest disagrees with intent")
+    active = runtime.read_active()
+    admitted = (
+        {intent.previous.generation_id, intent.candidate.generation_id}
+        if intent.phase is CaddyStartPhase.CANDIDATE_PREPARED
+        else {intent.candidate.generation_id}
+    )
+    if active not in admitted:
+        raise CaddyStartupError("active generation disagrees with bootstrap intent")
+    identifiers = store.list_verified()
+    if (
+        intent.previous.generation_id not in identifiers
+        or intent.candidate.generation_id not in identifiers
+    ):
+        raise CaddyStartupError("bootstrap transaction generation is absent")
+    return active
 
 
 def _prune_bootstrap_generations(

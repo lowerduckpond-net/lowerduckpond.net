@@ -44,6 +44,21 @@ def test_ordinary_start_is_fenced_to_one_target_and_three_attempts(tmp_path: Pat
             )
 
 
+def test_exhausted_ordinary_start_can_be_released_for_later_operator_retry(
+    tmp_path: Path,
+) -> None:
+    with _store(tmp_path) as store:
+        assert not store.clear_exhausted_ordinary_start()
+        for invocation_id in INVOCATIONS[:MAX_CADDY_START_ATTEMPTS]:
+            store.prepare_start(active=TARGET_A, invocation_id=invocation_id)
+        assert store.clear_exhausted_ordinary_start()
+        assert store.read() is None
+        assert not store.clear_exhausted_ordinary_start()
+
+        retried = store.prepare_start(active=TARGET_A, invocation_id=INVOCATIONS[3])
+        assert retried.candidate_invocations == (INVOCATIONS[3],)
+
+
 def test_recovery_reconciliation_is_inert_without_rollback_authority(tmp_path: Path) -> None:
     with _store(tmp_path) as store:
         assert store.require_rollback_target() is None

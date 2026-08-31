@@ -133,5 +133,7 @@ def test_production_convergence_repeats_the_m3_6_preflight() -> None:
     assert "export.lock | intake.lock | publication.lock | tenant-state.lock" in preflight
     assert "expected_locks=" not in preflight
     assert "generation_root=/etc/caddy/generations" in preflight
-    assert '$("${generation_check}") == unchanged' in preflight
+    assert 'generation_status=$("${generation_check}")' in preflight
+    assert "pending)" in preflight
+    assert "the pending Caddy transaction has no durable intent" in preflight
     assert "/etc/caddy/generations\\|root:caddy:750" not in preflight

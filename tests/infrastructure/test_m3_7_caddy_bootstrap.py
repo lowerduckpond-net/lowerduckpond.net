@@ -6,15 +6,12 @@ _ROOT = Path(__file__).parents[2]
 _CADDY_ROLE = _ROOT / "config/ansible/roles/caddy"
 
 
-def test_production_web_ingress_uses_only_the_reviewed_cloudflare_ranges() -> None:
-    site = (_ROOT / "config/ansible/playbooks/site.yml").read_text(encoding="utf-8")
+def test_production_web_ingress_is_not_restricted_before_edge_proxying() -> None:
     production = (
         _ROOT / "config/ansible/inventories/production/group_vars/hosting_nodes.yml"
     ).read_text(encoding="utf-8")
 
-    assert "../../../platform/cloudflare-networks.json" in site
-    assert "firewall_web_source_cidrs: >-" in production
-    assert "cloudflare_ipv4_cidrs + cloudflare_ipv6_cidrs" in production
+    assert "firewall_web_source_cidrs:" not in production
 
 
 def test_disposable_m3_qualification_keeps_its_own_caddy_runtime() -> None:
@@ -123,3 +120,8 @@ def test_production_acceptance_and_health_use_the_generation_check() -> None:
     assert "bootstrap-caddy-generation" in check
     assert "static_host_agent_artifact_sha256" in check
     assert "--check" in check
+
+    preflight = (_ROOT / "scripts/preflight-m3-6-production").read_text(encoding="utf-8")
+    assert "the Caddy startup-intent inventory is not resumable" in preflight
+    assert "pending)" in preflight
+    assert "the pending Caddy transaction has no durable intent" in preflight

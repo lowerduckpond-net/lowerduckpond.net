@@ -388,7 +388,7 @@
   changed_when: false
   failed_when: >-
     caddy_generation_check.rc != 0 or
-    caddy_generation_check.stdout | trim not in ['changed', 'unchanged']
+    caddy_generation_check.stdout | trim not in ['changed', 'pending', 'unchanged']
   when:
     - caddy_generation_enabled | bool
     - >-
@@ -399,7 +399,7 @@
   ansible.builtin.set_fact:
     caddy_generation_bootstrap_required: >-
       {{ caddy_generation_check.skipped | default(false) or
-         caddy_generation_check.stdout | default('changed') | trim == 'changed' or
+         caddy_generation_check.stdout | default('changed') | trim != 'unchanged' or
          static_host_agent_installation.changed | default(false) or
          caddy_generation_bootstrap_probe.results |
          selectattr('changed') | list | length > 0 or

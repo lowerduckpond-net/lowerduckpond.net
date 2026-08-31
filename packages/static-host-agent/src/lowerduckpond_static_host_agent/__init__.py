@@ -15,9 +15,11 @@ from lowerduckpond_static_host_agent.audit import (
     AuditState,
 )
 from lowerduckpond_static_host_agent.caddy_bootstrap import (
+    PlatformGenerationState,
     digest_path,
     ensure_platform_generation,
     platform_generation_matches,
+    platform_generation_state,
     require_exact_file,
 )
 from lowerduckpond_static_host_agent.caddy_generation import (
@@ -350,6 +352,7 @@ __all__ = [
     "OperatorAdapterError",
     "OperatorSession",
     "PinnedCaddyGeneration",
+    "PlatformGenerationState",
     "PlatformOnlyCaddyRoutes",
     "PortableBundle",
     "PortableBundleError",
@@ -417,6 +420,7 @@ __all__ = [
     "measure_release_tree",
     "measure_release_tree_snapshot",
     "platform_generation_matches",
+    "platform_generation_state",
     "prepare_active_caddy_execution",
     "require_exact_file",
     "start_target",

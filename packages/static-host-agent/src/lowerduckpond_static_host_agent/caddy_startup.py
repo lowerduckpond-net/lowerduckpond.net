@@ -353,6 +353,20 @@ class CaddyStartupStore:
             return None
         raise CaddyStartupError("candidate failure is not eligible for rollback")
 
+    def clear_exhausted_ordinary_start(self) -> bool:
+        """Release only an ordinary intent after its bounded retry cycle."""
+
+        current = self.read()
+        if current is None or current.mode is not CaddyStartMode.ORDINARY:
+            return False
+        if (
+            current.phase is not CaddyStartPhase.ORDINARY_STARTING
+            or len(current.candidate_invocations) != MAX_CADDY_START_ATTEMPTS
+        ):
+            return False
+        self._directory.remove((CADDY_START_INTENT_NAME,))
+        return True
+
     def mark_rollback_restart_required(
         self,
         intent: CaddyStartIntent,

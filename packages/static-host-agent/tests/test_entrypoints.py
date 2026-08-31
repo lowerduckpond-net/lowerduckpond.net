@@ -137,3 +137,48 @@ def test_caddy_recovery_selects_and_commits_before_queuing_restart(
 
     assert entrypoints.caddy_start_recovery_main([]) == 0
     assert order == ["select", "commit", "reset", "start"]
+
+
+def test_caddy_recovery_releases_an_exhausted_ordinary_retry_cycle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cleared: list[bool] = []
+
+    class Runtime:
+        def __enter__(self) -> Runtime:
+            return self
+
+        def __exit__(self, *_exception: object) -> None:
+            pass
+
+        def locked(self) -> nullcontext[None]:
+            return nullcontext()
+
+    class Startup:
+        def __enter__(self) -> Startup:
+            return self
+
+        def __exit__(self, *_exception: object) -> None:
+            pass
+
+        def reconcile_temporaries(self) -> int:
+            return 0
+
+        def require_rollback_target(self) -> None:
+            return None
+
+        def clear_exhausted_ordinary_start(self) -> bool:
+            cleared.append(True)
+            return True
+
+    class StartupType:
+        @staticmethod
+        def open(_path: Path, *, expected_owner: int) -> Startup:
+            assert expected_owner == 0
+            return Startup()
+
+    monkeypatch.setattr(entrypoints, "_open_systemd_caddy_runtime", Runtime)
+    monkeypatch.setattr(entrypoints, "CaddyStartupStore", StartupType)
+
+    assert entrypoints.caddy_start_recovery_main([]) == 0
+    assert cleared == [True]

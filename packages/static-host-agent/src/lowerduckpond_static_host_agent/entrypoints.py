@@ -28,7 +28,7 @@ from lowerduckpond_static_domain import generate_uuid7
 
 from lowerduckpond_static_host_agent.caddy_bootstrap import (
     ensure_platform_generation,
-    platform_generation_matches,
+    platform_generation_state,
     require_exact_file,
 )
 from lowerduckpond_static_host_agent.caddy_generation import (
@@ -329,6 +329,8 @@ def caddy_start_recovery_main(arguments: list[str] | None = None) -> int:
                 runtime.select_active(intent.previous.generation_id)
                 intent = startup.mark_rollback_restart_required(intent)
                 restart_required = intent.phase is CaddyStartPhase.ROLLBACK_RESTART_REQUIRED
+            else:
+                startup.clear_exhausted_ordinary_start()
         if restart_required:
             subprocess.run(
                 ["/usr/bin/systemctl", "reset-failed", "caddy.service"],
@@ -426,7 +428,7 @@ def caddy_bootstrap_main(arguments: list[str] | None = None) -> int:
             CaddyStartupStore.open(_CADDY_INTENT_ROOT, expected_owner=0) as startup,
         ):
             if check_only:
-                changed = not platform_generation_matches(
+                state = platform_generation_state(
                     runtime,
                     store,
                     binary=binary,
@@ -449,7 +451,10 @@ def caddy_bootstrap_main(arguments: list[str] | None = None) -> int:
                 )
     except CaddyRuntimeError, ContractError, KeyError, OSError, RuntimeError, ValueError:
         return _fail("caddy_generation_bootstrap_failed", 1)
-    os.write(sys.stdout.fileno(), b"changed\n" if changed else b"unchanged\n")
+    if check_only:
+        os.write(sys.stdout.fileno(), f"{state.value}\n".encode("ascii"))
+    else:
+        os.write(sys.stdout.fileno(), b"changed\n" if changed else b"unchanged\n")
     return 0
 
 

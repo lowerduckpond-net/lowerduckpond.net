@@ -19,7 +19,9 @@ from lowerduckpond_static_host_agent import (
     CaddyStartPhase,
     CaddyStartupStore,
     FilesystemCapacity,
+    PlatformGenerationState,
     ensure_platform_generation,
+    platform_generation_state,
     require_exact_file,
 )
 
@@ -173,6 +175,18 @@ def test_bootstrap_selects_a_new_generation_when_bound_trust_changes(tmp_path: P
         assert intent.candidate.generation_id == _GENERATION_B
         assert intent.previous is not None
         assert intent.previous.generation_id == _GENERATION_A
+        assert not startup.inventory_is_empty()
+        assert (
+            platform_generation_state(
+                runtime,
+                store,
+                binary=source,
+                environment=b"CLOUDFLARE_API_TOKEN=real-token\n",
+                origin_pull_ca_der=(b"ca-b",),
+                startup=startup,
+            )
+            is PlatformGenerationState.PENDING
+        )
 
     assert sorted(path.name for path in generations.iterdir()) == [
         _GENERATION_A,
