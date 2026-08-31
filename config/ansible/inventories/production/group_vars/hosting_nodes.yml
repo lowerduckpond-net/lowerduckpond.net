@@ -7,7 +7,9 @@ caddy_cloudflare_api_token: >-
 caddy_origin_pull_ca_paths: >-
   {{ lookup('ansible.builtin.env', 'CADDY_ORIGIN_PULL_CA_PATHS_JSON') |
   default('[]', true) | from_json }}
-caddy_origin_pull_enforcement_enabled: false
+caddy_origin_pull_enforcement_enabled: >-
+  {{ lookup('ansible.builtin.env', 'CADDY_ORIGIN_PULL_ENFORCEMENT_ENABLED') |
+  default('false', true) | bool }}
 caddy_generation_enabled: true
 
 backup_repository: "{{ lookup('ansible.builtin.env', 'BACKUP_REPOSITORY') }}"

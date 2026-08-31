@@ -6,6 +6,14 @@
   vars_files:
     - ../../../platform/versions.yml
     - ../../../platform/cloudflare-networks.json
+  vars:
+    firewall_web_source_cidrs: >-
+      {{
+        (cloudflare_ipv4_cidrs + cloudflare_ipv6_cidrs +
+         retiring_ipv4_cidrs + retiring_ipv6_cidrs)
+        if caddy_origin_pull_enforcement_enabled | bool
+        else ["0.0.0.0/0", "::/0"]
+      }}
   pre_tasks:
     - name: Verify the supported host operating system
       ansible.builtin.assert:

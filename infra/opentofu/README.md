@@ -13,7 +13,8 @@ adds a third, explicitly disposable root:
   equivalent M3.0 host, firewall, project assignment, and four test records. It
   has a separate encrypted state key and must be destroyed after the no-skip
   gate runs.
-- `modules/` contains the host, Spaces, and DNS resource boundaries.
+- `modules/` contains the host, Spaces, and two-zone public-edge resource
+  boundaries.
 
 Production state uses the Spaces S3-compatible backend and OpenTofu client-side
 AES-GCM encryption. Native S3 lockfiles remain disabled until conditional-write

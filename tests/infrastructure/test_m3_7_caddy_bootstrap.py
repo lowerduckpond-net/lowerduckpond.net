@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 _ROOT = Path(__file__).parents[2]
 _CADDY_ROLE = _ROOT / "config/ansible/roles/caddy"
+_PRODUCTION_CERTIFICATE_VARIABLE_COUNT = 2
 
 
 def test_production_web_ingress_is_not_restricted_before_edge_proxying() -> None:
@@ -12,7 +14,65 @@ def test_production_web_ingress_is_not_restricted_before_edge_proxying() -> None
     ).read_text(encoding="utf-8")
 
     assert "firewall_web_source_cidrs:" not in production
-    assert "caddy_origin_pull_enforcement_enabled: false" in production
+    assert "CADDY_ORIGIN_PULL_ENFORCEMENT_ENABLED" in production
+    assert "caddy_origin_pull_enforcement_enabled: false" not in production
+
+    playbook = (_ROOT / "config/ansible/playbooks/site.yml").read_text(encoding="utf-8")
+    assert "cloudflare_ipv4_cidrs + cloudflare_ipv6_cidrs" in playbook
+    assert "retiring_ipv4_cidrs + retiring_ipv6_cidrs" in playbook
+    assert "if caddy_origin_pull_enforcement_enabled | bool" in playbook
+    assert 'else ["0.0.0.0/0", "::/0"]' in playbook
+
+
+def test_edge_policy_is_installed_before_dns_becomes_proxied() -> None:
+    module = (_ROOT / "infra/opentofu/modules/cloudflare-public-edge/main.tf").read_text(
+        encoding="utf-8"
+    )
+    dependencies = {
+        "cloudflare_zone_setting.ssl",
+        "cloudflare_zone_setting.always_online",
+        "cloudflare_zone_setting.always_use_https",
+        "cloudflare_authenticated_origin_pulls_settings.zone",
+        "cloudflare_ruleset.cache_bypass",
+        "cloudflare_ruleset.transform_disable",
+        "cloudflare_ruleset.cdn_cgi_block",
+    }
+
+    for name in ("apex", "wildcard"):
+        match = re.search(
+            rf'resource "cloudflare_dns_record" "{name}" \{{(?P<body>.*?)\n\}}',
+            module,
+            flags=re.DOTALL,
+        )
+        assert match is not None
+        body = match.group("body")
+        assert "depends_on = [" in body
+        assert all(dependency in body for dependency in dependencies)
+
+
+def test_selected_origin_pull_leaf_is_bound_zone_wide() -> None:
+    module = (_ROOT / "infra/opentofu/modules/cloudflare-public-edge/main.tf").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'resource "cloudflare_authenticated_origin_pulls" "hostname"' not in module
+    assert 'data "cloudflare_authenticated_origin_pulls_certificates" "zone"' in module
+    assert 'certificate.status == "active"' in module
+    assert "local.newest_active_origin_pull_uploaded_on" in module
+    assert 'resource "cloudflare_authenticated_origin_pulls_settings" "zone"' in module
+
+
+def test_production_accepts_both_cloudflare_certificate_id_forms() -> None:
+    production_variables = (
+        _ROOT / "infra/opentofu/environments/production/variables.tf"
+    ).read_text(encoding="utf-8")
+    module_variables = (
+        _ROOT / "infra/opentofu/modules/cloudflare-public-edge/variables.tf"
+    ).read_text(encoding="utf-8")
+    accepted_grammar = "^(?:[0-9a-f]{32}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$"
+
+    assert production_variables.count(accepted_grammar) == _PRODUCTION_CERTIFICATE_VARIABLE_COUNT
+    assert module_variables.count(accepted_grammar) == 1
 
 
 def test_generation_bootstrap_binds_the_staged_or_required_origin_pull_mode() -> None:

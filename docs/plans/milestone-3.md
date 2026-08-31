@@ -820,7 +820,8 @@ Cloudflare DNS module for the `lowerduckpond.com` apex and wildcard, then evolve
 both instances into the reviewed public-edge module. Add a separately named
 non-secret `.com` zone-ID input and plan-policy assertions. The module manages
 proxied public A records, Full (strict), explicit cache bypass, Always Online
-disabled, account-specific Authenticated Origin Pull configuration, and the
+and Always Use HTTPS disabled, account-specific zone-level Authenticated Origin
+Pull configuration, and the
 reviewed Cloudflare network set used by both DigitalOcean and host firewalls.
 It leaves explicitly non-HTTP verification and administrative records DNS-only.
 It also disables optional response-body transformations and installs the
@@ -829,7 +830,7 @@ outside OpenTofu.
 
 Keep Cloudflare capabilities separate. The Caddy DNS-01 token retains
 only Zone Read and DNS Edit for the two zones. The OpenTofu edge token receives
-only the two-zone DNS, origin-pull association, zone-setting, SSL-setting, and
+only the two-zone DNS, zone-level origin-pull, zone-setting, SSL-setting, and
 ruleset permissions required by reviewed resources. A separate expiring
 operator token uploads and later retires each origin-pull leaf certificate from
 the trusted workstation, and is revoked after qualification teardown or
@@ -886,8 +887,10 @@ edge and origin behavior; then enforce client-certificate and Cloudflare-network
 ingress. CI compares the
 committed network set with Cloudflare's published ranges and reports drift, but
 a live plan never downloads and trusts an unreviewed replacement. Range changes
-first add the reviewed superset to both firewalls, verify edge reachability, and
-only then remove retired ranges from both boundaries.
+replace the active arrays with the exact newly published set while placing any
+removed ranges in explicit temporary retiring arrays. Both firewalls consume
+the union; verify edge reachability before removing retired ranges from both
+boundaries in a later reviewed change.
 
 Rotate the project CA as a second phased transaction: add the replacement CA to
 Caddy without removing the old one, move both zones to replacement-CA leaves,

@@ -88,11 +88,84 @@ variable "archive_bucket_name" {
 variable "cloudflare_zone_id" {
   description = "Cloudflare zone identifier for lowerduckpond.net."
   type        = string
-  sensitive   = true
+
+  validation {
+    condition     = can(regex("^[0-9a-f]{32}$", var.cloudflare_zone_id))
+    error_message = "cloudflare_zone_id must be a lowercase 32-character Cloudflare identifier."
+  }
+}
+
+variable "cloudflare_tenant_zone_id" {
+  description = "Cloudflare zone identifier for lowerduckpond.com."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[0-9a-f]{32}$", var.cloudflare_tenant_zone_id))
+    error_message = "cloudflare_tenant_zone_id must be a lowercase 32-character Cloudflare identifier."
+  }
 }
 
 variable "domain" {
-  description = "Managed public hosting domain."
+  description = "Trusted platform domain."
   type        = string
   default     = "lowerduckpond.net"
+
+  validation {
+    condition     = var.domain == "lowerduckpond.net"
+    error_message = "domain is fixed to lowerduckpond.net by the accepted architecture."
+  }
+}
+
+variable "tenant_domain" {
+  description = "Untrusted tenant domain."
+  type        = string
+  default     = "lowerduckpond.com"
+
+  validation {
+    condition     = var.tenant_domain == "lowerduckpond.com"
+    error_message = "tenant_domain is fixed to lowerduckpond.com by the accepted architecture."
+  }
+}
+
+variable "edge_rollout_phase" {
+  description = "Fail-safe production edge phase: direct, proxied, or enforced."
+  type        = string
+  default     = "direct"
+
+  validation {
+    condition     = contains(["direct", "proxied", "enforced"], var.edge_rollout_phase)
+    error_message = "edge_rollout_phase must be direct, proxied, or enforced."
+  }
+}
+
+variable "cloudflare_origin_pull_certificate_id" {
+  description = "Public ID of the uploaded lowerduckpond.net zone-level origin-pull leaf."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition = (
+      var.edge_rollout_phase == "direct" ||
+      (var.cloudflare_origin_pull_certificate_id != null &&
+      can(regex("^(?:[0-9a-f]{32}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$", var.cloudflare_origin_pull_certificate_id)))
+    )
+    error_message = "proxied and enforced phases require the lowerduckpond.net certificate ID in lowercase 32-hex or UUID form."
+  }
+}
+
+variable "cloudflare_tenant_origin_pull_certificate_id" {
+  description = "Public ID of the uploaded lowerduckpond.com zone-level origin-pull leaf."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition = (
+      var.edge_rollout_phase == "direct" ||
+      (var.cloudflare_tenant_origin_pull_certificate_id != null &&
+      can(regex("^(?:[0-9a-f]{32}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$", var.cloudflare_tenant_origin_pull_certificate_id)))
+    )
+    error_message = "proxied and enforced phases require the lowerduckpond.com certificate ID in lowercase 32-hex or UUID form."
+  }
 }

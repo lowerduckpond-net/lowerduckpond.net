@@ -57,15 +57,18 @@ The workflow needs three distinct DigitalOcean credential roles:
    `OPENTOFU_STATE_SECRET_ACCESS_KEY` can read and write only the state bucket.
    The bootstrap root creates this pair.
 
-`CLOUDFLARE_API_TOKEN` should be an account-owned token with Zone DNS Edit for
-only the `lowerduckpond.net` and `lowerduckpond.com` zones. Their zone IDs are
-supplied separately, so the token does not need Zone Read. The `.com` scope and
-zone ID become required when the Milestone 3 tenant-namespace infrastructure
-lands; until then the existing `.net`-only token remains valid for the current
-stack. The production stack creates a separate Spaces key limited to read/write
-operations on the backup bucket. M3.1 adds an independently scoped archive key,
-retrieves and backs it up only from a trusted workstation, and defers host
-installation until the root-owned archive component lands in M3.10.
+`CLOUDFLARE_API_TOKEN` should be an account-owned token limited to the
+`lowerduckpond.net` and `lowerduckpond.com` zones with DNS Write, Zone Settings
+Write, Cache Settings Write, Config Settings Write, Zone WAF Write, and SSL and
+Certificates Write. Those grants cover the managed records, Full (strict),
+cache-bypass and transform rules, `/cdn-cgi/` block, zone-level origin-pull setting,
+and public-certificate status read. The zone IDs are supplied separately, so
+the token does not need Zone Read. Do not substitute an account-wide ruleset or
+certificate grant. The production stack creates a separate Spaces key limited
+to read/write operations on the backup bucket. M3.1 adds an independently
+scoped archive key, retrieves and backs it up only from a trusted workstation,
+and defers host installation until the root-owned archive component lands in
+M3.10.
 
 This OpenTofu token is distinct from the Caddy runtime token documented in
 [`host-configuration.md`](host-configuration.md). Caddy needs both Zone Read
@@ -144,6 +147,10 @@ Configure these environment variables:
 - `CLOUDFLARE_ZONE_ID`, the trusted `lowerduckpond.net` zone
 - `CLOUDFLARE_TENANT_ZONE_ID`, the untrusted `lowerduckpond.com` zone, required
   when the Milestone 3 tenant namespace lands
+- `CLOUDFLARE_ORIGIN_PULL_CERTIFICATE_ID`, the public ID of the separately
+  uploaded, active `.net` zone-level origin-pull leaf
+- `CLOUDFLARE_TENANT_ORIGIN_PULL_CERTIFICATE_ID`, the public ID of the
+  separately uploaded, active `.com` zone-level origin-pull leaf
 - `DIGITALOCEAN_PROJECT_ID`
 - `OPENTOFU_STATE_BUCKET`
 - `SPACES_REGION`, set to `nyc3`
@@ -180,6 +187,60 @@ The one-time M3.1 archive-storage migration has an additional exact-plan flag,
 preflight, credential-backup step, and live gate. Follow
 [`m3-archive-storage.md`](m3-archive-storage.md); do not treat it as an ordinary
 unflagged infrastructure apply.
+
+M3.7 public-edge changes likewise require an explicit `public_edge_phase` on
+both the plan and apply dispatches. `proxied` creates the `.com` records and
+enables both reviewed zone policies while both origin firewalls remain open;
+`enforced` narrows the DigitalOcean web-ingress allowlist only after the host
+has independently required origin pulls and adopted the same reviewed
+Cloudflare networks. An `enforced` plan additionally requires
+`origin_pull_host_state=required`, proving that the preceding reviewed host
+convergence used `CADDY_ORIGIN_PULL_ENFORCEMENT_ENABLED=true`. A `direct` plan
+requires `origin_pull_host_state=staged`, proving that a preceding reviewed
+host convergence used `CADDY_ORIGIN_PULL_ENFORCEMENT_ENABLED=false`. The apply
+must repeat the exact value recorded with the reviewed plan. `proxied` and
+ordinary `none` plans require `unconfirmed`, so a confirmation cannot be
+reused for the wrong transition. Roll back `enforced` to `proxied`, converge
+the relaxed host, and only then select `direct`; the plan policy rejects an
+enforced-to-direct jump. `none` is the
+ordinary non-edge mode and retains the phase recorded in production state. It
+resolves to `direct` only for the one-time legacy state that predates this
+output and contains no managed edge policy.
+
+The committed Cloudflare network snapshot separates the currently published
+ranges from temporarily `retiring` ranges. Every retiring entry must cite an
+immutable ancestor commit whose reviewed snapshot contained that entry in its
+active set; CI verifies that provenance before allowing the range into either
+firewall. Both the DigitalOcean and host
+firewalls and Caddy's trusted-proxy boundary use their union while enforcement
+is active. When Cloudflare changes its list, first replace the active arrays
+with the exact newly published sets and place every removed range in the
+retiring arrays and record the preceding reviewed snapshot commit in
+`retiring_cidr_provenance`; rebuild and converge the host artifact and both firewalls,
+then verify the edge before removing the retiring ranges in a later reviewed
+change. Active and retiring arrays must be disjoint, and live plans never fetch
+or trust ranges that were not committed for review.
+
+Dispatch that rotation with the explicit `enforced` public-edge phase. The plan
+policy accepts an enforced-to-enforced firewall update only when the previous
+source ranges are a strict subset of the newly reviewed active-plus-retiring
+union and no other firewall field changes. An ordinary `none` plan continues
+to reject edge mutations.
+
+The two certificate IDs are nonsecret object identifiers. Uploading or
+retiring the corresponding leaves remains a separate temporary-credential
+operation; neither PEM input files nor private keys enter OpenTofu variables or
+GitHub variables. The provider reads the selected public leaf and its metadata
+into encrypted plans and state to prove it active. It also lists the zone's
+uploaded leaves and refuses to enable zone-level authenticated origin pulls
+unless the selected ID is the newest active leaf, which is the leaf Cloudflare
+serves for every proxied hostname in that zone. Its private key must never enter
+OpenTofu configuration, plans, or state.
+
+Cloudflare's zone-wide `always_use_https` switch is explicitly managed as
+`off`. Port 80 must reach Caddy so reusable aliases keep their reviewed method,
+path, query, and root-generated redirect semantics; an edge-wide redirect is
+not an acceptable substitute.
 
 ## Rebuild drill
 

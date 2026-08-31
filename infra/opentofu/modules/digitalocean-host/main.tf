@@ -67,17 +67,19 @@ resource "digitalocean_firewall" "host" {
   inbound_rule {
     protocol   = "tcp"
     port_range = "80"
-    # Public HTTP is an intentional edge-service requirement.
+    # Direct and proxied rollout phases intentionally retain public ingress;
+    # the production plan policy permits only this or the reviewed edge CIDRs.
     #trivy:ignore:DIG-0001
-    source_addresses = ["0.0.0.0/0", "::/0"]
+    source_addresses = var.web_source_cidrs
   }
 
   inbound_rule {
     protocol   = "tcp"
     port_range = "443"
-    # Public HTTPS is an intentional edge-service requirement.
+    # Direct and proxied rollout phases intentionally retain public ingress;
+    # the production plan policy permits only this or the reviewed edge CIDRs.
     #trivy:ignore:DIG-0001
-    source_addresses = ["0.0.0.0/0", "::/0"]
+    source_addresses = var.web_source_cidrs
   }
 
   outbound_rule {

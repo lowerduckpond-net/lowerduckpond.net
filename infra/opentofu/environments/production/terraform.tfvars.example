@@ -2,6 +2,14 @@ digitalocean_project_id = "00000000-0000-0000-0000-000000000000"
 backup_bucket_name      = "lowerduckpond-net-backups-unique-suffix"
 archive_bucket_name     = "lowerduckpond-net-production-tenant-archives-unique-suffix"
 cloudflare_zone_id      = "00000000000000000000000000000000"
+cloudflare_tenant_zone_id = "11111111111111111111111111111111"
+
+# Required only for the proxied and enforced M3.7 phases. These are public
+# Cloudflare object IDs. OpenTofu reads the selected public leaf and metadata to
+# prove it is active; private-key material never enters variables, plans, or state.
+# cloudflare_origin_pull_certificate_id        = "22222222222222222222222222222222"
+# cloudflare_tenant_origin_pull_certificate_id = "33333333333333333333333333333333"
+# edge_rollout_phase                           = "proxied"
 
 admin_ssh_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFakeExampleOnlyDoNotUse lowerduckpond-admin"
 admin_source_cidrs   = ["192.0.2.10/32"]

@@ -6,8 +6,10 @@
   runtime credential.
 - `digitalocean-tenant-archives/` owns separately retained, non-expiring tenant
   archive storage and its independently scoped runtime credential.
-- `cloudflare-dns/` owns the apex and wildcard records pointing at the retained
-  address.
+- `cloudflare-public-edge/` owns one zone's apex and wildcard records, strict
+  TLS mode, zone-level authenticated origin pulls, explicit HTTP forwarding,
+  cache bypass, transform controls, and reserved-path policy through an
+  explicit rollout phase.
 
 Modules expose only the outputs their callers need and contain no provider
 credentials or production-specific identifiers.

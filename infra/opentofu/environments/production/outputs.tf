@@ -3,6 +3,11 @@ output "reserved_ip_address" {
   value       = module.host.reserved_ip_address
 }
 
+output "edge_rollout_phase" {
+  description = "Selected fail-safe Cloudflare edge phase."
+  value       = var.edge_rollout_phase
+}
+
 output "backup_bucket_name" {
   description = "Spaces bucket used for Restic backups."
   value       = module.storage.bucket_name

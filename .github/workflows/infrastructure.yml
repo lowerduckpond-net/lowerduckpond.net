@@ -33,6 +33,25 @@ on:
         required: false
         default: false
         type: boolean
+      public_edge_phase:
+        description: Permit only one reviewed M3.7 public-edge phase transition
+        required: false
+        default: none
+        type: choice
+        options:
+          - none
+          - proxied
+          - enforced
+          - direct
+      origin_pull_host_state:
+        description: Confirm the reviewed host state required before an enforced or direct transition
+        required: false
+        default: unconfirmed
+        type: choice
+        options:
+          - unconfirmed
+          - staged
+          - required
 
 permissions:
   actions: read
@@ -58,13 +77,14 @@ jobs:
       DIGITALOCEAN_TOKEN: speculative-plan
       SPACES_ACCESS_KEY_ID: speculative-plan
       SPACES_SECRET_ACCESS_KEY: speculative-plan
-      SPECULATIVE_ROOT: /tmp/lowerduckpond-speculative/opentofu/environments/production
+      SPECULATIVE_ROOT: /tmp/lowerduckpond-speculative/infra/opentofu/environments/production
       TF_VAR_admin_source_cidrs: '["192.0.2.10/32"]'
       TF_VAR_admin_ssh_public_key: >-
         ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFakeExampleOnlyDoNotUse speculative-plan
       TF_VAR_archive_bucket_name: lowerduckpond-net-tenant-archives-speculative
       TF_VAR_backup_bucket_name: lowerduckpond-net-backups-speculative
-      TF_VAR_cloudflare_zone_id: 00000000000000000000000000000000
+      TF_VAR_cloudflare_zone_id: "00000000000000000000000000000000"
+      TF_VAR_cloudflare_tenant_zone_id: "11111111111111111111111111111111"
       TF_VAR_digitalocean_project_id: 00000000-0000-0000-0000-000000000000
       TF_VAR_state_encryption_passphrase: speculative-plan-passphrase-000000000000
     steps:
@@ -78,7 +98,7 @@ jobs:
       - name: Prepare isolated local backend
         run: |
           mkdir -p /tmp/lowerduckpond-speculative
-          cp -R infra/opentofu /tmp/lowerduckpond-speculative/opentofu
+          cp -R infra platform /tmp/lowerduckpond-speculative/
           rm "${SPECULATIVE_ROOT}/backend.tf"
       - name: Initialize providers and modules
         working-directory: ${{ env.SPECULATIVE_ROOT }}
@@ -86,6 +106,7 @@ jobs:
       - name: Create no-credential speculative plan
         working-directory: ${{ env.SPECULATIVE_ROOT }}
         run: |
+          set -o pipefail
           tofu plan -input=false -lock=false -no-color -refresh=false \
             -out=speculative.tfplan | tee plan.txt
       - name: Enforce plan policy
@@ -132,6 +153,11 @@ jobs:
       TF_VAR_archive_bucket_name: ${{ vars.ARCHIVE_BUCKET_NAME }}
       TF_VAR_backup_bucket_name: ${{ vars.BACKUP_BUCKET_NAME }}
       TF_VAR_cloudflare_zone_id: ${{ vars.CLOUDFLARE_ZONE_ID }}
+      TF_VAR_cloudflare_tenant_zone_id: ${{ vars.CLOUDFLARE_TENANT_ZONE_ID }}
+      TF_VAR_cloudflare_origin_pull_certificate_id: >-
+        ${{ vars.CLOUDFLARE_ORIGIN_PULL_CERTIFICATE_ID }}
+      TF_VAR_cloudflare_tenant_origin_pull_certificate_id: >-
+        ${{ vars.CLOUDFLARE_TENANT_ORIGIN_PULL_CERTIFICATE_ID }}
       TF_VAR_digitalocean_project_id: ${{ vars.DIGITALOCEAN_PROJECT_ID }}
       TF_VAR_state_encryption_passphrase: ${{ secrets.OPENTOFU_ENCRYPTION_PASSPHRASE }}
     steps:
@@ -156,14 +182,58 @@ jobs:
             -backend-config="skip_region_validation=true" \
             -backend-config="skip_s3_checksum=true" \
             -backend-config="use_lockfile=false"
+      - name: Resolve the desired public-edge phase
+        id: edge_phase
+        working-directory: ${{ env.PRODUCTION_ROOT }}
+        env:
+          REQUESTED_EDGE_PHASE: ${{ inputs.public_edge_phase }}
+        run: |
+          phase="${REQUESTED_EDGE_PHASE}"
+          if [[ "${phase}" == "none" ]]; then
+            if phase="$(tofu output -raw edge_rollout_phase 2>/dev/null)"; then
+              :
+            else
+              state_resources="$(tofu state list)"
+              if grep -Eq \
+                'cloudflare_(authenticated_origin_pulls_settings|ruleset|zone_setting)' \
+                <<<"${state_resources}"; then
+                echo "Cannot infer the deployed edge phase from legacy state." >&2
+                exit 1
+              fi
+              phase=direct
+            fi
+          fi
+          if [[ ! "${phase}" =~ ^(direct|proxied|enforced)$ ]]; then
+            echo "Resolved public-edge phase is invalid: ${phase}" >&2
+            exit 1
+          fi
+          echo "TF_VAR_edge_rollout_phase=${phase}" >> "${GITHUB_ENV}"
+          echo "phase=${phase}" >> "${GITHUB_OUTPUT}"
+          echo "Production plan retains public-edge phase: ${phase}"
       - name: Create production plan
         id: plan
         working-directory: ${{ env.PRODUCTION_ROOT }}
         run: |
           plan_arguments=()
-          if [[ "${{ inputs.replace_droplet }}" == "true" && \
-                "${{ inputs.initialize_archive_storage }}" == "true" ]]; then
-            echo "Droplet replacement and archive-storage migration require separate plans." >&2
+          special_modes=0
+          host_state="${{ inputs.origin_pull_host_state }}"
+          [[ -n "${host_state}" ]] || host_state=unconfirmed
+          case "${{ inputs.public_edge_phase }}" in
+            enforced) expected_host_state=required ;;
+            direct) expected_host_state=staged ;;
+            *) expected_host_state=unconfirmed ;;
+          esac
+          if [[ "${host_state}" != "${expected_host_state}" ]]; then
+            echo "The requested edge phase requires origin_pull_host_state=${expected_host_state}." >&2
+            exit 1
+          fi
+          echo "origin_pull_host_state=${host_state}" >> "${GITHUB_OUTPUT}"
+          [[ "${{ inputs.replace_droplet }}" == "true" ]] && ((special_modes += 1))
+          [[ "${{ inputs.initialize_archive_storage }}" == "true" ]] && \
+            ((special_modes += 1))
+          [[ "${{ inputs.public_edge_phase }}" != "none" ]] && ((special_modes += 1))
+          if (( special_modes > 1 )); then
+            echo "Droplet, archive-storage, and public-edge changes require separate plans." >&2
             exit 1
           fi
           if [[ "${{ inputs.replace_droplet }}" == "true" ]]; then
@@ -194,6 +264,12 @@ jobs:
           if [[ "${{ inputs.initialize_archive_storage }}" == "true" ]]; then
             policy_arguments+=("--allow-archive-storage-migration")
           fi
+          if [[ "${{ inputs.public_edge_phase }}" != "none" ]]; then
+            policy_arguments+=(
+              "--public-edge-transition"
+              "${{ inputs.public_edge_phase }}"
+            )
+          fi
           python "${GITHUB_WORKSPACE}/scripts/assert_opentofu_plan.py" \
             "${policy_arguments[@]}" plan.json
           rm plan.json
@@ -208,12 +284,19 @@ jobs:
             --arg ref "${GITHUB_REF}" \
             --arg run_id "${GITHUB_RUN_ID}" \
             --arg changes "${PLAN_CHANGES}" \
+            --arg origin_pull_host_state \
+              "${{ steps.plan.outputs.origin_pull_host_state }}" \
             --arg initialize_archive_storage "${{ inputs.initialize_archive_storage }}" \
+            --arg public_edge_phase "${{ inputs.public_edge_phase }}" \
+            --arg resolved_public_edge_phase "${{ steps.edge_phase.outputs.phase }}" \
             --arg replace_droplet "${{ inputs.replace_droplet }}" \
             --arg sha256 "$(sha256sum production.tfplan | cut -d ' ' -f 1)" \
             '{commit: $commit, event: $event, ref: $ref, run_id: $run_id,
               changes: $changes,
+              origin_pull_host_state: $origin_pull_host_state,
               initialize_archive_storage: $initialize_archive_storage,
+              public_edge_phase: $public_edge_phase,
+              resolved_public_edge_phase: $resolved_public_edge_phase,
               replace_droplet: $replace_droplet,
               plan_sha256: $sha256}' \
             > plan-metadata.json
@@ -264,6 +347,11 @@ jobs:
       TF_VAR_archive_bucket_name: ${{ vars.ARCHIVE_BUCKET_NAME }}
       TF_VAR_backup_bucket_name: ${{ vars.BACKUP_BUCKET_NAME }}
       TF_VAR_cloudflare_zone_id: ${{ vars.CLOUDFLARE_ZONE_ID }}
+      TF_VAR_cloudflare_tenant_zone_id: ${{ vars.CLOUDFLARE_TENANT_ZONE_ID }}
+      TF_VAR_cloudflare_origin_pull_certificate_id: >-
+        ${{ vars.CLOUDFLARE_ORIGIN_PULL_CERTIFICATE_ID }}
+      TF_VAR_cloudflare_tenant_origin_pull_certificate_id: >-
+        ${{ vars.CLOUDFLARE_TENANT_ORIGIN_PULL_CERTIFICATE_ID }}
       TF_VAR_digitalocean_project_id: ${{ vars.DIGITALOCEAN_PROJECT_ID }}
       TF_VAR_state_encryption_passphrase: ${{ secrets.OPENTOFU_ENCRYPTION_PASSPHRASE }}
     steps:
@@ -305,6 +393,18 @@ jobs:
           test "$(jq -r .run_id plan-metadata.json)" = "${{ inputs.plan_run_id }}"
           test "$(jq -r .initialize_archive_storage plan-metadata.json)" = \
             "${{ inputs.initialize_archive_storage }}"
+          test "$(jq -r .origin_pull_host_state plan-metadata.json)" = \
+            "${{ inputs.origin_pull_host_state }}"
+          test "$(jq -r .public_edge_phase plan-metadata.json)" = \
+            "${{ inputs.public_edge_phase }}"
+          jq -e '
+            .resolved_public_edge_phase
+            | IN("direct", "proxied", "enforced")
+          ' plan-metadata.json >/dev/null
+          if [[ "${{ inputs.public_edge_phase }}" != "none" ]]; then
+            test "$(jq -r .resolved_public_edge_phase plan-metadata.json)" = \
+              "${{ inputs.public_edge_phase }}"
+          fi
           test "$(jq -r .replace_droplet plan-metadata.json)" = \
             "${{ inputs.replace_droplet }}"
           test "$(jq -r .plan_sha256 plan-metadata.json)" = \
