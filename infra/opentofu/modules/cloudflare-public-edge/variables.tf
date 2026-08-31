@@ -53,8 +53,8 @@ variable "origin_pull_certificate_id" {
     condition = (
       var.rollout_phase == "direct" ||
       (var.origin_pull_certificate_id != null &&
-      can(regex("^[0-9a-f]{32}$", var.origin_pull_certificate_id)))
+      can(regex("^(?:[0-9a-f]{32}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$", var.origin_pull_certificate_id)))
     )
-    error_message = "proxied and enforced phases require a lowercase 32-character certificate ID."
+    error_message = "proxied and enforced phases require a lowercase 32-hex or UUID certificate ID."
   }
 }

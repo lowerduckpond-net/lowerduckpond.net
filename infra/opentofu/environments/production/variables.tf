@@ -148,9 +148,9 @@ variable "cloudflare_origin_pull_certificate_id" {
     condition = (
       var.edge_rollout_phase == "direct" ||
       (var.cloudflare_origin_pull_certificate_id != null &&
-      can(regex("^[0-9a-f]{32}$", var.cloudflare_origin_pull_certificate_id)))
+      can(regex("^(?:[0-9a-f]{32}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$", var.cloudflare_origin_pull_certificate_id)))
     )
-    error_message = "proxied and enforced phases require the lowerduckpond.net certificate ID."
+    error_message = "proxied and enforced phases require the lowerduckpond.net certificate ID in lowercase 32-hex or UUID form."
   }
 }
 
@@ -164,8 +164,8 @@ variable "cloudflare_tenant_origin_pull_certificate_id" {
     condition = (
       var.edge_rollout_phase == "direct" ||
       (var.cloudflare_tenant_origin_pull_certificate_id != null &&
-      can(regex("^[0-9a-f]{32}$", var.cloudflare_tenant_origin_pull_certificate_id)))
+      can(regex("^(?:[0-9a-f]{32}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$", var.cloudflare_tenant_origin_pull_certificate_id)))
     )
-    error_message = "proxied and enforced phases require the lowerduckpond.com certificate ID."
+    error_message = "proxied and enforced phases require the lowerduckpond.com certificate ID in lowercase 32-hex or UUID form."
   }
 }

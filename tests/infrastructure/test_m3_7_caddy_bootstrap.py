@@ -5,6 +5,7 @@ from pathlib import Path
 
 _ROOT = Path(__file__).parents[2]
 _CADDY_ROLE = _ROOT / "config/ansible/roles/caddy"
+_PRODUCTION_CERTIFICATE_VARIABLE_COUNT = 2
 
 
 def test_production_web_ingress_is_not_restricted_before_edge_proxying() -> None:
@@ -45,6 +46,19 @@ def test_edge_policy_is_installed_before_dns_becomes_proxied() -> None:
         body = match.group("body")
         assert "depends_on = [" in body
         assert all(dependency in body for dependency in dependencies)
+
+
+def test_production_accepts_both_cloudflare_certificate_id_forms() -> None:
+    production_variables = (
+        _ROOT / "infra/opentofu/environments/production/variables.tf"
+    ).read_text(encoding="utf-8")
+    module_variables = (
+        _ROOT / "infra/opentofu/modules/cloudflare-public-edge/variables.tf"
+    ).read_text(encoding="utf-8")
+    accepted_grammar = "^(?:[0-9a-f]{32}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$"
+
+    assert production_variables.count(accepted_grammar) == _PRODUCTION_CERTIFICATE_VARIABLE_COUNT
+    assert module_variables.count(accepted_grammar) == 1
 
 
 def test_generation_bootstrap_binds_the_staged_or_required_origin_pull_mode() -> None:

@@ -557,7 +557,9 @@ def _check_firewall(
         return "open"
     if web_sources == CLOUDFLARE_PROXY_CIDRS:
         return "restricted"
-    if allow_historical_restricted and web_sources < CLOUDFLARE_PROXY_CIDRS:
+    if allow_historical_restricted and (
+        web_sources < CLOUDFLARE_PROXY_CIDRS or web_sources > CLOUDFLARE_PROXY_CIDRS
+    ):
         return "restricted"
     errors.append("web ingress must be exactly world-open or the reviewed Cloudflare CIDRs")
     return None

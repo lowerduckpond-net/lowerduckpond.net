@@ -661,6 +661,24 @@ def test_allows_exact_cidr_rotation_while_already_enforced() -> None:
     assert_plan(plan, public_edge_transition="enforced")
 
 
+def test_allows_retiring_cidr_removal_while_already_enforced() -> None:
+    plan = _valid_enforced_edge_plan()
+    for resource in plan["resource_changes"]:
+        resource["change"]["before"] = deepcopy(resource["change"]["after"])
+        resource["change"]["actions"] = ["no-op"]
+    firewall = next(
+        resource
+        for resource in plan["resource_changes"]
+        if resource["address"] == "module.host.digitalocean_firewall.host"
+    )
+    for rule in firewall["change"]["before"]["inbound_rule"]:
+        if rule["port_range"] in {"80", "443"}:
+            rule["source_addresses"] = [*rule["source_addresses"], "192.0.2.0/24"]
+    firewall["change"]["actions"] = ["update"]
+
+    assert_plan(plan, public_edge_transition="enforced")
+
+
 def test_rejects_duplicate_web_ingress_rules() -> None:
     plan = _valid_enforced_edge_plan()
     firewall = next(
