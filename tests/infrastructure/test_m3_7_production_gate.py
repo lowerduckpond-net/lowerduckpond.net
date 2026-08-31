@@ -305,6 +305,34 @@ def test_account_token_policy_requires_exact_permissions_and_resources() -> None
             label="test",
         )
 
+    split_scope_token = {
+        **token,
+        "policies": [
+            {
+                "effect": "allow",
+                "permission_groups": [{"id": "4" * 32, "name": "Zone Read"}],
+                "resources": {sorted(zone_resources)[0]: "*"},
+            },
+            {
+                "effect": "allow",
+                "permission_groups": [{"id": "5" * 32, "name": "DNS Write"}],
+                "resources": {sorted(zone_resources)[1]: "*"},
+            },
+        ],
+    }
+    with pytest.raises(ProductionEdgePreflightError, match="exact reviewed policy"):
+        check_m3_7_production_edge.validate_account_token_policy(
+            split_scope_token,
+            expected_id=token_id,
+            expected_permissions={"4" * 32: "Zone Read", "5" * 32: "DNS Write"},
+            expected_resources=zone_resources,
+            label="test",
+        )
+
+    expiring_token = {**token, "expires_on": "2027-01-01T00:00:00Z"}
+    with pytest.raises(ProductionEdgePreflightError, match="unexpectedly expires"):
+        check_m3_7_production_edge.validate_non_expiring_account_token(expiring_token, label="test")
+
 
 def test_production_gate_is_read_only_and_composes_existing_gate() -> None:
     preflight = PREFLIGHT.read_text(encoding="utf-8")
@@ -328,6 +356,7 @@ def test_production_gate_is_read_only_and_composes_existing_gate() -> None:
     assert "if ! lowerduckpond_net_certificate_id=$(" in runbook
     assert "if ! lowerduckpond_com_certificate_id=$(" in runbook
     assert '--output "$response_path"' in runbook
+    assert "(-[0-9a-f]{4}){3}" in runbook
 
 
 def test_production_gate_rejects_missing_inputs_before_network_access() -> None:

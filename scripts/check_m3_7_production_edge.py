@@ -438,7 +438,7 @@ def validate_account_token_policy(
     if not isinstance(policies, list) or not policies:
         raise ProductionEdgePreflightError(f"the {label} token policy is malformed")
     permissions: dict[str, str] = {}
-    resource_names: set[str] = set()
+    resource_bindings: dict[str, set[str]] = {}
     for policy in policies:
         if not isinstance(policy, dict) or policy.get("effect") != "allow":
             raise ProductionEdgePreflightError(f"the {label} token policy is malformed")
@@ -466,11 +466,25 @@ def validate_account_token_policy(
             permissions[identifier] = name
         if any(not isinstance(key, str) or value != "*" for key, value in resources.items()):
             raise ProductionEdgePreflightError(f"the {label} token policy is malformed")
-        resource_names.update(resources)
-    if permissions != expected_permissions or resource_names != expected_resources:
+        for identifier in (
+            group.get("id") for group in permission_groups if isinstance(group, dict)
+        ):
+            if isinstance(identifier, str):
+                resource_bindings.setdefault(identifier, set()).update(resources)
+    if (
+        permissions != expected_permissions
+        or set(resource_bindings) != set(expected_permissions)
+        or any(resources != expected_resources for resources in resource_bindings.values())
+    ):
         raise ProductionEdgePreflightError(
             f"the {label} token does not have the exact reviewed policy"
         )
+
+
+def validate_non_expiring_account_token(token: Mapping[str, object], *, label: str) -> None:
+    """Reject an expiry boundary on a durable runtime token."""
+    if token.get("expires_on") not in (None, ""):
+        raise ProductionEdgePreflightError(f"the {label} token unexpectedly expires")
 
 
 def _resolve_permission_groups(
@@ -601,6 +615,8 @@ def _require_account_token_policies(  # noqa: PLR0913 -- all credential roles ar
             expected_resources=zone_resources,
             label=label,
         )
+        if label == "Caddy runtime":
+            validate_non_expiring_account_token(details, label=label)
 
 
 def _require_direct_dns(

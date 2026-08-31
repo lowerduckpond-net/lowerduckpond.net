@@ -123,7 +123,8 @@ upload_zone_leaf() {
   jq --exit-status --raw-output \
     'if .success == true
         and (.result.id | type) == "string"
-        and (.result.id | test("^[0-9a-f]{32}$"))
+        and (.result.id
+          | test("^([0-9a-f]{32}|[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12})$"))
      then .result.id else error("zone-level leaf upload failed") end' \
     "$response_path"
 }
