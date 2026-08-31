@@ -42,7 +42,10 @@ def build_platform_only_caddy_routes() -> PlatformOnlyCaddyRoutes:
     """Generate fixed platform routes with tenant publication unconditionally disabled."""
 
     route_state = _route_state()
+    access_logger_name = "log0"
+    certificate_subjects = sorted((PLATFORM_APEX, PLATFORM_WILDCARD, TENANT_APEX, TENANT_WILDCARD))
     http_app: dict[str, object] = {
+        "metrics": {},
         "servers": {
             "production": {
                 "listen": [":443"],
@@ -54,13 +57,52 @@ def build_platform_only_caddy_routes() -> PlatformOnlyCaddyRoutes:
                     _catch_all_unknown_route(),
                 ],
                 "errors": {"routes": [_error_route()]},
+                "logs": {
+                    "logger_names": {
+                        subject: [access_logger_name] for subject in certificate_subjects
+                    }
+                },
             }
-        }
+        },
     }
     return PlatformOnlyCaddyRoutes(
         configuration={
             "admin": {"listen": f"unix/{CADDY_ADMIN_SOCKET}"},
-            "apps": {"http": http_app},
+            "apps": {
+                "http": http_app,
+                "tls": {
+                    "automation": {
+                        "policies": [
+                            {
+                                "issuers": [
+                                    {
+                                        "challenges": {
+                                            "dns": {
+                                                "provider": {
+                                                    "api_token": ("{env.CLOUDFLARE_API_TOKEN}"),
+                                                    "name": "cloudflare",
+                                                }
+                                            }
+                                        },
+                                        "module": "acme",
+                                    }
+                                ],
+                                "subjects": certificate_subjects,
+                            }
+                        ]
+                    }
+                },
+            },
+            "logging": {
+                "logs": {
+                    "default": {"exclude": [f"http.log.access.{access_logger_name}"]},
+                    access_logger_name: {
+                        "encoder": {"format": "json"},
+                        "include": [f"http.log.access.{access_logger_name}"],
+                        "writer": {"output": "stdout"},
+                    },
+                }
+            },
         },
         http_app=http_app,
         route_metadata={

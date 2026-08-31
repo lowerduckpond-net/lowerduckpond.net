@@ -44,7 +44,9 @@ from lowerduckpond_static_host_agent.caddy_generation import (
     CaddyGenerationStore,
     PinnedCaddyGeneration,
 )
-from lowerduckpond_static_host_agent.caddy_routes import build_platform_only_caddy_routes
+from lowerduckpond_static_host_agent.caddy_routes import (
+    build_platform_only_caddy_routes,
+)
 from lowerduckpond_static_host_agent.locks import LockManager, LockMode, LockName
 
 CADDY_ACTIVE_REFERENCE_NAME: Final = "active"
@@ -64,6 +66,7 @@ _REFERENCE_TEMPORARY_PATTERN: Final = re.compile(r"\.ldp-active-[0-9a-f]{32}")
 _ENVIRONMENT_NAME_PATTERN: Final = re.compile(r"[A-Z_][A-Z0-9_]*", flags=re.ASCII)
 _CADDY_VALIDATION_OUTPUT_BYTES: Final = 262_144
 _CADDY_VALIDATION_TIMEOUT_SECONDS: Final = 30
+_CADDY_VALIDATION_API_TOKEN: Final = "0" * 40
 _BASH: Final = "/bin/bash"
 _PRLIMIT: Final = "/usr/bin/prlimit"
 _SETPRIV: Final = "/usr/bin/setpriv"
@@ -158,6 +161,7 @@ class CaddyRuntime:
         owner: int,
         group: int,
         creation_group: int,
+        expected_binary_sha256: str,
         candidate_validator: CandidateValidator,
     ) -> None:
         self._root_fd = root_fd
@@ -165,6 +169,7 @@ class CaddyRuntime:
         self._owner = owner
         self._group = group
         self._creation_group = creation_group
+        self._expected_binary_sha256 = _validate_expected_binary_sha256(expected_binary_sha256)
         self._candidate_validator = candidate_validator
         self._context_mutex = threading.RLock()
         self._locked = False
@@ -181,6 +186,7 @@ class CaddyRuntime:
         expected_group: int,
         validation_uid: int,
         validation_gid: int,
+        expected_binary_sha256: str,
         expected_lock_owner: int | None = None,
         expected_lock_group: int | None = None,
         root_mode: int = CADDY_RUNTIME_ROOT_MODE,
@@ -216,6 +222,7 @@ class CaddyRuntime:
             owner=expected_owner,
             group=expected_group,
             creation_group=os.getegid(),
+            expected_binary_sha256=expected_binary_sha256,
             candidate_validator=(
                 partial(
                     _validate_generation_candidate,
@@ -237,6 +244,7 @@ class CaddyRuntime:
         expected_group: int,
         validation_uid: int,
         validation_gid: int,
+        expected_binary_sha256: str,
         expected_lock_owner: int,
         expected_lock_group: int,
         root_mode: int = CADDY_RUNTIME_ROOT_MODE,
@@ -272,6 +280,7 @@ class CaddyRuntime:
             owner=expected_owner,
             group=expected_group,
             creation_group=os.getegid(),
+            expected_binary_sha256=expected_binary_sha256,
             candidate_validator=(
                 partial(
                     _validate_generation_candidate,
@@ -362,6 +371,11 @@ class CaddyRuntime:
         store = self._open_generation_store()
         try:
             generation = store.open_verified(generation_id)
+            try:
+                _validate_trusted_binary(generation, self._expected_binary_sha256)
+            except BaseException:
+                generation.close()
+                raise
         finally:
             store.close()
         return SelectedCaddyGeneration(generation_id, generation)
@@ -380,6 +394,7 @@ class CaddyRuntime:
         store = self._open_generation_store()
         try:
             with store.open_verified(canonical_id) as generation:
+                _validate_trusted_binary(generation, self._expected_binary_sha256)
                 _validate_platform_only_route_binding(generation)
                 environment = _read_generation_environment(generation)
                 self._candidate_validator(generation, environment)
@@ -785,6 +800,21 @@ def _canonical_generation_id(value: str) -> str:
         raise CaddyRuntimeError("active reference does not name a UUIDv7 generation") from error
 
 
+def _validate_expected_binary_sha256(value: str) -> str:
+    if type(value) is not str or re.fullmatch(r"[0-9a-f]{64}", value, flags=re.ASCII) is None:
+        raise ValueError("trusted Caddy binary SHA-256 must be lowercase hexadecimal")
+    return value
+
+
+def _validate_trusted_binary(
+    generation: PinnedCaddyGeneration,
+    expected_binary_sha256: str,
+) -> None:
+    binary = next(item for item in generation.manifest.files if item.name == CADDY_BINARY_NAME)
+    if not secrets.compare_digest(binary.sha256, expected_binary_sha256):
+        raise CaddyRuntimeError("selected Caddy binary does not match the trusted digest")
+
+
 def _parse_environment(data: bytes) -> dict[str, str]:
     if (
         not data
@@ -859,10 +889,12 @@ def _validate_generation_candidate(
             validation_uid=validation_uid,
             validation_gid=validation_gid,
         )
+        module_environment = dict(isolated_environment)
+        module_environment.pop("CLOUDFLARE_API_TOKEN", None)
         modules = _run_validation_command(
             binary_fd,
             ["list-modules"],
-            environment=isolated_environment,
+            environment=module_environment,
             inherited_descriptors=(),
             validation_uid=validation_uid,
             validation_gid=validation_gid,
@@ -871,10 +903,12 @@ def _validate_generation_candidate(
             line.strip() for line in modules.stdout.splitlines()
         }:
             raise CaddyRuntimeError("selected Caddy binary does not provide the required module")
+        validation_environment = dict(module_environment)
+        validation_environment["CLOUDFLARE_API_TOKEN"] = _CADDY_VALIDATION_API_TOKEN
         validated = _run_validation_command(
             binary_fd,
             ["validate", "--config", f"/proc/self/fd/{configuration_fd}"],
-            environment=isolated_environment,
+            environment=validation_environment,
             inherited_descriptors=(configuration_fd,),
             validation_uid=validation_uid,
             validation_gid=validation_gid,
@@ -1040,12 +1074,10 @@ def _run_validation_command(  # noqa: PLR0913
         except subprocess.TimeoutExpired as error:
             raise CaddyRuntimeError("selected Caddy validation exceeded its deadline") from error
         return _ValidationResult(returncode, bytes(output))
-    except BaseException:
-        _kill_validation_process(process, scope_unit=invocation.scope_unit)
-        raise
     finally:
         selector.close()
         process.stdout.close()
+        _kill_validation_process(process, scope_unit=invocation.scope_unit)
 
 
 def _kill_validation_process(
@@ -1053,29 +1085,76 @@ def _kill_validation_process(
     *,
     scope_unit: str | None,
 ) -> None:
+    scope_error: BaseException | None = None
     if scope_unit is not None:
-        with suppress(OSError, subprocess.TimeoutExpired):
-            subprocess.run(  # noqa: S603 - fixed systemd scope operation
-                [
-                    _SYSTEMCTL,
+        try:
+            for arguments in (
+                (
                     "kill",
                     "--kill-whom=all",
                     "--signal=KILL",
                     scope_unit,
+                ),
+                ("stop", scope_unit),
+            ):
+                subprocess.run(  # noqa: S603 - fixed systemd scope operation
+                    [_SYSTEMCTL, *arguments],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    env={"PATH": "/usr/bin:/bin"},
+                    check=False,
+                    timeout=5,
+                )
+            status = subprocess.run(  # noqa: S603 - fixed systemd scope operation
+                [
+                    _SYSTEMCTL,
+                    "show",
+                    "--property=LoadState",
+                    "--property=ActiveState",
+                    scope_unit,
                 ],
                 stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 env={"PATH": "/usr/bin:/bin"},
                 check=False,
                 timeout=5,
             )
-    with suppress(ProcessLookupError):
-        os.killpg(process.pid, signal.SIGKILL)
-    with suppress(ProcessLookupError):
-        process.kill()
-    with suppress(subprocess.TimeoutExpired):
-        process.wait(timeout=5)
+            properties = {
+                name: value
+                for line in status.stdout.decode("ascii", errors="replace").splitlines()
+                if "=" in line
+                for name, value in (line.split("=", 1),)
+            }
+            if status.returncode != 0 or not (
+                properties.get("LoadState") == "not-found"
+                or properties.get("ActiveState") in {"failed", "inactive"}
+            ):
+                scope_error = CaddyRuntimeError(
+                    "selected Caddy validation scope could not be torn down"
+                )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            scope_error = CaddyRuntimeError(
+                "selected Caddy validation scope could not be torn down"
+            )
+            scope_error.__cause__ = error
+    try:
+        with suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
+        with suppress(ProcessLookupError):
+            process.kill()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired as error:
+            if scope_error is None:
+                scope_error = CaddyRuntimeError(
+                    "selected Caddy validation process could not be reaped"
+                )
+                scope_error.__cause__ = error
+    finally:
+        if scope_error is not None:
+            raise scope_error
 
 
 def _read_generation_environment(generation: PinnedCaddyGeneration) -> dict[str, str]:

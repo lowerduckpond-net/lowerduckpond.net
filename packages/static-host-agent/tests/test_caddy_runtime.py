@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import os
 import subprocess
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypedDict
+from typing import TypedDict, cast
 
 import lowerduckpond_static_host_agent.caddy_runtime as caddy_runtime_module
 import pytest
@@ -49,6 +50,7 @@ class RuntimeFixture:
     root: Path
     lock: Path
     binary: Path
+    binary_sha256: str
     owner: int
     group: int
 
@@ -60,6 +62,7 @@ class RuntimeFixture:
             expected_group=self.group,
             validation_uid=self.owner,
             validation_gid=self.group,
+            expected_binary_sha256=self.binary_sha256,
             candidate_validator=_accept_candidate,
         )
 
@@ -71,6 +74,7 @@ class RuntimeFixture:
             expected_group=self.group,
             validation_uid=self.owner,
             validation_gid=self.group,
+            expected_binary_sha256=self.binary_sha256,
         )
 
 
@@ -118,7 +122,14 @@ def runtime_fixture(tmp_path: Path) -> RuntimeFixture:
                     route_metadata=routes.route_metadata,
                 ),
             )
-    return RuntimeFixture(root, lock, binary, owner, group)
+    return RuntimeFixture(
+        root,
+        lock,
+        binary,
+        hashlib.sha256(binary.read_bytes()).hexdigest(),
+        owner,
+        group,
+    )
 
 
 def test_selection_requires_the_publication_lock(
@@ -301,6 +312,7 @@ def test_runtime_accepts_a_preopened_root_owned_publication_lock_descriptor(
                 expected_group=runtime_fixture.group,
                 validation_uid=runtime_fixture.owner,
                 validation_gid=runtime_fixture.group,
+                expected_binary_sha256=runtime_fixture.binary_sha256,
                 expected_lock_owner=runtime_fixture.owner,
                 expected_lock_group=runtime_fixture.group,
                 candidate_validator=_accept_candidate,
@@ -550,6 +562,83 @@ def test_selection_rejects_a_non_caddy_executable_and_preserves_active(
         assert runtime.read_active() == GENERATION_A
 
 
+def test_selection_authenticates_the_binary_before_candidate_execution(
+    runtime_fixture: RuntimeFixture,
+    tmp_path: Path,
+) -> None:
+    generation_id = "0198d17f-6f4a-7000-8000-000000000008"
+    untrusted_binary = tmp_path / "untrusted-caddy"
+    untrusted_binary.write_bytes(Path("/usr/bin/false").read_bytes())
+    untrusted_binary.chmod(0o755)
+    routes = build_platform_only_caddy_routes()
+    with CaddyGenerationStore.open(
+        runtime_fixture.root / "generations",
+        expected_owner=runtime_fixture.owner,
+        expected_group=runtime_fixture.group,
+    ) as store:
+        store.publish(
+            generation_id,
+            CaddyGenerationPayload(
+                binary=CaddyBinarySource(
+                    untrusted_binary,
+                    owner=runtime_fixture.owner,
+                    group=runtime_fixture.group,
+                ),
+                environment=b"CLOUDFLARE_API_TOKEN=real-secret\n",
+                configuration=_configuration(),
+                route_metadata=routes.route_metadata,
+            ),
+        )
+
+    candidate_executed = False
+
+    def record_candidate(_generation: object, _environment: object) -> None:
+        nonlocal candidate_executed
+        candidate_executed = True
+
+    with (
+        CaddyRuntime.open(
+            runtime_fixture.root,
+            runtime_fixture.lock,
+            expected_owner=runtime_fixture.owner,
+            expected_group=runtime_fixture.group,
+            validation_uid=runtime_fixture.owner,
+            validation_gid=runtime_fixture.group,
+            expected_binary_sha256=runtime_fixture.binary_sha256,
+            candidate_validator=record_candidate,
+        ) as runtime,
+        runtime.locked(),
+    ):
+        runtime.select_active(GENERATION_A)
+        candidate_executed = False
+        with pytest.raises(CaddyRuntimeError, match="trusted digest"):
+            runtime.select_active(generation_id)
+        assert not candidate_executed
+        assert runtime.read_active() == GENERATION_A
+
+
+def test_launcher_reauthenticates_the_active_binary_against_the_external_digest(
+    runtime_fixture: RuntimeFixture,
+) -> None:
+    with runtime_fixture.open() as runtime, runtime.locked():
+        runtime.select_active(GENERATION_A)
+
+    with (
+        CaddyRuntime.open(
+            runtime_fixture.root,
+            runtime_fixture.lock,
+            expected_owner=runtime_fixture.owner,
+            expected_group=runtime_fixture.group,
+            validation_uid=runtime_fixture.owner,
+            validation_gid=runtime_fixture.group,
+            expected_binary_sha256="0" * 64,
+            candidate_validator=_accept_candidate,
+        ) as runtime,
+        pytest.raises(CaddyRuntimeError, match="trusted digest"),
+    ):
+        prepare_active_caddy_execution(runtime)
+
+
 def test_selection_bounds_output_from_an_invalid_candidate(
     runtime_fixture: RuntimeFixture,
 ) -> None:
@@ -566,6 +655,78 @@ def test_selection_bounds_output_from_an_invalid_candidate(
             )
     finally:
         os.close(descriptor)
+
+
+@pytest.mark.parametrize(
+    ("binary_path", "expected_returncode"),
+    [(Path("/usr/bin/true"), 0), (Path("/usr/bin/false"), 1)],
+)
+def test_candidate_validation_tears_down_every_completed_command(
+    runtime_fixture: RuntimeFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    binary_path: Path,
+    expected_returncode: int,
+) -> None:
+    calls: list[str | None] = []
+    original = caddy_runtime_module._kill_validation_process
+
+    def record_teardown(
+        process: subprocess.Popen[bytes],
+        *,
+        scope_unit: str | None,
+    ) -> None:
+        calls.append(scope_unit)
+        original(process, scope_unit=scope_unit)
+
+    monkeypatch.setattr(caddy_runtime_module, "_kill_validation_process", record_teardown)
+    descriptor = os.open(binary_path, os.O_RDONLY | os.O_CLOEXEC)
+    try:
+        result = caddy_runtime_module._run_validation_command(
+            descriptor,
+            [],
+            environment={},
+            inherited_descriptors=(),
+            validation_uid=runtime_fixture.owner,
+            validation_gid=runtime_fixture.group,
+        )
+    finally:
+        os.close(descriptor)
+
+    assert result.returncode == expected_returncode
+    assert calls == [None]
+
+
+def test_scope_teardown_requires_an_inactive_or_removed_unit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Process:
+        pid = 999_999_999
+
+        @staticmethod
+        def kill() -> None:
+            raise ProcessLookupError
+
+        @staticmethod
+        def wait(*, timeout: int) -> int:
+            assert timeout > 0
+            return 0
+
+    commands: list[list[str]] = []
+
+    def run(arguments: list[str], **_options: object) -> subprocess.CompletedProcess[bytes]:
+        commands.append(arguments)
+        stdout = b"LoadState=not-found\nActiveState=inactive\n" if "show" in arguments else b""
+        return subprocess.CompletedProcess(arguments, 0, stdout=stdout)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(os, "killpg", lambda _pid, _signal: None)
+
+    caddy_runtime_module._kill_validation_process(
+        cast("subprocess.Popen[bytes]", Process()),
+        scope_unit="lowerduckpond-caddy-validation-0123456789abcdef.scope",
+    )
+
+    assert [command[1] for command in commands] == ["kill", "stop", "show"]
 
 
 def test_root_candidate_validation_has_exact_descendant_resource_boundaries() -> None:
@@ -675,6 +836,9 @@ def test_selection_rejects_configuration_the_pinned_binary_cannot_load(
         validation_directory,
         validation_directory,
     ]
+    assert "CLOUDFLARE_API_TOKEN" not in isolated_environments[0]
+    assert isolated_environments[1]["CLOUDFLARE_API_TOKEN"] == "0" * 40
+    assert all("token-b" not in environment.values() for environment in isolated_environments)
     assert Path(validation_directory).parent.parent == Path("/", "dev", "shm")
     assert not Path(validation_directory).exists()
 

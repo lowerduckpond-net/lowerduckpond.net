@@ -72,7 +72,8 @@ def _handlers(route: dict[str, object]) -> list[dict[str, object]]:
 def test_platform_only_generation_has_one_fixed_server_and_five_terminal_routes() -> None:
     generated = build_platform_only_caddy_routes()
 
-    assert generated.http_app.keys() == {"servers"}
+    assert generated.http_app.keys() == {"metrics", "servers"}
+    assert generated.http_app["metrics"] == {}
     servers = generated.http_app["servers"]
     assert type(servers) is dict
     assert servers.keys() == {"production"}
@@ -212,13 +213,70 @@ def test_route_metadata_is_canonical_self_bound_and_publication_disabled() -> No
     assert canonical_json_bytes(json.loads(canonical)) == canonical
 
 
-def test_complete_configuration_exposes_only_the_unix_admin_and_http_app() -> None:
+def test_complete_configuration_exposes_only_the_allowlisted_native_apps() -> None:
+    generated = build_platform_only_caddy_routes()
+    configuration = generated.configuration
+
+    assert configuration.keys() == {"admin", "apps", "logging"}
+    assert configuration["admin"] == {"listen": "unix//run/caddy/admin.sock"}
+    apps = configuration["apps"]
+    assert type(apps) is dict
+    assert apps.keys() == {"http", "tls"}
+    assert apps["http"] == generated.http_app
+
+
+def test_native_tls_policy_uses_cloudflare_dns_for_both_apexes_and_wildcards() -> None:
+    apps = build_platform_only_caddy_routes().configuration["apps"]
+    assert type(apps) is dict
+
+    assert apps["tls"] == {
+        "automation": {
+            "policies": [
+                {
+                    "issuers": [
+                        {
+                            "challenges": {
+                                "dns": {
+                                    "provider": {
+                                        "api_token": "{env.CLOUDFLARE_API_TOKEN}",
+                                        "name": "cloudflare",
+                                    }
+                                }
+                            },
+                            "module": "acme",
+                        }
+                    ],
+                    "subjects": sorted(
+                        (PLATFORM_APEX, PLATFORM_WILDCARD, TENANT_APEX, TENANT_WILDCARD)
+                    ),
+                }
+            ]
+        }
+    }
+
+
+def test_native_access_logging_is_structured_and_journal_bound() -> None:
     generated = build_platform_only_caddy_routes()
 
-    assert generated.configuration == {
-        "admin": {"listen": "unix//run/caddy/admin.sock"},
-        "apps": {"http": generated.http_app},
+    assert generated.configuration["logging"] == {
+        "logs": {
+            "default": {"exclude": ["http.log.access.log0"]},
+            "log0": {
+                "encoder": {"format": "json"},
+                "include": ["http.log.access.log0"],
+                "writer": {"output": "stdout"},
+            },
+        }
     }
+    assert _production_server()["logs"] == {
+        "logger_names": {
+            subject: ["log0"]
+            for subject in sorted((PLATFORM_APEX, PLATFORM_WILDCARD, TENANT_APEX, TENANT_WILDCARD))
+        }
+    }
+    encoded = canonical_json_bytes(generated.configuration["logging"])
+    assert b'"filename"' not in encoded
+    assert b'"Cookie"' not in encoded
 
 
 def test_generated_routes_contain_no_tenant_content_or_redirect_input_surface() -> None:
