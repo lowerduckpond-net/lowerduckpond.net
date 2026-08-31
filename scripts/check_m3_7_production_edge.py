@@ -231,8 +231,9 @@ class CloudflareClient:
                 raise ProductionEdgePreflightError(
                     "Cloudflare cursor pagination metadata is malformed"
                 )
+            cursors_present = isinstance(result_info, dict) and "cursors" in result_info
             cursors = result_info.get("cursors") if isinstance(result_info, dict) else None
-            if cursors is not None and not isinstance(cursors, dict):
+            if cursors_present and not isinstance(cursors, dict):
                 raise ProductionEdgePreflightError(
                     "Cloudflare cursor pagination metadata is malformed"
                 )

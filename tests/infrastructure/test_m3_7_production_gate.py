@@ -284,6 +284,7 @@ def test_cloudflare_cursor_collection_accepts_optional_terminal_metadata(
     "malformed_metadata",
     (
         {"result_info": None},
+        {"result_info": {"cursors": None}},
         {"result_info": {"cursors": "not-an-object"}},
         {"result_info": {"cursors": {"after": ""}}},
     ),
