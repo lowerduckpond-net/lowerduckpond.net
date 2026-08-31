@@ -9,7 +9,8 @@ _CADDY_ROLE = _ROOT / "config/ansible/roles/caddy"
 def test_production_unit_executes_only_the_descriptor_pinned_launcher() -> None:
     unit = (_CADDY_ROLE / "templates/caddy-generation.service.j2").read_text(encoding="utf-8")
 
-    assert "OpenFile={{ caddy_publication_lock_path }}:publication-lock:read-write" in unit
+    assert "OpenFile={{ caddy_publication_lock_path }}:publication-lock" in unit
+    assert ":publication-lock:read-write" not in unit
     assert "ExecStart=/usr/local/libexec/lowerduckpond/launch-caddy-generation" in unit
     assert "Restart=on-failure" in unit
     assert "RestartSec=5s" in unit
@@ -26,7 +27,9 @@ def test_generation_migration_is_stopped_masked_and_defaults_on() -> None:
     site = (_ROOT / "config/ansible/playbooks/site.yml").read_text(encoding="utf-8")
 
     assert "caddy_generation_enabled: true" in defaults
-    assert "Stop and mask Caddy for the immutable bootstrap transaction" in tasks
+    assert "Stop Caddy for the immutable bootstrap transaction" in tasks
+    assert "Runtime-mask Caddy for the immutable bootstrap transaction" in tasks
+    assert "mask\n      - --runtime\n      - caddy.service" in tasks
     assert "Build, validate, and select the complete platform-only generation" in tasks
     assert "Remove the retired mutable Caddy configuration" in site
     assert "--check" in tasks
@@ -39,8 +42,10 @@ def test_frozen_wrappers_enter_only_the_reviewed_host_agent_entrypoints() -> Non
 
     assert "caddy_bootstrap_main" in bootstrap
     assert "caddy_launcher_main" in launcher
-    assert "/opt/lowerduckpond/static-host-agent/current/site-packages" in bootstrap
-    assert "/opt/lowerduckpond/static-host-agent/current/site-packages" in launcher
+    assert "static-host-agent/{artifact_sha256}/site-packages" in bootstrap
+    assert "static-host-agent/{artifact_sha256}/site-packages" in launcher
+    assert "current/site-packages" not in bootstrap
+    assert "current/site-packages" not in launcher
 
 
 def test_production_acceptance_and_health_use_the_generation_check() -> None:

@@ -367,6 +367,7 @@
   ansible.builtin.command:
     argv: >-
       {{ ['/usr/local/libexec/lowerduckpond/bootstrap-caddy-generation',
+          static_host_agent_artifact_sha256,
           '--check', caddy_binary_path,
           caddy_generation_binary.stat.checksum,
           '/etc/caddy/environment'] +
@@ -394,11 +395,22 @@
          caddy_generation_unit_probe.changed }}
   when: caddy_generation_enabled | bool
 
-- name: Stop and mask Caddy for the immutable bootstrap transaction
+- name: Stop Caddy for the immutable bootstrap transaction
   ansible.builtin.systemd_service:
     name: caddy.service
     state: stopped
-    masked: true
+  when:
+    - caddy_generation_enabled | bool
+    - caddy_generation_bootstrap_required | bool
+
+- name: Runtime-mask Caddy for the immutable bootstrap transaction
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - mask
+      - --runtime
+      - caddy.service
+  changed_when: true
   when:
     - caddy_generation_enabled | bool
     - caddy_generation_bootstrap_required | bool
@@ -452,6 +464,7 @@
   ansible.builtin.command:
     argv: >-
       {{ ['/usr/local/libexec/lowerduckpond/bootstrap-caddy-generation',
+          static_host_agent_artifact_sha256,
           caddy_binary_path, caddy_generation_binary.stat.checksum,
           '/etc/caddy/environment'] + caddy_installed_origin_pull_ca_paths }}
   register: caddy_generation_bootstrap
@@ -463,10 +476,21 @@
     - caddy_generation_enabled | bool
     - caddy_generation_bootstrap_required | bool
 
-- name: Unmask, enable, and start immutable Caddy
+- name: Remove the immutable-bootstrap runtime mask
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - unmask
+      - --runtime
+      - caddy.service
+  changed_when: true
+  when:
+    - caddy_generation_enabled | bool
+    - caddy_generation_bootstrap_required | bool
+
+- name: Enable and start immutable Caddy
   ansible.builtin.systemd_service:
     name: caddy.service
-    masked: false
     enabled: true
     state: started
   when: caddy_generation_enabled | bool
