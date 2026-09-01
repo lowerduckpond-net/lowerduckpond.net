@@ -841,24 +841,25 @@ def _check_public_edge_rule(
     phase = after.get("phase")
     invalid = False
     if phase == "http_request_cache_settings":
+        expected_parameters = {"cache": False}
         invalid = (
             rule.get("action") != "set_cache_settings"
             or rule.get("expression") != zone_expression
-            or rule.get("action_parameters") != {"cache": False}
+            or not _action_parameters_match(rule.get("action_parameters"), expected_parameters)
         )
     elif phase == "http_config_settings":
+        expected_parameters = {
+            "automatic_https_rewrites": False,
+            "disable_rum": True,
+            "disable_zaraz": True,
+            "email_obfuscation": False,
+            "fonts": False,
+            "rocket_loader": False,
+        }
         invalid = (
             rule.get("action") != "set_config"
             or rule.get("expression") != zone_expression
-            or rule.get("action_parameters")
-            != {
-                "automatic_https_rewrites": False,
-                "disable_rum": True,
-                "disable_zaraz": True,
-                "email_obfuscation": False,
-                "fonts": False,
-                "rocket_loader": False,
-            }
+            or not _action_parameters_match(rule.get("action_parameters"), expected_parameters)
         )
     elif phase == "http_request_firewall_custom":
         invalid = rule.get("action") != "block" or rule.get("expression") != (
@@ -867,6 +868,15 @@ def _check_public_edge_rule(
         )
     if invalid:
         errors.append(f"{address} does not match its reviewed {phase} rule")
+
+
+def _action_parameters_match(parameters: object, expected: dict[str, object]) -> bool:
+    """Accept provider-shaped nulls without permitting another configured action."""
+    return (
+        isinstance(parameters, dict)
+        and all(parameters.get(key) == value for key, value in expected.items())
+        and not any(value is not None and key not in expected for key, value in parameters.items())
+    )
 
 
 def _check_public_edge_resources(

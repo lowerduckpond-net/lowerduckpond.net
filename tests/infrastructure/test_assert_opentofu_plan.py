@@ -560,6 +560,31 @@ def test_allows_exact_proxied_public_edge_transition() -> None:
     assert_plan(_valid_public_edge_plan(), public_edge_transition="proxied")
 
 
+def test_allows_null_provider_fields_in_public_edge_action_parameters() -> None:
+    plan = _valid_public_edge_plan()
+    for resource in plan["resource_changes"]:
+        if resource["type"] != "cloudflare_ruleset":
+            continue
+        parameters = resource["change"]["after"]["rules"][0]["action_parameters"]
+        if isinstance(parameters, dict):
+            parameters["provider_computed_field"] = None
+
+    assert_plan(plan, public_edge_transition="proxied")
+
+
+def test_rejects_non_null_extra_public_edge_action_parameter() -> None:
+    plan = _valid_public_edge_plan()
+    ruleset = next(
+        resource
+        for resource in plan["resource_changes"]
+        if resource["address"].endswith("cloudflare_ruleset.cache_bypass[0]")
+    )
+    ruleset["change"]["after"]["rules"][0]["action_parameters"]["provider_computed_field"] = True
+
+    with pytest.raises(PlanPolicyError, match="reviewed http_request_cache_settings rule"):
+        assert_plan(plan, public_edge_transition="proxied")
+
+
 def test_rejects_public_edge_transition_without_explicit_mode() -> None:
     with pytest.raises(PlanPolicyError, match="require --public-edge-transition"):
         assert_plan(_valid_public_edge_plan())
