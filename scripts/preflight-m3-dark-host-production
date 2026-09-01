@@ -54,6 +54,21 @@ if ! ssh-keygen -F lowerduckpond.net >/dev/null; then
     exit 2
 fi
 
+production_ssh_host=${PRODUCTION_ORIGIN_IPV4:-lowerduckpond.net}
+if [[ ${production_ssh_host} != lowerduckpond.net ]]; then
+    if [[ ! ${production_ssh_host} =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+        echo "PRODUCTION_ORIGIN_IPV4 must be one IPv4 address." >&2
+        exit 2
+    fi
+    IFS=. read -r -a production_ssh_octets <<<"${production_ssh_host}"
+    for production_ssh_octet in "${production_ssh_octets[@]}"; do
+        if ((10#${production_ssh_octet} > 255)); then
+            echo "PRODUCTION_ORIGIN_IPV4 must be one IPv4 address." >&2
+            exit 2
+        fi
+    done
+fi
+
 working_directory=$(mktemp -d)
 cleanup() {
     chmod --recursive u+w "${working_directory}" 2>/dev/null || true
@@ -86,10 +101,11 @@ uv run \
 
 ssh \
     -o BatchMode=yes \
+    -o HostKeyAlias=lowerduckpond.net \
     -o IdentitiesOnly=yes \
     -o StrictHostKeyChecking=yes \
     -i "${ANSIBLE_PRIVATE_KEY_FILE}" \
-    ldp-admin@lowerduckpond.net \
+    "ldp-admin@${production_ssh_host}" \
     "sudo --non-interactive /bin/bash -s -- ${allow_failed_caddy_recovery}" <<'REMOTE'
 set -euo pipefail
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -12,6 +13,7 @@ IDENTITY_CHECKER = (REPOSITORY_ROOT / "scripts/check-m3-6-operator-identity").re
 PREFLIGHT = (REPOSITORY_ROOT / "scripts/preflight-m3-6-production").resolve()
 DARK_HOST_PREFLIGHT = (REPOSITORY_ROOT / "scripts/preflight-m3-dark-host-production").resolve()
 CONFIGURE = (REPOSITORY_ROOT / "scripts/configure-production").resolve()
+INVENTORY_READER = (REPOSITORY_ROOT / "scripts/read_production_ansible_inventory.py").resolve()
 SSH_KEYGEN = shutil.which("ssh-keygen")
 INPUT_ERROR_STATUS = 2
 
@@ -129,6 +131,15 @@ def test_production_convergence_repeats_the_m3_6_preflight() -> None:
     assert "--allow-exact-failed-caddy-recovery" in preflight
     assert "--allow-exact-failed-caddy-recovery" in dark_host_preflight
     assert '"${repository_root}/scripts/preflight-m3-dark-host-production"' not in configure
+    assert "output -json ansible_inventory" in configure
+    assert "export PRODUCTION_ORIGIN_IPV4" in configure
+    assert configure.index("output -json ansible_inventory") < configure.index(
+        '"${repository_root}/scripts/preflight-m3-6-production"'
+    )
+    assert "HostKeyAlias=lowerduckpond.net" in preflight
+    assert "HostKeyAlias=lowerduckpond.net" in dark_host_preflight
+    assert '"ldp-admin@${production_ssh_host}"' in preflight
+    assert '"ldp-admin@${production_ssh_host}"' in dark_host_preflight
     assert "-o IdentitiesOnly=yes" in preflight
     assert "-o IdentitiesOnly=yes" in dark_host_preflight
     assert "expected_state_inventory=" in preflight
@@ -158,6 +169,63 @@ def test_production_convergence_repeats_the_m3_6_preflight() -> None:
     assert "the Caddy recovery unit is not in its exact quiescent state" in dark_host_preflight
     assert "systemctl list-jobs --no-legend --plain" in dark_host_preflight
     assert 'caddy.service" || $2 == "caddy-recovery.service"' in dark_host_preflight
+
+
+def read_inventory(value: object) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(  # noqa: S603 -- reviewed repository helper.
+        [os.fspath(INVENTORY_READER)],
+        input=json.dumps(value),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_production_inventory_reader_accepts_the_exact_state_output() -> None:
+    result = read_inventory(
+        {
+            "all": {
+                "hosts": {
+                    "lowerduckpond_production_01": {
+                        "ansible_host": "157.230.203.161",
+                        "ansible_user": "ldp-admin",
+                        "private_ip": "10.10.0.2",
+                    }
+                }
+            }
+        }
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "157.230.203.161\n"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"extra": {}},
+        {"all": {"hosts": {}}},
+        {
+            "all": {
+                "hosts": {
+                    "lowerduckpond_production_01": {
+                        "ansible_host": "10.10.0.2",
+                        "ansible_user": "ldp-admin",
+                        "private_ip": "157.230.203.161",
+                    }
+                }
+            }
+        },
+    ],
+)
+def test_production_inventory_reader_rejects_shape_and_address_drift(
+    mutation: object,
+) -> None:
+    result = read_inventory(mutation)
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert result.stderr == "Production state returned an invalid Ansible inventory.\n"
 
 
 @pytest.mark.parametrize("script", [PREFLIGHT, DARK_HOST_PREFLIGHT])

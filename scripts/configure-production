@@ -8,9 +8,6 @@ inventory="${repository_root}/config/ansible/inventories/production/hosts.yml"
 site_playbook="${repository_root}/config/ansible/playbooks/site.yml"
 acceptance_playbook="${repository_root}/config/ansible/playbooks/acceptance.yml"
 
-"${repository_root}/scripts/preflight-m3-6-production" \
-    --allow-exact-failed-caddy-recovery
-
 required_environment=(
     ADMIN_SOURCE_CIDRS_JSON
     ANSIBLE_PRIVATE_KEY_FILE
@@ -40,7 +37,7 @@ if [[ ${CADDY_ORIGIN_PULL_ENFORCEMENT_ENABLED} != "true" &&
     exit 2
 fi
 
-for command_name in sha256sum ssh-keygen tofu uv; do
+for command_name in git sha256sum ssh-keygen tofu uv; do
     if ! command -v "${command_name}" >/dev/null 2>&1; then
         echo "Required command ${command_name} is not installed." >&2
         exit 2
@@ -61,6 +58,17 @@ MESSAGE
     exit 2
 fi
 
+git -C "${repository_root}" fetch --quiet origin main
+if [[ $(git -C "${repository_root}" branch --show-current) != main ]] ||
+   [[ -n $(git -C "${repository_root}" status --short) ]] ||
+   ! git -C "${repository_root}" show-ref --verify --quiet \
+       refs/remotes/origin/main ||
+   [[ $(git -C "${repository_root}" rev-parse HEAD) != \
+      $(git -C "${repository_root}" rev-parse origin/main) ]]; then
+    echo "Production convergence requires clean, current main." >&2
+    exit 2
+fi
+
 export AWS_ACCESS_KEY_ID=${OPENTOFU_STATE_ACCESS_KEY_ID}
 export AWS_SECRET_ACCESS_KEY=${OPENTOFU_STATE_SECRET_ACCESS_KEY}
 export TF_VAR_state_encryption_passphrase=${OPENTOFU_ENCRYPTION_PASSPHRASE}
@@ -76,6 +84,16 @@ tofu -chdir="${production_root}" init -input=false -reconfigure \
     -backend-config="skip_region_validation=true" \
     -backend-config="skip_s3_checksum=true" \
     -backend-config="use_lockfile=false"
+
+if ! production_origin_ipv4=$(tofu -chdir="${production_root}" \
+    output -json ansible_inventory | uv run --quiet python \
+    "${repository_root}/scripts/read_production_ansible_inventory.py"); then
+    exit 1
+fi
+export PRODUCTION_ORIGIN_IPV4=${production_origin_ipv4}
+
+"${repository_root}/scripts/preflight-m3-6-production" \
+    --allow-exact-failed-caddy-recovery
 
 export SPACES_BACKUP_ACCESS_KEY_ID
 SPACES_BACKUP_ACCESS_KEY_ID=$(tofu -chdir="${production_root}" \

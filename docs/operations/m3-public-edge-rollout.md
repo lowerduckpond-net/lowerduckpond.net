@@ -289,8 +289,11 @@ for a later boundary from an earlier one.
    address authenticity, exact representations, strict host handling, and
    continued direct-origin availability for rollback.
 4. With `CADDY_ORIGIN_PULL_ENFORCEMENT_ENABLED=true`, run the separately
-   authorized guarded production convergence. Prove edge requests succeed and
-   direct requests without the project leaf fail.
+   authorized guarded production convergence. The wrapper reads the reserved
+   origin IPv4 address from the exact encrypted-state inventory and pins its
+   SSH host-key identity to `lowerduckpond.net`, so proxied DNS is not used for
+   administrative transport. Prove edge requests succeed and direct requests
+   without the project leaf fail.
 5. Dispatch and apply the separately reviewed `enforced` plan with
    `origin_pull_host_state=required`. This narrows DigitalOcean ingress to the
    same committed Cloudflare network union already used by the host and Caddy.
