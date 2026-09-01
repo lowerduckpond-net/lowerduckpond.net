@@ -55,13 +55,15 @@ if [[ ! ${artifact_digest} =~ ^[0-9a-f]{64}$ ]]; then
     echo "The M3.5 preflight did not report one valid artifact digest." >&2
     exit 1
 fi
+production_ssh_host=${PRODUCTION_ORIGIN_IPV4:-lowerduckpond.net}
 
 ssh \
     -o BatchMode=yes \
+    -o HostKeyAlias=lowerduckpond.net \
     -o IdentitiesOnly=yes \
     -o StrictHostKeyChecking=yes \
     -i "${ANSIBLE_PRIVATE_KEY_FILE}" \
-    ldp-admin@lowerduckpond.net \
+    "ldp-admin@${production_ssh_host}" \
     "sudo --non-interactive /bin/bash -s -- ${artifact_digest}" <<'REMOTE'
 set -euo pipefail
 export LC_ALL=C

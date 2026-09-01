@@ -119,7 +119,13 @@ just configure-production
 ```
 
 The command performs a read-only OpenTofu state initialization and output
-read; it never plans or applies infrastructure. It then:
+read; it never plans or applies infrastructure. The wrapper validates the
+exact machine-readable Ansible inventory in
+encrypted production state and connects to its reserved origin IPv4 address.
+SSH still verifies that address against the independently pinned
+`lowerduckpond.net` host-key identity. This keeps convergence available after
+the public DNS records are proxied without weakening host-key checking or
+requiring an operator-maintained address override. It then:
 
 1. converges the hosting node;
 2. converges it again and requires `changed=0`;
