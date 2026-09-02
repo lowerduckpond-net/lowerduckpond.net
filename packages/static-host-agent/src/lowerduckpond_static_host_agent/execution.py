@@ -166,6 +166,14 @@ class AuthorizationExecutor:
                     )
                 )
             except IntakeArtifactUnavailableError:
+                recovered = self._recover_claimed_lifecycle_without_artifact(
+                    canonical_id,
+                    initial,
+                    handler=handler,
+                    blocking=blocking,
+                )
+                if recovered is not None:
+                    return recovered
                 return self._fail_without_claim(
                     canonical_id,
                     initial,
@@ -185,6 +193,41 @@ class AuthorizationExecutor:
             )
             claim.consume()
             return outcome
+
+    def _recover_claimed_lifecycle_without_artifact(
+        self,
+        job_id: str,
+        initial: StoredContract,
+        *,
+        handler: LifecycleJobHandler | None,
+        blocking: bool,
+    ) -> ExecutionOutcome | None:
+        with self._repository.transaction(
+            mode=LockMode.EXCLUSIVE,
+            blocking=blocking,
+        ) as transaction:
+            current = transaction.read(StateRecordPath.authorization_job(job_id))
+            _require_same_authority(initial.document, current.document)
+            if current.document["phase"] != "claimed":
+                return None
+            _validate_request_integrity(current.document)
+            _request, intents = _bound_lifecycle_intents(transaction, current.document)
+            if not intents:
+                raise ExecutionError("claimed artifact job has no active lifecycle recovery intent")
+            _require_available_lifecycle_handler(True, handler)
+            existing = _read_result_transaction(transaction, job_id)
+            if existing is not None:
+                _validate_result_binding(current.document, existing.document)
+                _validate_result_intent_binding(existing.document, _request, intents)
+        if handler is None:  # pragma: no cover - active intent requires a handler
+            raise ExecutionError("authorization handler selection was lost")
+        return self._execute_handler(
+            job_id,
+            initial,
+            handler,
+            claim=None,
+            blocking=blocking,
+        )
 
     def _replay_existing_result(
         self,
@@ -476,16 +519,20 @@ def _validate_job_integrity(
     *,
     claim: ArtifactClaim | None,
 ) -> None:
-    request = job["request"]
-    if type(request) is not dict:  # pragma: no cover - schema validation proves this
-        raise ExecutionError("authorization job request is not an object")
-    if request_digest(request).to_dict() != job["requestDigest"]:
-        raise ExecutionError("authorization request digest does not match its envelope")
+    _validate_request_integrity(job)
     declared = _job_artifact(job)
     if (declared is None) != (claim is None):
         raise ExecutionError("authorization artifact presence does not match its envelope")
     if declared is not None and claim is not None and claim.artifact.verified != declared:
         raise ExecutionError("claimed artifact does not match its authorization envelope")
+
+
+def _validate_request_integrity(job: dict[str, object]) -> None:
+    request = job["request"]
+    if type(request) is not dict:  # pragma: no cover - schema validation proves this
+        raise ExecutionError("authorization job request is not an object")
+    if request_digest(request).to_dict() != job["requestDigest"]:
+        raise ExecutionError("authorization request digest does not match its envelope")
 
 
 def _expected_source_error(
@@ -594,6 +641,16 @@ def _has_bound_lifecycle_intent(
     *,
     result: dict[str, object],
 ) -> bool:
+    request, matching_intents = _bound_lifecycle_intents(transaction, job)
+    if matching_intents:
+        _validate_result_intent_binding(result, request, matching_intents)
+    return bool(matching_intents)
+
+
+def _bound_lifecycle_intents(
+    transaction: ExecutionTransaction,
+    job: dict[str, object],
+) -> tuple[dict[str, object], list[dict[str, object]]]:
     request = job["request"]
     if type(request) is not dict:  # pragma: no cover - validated reads prove this
         raise ExecutionError("authorization job request is not an object")
@@ -622,9 +679,7 @@ def _has_bound_lifecycle_intent(
             raise ExecutionError("authorization job repeats one lifecycle intent kind")
         matching_kinds.add(kind)
         matching_intents.append(intent.document)
-    if matching_intents:
-        _validate_result_intent_binding(result, request, matching_intents)
-    return bool(matching_kinds)
+    return request, matching_intents
 
 
 def _require_available_lifecycle_handler(

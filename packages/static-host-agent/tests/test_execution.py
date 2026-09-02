@@ -1509,6 +1509,102 @@ def test_executor_fails_terminally_when_bound_artifact_is_absent(tmp_path: Path)
     assert outcome.result["errorCode"] == "invalid_artifact"
 
 
+def test_executor_recovers_a_claimed_lifecycle_job_without_its_artifact(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    manifest = _fixture("site.json")
+    source_digest = manifest_digest(manifest).to_dict()
+    candidate_manifest = json.loads(json.dumps(manifest))
+    candidate_spec = candidate_manifest["spec"]
+    assert type(candidate_spec) is dict
+    candidate_deployment = candidate_spec["desiredDeployment"]
+    assert type(candidate_deployment) is dict
+    candidate_deployment["id"] = "0198d17f-6f4a-7000-8000-000000000005"
+    candidate_deployment["archiveSha256"] = "d" * 64
+    candidate_digest = manifest_digest(candidate_manifest).to_dict()
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), manifest)
+    _write(
+        root,
+        StateRecordPath.tenant_deployment(_TENANT_ID, _DEPLOYMENT_ID),
+        _fixture("deployment-record.json"),
+    )
+    artifact = VerifiedArtifact(32, "d" * 64)
+    correlation_id = "0198d17f-6f4a-7000-8000-000000000003"
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "deploy",
+        "correlationId": correlation_id,
+        "tenantId": _TENANT_ID,
+        "artifact": {"size": artifact.size, "sha256": artifact.sha256},
+    }
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued = AuthorizationIssuer(
+            repository,
+            gate=_OpenGate(),
+            entropy=_Entropy(),
+        ).issue(
+            canonical_json_bytes(request),
+            operator_principal="operator@example.test",
+            now=_NOW,
+            artifact=artifact,
+        )
+        job = repository.read(StateRecordPath.authorization_job(issued.job_id))
+        claimed = job.document
+        claimed["phase"] = "claimed"
+        repository.compare_and_swap(
+            StateRecordPath.authorization_job(issued.job_id),
+            job.revision,
+            claimed,
+        )
+        source_observed = _fixture("tenant-observed-state.json")
+        source_observed["desiredManifestDigest"] = source_digest
+        candidate_observed = json.loads(json.dumps(source_observed))
+        candidate_observed["desiredManifestDigest"] = candidate_digest
+        candidate_observed["activeDeploymentId"] = candidate_deployment["id"]
+        candidate_observed["runtimeGenerationId"] = "0198d17f-6f4a-7000-8000-000000000006"
+        intent = _fixture("transaction-intent.json")
+        intent.update(
+            {
+                "tenantId": _TENANT_ID,
+                "correlationId": correlation_id,
+                "operation": "deploy",
+                "sourceManifestDigest": source_digest,
+                "candidateManifestDigest": candidate_digest,
+                "lifecycleRecovery": {
+                    "sourceObservedState": source_observed,
+                    "sourceRuntimeGenerationId": ("0198d17f-6f4a-7000-8000-000000000004"),
+                    "sourceRouteSet": "both",
+                    "candidateObservedState": candidate_observed,
+                    "candidateRuntimeGenerationId": ("0198d17f-6f4a-7000-8000-000000000006"),
+                    "candidateRouteSet": "both",
+                },
+            }
+        )
+        repository.create_immutable(
+            StateRecordPath.transaction_intent(intent["intentId"]),
+            intent,
+        )
+        handler = _CompletingFailureHandler(repository)
+
+        outcome = AuthorizationExecutor(
+            repository,
+            intake,
+            handlers={"deploy": handler},
+        ).execute(issued.job_id)
+        terminal = repository.read(StateRecordPath.authorization_job(issued.job_id)).document
+
+    assert outcome.result["errorCode"] == "not_implemented"
+    assert terminal["phase"] == "failed"
+    assert handler.claims == [None]
+
+
 def test_executor_repairs_a_terminal_result_published_before_job_phase(
     tmp_path: Path,
 ) -> None:
