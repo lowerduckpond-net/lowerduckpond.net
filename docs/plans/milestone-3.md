@@ -1,7 +1,7 @@
 # Milestone 3 implementation plan
 
-- Status: implementation in progress; M3.0 through M3.4 complete
-- Updated: 2026-08-29
+- Status: implementation in progress; M3.0 through M3.7 complete
+- Updated: 2026-09-02
 - Outcome: deliver the complete static-tenant lifecycle through the trusted
   workstation without enabling the Milestone 4 public control plane
 
@@ -219,8 +219,8 @@ empty, and independently confirmed the Droplet, firewall, project assignment,
 four DNS records, four Authenticated Origin Pulls associations, six rulesets,
 ACME records, and four uploaded leaves absent. Both temporary Cloudflare tokens
 were revoked and disposable trusted-workstation material was removed. The
-backed-up CA roots remain retained pending the production-CA decision required
-before M3.12. M3.1 through M3.6 subsequently completed, and M3.7 is the next
+backed-up CA roots remain retained as qualification-only material. M3.1 through
+M3.7 subsequently completed, and M3.8 is the next
 implementation phase; the M3.0 result does not enable production or satisfy
 any later Milestone 3 gate.
 
@@ -318,7 +318,7 @@ and an independent version-aware and multipart-aware probe proved the entire
 archive bucket empty. Protected run `33219502391` then passed ordinary
 production policy and reported no changes with the migration flag disabled.
 The archive credential remains in operator custody and off the production host
-until M3.10. M3.2 through M3.6 subsequently completed, and M3.7 is the next
+until M3.10. M3.2 through M3.7 subsequently completed, and M3.8 is the next
 implementation phase; M3.1 does not enable production or satisfy any later
 Milestone 3 gate.
 
@@ -715,7 +715,8 @@ production flag rejected before request intake or state allocation. The
 private operator key and its passphrase are backed up separately, only its
 public half is installed, and the stable audit principal is the non-personal
 role alias `production-static-operator`. Production publication remains
-disabled, and M3.7 is the next implementation phase.
+disabled. M3.7 subsequently completed, and M3.8 is the next implementation
+phase.
 
 The first review boundary installed the dedicated,
 password-disabled SSH identity, root-owned key binding and principal,
@@ -817,13 +818,29 @@ state stays intact and `ldp-admin` remains usable.
 
 ### M3.7: replace mutable Caddy inputs with complete generations
 
-Implementation status: the immutable-generation, platform-only route,
-bootstrap, two-zone public-edge, reviewed-network, protected workflow, and
-read-only production-preflight boundaries are implemented. Production remains
-direct, origin-pull enforcement remains disabled, and static publication
-remains disabled. Complete the external CA/leaf custody steps and the M3.7
-read-only starting gate before separately authorizing any production
-convergence or protected edge transition.
+Implementation status (2026-09-02): complete. A dedicated production CA and
+one selected account-specific leaf per zone were created under separate
+operator custody. Protected plan/apply runs `33465700316` and `33467680759`
+moved both zones behind the proxied edge from source revision
+`0f897f6648e5e7e6b2425aa9b92db22c32003483`. Guarded host convergence then
+required origin-pull authentication while retaining the disabled publication
+gate. Protected plan/apply runs `33570512670` and `33570902467` narrowed
+production ingress to the reviewed Cloudflare network union from source
+revision `ee6a60b36db40d5aaab4a6c2dacfb83fa0ef4d7d`.
+
+The final live gate proved both zones through Full (strict), account-specific
+Authenticated Origin Pulls, cache and transformation policy, exact
+representations, strict host handling, authentic forwarded addresses,
+Cloudflare-only ingress, direct-origin denial, disabled tenant publication,
+reboot recovery, and unchanged selected generation. The corrected
+reserved-namespace proof distinguishes Cloudflare's provider-owned lowercase
+trace from WAF-eligible tenant paths and proved that neither outcome reached
+Caddy. Final protected plan run `33582756829` resolved the exact merged-main
+state to `enforced`, reported no changes, and passed production policy. The two
+temporary Cloudflare tokens were revoked and the four working leaf-key and CSR
+files were removed after their retained public certificates, certificate IDs,
+CA material, and separate backups were confirmed. Static publication remains
+disabled, and M3.8 is the next implementation phase.
 
 Extend the production OpenTofu stack with a second instance of the existing
 Cloudflare DNS module for the `lowerduckpond.com` apex and wildcard, then evolve

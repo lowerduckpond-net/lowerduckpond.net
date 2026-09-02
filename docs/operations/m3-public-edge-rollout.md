@@ -1,9 +1,8 @@
 # M3.7 production public-edge rollout
 
-> **Status: implementation complete; production is still direct and dark.**
-> Complete the read-only starting gate on clean, current `main`, then stop for
-> explicit authorization before the first host convergence or protected edge
-> plan. Static publication remains disabled throughout M3.7.
+> **Status: M3.7 production rollout complete as of 2026-09-02.** Both zones
+> use the enforced Cloudflare edge and the production host retains the complete
+> platform-only generation. Static publication remains disabled.
 
 M3.7 replaces the production Caddy runtime with complete immutable generations
 and moves the two public zones behind the reviewed Cloudflare edge. The live
@@ -308,6 +307,32 @@ for a later boundary from an earlier one.
    an unpredictable query marker to every request, and fails closed unless a
    bounded, host-key-pinned read of the Caddy journal proves that marker absent.
    Revoke the temporary certificate-lifecycle token before its deadline.
+
+## Completion record
+
+Protected plan/apply runs `33465700316` and `33467680759` established the
+proxied phase from source revision
+`0f897f6648e5e7e6b2425aa9b92db22c32003483`. After guarded host convergence
+required the selected production CA, protected plan/apply runs `33570512670`
+and `33570902467` established the enforced phase from source revision
+`ee6a60b36db40d5aaab4a6c2dacfb83fa0ef4d7d`.
+
+The post-enforcement gate proved successful edge responses for both zones,
+direct-origin denial, authentic forwarded addresses, exact representations,
+browser cookie isolation, disabled tenant publication, reboot recovery, and an
+unchanged selected generation. The production reserved-namespace check from
+source revision `e831f1953e6557a7da4602371c5e33bc5da8e660` proved WAF denial
+for blockable paths and proved that Cloudflare's provider-owned lowercase
+trace did not reach Caddy. No trace fields or visitor addresses entered the
+sanitized evidence. Final protected plan run `33582756829` then resolved the
+existing edge phase to `enforced`, reported no changes from that exact merged
+revision, and passed ordinary production policy.
+
+After acceptance, the operator revoked both temporary Cloudflare tokens and
+removed the two leaf private keys and CSRs from the workstation. The public
+leaves, certificate-ID file, production CA certificate, encrypted CA key,
+serial, and their separate backups remain in operator custody for future
+rotation.
 
 Rollback from `enforced` first applies the reviewed `proxied` phase, then
 converges the host with enforcement false, and only then applies `direct` with
