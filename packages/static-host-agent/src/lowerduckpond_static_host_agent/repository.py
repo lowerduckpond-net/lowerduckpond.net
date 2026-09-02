@@ -41,7 +41,12 @@ from lowerduckpond_static_host_agent.capacity import (
     measure_filesystem_capacity_descriptor,
 )
 from lowerduckpond_static_host_agent.durable import DurableDirectory, FailureHook
-from lowerduckpond_static_host_agent.locks import LockManager, LockMode, LockName
+from lowerduckpond_static_host_agent.locks import (
+    LockManager,
+    LockMode,
+    LockName,
+    LockRequest,
+)
 from lowerduckpond_static_host_agent.state_inventory import (
     DEFAULT_INTENT_INVENTORY_LIMITS,
     DEFAULT_STATE_INVENTORY_LIMITS,
@@ -487,6 +492,41 @@ class StateRepository:
                 yield transaction
             finally:
                 transaction._close()
+
+    @contextmanager
+    def publication_transaction(
+        self,
+        *,
+        mode: LockMode = LockMode.EXCLUSIVE,
+        blocking: bool = False,
+    ) -> Iterator[_StateTransaction]:
+        """Hold publication before tenant-state for one coherent lifecycle mutation."""
+
+        self._require_open()
+        with self._locks.acquire_many(
+            (
+                LockRequest(LockName.PUBLICATION, LockMode.EXCLUSIVE),
+                LockRequest(LockName.TENANT_STATE, mode),
+            ),
+            blocking=blocking,
+        ):
+            transaction = _StateTransaction(self, mode=mode)
+            try:
+                yield transaction
+            finally:
+                transaction._close()
+
+    def require_held(
+        self,
+        name: LockName,
+        *,
+        mode: LockMode | None = None,
+        descriptor: int | None = None,
+    ) -> None:
+        """Prove a repository-owned lock and optional inode are held now."""
+
+        self._require_open()
+        self._locks.require_held(name, mode=mode, descriptor=descriptor)
 
     def read(self, path: StateRecordPath, *, blocking: bool = False) -> StoredContract:
         with self.transaction(mode=LockMode.SHARED, blocking=blocking) as transaction:
