@@ -15,6 +15,7 @@ from lowerduckpond_static_host_agent import (
     AuthorizationExecutor,
     AuthorizationIssuer,
     CapacityProjection,
+    ExecutionOutcome,
     FilesystemCapacity,
     IssuedAuthorization,
     LockManager,
@@ -59,13 +60,14 @@ class _CompletingCreateHandler:
         *,
         claim: ArtifactClaim | None,
         blocking: bool,
-    ) -> dict[str, object]:
+    ) -> ExecutionOutcome:
         job = self._repository.read(
             StateRecordPath.authorization_job(job_id),
             blocking=blocking,
         )
         self.phases.append(job.document["phase"])
         self.claims.append(claim)
+        created = False
         try:
             result = self._repository.read(
                 StateRecordPath.authorization_result(job_id),
@@ -85,6 +87,7 @@ class _CompletingCreateHandler:
                     result,
                     blocking=blocking,
                 )
+                created = True
         if self._commit_job:
             current = self._repository.read(
                 StateRecordPath.authorization_job(job_id),
@@ -98,7 +101,7 @@ class _CompletingCreateHandler:
                 completed,
                 blocking=blocking,
             )
-        return result
+        return ExecutionOutcome(result, created)
 
 
 class _CompletingFailureHandler:
@@ -112,7 +115,7 @@ class _CompletingFailureHandler:
         *,
         claim: ArtifactClaim | None,
         blocking: bool,
-    ) -> dict[str, object]:
+    ) -> ExecutionOutcome:
         self.claims.append(claim)
         job = self._repository.read(
             StateRecordPath.authorization_job(job_id),
@@ -143,7 +146,7 @@ class _CompletingFailureHandler:
             failed,
             blocking=blocking,
         )
-        return result
+        return ExecutionOutcome(result, True)
 
 
 @pytest.fixture(autouse=True)
@@ -463,6 +466,7 @@ def test_executor_uses_bound_intent_not_error_code_to_select_handler_replay(
         ).execute(issued.job_id)
 
     assert outcome.result == result
+    assert outcome.created is False
     assert handler.phases == ["claimed"]
 
 

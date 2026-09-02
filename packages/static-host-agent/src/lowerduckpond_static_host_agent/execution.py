@@ -110,7 +110,7 @@ class LifecycleJobHandler(Protocol):
         *,
         claim: ArtifactClaim | None,
         blocking: bool,
-    ) -> dict[str, object]: ...
+    ) -> ExecutionOutcome: ...
 
 
 class AuthorizationExecutor:
@@ -166,7 +166,6 @@ class AuthorizationExecutor:
                     initial,
                     handler,
                     claim=None,
-                    created=False,
                     blocking=blocking,
                 )
                 self._consume_terminal_artifact(initial.document, blocking=blocking)
@@ -239,7 +238,6 @@ class AuthorizationExecutor:
         blocking: bool,
     ) -> ExecutionOutcome:
         path = StateRecordPath.authorization_job(job_id)
-        created = True
         with self._repository.transaction(
             mode=LockMode.EXCLUSIVE,
             blocking=blocking,
@@ -254,7 +252,6 @@ class AuthorizationExecutor:
                 ):
                     result = _repair_terminal_phase_transaction(transaction, current, existing)
                     return ExecutionOutcome(result, False)
-                created = False
             else:
                 _validate_job_integrity(current.document, claim=claim)
                 if current.document["phase"] == "pending":
@@ -282,24 +279,22 @@ class AuthorizationExecutor:
             initial,
             handler,
             claim=claim,
-            created=created,
             blocking=blocking,
         )
 
-    def _execute_handler(  # noqa: PLR0913 - handler trust inputs stay explicit
+    def _execute_handler(
         self,
         job_id: str,
         initial: StoredContract,
         handler: LifecycleJobHandler,
         *,
         claim: ArtifactClaim | None,
-        created: bool,
         blocking: bool,
     ) -> ExecutionOutcome:
         returned = handler.execute(job_id, claim=claim, blocking=blocking)
-        if type(returned) is not dict:
-            raise ExecutionError("lifecycle handler returned a malformed result")
-        result = deepcopy(returned)
+        if type(returned) is not ExecutionOutcome:
+            raise ExecutionError("lifecycle handler returned a malformed outcome")
+        result = deepcopy(returned.result)
         validate_contract(result, expected_kind=ContractKind.OPERATION_RESULT)
         with self._repository.transaction(
             mode=LockMode.EXCLUSIVE,
@@ -314,7 +309,7 @@ class AuthorizationExecutor:
             expected_phase = "completed" if result["status"] == "succeeded" else "failed"
             if current.document["phase"] != expected_phase:
                 raise ExecutionError("lifecycle handler returned before terminal job commit")
-        return ExecutionOutcome(result, created)
+        return ExecutionOutcome(result, returned.created)
 
     def _handler_for(self, job: dict[str, object]) -> LifecycleJobHandler | None:
         request = job["request"]
