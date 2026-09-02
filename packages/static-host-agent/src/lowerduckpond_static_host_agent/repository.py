@@ -961,6 +961,15 @@ class _StateTransaction:
                 matching += 1
         if matching != 1 or len(inventory.records) != 1:
             raise StateRecordError("tenant namespace requires one matching active create intent")
+        intents = self._repository._durable.open_descendant(("intents",))
+        try:
+            descriptor = intents.duplicate_descriptor()
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        finally:
+            intents.close()
 
     def _create_immutable_bytes(
         self,

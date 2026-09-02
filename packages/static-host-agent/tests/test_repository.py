@@ -409,6 +409,33 @@ def test_tenant_namespace_requires_and_preserves_one_create_intent(
     )
 
 
+def test_tenant_namespace_syncs_its_validated_intent_before_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _state_root(tmp_path)
+    tenant_id, intent = _create_intent()
+    intents_inode = (root / "intents").stat().st_ino
+    synced_inodes: list[int] = []
+    original_fsync = os.fsync
+
+    def record_fsync(descriptor: int) -> None:
+        synced_inodes.append(os.fstat(descriptor).st_ino)
+        original_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", record_fsync)
+
+    with _repository(root) as repository, repository.publication_transaction() as transaction:
+        transaction.create_immutable(
+            StateRecordPath.transaction_intent(intent["intentId"]),
+            intent,
+        )
+        synced_inodes.clear()
+        transaction.ensure_create_tenant_namespace(tenant_id)
+
+    assert synced_inodes[0] == intents_inode
+
+
 @pytest.mark.parametrize(
     "boundary",
     [
