@@ -15,7 +15,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Collection, Iterator, Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from enum import StrEnum
@@ -519,6 +519,28 @@ class CaddyRuntime:
                 with suppress(FileNotFoundError):
                     os.unlink(temporary_name, dir_fd=self._root_fd)
                     os.fsync(self._root_fd)
+
+    def prune_unreferenced_generations(
+        self,
+        protected_generation_ids: Collection[str],
+        *,
+        keep_newest_unprotected: int = 0,
+    ) -> tuple[str, ...]:
+        """Retain active, explicit recovery targets, and optional predecessor."""
+
+        self._require_locked()
+        protected = {
+            _canonical_generation_id(generation_id) for generation_id in protected_generation_ids
+        }
+        protected.add(self.read_active())
+        store = self._open_generation_store()
+        try:
+            return store.prune_unreferenced(
+                protected,
+                keep_newest_unprotected=keep_newest_unprotected,
+            )
+        finally:
+            store.close()
 
     def remove_abandoned_reference_temporaries(
         self,

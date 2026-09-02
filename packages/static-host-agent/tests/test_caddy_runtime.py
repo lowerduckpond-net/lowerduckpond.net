@@ -577,6 +577,51 @@ def test_runtime_counts_every_existing_generation_before_candidate_admission(
             )
 
 
+def test_runtime_prunes_only_generations_outside_active_and_recovery_set(
+    runtime_fixture: RuntimeFixture,
+) -> None:
+    with runtime_fixture.open() as runtime, runtime.locked():
+        runtime.select_active(GENERATION_A)
+
+        assert runtime.prune_unreferenced_generations((GENERATION_B,)) == ()
+        assert runtime.read_active() == GENERATION_A
+        assert runtime.prune_unreferenced_generations(()) == (GENERATION_B,)
+        assert runtime.read_active() == GENERATION_A
+
+    with CaddyGenerationStore.open(
+        runtime_fixture.root / "generations",
+        expected_owner=runtime_fixture.owner,
+        expected_group=runtime_fixture.group,
+    ) as store:
+        assert store.list_verified() == (GENERATION_A,)
+
+
+def test_runtime_can_retain_one_last_known_good_generation(
+    runtime_fixture: RuntimeFixture,
+) -> None:
+    with runtime_fixture.open() as runtime, runtime.locked():
+        runtime.select_active(GENERATION_A)
+
+        assert runtime.prune_unreferenced_generations((), keep_newest_unprotected=1) == ()
+
+    with CaddyGenerationStore.open(
+        runtime_fixture.root / "generations",
+        expected_owner=runtime_fixture.owner,
+        expected_group=runtime_fixture.group,
+    ) as store:
+        assert store.list_verified() == (GENERATION_A, GENERATION_B)
+
+
+def test_runtime_generation_pruning_requires_publication_lock(
+    runtime_fixture: RuntimeFixture,
+) -> None:
+    with (
+        runtime_fixture.open() as runtime,
+        pytest.raises(CaddyRuntimeError, match="publication lock"),
+    ):
+        runtime.prune_unreferenced_generations(())
+
+
 def test_held_lock_context_fails_busy_instead_of_inverting_the_process_mutex(
     runtime_fixture: RuntimeFixture,
 ) -> None:
