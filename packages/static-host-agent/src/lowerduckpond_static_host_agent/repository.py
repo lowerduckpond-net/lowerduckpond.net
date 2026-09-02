@@ -877,6 +877,57 @@ class _StateTransaction:
         finally:
             tenant_root.close()
 
+    def measure_create_tenant_namespace_growth(self, tenant_id: object) -> int:
+        """Return the exact missing directory count for create replay admission."""
+
+        self._require_exclusive()
+        canonical_id = validate_uuid7(tenant_id)
+        self._require_create_intent(canonical_id)
+        tenant_root = self._repository._durable.open_descendant(("tenants",))
+        try:
+            root_fd = tenant_root.duplicate_descriptor()
+            try:
+                try:
+                    tenant_fd = os.open(
+                        canonical_id,
+                        _DIRECTORY_OPEN_FLAGS,
+                        dir_fd=root_fd,
+                    )
+                except FileNotFoundError:
+                    return 1 + len(_TENANT_CHILD_DIRECTORIES)
+                try:
+                    validate_state_directory(
+                        tenant_fd,
+                        expected_owner=self._repository._expected_owner,
+                        expected_mode=self._repository._expected_directory_mode,
+                    )
+                    missing = 0
+                    for name in _TENANT_CHILD_DIRECTORIES:
+                        try:
+                            child_fd = os.open(
+                                name,
+                                _DIRECTORY_OPEN_FLAGS,
+                                dir_fd=tenant_fd,
+                            )
+                        except FileNotFoundError:
+                            missing += 1
+                            continue
+                        try:
+                            validate_state_directory(
+                                child_fd,
+                                expected_owner=self._repository._expected_owner,
+                                expected_mode=self._repository._expected_directory_mode,
+                            )
+                        finally:
+                            os.close(child_fd)
+                    return missing
+                finally:
+                    os.close(tenant_fd)
+            finally:
+                os.close(root_fd)
+        finally:
+            tenant_root.close()
+
     def remove_empty_create_tenant_namespace(
         self,
         tenant_id: object,

@@ -120,6 +120,11 @@ from lowerduckpond_static_host_agent.correlations import (
     CorrelationReconciliation,
     CorrelationResolution,
 )
+from lowerduckpond_static_host_agent.create_commit import (
+    CreateCommitBoundary,
+    CreateCommitError,
+    finalize_create_transition,
+)
 from lowerduckpond_static_host_agent.durable import (
     DurabilityBoundary,
     DurableDirectory,
@@ -356,6 +361,8 @@ __all__ = [
     "CorrelationRateLimitError",
     "CorrelationReconciliation",
     "CorrelationResolution",
+    "CreateCommitBoundary",
+    "CreateCommitError",
     "CreateStateBoundary",
     "CreateTransitionPlan",
     "DeadlineReader",
@@ -465,6 +472,7 @@ __all__ = [
     "digest_path",
     "ensure_platform_generation",
     "extract_deployment_zip",
+    "finalize_create_transition",
     "import_portable_bundle",
     "inspect_deployment_zip",
     "inspect_portable_bundle",
