@@ -913,6 +913,81 @@ def test_executor_recognizes_archive_intent_paths_for_handler_replay(
     assert handler.phases == ["failed"]
 
 
+def test_executor_binds_a_successful_archive_result_to_its_construction_intent(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    job = _fixture("authorization-job.json")
+    intent = _fixture("archive-construction-intent.json")
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "archive",
+        "correlationId": intent["correlationId"],
+        "tenantId": intent["tenantId"],
+    }
+    job["request"] = request
+    job["requestDigest"] = request_digest(request).to_dict()
+    job["phase"] = "claimed"
+    expected = job["expectedSource"]
+    assert type(expected) is dict
+    expected.update(
+        {
+            "expectsTenantAbsent": False,
+            "lifecycle": "active",
+            "manifestDigest": intent["sourceManifestDigest"],
+            "deploymentDigest": intent["deploymentRecordDigest"],
+            "archiveRecordDigest": None,
+        }
+    )
+    correlation = json.loads(json.dumps(job))
+    correlation["phase"] = "pending"
+    manifest = _fixture("site.json")
+    spec = manifest["spec"]
+    metadata = manifest["metadata"]
+    assert type(spec) is dict
+    assert type(metadata) is dict
+    spec["desiredState"] = "archived"
+    result: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationResult",
+        "provenance": {"kind": "authorization-job", "jobId": job["jobId"]},
+        "correlationId": request["correlationId"],
+        "operation": "archive",
+        "status": "succeeded",
+        "tenantId": request["tenantId"],
+        "canonicalOrigin": metadata["canonicalOrigin"],
+        "manifest": manifest,
+    }
+    assert manifest_digest(manifest).to_dict() != intent["candidateManifestDigest"]
+    _write(root, StateRecordPath.authorization_job(job["jobId"]), job)
+    _write(
+        root,
+        StateRecordPath.authorization_correlation(request["correlationId"]),
+        correlation,
+    )
+    _write(
+        root,
+        StateRecordPath.archive_construction_intent(intent["intentId"]),
+        intent,
+    )
+    _write(root, StateRecordPath.authorization_result(job["jobId"]), result)
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        handler = _CompletingCreateHandler(repository)
+        with pytest.raises(RuntimeError, match="construction intent"):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={"archive": handler},
+            ).execute(job["jobId"])
+
+    assert handler.phases == []
+
+
 def test_executor_dispatches_a_claimed_job_without_rechecking_its_source(
     tmp_path: Path,
 ) -> None:
