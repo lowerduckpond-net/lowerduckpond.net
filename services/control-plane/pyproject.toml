@@ -4,7 +4,7 @@ version = "0.0.0"
 description = "Public control-plane service for Lower Duck Pond Hosting"
 requires-python = ">=3.14,<3.15"
 dependencies = [
-  "fastapi>=0.140.8,<0.141",
+  "fastapi>=0.140.8,<0.142",
   "sqlalchemy>=2.0.51,<2.1",
   "uvicorn>=0.35.0,<1",
 ]
