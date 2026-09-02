@@ -139,70 +139,13 @@ class AuthorizationExecutor:
         handler = self._handler_for(initial.document)
         existing = self._read_result(canonical_id, blocking=blocking)
         if existing is not None:
-            result: dict[str, object] | None = None
-            with self._repository.transaction(
-                mode=LockMode.EXCLUSIVE,
+            return self._replay_existing_result(
+                canonical_id,
+                initial,
+                existing,
+                handler=handler,
                 blocking=blocking,
-            ) as transaction:
-                current = transaction.read(path)
-                _require_same_authority(initial.document, current.document)
-                durable = _read_result_transaction(transaction, canonical_id)
-                if durable is None or durable.document != existing.document:
-                    raise ExecutionError("terminal result changed during replay")
-                _validate_result_binding(current.document, durable.document)
-                has_lifecycle_intent = _has_bound_lifecycle_intent(
-                    transaction,
-                    current.document,
-                    result=durable.document,
-                )
-                _require_available_lifecycle_handler(has_lifecycle_intent, handler)
-                dispatch = has_lifecycle_intent
-                if not dispatch:
-                    result = _repair_terminal_phase_transaction(
-                        transaction,
-                        current,
-                        durable,
-                    )
-            if dispatch:
-                if handler is None:  # pragma: no cover - dispatch proves a handler
-                    raise ExecutionError("authorization handler selection was lost")
-                artifact = _job_artifact(initial.document)
-                if artifact is None:
-                    return self._execute_handler(
-                        canonical_id,
-                        initial,
-                        handler,
-                        claim=None,
-                        blocking=blocking,
-                    )
-                with ExitStack() as claim_stack:
-                    try:
-                        claim = claim_stack.enter_context(
-                            self._intake.claim(
-                                correlation_id=_correlation_id(initial.document),
-                                declared=artifact,
-                                blocking=blocking,
-                            )
-                        )
-                    except IntakeArtifactUnavailableError as error:
-                        raise ExecutionError("lifecycle replay artifact is unavailable") from error
-                    except IntakeError as error:
-                        raise ExecutionError(
-                            "lifecycle replay artifact failed root-owned validation"
-                        ) from error
-                    outcome = self._execute_handler(
-                        canonical_id,
-                        initial,
-                        handler,
-                        claim=claim,
-                        blocking=blocking,
-                    )
-                    claim.consume()
-                    return outcome
-            if result is None:  # pragma: no cover - direct replay assigns the result
-                raise ExecutionError("terminal result selection was lost")
-            self._consume_terminal_artifact(initial.document, blocking=blocking)
-            return ExecutionOutcome(result, False)
+            )
 
         artifact = _job_artifact(initial.document)
         if artifact is None:
@@ -242,6 +185,110 @@ class AuthorizationExecutor:
             )
             claim.consume()
             return outcome
+
+    def _replay_existing_result(
+        self,
+        job_id: str,
+        initial: StoredContract,
+        existing: StoredContract,
+        *,
+        handler: LifecycleJobHandler | None,
+        blocking: bool,
+    ) -> ExecutionOutcome:
+        result: dict[str, object] | None = None
+        with self._repository.transaction(
+            mode=LockMode.EXCLUSIVE,
+            blocking=blocking,
+        ) as transaction:
+            current = transaction.read(StateRecordPath.authorization_job(job_id))
+            _require_same_authority(initial.document, current.document)
+            durable = _read_result_transaction(transaction, job_id)
+            if durable is None or durable.document != existing.document:
+                raise ExecutionError("terminal result changed during replay")
+            _validate_result_binding(current.document, durable.document)
+            dispatch = _has_bound_lifecycle_intent(
+                transaction,
+                current.document,
+                result=durable.document,
+            )
+            _require_available_lifecycle_handler(dispatch, handler)
+            if not dispatch:
+                result = _repair_terminal_phase_transaction(transaction, current, durable)
+        if not dispatch:
+            if result is None:  # pragma: no cover - direct replay assigns the result
+                raise ExecutionError("terminal result selection was lost")
+            self._consume_terminal_artifact(initial.document, blocking=blocking)
+            return ExecutionOutcome(result, False)
+        if handler is None:  # pragma: no cover - dispatch proves a handler
+            raise ExecutionError("authorization handler selection was lost")
+        artifact = _job_artifact(initial.document)
+        if artifact is None:
+            return self._execute_handler(
+                job_id,
+                initial,
+                handler,
+                claim=None,
+                blocking=blocking,
+            )
+        with ExitStack() as claim_stack:
+            try:
+                claim = claim_stack.enter_context(
+                    self._intake.claim(
+                        correlation_id=_correlation_id(initial.document),
+                        declared=artifact,
+                        blocking=blocking,
+                    )
+                )
+            except IntakeArtifactUnavailableError as error:
+                completed = self._completed_replay_after_artifact_loss(
+                    job_id,
+                    initial,
+                    existing.document,
+                    blocking=blocking,
+                )
+                if completed is not None:
+                    return completed
+                raise ExecutionError("lifecycle replay artifact is unavailable") from error
+            except IntakeError as error:
+                raise ExecutionError(
+                    "lifecycle replay artifact failed root-owned validation"
+                ) from error
+            outcome = self._execute_handler(
+                job_id,
+                initial,
+                handler,
+                claim=claim,
+                blocking=blocking,
+            )
+            claim.consume()
+            return outcome
+
+    def _completed_replay_after_artifact_loss(
+        self,
+        job_id: str,
+        initial: StoredContract,
+        expected_result: dict[str, object],
+        *,
+        blocking: bool,
+    ) -> ExecutionOutcome | None:
+        with self._repository.transaction(
+            mode=LockMode.EXCLUSIVE,
+            blocking=blocking,
+        ) as transaction:
+            current = transaction.read(StateRecordPath.authorization_job(job_id))
+            _require_same_authority(initial.document, current.document)
+            durable = _read_result_transaction(transaction, job_id)
+            if durable is None or durable.document != expected_result:
+                raise ExecutionError("terminal result changed after artifact replay race")
+            _validate_result_binding(current.document, durable.document)
+            if _has_bound_lifecycle_intent(
+                transaction,
+                current.document,
+                result=durable.document,
+            ):
+                return None
+            result = _repair_terminal_phase_transaction(transaction, current, durable)
+            return ExecutionOutcome(result, False)
 
     def _consume_terminal_artifact(
         self,
