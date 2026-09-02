@@ -14,6 +14,13 @@ from lowerduckpond_static_host_agent.audit import (
     AuditLimits,
     AuditState,
 )
+from lowerduckpond_static_host_agent.caddy_admin import (
+    CaddyAdminError,
+    load_caddy_configuration,
+    reload_caddy_generation,
+    restore_caddy_generation,
+    verify_running_caddy,
+)
 from lowerduckpond_static_host_agent.caddy_bootstrap import (
     PlatformGenerationState,
     digest_path,
@@ -315,6 +322,7 @@ __all__ = [
     "AuthorizationExecutor",
     "AuthorizationIssuer",
     "AuthorizationRecordInventory",
+    "CaddyAdminError",
     "CaddyBinarySource",
     "CaddyDerivedGenerationPayload",
     "CaddyGenerationAlreadyExistsError",
@@ -456,6 +464,7 @@ __all__ = [
     "import_portable_bundle",
     "inspect_deployment_zip",
     "inspect_portable_bundle",
+    "load_caddy_configuration",
     "measure_filesystem_capacity",
     "measure_release_tree",
     "measure_release_tree_snapshot",
@@ -463,7 +472,10 @@ __all__ = [
     "platform_generation_matches",
     "platform_generation_state",
     "prepare_active_caddy_execution",
+    "reload_caddy_generation",
     "require_exact_file",
+    "restore_caddy_generation",
     "snapshot_tenant_routes",
     "start_target",
+    "verify_running_caddy",
 ]
