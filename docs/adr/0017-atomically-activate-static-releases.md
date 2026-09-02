@@ -240,6 +240,10 @@ ordered persistence protocol:
    file; `fsync` it, rename it into place, and `fsync` the state directory. The
    candidate must be the exact operation-specific transformation of that source;
    recovery rejects any unrelated field change before dispatch.
+   A host-agent artifact upgrade may install its immutable candidate, but it
+   must not select a new schema implementation while any lifecycle intent is
+   active. The prior selected agent retains recovery authority; after it clears
+   the intent, convergence may atomically select the verified upgrade.
 3. Create a temporary active-Caddy-generation reference, atomically rename it
    over the old reference, and `fsync` its containing directory. A reference is
    never selected before its release and complete runtime generation are

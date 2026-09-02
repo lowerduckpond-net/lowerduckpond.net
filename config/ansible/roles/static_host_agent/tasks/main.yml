@@ -83,6 +83,7 @@
       - "{{ static_host_agent_artifact_sha256 }}"
       - "{{ static_host_agent_install_root }}"
       - /usr/local/libexec/lowerduckpond/verify-static-host-agent-artifact
+      - "{{ static_host_agent_state_root }}"
   register: static_host_agent_installation
   changed_when: static_host_agent_installation.stdout | trim == 'changed'
 
