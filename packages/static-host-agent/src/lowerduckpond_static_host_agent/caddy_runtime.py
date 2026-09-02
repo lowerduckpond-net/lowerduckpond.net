@@ -57,6 +57,7 @@ from lowerduckpond_static_host_agent.locks import LockMode, LockName
 from lowerduckpond_static_host_agent.route_snapshot import (
     RouteSnapshotTransaction,
     TenantRouteOverlay,
+    TenantRouteSnapshot,
     snapshot_tenant_routes,
 )
 from lowerduckpond_static_host_agent.tenant_generation import (
@@ -420,6 +421,25 @@ class CaddyRuntime:
         finally:
             store.close()
         return generation
+
+    def read_generation_route_snapshot(self, generation_id: str) -> TenantRouteSnapshot:
+        """Return exact tenant inputs from one verified tenant-capable generation."""
+
+        self._require_locked()
+        with self.open_verified_generation(generation_id) as generation:
+            descriptor = generation.duplicate_payload_descriptor(CADDY_ROUTE_METADATA_NAME)
+            try:
+                route_metadata = decode_json_object(
+                    os.pread(descriptor, MAX_CADDY_ROUTE_METADATA_BYTES + 1, 0),
+                    maximum_bytes=MAX_CADDY_ROUTE_METADATA_BYTES,
+                )
+            finally:
+                os.close(descriptor)
+        route_state = route_metadata.get("routeState")
+        if type(route_state) is not dict or route_state.get("generationClass") != "tenant-capable":
+            raise CaddyRuntimeError("generation has no tenant route snapshot")
+        namespace, tenants = _tenant_route_inputs(route_state, generation_id=generation_id)
+        return TenantRouteSnapshot(namespace, tenants)
 
     def publish_candidate(
         self,

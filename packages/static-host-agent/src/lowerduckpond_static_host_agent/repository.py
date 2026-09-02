@@ -28,6 +28,7 @@ from lowerduckpond_static_contracts import (
 from lowerduckpond_static_host_agent.audit import (
     DEFAULT_AUDIT_LIMITS,
     AuditAppend,
+    AuditCorrelationSnapshot,
     AuditLimits,
     AuditState,
 )
@@ -36,6 +37,9 @@ from lowerduckpond_static_host_agent.audit import (
 )
 from lowerduckpond_static_host_agent.audit import (
     inspect_audit as inspect_audit_records,
+)
+from lowerduckpond_static_host_agent.audit import (
+    inspect_audit_correlation as inspect_audit_correlation_records,
 )
 from lowerduckpond_static_host_agent.capacity import (
     FilesystemCapacity,
@@ -689,6 +693,18 @@ class StateRepository:
         with self.transaction(mode=LockMode.EXCLUSIVE, blocking=blocking) as transaction:
             return transaction.inspect_audit(limits=limits)
 
+    def inspect_audit_correlation(
+        self,
+        correlation_id: object,
+        *,
+        limits: AuditLimits = DEFAULT_AUDIT_LIMITS,
+        blocking: bool = False,
+    ) -> AuditCorrelationSnapshot:
+        """Return one bounded audit correlation under exclusive tenant-state."""
+
+        with self.transaction(mode=LockMode.EXCLUSIVE, blocking=blocking) as transaction:
+            return transaction.inspect_audit_correlation(correlation_id, limits=limits)
+
     def append_audit(
         self,
         document: dict[str, object],
@@ -1264,6 +1280,22 @@ class _StateTransaction:
         self._require_exclusive()
         return inspect_audit_records(
             self._repository._durable,
+            expected_owner=self._repository._expected_owner,
+            expected_directory_mode=self._repository._expected_directory_mode,
+            expected_record_mode=self._repository._expected_record_mode,
+            limits=limits,
+        )
+
+    def inspect_audit_correlation(
+        self,
+        correlation_id: object,
+        *,
+        limits: AuditLimits = DEFAULT_AUDIT_LIMITS,
+    ) -> AuditCorrelationSnapshot:
+        self._require_exclusive()
+        return inspect_audit_correlation_records(
+            self._repository._durable,
+            correlation_id,
             expected_owner=self._repository._expected_owner,
             expected_directory_mode=self._repository._expected_directory_mode,
             expected_record_mode=self._repository._expected_record_mode,

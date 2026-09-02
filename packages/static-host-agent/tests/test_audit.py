@@ -66,15 +66,34 @@ def test_append_builds_one_exact_canonical_hash_chain(tmp_path: Path) -> None:
         first_result = repository.append_audit(first)
         second_result = repository.append_audit(second)
         state = repository.inspect_audit()
+        snapshot = repository.inspect_audit_correlation(first["correlationId"])
+        absent = repository.inspect_audit_correlation("0198d17f-6f4a-7000-8000-ffffffffffff")
 
     assert first_result.entry_digest == first_digest
     assert second_result.state == state
     assert state.entry_count == _EXPECTED_CHAIN_ENTRIES
     assert state.segment_count == 1
     assert state.terminal_digest == audit_entry_digest(second).to_dict()
+    assert snapshot.state == state
+    assert snapshot.entry == first
+    assert absent.state == state
+    assert absent.entry is None
     assert (root / "audit/segment-00000000000000000000.jsonl").read_bytes() == (
         canonical_json_bytes(first) + canonical_json_bytes(second)
     )
+
+
+def test_correlation_lookup_rejects_duplicate_entries(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    first = _entry(0, None)
+    second = _entry(1, audit_entry_digest(first).to_dict())
+    second["correlationId"] = first["correlationId"]
+
+    with _repository(root) as repository:
+        repository.append_audit(first)
+        repository.append_audit(second)
+        with pytest.raises(AuditError, match="correlation appears multiple times"):
+            repository.inspect_audit_correlation(first["correlationId"])
 
 
 @pytest.mark.parametrize("invalid_field", ["sequence", "predecessor"])

@@ -17,6 +17,7 @@ from lowerduckpond_static_contracts import (
     canonical_json_bytes,
     decode_contract,
     validate_contract,
+    validate_uuid7,
 )
 
 from lowerduckpond_static_host_agent.durable import (
@@ -91,6 +92,14 @@ class AuditState:
 
 
 @dataclass(frozen=True, slots=True)
+class AuditCorrelationSnapshot:
+    """One bounded correlation lookup paired with its exact chain state."""
+
+    state: AuditState
+    entry: dict[str, object] | None
+
+
+@dataclass(frozen=True, slots=True)
 class AuditAppend:
     """The committed digest and verified resulting chain state."""
 
@@ -131,6 +140,37 @@ def inspect_audit(
     finally:
         audit_directory.close()
     return _validate_chain(segments, limits=limits)
+
+
+def inspect_audit_correlation(  # noqa: PLR0913 - keep every audit boundary explicit
+    root: DurableDirectory,
+    correlation_id: object,
+    *,
+    expected_owner: int,
+    expected_directory_mode: int,
+    expected_record_mode: int,
+    limits: AuditLimits = DEFAULT_AUDIT_LIMITS,
+) -> AuditCorrelationSnapshot:
+    """Validate the complete chain and return at most one exact correlation."""
+
+    canonical_correlation_id = validate_uuid7(correlation_id)
+    audit_directory = root.open_descendant(("audit",))
+    try:
+        segments = _read_segments(
+            audit_directory,
+            expected_owner=expected_owner,
+            expected_directory_mode=expected_directory_mode,
+            expected_record_mode=expected_record_mode,
+            limits=limits,
+        )
+    finally:
+        audit_directory.close()
+    state, entry = _validate_chain_records(
+        segments,
+        limits=limits,
+        correlation_id=canonical_correlation_id,
+    )
+    return AuditCorrelationSnapshot(state=state, entry=entry)
 
 
 def append_audit(  # noqa: PLR0913 - keep every security boundary explicit
@@ -228,7 +268,7 @@ def _read_segments(
     expected_directory_mode: int,
     expected_record_mode: int,
     limits: AuditLimits,
-) -> tuple[_Segment, ...]:
+) -> list[_Segment]:
     directory.remove_abandoned_publication_temporaries(
         expected_owner=expected_owner,
         expected_mode=expected_record_mode,
@@ -299,20 +339,35 @@ def _read_segments(
         )
         if final_names != names or _metadata_generation(after) != _metadata_generation(final):
             raise AuditError("audit directory changed while its segments were read")
-        return tuple(segments)
+        return segments
     finally:
         os.close(descriptor)
 
 
 def _validate_chain(
-    segments: tuple[_Segment, ...],
+    segments: list[_Segment],
     *,
     limits: AuditLimits,
 ) -> AuditState:
+    state, _entry = _validate_chain_records(
+        segments,
+        limits=limits,
+        correlation_id=None,
+    )
+    return state
+
+
+def _validate_chain_records(
+    segments: list[_Segment],
+    *,
+    limits: AuditLimits,
+    correlation_id: str | None,
+) -> tuple[AuditState, dict[str, object] | None]:
     sequence = 0
     terminal: dict[str, str] | None = None
     allocated = 0
     previous_segment_bytes: int | None = None
+    matching_entry: dict[str, object] | None = None
     for segment in segments:
         if not segment.data or not segment.data.endswith(b"\n"):
             raise AuditError("audit segment is not nonempty canonical JSON lines")
@@ -340,16 +395,23 @@ def _validate_chain(
                 raise AuditError("audit entry sequence is not contiguous")
             if document["previousEntryDigest"] != terminal:
                 raise AuditError("audit entry predecessor breaks the chain")
+            if correlation_id is not None and document["correlationId"] == correlation_id:
+                if matching_entry is not None:
+                    raise AuditError("audit correlation appears multiple times")
+                matching_entry = document
             terminal = audit_entry_digest(document).to_dict()
             sequence += 1
         previous_segment_bytes = len(segment.data)
     if allocated > limits.maximum_administrator_bytes:
         raise AuditCapacityError("audit allocation exceeds its absolute ceiling")
-    return AuditState(
-        entry_count=sequence,
-        segment_count=len(segments),
-        allocated_bytes=allocated,
-        terminal_digest=terminal,
+    return (
+        AuditState(
+            entry_count=sequence,
+            segment_count=len(segments),
+            allocated_bytes=allocated,
+            terminal_digest=terminal,
+        ),
+        matching_entry,
     )
 
 
