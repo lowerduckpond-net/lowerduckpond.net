@@ -122,6 +122,20 @@ def reload_caddy_generation(
     verifier(candidate)
 
 
+def restore_caddy_generation(
+    generation: PinnedCaddyGeneration,
+    *,
+    verifier: GenerationVerifier = verify_running_caddy,
+    loader: GenerationLoader = load_caddy_configuration,
+) -> None:
+    """Load and verify a selected known-good generation after candidate failure."""
+
+    if type(generation) is not PinnedCaddyGeneration:
+        raise TypeError("Caddy restoration requires one pinned generation")
+    loader(generation)
+    verifier(generation)
+
+
 def _systemd_main_pid() -> str:
     return subprocess.run(
         [

@@ -18,6 +18,7 @@ from lowerduckpond_static_host_agent.caddy_admin import (
     CaddyAdminError,
     load_caddy_configuration,
     reload_caddy_generation,
+    restore_caddy_generation,
     verify_running_caddy,
 )
 from lowerduckpond_static_host_agent.caddy_bootstrap import (
@@ -473,6 +474,7 @@ __all__ = [
     "prepare_active_caddy_execution",
     "reload_caddy_generation",
     "require_exact_file",
+    "restore_caddy_generation",
     "snapshot_tenant_routes",
     "start_target",
     "verify_running_caddy",

@@ -17,6 +17,7 @@ from lowerduckpond_static_host_agent import (
     build_platform_only_caddy_routes,
     load_caddy_configuration,
     reload_caddy_generation,
+    restore_caddy_generation,
     verify_running_caddy,
 )
 
@@ -102,6 +103,20 @@ def test_reload_rejects_same_generation_or_changed_host_inputs(tmp_path: Path) -
                 reload_caddy_generation(previous, candidate)
             with pytest.raises(CaddyAdminError, match="distinct"):
                 reload_caddy_generation(previous, previous)
+
+
+def test_restore_loads_before_verifying_known_good_generation(tmp_path: Path) -> None:
+    events: list[str] = []
+    with _store(tmp_path) as store:
+        store.publish(_GENERATION_A, _payload(tmp_path))
+        with store.open_verified(_GENERATION_A) as generation:
+            restore_caddy_generation(
+                generation,
+                loader=lambda _generation: events.append("load"),
+                verifier=lambda _generation: events.append("verify"),
+            )
+
+    assert events == ["load", "verify"]
 
 
 def test_load_sends_exact_pinned_configuration(tmp_path: Path) -> None:
