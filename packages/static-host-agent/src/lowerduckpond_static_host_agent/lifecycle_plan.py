@@ -121,6 +121,7 @@ def plan_create_transition(  # noqa: PLR0913 - each authority input is explicit
             "candidateRuntimeGenerationId": candidate_generation,
             "candidateRouteSet": "absent",
         },
+        "sourceManifest": None,
         "sourceManifestDigest": None,
         "candidateManifest": created.manifest,
         "candidateManifestDigest": desired_digest,

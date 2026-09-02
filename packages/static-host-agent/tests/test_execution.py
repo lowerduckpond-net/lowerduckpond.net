@@ -349,6 +349,22 @@ def _write(root: Path, path: StateRecordPath, document: dict[str, object]) -> No
     target.chmod(0o600)
 
 
+def _write_deployment_record(
+    root: Path,
+    deployment_id: object,
+    archive_sha256: object,
+) -> None:
+    record = _fixture("deployment-record.json")
+    record["id"] = deployment_id
+    record["archiveSha256"] = archive_sha256
+    _mkdir(root / "tenants" / _TENANT_ID)
+    _write(
+        root,
+        StateRecordPath.tenant_deployment(_TENANT_ID, deployment_id),
+        record,
+    )
+
+
 def _create_request() -> bytes:
     return canonical_json_bytes(_fixture("operation-request.json"))
 
@@ -374,6 +390,7 @@ def _create_intent(correlation_id: object) -> dict[str, object]:
     candidate_digest = manifest_digest(candidate_manifest).to_dict()
     intent["correlationId"] = correlation_id
     intent["operation"] = "create"
+    intent["sourceManifest"] = None
     intent["sourceManifestDigest"] = None
     intent["candidateManifest"] = candidate_manifest
     intent["candidateManifestDigest"] = candidate_digest
@@ -795,6 +812,7 @@ def test_executor_binds_a_successful_rename_result_to_its_active_intent(
             "tenantId": _TENANT_ID,
             "correlationId": request["correlationId"],
             "operation": "rename",
+            "sourceManifest": source_manifest,
             "sourceManifestDigest": source_digest,
             "candidateManifest": candidate_manifest,
             "candidateManifestDigest": candidate_digest,
@@ -895,6 +913,7 @@ def test_executor_rejects_an_unauthorized_claimed_candidate_before_dispatch(
             "tenantId": _TENANT_ID,
             "correlationId": request["correlationId"],
             "operation": "rename",
+            "sourceManifest": source_manifest,
             "sourceManifestDigest": source_digest,
             "candidateManifest": candidate_manifest,
             "candidateManifestDigest": candidate_digest,
@@ -995,6 +1014,7 @@ def test_executor_binds_a_deployment_candidate_to_its_request(
             "tenantId": _TENANT_ID,
             "correlationId": request["correlationId"],
             "operation": operation,
+            "sourceManifest": source_manifest,
             "sourceManifestDigest": source_digest,
             "candidateManifest": candidate_manifest,
             "candidateManifestDigest": candidate_digest,
@@ -1029,6 +1049,12 @@ def test_executor_binds_a_deployment_candidate_to_its_request(
     )
     _write(root, StateRecordPath.transaction_intent(intent["intentId"]), intent)
     _write(root, StateRecordPath.authorization_result(job["jobId"]), result)
+    if operation == "rollback":
+        _write_deployment_record(
+            root,
+            request["deploymentId"],
+            candidate_deployment["archiveSha256"],
+        )
 
     with (
         StateRepository(root, expected_owner=os.geteuid()) as repository,
@@ -1635,6 +1661,7 @@ def test_executor_retains_artifact_when_handler_leaves_its_intent(tmp_path: Path
                 "tenantId": _TENANT_ID,
                 "correlationId": correlation_id,
                 "operation": "deploy",
+                "sourceManifest": manifest,
                 "sourceManifestDigest": source_digest,
                 "candidateManifest": candidate_manifest,
                 "candidateManifestDigest": candidate_digest,
@@ -1741,6 +1768,7 @@ def test_executor_reacquires_the_bound_artifact_for_lifecycle_replay(
                 "tenantId": _TENANT_ID,
                 "correlationId": correlation_id,
                 "operation": "deploy",
+                "sourceManifest": manifest,
                 "sourceManifestDigest": manifest_digest_value,
                 "candidateManifest": candidate_manifest,
                 "candidateManifestDigest": candidate_manifest_digest,
@@ -1857,6 +1885,7 @@ def test_executor_returns_a_completed_replay_after_losing_the_artifact_race(
                 "tenantId": _TENANT_ID,
                 "correlationId": correlation_id,
                 "operation": "deploy",
+                "sourceManifest": manifest,
                 "sourceManifestDigest": source_digest,
                 "candidateManifest": candidate_manifest,
                 "candidateManifestDigest": candidate_digest,
@@ -2080,6 +2109,7 @@ def test_executor_recovers_a_claimed_lifecycle_job_without_its_artifact(
                 "tenantId": _TENANT_ID,
                 "correlationId": correlation_id,
                 "operation": "deploy",
+                "sourceManifest": manifest,
                 "sourceManifestDigest": source_digest,
                 "candidateManifest": candidate_manifest,
                 "candidateManifestDigest": candidate_digest,

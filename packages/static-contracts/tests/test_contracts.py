@@ -526,7 +526,15 @@ def test_create_intent_requires_an_absent_source_manifest() -> None:
     intent = _load_object(FIXTURE_ROOT / "accepted/transaction-intent.json")
     source_digest = intent["sourceManifestDigest"]
     intent["operation"] = "create"
+    intent["sourceManifest"] = None
     intent["sourceManifestDigest"] = None
+    candidate_manifest = intent["candidateManifest"]
+    assert type(candidate_manifest) is dict
+    candidate_spec = candidate_manifest["spec"]
+    assert type(candidate_spec) is dict
+    candidate_spec["desiredState"] = "undeployed"
+    del candidate_spec["desiredDeployment"]
+    intent["candidateManifestDigest"] = manifest_digest(candidate_manifest).to_dict()
     candidate = _load_object(FIXTURE_ROOT / "accepted/tenant-observed-state.json")
     candidate.update(
         {
@@ -1167,6 +1175,26 @@ def test_transaction_candidate_manifest_binds_its_digest_and_tenant() -> None:
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
 
+def test_transaction_source_manifest_binds_its_digest_and_tenant() -> None:
+    intent = _load_object(FIXTURE_ROOT / "accepted/transaction-intent.json")
+    source = intent["sourceManifest"]
+    assert type(source) is dict
+    metadata = source["metadata"]
+    assert type(metadata) is dict
+    metadata["slug"] = "source-digest-drift"
+
+    with pytest.raises(ContractError, match="source manifest binding") as captured:
+        validate_contract(intent)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+    metadata["id"] = "0198d17f-6f4a-7000-8000-000000000099"
+    metadata["canonicalOrigin"] = "t-0198d17f6f4a70008000000000000099.lowerduckpond.com"
+    intent["sourceManifestDigest"] = manifest_digest(source).to_dict()
+    with pytest.raises(ContractError, match="source tenant identity") as captured:
+        validate_contract(intent)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
 def test_delete_intent_requires_an_absent_candidate_manifest() -> None:
     intent = _load_object(FIXTURE_ROOT / "accepted/transaction-intent.json")
     candidate_manifest = intent["candidateManifest"]
@@ -1174,6 +1202,12 @@ def test_delete_intent_requires_an_absent_candidate_manifest() -> None:
     intent["operation"] = "delete"
     intent["candidateManifest"] = None
     intent["candidateManifestDigest"] = None
+    source_manifest = intent["sourceManifest"]
+    assert type(source_manifest) is dict
+    source_spec = source_manifest["spec"]
+    assert type(source_spec) is dict
+    source_spec["desiredState"] = "archived"
+    intent["sourceManifestDigest"] = manifest_digest(source_manifest).to_dict()
     source = _load_object(FIXTURE_ROOT / "accepted/tenant-observed-state.json")
     source.update(
         {
@@ -1226,6 +1260,7 @@ def _route_only_transaction_intent(
         deployment["id"] = "0198d17f-6f4a-7000-8000-000000000009"
     source_digest = manifest_digest(source_manifest).to_dict()
     candidate_digest = manifest_digest(candidate_manifest).to_dict()
+    intent["sourceManifest"] = source_manifest
     intent["sourceManifestDigest"] = source_digest
     intent["candidateManifest"] = candidate_manifest
     intent["candidateManifestDigest"] = candidate_digest
@@ -1308,6 +1343,62 @@ def test_route_only_intent_preserves_the_remembered_deployment(
     assert type(candidate) is dict
     candidate["activeDeploymentId"] = "0198d17f-6f4a-7000-8000-000000000009"
     with pytest.raises(ContractError) as captured:
+        validate_contract(intent)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+@pytest.mark.parametrize(
+    ("operation", "source_state", "candidate_state"),
+    [
+        ("suspend", "active", "suspended"),
+        ("resume", "suspended", "active"),
+        ("rename", "active", "active"),
+        ("deploy", "active", "active"),
+        ("rollback", "active", "active"),
+    ],
+)
+def test_transaction_candidate_cannot_change_unrelated_fields(
+    operation: str,
+    source_state: str,
+    candidate_state: str,
+) -> None:
+    intent = _route_only_transaction_intent(operation, source_state, candidate_state)
+    candidate_manifest = intent["candidateManifest"]
+    recovery = intent["lifecycleRecovery"]
+    assert type(candidate_manifest) is dict
+    assert type(recovery) is dict
+    candidate_spec = candidate_manifest["spec"]
+    candidate_observed = recovery["candidateObservedState"]
+    assert type(candidate_spec) is dict
+    assert type(candidate_observed) is dict
+    quotas = candidate_spec["quotas"]
+    assert type(quotas) is dict
+    quotas["entries"] = 4999
+    candidate_digest = manifest_digest(candidate_manifest).to_dict()
+    intent["candidateManifestDigest"] = candidate_digest
+    candidate_observed["desiredManifestDigest"] = candidate_digest
+
+    with pytest.raises(ContractError, match="outside its operation") as captured:
+        validate_contract(intent)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+def test_recovery_observed_state_must_match_its_candidate_manifest() -> None:
+    intent = _route_only_transaction_intent("suspend", "active", "suspended")
+    candidate_manifest = intent["candidateManifest"]
+    recovery = intent["lifecycleRecovery"]
+    assert type(candidate_manifest) is dict
+    assert type(recovery) is dict
+    candidate_spec = candidate_manifest["spec"]
+    candidate_observed = recovery["candidateObservedState"]
+    assert type(candidate_spec) is dict
+    assert type(candidate_observed) is dict
+    candidate_spec["desiredState"] = "active"
+    candidate_digest = manifest_digest(candidate_manifest).to_dict()
+    intent["candidateManifestDigest"] = candidate_digest
+    candidate_observed["desiredManifestDigest"] = candidate_digest
+
+    with pytest.raises(ContractError, match="disagrees with its manifest") as captured:
         validate_contract(intent)
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
@@ -1473,6 +1564,7 @@ def _archive_transaction_intent() -> dict[str, object]:
     intent.update(
         {
             "operation": "archive",
+            "sourceManifest": source,
             "sourceManifestDigest": source_digest,
             "candidateManifest": candidate,
             "candidateManifestDigest": candidate_digest,

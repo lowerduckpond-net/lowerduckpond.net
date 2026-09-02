@@ -1051,7 +1051,8 @@ class _StateTransaction:
         if spec["desiredState"] != "undeployed" or "desiredDeployment" in spec:
             raise StateRecordError("create candidate manifest is not undeployed")
         if (
-            intent["sourceManifestDigest"] is not None
+            intent["sourceManifest"] is not None
+            or intent["sourceManifestDigest"] is not None
             or intent["candidateManifestDigest"] != candidate_manifest_digest
             or recovery["sourceObservedState"] is not None
             or recovery["sourceRouteSet"] != "absent"

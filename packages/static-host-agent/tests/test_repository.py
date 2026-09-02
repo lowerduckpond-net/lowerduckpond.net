@@ -789,7 +789,7 @@ def test_create_tenant_state_rejects_a_candidate_outside_its_intent(tmp_path: Pa
     ]
 
 
-def test_create_tenant_state_requires_an_undeployed_manifest(tmp_path: Path) -> None:
+def test_create_intent_requires_an_undeployed_manifest(tmp_path: Path) -> None:
     root = _state_root(tmp_path)
     plan = _create_plan()
     active = _fixture("site.json")
@@ -804,17 +804,15 @@ def test_create_tenant_state_requires_an_undeployed_manifest(tmp_path: Path) -> 
     assert type(recovery) is dict
     recovery["candidateObservedState"] = observed
 
-    with _repository(root) as repository, repository.publication_transaction() as transaction:
+    with (
+        _repository(root) as repository,
+        repository.publication_transaction() as transaction,
+        pytest.raises(ContractError, match="observed recovery state"),
+    ):
         transaction.create_immutable(
             StateRecordPath.transaction_intent(plan.intent_id),
             intent,
         )
-        with pytest.raises(StateRecordError, match="undeployed"):
-            transaction.ensure_create_tenant_state(
-                plan.tenant_id,
-                active,
-                observed,
-            )
 
     assert not (root / "tenants" / plan.tenant_id).exists()
 
