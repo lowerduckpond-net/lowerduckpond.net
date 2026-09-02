@@ -8,6 +8,7 @@ import ipaddress
 import os
 import re
 import secrets
+import shutil
 import subprocess
 import sys
 import time
@@ -24,11 +25,17 @@ from lowerduckpond_m3_qualification.reserved_namespace import (
 )
 
 PRODUCTION_HOSTNAMES: Final = ("lowerduckpond.net", "lowerduckpond.com")
+REPOSITORY_ROOT: Final = Path(__file__).resolve().parent.parent
+PRODUCTION_ROOT: Final = REPOSITORY_ROOT / "infra/opentofu/environments/production"
+INVENTORY_PARSER: Final = REPOSITORY_ROOT / "scripts/read_production_ansible_inventory.py"
 ALLOWED_PATHS: Final = frozenset((*BLOCKED_RESERVED_PATHS, PROVIDER_TRACE_PATH))
 HTTP_TIMEOUT_SECONDS: Final = 10
 SSH_TIMEOUT_SECONDS: Final = 30
+STATE_TIMEOUT_SECONDS: Final = 30
 MAXIMUM_RESPONSE_BYTES: Final = 65_536
 MAXIMUM_JOURNAL_BYTES: Final = 65_536
+MAXIMUM_STATE_OUTPUT_BYTES: Final = 1_048_576
+MAXIMUM_PARSED_ADDRESS_BYTES: Final = 64
 JOURNAL_SETTLE_SECONDS: Final = 1.0
 PROBE_MARKER_PATTERN: Final = re.compile(r"^m3-7-reserved-[0-9a-f]{32}$")
 
@@ -73,19 +80,70 @@ def _request(hostname: str, path: str, marker: str) -> NamespaceResponse:
         connection.close()
 
 
-def _origin_was_reached(marker: str) -> bool:
-    private_key_value = os.environ.get("ANSIBLE_PRIVATE_KEY_FILE", "")
-    origin_value = os.environ.get("PRODUCTION_ORIGIN_IPV4", "")
-    private_key = Path(private_key_value)
+def _production_origin() -> ipaddress.IPv4Address:
+    tofu = shutil.which("tofu")
+    if tofu is None:
+        raise ReservedNamespaceError("production state inventory read failed")
+    state_environment = os.environ.copy()
+    state_mappings = {
+        "AWS_ACCESS_KEY_ID": "OPENTOFU_STATE_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY": "OPENTOFU_STATE_SECRET_ACCESS_KEY",
+        "TF_VAR_state_encryption_passphrase": "OPENTOFU_ENCRYPTION_PASSPHRASE",
+    }
+    for target, source in state_mappings.items():
+        value = os.environ.get(source, "")
+        if not value:
+            raise ReservedNamespaceError("production state credentials are incomplete")
+        state_environment[target] = value
+
     try:
-        origin = ipaddress.ip_address(origin_value)
-    except ValueError as error:
-        raise ReservedNamespaceError("production origin address is invalid") from error
+        state = subprocess.run(  # noqa: S603 - fixed executable and repository path
+            (
+                tofu,
+                f"-chdir={PRODUCTION_ROOT}",
+                "output",
+                "-json",
+                "ansible_inventory",
+            ),
+            check=False,
+            capture_output=True,
+            env=state_environment,
+            timeout=STATE_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ReservedNamespaceError("production state inventory read failed") from error
+    if state.returncode != 0 or not state.stdout or len(state.stdout) > MAXIMUM_STATE_OUTPUT_BYTES:
+        raise ReservedNamespaceError("production state inventory read failed")
+
+    try:
+        parsed = subprocess.run(  # noqa: S603 - fixed interpreter and parser path
+            (sys.executable, str(INVENTORY_PARSER)),
+            input=state.stdout,
+            check=False,
+            capture_output=True,
+            timeout=STATE_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ReservedNamespaceError("production state inventory validation failed") from error
+    if parsed.returncode != 0 or len(parsed.stdout) > MAXIMUM_PARSED_ADDRESS_BYTES:
+        raise ReservedNamespaceError("production state inventory validation failed")
+    try:
+        origin = ipaddress.ip_address(parsed.stdout.decode("ascii").strip())
+    except (UnicodeDecodeError, ValueError) as error:
+        raise ReservedNamespaceError("production state inventory validation failed") from error
+    if not isinstance(origin, ipaddress.IPv4Address) or not origin.is_global:
+        raise ReservedNamespaceError("production state inventory validation failed")
+    return origin
+
+
+def _origin_was_reached(marker: str, *, origin: ipaddress.IPv4Address | None = None) -> bool:
+    private_key_value = os.environ.get("ANSIBLE_PRIVATE_KEY_FILE", "")
+    private_key = Path(private_key_value)
+    resolved_origin = origin or _production_origin()
     if (
         PROBE_MARKER_PATTERN.fullmatch(marker) is None
         or not private_key.is_file()
-        or not isinstance(origin, ipaddress.IPv4Address)
-        or not origin.is_global
+        or not resolved_origin.is_global
     ):
         raise ReservedNamespaceError("production origin journal inputs are invalid")
 
@@ -103,7 +161,7 @@ def _origin_was_reached(marker: str) -> bool:
         "StrictHostKeyChecking=yes",
         "-i",
         str(private_key),
-        f"ldp-admin@{origin}",
+        f"ldp-admin@{resolved_origin}",
         "sudo",
         "--non-interactive",
         "/usr/bin/journalctl",

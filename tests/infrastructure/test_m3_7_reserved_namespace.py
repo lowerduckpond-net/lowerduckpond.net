@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ipaddress
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -127,7 +129,6 @@ def test_origin_probe_uses_the_pinned_production_ssh_contract(
     private_key = tmp_path / "production-key"
     private_key.touch(mode=0o600)
     monkeypatch.setenv("ANSIBLE_PRIVATE_KEY_FILE", str(private_key))
-    monkeypatch.setenv("PRODUCTION_ORIGIN_IPV4", "8.8.8.8")
     observed: list[tuple[str, ...]] = []
 
     def run(
@@ -145,7 +146,7 @@ def test_origin_probe_uses_the_pinned_production_ssh_contract(
 
     monkeypatch.setattr(production_check.subprocess, "run", run)
 
-    assert not production_check._origin_was_reached(marker)
+    assert not production_check._origin_was_reached(marker, origin=ipaddress.ip_address("8.8.8.8"))
     assert observed == [
         (
             "ssh",
@@ -182,7 +183,6 @@ def test_origin_probe_fails_closed_when_the_journal_contains_the_marker(
     private_key = tmp_path / "production-key"
     private_key.touch(mode=0o600)
     monkeypatch.setenv("ANSIBLE_PRIVATE_KEY_FILE", str(private_key))
-    monkeypatch.setenv("PRODUCTION_ORIGIN_IPV4", "8.8.8.8")
     monkeypatch.setattr(
         production_check.subprocess,
         "run",
@@ -191,7 +191,7 @@ def test_origin_probe_fails_closed_when_the_journal_contains_the_marker(
         ),
     )
 
-    assert production_check._origin_was_reached(marker)
+    assert production_check._origin_was_reached(marker, origin=ipaddress.ip_address("8.8.8.8"))
 
 
 def test_origin_probe_rejects_a_journal_or_transport_failure(
@@ -201,7 +201,6 @@ def test_origin_probe_rejects_a_journal_or_transport_failure(
     private_key = tmp_path / "production-key"
     private_key.touch(mode=0o600)
     monkeypatch.setenv("ANSIBLE_PRIVATE_KEY_FILE", str(private_key))
-    monkeypatch.setenv("PRODUCTION_ORIGIN_IPV4", "8.8.8.8")
     monkeypatch.setattr(
         production_check.subprocess,
         "run",
@@ -211,4 +210,52 @@ def test_origin_probe_rejects_a_journal_or_transport_failure(
     )
 
     with pytest.raises(ReservedNamespaceError, match="journal read failed"):
-        production_check._origin_was_reached(marker)
+        production_check._origin_was_reached(marker, origin=ipaddress.ip_address("8.8.8.8"))
+
+
+def test_production_origin_comes_from_the_strict_state_inventory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    credential_value = "fixture-credential"
+    encryption_value = "fixture-encryption"
+    monkeypatch.setenv("OPENTOFU_STATE_ACCESS_KEY_ID", "state-access-key")
+    monkeypatch.setenv("OPENTOFU_STATE_SECRET_ACCESS_KEY", credential_value)
+    monkeypatch.setenv("OPENTOFU_ENCRYPTION_PASSPHRASE", encryption_value)
+    monkeypatch.setattr(production_check.shutil, "which", lambda _: "/usr/bin/tofu")
+    observed: list[tuple[tuple[str, ...], dict[str, str] | None, bytes | None]] = []
+
+    def run(command: tuple[str, ...], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        environment = kwargs.get("env")
+        input_data = kwargs.get("input")
+        assert environment is None or isinstance(environment, dict)
+        assert input_data is None or isinstance(input_data, bytes)
+        observed.append((command, environment, input_data))
+        assert not kwargs["check"]
+        assert kwargs["capture_output"]
+        assert kwargs["timeout"] == production_check.STATE_TIMEOUT_SECONDS
+        if command[0] == "/usr/bin/tofu":
+            return subprocess.CompletedProcess(
+                command, 0, stdout=b'{"all":{"hosts":{}}}', stderr=b""
+            )
+        assert command == (sys.executable, str(production_check.INVENTORY_PARSER))
+        return subprocess.CompletedProcess(command, 0, stdout=b"8.8.8.8\n", stderr=b"")
+
+    monkeypatch.setattr(production_check.subprocess, "run", run)
+
+    assert production_check._production_origin() == ipaddress.ip_address("8.8.8.8")
+    assert observed[0][0] == (
+        "/usr/bin/tofu",
+        f"-chdir={production_check.PRODUCTION_ROOT}",
+        "output",
+        "-json",
+        "ansible_inventory",
+    )
+    assert observed[0][1] is not None
+    assert observed[0][1]["AWS_ACCESS_KEY_ID"] == "state-access-key"
+    assert observed[0][1]["AWS_SECRET_ACCESS_KEY"] == credential_value
+    assert observed[0][1]["TF_VAR_state_encryption_passphrase"] == encryption_value
+    assert observed[1] == (
+        (sys.executable, str(production_check.INVENTORY_PARSER)),
+        None,
+        b'{"all":{"hosts":{}}}',
+    )

@@ -302,11 +302,12 @@ for a later boundary from an earlier one.
    disabled-publication proofs. Run
    `just check-m3-7-production-reserved-namespace`; its sanitized result must
    prove WAF denial for blockable paths and a provider-owned lowercase trace
-   that never reached Caddy. The check requires `PRODUCTION_ORIGIN_IPV4` and
-   `ANSIBLE_PRIVATE_KEY_FILE`; it adds an unpredictable query marker to every
-   request and fails closed unless a bounded, host-key-pinned read of the Caddy
-   journal proves that marker absent. Revoke the temporary
-   certificate-lifecycle token before its deadline.
+   that never reached Caddy. The check requires `ANSIBLE_PRIVATE_KEY_FILE` and
+   the same `OPENTOFU_STATE_*` credential and encryption inputs used above. It
+   derives the origin address from the strict production inventory output, adds
+   an unpredictable query marker to every request, and fails closed unless a
+   bounded, host-key-pinned read of the Caddy journal proves that marker absent.
+   Revoke the temporary certificate-lifecycle token before its deadline.
 
 Rollback from `enforced` first applies the reviewed `proxied` phase, then
 converges the host with enforcement false, and only then applies `direct` with
