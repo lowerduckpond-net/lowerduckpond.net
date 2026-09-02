@@ -4,6 +4,12 @@
 > this runbook intact for reviewed requalification; any future live sequence
 > still requires explicit authorization and an exact, clean `main` revision.
 
+**Reserved-path correction:** production validation on 2026-09-01 found that
+the passing run's uppercase `/CDN-CGI/trace` probe did not exercise
+Cloudflare's exact lowercase internal endpoint. The historical report remains
+unchanged; future requalification uses the corrected dual-outcome probe
+described below, and M3.7 requires a supplemental production check.
+
 M3.0 is a destructive, disposable qualification drill. It puts four temporary
 hostnames through the real Cloudflare edge, uses a production-equivalent NYC1
 Droplet, proves a complete origin-pull CA rollover, emits one sanitized
@@ -401,9 +407,14 @@ successful final replacement stage complete the causal rollover proof.
 
 The final edge stage proves current zone policy, proxied DNS, distinct edge and
 origin certificates, direct-origin denial, forwarding-header authenticity,
-cache bypass, representation fidelity, reserved-path blocking, generic unknown
+cache bypass, representation fidelity, reserved-path isolation, generic unknown
 hosts, method/host/path/query-preserving HTTP redirects, and the absence of
 stale bytes during a bounded disposable Caddy outage followed by recovery.
+The reserved-path check requires WAF denial for `/cdn-cgi`, its slash form, an
+unclaimed descendant, and uppercase `/CDN-CGI/trace`. It separately requires
+the exact lowercase `/cdn-cgi/trace` response to be bounded, plain-text,
+Cloudflare-served, structurally recognizable, and absent from Caddy; no trace
+field enters sanitized evidence.
 For representation fidelity, the origin-side HTTP component listener uses a
 host-agnostic site address bound only to `127.0.0.1`; its route-level allowlist
 then admits the same reviewed public `Host` values used through the edge. This
@@ -525,7 +536,9 @@ for architecture review if any of these fail:
 - Cloudflare DNS answers expose only addresses in the reviewed provider
   snapshot, and both DigitalOcean and host firewalls deny the known origin;
 - Cloudflare preserves the admitted response while cache bypass and transform
-  controls are active, and its `/cdn-cgi` block wins before Caddy; and
+  controls are active, its WAF blocks unclaimed and case-variant `/cdn-cgi`
+  paths, and its exact internal trace remains provider-owned and absent from
+  Caddy; and
 - the provider returns a documented `520`–`527` response without stale or
   archived bytes when only the disposable origin is unavailable.
 

@@ -261,9 +261,11 @@ Deliver:
   distinguish an explicit provider security block from tenant content; use a
   host-agnostic Caddy site address bound only to loopback for the origin-side
   comparison so the reviewed public `Host` values reach their component routes;
-- block `/cdn-cgi` and its descendants with the managed zone WAF, prove no
-  diagnostic endpoint or request reaches Caddy, and prove archive admission
-  rejects the normalized, case-insensitive first path component;
+- block unclaimed and case-variant `/cdn-cgi` requests with the managed zone
+  WAF, recognize Cloudflare's exact lowercase internal trace without retaining
+  visitor-specific fields, prove neither outcome reaches Caddy, and prove
+  archive admission rejects the normalized, case-insensitive first path
+  component;
 - prove Caddy can remove `Cookie` before static tenant handling, remove
   `Set-Cookie` from every `.com` route class, prohibit trusted generated
   handlers from positively emitting it, strip hostile parent-domain and
@@ -833,8 +835,9 @@ Pull configuration, and the
 reviewed Cloudflare network set used by both DigitalOcean and host firewalls.
 It leaves explicitly non-HTTP verification and administrative records DNS-only.
 It also disables optional response-body transformations and installs the
-two-zone `/cdn-cgi/` block. Never manually toggle proxy status or edge features
-outside OpenTofu.
+two-zone `/cdn-cgi/` WAF defense. Cloudflare's exact internal endpoints remain
+provider-owned and outside the tenant representation contract. Never manually
+toggle proxy status or edge features outside OpenTofu.
 
 Keep Cloudflare capabilities separate. The Caddy DNS-01 token retains
 only Zone Read and DNS Edit for the two zones. The OpenTofu edge token receives
@@ -911,7 +914,8 @@ Gate: the reviewed OpenTofu plan and approved apply add only the intended
 origin certificates in both zones. Prove proxied public DNS, Full (strict),
 account-specific origin pull, explicit cache bypass, Always Online disabled,
 direct-origin denial, forwarded-header authenticity, response fidelity,
-`/cdn-cgi/` denial, and Cloudflare-only ingress before enforcement.
+`/cdn-cgi/` tenant-path denial and internal-endpoint isolation, and
+Cloudflare-only ingress before enforcement.
 Prove forwarded-header authenticity from the bounded Caddy access-log suffix
 for nonce-tagged requests: the peer must be in the reviewed Cloudflare ranges,
 and Caddy's parsed client address must be global and differ from both the
@@ -1118,7 +1122,7 @@ failure-injection evidence.
 | Critical | The privileged ZIP parser turns crafted metadata or decompression into root compromise or host exhaustion. | Structural gate first, narrow accepted methods, descriptor-relative extraction, systemd resource sandbox, hostile corpus, and no publication on failure. |
 | Critical | A direct origin path or forged forwarding header bypasses Cloudflare policy or attributes an attacker-selected address to a request. | Require account-specific origin pulls, pin reviewed Cloudflare networks in both firewalls, trust forwarded headers only on that authenticated path, and test denial from outside it. |
 | Critical | Cloudflare serves a tenant, alias, error, or lifecycle response across a state change or identity boundary through cache or Always Online. | Install explicit two-zone cache bypass and disable Always Online in M3, retain origin `no-store`, and test repeated responses, lifecycle transitions, and disposable origin unavailability. Design cache keys, stale serving, purges, failure handling, and a purge-only credential separately in M5 before enabling either mechanism. |
-| High | Cloudflare rewrites a validated tenant representation or serves its reserved endpoint instead of the platform contract. | Disable optional transformations, emit `no-transform`, compare origin and edge representations, block `/cdn-cgi/`, reserve the colliding archive path, and fail M3.0 if the provider endpoint cannot be preempted. |
+| High | Cloudflare rewrites a validated tenant representation or serves an internal endpoint as if it were platform or tenant content. | Disable optional transformations, emit `no-transform`, compare origin and edge representations, reserve `cdn-cgi` from tenant archives, block unclaimed and case-variant paths, classify exact internal endpoints as provider responses, and prove no reserved-path request reaches Caddy. |
 | High | Root host-agent scope grows until its review boundary is no longer understandable. | Keep contracts and operator client unprivileged, divide host-agent modules by state/archive/publication/lifecycle, and deliver one invariant group per PR. |
 | High | Spaces behavior differs from assumed S3 version, delete-marker, pagination, multipart-listing, or visibility semantics. | Test the exact DigitalOcean operations and interruption states with forced pagination; quarantine ambiguity and close archive admission rather than guess. |
 | High | Archive or backup credentials create a combined destructive blast radius. | Separate bucket-scoped keys, processes, environment files, health checks, and mutual-denial acceptance tests. |
@@ -1144,8 +1148,9 @@ These are hypotheses, not design facts:
    path, query, redirect, cookie, and unknown-host contracts; explicit bypass
    prevents every Milestone 3 response class from entering edge cache, Always
    Online stays disabled and serves no representation during disposable origin
-   unavailability, optional transformations stay disabled, and the zone WAF
-   preempts `/cdn-cgi/`.
+   unavailability, optional transformations stay disabled, the zone WAF blocks
+   unclaimed and case-variant `/cdn-cgi/` paths, and exact provider-managed
+   internal endpoints remain isolated from Caddy.
 5. Full (strict), account-specific Authenticated Origin Pulls, and the reviewed
    Cloudflare network set prevent direct-origin and cross-account access without
    making renewal, restart, port 80 handling, or recovery unavailable.
@@ -1266,7 +1271,8 @@ report demonstrates that:
   explicit cache bypass while Always Online remained disabled and direct origin
   access remained denied; disposable origin unavailability returned no stale or
   archived representation, origin and edge representations agreed, and
-  `/cdn-cgi/` was blocked and unavailable to tenant archives;
+  `/cdn-cgi/` was unavailable to tenant archives and never reached Caddy,
+  including when Cloudflare answered an exact internal endpoint;
 - lifecycle and slug reuse converged without transferring a tenant origin;
 - Caddy survived replacement, failed activation, restart, Ansible convergence,
   and reboot using only complete generations;

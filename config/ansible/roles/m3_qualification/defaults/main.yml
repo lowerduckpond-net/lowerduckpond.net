@@ -15,6 +15,7 @@ m3_qualification_python_modules:
   - host.py
   - libraries.py
   - report.py
+  - reserved_namespace.py
   - session.py
 m3_qualification_runtime_root: /run/lowerduckpond-m3-qualification
 m3_qualification_state_root: /var/lib/lowerduckpond-m3

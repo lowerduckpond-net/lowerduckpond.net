@@ -56,12 +56,13 @@ all alias failures avoids disclosing whether a hostname is unknown or merely
 inactive and prevents a negative response from surviving later deployment,
 resume, restore, rename, or slug reassignment.
 
-Cloudflare reserves `/cdn-cgi/` ahead of Caddy. The managed edge blocks that
-path namespace and the platform does not promise its ordinary alias `404` body
-there; the response is a provider-owned denial that contains no tenant
-destination or content and never reaches Caddy. This is the only Milestone 3
-provider-path exception to the alias contract. Qualification must prove the
-block before proxy rollout.
+Cloudflare reserves `/cdn-cgi/` ahead of Caddy. The managed edge blocks
+unclaimed and case-variant paths in that namespace, while Cloudflare may answer
+an exact internal endpoint such as lowercase `/cdn-cgi/trace` before custom WAF
+rules. The platform does not promise its ordinary alias `404` body there;
+neither response class contains a tenant destination or content or reaches
+Caddy. This is the only Milestone 3 provider-path exception to the alias
+contract. Qualification must prove both outcomes before proxy rollout.
 
 The alias service does not register service workers or hold authentication
 state. Platform authentication remains on the separately registered

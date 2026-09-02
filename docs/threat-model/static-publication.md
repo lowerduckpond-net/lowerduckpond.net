@@ -36,7 +36,8 @@ features require their own threat-model extensions before activation.
   while the origin is unavailable.
 - Cloudflare does not rewrite or inject into an accepted Milestone 3 origin
   representation, and its reserved `/cdn-cgi/` namespace cannot collide with a
-  tenant release or bypass alias rejection behavior.
+  tenant release or select a Caddy alias or tenant route. Exact provider-owned
+  internal endpoints remain outside the application representation contract.
 - Reassigning a human-readable slug cannot transfer a browser origin, service
   worker, cookie, or tenant-controlled storage to the next tenant.
 - Importing a portable bundle cannot claim its embedded tenant identity,
@@ -163,7 +164,7 @@ record.
 | Cloudflare serves a prior deployment, suspended tenant, released slug, redirect, error, or cookie-dependent response | Install explicit edge cache-bypass rules and manage Always Online as disabled for both zones throughout Milestone 3; retain origin `no-store` on every alias, apex, unknown-host, and error response; repeat requests through the real edge while changing lifecycle-shaped fixtures; and prove origin unavailability returns no stale or Internet Archive representation. Cache or stale-serving eligibility requires a later lifecycle-aware ADR and purge/recovery tests. |
 | Cloudflare transforms tenant headers or emits security cookies | Prove tenant-controlled `Set-Cookie` is absent before the edge, classify Cloudflare-owned cookies separately, forbid LDP authentication from trusting them, and exercise edge responses in every supported browser rather than inferring browser behavior from direct-origin tests. |
 | Cloudflare rewrites an accepted HTML body or injects a provider script | Disable every optional body-transforming feature in managed edge policy, emit `Cache-Control: no-transform`, compare origin and edge representations in qualification, and treat a security block or challenge as a provider availability response rather than tenant content. |
-| Cloudflare serves a provider endpoint from `/cdn-cgi/` or hides a tenant file under that prefix | Block the complete reserved namespace at the zone WAF, reject `cdn-cgi` as a case-insensitive normalized first tenant path component, record the provider denial as the sole alias-path exception, and prove the request never reaches Caddy. |
+| Cloudflare serves an internal endpoint from `/cdn-cgi/` or hides a tenant file under that prefix | Reject `cdn-cgi` as a case-insensitive normalized first tenant path component, block unclaimed and case-variant paths at the zone WAF, classify exact Cloudflare internal endpoints as provider responses rather than tenant content, retain no visitor-specific trace fields, and prove neither outcome reaches Caddy. |
 | Origin-pull material expires, leaks, or rotates incompletely | Keep CA private keys offline, expose only replaceable leaves to Cloudflare, overlap old and replacement CA trust before moving edge leaves, retire the old CA only after every association changes, alert before expiry, and test rejection and rollback at every phase. |
 | Slug reassignment transfers persistent browser state | Treat the slug hostname only as a platform alias. Redirect its exact bare root without caching, referrer, cookie, path, query, tenant body, tenant header, or caller-selected target to the immutable tenant origin. Never reassign a tenant ID or canonical hostname; release only the slug mapping. |
 | Alias becomes a confused deputy, secret sink, or stale content URL | Generate its destination solely from root-owned tenant ID and suffix, redirect only active tenants, reject every non-root path, query, and unsupported method without forwarding, apply `Cache-Control: no-store` to every redirect and generic failure so lifecycle changes cannot leave a cached positive or negative result, discard sensitive alias request fields before logging, and test that uploaded bytes and service workers are unreachable at the alias. |
@@ -370,8 +371,9 @@ Implementation and review must preserve these invariants:
     the operator credential.
 37. Managed edge configuration disables optional body rewriting and script
     injection, and Caddy emits `Cache-Control: no-transform`. The zone WAF
-    blocks `/cdn-cgi` and its descendants before they reach Caddy; archive,
-    import, and restore reject that normalized first component.
+    blocks unclaimed and case-variant `/cdn-cgi` requests before Caddy, exact
+    provider-managed internal endpoints remain isolated from Caddy, and
+    archive, import, and restore reject that normalized first component.
 
 ## Residual risks
 

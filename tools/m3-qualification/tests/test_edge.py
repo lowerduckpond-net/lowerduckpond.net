@@ -463,6 +463,33 @@ def test_qualification_caddy_does_not_reflect_client_ips_or_literal_escapes() ->
     assert "provisioned for this name.\\n" not in base_template
 
 
+def test_edge_reserved_path_check_exercises_the_exact_provider_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[tuple[str, str]] = []
+
+    def fake_request(hostname: str, path: str) -> edge.EdgeResponse:
+        observed.append((hostname, path))
+        if path == "/cdn-cgi/trace":
+            return edge.EdgeResponse(
+                status=200,
+                fields={"server": "cloudflare", "content-type": "text/plain"},
+                content=b"fl=test\ncolo=DFW\n",
+            )
+        return edge.EdgeResponse(status=403, fields={}, content=b"blocked")
+
+    monkeypatch.setattr(edge, "_request", fake_request)
+
+    assert edge._check_reserved_path() == {
+        "origin_preempted": True,
+        "provider_namespace_blocked": True,
+    }
+    assert (edge.PLATFORM_HOST, "/cdn-cgi/trace") in observed
+    assert (edge.PLATFORM_HOST, "/CDN-CGI/trace") in observed
+    assert (edge.CANONICAL_HOST, "/cdn-cgi/trace") in observed
+    assert (edge.CANONICAL_HOST, "/CDN-CGI/trace") in observed
+
+
 def test_final_edge_checks_report_one_failed_operation_without_masking_the_rest(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -24,6 +24,11 @@ from pathlib import Path
 from typing import Final
 
 from lowerduckpond_m3_qualification.report import CheckResult, EvidenceValue, run_check
+from lowerduckpond_m3_qualification.reserved_namespace import (
+    NamespaceResponse,
+    ReservedNamespaceError,
+    check_reserved_namespace,
+)
 
 API_ROOT: Final = "https://api.cloudflare.com/client/v4"
 PLATFORM_HOST: Final = "m3-qualification.lowerduckpond.net"
@@ -76,7 +81,6 @@ CACHE_ROUTE_PATHS: Final = (
     (CANONICAL_HOST, "/static"),
     (UNKNOWN_HOST, "/"),
 )
-RESERVED_PATHS: Final = ("/cdn-cgi", "/cdn-cgi/", "/CDN-CGI/trace")
 API_TIMEOUT_SECONDS: Final = 15
 HTTP_TIMEOUT_SECONDS: Final = 10
 DIRECT_TIMEOUT_SECONDS: Final = 3
@@ -455,12 +459,24 @@ def _check_representation_fidelity(inputs: EdgeInputs) -> dict[str, EvidenceValu
 
 
 def _check_reserved_path() -> dict[str, EvidenceValue]:
-    for hostname in (PLATFORM_HOST, CANONICAL_HOST):
-        for path in RESERVED_PATHS:
-            response = _request(hostname, path)
-            if response.status != HTTPStatus.FORBIDDEN or _origin_reached(response):
-                raise EdgeQualificationError("reserved Cloudflare namespace reached the origin")
-    return {"origin_preempted": True, "provider_namespace_blocked": True}
+    def request(hostname: str, path: str) -> NamespaceResponse:
+        response = _request(hostname, path)
+        return NamespaceResponse(
+            status=response.status,
+            fields=response.fields,
+            content=response.content,
+        )
+
+    try:
+        evidence: dict[str, EvidenceValue] = dict(
+            check_reserved_namespace(
+                hostnames=(PLATFORM_HOST, CANONICAL_HOST),
+                request=request,
+            )
+        )
+        return evidence
+    except ReservedNamespaceError as error:
+        raise EdgeQualificationError(str(error)) from error
 
 
 def _check_unknown_host() -> dict[str, EvidenceValue]:

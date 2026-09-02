@@ -74,6 +74,7 @@ QUALIFICATION_PYTHON_MODULES = (
     "host.py",
     "libraries.py",
     "report.py",
+    "reserved_namespace.py",
     "session.py",
 )
 QUALIFICATION_REPAIRED_LOG_PATH = "/tmp/lowerduckpond-m3-qualification-repair.json"  # noqa: S108

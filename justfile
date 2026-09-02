@@ -126,6 +126,10 @@ preflight-m3-6-production: _sync
 preflight-m3-7-production: _sync
     scripts/preflight-m3-7-production
 
+# Prove the production reserved namespace remains isolated from Caddy.
+check-m3-7-production-reserved-namespace: _sync
+    uv run python scripts/check_m3_7_reserved_namespace.py
+
 # Converge production twice and run host acceptance and restore checks.
 configure-production: _sync
     scripts/configure-production
