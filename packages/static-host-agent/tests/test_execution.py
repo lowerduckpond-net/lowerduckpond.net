@@ -21,6 +21,7 @@ from lowerduckpond_static_host_agent import (
     CapacityProjection,
     ExecutionOutcome,
     FilesystemCapacity,
+    IntakeArtifactUnavailableError,
     IssuedAuthorization,
     LockManager,
     StateRecordPath,
@@ -151,6 +152,20 @@ class _CompletingFailureHandler:
             blocking=blocking,
         )
         return ExecutionOutcome(result, True)
+
+
+class _UnavailableArtifactHandler:
+    def execute(
+        self,
+        job_id: str,
+        *,
+        claim: ArtifactClaim | None,
+        blocking: bool,
+    ) -> ExecutionOutcome:
+        assert job_id
+        assert claim is not None
+        assert blocking is False
+        raise IntakeArtifactUnavailableError("handler recovery requires its artifact")
 
 
 @pytest.fixture(autouse=True)
@@ -799,6 +814,67 @@ def test_executor_consumes_only_the_artifact_bound_to_the_job(tmp_path: Path) ->
     assert handler.claims[0] is not None
     assert handler.claims[0].artifact == lease.artifact
     assert list((root / "intake").iterdir()) == []
+
+
+def test_executor_does_not_terminalize_handler_artifact_errors(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), _fixture("site.json"))
+    _write(
+        root,
+        StateRecordPath.tenant_deployment(_TENANT_ID, _DEPLOYMENT_ID),
+        _fixture("deployment-record.json"),
+    )
+    payload = b"recoverable deployment"
+    artifact = VerifiedArtifact(len(payload), hashlib.sha256(payload).hexdigest())
+    correlation_id = "0198d17f-6f4a-7000-8000-000000000003"
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "deploy",
+        "correlationId": correlation_id,
+        "tenantId": _TENANT_ID,
+        "artifact": {"size": artifact.size, "sha256": artifact.sha256},
+    }
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        with intake.admit(
+            operation="deploy",
+            correlation_id=correlation_id,
+            declared=artifact,
+            read=BytesIO(payload).read,
+        ) as lease:
+            issued = AuthorizationIssuer(
+                repository,
+                gate=_OpenGate(),
+                entropy=_Entropy(),
+            ).issue(
+                canonical_json_bytes(request),
+                operator_principal="operator@example.test",
+                now=_NOW,
+                artifact=artifact,
+            )
+            lease.commit()
+
+        with pytest.raises(
+            IntakeArtifactUnavailableError,
+            match="handler recovery requires",
+        ):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={"deploy": _UnavailableArtifactHandler()},
+            ).execute(issued.job_id)
+
+        job = repository.read(StateRecordPath.authorization_job(issued.job_id)).document
+        with pytest.raises(FileNotFoundError):
+            repository.read(StateRecordPath.authorization_result(issued.job_id))
+
+    assert job["phase"] == "claimed"
+    assert [path.name for path in (root / "intake").iterdir()] == [f"{correlation_id}.artifact"]
 
 
 def test_executor_fails_terminally_when_bound_artifact_is_absent(tmp_path: Path) -> None:
