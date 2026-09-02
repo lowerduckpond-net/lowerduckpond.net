@@ -171,6 +171,12 @@ def finalize_create_transition(
     return deepcopy(documents.result)
 
 
+def validate_create_transition(job: StoredContract, plan: CreateTransitionPlan) -> None:
+    """Validate every create document relationship without mutating state."""
+
+    _freeze_and_validate(job, plan)
+
+
 @dataclass(frozen=True, slots=True)
 class _MissingState:
     result: bool

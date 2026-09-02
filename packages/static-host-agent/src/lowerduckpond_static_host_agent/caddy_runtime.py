@@ -397,9 +397,19 @@ class CaddyRuntime:
 
         self._require_locked()
         generation_id = self.read_active()
+        return SelectedCaddyGeneration(
+            generation_id,
+            self.open_verified_generation(generation_id),
+        )
+
+    def open_verified_generation(self, generation_id: str) -> PinnedCaddyGeneration:
+        """Pin and verify one explicit complete generation under publication."""
+
+        self._require_locked()
+        canonical_id = _canonical_generation_id(generation_id)
         store = self._open_generation_store()
         try:
-            generation = store.open_verified(generation_id)
+            generation = store.open_verified(canonical_id)
             try:
                 if self._expected_binary_sha256 is not None:
                     _validate_trusted_binary(generation, self._expected_binary_sha256)
@@ -409,7 +419,7 @@ class CaddyRuntime:
                 raise
         finally:
             store.close()
-        return SelectedCaddyGeneration(generation_id, generation)
+        return generation
 
     def publish_candidate(
         self,
