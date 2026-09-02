@@ -1,0 +1,300 @@
+from __future__ import annotations
+
+import json
+import os
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import cast
+
+import lowerduckpond_static_host_agent.repository as repository_module
+import pytest
+from lowerduckpond_static_contracts import (
+    canonical_json_bytes,
+    platform_state_digest,
+)
+from lowerduckpond_static_host_agent import (
+    CaddyGenerationManifest,
+    CaddyRuntime,
+    CapacityRejectedError,
+    CreatePreparationError,
+    FilesystemCapacity,
+    HostCapacityLimits,
+    LockManager,
+    PreparedCreateTransition,
+    StateRecordPath,
+    StateRepository,
+    StoredContract,
+    TenantRouteOverlay,
+    prepare_create_transition,
+)
+
+_FIXTURE_ROOT = Path(__file__).parents[3] / "tests/static-publication/fixtures/accepted"
+_SOURCE_GENERATION = "0198d17f-6f4a-7000-8000-000000000004"
+_NOW = datetime(2026, 9, 2, 13, 45, tzinfo=UTC)
+
+
+class _Entropy:
+    def __init__(self) -> None:
+        self._value = 0
+
+    def __call__(self, length: int) -> bytes:
+        self._value += 1
+        return self._value.to_bytes(length, byteorder="big")
+
+
+class _Gate:
+    def __init__(self, *, enabled: bool = True) -> None:
+        self.enabled = enabled
+
+    def require_enabled(self) -> None:
+        if not self.enabled:
+            raise RuntimeError("publication_disabled")
+
+
+class _Pinned:
+    def close(self) -> None:
+        return
+
+
+@dataclass(frozen=True)
+class _Selected:
+    generation_id: str
+    generation: _Pinned
+
+
+@dataclass(frozen=True)
+class _Candidate:
+    generation_id: str
+
+
+class _Runtime:
+    def __init__(self) -> None:
+        self.events: list[str] = []
+        self.overlay: TenantRouteOverlay | None = None
+        self.candidate: _Candidate | None = None
+
+    @contextmanager
+    def using_held_publication_lock(self, _repository: StateRepository) -> Iterator[None]:
+        self.events.append("locked")
+        yield
+
+    def open_active_verified(self) -> _Selected:
+        self.events.append("active")
+        return _Selected(_SOURCE_GENERATION, _Pinned())
+
+    def prune_unreferenced_generations(
+        self,
+        _protected: tuple[()],
+        *,
+        keep_newest_unprotected: int,
+    ) -> tuple[str, ...]:
+        assert keep_newest_unprotected == 1
+        self.events.append("pruned")
+        return ()
+
+    def publish_candidate(
+        self,
+        generation_id: str,
+        *,
+        transaction: object,
+        overlay: TenantRouteOverlay,
+        gate: _Gate,
+    ) -> CaddyGenerationManifest:
+        del transaction
+        gate.require_enabled()
+        self.events.append("published")
+        self.overlay = overlay
+        self.candidate = _Candidate(generation_id)
+        return cast(CaddyGenerationManifest, self.candidate)
+
+    def discard_unselected_candidate(
+        self,
+        generation_id: str,
+        manifest: CaddyGenerationManifest,
+    ) -> None:
+        assert generation_id == manifest.generation_id
+        self.events.append("discarded")
+
+
+@pytest.fixture(autouse=True)
+def _capacity_isolated(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "lowerduckpond_static_host_agent.repository._StateTransaction.measure_filesystem_capacity",
+        lambda _transaction: FilesystemCapacity(
+            device=1,
+            fragment_size=4096,
+            total_blocks=10_000_000,
+            available_blocks=9_000_000,
+            total_inodes=1_000_000,
+            available_inodes=900_000,
+        ),
+    )
+
+
+def _fixture(name: str) -> dict[str, object]:
+    value = json.loads((_FIXTURE_ROOT / name).read_text(encoding="utf-8"))
+    assert type(value) is dict
+    return value
+
+
+def _mkdir(path: Path) -> None:
+    path.mkdir()
+    path.chmod(0o700)
+
+
+def _state_root(tmp_path: Path) -> Path:
+    root = tmp_path / "state"
+    _mkdir(root)
+    for components in (
+        ("platform",),
+        ("tenants",),
+        ("authorization",),
+        ("authorization", "correlations"),
+        ("authorization", "jobs"),
+        ("authorization", "results"),
+        ("intents",),
+        ("audit",),
+        ("locks",),
+    ):
+        _mkdir(root.joinpath(*components))
+    LockManager.initialize(root / "locks", expected_owner=os.geteuid()).close()
+    return root
+
+
+def _write(root: Path, path: StateRecordPath, document: dict[str, object]) -> None:
+    target = root.joinpath(*path.components)
+    target.write_bytes(canonical_json_bytes(document))
+    target.chmod(0o600)
+
+
+def _prepared_repository(root: Path) -> tuple[StateRepository, dict[str, object]]:
+    namespace = _fixture("platform-namespace.json")
+    job = _fixture("authorization-job.json")
+    expected = job["expectedSource"]
+    assert type(expected) is dict
+    expected["platformStateDigest"] = platform_state_digest(namespace).to_dict()
+    job["phase"] = "claimed"
+    _write(root, StateRecordPath.platform_namespace(), namespace)
+    _write(root, StateRecordPath.authorization_job(job["jobId"]), job)
+    return StateRepository(root, expected_owner=os.geteuid()), job
+
+
+def _prepare(
+    repository: StateRepository,
+    runtime: _Runtime,
+    job: dict[str, object],
+    *,
+    limits: HostCapacityLimits | None = None,
+) -> PreparedCreateTransition:
+    selected_limits = HostCapacityLimits() if limits is None else limits
+    return prepare_create_transition(
+        repository,
+        cast(CaddyRuntime, runtime),
+        _Gate(),
+        job["jobId"],
+        now=_NOW,
+        clock=lambda: 1_777_000_000_000,
+        entropy=_Entropy(),
+        capacity_limits=selected_limits,
+    )
+
+
+def test_create_preparation_publishes_then_binds_one_exact_intent(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root)
+    runtime = _Runtime()
+    try:
+        prepared = _prepare(repository, runtime, job)
+
+        assert runtime.events == ["locked", "active", "pruned", "published"]
+        assert runtime.overlay is not None
+        assert runtime.overlay.tenant.manifest == prepared.plan.manifest
+        assert runtime.overlay.tenant.observed_state == prepared.plan.observed_state
+        assert runtime.overlay.tenant.deployment is None
+        assert prepared.plan.intent["lifecycleRecovery"] == {
+            "sourceObservedState": None,
+            "sourceRuntimeGenerationId": _SOURCE_GENERATION,
+            "sourceRouteSet": "absent",
+            "candidateObservedState": prepared.plan.observed_state,
+            "candidateRuntimeGenerationId": prepared.candidate_manifest.generation_id,
+            "candidateRouteSet": "absent",
+        }
+        assert (
+            repository.read(StateRecordPath.transaction_intent(prepared.plan.intent_id)).document
+            == prepared.plan.intent
+        )
+        assert repository.measure_inventory().tenant_ids == ()
+    finally:
+        repository.close()
+
+
+def test_create_preparation_discards_candidate_when_intent_admission_fails(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root)
+    runtime = _Runtime()
+    limits = HostCapacityLimits(minimum_available_bytes=100 * 1024 * 1024 * 1024)
+    try:
+        with pytest.raises(CapacityRejectedError):
+            _prepare(repository, runtime, job, limits=limits)
+
+        assert runtime.events[-2:] == ["published", "discarded"]
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
+def test_create_preparation_checks_gate_before_generation_cleanup(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root)
+    runtime = _Runtime()
+    try:
+        with pytest.raises(RuntimeError, match="publication_disabled"):
+            prepare_create_transition(
+                repository,
+                cast(CaddyRuntime, runtime),
+                _Gate(enabled=False),
+                job["jobId"],
+                now=_NOW,
+                clock=lambda: 1_777_000_000_000,
+                entropy=_Entropy(),
+            )
+
+        assert runtime.events == ["locked"]
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
+def test_create_preparation_retains_candidate_on_ambiguous_intent_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root)
+    runtime = _Runtime()
+    create = repository_module._StateTransaction.create_immutable
+
+    def create_then_fail(
+        transaction: repository_module._StateTransaction,
+        path: StateRecordPath,
+        document: dict[str, object],
+    ) -> StoredContract:
+        stored = create(transaction, path, document)
+        if path.is_intent:
+            raise OSError("injected ambiguous intent completion")
+        return stored
+
+    monkeypatch.setattr(repository_module._StateTransaction, "create_immutable", create_then_fail)
+    try:
+        with pytest.raises(CreatePreparationError, match="ambiguous durable completion"):
+            _prepare(repository, runtime, job)
+
+        assert "discarded" not in runtime.events
+        assert len(repository.measure_intent_records().records) == 1
+    finally:
+        repository.close()

@@ -125,6 +125,11 @@ from lowerduckpond_static_host_agent.create_commit import (
     CreateCommitError,
     finalize_create_transition,
 )
+from lowerduckpond_static_host_agent.create_prepare import (
+    CreatePreparationError,
+    PreparedCreateTransition,
+    prepare_create_transition,
+)
 from lowerduckpond_static_host_agent.durable import (
     DurabilityBoundary,
     DurableDirectory,
@@ -363,6 +368,7 @@ __all__ = [
     "CorrelationResolution",
     "CreateCommitBoundary",
     "CreateCommitError",
+    "CreatePreparationError",
     "CreateStateBoundary",
     "CreateTransitionPlan",
     "DeadlineReader",
@@ -407,6 +413,7 @@ __all__ = [
     "PortableBundleImport",
     "PortableBundleInspection",
     "PreparedCaddyExecution",
+    "PreparedCreateTransition",
     "PublicationDisabledError",
     "PublicationGate",
     "ReadDeadline",
@@ -484,6 +491,7 @@ __all__ = [
     "platform_generation_matches",
     "platform_generation_state",
     "prepare_active_caddy_execution",
+    "prepare_create_transition",
     "reload_caddy_generation",
     "require_exact_file",
     "restore_caddy_generation",

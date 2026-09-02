@@ -577,6 +577,49 @@ def test_runtime_counts_every_existing_generation_before_candidate_admission(
             )
 
 
+def test_runtime_discards_only_an_exact_unselected_candidate(
+    runtime_fixture: RuntimeFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _allow_candidate_capacity(monkeypatch, runtime_fixture.root)
+    transaction, overlay, gate = _candidate_inputs()
+    with runtime_fixture.open() as runtime, runtime.locked():
+        runtime.select_active(GENERATION_A)
+        manifest = runtime.publish_candidate(
+            _TENANT_GENERATION,
+            transaction=transaction,
+            overlay=overlay,
+            gate=gate,
+        )
+
+        runtime.discard_unselected_candidate(_TENANT_GENERATION, manifest)
+
+        assert runtime.read_active() == GENERATION_A
+        with pytest.raises(FileNotFoundError):
+            runtime.select_active(_TENANT_GENERATION)
+
+
+def test_runtime_refuses_to_discard_an_active_generation(
+    runtime_fixture: RuntimeFixture,
+) -> None:
+    with (
+        CaddyGenerationStore.open(
+            runtime_fixture.root / "generations",
+            expected_owner=runtime_fixture.owner,
+            expected_group=runtime_fixture.group,
+        ) as store,
+        store.open_verified(GENERATION_A) as generation,
+    ):
+        manifest = generation.manifest
+
+    with runtime_fixture.open() as runtime, runtime.locked():
+        runtime.select_active(GENERATION_A)
+        with pytest.raises(CaddyRuntimeError, match="cannot discard the active"):
+            runtime.discard_unselected_candidate(GENERATION_A, manifest)
+
+        assert runtime.read_active() == GENERATION_A
+
+
 def test_runtime_prunes_only_generations_outside_active_and_recovery_set(
     runtime_fixture: RuntimeFixture,
 ) -> None:

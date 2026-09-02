@@ -542,6 +542,25 @@ class CaddyRuntime:
         finally:
             store.close()
 
+    def discard_unselected_candidate(
+        self,
+        generation_id: str,
+        manifest: CaddyGenerationManifest,
+    ) -> None:
+        """Remove only one exact candidate that never became active."""
+
+        self._require_locked()
+        candidate_id = _canonical_generation_id(generation_id)
+        if manifest.generation_id != candidate_id:
+            raise CaddyRuntimeError("candidate manifest identity disagrees")
+        if self.read_active() == candidate_id:
+            raise CaddyRuntimeError("cannot discard the active Caddy generation")
+        store = self._open_generation_store()
+        try:
+            store.discard_published(candidate_id, manifest)
+        finally:
+            store.close()
+
     def remove_abandoned_reference_temporaries(
         self,
         *,
