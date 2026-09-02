@@ -287,6 +287,32 @@ def test_create_commit_rejects_cross_document_state_drift_before_mutation(
         repository.close()
 
 
+def test_create_commit_pins_the_exact_intent_before_terminal_mutation(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    repository, job, plan = _prepared_create(root)
+    intent_path = StateRecordPath.transaction_intent(plan.intent_id)
+    stored = repository.read(intent_path)
+    changed = stored.document
+    changed["createdAt"] = "2026-09-02T12:31:00Z"
+    repository.compare_and_swap(intent_path, stored.revision, changed)
+    try:
+        with (
+            repository.publication_transaction() as transaction,
+            pytest.raises(CreateCommitError, match="intent changed"),
+        ):
+            finalize_create_transition(transaction, job, plan)
+
+        with pytest.raises(FileNotFoundError):
+            repository.read(StateRecordPath.tenant_desired(plan.tenant_id))
+        with pytest.raises(FileNotFoundError):
+            repository.read(StateRecordPath.authorization_result(job.document["jobId"]))
+        assert repository.inspect_audit().entry_count == 0
+    finally:
+        repository.close()
+
+
 def test_create_commit_admits_all_growth_before_first_mutation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

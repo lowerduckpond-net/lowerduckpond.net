@@ -142,6 +142,7 @@ def finalize_create_transition(
     terminal = _terminal_create_without_intent(transaction, current_job, documents)
     if terminal is not None:
         return terminal
+    intent_removal = _require_exact_intent(transaction, documents)
     missing = _admit_missing_state(
         transaction,
         current_job,
@@ -161,7 +162,7 @@ def finalize_create_transition(
     _notify(failure_hook, CreateCommitBoundary.RESULT_SYNC)
     _ensure_completed_job(transaction, current_job)
     _notify(failure_hook, CreateCommitBoundary.JOB_SYNC)
-    _remove_exact_intent(transaction, documents)
+    transaction.remove_reconciled_intent(intent_removal.path, intent_removal.token)
     _notify(failure_hook, CreateCommitBoundary.INTENT_REMOVED)
     return deepcopy(documents.result)
 
@@ -169,6 +170,32 @@ def finalize_create_transition(
 @dataclass(frozen=True, slots=True)
 class _MissingState:
     result: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _ExactIntent:
+    path: StateRecordPath
+    token: IntentRemovalToken
+
+
+def _require_exact_intent(
+    transaction: CreateCommitTransaction,
+    documents: _CreateDocuments,
+) -> _ExactIntent:
+    inventory = transaction.measure_intent_records()
+    if len(inventory.records) != 1 or inventory.records[0].intent_id != documents.intent_id:
+        raise CreateCommitError("create finalization requires its sole exact intent")
+    identity = inventory.records[0]
+    path, record = transaction.read_intent(documents.intent_id)
+    if (
+        path != StateRecordPath.transaction_intent(documents.intent_id)
+        or record.document != documents.intent
+    ):
+        raise CreateCommitError("create intent changed before terminal mutation")
+    return _ExactIntent(
+        path,
+        IntentRemovalToken(record.revision, identity.metadata_generation),
+    )
 
 
 def _terminal_create_without_intent(
@@ -431,26 +458,6 @@ def _ensure_completed_job(
         StateRecordPath.authorization_job(completed["jobId"]),
         job.revision,
         completed,
-    )
-
-
-def _remove_exact_intent(
-    transaction: CreateCommitTransaction,
-    documents: _CreateDocuments,
-) -> None:
-    inventory = transaction.measure_intent_records()
-    if len(inventory.records) != 1 or inventory.records[0].intent_id != documents.intent_id:
-        raise CreateCommitError("create intent inventory changed before removal")
-    identity = inventory.records[0]
-    path, record = transaction.read_intent(documents.intent_id)
-    if (
-        path != StateRecordPath.transaction_intent(documents.intent_id)
-        or record.document != documents.intent
-    ):
-        raise CreateCommitError("create intent changed before removal")
-    transaction.remove_reconciled_intent(
-        path,
-        IntentRemovalToken(record.revision, identity.metadata_generation),
     )
 
 
