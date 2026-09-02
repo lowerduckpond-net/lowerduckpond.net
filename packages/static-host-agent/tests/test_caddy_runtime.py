@@ -29,6 +29,7 @@ from lowerduckpond_static_host_agent import (
     LockMode,
     LockName,
     LockOrderError,
+    StateRepository,
     TenantRouteInput,
     build_platform_only_caddy_routes,
     build_tenant_caddy_routes,
@@ -312,6 +313,36 @@ def test_runtime_composes_with_the_same_lock_already_held_by_lock_manager(
     ):
         runtime.select_active(GENERATION_A)
         assert runtime.read_active() == GENERATION_A
+
+
+def test_runtime_composes_with_repository_publication_transaction(
+    runtime_fixture: RuntimeFixture,
+    tmp_path: Path,
+) -> None:
+    state_root = tmp_path / "state"
+    state_root.mkdir(mode=0o700)
+    lock_root = state_root / "locks"
+    lock_root.mkdir(mode=0o700)
+    LockManager.initialize(lock_root, expected_owner=runtime_fixture.owner).close()
+
+    with (
+        StateRepository(state_root, expected_owner=runtime_fixture.owner) as repository,
+        CaddyRuntime.open(
+            runtime_fixture.root,
+            lock_root / LockName.PUBLICATION.filename,
+            expected_owner=runtime_fixture.owner,
+            expected_group=runtime_fixture.group,
+            validation_uid=runtime_fixture.owner,
+            validation_gid=runtime_fixture.group,
+            expected_binary_sha256=runtime_fixture.binary_sha256,
+            candidate_validator=_accept_candidate,
+        ) as runtime,
+        repository.publication_transaction() as transaction,
+        runtime.using_held_publication_lock(repository),
+    ):
+        runtime.select_active(GENERATION_A)
+        assert runtime.read_active() == GENERATION_A
+        assert transaction is not None
 
 
 def test_held_lock_context_fails_busy_instead_of_inverting_the_process_mutex(

@@ -22,7 +22,7 @@ from enum import StrEnum
 from functools import partial
 from pathlib import Path
 from types import TracebackType
-from typing import Final, Self, cast
+from typing import Final, Protocol, Self, cast
 
 from lowerduckpond_static_contracts import (
     ContractError,
@@ -52,7 +52,7 @@ from lowerduckpond_static_host_agent.caddy_routes import (
     build_tenant_caddy_routes,
     configured_origin_pull_policy,
 )
-from lowerduckpond_static_host_agent.locks import LockManager, LockMode, LockName
+from lowerduckpond_static_host_agent.locks import LockMode, LockName
 
 CADDY_ACTIVE_REFERENCE_NAME: Final = "active"
 CADDY_GENERATIONS_DIRECTORY_NAME: Final = "generations"
@@ -132,6 +132,18 @@ class CaddySelectionBoundary(StrEnum):
 SelectionFailureHook = Callable[[CaddySelectionBoundary], None]
 Execve = Callable[[int, list[str], dict[str, str]], object]
 CandidateValidator = Callable[[PinnedCaddyGeneration, Mapping[str, str]], None]
+
+
+class _HeldLockVerifier(Protocol):
+    """Prove that the current thread owns one exact ordered host lock."""
+
+    def require_held(
+        self,
+        name: LockName,
+        *,
+        mode: LockMode | None = None,
+        descriptor: int | None = None,
+    ) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -331,7 +343,7 @@ class CaddyRuntime:
                 fcntl.flock(self._lock_fd, fcntl.LOCK_UN)
 
     @contextmanager
-    def using_held_publication_lock(self, lock_manager: LockManager) -> Iterator[object]:
+    def using_held_publication_lock(self, lock_manager: _HeldLockVerifier) -> Iterator[object]:
         """Use this exact inode through a caller's already-held ordered lock."""
 
         if not self._context_mutex.acquire(blocking=False):

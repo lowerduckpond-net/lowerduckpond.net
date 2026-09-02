@@ -21,6 +21,8 @@ from lowerduckpond_static_contracts import (
 from lowerduckpond_static_host_agent import (
     LockManager,
     LockMode,
+    LockName,
+    LockOrderError,
     StateAlreadyExistsError,
     StateConflictError,
     StatePathError,
@@ -300,6 +302,51 @@ def test_emergency_result_binds_its_correlation_identity_to_the_result_path(
         reread = repository.read(path)
 
     assert created.document == reread.document == result
+
+
+def test_publication_transaction_holds_publication_before_tenant_state(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    namespace = _fixture("platform-namespace.json")
+    _write_record(root, StateRecordPath.platform_namespace(), namespace)
+
+    with _repository(root) as repository:
+        with pytest.raises(LockOrderError, match="must already be held"):
+            repository.require_held(LockName.PUBLICATION, mode=LockMode.EXCLUSIVE)
+        with repository.publication_transaction() as transaction:
+            repository.require_held(LockName.PUBLICATION, mode=LockMode.EXCLUSIVE)
+            repository.require_held(LockName.TENANT_STATE, mode=LockMode.EXCLUSIVE)
+            assert transaction.read(StateRecordPath.platform_namespace()).document == namespace
+        with pytest.raises(LockOrderError, match="must already be held"):
+            repository.require_held(LockName.TENANT_STATE, mode=LockMode.EXCLUSIVE)
+
+
+def test_publication_transaction_rejects_tenant_state_to_publication_inversion(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+
+    with (
+        _repository(root) as repository,
+        repository.transaction(mode=LockMode.EXCLUSIVE),
+        pytest.raises(LockOrderError, match="publication, tenant-state"),
+        repository.publication_transaction(),
+    ):
+        pass
+
+
+def test_publication_transaction_does_not_expose_shared_tenant_state(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+
+    with (
+        _repository(root) as repository,
+        pytest.raises(TypeError, match="mode"),
+        repository.publication_transaction(mode=LockMode.SHARED),  # type: ignore[call-arg]
+    ):
+        pass
 
 
 def test_reader_rejects_schema_valid_but_noncanonical_bytes(tmp_path: Path) -> None:
