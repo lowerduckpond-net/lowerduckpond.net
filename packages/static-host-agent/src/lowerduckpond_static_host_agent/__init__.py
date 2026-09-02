@@ -201,7 +201,9 @@ from lowerduckpond_static_host_agent.job_runtime import (
 from lowerduckpond_static_host_agent.lifecycle_plan import (
     CreateTransitionPlan,
     LifecyclePlanError,
+    RouteTransitionPlan,
     plan_create_transition,
+    plan_route_transition,
 )
 from lowerduckpond_static_host_agent.locks import (
     LockManager,
@@ -460,6 +462,7 @@ __all__ = [
     "ResultWaiter",
     "RouteOverlayMode",
     "RouteSnapshotError",
+    "RouteTransitionPlan",
     "RuntimeBoundaryError",
     "SelectedCaddyGeneration",
     "StartupReconciler",
@@ -523,6 +526,7 @@ __all__ = [
     "measure_release_tree",
     "measure_release_tree_snapshot",
     "plan_create_transition",
+    "plan_route_transition",
     "platform_generation_matches",
     "platform_generation_state",
     "prepare_active_caddy_execution",

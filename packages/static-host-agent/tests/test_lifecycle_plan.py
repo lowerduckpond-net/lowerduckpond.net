@@ -8,9 +8,12 @@ from pathlib import Path
 import pytest
 from lowerduckpond_static_contracts import (
     ContractKind,
+    archive_record_digest,
     audit_entry_digest,
+    deployment_record_digest,
     manifest_digest,
     platform_state_digest,
+    request_digest,
     result_digest,
     validate_contract,
 )
@@ -18,7 +21,9 @@ from lowerduckpond_static_host_agent import AuditState
 from lowerduckpond_static_host_agent.lifecycle_plan import (
     CreateTransitionPlan,
     LifecyclePlanError,
+    RouteTransitionPlan,
     plan_create_transition,
+    plan_route_transition,
 )
 
 _FIXTURE_ROOT = Path(__file__).parents[3] / "tests/static-publication/fixtures/accepted"
@@ -65,6 +70,128 @@ def _plan(
         selected_job,
         selected_namespace,
         source_runtime_generation_id=source_generation,
+        candidate_runtime_generation_id=candidate_generation,
+        audit_state=AuditState(
+            _AUDIT_SEQUENCE,
+            1,
+            4096,
+            audit_entry_digest(_fixture("audit-entry.json")).to_dict(),
+        ),
+        now=_NOW,
+        clock=lambda: 1_777_000_000_000,
+        entropy=_Entropy(),
+    )
+
+
+def _route_source(
+    state: str,
+) -> tuple[
+    dict[str, object],
+    dict[str, object],
+    dict[str, object] | None,
+    dict[str, object] | None,
+]:
+    manifest = _fixture("site.json")
+    spec = manifest["spec"]
+    metadata = manifest["metadata"]
+    assert type(spec) is dict
+    assert type(metadata) is dict
+    spec["desiredState"] = state
+    deployment: dict[str, object] | None = _fixture("deployment-record.json")
+    archive: dict[str, object] | None = None
+    if state == "undeployed":
+        spec.pop("desiredDeployment")
+        deployment = None
+        active_deployment_id = None
+    else:
+        desired_deployment = spec["desiredDeployment"]
+        assert type(desired_deployment) is dict
+        active_deployment_id = desired_deployment["id"] if state != "archived" else None
+        if state == "archived":
+            archive = _fixture("archive-record.json")
+            archive["manifestDigest"] = manifest_digest(manifest).to_dict()
+    observed: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "TenantObservedState",
+        "tenantId": metadata["id"],
+        "desiredManifestDigest": manifest_digest(manifest).to_dict(),
+        "observedState": state,
+        "activeDeploymentId": active_deployment_id,
+        "runtimeGenerationId": _SOURCE_GENERATION if state == "active" else None,
+        "reconciledAt": "2026-09-02T12:00:00Z",
+    }
+    validate_contract(manifest, expected_kind=ContractKind.SITE)
+    validate_contract(observed, expected_kind=ContractKind.TENANT_OBSERVED_STATE)
+    return manifest, observed, deployment, archive
+
+
+def _route_job(  # noqa: PLR0913 - fixture authority tuple
+    operation: str,
+    namespace: dict[str, object],
+    manifest: dict[str, object],
+    deployment: dict[str, object] | None,
+    archive: dict[str, object] | None,
+    *,
+    slug: str | None = None,
+) -> dict[str, object]:
+    metadata = manifest["metadata"]
+    spec = manifest["spec"]
+    assert type(metadata) is dict
+    assert type(spec) is dict
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": operation,
+        "correlationId": "0198d17f-6f4a-7000-8000-000000000001",
+        "tenantId": metadata["id"],
+    }
+    if slug is not None:
+        request["slug"] = slug
+    job: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "AuthorizationJob",
+        "compatibilityVersion": "static-job-v1",
+        "jobId": "0198d17f-6f4a-7000-8000-000000000002",
+        "operatorPrincipal": "operator@example.test",
+        "request": request,
+        "requestDigest": request_digest(request).to_dict(),
+        "artifact": None,
+        "expectedSource": {
+            "expectsTenantAbsent": False,
+            "lifecycle": spec["desiredState"],
+            "manifestDigest": manifest_digest(manifest).to_dict(),
+            "deploymentDigest": (
+                deployment_record_digest(deployment).to_dict() if deployment is not None else None
+            ),
+            "archiveRecordDigest": (
+                archive_record_digest(archive).to_dict() if archive is not None else None
+            ),
+            "platformStateDigest": platform_state_digest(namespace).to_dict(),
+        },
+        "acceptedAt": "2026-09-02T12:00:01Z",
+        "phase": "claimed",
+    }
+    validate_contract(job, expected_kind=ContractKind.AUTHORIZATION_JOB)
+    return job
+
+
+def _route_plan(
+    operation: str,
+    state: str,
+    *,
+    slug: str | None = None,
+    candidate_generation: str = _CANDIDATE_GENERATION,
+) -> RouteTransitionPlan:
+    namespace = _fixture("platform-namespace.json")
+    manifest, observed, deployment, archive = _route_source(state)
+    return plan_route_transition(
+        _route_job(operation, namespace, manifest, deployment, archive, slug=slug),
+        namespace,
+        manifest,
+        observed,
+        deployment,
+        archive,
+        source_runtime_generation_id=_SOURCE_GENERATION,
         candidate_runtime_generation_id=candidate_generation,
         audit_state=AuditState(
             _AUDIT_SEQUENCE,
@@ -166,3 +293,178 @@ def test_create_plan_rejects_a_naive_wall_clock() -> None:
             clock=lambda: 1_777_000_000_000,
             entropy=_Entropy(),
         )
+
+
+@pytest.mark.parametrize(
+    ("operation", "source_state", "target_state", "source_routes", "candidate_routes"),
+    [
+        ("suspend", "active", "suspended", "both", "absent"),
+        ("suspend", "suspended", "suspended", "absent", "absent"),
+        ("resume", "suspended", "active", "absent", "both"),
+        ("resume", "active", "active", "both", "both"),
+        ("rename", "undeployed", "undeployed", "absent", "absent"),
+        ("rename", "active", "active", "both", "both"),
+        ("rename", "suspended", "suspended", "absent", "absent"),
+        ("reconcile", "undeployed", "undeployed", "absent", "absent"),
+        ("reconcile", "active", "active", "both", "both"),
+        ("reconcile", "suspended", "suspended", "absent", "absent"),
+        ("reconcile", "archived", "archived", "absent", "absent"),
+    ],
+)
+def test_route_plan_materializes_the_complete_lifecycle_matrix_entry(
+    operation: str,
+    source_state: str,
+    target_state: str,
+    source_routes: str,
+    candidate_routes: str,
+) -> None:
+    slug = "renamed-duck" if operation == "rename" else None
+    plan = _route_plan(operation, source_state, slug=slug)
+
+    assert validate_contract(plan.manifest) is ContractKind.SITE
+    assert validate_contract(plan.observed_state) is ContractKind.TENANT_OBSERVED_STATE
+    assert validate_contract(plan.intent) is ContractKind.TRANSACTION_INTENT
+    assert validate_contract(plan.result) is ContractKind.OPERATION_RESULT
+    assert validate_contract(plan.audit_entry) is ContractKind.AUDIT_ENTRY
+    spec = plan.manifest["spec"]
+    metadata = plan.manifest["metadata"]
+    recovery = plan.intent["lifecycleRecovery"]
+    assert type(spec) is dict
+    assert type(metadata) is dict
+    assert type(recovery) is dict
+    assert spec["desiredState"] == target_state
+    if slug is not None:
+        assert metadata["slug"] == slug
+    assert recovery["sourceRouteSet"] == source_routes
+    assert recovery["candidateRouteSet"] == candidate_routes
+    assert recovery["sourceRuntimeGenerationId"] == _SOURCE_GENERATION
+    assert recovery["candidateRuntimeGenerationId"] == _CANDIDATE_GENERATION
+    assert plan.observed_state["runtimeGenerationId"] == (
+        _CANDIDATE_GENERATION if target_state == "active" else None
+    )
+    assert plan.audit_entry["resultDigest"] == result_digest(plan.result).to_dict()
+
+
+@pytest.mark.parametrize(
+    ("operation", "state"),
+    [("suspend", "suspended"), ("resume", "active"), ("reconcile", "active")],
+)
+def test_route_plan_preserves_manifest_generation_for_no_op_transitions(
+    operation: str,
+    state: str,
+) -> None:
+    plan = _route_plan(operation, state)
+
+    assert plan.intent["sourceManifestDigest"] == plan.intent["candidateManifestDigest"]
+
+
+def test_route_plan_does_not_mutate_authority_or_source_inputs() -> None:
+    namespace = _fixture("platform-namespace.json")
+    manifest, observed, deployment, archive = _route_source("active")
+    job = _route_job("rename", namespace, manifest, deployment, archive, slug="renamed-duck")
+    before = deepcopy((job, namespace, manifest, observed, deployment, archive))
+
+    plan_route_transition(
+        job,
+        namespace,
+        manifest,
+        observed,
+        deployment,
+        archive,
+        source_runtime_generation_id=_SOURCE_GENERATION,
+        candidate_runtime_generation_id=_CANDIDATE_GENERATION,
+        audit_state=AuditState(0, 0, 0, None),
+        now=_NOW,
+        clock=lambda: 1_777_000_000_000,
+        entropy=_Entropy(),
+    )
+
+    assert (job, namespace, manifest, observed, deployment, archive) == before
+
+
+def test_route_plan_rejects_a_transition_outside_the_lifecycle_matrix() -> None:
+    with pytest.raises(LifecyclePlanError, match="not valid"):
+        _route_plan("suspend", "undeployed")
+
+
+def test_route_plan_rejects_authority_source_drift() -> None:
+    namespace = _fixture("platform-namespace.json")
+    manifest, observed, deployment, archive = _route_source("active")
+    job = _route_job("suspend", namespace, manifest, deployment, archive)
+    expected = job["expectedSource"]
+    assert type(expected) is dict
+    expected["manifestDigest"] = {
+        "format": "lowerduckpond-manifest-v1",
+        "algorithm": "sha256",
+        "value": "a" * 64,
+    }
+
+    with pytest.raises(LifecyclePlanError, match="not bound"):
+        plan_route_transition(
+            job,
+            namespace,
+            manifest,
+            observed,
+            deployment,
+            archive,
+            source_runtime_generation_id=_SOURCE_GENERATION,
+            candidate_runtime_generation_id=_CANDIDATE_GENERATION,
+            audit_state=AuditState(0, 0, 0, None),
+            now=_NOW,
+            clock=lambda: 1_777_000_000_000,
+            entropy=_Entropy(),
+        )
+
+
+def test_route_plan_rejects_observed_state_drift() -> None:
+    namespace = _fixture("platform-namespace.json")
+    manifest, observed, deployment, archive = _route_source("active")
+    observed["runtimeGenerationId"] = _CANDIDATE_GENERATION
+
+    with pytest.raises(LifecyclePlanError, match="observed-state"):
+        plan_route_transition(
+            _route_job("suspend", namespace, manifest, deployment, archive),
+            namespace,
+            manifest,
+            observed,
+            deployment,
+            archive,
+            source_runtime_generation_id=_SOURCE_GENERATION,
+            candidate_runtime_generation_id=_CANDIDATE_GENERATION,
+            audit_state=AuditState(0, 0, 0, None),
+            now=_NOW,
+            clock=lambda: 1_777_000_000_000,
+            entropy=_Entropy(),
+        )
+
+
+def test_route_plan_rejects_an_archived_source_without_its_archive_record() -> None:
+    namespace = _fixture("platform-namespace.json")
+    manifest, observed, deployment, archive = _route_source("archived")
+    assert archive is not None
+
+    with pytest.raises(LifecyclePlanError, match="omitted its archive"):
+        plan_route_transition(
+            _route_job("reconcile", namespace, manifest, deployment, archive),
+            namespace,
+            manifest,
+            observed,
+            deployment,
+            None,
+            source_runtime_generation_id=_SOURCE_GENERATION,
+            candidate_runtime_generation_id=_CANDIDATE_GENERATION,
+            audit_state=AuditState(0, 0, 0, None),
+            now=_NOW,
+            clock=lambda: 1_777_000_000_000,
+            entropy=_Entropy(),
+        )
+
+
+def test_route_plan_rejects_reusing_the_runtime_generation() -> None:
+    with pytest.raises(LifecyclePlanError, match="distinct runtime"):
+        _route_plan("reconcile", "active", candidate_generation=_SOURCE_GENERATION)
+
+
+def test_route_plan_rejects_a_rename_to_the_current_slug() -> None:
+    with pytest.raises(LifecyclePlanError, match="different slug"):
+        _route_plan("rename", "active", slug="duck-repair")
