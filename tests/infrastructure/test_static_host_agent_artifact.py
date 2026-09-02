@@ -89,11 +89,12 @@ def test_host_agent_artifact_is_locked_reproducible_and_installable(
 
     install_root = tmp_path / "install"
     install_root.mkdir()
+    state_root = tmp_path / "state"
     verifier = verifier_for_test(tmp_path)
-    installed = run(INSTALLER, first, digest, install_root, verifier)
+    installed = run(INSTALLER, first, digest, install_root, verifier, state_root)
     assert installed.returncode == 0, installed.stderr
     assert installed.stdout == "changed\n"
-    repeated = run(INSTALLER, first, digest, install_root, verifier)
+    repeated = run(INSTALLER, first, digest, install_root, verifier, state_root)
     assert repeated.returncode == 0, repeated.stderr
     assert repeated.stdout == "unchanged\n"
 
@@ -112,8 +113,9 @@ def test_installer_refuses_drift_in_an_existing_version(tmp_path: Path) -> None:
     digest = build.stdout.strip()
     install_root = tmp_path / "install"
     install_root.mkdir()
+    state_root = tmp_path / "state"
     verifier = verifier_for_test(tmp_path)
-    assert run(INSTALLER, artifact, digest, install_root, verifier).returncode == 0
+    assert run(INSTALLER, artifact, digest, install_root, verifier, state_root).returncode == 0
 
     selected = install_root / digest
     victim = next((selected / "site-packages").rglob("*.py"))
@@ -121,9 +123,39 @@ def test_installer_refuses_drift_in_an_existing_version(tmp_path: Path) -> None:
     victim.write_bytes(victim.read_bytes() + b"\n")
     victim.chmod(ARCHIVE_FILE_MODE)
 
-    refused = run(INSTALLER, artifact, digest, install_root, verifier)
+    refused = run(INSTALLER, artifact, digest, install_root, verifier, state_root)
     assert refused.returncode != 0
     assert "content drifted" in refused.stderr
+
+
+def test_installer_refuses_to_select_an_upgrade_with_an_active_intent(
+    tmp_path: Path,
+) -> None:
+    artifact = tmp_path / "artifact.tar"
+    build = run(BUILDER, artifact)
+    assert build.returncode == 0, build.stderr
+    digest = build.stdout.strip()
+    install_root = tmp_path / "install"
+    install_root.mkdir()
+    previous = install_root / "previous"
+    previous.mkdir()
+    (install_root / "current").symlink_to(previous, target_is_directory=True)
+    state_root = tmp_path / "state"
+    intents = state_root / "intents"
+    intents.mkdir(parents=True)
+    (intents / "legacy.json").write_text("{}", encoding="utf-8")
+    verifier = verifier_for_test(tmp_path)
+
+    refused = run(INSTALLER, artifact, digest, install_root, verifier, state_root)
+
+    assert refused.returncode != 0
+    assert "active lifecycle intent blocks" in refused.stderr
+    assert (install_root / "current").resolve(strict=True) == previous
+
+    (intents / "legacy.json").unlink()
+    installed = run(INSTALLER, artifact, digest, install_root, verifier, state_root)
+    assert installed.returncode == 0, installed.stderr
+    assert (install_root / "current").resolve(strict=True) == install_root / digest
 
 
 def test_preflight_extraction_preserves_reviewed_modes_under_restrictive_umask(
