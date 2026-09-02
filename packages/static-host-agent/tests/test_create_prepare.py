@@ -92,6 +92,7 @@ class _Runtime:
         self.source = _Candidate(_SOURCE_GENERATION)
         self.active = _SOURCE_GENERATION
         self.running = _SOURCE_GENERATION
+        self.reference_temporaries = 0
 
     @contextmanager
     def using_held_publication_lock(self, _repository: StateRepository) -> Iterator[None]:
@@ -116,7 +117,14 @@ class _Runtime:
 
     def select_active(self, generation_id: str) -> None:
         self.events.append(f"selected:{generation_id}")
+        self.reference_temporaries = 0
         self.active = generation_id
+
+    def remove_abandoned_reference_temporaries(self) -> int:
+        self.events.append("cleaned-reference-temporaries")
+        removed = self.reference_temporaries
+        self.reference_temporaries = 0
+        return removed
 
     def prune_unreferenced_generations(
         self,
@@ -378,6 +386,7 @@ def test_create_activation_selects_reloads_and_commits_terminal_state(
             "locked",
             f"opened:{_SOURCE_GENERATION}",
             f"opened:{candidate_id}",
+            "cleaned-reference-temporaries",
             "read-active",
             f"verified:{_SOURCE_GENERATION}",
             f"selected:{candidate_id}",
@@ -417,6 +426,42 @@ def test_create_activation_preserves_preparation_capacity_limits(tmp_path: Path)
         assert not any(event.startswith("selected:") for event in runtime.events)
         assert len(repository.measure_intent_records().records) == 1
         assert repository.measure_inventory().tenant_ids == ()
+    finally:
+        repository.close()
+
+
+def test_create_activation_cleans_reference_temporaries_before_capacity_rejection(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root)
+    runtime = _Runtime()
+    limits = HostCapacityLimits(maximum_unique_inodes=1)
+    try:
+        prepared = _prepare(repository, runtime, job, limits=limits)
+        runtime.reference_temporaries = 1
+        runtime.events.clear()
+
+        with pytest.raises(CapacityRejectedError, match="inode ceiling"):
+            activate_create_transition(
+                repository,
+                cast(CaddyRuntime, runtime),
+                _Gate(),
+                prepared,
+                reloader=runtime.reload,
+                restorer=runtime.restore,
+                verifier=runtime.verify,
+            )
+
+        assert runtime.reference_temporaries == 0
+        assert runtime.events[:4] == [
+            "locked",
+            f"opened:{_SOURCE_GENERATION}",
+            f"opened:{prepared.candidate_manifest.generation_id}",
+            "cleaned-reference-temporaries",
+        ]
+        assert runtime.active == runtime.running == _SOURCE_GENERATION
+        assert len(repository.measure_intent_records().records) == 1
     finally:
         repository.close()
 
@@ -543,10 +588,11 @@ def test_create_activation_repairs_running_source_before_reselecting_candidate(
         )
 
         assert runtime.active == runtime.running == candidate_id
-        assert runtime.events[:6] == [
+        assert runtime.events[:7] == [
             "locked",
             f"opened:{_SOURCE_GENERATION}",
             f"opened:{candidate_id}",
+            "cleaned-reference-temporaries",
             "read-active",
             f"verified:{_SOURCE_GENERATION}",
             "restored",

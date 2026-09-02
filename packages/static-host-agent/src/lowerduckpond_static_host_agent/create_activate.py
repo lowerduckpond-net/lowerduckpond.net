@@ -98,6 +98,7 @@ def activate_create_transition(  # noqa: PLR0913 - recovery mechanisms stay inje
         ):
             if candidate.manifest != prepared.candidate_manifest:
                 raise CreateActivationError("prepared candidate manifest changed")
+            runtime.remove_abandoned_reference_temporaries()
             try:
                 admit_create_transition(
                     transaction,
