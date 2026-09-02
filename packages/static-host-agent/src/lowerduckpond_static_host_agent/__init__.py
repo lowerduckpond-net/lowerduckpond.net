@@ -10,9 +10,9 @@ from lowerduckpond_static_host_agent.audit import (
     DEFAULT_AUDIT_LIMITS,
     AuditAppend,
     AuditCapacityError,
+    AuditCorrelationSnapshot,
     AuditError,
     AuditLimits,
-    AuditSnapshot,
     AuditState,
 )
 from lowerduckpond_static_host_agent.caddy_admin import (
@@ -334,9 +334,9 @@ __all__ = [
     "ArtifactLease",
     "AuditAppend",
     "AuditCapacityError",
+    "AuditCorrelationSnapshot",
     "AuditError",
     "AuditLimits",
-    "AuditSnapshot",
     "AuditState",
     "AuthorizationExecutor",
     "AuthorizationIssuer",
