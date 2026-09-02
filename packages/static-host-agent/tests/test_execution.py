@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from lowerduckpond_static_contracts import (
     canonical_json_bytes,
+    deployment_record_digest,
     manifest_digest,
     request_digest,
 )
@@ -460,6 +461,111 @@ def test_executor_binds_a_successful_create_result_to_its_active_intent(
                 intake,
                 handlers={"create": handler},
             ).execute(issued.job_id)
+
+    assert handler.phases == []
+
+
+def test_executor_binds_a_successful_rename_result_to_its_active_intent(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    source_manifest = _fixture("site.json")
+    source_digest = manifest_digest(source_manifest).to_dict()
+    candidate_manifest = json.loads(json.dumps(source_manifest))
+    candidate_metadata = candidate_manifest["metadata"]
+    assert type(candidate_metadata) is dict
+    candidate_metadata["slug"] = "renamed-duck"
+    candidate_digest = manifest_digest(candidate_manifest).to_dict()
+
+    job = _fixture("authorization-job.json")
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "rename",
+        "correlationId": "0198d17f-6f4a-7000-8000-000000000001",
+        "tenantId": _TENANT_ID,
+        "slug": "renamed-duck",
+    }
+    job["request"] = request
+    job["requestDigest"] = request_digest(request).to_dict()
+    job["phase"] = "claimed"
+    expected = job["expectedSource"]
+    assert type(expected) is dict
+    expected.update(
+        {
+            "expectsTenantAbsent": False,
+            "lifecycle": "active",
+            "manifestDigest": source_digest,
+            "deploymentDigest": deployment_record_digest(
+                _fixture("deployment-record.json")
+            ).to_dict(),
+            "archiveRecordDigest": None,
+        }
+    )
+    correlation = json.loads(json.dumps(job))
+    correlation["phase"] = "pending"
+
+    intent = _fixture("transaction-intent.json")
+    source_observed = _fixture("tenant-observed-state.json")
+    source_observed["desiredManifestDigest"] = source_digest
+    candidate_observed = json.loads(json.dumps(source_observed))
+    candidate_observed["desiredManifestDigest"] = candidate_digest
+    candidate_observed["runtimeGenerationId"] = "0198d17f-6f4a-7000-8000-000000000006"
+    intent.update(
+        {
+            "tenantId": _TENANT_ID,
+            "correlationId": request["correlationId"],
+            "operation": "rename",
+            "sourceManifestDigest": source_digest,
+            "candidateManifestDigest": candidate_digest,
+            "lifecycleRecovery": {
+                "sourceObservedState": source_observed,
+                "sourceRuntimeGenerationId": "0198d17f-6f4a-7000-8000-000000000004",
+                "sourceRouteSet": "both",
+                "candidateObservedState": candidate_observed,
+                "candidateRuntimeGenerationId": "0198d17f-6f4a-7000-8000-000000000006",
+                "candidateRouteSet": "both",
+            },
+        }
+    )
+    result = _fixture("operation-result.json")
+    provenance = result["provenance"]
+    assert type(provenance) is dict
+    provenance["jobId"] = job["jobId"]
+    result.update(
+        {
+            "correlationId": request["correlationId"],
+            "operation": "rename",
+            "tenantId": _TENANT_ID,
+            "manifest": candidate_manifest,
+        }
+    )
+    result_manifest = result["manifest"]
+    assert type(result_manifest) is dict
+    result_metadata = result_manifest["metadata"]
+    assert type(result_metadata) is dict
+    result_metadata["slug"] = "different-duck"
+
+    _write(root, StateRecordPath.authorization_job(job["jobId"]), job)
+    _write(
+        root,
+        StateRecordPath.authorization_correlation(request["correlationId"]),
+        correlation,
+    )
+    _write(root, StateRecordPath.transaction_intent(intent["intentId"]), intent)
+    _write(root, StateRecordPath.authorization_result(job["jobId"]), result)
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        handler = _CompletingCreateHandler(repository)
+        with pytest.raises(RuntimeError, match="result disagrees with its lifecycle intent"):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={"rename": handler},
+            ).execute(job["jobId"])
 
     assert handler.phases == []
 
