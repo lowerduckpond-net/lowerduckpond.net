@@ -282,6 +282,40 @@ def test_executor_dispatches_claimed_create_and_replays_its_handler(tmp_path: Pa
     assert handler.claims == [None, None]
 
 
+def test_executor_repairs_a_lagging_job_phase_before_handler_replay(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+
+    with StateRepository(root, expected_owner=os.geteuid()) as repository:
+        issued = _issue_create(repository)
+        request = issued.document["request"]
+        assert type(request) is dict
+        result = _fixture("operation-result.json")
+        provenance = result["provenance"]
+        assert type(provenance) is dict
+        provenance["jobId"] = issued.job_id
+        result["correlationId"] = request["correlationId"]
+        repository.create_immutable(
+            StateRecordPath.authorization_result(issued.job_id),
+            result,
+        )
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        handler = _CompletingCreateHandler(repository)
+        outcome = AuthorizationExecutor(
+            repository,
+            intake,
+            handlers={"create": handler},
+        ).execute(issued.job_id)
+
+    assert outcome.created is False
+    assert outcome.result == result
+    assert handler.phases == ["completed"]
+
+
 def test_executor_rejects_a_misbound_result_before_handler_dispatch(tmp_path: Path) -> None:
     root = _state_root(tmp_path)
     _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))

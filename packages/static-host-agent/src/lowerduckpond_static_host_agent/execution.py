@@ -134,7 +134,7 @@ class AuthorizationExecutor:
         existing = self._read_result(canonical_id, blocking=blocking)
         if existing is not None:
             if handler is not None:
-                _validate_result_binding(initial.document, existing.document)
+                self._repair_terminal_phase(initial, existing, blocking=blocking)
                 outcome = self._execute_handler(
                     canonical_id,
                     initial,
@@ -224,7 +224,7 @@ class AuthorizationExecutor:
                 if handler is None:
                     result = _repair_terminal_phase_transaction(transaction, current, existing)
                     return ExecutionOutcome(result, False)
-                _validate_result_binding(current.document, existing.document)
+                _repair_terminal_phase_transaction(transaction, current, existing)
                 created = False
             else:
                 _validate_job_integrity(current.document, claim=claim)
