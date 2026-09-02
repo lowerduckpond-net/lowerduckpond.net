@@ -13,8 +13,10 @@ from lowerduckpond_static_host_agent.caddy_admin import (
 )
 from lowerduckpond_static_host_agent.caddy_generation import PinnedCaddyGeneration
 from lowerduckpond_static_host_agent.caddy_runtime import CaddyRuntime
+from lowerduckpond_static_host_agent.capacity import CapacityError
 from lowerduckpond_static_host_agent.create_commit import (
     CreateCommitFailureHook,
+    admit_create_transition,
     finalize_create_transition,
     validate_create_transition,
 )
@@ -25,7 +27,10 @@ from lowerduckpond_static_host_agent.repository import (
     StateRepository,
     StoredContract,
 )
-from lowerduckpond_static_host_agent.state_inventory import IntentRecordInventory
+from lowerduckpond_static_host_agent.state_inventory import (
+    IntentRecordInventory,
+    StateAdmissionRejectedError,
+)
 
 GenerationReloader = Callable[[PinnedCaddyGeneration, PinnedCaddyGeneration], None]
 GenerationRestorer = Callable[[PinnedCaddyGeneration], None]
@@ -93,6 +98,21 @@ def activate_create_transition(  # noqa: PLR0913 - recovery mechanisms stay inje
         ):
             if candidate.manifest != prepared.candidate_manifest:
                 raise CreateActivationError("prepared candidate manifest changed")
+            try:
+                admit_create_transition(
+                    transaction,
+                    current_job,
+                    plan,
+                    capacity_limits=prepared.capacity_limits,
+                )
+            except (CapacityError, StateAdmissionRejectedError) as error:
+                _reject_capacity_before_activation(
+                    runtime,
+                    source,
+                    candidate,
+                    restorer=restorer,
+                    error=error,
+                )
             _ensure_candidate_running(
                 runtime,
                 source,
@@ -101,13 +121,16 @@ def activate_create_transition(  # noqa: PLR0913 - recovery mechanisms stay inje
                 restorer=restorer,
                 verifier=verifier,
             )
-            return finalize_create_transition(
-                transaction,
-                current_job,
-                plan,
-                capacity_limits=prepared.capacity_limits,
-                failure_hook=commit_failure_hook,
-            )
+            try:
+                return finalize_create_transition(
+                    transaction,
+                    current_job,
+                    plan,
+                    capacity_limits=prepared.capacity_limits,
+                    failure_hook=commit_failure_hook,
+                )
+            except (CapacityError, StateAdmissionRejectedError) as error:
+                _restore_source(runtime, source, restorer=restorer, error=error)
 
 
 def _require_exact_job(
@@ -183,3 +206,19 @@ def _restore_source(
     except BaseException as recovery_error:
         raise CreateActivationError("create runtime restoration failed closed") from recovery_error
     raise error from None
+
+
+def _reject_capacity_before_activation(
+    runtime: CaddyRuntime,
+    source: PinnedCaddyGeneration,
+    candidate: PinnedCaddyGeneration,
+    *,
+    restorer: GenerationRestorer,
+    error: BaseException,
+) -> NoReturn:
+    active_id = runtime.read_active()
+    if active_id == source.manifest.generation_id:
+        raise error from None
+    if active_id == candidate.manifest.generation_id:
+        _restore_source(runtime, source, restorer=restorer, error=error)
+    raise CreateActivationError("active Caddy generation is outside create recovery authority")

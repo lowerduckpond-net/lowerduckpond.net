@@ -177,6 +177,26 @@ def validate_create_transition(job: StoredContract, plan: CreateTransitionPlan) 
     _freeze_and_validate(job, plan)
 
 
+def admit_create_transition(
+    transaction: CreateCommitTransaction,
+    job: StoredContract,
+    plan: CreateTransitionPlan,
+    *,
+    capacity_limits: HostCapacityLimits = DEFAULT_HOST_CAPACITY_LIMITS,
+) -> None:
+    """Prove terminal create capacity and inventory before runtime mutation."""
+
+    documents = _freeze_and_validate(job, plan)
+    current_job = _require_same_job(transaction, job)
+    _require_exact_intent(transaction, documents)
+    _admit_missing_state(
+        transaction,
+        current_job,
+        documents,
+        capacity_limits=capacity_limits,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class _MissingState:
     result: bool

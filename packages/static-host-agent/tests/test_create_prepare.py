@@ -412,6 +412,40 @@ def test_create_activation_preserves_preparation_capacity_limits(tmp_path: Path)
                 verifier=runtime.verify,
             )
 
+        assert runtime.active == runtime.running == _SOURCE_GENERATION
+        assert not any(event.startswith("selected:") for event in runtime.events)
+        assert len(repository.measure_intent_records().records) == 1
+        assert repository.measure_inventory().tenant_ids == ()
+    finally:
+        repository.close()
+
+
+def test_create_activation_restores_selected_candidate_after_capacity_rejection(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root)
+    runtime = _Runtime()
+    limits = HostCapacityLimits(maximum_unique_inodes=1)
+    try:
+        prepared = _prepare(repository, runtime, job, limits=limits)
+        candidate_id = prepared.candidate_manifest.generation_id
+        runtime.active = runtime.running = candidate_id
+        runtime.events.clear()
+
+        with pytest.raises(CapacityRejectedError, match="inode ceiling"):
+            activate_create_transition(
+                repository,
+                cast(CaddyRuntime, runtime),
+                _Gate(),
+                prepared,
+                reloader=runtime.reload,
+                restorer=runtime.restore,
+                verifier=runtime.verify,
+            )
+
+        assert runtime.active == runtime.running == _SOURCE_GENERATION
+        assert runtime.events[-2:] == [f"selected:{_SOURCE_GENERATION}", "restored"]
         assert len(repository.measure_intent_records().records) == 1
         assert repository.measure_inventory().tenant_ids == ()
     finally:
