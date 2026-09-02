@@ -21,6 +21,7 @@ from lowerduckpond_static_host_agent import (
     AuthorizationExecutor,
     AuthorizationIssuer,
     CapacityProjection,
+    ExecutionError,
     ExecutionOutcome,
     FilesystemCapacity,
     IntakeArtifactUnavailableError,
@@ -156,6 +157,50 @@ class _CompletingFailureHandler:
             blocking=blocking,
         )
         return ExecutionOutcome(result, True)
+
+
+class _CompletingIntentHandler:
+    def __init__(
+        self,
+        repository: StateRepository,
+        *,
+        intent_path: StateRecordPath,
+        delegate: _CompletingCreateHandler | _CompletingFailureHandler,
+    ) -> None:
+        self._repository = repository
+        self._intent_path = intent_path
+        self._delegate = delegate
+
+    @property
+    def claims(self) -> list[ArtifactClaim | None]:
+        return self._delegate.claims
+
+    @property
+    def phases(self) -> list[object]:
+        assert isinstance(self._delegate, _CompletingCreateHandler)
+        return self._delegate.phases
+
+    def execute(
+        self,
+        job_id: str,
+        *,
+        claim: ArtifactClaim | None,
+        blocking: bool,
+    ) -> ExecutionOutcome:
+        outcome = self._delegate.execute(job_id, claim=claim, blocking=blocking)
+        intent = self._repository.read(self._intent_path, blocking=blocking)
+        inventory = self._repository.measure_intent_records(blocking=blocking)
+        generation = next(
+            record.metadata_generation
+            for record in inventory.records
+            if record.intent_id == self._intent_path.record_id
+        )
+        self._repository.remove_reconciled_intent(
+            self._intent_path,
+            IntentRemovalToken(intent.revision, generation),
+            blocking=blocking,
+        )
+        return outcome
 
 
 class _UnavailableArtifactHandler:
@@ -935,7 +980,13 @@ def test_executor_uses_bound_intent_not_error_code_to_select_handler_replay(
         StateRepository(root, expected_owner=os.geteuid()) as repository,
         ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
     ):
-        handler = _CompletingCreateHandler(repository)
+        intent_id = intent["intentId"]
+        assert type(intent_id) is str
+        handler = _CompletingIntentHandler(
+            repository,
+            intent_path=StateRecordPath.transaction_intent(intent_id),
+            delegate=_CompletingCreateHandler(repository),
+        )
         outcome = AuthorizationExecutor(
             repository,
             intake,
@@ -1073,7 +1124,11 @@ def test_executor_recognizes_archive_intent_paths_for_handler_replay(
         StateRepository(root, expected_owner=os.geteuid()) as repository,
         ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
     ):
-        handler = _CompletingCreateHandler(repository)
+        handler = _CompletingIntentHandler(
+            repository,
+            intent_path=intent_path,
+            delegate=_CompletingCreateHandler(repository),
+        )
         outcome = AuthorizationExecutor(
             repository,
             intake,
@@ -1255,6 +1310,100 @@ def test_executor_consumes_only_the_artifact_bound_to_the_job(tmp_path: Path) ->
     assert list((root / "intake").iterdir()) == []
 
 
+def test_executor_retains_artifact_when_handler_leaves_its_intent(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    manifest = _fixture("site.json")
+    source_digest = manifest_digest(manifest).to_dict()
+    candidate_manifest = json.loads(json.dumps(manifest))
+    candidate_spec = candidate_manifest["spec"]
+    assert type(candidate_spec) is dict
+    candidate_deployment = candidate_spec["desiredDeployment"]
+    assert type(candidate_deployment) is dict
+    candidate_deployment["id"] = "0198d17f-6f4a-7000-8000-000000000005"
+    candidate_deployment["archiveSha256"] = "d" * 64
+    candidate_digest = manifest_digest(candidate_manifest).to_dict()
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), manifest)
+    _write(
+        root,
+        StateRecordPath.tenant_deployment(_TENANT_ID, _DEPLOYMENT_ID),
+        _fixture("deployment-record.json"),
+    )
+    payload = b"intent-bound deployment"
+    artifact = VerifiedArtifact(len(payload), hashlib.sha256(payload).hexdigest())
+    correlation_id = "0198d17f-6f4a-7000-8000-000000000003"
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "deploy",
+        "correlationId": correlation_id,
+        "tenantId": _TENANT_ID,
+        "artifact": {"size": artifact.size, "sha256": artifact.sha256},
+    }
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        with intake.admit(
+            operation="deploy",
+            correlation_id=correlation_id,
+            declared=artifact,
+            read=BytesIO(payload).read,
+        ) as lease:
+            issued = AuthorizationIssuer(
+                repository,
+                gate=_OpenGate(),
+                entropy=_Entropy(),
+            ).issue(
+                canonical_json_bytes(request),
+                operator_principal="operator@example.test",
+                now=_NOW,
+                artifact=artifact,
+            )
+            lease.commit()
+        source_observed = _fixture("tenant-observed-state.json")
+        source_observed["desiredManifestDigest"] = source_digest
+        candidate_observed = json.loads(json.dumps(source_observed))
+        candidate_observed["desiredManifestDigest"] = candidate_digest
+        candidate_observed["activeDeploymentId"] = candidate_deployment["id"]
+        candidate_observed["runtimeGenerationId"] = "0198d17f-6f4a-7000-8000-000000000006"
+        intent = _fixture("transaction-intent.json")
+        intent.update(
+            {
+                "tenantId": _TENANT_ID,
+                "correlationId": correlation_id,
+                "operation": "deploy",
+                "sourceManifestDigest": source_digest,
+                "candidateManifestDigest": candidate_digest,
+                "lifecycleRecovery": {
+                    "sourceObservedState": source_observed,
+                    "sourceRuntimeGenerationId": ("0198d17f-6f4a-7000-8000-000000000004"),
+                    "sourceRouteSet": "both",
+                    "candidateObservedState": candidate_observed,
+                    "candidateRuntimeGenerationId": ("0198d17f-6f4a-7000-8000-000000000006"),
+                    "candidateRouteSet": "both",
+                },
+            }
+        )
+        intent_path = StateRecordPath.transaction_intent(intent["intentId"])
+        repository.create_immutable(intent_path, intent)
+
+        with pytest.raises(ExecutionError, match="before clearing its intent"):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={"deploy": _CompletingFailureHandler(repository)},
+            ).execute(issued.job_id)
+
+        terminal = repository.read(StateRecordPath.authorization_job(issued.job_id)).document
+        repository.read(intent_path)
+        repository.read(StateRecordPath.authorization_result(issued.job_id))
+
+    assert terminal["phase"] == "failed"
+    assert [path.name for path in (root / "intake").iterdir()] == [f"{correlation_id}.artifact"]
+
+
 def test_executor_reacquires_the_bound_artifact_for_lifecycle_replay(
     tmp_path: Path,
 ) -> None:
@@ -1361,7 +1510,13 @@ def test_executor_reacquires_the_bound_artifact_for_lifecycle_replay(
             result,
         )
 
-        handler = _CompletingCreateHandler(repository)
+        intent_id = intent["intentId"]
+        assert type(intent_id) is str
+        handler = _CompletingIntentHandler(
+            repository,
+            intent_path=StateRecordPath.transaction_intent(intent_id),
+            delegate=_CompletingCreateHandler(repository),
+        )
         outcome = AuthorizationExecutor(
             repository,
             intake,
@@ -1677,7 +1832,13 @@ def test_executor_recovers_a_claimed_lifecycle_job_without_its_artifact(
             StateRecordPath.transaction_intent(intent["intentId"]),
             intent,
         )
-        handler = _CompletingFailureHandler(repository)
+        intent_id = intent["intentId"]
+        assert type(intent_id) is str
+        handler = _CompletingIntentHandler(
+            repository,
+            intent_path=StateRecordPath.transaction_intent(intent_id),
+            delegate=_CompletingFailureHandler(repository),
+        )
 
         outcome = AuthorizationExecutor(
             repository,
