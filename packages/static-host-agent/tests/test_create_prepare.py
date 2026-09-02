@@ -492,8 +492,13 @@ def test_create_activation_restores_source_when_reload_fails(tmp_path: Path) -> 
         repository.close()
 
 
+@pytest.mark.parametrize(
+    "interrupted_boundary",
+    [CreateCommitBoundary.STATE_SYNC, CreateCommitBoundary.JOB_SYNC],
+)
 def test_create_activation_keeps_candidate_during_terminal_commit_replay(
     tmp_path: Path,
+    interrupted_boundary: CreateCommitBoundary,
 ) -> None:
     root = _state_root(tmp_path)
     repository, job = _prepared_repository(root)
@@ -503,7 +508,7 @@ def test_create_activation_keeps_candidate_during_terminal_commit_replay(
         candidate_id = prepared.candidate_manifest.generation_id
 
         def interrupt(boundary: CreateCommitBoundary) -> None:
-            if boundary is CreateCommitBoundary.STATE_SYNC:
+            if boundary is interrupted_boundary:
                 raise RuntimeError("interrupted terminal commit")
 
         with pytest.raises(RuntimeError, match="interrupted terminal commit"):

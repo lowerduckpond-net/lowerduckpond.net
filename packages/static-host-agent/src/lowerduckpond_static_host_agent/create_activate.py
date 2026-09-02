@@ -69,7 +69,7 @@ def activate_create_transition(  # noqa: PLR0913 - recovery mechanisms stay inje
         runtime.using_held_publication_lock(repository),
     ):
         gate.require_enabled()
-        current_job = _require_exact_claimed_job(transaction, prepared.job)
+        current_job = _require_exact_job(transaction, prepared.job)
         _require_exact_intent(transaction, plan.intent_id, plan.intent)
         recovery = plan.intent["lifecycleRecovery"]
         if type(recovery) is not dict:  # pragma: no cover - plan validation proves this
@@ -101,12 +101,16 @@ def activate_create_transition(  # noqa: PLR0913 - recovery mechanisms stay inje
             )
 
 
-def _require_exact_claimed_job(
+def _require_exact_job(
     transaction: CreateActivationTransaction,
     prepared: StoredContract,
 ) -> StoredContract:
     current = transaction.read(StateRecordPath.authorization_job(prepared.document["jobId"]))
-    if current.document != prepared.document or current.document["phase"] != "claimed":
+    expected_document = prepared.document
+    current_document = current.document
+    expected_document.pop("phase", None)
+    current_phase = current_document.pop("phase", None)
+    if expected_document != current_document or current_phase not in {"claimed", "completed"}:
         raise CreateActivationError("prepared create job changed before activation")
     return current
 
