@@ -39,10 +39,8 @@ from lowerduckpond_static_host_agent.caddy_generation import (
     MAX_CADDY_CONFIGURATION_BYTES,
     MAX_CADDY_ENVIRONMENT_BYTES,
     MAX_CADDY_ROUTE_METADATA_BYTES,
-    CaddyDerivedGenerationPayload,
     CaddyGenerationManifest,
     CaddyGenerationStore,
-    CaddyPublishPayload,
     PinnedCaddyGeneration,
 )
 from lowerduckpond_static_host_agent.caddy_routes import (
@@ -54,7 +52,16 @@ from lowerduckpond_static_host_agent.caddy_routes import (
     build_tenant_caddy_routes,
     configured_origin_pull_policy,
 )
+from lowerduckpond_static_host_agent.issuance import PublicationGate
 from lowerduckpond_static_host_agent.locks import LockMode, LockName
+from lowerduckpond_static_host_agent.route_snapshot import (
+    RouteSnapshotTransaction,
+    TenantRouteOverlay,
+    snapshot_tenant_routes,
+)
+from lowerduckpond_static_host_agent.tenant_generation import (
+    derive_tenant_generation_payload,
+)
 
 CADDY_ACTIVE_REFERENCE_NAME: Final = "active"
 CADDY_GENERATIONS_DIRECTORY_NAME: Final = "generations"
@@ -407,23 +414,25 @@ class CaddyRuntime:
     def publish_candidate(
         self,
         generation_id: str,
-        payload: CaddyPublishPayload,
+        *,
+        transaction: RouteSnapshotTransaction,
+        overlay: TenantRouteOverlay,
+        gate: PublicationGate,
     ) -> CaddyGenerationManifest:
-        """Admit, install, and validate one unselected complete generation."""
+        """Derive, admit, and validate one unselected tenant generation."""
 
         self._require_locked()
+        gate.require_enabled()
         candidate_id = _canonical_generation_id(generation_id)
         active = self.open_active_verified()
         try:
             if candidate_id == active.generation_id:
                 raise CaddyRuntimeError("candidate Caddy generation is already active")
-            if (
-                isinstance(payload, CaddyDerivedGenerationPayload)
-                and payload.source.manifest != active.generation.manifest
-            ):
-                raise CaddyRuntimeError(
-                    "derived Caddy candidate host inputs are not the active generation"
-                )
+            payload = derive_tenant_generation_payload(
+                active.generation,
+                snapshot_tenant_routes(transaction, overlay=overlay),
+                candidate_generation_id=candidate_id,
+            )
 
             store = self._open_generation_store()
             try:
@@ -440,7 +449,7 @@ class CaddyRuntime:
                         environment = _read_generation_environment(candidate)
                         self._candidate_validator(candidate, environment)
                 except BaseException:
-                    store.remove_verified(candidate_id)
+                    store.discard_published(candidate_id, manifest)
                     raise
                 return manifest
             finally:

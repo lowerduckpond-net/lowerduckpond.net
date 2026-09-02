@@ -586,6 +586,72 @@ class CaddyGenerationStore:
             creation_group=os.getegid(),
         )
 
+    def discard_published(
+        self,
+        generation_id: str,
+        expected_manifest: CaddyGenerationManifest,
+    ) -> None:
+        """Remove one just-published candidate without trusting its payload digests."""
+
+        self._require_open()
+        canonical_id = validate_uuid7(generation_id)
+        if (
+            type(expected_manifest) is not CaddyGenerationManifest
+            or expected_manifest.generation_id != canonical_id
+        ):
+            raise CaddyGenerationError("candidate discard manifest binding is invalid")
+        retired_name = f"{_RETIRED_PREFIX}{canonical_id}"
+        try:
+            os.stat(retired_name, dir_fd=self._root_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise CaddyGenerationError("retired generation staging already exists")
+
+        descriptor = os.open(canonical_id, _DIRECTORY_OPEN_FLAGS, dir_fd=self._root_fd)
+        try:
+            pinned = os.fstat(descriptor)
+            _validate_directory_metadata(
+                pinned,
+                owner=self._owner,
+                group=self._group,
+                mode=CADDY_GENERATION_MODE,
+                label="Caddy generation",
+            )
+            _validate_exact_inventory(descriptor)
+            manifest_bytes = _read_named_file(
+                descriptor,
+                CADDY_MANIFEST_NAME,
+                owner=self._owner,
+                group=self._group,
+                mode=CADDY_PRIVATE_FILE_MODE,
+                maximum_bytes=MAX_CADDY_MANIFEST_BYTES,
+            )
+            if not secrets.compare_digest(manifest_bytes, expected_manifest.to_bytes()):
+                raise CaddyGenerationError("candidate discard manifest changed")
+            current = os.stat(canonical_id, dir_fd=self._root_fd, follow_symlinks=False)
+            if _snapshot(pinned) != _snapshot(current):
+                raise CaddyGenerationError("candidate changed before discard")
+            os.rename(
+                canonical_id,
+                retired_name,
+                src_dir_fd=self._root_fd,
+                dst_dir_fd=self._root_fd,
+            )
+            renamed = os.stat(retired_name, dir_fd=self._root_fd, follow_symlinks=False)
+            if (pinned.st_dev, pinned.st_ino) != (renamed.st_dev, renamed.st_ino):
+                raise CaddyGenerationError("discarded candidate inode changed during rename")
+            os.fsync(self._root_fd)
+        finally:
+            os.close(descriptor)
+        _remove_generation_temporary(
+            self._root_fd,
+            retired_name,
+            owner=self._owner,
+            group=self._group,
+            creation_group=os.getegid(),
+        )
+
     def _measure_allocations(
         self,
         generation_ids: Collection[str],
