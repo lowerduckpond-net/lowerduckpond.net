@@ -22,7 +22,11 @@ from lowerduckpond_static_contracts import (
 )
 
 from lowerduckpond_static_host_agent.correlations import CorrelationAdmission
-from lowerduckpond_static_host_agent.execution import ExecutionError, JobHandoff
+from lowerduckpond_static_host_agent.execution import (
+    ExecutionError,
+    JobHandoff,
+    validate_result_lifecycle_authority,
+)
 from lowerduckpond_static_host_agent.intake import ArtifactIntake
 from lowerduckpond_static_host_agent.issuance import IssuedAuthorization, VerifiedArtifact
 from lowerduckpond_static_host_agent.locks import LockMode, StateBusyError
@@ -135,35 +139,39 @@ class ResultWaiter:
                 raise RuntimeBoundaryError("authorized job result timed out")
             self._sleep(_RESULT_POLL_SECONDS)
             result = self._read(issued.job_id)
-        if self._has_active_lifecycle_intent(issued):
-            self._handoff.enqueue(issued.job_id)
         _validate_result_for_job(issued.document, result)
+        if self._validate_lifecycle_result(issued, result, deadline=deadline):
+            self._handoff.enqueue(issued.job_id)
         return result
 
-    def _has_active_lifecycle_intent(self, issued: IssuedAuthorization) -> bool:
-        correlation_id = _correlation_id(issued.document)
-        try:
-            with self._repository.transaction(
-                mode=LockMode.EXCLUSIVE,
-                blocking=False,
-            ) as transaction:
-                for identity in transaction.measure_intent_records().records:
-                    _path, intent = transaction.read_intent(identity.intent_id)
-                    provenance = intent.document.get("provenance")
-                    if (
-                        intent.document["kind"] == "ArchiveRetirementIntent"
-                        and type(provenance) is dict
-                        and provenance.get("kind") == "emergency-administrator"
-                    ):
-                        continue
-                    if intent.document["correlationId"] == correlation_id:
-                        return True
-                return False
-        except StateBusyError:
-            # A successful immutable result does not prove lifecycle cleanup is
-            # complete while the authority lock is contended. Queue the exact
-            # opaque job so the worker rechecks under its normal boundaries.
-            return True
+    def _validate_lifecycle_result(
+        self,
+        issued: IssuedAuthorization,
+        result: dict[str, object],
+        *,
+        deadline: float,
+    ) -> bool:
+        while True:
+            try:
+                with self._repository.transaction(
+                    mode=LockMode.EXCLUSIVE,
+                    blocking=False,
+                ) as transaction:
+                    return validate_result_lifecycle_authority(
+                        transaction,
+                        issued.document,
+                        result,
+                    )
+            except StateBusyError:
+                if self._clock() >= deadline:
+                    raise RuntimeBoundaryError(
+                        "authorized job lifecycle validation timed out"
+                    ) from None
+                self._sleep(_RESULT_POLL_SECONDS)
+            except ExecutionError as error:
+                raise RuntimeBoundaryError(
+                    "authorized job result disagrees with lifecycle authority"
+                ) from error
 
     def _read(self, job_id: str) -> dict[str, object] | None:
         try:

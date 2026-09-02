@@ -662,6 +662,17 @@ def _has_bound_lifecycle_intent(
     return bool(matching_intents)
 
 
+def validate_result_lifecycle_authority(
+    transaction: ExecutionTransaction,
+    job: dict[str, object],
+    result: dict[str, object],
+) -> bool:
+    """Validate a terminal result against any durable lifecycle authority."""
+
+    _validate_result_binding(job, result)
+    return _has_bound_lifecycle_intent(transaction, job, result=result)
+
+
 def _bound_lifecycle_intents(
     transaction: ExecutionTransaction,
     job: dict[str, object],
