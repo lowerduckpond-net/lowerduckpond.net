@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
@@ -23,6 +24,7 @@ from lowerduckpond_static_host_agent import (
     ExecutionOutcome,
     FilesystemCapacity,
     IntakeArtifactUnavailableError,
+    IntentRemovalToken,
     IssuedAuthorization,
     LockManager,
     StateRecordPath,
@@ -168,6 +170,53 @@ class _UnavailableArtifactHandler:
         assert claim is not None
         assert blocking is False
         raise IntakeArtifactUnavailableError("handler recovery requires its artifact")
+
+
+class _CompletingUnavailableIntake:
+    def __init__(
+        self,
+        repository: StateRepository,
+        *,
+        job_id: str,
+        intent_id: str,
+    ) -> None:
+        self._repository = repository
+        self._job_id = job_id
+        self._intent_id = intent_id
+
+    @contextmanager
+    def claim(
+        self,
+        *,
+        correlation_id: object,
+        declared: VerifiedArtifact,
+        blocking: bool = False,
+    ) -> object:
+        assert correlation_id
+        assert declared.size > 0
+        assert blocking is True
+        path = StateRecordPath.transaction_intent(self._intent_id)
+        intent = self._repository.read(path)
+        inventory = self._repository.measure_intent_records()
+        generation = next(
+            record.metadata_generation
+            for record in inventory.records
+            if record.intent_id == self._intent_id
+        )
+        self._repository.remove_reconciled_intent(
+            path,
+            IntentRemovalToken(intent.revision, generation),
+        )
+        job = self._repository.read(StateRecordPath.authorization_job(self._job_id))
+        failed = job.document
+        failed["phase"] = "failed"
+        self._repository.compare_and_swap(
+            StateRecordPath.authorization_job(self._job_id),
+            job.revision,
+            failed,
+        )
+        raise IntakeArtifactUnavailableError("concurrent replay consumed the artifact")
+        yield  # pragma: no cover - contextmanager generator marker
 
 
 @pytest.fixture(autouse=True)
@@ -1304,6 +1353,122 @@ def test_executor_reacquires_the_bound_artifact_for_lifecycle_replay(
     assert handler.claims[0] is not None
     assert handler.claims[0].artifact.verified == artifact
     assert list((root / "intake").iterdir()) == []
+
+
+def test_executor_returns_a_completed_replay_after_losing_the_artifact_race(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    manifest = _fixture("site.json")
+    source_digest = manifest_digest(manifest).to_dict()
+    candidate_manifest = json.loads(json.dumps(manifest))
+    candidate_spec = candidate_manifest["spec"]
+    assert type(candidate_spec) is dict
+    candidate_deployment = candidate_spec["desiredDeployment"]
+    assert type(candidate_deployment) is dict
+    candidate_deployment["id"] = "0198d17f-6f4a-7000-8000-000000000005"
+    candidate_deployment["archiveSha256"] = "d" * 64
+    candidate_digest = manifest_digest(candidate_manifest).to_dict()
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), manifest)
+    _write(
+        root,
+        StateRecordPath.tenant_deployment(_TENANT_ID, _DEPLOYMENT_ID),
+        _fixture("deployment-record.json"),
+    )
+    artifact = VerifiedArtifact(32, "d" * 64)
+    correlation_id = "0198d17f-6f4a-7000-8000-000000000003"
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "deploy",
+        "correlationId": correlation_id,
+        "tenantId": _TENANT_ID,
+        "artifact": {"size": artifact.size, "sha256": artifact.sha256},
+    }
+
+    with StateRepository(root, expected_owner=os.geteuid()) as repository:
+        issued = AuthorizationIssuer(
+            repository,
+            gate=_OpenGate(),
+            entropy=_Entropy(),
+        ).issue(
+            canonical_json_bytes(request),
+            operator_principal="operator@example.test",
+            now=_NOW,
+            artifact=artifact,
+        )
+        job = repository.read(StateRecordPath.authorization_job(issued.job_id))
+        claimed = job.document
+        claimed["phase"] = "claimed"
+        repository.compare_and_swap(
+            StateRecordPath.authorization_job(issued.job_id),
+            job.revision,
+            claimed,
+        )
+        source_observed = _fixture("tenant-observed-state.json")
+        source_observed["desiredManifestDigest"] = source_digest
+        candidate_observed = json.loads(json.dumps(source_observed))
+        candidate_observed["desiredManifestDigest"] = candidate_digest
+        candidate_observed["activeDeploymentId"] = candidate_deployment["id"]
+        candidate_observed["runtimeGenerationId"] = "0198d17f-6f4a-7000-8000-000000000006"
+        intent = _fixture("transaction-intent.json")
+        intent.update(
+            {
+                "tenantId": _TENANT_ID,
+                "correlationId": correlation_id,
+                "operation": "deploy",
+                "sourceManifestDigest": source_digest,
+                "candidateManifestDigest": candidate_digest,
+                "lifecycleRecovery": {
+                    "sourceObservedState": source_observed,
+                    "sourceRuntimeGenerationId": ("0198d17f-6f4a-7000-8000-000000000004"),
+                    "sourceRouteSet": "both",
+                    "candidateObservedState": candidate_observed,
+                    "candidateRuntimeGenerationId": ("0198d17f-6f4a-7000-8000-000000000006"),
+                    "candidateRouteSet": "both",
+                },
+            }
+        )
+        repository.create_immutable(
+            StateRecordPath.transaction_intent(intent["intentId"]),
+            intent,
+        )
+        result: dict[str, object] = {
+            "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+            "kind": "OperationResult",
+            "provenance": {"kind": "authorization-job", "jobId": issued.job_id},
+            "correlationId": correlation_id,
+            "operation": "deploy",
+            "status": "failed",
+            "errorCode": "state_drift",
+            "tenantId": _TENANT_ID,
+        }
+        repository.create_immutable(
+            StateRecordPath.authorization_result(issued.job_id),
+            result,
+        )
+        handler = _CompletingFailureHandler(repository)
+        intake = _CompletingUnavailableIntake(
+            repository,
+            job_id=issued.job_id,
+            intent_id=intent["intentId"],
+        )
+
+        outcome = AuthorizationExecutor(
+            repository,
+            intake,  # type: ignore[arg-type] - deterministic race double
+            handlers={"deploy": handler},
+        ).execute(issued.job_id, blocking=True)
+
+        terminal = repository.read(StateRecordPath.authorization_job(issued.job_id)).document
+        with pytest.raises(FileNotFoundError):
+            repository.read(StateRecordPath.transaction_intent(intent["intentId"]))
+
+    assert outcome.result == result
+    assert outcome.created is False
+    assert terminal["phase"] == "failed"
+    assert handler.claims == []
 
 
 def test_executor_does_not_terminalize_handler_artifact_errors(tmp_path: Path) -> None:
