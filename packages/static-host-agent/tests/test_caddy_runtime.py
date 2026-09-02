@@ -457,6 +457,38 @@ def test_runtime_opens_one_explicit_verified_generation(
         assert runtime.read_active() == GENERATION_A
 
 
+def test_runtime_reads_exact_tenant_snapshot_from_explicit_generation(
+    runtime_fixture: RuntimeFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _allow_candidate_capacity(monkeypatch, runtime_fixture.root)
+    transaction, overlay, gate = _candidate_inputs()
+    with runtime_fixture.open() as runtime, runtime.locked():
+        runtime.select_active(GENERATION_A)
+        runtime.publish_candidate(
+            _TENANT_GENERATION,
+            transaction=transaction,
+            overlay=overlay,
+            gate=gate,
+        )
+
+        snapshot = runtime.read_generation_route_snapshot(_TENANT_GENERATION)
+
+        assert snapshot.platform_namespace == _platform_namespace()
+        assert snapshot.tenants == (_tenant_input(),)
+        assert runtime.read_active() == GENERATION_A
+
+
+def test_runtime_rejects_a_platform_only_generation_as_tenant_snapshot(
+    runtime_fixture: RuntimeFixture,
+) -> None:
+    with runtime_fixture.open() as runtime, runtime.locked():
+        runtime.select_active(GENERATION_A)
+
+        with pytest.raises(CaddyRuntimeError, match="no tenant route snapshot"):
+            runtime.read_generation_route_snapshot(GENERATION_A)
+
+
 def test_runtime_refuses_candidate_publication_while_the_gate_is_closed(
     runtime_fixture: RuntimeFixture,
 ) -> None:

@@ -66,12 +66,15 @@ def test_append_builds_one_exact_canonical_hash_chain(tmp_path: Path) -> None:
         first_result = repository.append_audit(first)
         second_result = repository.append_audit(second)
         state = repository.inspect_audit()
+        snapshot = repository.inspect_audit_snapshot()
 
     assert first_result.entry_digest == first_digest
     assert second_result.state == state
     assert state.entry_count == _EXPECTED_CHAIN_ENTRIES
     assert state.segment_count == 1
     assert state.terminal_digest == audit_entry_digest(second).to_dict()
+    assert snapshot.state == state
+    assert snapshot.entries == (first, second)
     assert (root / "audit/segment-00000000000000000000.jsonl").read_bytes() == (
         canonical_json_bytes(first) + canonical_json_bytes(second)
     )

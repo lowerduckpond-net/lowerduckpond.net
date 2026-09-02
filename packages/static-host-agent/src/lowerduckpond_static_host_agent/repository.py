@@ -29,6 +29,7 @@ from lowerduckpond_static_host_agent.audit import (
     DEFAULT_AUDIT_LIMITS,
     AuditAppend,
     AuditLimits,
+    AuditSnapshot,
     AuditState,
 )
 from lowerduckpond_static_host_agent.audit import (
@@ -36,6 +37,9 @@ from lowerduckpond_static_host_agent.audit import (
 )
 from lowerduckpond_static_host_agent.audit import (
     inspect_audit as inspect_audit_records,
+)
+from lowerduckpond_static_host_agent.audit import (
+    inspect_audit_snapshot as inspect_audit_snapshot_records,
 )
 from lowerduckpond_static_host_agent.capacity import (
     FilesystemCapacity,
@@ -689,6 +693,17 @@ class StateRepository:
         with self.transaction(mode=LockMode.EXCLUSIVE, blocking=blocking) as transaction:
             return transaction.inspect_audit(limits=limits)
 
+    def inspect_audit_snapshot(
+        self,
+        *,
+        limits: AuditLimits = DEFAULT_AUDIT_LIMITS,
+        blocking: bool = False,
+    ) -> AuditSnapshot:
+        """Return every validated audit entry under exclusive tenant-state."""
+
+        with self.transaction(mode=LockMode.EXCLUSIVE, blocking=blocking) as transaction:
+            return transaction.inspect_audit_snapshot(limits=limits)
+
     def append_audit(
         self,
         document: dict[str, object],
@@ -1263,6 +1278,20 @@ class _StateTransaction:
     ) -> AuditState:
         self._require_exclusive()
         return inspect_audit_records(
+            self._repository._durable,
+            expected_owner=self._repository._expected_owner,
+            expected_directory_mode=self._repository._expected_directory_mode,
+            expected_record_mode=self._repository._expected_record_mode,
+            limits=limits,
+        )
+
+    def inspect_audit_snapshot(
+        self,
+        *,
+        limits: AuditLimits = DEFAULT_AUDIT_LIMITS,
+    ) -> AuditSnapshot:
+        self._require_exclusive()
+        return inspect_audit_snapshot_records(
             self._repository._durable,
             expected_owner=self._repository._expected_owner,
             expected_directory_mode=self._repository._expected_directory_mode,

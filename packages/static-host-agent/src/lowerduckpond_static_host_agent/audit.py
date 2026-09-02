@@ -91,6 +91,14 @@ class AuditState:
 
 
 @dataclass(frozen=True, slots=True)
+class AuditSnapshot:
+    """Every validated audit entry paired with its exact chain state."""
+
+    state: AuditState
+    entries: tuple[dict[str, object], ...]
+
+
+@dataclass(frozen=True, slots=True)
 class AuditAppend:
     """The committed digest and verified resulting chain state."""
 
@@ -131,6 +139,30 @@ def inspect_audit(
     finally:
         audit_directory.close()
     return _validate_chain(segments, limits=limits)
+
+
+def inspect_audit_snapshot(
+    root: DurableDirectory,
+    *,
+    expected_owner: int,
+    expected_directory_mode: int,
+    expected_record_mode: int,
+    limits: AuditLimits = DEFAULT_AUDIT_LIMITS,
+) -> AuditSnapshot:
+    """Validate and return the complete bounded audit chain."""
+
+    audit_directory = root.open_descendant(("audit",))
+    try:
+        segments = _read_segments(
+            audit_directory,
+            expected_owner=expected_owner,
+            expected_directory_mode=expected_directory_mode,
+            expected_record_mode=expected_record_mode,
+            limits=limits,
+        )
+    finally:
+        audit_directory.close()
+    return _validate_chain_snapshot(segments, limits=limits)
 
 
 def append_audit(  # noqa: PLR0913 - keep every security boundary explicit
@@ -309,10 +341,19 @@ def _validate_chain(
     *,
     limits: AuditLimits,
 ) -> AuditState:
+    return _validate_chain_snapshot(segments, limits=limits).state
+
+
+def _validate_chain_snapshot(
+    segments: tuple[_Segment, ...],
+    *,
+    limits: AuditLimits,
+) -> AuditSnapshot:
     sequence = 0
     terminal: dict[str, str] | None = None
     allocated = 0
     previous_segment_bytes: int | None = None
+    entries: list[dict[str, object]] = []
     for segment in segments:
         if not segment.data or not segment.data.endswith(b"\n"):
             raise AuditError("audit segment is not nonempty canonical JSON lines")
@@ -340,16 +381,20 @@ def _validate_chain(
                 raise AuditError("audit entry sequence is not contiguous")
             if document["previousEntryDigest"] != terminal:
                 raise AuditError("audit entry predecessor breaks the chain")
+            entries.append(document)
             terminal = audit_entry_digest(document).to_dict()
             sequence += 1
         previous_segment_bytes = len(segment.data)
     if allocated > limits.maximum_administrator_bytes:
         raise AuditCapacityError("audit allocation exceeds its absolute ceiling")
-    return AuditState(
-        entry_count=sequence,
-        segment_count=len(segments),
-        allocated_bytes=allocated,
-        terminal_digest=terminal,
+    return AuditSnapshot(
+        state=AuditState(
+            entry_count=sequence,
+            segment_count=len(segments),
+            allocated_bytes=allocated,
+            terminal_digest=terminal,
+        ),
+        entries=tuple(entries),
     )
 
 
