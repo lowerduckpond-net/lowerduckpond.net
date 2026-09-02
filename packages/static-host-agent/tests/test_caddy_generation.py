@@ -20,6 +20,7 @@ from lowerduckpond_static_host_agent import (
     CADDY_ROUTE_METADATA_NAME,
     CADDY_ROUTE_METADATA_SCHEMA,
     CaddyBinarySource,
+    CaddyDerivedGenerationPayload,
     CaddyGenerationAlreadyExistsError,
     CaddyGenerationBoundary,
     CaddyGenerationError,
@@ -172,6 +173,133 @@ def test_open_verified_pins_every_manifest_verified_payload(tmp_path: Path) -> N
                 assert os.read(descriptor, 4096) == canonical_json_bytes(payload.configuration)
             finally:
                 os.close(descriptor)
+
+
+def test_derived_generation_copies_only_pinned_host_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _make_root(tmp_path)
+    device = root.stat().st_dev
+    monkeypatch.setattr(
+        caddy_generation_module,
+        "measure_filesystem_capacity_descriptor",
+        lambda _descriptor: FilesystemCapacity(
+            device=device,
+            fragment_size=4096,
+            total_blocks=10_000_000,
+            available_blocks=9_000_000,
+            total_inodes=1_000_000,
+            available_inodes=900_000,
+        ),
+    )
+    original = _payload(tmp_path)
+    replacement_configuration = {
+        "admin": {"listen": "127.0.0.1:2019"},
+        "apps": {"http": {"servers": {"replacement": {}}}},
+    }
+    replacement_routes = _route_metadata(publication_enabled=True)
+
+    with _open_store(root) as store:
+        first = store.publish(_GENERATION_ID, original)
+        with store.open_verified(_GENERATION_ID) as source:
+            derived = CaddyDerivedGenerationPayload(
+                source,
+                replacement_configuration,
+                replacement_routes,
+            )
+            store.admit_candidate(derived, (_GENERATION_ID,))
+            second = store.publish(_SECOND_GENERATION_ID, derived)
+        with store.open_verified(_SECOND_GENERATION_ID) as published:
+            environment_fd = published.duplicate_payload_descriptor(CADDY_ENVIRONMENT_NAME)
+            configuration_fd = published.duplicate_payload_descriptor(CADDY_CONFIGURATION_NAME)
+            try:
+                assert os.read(environment_fd, 4096) == original.environment
+                assert os.read(configuration_fd, 4096) == canonical_json_bytes(
+                    replacement_configuration
+                )
+            finally:
+                os.close(environment_fd)
+                os.close(configuration_fd)
+
+    first_files = {item.name: item for item in first.files}
+    second_files = {item.name: item for item in second.files}
+    for name in (CADDY_BINARY_NAME, CADDY_ENVIRONMENT_NAME):
+        assert second_files[name] == first_files[name]
+    for name in (CADDY_CONFIGURATION_NAME, CADDY_ROUTE_METADATA_NAME):
+        assert second_files[name] != first_files[name]
+
+
+def test_derived_generation_requires_its_source_to_remain_pinned(
+    tmp_path: Path,
+) -> None:
+    root = _make_root(tmp_path)
+
+    with _open_store(root) as store:
+        store.publish(_GENERATION_ID, _payload(tmp_path))
+        source = store.open_verified(_GENERATION_ID)
+        derived = CaddyDerivedGenerationPayload(
+            source,
+            {"apps": {"http": {"servers": {}}}},
+            _route_metadata(publication_enabled=True),
+        )
+        source.close()
+        with pytest.raises(ValueError, match="closed"):
+            store.admit_candidate(derived, (_GENERATION_ID,))
+        with pytest.raises(ValueError, match="closed"):
+            store.publish(_SECOND_GENERATION_ID, derived)
+
+    assert list(root.glob(".ldp-generation-*")) == []
+
+
+def test_derived_generation_rejects_unsafe_pinned_host_input_metadata(
+    tmp_path: Path,
+) -> None:
+    root = _make_root(tmp_path)
+
+    with _open_store(root) as store:
+        store.publish(_GENERATION_ID, _payload(tmp_path))
+        environment = root / _GENERATION_ID / CADDY_ENVIRONMENT_NAME
+        source = store.open_verified(_GENERATION_ID)
+        try:
+            environment.chmod(0o644)
+            derived = CaddyDerivedGenerationPayload(
+                source,
+                {"apps": {"http": {"servers": {}}}},
+                _route_metadata(publication_enabled=True),
+            )
+            with pytest.raises(CaddyGenerationError, match="metadata is unsafe"):
+                store.admit_candidate(derived, (_GENERATION_ID,))
+            with pytest.raises(CaddyGenerationError, match="metadata is unsafe"):
+                store.publish(_SECOND_GENERATION_ID, derived)
+        finally:
+            source.close()
+
+    assert list(root.glob(".ldp-generation-*")) == []
+
+
+def test_derived_generation_uses_the_pinned_source_after_namespace_rename(
+    tmp_path: Path,
+) -> None:
+    root = _make_root(tmp_path)
+    original = _payload(tmp_path)
+
+    with _open_store(root) as store:
+        store.publish(_GENERATION_ID, original)
+        with store.open_verified(_GENERATION_ID) as source:
+            (root / _GENERATION_ID).rename(root / "detached-source")
+            derived = CaddyDerivedGenerationPayload(
+                source,
+                {"apps": {"http": {"servers": {"replacement": {}}}}},
+                _route_metadata(publication_enabled=True),
+            )
+            store.publish(_SECOND_GENERATION_ID, derived)
+        with store.open_verified(_SECOND_GENERATION_ID) as published:
+            binary_fd = published.duplicate_payload_descriptor(CADDY_BINARY_NAME)
+            try:
+                assert os.read(binary_fd, 4096) == b"pinned-caddy-binary\n"
+            finally:
+                os.close(binary_fd)
 
 
 def test_pinned_payload_survives_later_namespace_replacement(tmp_path: Path) -> None:

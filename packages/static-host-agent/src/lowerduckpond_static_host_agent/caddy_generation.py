@@ -296,6 +296,28 @@ class PinnedCaddyGeneration:
             raise ValueError("pinned Caddy generation is closed")
 
 
+@dataclass(frozen=True, slots=True)
+class CaddyDerivedGenerationPayload:
+    """New routes paired with pinned host inputs from one complete generation."""
+
+    source: PinnedCaddyGeneration
+    configuration: Mapping[str, object]
+    route_metadata: Mapping[str, object]
+
+    def __post_init__(self) -> None:
+        if type(self.source) is not PinnedCaddyGeneration:
+            raise TypeError("derived Caddy payload source must be one pinned generation")
+        _canonical_object(self.configuration, maximum_bytes=MAX_CADDY_CONFIGURATION_BYTES)
+        route_bytes = _canonical_object(
+            self.route_metadata,
+            maximum_bytes=MAX_CADDY_ROUTE_METADATA_BYTES,
+        )
+        _validate_route_metadata(decode_json_object(route_bytes, maximum_bytes=len(route_bytes)))
+
+
+type CaddyPublishPayload = CaddyGenerationPayload | CaddyDerivedGenerationPayload
+
+
 class CaddyGenerationStore:
     """Descriptor-relative publisher and verifier for complete Caddy generations."""
 
@@ -498,7 +520,7 @@ class CaddyGenerationStore:
 
     def admit_candidate(
         self,
-        payload: CaddyGenerationPayload,
+        payload: CaddyPublishPayload,
         retained_generation_ids: Collection[str],
     ) -> None:
         """Admit one worst-case complete candidate before any generation write."""
@@ -509,7 +531,12 @@ class CaddyGenerationStore:
             raise CaddyGenerationError("no Caddy generation slot remains for a candidate")
         allocations = self._measure_allocations(retained)
         filesystem = measure_filesystem_capacity_descriptor(self._root_fd)
-        reservation = _candidate_reservation(payload, filesystem.fragment_size)
+        reservation = _candidate_reservation(
+            payload,
+            filesystem.fragment_size,
+            owner=self._owner,
+            group=self._group,
+        )
         admit_release_capacity(
             ReleaseCapacityUsage(allocations),
             reservation,
@@ -601,7 +628,7 @@ class CaddyGenerationStore:
     def publish(  # noqa: PLR0915
         self,
         generation_id: str,
-        payload: CaddyGenerationPayload,
+        payload: CaddyPublishPayload,
         *,
         failure_hook: GenerationFailureHook | None = None,
         temporary_name_source: TemporaryNameSource | None = None,
@@ -628,19 +655,24 @@ class CaddyGenerationStore:
             os.fchown(temporary_fd, self._owner, self._group)
 
             files = [
-                _copy_binary(
+                _copy_payload_binary(
                     temporary_fd,
-                    payload.binary,
+                    payload,
                     owner=self._owner,
                     group=self._group,
                 )
             ]
             _notify(failure_hook, CaddyGenerationBoundary.BINARY_SYNC)
+            environment = _payload_environment(
+                payload,
+                owner=self._owner,
+                group=self._group,
+            )
             files.append(
                 _write_payload(
                     temporary_fd,
                     CADDY_ENVIRONMENT_NAME,
-                    payload.environment,
+                    environment,
                     mode=CADDY_PRIVATE_FILE_MODE,
                     owner=self._owner,
                     group=self._group,
@@ -961,18 +993,74 @@ def _copy_binary(
                 "staged Caddy binary is not a no-follow regular file"
             ) from error
         raise
+    try:
+        return _copy_binary_descriptor(
+            directory_fd,
+            source_fd,
+            source_owner=source.owner,
+            source_group=source.group,
+            source_mode=source.mode,
+            owner=owner,
+            group=group,
+            label="staged",
+        )
+    finally:
+        os.close(source_fd)
+
+
+def _copy_payload_binary(
+    directory_fd: int,
+    payload: CaddyPublishPayload,
+    *,
+    owner: int,
+    group: int,
+) -> CaddyGenerationFile:
+    if isinstance(payload, CaddyGenerationPayload):
+        return _copy_binary(
+            directory_fd,
+            payload.binary,
+            owner=owner,
+            group=group,
+        )
+    source_fd = payload.source.duplicate_payload_descriptor(CADDY_BINARY_NAME)
+    try:
+        return _copy_binary_descriptor(
+            directory_fd,
+            source_fd,
+            source_owner=owner,
+            source_group=group,
+            source_mode=CADDY_BINARY_MODE,
+            owner=owner,
+            group=group,
+            label="derived",
+        )
+    finally:
+        os.close(source_fd)
+
+
+def _copy_binary_descriptor(  # noqa: PLR0913 - every metadata binding is explicit
+    directory_fd: int,
+    source_fd: int,
+    *,
+    source_owner: int,
+    source_group: int,
+    source_mode: int,
+    owner: int,
+    group: int,
+    label: str,
+) -> CaddyGenerationFile:
     destination_fd: int | None = None
     try:
         before = os.fstat(source_fd)
         if (
             not stat.S_ISREG(before.st_mode)
-            or before.st_uid != source.owner
-            or before.st_gid != source.group
-            or stat.S_IMODE(before.st_mode) != source.mode
+            or before.st_uid != source_owner
+            or before.st_gid != source_group
+            or stat.S_IMODE(before.st_mode) != source_mode
             or before.st_nlink != 1
             or not 0 < before.st_size <= MAX_CADDY_BINARY_BYTES
         ):
-            raise CaddyGenerationError("staged Caddy binary metadata is unsafe")
+            raise CaddyGenerationError(f"{label} Caddy binary metadata is unsafe")
         destination_fd = _create_payload_file(
             directory_fd,
             CADDY_BINARY_NAME,
@@ -982,18 +1070,15 @@ def _copy_binary(
         )
         digest = hashlib.sha256()
         copied = 0
-        while True:
-            chunk = os.read(source_fd, _COPY_CHUNK_BYTES)
-            if not chunk:
-                break
+        while chunk := os.read(source_fd, _COPY_CHUNK_BYTES):
             copied += len(chunk)
             if copied > MAX_CADDY_BINARY_BYTES:
-                raise CaddyGenerationError("staged Caddy binary exceeds its byte limit")
+                raise CaddyGenerationError(f"{label} Caddy binary exceeds its byte limit")
             _write_all(destination_fd, chunk)
             digest.update(chunk)
         after = os.fstat(source_fd)
         if _snapshot(before) != _snapshot(after) or copied != before.st_size:
-            raise CaddyGenerationError("staged Caddy binary changed while copying")
+            raise CaddyGenerationError(f"{label} Caddy binary changed while copying")
         os.fsync(destination_fd)
         return CaddyGenerationFile(
             CADDY_BINARY_NAME,
@@ -1002,9 +1087,56 @@ def _copy_binary(
             digest.hexdigest(),
         )
     finally:
-        os.close(source_fd)
         if destination_fd is not None:
             os.close(destination_fd)
+
+
+def _payload_environment(
+    payload: CaddyPublishPayload,
+    *,
+    owner: int,
+    group: int,
+) -> bytes:
+    if isinstance(payload, CaddyGenerationPayload):
+        return payload.environment
+    descriptor = payload.source.duplicate_payload_descriptor(CADDY_ENVIRONMENT_NAME)
+    try:
+        before = os.fstat(descriptor)
+        _validate_derived_payload_metadata(
+            before,
+            owner=owner,
+            group=group,
+            mode=CADDY_PRIVATE_FILE_MODE,
+            maximum_bytes=MAX_CADDY_ENVIRONMENT_BYTES,
+        )
+        data = _read_pinned(descriptor, MAX_CADDY_ENVIRONMENT_BYTES)
+        after = os.fstat(descriptor)
+        if _snapshot(before) != _snapshot(after) or len(data) != before.st_size:
+            raise CaddyGenerationError("derived Caddy environment changed while reading")
+        _validate_environment(data)
+        return data
+    finally:
+        os.close(descriptor)
+
+
+def _validate_derived_payload_metadata(
+    metadata: os.stat_result,
+    *,
+    owner: int,
+    group: int,
+    mode: int,
+    maximum_bytes: int,
+) -> None:
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_uid != owner
+        or metadata.st_gid != group
+        or stat.S_IMODE(metadata.st_mode) != mode
+        or metadata.st_nlink != 1
+        or metadata.st_size > maximum_bytes
+        or metadata.st_size <= 0
+    ):
+        raise CaddyGenerationError("derived Caddy host-input metadata is unsafe")
 
 
 def _write_payload(  # noqa: PLR0913
@@ -1166,15 +1298,19 @@ def _remove_generation_temporary(
 
 
 def _candidate_reservation(
-    payload: CaddyGenerationPayload,
+    payload: CaddyPublishPayload,
     fragment_size: int,
+    *,
+    owner: int,
+    group: int,
 ) -> CapacityReservation:
     if fragment_size <= 0:
         raise CaddyGenerationError("generation filesystem fragment size is invalid")
-    binary_size = _binary_source_size(payload.binary)
+    binary_size = _payload_binary_size(payload, owner=owner, group=group)
+    environment_size = len(_payload_environment(payload, owner=owner, group=group))
     payload_sizes = (
         binary_size,
-        len(payload.environment),
+        environment_size,
         len(canonical_json_bytes(payload.configuration)),
         len(canonical_json_bytes(payload.route_metadata)),
         MAX_CADDY_MANIFEST_BYTES,
@@ -1189,6 +1325,29 @@ def _candidate_reservation(
         allocated_bytes=(3 * fragment_size) + sum(allocated(size) for size in payload_sizes),
         unique_inodes=len(payload_sizes) + 1,
     )
+
+
+def _payload_binary_size(
+    payload: CaddyPublishPayload,
+    *,
+    owner: int,
+    group: int,
+) -> int:
+    if isinstance(payload, CaddyGenerationPayload):
+        return _binary_source_size(payload.binary)
+    descriptor = payload.source.duplicate_payload_descriptor(CADDY_BINARY_NAME)
+    try:
+        metadata = os.fstat(descriptor)
+        _validate_derived_payload_metadata(
+            metadata,
+            owner=owner,
+            group=group,
+            mode=CADDY_BINARY_MODE,
+            maximum_bytes=MAX_CADDY_BINARY_BYTES,
+        )
+        return metadata.st_size
+    finally:
+        os.close(descriptor)
 
 
 def _binary_source_size(source: CaddyBinarySource) -> int:
