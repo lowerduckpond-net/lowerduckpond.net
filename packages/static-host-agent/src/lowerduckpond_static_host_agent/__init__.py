@@ -66,6 +66,7 @@ from lowerduckpond_static_host_agent.caddy_routes import (
     TenantRouteInput,
     build_platform_only_caddy_routes,
     build_tenant_caddy_routes,
+    configured_origin_pull_policy,
 )
 from lowerduckpond_static_host_agent.caddy_runtime import (
     CADDY_ACTIVE_REFERENCE_MODE,
@@ -241,6 +242,10 @@ from lowerduckpond_static_host_agent.state_inventory import (
     StateInventoryProjection,
     StateInventoryReservation,
     admit_state_inventory,
+)
+from lowerduckpond_static_host_agent.tenant_generation import (
+    TenantGenerationError,
+    derive_tenant_generation_payload,
 )
 from lowerduckpond_static_host_agent.zip_structure import (
     DEFAULT_ZIP_LIMITS,
@@ -421,6 +426,7 @@ __all__ = [
     "SubprocessRequestDecoder",
     "SystemdJobHandoff",
     "TenantCaddyRoutes",
+    "TenantGenerationError",
     "TenantRouteInput",
     "TenantRouteOverlay",
     "TenantRouteSnapshot",
@@ -441,7 +447,9 @@ __all__ = [
     "build_portable_bundle",
     "build_tenant_caddy_routes",
     "caddy_route_state_digest",
+    "configured_origin_pull_policy",
     "decoder_main",
+    "derive_tenant_generation_payload",
     "digest_path",
     "ensure_platform_generation",
     "extract_deployment_zip",

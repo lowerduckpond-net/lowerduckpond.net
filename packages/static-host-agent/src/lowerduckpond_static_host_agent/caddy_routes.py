@@ -116,6 +116,55 @@ class _ValidatedTenantRoute:
     deployment: dict[str, object] | None
 
 
+def configured_origin_pull_policy(
+    configuration: dict[str, object],
+) -> tuple[tuple[bytes, ...], bool]:
+    """Recover the bounded origin-pull policy from one generated configuration."""
+
+    try:
+        apps = configuration["apps"]
+        if type(apps) is not dict:
+            raise TypeError
+        http = apps["http"]
+        if type(http) is not dict:
+            raise TypeError
+        servers = http["servers"]
+        if type(servers) is not dict:
+            raise TypeError
+        production = servers["production"]
+        if type(production) is not dict:
+            raise TypeError
+        policies = production["tls_connection_policies"]
+        if type(policies) is not list or len(policies) != 1:
+            raise TypeError
+        policy = policies[0]
+        if type(policy) is not dict:
+            raise TypeError
+        authentication = policy["client_authentication"]
+        if type(authentication) is not dict:
+            raise TypeError
+        mode = authentication["mode"]
+        if mode not in {"verify_if_given", "require_and_verify"}:
+            raise TypeError
+        pool = authentication["ca"]
+        if type(pool) is not dict:
+            raise TypeError
+        if set(pool) != {"provider", "trusted_ca_certs"} or pool["provider"] != "inline":
+            raise TypeError
+        encoded_certificates = pool["trusted_ca_certs"]
+        if type(encoded_certificates) is not list or any(
+            type(encoded) is not str for encoded in encoded_certificates
+        ):
+            raise TypeError
+        certificates = tuple(
+            base64.b64decode(encoded, validate=True) for encoded in encoded_certificates
+        )
+        _origin_pull_ca_certificates(certificates)
+    except (KeyError, TypeError, ValueError) as error:
+        raise CaddyRouteError("configured origin-pull trust is malformed") from error
+    return certificates, mode == "require_and_verify"
+
+
 def build_platform_only_caddy_routes(
     *, origin_pull_ca_der: tuple[bytes, ...], origin_pull_required: bool
 ) -> PlatformOnlyCaddyRoutes:
