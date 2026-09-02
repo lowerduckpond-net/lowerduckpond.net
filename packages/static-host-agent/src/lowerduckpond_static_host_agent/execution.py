@@ -164,15 +164,39 @@ class AuthorizationExecutor:
             if dispatch:
                 if handler is None:  # pragma: no cover - dispatch proves a handler
                     raise ExecutionError("authorization handler selection was lost")
-                outcome = self._execute_handler(
-                    canonical_id,
-                    initial,
-                    handler,
-                    claim=None,
-                    blocking=blocking,
-                )
-                self._consume_terminal_artifact(initial.document, blocking=blocking)
-                return outcome
+                artifact = _job_artifact(initial.document)
+                if artifact is None:
+                    return self._execute_handler(
+                        canonical_id,
+                        initial,
+                        handler,
+                        claim=None,
+                        blocking=blocking,
+                    )
+                with ExitStack() as claim_stack:
+                    try:
+                        claim = claim_stack.enter_context(
+                            self._intake.claim(
+                                correlation_id=_correlation_id(initial.document),
+                                declared=artifact,
+                                blocking=blocking,
+                            )
+                        )
+                    except IntakeArtifactUnavailableError as error:
+                        raise ExecutionError("lifecycle replay artifact is unavailable") from error
+                    except IntakeError as error:
+                        raise ExecutionError(
+                            "lifecycle replay artifact failed root-owned validation"
+                        ) from error
+                    outcome = self._execute_handler(
+                        canonical_id,
+                        initial,
+                        handler,
+                        claim=claim,
+                        blocking=blocking,
+                    )
+                    claim.consume()
+                    return outcome
             if result is None:  # pragma: no cover - direct replay assigns the result
                 raise ExecutionError("terminal result selection was lost")
             self._consume_terminal_artifact(initial.document, blocking=blocking)

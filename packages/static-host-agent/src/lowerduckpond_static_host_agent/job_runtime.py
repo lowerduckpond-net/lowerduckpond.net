@@ -235,7 +235,10 @@ class StartupReconciler:
                 filename = f"{correlation_id}.artifact"
                 result_exists = self._result_exists(job_id)
                 artifact = _artifact_binding(job)
-                if result_exists or job["phase"] in {"completed", "failed"}:
+                needs_lifecycle_replay = job_id in active_intent_jobs
+                if (
+                    result_exists or job["phase"] in {"completed", "failed"}
+                ) and not needs_lifecycle_replay:
                     terminal.add(filename)
                 elif artifact is not None:
                     authorized[filename] = artifact
