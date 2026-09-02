@@ -39,8 +39,10 @@ from lowerduckpond_static_host_agent.caddy_generation import (
     MAX_CADDY_CONFIGURATION_BYTES,
     MAX_CADDY_ENVIRONMENT_BYTES,
     MAX_CADDY_ROUTE_METADATA_BYTES,
+    CaddyDerivedGenerationPayload,
     CaddyGenerationManifest,
     CaddyGenerationStore,
+    CaddyPublishPayload,
     PinnedCaddyGeneration,
 )
 from lowerduckpond_static_host_agent.caddy_routes import (
@@ -401,6 +403,50 @@ class CaddyRuntime:
         finally:
             store.close()
         return SelectedCaddyGeneration(generation_id, generation)
+
+    def publish_candidate(
+        self,
+        generation_id: str,
+        payload: CaddyPublishPayload,
+    ) -> CaddyGenerationManifest:
+        """Admit, install, and validate one unselected complete generation."""
+
+        self._require_locked()
+        candidate_id = _canonical_generation_id(generation_id)
+        active = self.open_active_verified()
+        try:
+            if candidate_id == active.generation_id:
+                raise CaddyRuntimeError("candidate Caddy generation is already active")
+            if (
+                isinstance(payload, CaddyDerivedGenerationPayload)
+                and payload.source.manifest != active.generation.manifest
+            ):
+                raise CaddyRuntimeError(
+                    "derived Caddy candidate host inputs are not the active generation"
+                )
+
+            store = self._open_generation_store()
+            try:
+                retained = store.list_verified()
+                if active.generation_id not in retained:
+                    raise CaddyRuntimeError("active Caddy generation is absent from storage")
+                store.admit_candidate(payload, retained)
+                manifest = store.publish(candidate_id, payload)
+                try:
+                    with store.open_verified(candidate_id) as candidate:
+                        if self._expected_binary_sha256 is not None:
+                            _validate_trusted_binary(candidate, self._expected_binary_sha256)
+                        _validate_route_binding(candidate)
+                        environment = _read_generation_environment(candidate)
+                        self._candidate_validator(candidate, environment)
+                except BaseException:
+                    store.remove_verified(candidate_id)
+                    raise
+                return manifest
+            finally:
+                store.close()
+        finally:
+            active.generation.close()
 
     def select_active(
         self,

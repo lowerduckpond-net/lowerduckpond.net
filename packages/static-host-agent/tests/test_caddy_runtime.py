@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TypedDict, cast
 
+import lowerduckpond_static_host_agent.caddy_generation as caddy_generation_module
 import lowerduckpond_static_host_agent.caddy_runtime as caddy_runtime_module
 import pytest
 from lowerduckpond_static_contracts import canonical_json_bytes, manifest_digest
@@ -20,15 +21,19 @@ from lowerduckpond_static_host_agent import (
     CADDY_PUBLICATION_LOCK_MODE,
     CADDY_RUNTIME_ROOT_MODE,
     CaddyBinarySource,
+    CaddyDerivedGenerationPayload,
+    CaddyGenerationError,
     CaddyGenerationPayload,
     CaddyGenerationStore,
     CaddyRuntime,
     CaddyRuntimeError,
     CaddySelectionBoundary,
+    FilesystemCapacity,
     LockManager,
     LockMode,
     LockName,
     LockOrderError,
+    PinnedCaddyGeneration,
     StateRepository,
     TenantRouteInput,
     build_platform_only_caddy_routes,
@@ -47,6 +52,24 @@ _TENANT_GENERATION = "0198d17f-6f4a-7000-8000-000000000008"
 
 def _accept_candidate(_generation: object, _environment: object) -> None:
     pass
+
+
+def _allow_candidate_capacity(
+    monkeypatch: pytest.MonkeyPatch,
+    root: Path,
+) -> None:
+    monkeypatch.setattr(
+        caddy_generation_module,
+        "measure_filesystem_capacity_descriptor",
+        lambda _descriptor: FilesystemCapacity(
+            device=root.stat().st_dev,
+            fragment_size=4096,
+            total_blocks=10_000_000,
+            available_blocks=9_000_000,
+            total_inodes=1_000_000,
+            available_inodes=900_000,
+        ),
+    )
 
 
 def _configuration() -> dict[str, object]:
@@ -114,6 +137,14 @@ def _tenant_routes(
         origin_pull_required=True,
     )
     return generated.configuration, generated.route_metadata
+
+
+def _derived_payload(
+    source: PinnedCaddyGeneration,
+    generation_id: str = _TENANT_GENERATION,
+) -> CaddyDerivedGenerationPayload:
+    configuration, route_metadata = _tenant_routes(generation_id)
+    return CaddyDerivedGenerationPayload(source, configuration, route_metadata)
 
 
 @dataclass(frozen=True)
@@ -343,6 +374,109 @@ def test_runtime_composes_with_repository_publication_transaction(
         runtime.select_active(GENERATION_A)
         assert runtime.read_active() == GENERATION_A
         assert transaction is not None
+
+
+def test_runtime_publishes_and_validates_one_unselected_derived_candidate(
+    runtime_fixture: RuntimeFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _allow_candidate_capacity(monkeypatch, runtime_fixture.root)
+    with runtime_fixture.open() as runtime, runtime.locked():
+        runtime.select_active(GENERATION_A)
+        selected = runtime.open_active_verified()
+        try:
+            manifest = runtime.publish_candidate(
+                _TENANT_GENERATION,
+                _derived_payload(selected.generation),
+            )
+        finally:
+            selected.generation.close()
+
+        assert manifest.generation_id == _TENANT_GENERATION
+        assert runtime.read_active() == GENERATION_A
+        runtime.select_active(_TENANT_GENERATION)
+        assert runtime.read_active() == _TENANT_GENERATION
+
+
+def test_runtime_rejects_derived_inputs_from_a_nonactive_generation(
+    runtime_fixture: RuntimeFixture,
+) -> None:
+    with runtime_fixture.open() as runtime, runtime.locked():
+        runtime.select_active(GENERATION_B)
+        stale = runtime.open_active_verified()
+        try:
+            runtime.select_active(GENERATION_A)
+            with pytest.raises(CaddyRuntimeError, match="not the active generation"):
+                runtime.publish_candidate(
+                    _TENANT_GENERATION,
+                    _derived_payload(stale.generation),
+                )
+        finally:
+            stale.generation.close()
+
+        assert runtime.read_active() == GENERATION_A
+
+
+def test_runtime_removes_a_candidate_that_fails_validation(
+    runtime_fixture: RuntimeFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _allow_candidate_capacity(monkeypatch, runtime_fixture.root)
+
+    def reject_candidate(generation: PinnedCaddyGeneration, _environment: object) -> None:
+        if generation.manifest.generation_id == _TENANT_GENERATION:
+            raise CaddyRuntimeError("injected candidate rejection")
+
+    with (
+        CaddyRuntime.open(
+            runtime_fixture.root,
+            runtime_fixture.lock,
+            expected_owner=runtime_fixture.owner,
+            expected_group=runtime_fixture.group,
+            validation_uid=runtime_fixture.owner,
+            validation_gid=runtime_fixture.group,
+            expected_binary_sha256=runtime_fixture.binary_sha256,
+            candidate_validator=reject_candidate,
+        ) as runtime,
+        runtime.locked(),
+    ):
+        runtime.select_active(GENERATION_A)
+        selected = runtime.open_active_verified()
+        try:
+            with pytest.raises(CaddyRuntimeError, match="injected candidate rejection"):
+                runtime.publish_candidate(
+                    _TENANT_GENERATION,
+                    _derived_payload(selected.generation),
+                )
+        finally:
+            selected.generation.close()
+
+        assert runtime.read_active() == GENERATION_A
+        with pytest.raises(FileNotFoundError):
+            runtime.select_active(_TENANT_GENERATION)
+
+
+def test_runtime_counts_every_existing_generation_before_candidate_admission(
+    runtime_fixture: RuntimeFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _allow_candidate_capacity(monkeypatch, runtime_fixture.root)
+    next_generation = "0198d17f-6f4a-7000-8000-000000000009"
+    with runtime_fixture.open() as runtime, runtime.locked():
+        runtime.select_active(GENERATION_A)
+        selected = runtime.open_active_verified()
+        try:
+            runtime.publish_candidate(
+                _TENANT_GENERATION,
+                _derived_payload(selected.generation),
+            )
+            with pytest.raises(CaddyGenerationError, match="no Caddy generation slot"):
+                runtime.publish_candidate(
+                    next_generation,
+                    _derived_payload(selected.generation, next_generation),
+                )
+        finally:
+            selected.generation.close()
 
 
 def test_held_lock_context_fails_busy_instead_of_inverting_the_process_mutex(
