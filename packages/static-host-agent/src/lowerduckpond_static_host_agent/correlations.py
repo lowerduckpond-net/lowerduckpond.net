@@ -93,6 +93,12 @@ class _CorrelationTransaction(Protocol):
         limits: StateInventoryLimits,
     ) -> object: ...
 
+    def measure_authorization_records(
+        self,
+        *,
+        limits: StateInventoryLimits,
+    ) -> AuthorizationRecordInventory: ...
+
 
 class CorrelationAdmission:
     """Resolve exact retries and admit new immutable job/correlation pairs."""
@@ -190,17 +196,25 @@ class CorrelationAdmission:
             mode=LockMode.EXCLUSIVE,
             blocking=blocking,
         ) as transaction:
-            inventory = transaction.measure_authorization_records(limits=self._limits)
-            correlations, repaired_records = _reconcile_pairs(
-                transaction,
-                inventory=inventory,
-                limits=self._limits,
-                capacity_limits=self._capacity_limits,
-            )
-            jobs = tuple(
-                transaction.read(StateRecordPath.authorization_job(_job_id(correlation)))
-                for _correlation_id, correlation in sorted(correlations.items())
-            )
+            return self.reconcile_transaction(transaction)
+
+    def reconcile_transaction(
+        self,
+        transaction: _CorrelationTransaction,
+    ) -> CorrelationReconciliation:
+        """Repair and snapshot pairs inside a caller-held state transaction."""
+
+        inventory = transaction.measure_authorization_records(limits=self._limits)
+        correlations, repaired_records = _reconcile_pairs(
+            transaction,
+            inventory=inventory,
+            limits=self._limits,
+            capacity_limits=self._capacity_limits,
+        )
+        jobs = tuple(
+            transaction.read(StateRecordPath.authorization_job(_job_id(correlation)))
+            for _correlation_id, correlation in sorted(correlations.items())
+        )
         return CorrelationReconciliation(jobs=jobs, repaired_records=repaired_records)
 
     def find_retry(

@@ -35,6 +35,7 @@ from lowerduckpond_static_host_agent.repository import (
     StateRepository,
     StoredContract,
 )
+from lowerduckpond_static_host_agent.state_inventory import IntentRecordInventory
 
 _SYSTEMCTL: Final = Path("/usr/bin/systemctl")
 _WORKER_UNIT: Final = "lowerduckpond-static-worker@{job_id}.service"
@@ -68,6 +69,21 @@ class _AuthorizationReceiver(Protocol):
         *,
         operator_principal: str,
     ) -> IssuedAuthorization: ...
+
+
+class _StartupTransaction(Protocol):
+    def read(self, path: StateRecordPath) -> StoredContract: ...
+
+    def measure_intent_records(self) -> IntentRecordInventory: ...
+
+    def read_intent(self, intent_id: object) -> tuple[StateRecordPath, StoredContract]: ...
+
+    def select_recovery_batch(
+        self,
+        job_ids: tuple[str, ...],
+        *,
+        limit: int,
+    ) -> tuple[str, ...]: ...
 
 
 def _sleep(seconds: float) -> None:
@@ -258,37 +274,43 @@ class StartupReconciler:
 
         def load_authority() -> tuple[dict[str, VerifiedArtifact], set[str]]:
             nonlocal batch, repaired_pairs
-            repaired = CorrelationAdmission(self._repository).reconcile(blocking=True)
-            repaired_pairs = repaired.repaired_records
-            active_intent_jobs = self._active_intent_job_ids(repaired.jobs)
-            authorized: dict[str, VerifiedArtifact] = {}
-            terminal: set[str] = set()
-            for stored in repaired.jobs:
-                job = stored.document
-                job_id = validate_uuid7(job["jobId"])
-                correlation_id = _correlation_id(job)
-                filename = f"{correlation_id}.artifact"
-                result_exists = self._result_exists(job_id)
-                artifact = _artifact_binding(job)
-                needs_lifecycle_replay = job_id in active_intent_jobs
-                if (
-                    result_exists or job["phase"] in {"completed", "failed"}
-                ) and not needs_lifecycle_replay:
-                    terminal.add(filename)
-                elif artifact is not None:
-                    authorized[filename] = artifact
-                if result_exists:
-                    if job["phase"] not in {"completed", "failed"} or job_id in active_intent_jobs:
-                        queued.append(job_id)
-                elif job["phase"] in {"pending", "claimed"}:
-                    queued.append(job_id)
-                else:
-                    raise ExecutionError("terminal authorization job has no immutable result")
-            batch = self._repository.select_recovery_batch(
-                tuple(queued),
-                limit=_RECOVERY_HANDOFF_LIMIT,
+            with self._repository.transaction(
+                mode=LockMode.EXCLUSIVE,
                 blocking=True,
-            )
+            ) as transaction:
+                repaired = CorrelationAdmission(self._repository).reconcile_transaction(transaction)
+                repaired_pairs = repaired.repaired_records
+                active_intent_jobs = self._active_intent_job_ids(transaction, repaired.jobs)
+                authorized: dict[str, VerifiedArtifact] = {}
+                terminal: set[str] = set()
+                for stored in repaired.jobs:
+                    job = stored.document
+                    job_id = validate_uuid7(job["jobId"])
+                    correlation_id = _correlation_id(job)
+                    filename = f"{correlation_id}.artifact"
+                    result_exists = self._result_exists(transaction, job_id)
+                    artifact = _artifact_binding(job)
+                    needs_lifecycle_replay = job_id in active_intent_jobs
+                    if (
+                        result_exists or job["phase"] in {"completed", "failed"}
+                    ) and not needs_lifecycle_replay:
+                        terminal.add(filename)
+                    elif artifact is not None:
+                        authorized[filename] = artifact
+                    if result_exists:
+                        if (
+                            job["phase"] not in {"completed", "failed"}
+                            or job_id in active_intent_jobs
+                        ):
+                            queued.append(job_id)
+                    elif job["phase"] in {"pending", "claimed"}:
+                        queued.append(job_id)
+                    else:
+                        raise ExecutionError("terminal authorization job has no immutable result")
+                batch = transaction.select_recovery_batch(
+                    tuple(queued),
+                    limit=_RECOVERY_HANDOFF_LIMIT,
+                )
             return authorized, terminal
 
         intake = self._intake.reconcile(
@@ -308,18 +330,17 @@ class StartupReconciler:
             deferred_jobs=len(queued) - len(batch),
         )
 
-    def _result_exists(self, job_id: str) -> bool:
+    @staticmethod
+    def _result_exists(transaction: _StartupTransaction, job_id: str) -> bool:
         try:
-            self._repository.read(
-                StateRecordPath.authorization_result(job_id),
-                blocking=True,
-            )
+            transaction.read(StateRecordPath.authorization_result(job_id))
         except FileNotFoundError:
             return False
         return True
 
+    @staticmethod
     def _active_intent_job_ids(
-        self,
+        transaction: _StartupTransaction,
         jobs: tuple[StoredContract, ...],
     ) -> set[str]:
         jobs_by_correlation: dict[str, str] = {}
@@ -329,27 +350,21 @@ class StartupReconciler:
                 raise ExecutionError("authorization inventory repeats a correlation")
             jobs_by_correlation[correlation_id] = validate_uuid7(stored.document["jobId"])
         active: set[str] = set()
-        with self._repository.transaction(
-            mode=LockMode.EXCLUSIVE,
-            blocking=True,
-        ) as transaction:
-            for identity in transaction.measure_intent_records().records:
-                _path, intent = transaction.read_intent(identity.intent_id)
-                provenance = intent.document.get("provenance")
-                if (
-                    intent.document["kind"] == "ArchiveRetirementIntent"
-                    and type(provenance) is dict
-                    and provenance.get("kind") == "emergency-administrator"
-                ):
-                    continue
-                correlation_id = validate_uuid7(intent.document["correlationId"])
-                try:
-                    job_id = jobs_by_correlation[correlation_id]
-                except KeyError as error:
-                    raise ExecutionError(
-                        "active lifecycle intent has no authorization job"
-                    ) from error
-                active.add(job_id)
+        for identity in transaction.measure_intent_records().records:
+            _path, intent = transaction.read_intent(identity.intent_id)
+            provenance = intent.document.get("provenance")
+            if (
+                intent.document["kind"] == "ArchiveRetirementIntent"
+                and type(provenance) is dict
+                and provenance.get("kind") == "emergency-administrator"
+            ):
+                continue
+            correlation_id = validate_uuid7(intent.document["correlationId"])
+            try:
+                job_id = jobs_by_correlation[correlation_id]
+            except KeyError as error:
+                raise ExecutionError("active lifecycle intent has no authorization job") from error
+            active.add(job_id)
         return active
 
 
