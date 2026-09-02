@@ -459,6 +459,34 @@ def test_startup_reconciliation_requeues_a_terminal_job_with_active_intent(
     assert handoff.enqueued == [issued.job_id]
 
 
+def test_startup_reconciliation_skips_emergency_retirement_intent(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    with StateRepository(root, expected_owner=os.geteuid()) as repository:
+        pending = _issue(repository)
+        intent = _fixture("archive-retirement-intent.json")
+        intent["correlationId"] = "0198d17f-6f4a-7000-8000-000000000009"
+        intent["provenance"] = {
+            "kind": "emergency-administrator",
+            "reason": "reconcile separately through root recovery",
+        }
+        repository.create_immutable(
+            StateRecordPath.archive_retirement_intent(intent["intentId"]),
+            intent,
+        )
+
+    handoff = _CaptureHandoff()
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        outcome = StartupReconciler(repository, intake, handoff).reconcile()
+
+    assert outcome.enqueued_jobs == (pending.job_id,)
+    assert handoff.enqueued == [pending.job_id]
+
+
 def test_startup_reconciliation_batches_backlog_under_the_aggregate_limit(
     tmp_path: Path,
 ) -> None:
