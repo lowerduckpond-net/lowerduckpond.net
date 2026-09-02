@@ -6,7 +6,7 @@ from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol, cast
+from typing import Final, Protocol, cast
 
 from lowerduckpond_static_contracts import (
     ContractKind,
@@ -44,6 +44,8 @@ from lowerduckpond_static_host_agent.state_inventory import (
     StateInventoryProjection,
     StateInventoryReservation,
 )
+
+_CREATE_TENANT_DIRECTORY_COUNT: Final = 3
 
 
 class CreateCommitError(RuntimeError):
@@ -87,6 +89,8 @@ class CreateCommitTransaction(Protocol):
         manifest: dict[str, object],
         observed_state: dict[str, object],
     ) -> None: ...
+
+    def measure_create_tenant_namespace_growth(self, tenant_id: object) -> int: ...
 
     def inspect_audit(self) -> AuditState: ...
 
@@ -363,6 +367,9 @@ def _admit_missing_state(
     job_transition = job.document["phase"] == "claimed"
     inventory = transaction.measure_inventory()
     tenant_missing = documents.tenant_id not in inventory.tenant_ids
+    directory_inodes = transaction.measure_create_tenant_namespace_growth(documents.tenant_id)
+    if tenant_missing != (directory_inodes == _CREATE_TENANT_DIRECTORY_COUNT):
+        raise CreateCommitError("create tenant inventory and namespace shape disagree")
     allocations = {
         path: transaction.allocation_upper_bound(len(canonical_json_bytes(document)))
         for path, document in missing
@@ -386,7 +393,6 @@ def _admit_missing_state(
             authorization_allocated_bytes=result_allocation,
         )
     )
-    directory_inodes = 3 if tenant_missing else 0
     entry_count = len(missing) + directory_inodes + int(audit_missing) + int(job_transition)
     admit_release_capacity(
         ReleaseCapacityUsage(()),

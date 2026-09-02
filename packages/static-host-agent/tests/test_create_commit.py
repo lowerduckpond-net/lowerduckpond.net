@@ -6,6 +6,7 @@ from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
 
+import lowerduckpond_static_host_agent.create_commit as create_commit_module
 import pytest
 from lowerduckpond_static_contracts import (
     canonical_json_bytes,
@@ -13,6 +14,8 @@ from lowerduckpond_static_contracts import (
 )
 from lowerduckpond_static_host_agent import (
     AuditState,
+    CapacityProjection,
+    CapacityReservation,
     CreateCommitBoundary,
     CreateCommitError,
     CreateTransitionPlan,
@@ -28,6 +31,7 @@ from lowerduckpond_static_host_agent import (
 _FIXTURE_ROOT = Path(__file__).parents[3] / "tests/static-publication/fixtures/accepted"
 _SOURCE_GENERATION = "0198d17f-6f4a-7000-8000-000000000004"
 _CANDIDATE_GENERATION = "0198d17f-6f4a-7000-8000-000000000006"
+_PARTIAL_REPLAY_RESERVED_INODES = 6
 
 
 class _Entropy:
@@ -392,5 +396,43 @@ def test_create_commit_rejects_a_wrong_audit_predecessor_before_state_mutation(
 
         with pytest.raises(FileNotFoundError):
             repository.read(StateRecordPath.tenant_desired(plan.tenant_id))
+    finally:
+        repository.close()
+
+
+def test_create_commit_reserves_missing_child_directories_during_replay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _state_root(tmp_path)
+    repository, job, plan = _prepared_create(root)
+    tenant_root = root / "tenants" / plan.tenant_id
+    _mkdir(tenant_root)
+    _mkdir(tenant_root / "deployments")
+    reservations: list[CapacityReservation] = []
+
+    def capture_reservation(
+        _usage: object,
+        reservation: CapacityReservation,
+        _filesystem: object,
+        *,
+        limits: object,
+    ) -> CapacityProjection:
+        del limits
+        reservations.append(reservation)
+        return CapacityProjection(0, 0, 1, 1, 0, 0)
+
+    monkeypatch.setattr(
+        create_commit_module,
+        "admit_release_capacity",
+        capture_reservation,
+    )
+    try:
+        with repository.publication_transaction() as transaction:
+            finalize_create_transition(transaction, job, plan)
+
+        assert len(reservations) == 1
+        assert reservations[0].unique_inodes == _PARTIAL_REPLAY_RESERVED_INODES
+        assert (tenant_root / "archives").is_dir()
     finally:
         repository.close()
