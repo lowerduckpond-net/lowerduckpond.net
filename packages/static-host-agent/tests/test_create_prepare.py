@@ -392,6 +392,32 @@ def test_create_activation_selects_reloads_and_commits_terminal_state(
         repository.close()
 
 
+def test_create_activation_preserves_preparation_capacity_limits(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root)
+    runtime = _Runtime()
+    limits = HostCapacityLimits(maximum_unique_inodes=1)
+    try:
+        prepared = _prepare(repository, runtime, job, limits=limits)
+
+        assert prepared.capacity_limits == limits
+        with pytest.raises(CapacityRejectedError, match="inode ceiling"):
+            activate_create_transition(
+                repository,
+                cast(CaddyRuntime, runtime),
+                _Gate(),
+                prepared,
+                reloader=runtime.reload,
+                restorer=runtime.restore,
+                verifier=runtime.verify,
+            )
+
+        assert len(repository.measure_intent_records().records) == 1
+        assert repository.measure_inventory().tenant_ids == ()
+    finally:
+        repository.close()
+
+
 def test_create_activation_replays_selected_candidate_before_reload(
     tmp_path: Path,
 ) -> None:

@@ -57,6 +57,7 @@ class PreparedCreateTransition:
     job: StoredContract
     plan: CreateTransitionPlan
     candidate_manifest: CaddyGenerationManifest
+    capacity_limits: HostCapacityLimits
 
 
 class CreatePreparationTransaction(Protocol):
@@ -150,7 +151,7 @@ def prepare_create_transition(  # noqa: PLR0913 - authority sources stay explici
                 candidate_manifest,
                 error,
             )
-        return PreparedCreateTransition(job, plan, candidate_manifest)
+        return PreparedCreateTransition(job, plan, candidate_manifest, capacity_limits)
 
 
 def _require_current_create_authority(

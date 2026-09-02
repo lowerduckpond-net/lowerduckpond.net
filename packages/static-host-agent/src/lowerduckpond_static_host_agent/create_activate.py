@@ -75,6 +75,7 @@ def activate_create_transition(  # noqa: PLR0913 - recovery mechanisms stay inje
                 transaction,
                 current_job,
                 plan,
+                capacity_limits=prepared.capacity_limits,
                 failure_hook=commit_failure_hook,
             )
         _require_exact_intent(transaction, plan.intent_id, plan.intent)
@@ -104,6 +105,7 @@ def activate_create_transition(  # noqa: PLR0913 - recovery mechanisms stay inje
                 transaction,
                 current_job,
                 plan,
+                capacity_limits=prepared.capacity_limits,
                 failure_hook=commit_failure_hook,
             )
 
