@@ -12,7 +12,7 @@ from typing import TypedDict, cast
 
 import lowerduckpond_static_host_agent.caddy_runtime as caddy_runtime_module
 import pytest
-from lowerduckpond_static_contracts import canonical_json_bytes
+from lowerduckpond_static_contracts import canonical_json_bytes, manifest_digest
 from lowerduckpond_static_host_agent import (
     CADDY_ACTIVE_REFERENCE_MODE,
     CADDY_ACTIVE_REFERENCE_NAME,
@@ -29,13 +29,19 @@ from lowerduckpond_static_host_agent import (
     LockMode,
     LockName,
     LockOrderError,
+    TenantRouteInput,
     build_platform_only_caddy_routes,
+    build_tenant_caddy_routes,
+    caddy_route_state_digest,
     prepare_active_caddy_execution,
 )
 
 GENERATION_A = "0198d17f-6f4a-7000-8000-000000000001"
 GENERATION_B = "0198d17f-6f4a-7000-8000-000000000002"
 _ORIGIN_PULL_CA_DER = b"review-only-origin-pull-ca"
+_TENANT_ID = "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100"
+_DEPLOYMENT_ID = "0191e2ca-49f2-7608-8cf3-f80ab2cab151"
+_TENANT_GENERATION = "0198d17f-6f4a-7000-8000-000000000008"
 
 
 def _accept_candidate(_generation: object, _environment: object) -> None:
@@ -47,6 +53,66 @@ def _configuration() -> dict[str, object]:
         origin_pull_ca_der=(_ORIGIN_PULL_CA_DER,),
         origin_pull_required=True,
     ).configuration
+
+
+def _tenant_routes(
+    generation_id: str = _TENANT_GENERATION,
+) -> tuple[dict[str, object], dict[str, object]]:
+    manifest: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "Site",
+        "metadata": {
+            "id": _TENANT_ID,
+            "slug": "duck-repair",
+            "canonicalOrigin": ("t-0191e2c48f7a7c3b8d1e5f62047a2100.lowerduckpond.com"),
+        },
+        "spec": {
+            "runtime": "static",
+            "desiredState": "active",
+            "desiredDeployment": {
+                "id": _DEPLOYMENT_ID,
+                "archiveSha256": "0" * 64,
+            },
+            "quotas": {"storageMiB": 100, "entries": 5000},
+        },
+    }
+    observed: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "TenantObservedState",
+        "tenantId": _TENANT_ID,
+        "desiredManifestDigest": manifest_digest(manifest).to_dict(),
+        "observedState": "active",
+        "activeDeploymentId": _DEPLOYMENT_ID,
+        "runtimeGenerationId": GENERATION_A,
+        "reconciledAt": "2026-09-02T13:00:00Z",
+    }
+    deployment: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "DeploymentRecord",
+        "id": _DEPLOYMENT_ID,
+        "tenantId": _TENANT_ID,
+        "archiveSha256": "0" * 64,
+        "releaseTreeDigest": {
+            "format": "lowerduckpond-release-tree-v1",
+            "algorithm": "sha256",
+            "value": "1" * 64,
+        },
+        "createdAt": "2026-09-02T12:00:00Z",
+        "correlationId": "0198d17f-6f4a-7000-8000-000000000001",
+    }
+    generated = build_tenant_caddy_routes(
+        platform_namespace={
+            "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+            "kind": "PlatformNamespace",
+            "tenantOriginSuffix": "lowerduckpond.com",
+            "initializedAt": "2026-09-02T11:00:00Z",
+        },
+        tenants=(TenantRouteInput(manifest, observed, deployment),),
+        runtime_generation_id=generation_id,
+        origin_pull_ca_der=(_ORIGIN_PULL_CA_DER,),
+        origin_pull_required=True,
+    )
+    return generated.configuration, generated.route_metadata
 
 
 @dataclass(frozen=True)
@@ -912,6 +978,91 @@ def test_selection_and_launch_reject_configuration_that_disagrees_with_route_sta
         pytest.raises(CaddyRuntimeError, match="route state disagree"),
     ):
         prepare_active_caddy_execution(runtime)
+
+
+def test_selection_and_launch_independently_rederive_tenant_capable_routes(
+    runtime_fixture: RuntimeFixture,
+) -> None:
+    configuration, route_metadata = _tenant_routes()
+    with CaddyGenerationStore.open(
+        runtime_fixture.root / "generations",
+        expected_owner=runtime_fixture.owner,
+        expected_group=runtime_fixture.group,
+    ) as store:
+        store.publish(
+            _TENANT_GENERATION,
+            CaddyGenerationPayload(
+                binary=CaddyBinarySource(
+                    runtime_fixture.binary,
+                    owner=runtime_fixture.owner,
+                    group=runtime_fixture.group,
+                ),
+                environment=b"CLOUDFLARE_API_TOKEN=token-a\nXDG_CONFIG_HOME=/etc/caddy\n",
+                configuration=configuration,
+                route_metadata=route_metadata,
+            ),
+        )
+
+    with runtime_fixture.open() as runtime, runtime.locked():
+        runtime.select_active(_TENANT_GENERATION)
+        selected = runtime.open_active_verified()
+        try:
+            assert selected.generation_id == _TENANT_GENERATION
+        finally:
+            selected.generation.close()
+
+    with runtime_fixture.open() as runtime, prepare_active_caddy_execution(runtime) as prepared:
+        descriptor = prepared.duplicate_configuration_descriptor()
+        try:
+            assert os.read(descriptor, os.fstat(descriptor).st_size) == canonical_json_bytes(
+                configuration
+            )
+        finally:
+            os.close(descriptor)
+
+
+@pytest.mark.parametrize("mismatch", ["generation", "route-set"])
+def test_selection_rejects_self_consistent_but_false_tenant_route_metadata(
+    runtime_fixture: RuntimeFixture,
+    mismatch: str,
+) -> None:
+    configuration, route_metadata = _tenant_routes()
+    route_state = route_metadata["routeState"]
+    assert type(route_state) is dict
+    if mismatch == "generation":
+        route_state["runtimeGenerationId"] = GENERATION_B
+    else:
+        tenant_states = route_state["tenantStates"]
+        assert type(tenant_states) is list
+        tenant_state = tenant_states[0]
+        assert type(tenant_state) is dict
+        tenant_state["routeSet"] = "absent"
+    route_metadata["routeStateDigest"] = caddy_route_state_digest(route_state).to_dict()
+
+    with CaddyGenerationStore.open(
+        runtime_fixture.root / "generations",
+        expected_owner=runtime_fixture.owner,
+        expected_group=runtime_fixture.group,
+    ) as store:
+        store.publish(
+            _TENANT_GENERATION,
+            CaddyGenerationPayload(
+                binary=CaddyBinarySource(
+                    runtime_fixture.binary,
+                    owner=runtime_fixture.owner,
+                    group=runtime_fixture.group,
+                ),
+                environment=b"CLOUDFLARE_API_TOKEN=token-a\nXDG_CONFIG_HOME=/etc/caddy\n",
+                configuration=configuration,
+                route_metadata=route_metadata,
+            ),
+        )
+
+    with runtime_fixture.open() as runtime, runtime.locked():
+        runtime.select_active(GENERATION_A)
+        with pytest.raises(CaddyRuntimeError, match="route"):
+            runtime.select_active(_TENANT_GENERATION)
+        assert runtime.read_active() == GENERATION_A
 
 
 @pytest.mark.parametrize("mismatch", ["tcp-admin", "additional-app"])

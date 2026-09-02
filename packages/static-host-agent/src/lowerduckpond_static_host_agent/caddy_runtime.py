@@ -23,11 +23,10 @@ from enum import StrEnum
 from functools import partial
 from pathlib import Path
 from types import TracebackType
-from typing import Final, Self
+from typing import Final, Self, cast
 
 from lowerduckpond_static_contracts import (
     ContractError,
-    canonical_json_bytes,
     decode_json_object,
     validate_uuid7,
 )
@@ -46,7 +45,12 @@ from lowerduckpond_static_host_agent.caddy_generation import (
     PinnedCaddyGeneration,
 )
 from lowerduckpond_static_host_agent.caddy_routes import (
+    CaddyRouteError,
+    PlatformOnlyCaddyRoutes,
+    TenantCaddyRoutes,
+    TenantRouteInput,
     build_platform_only_caddy_routes,
+    build_tenant_caddy_routes,
 )
 from lowerduckpond_static_host_agent.locks import LockManager, LockMode, LockName
 
@@ -378,7 +382,7 @@ class CaddyRuntime:
             try:
                 if self._expected_binary_sha256 is not None:
                     _validate_trusted_binary(generation, self._expected_binary_sha256)
-                _validate_platform_only_route_binding(generation)
+                _validate_route_binding(generation)
             except BaseException:
                 generation.close()
                 raise
@@ -402,7 +406,7 @@ class CaddyRuntime:
             with store.open_verified(canonical_id) as generation:
                 if self._expected_binary_sha256 is not None:
                     _validate_trusted_binary(generation, self._expected_binary_sha256)
-                _validate_platform_only_route_binding(generation)
+                _validate_route_binding(generation)
                 environment = _read_generation_environment(generation)
                 self._candidate_validator(generation, environment)
         finally:
@@ -854,7 +858,7 @@ def _parse_environment(data: bytes) -> dict[str, str]:
     return result
 
 
-def _validate_platform_only_route_binding(generation: PinnedCaddyGeneration) -> None:
+def _validate_route_binding(generation: PinnedCaddyGeneration) -> None:
     configuration_fd = generation.duplicate_payload_descriptor(CADDY_CONFIGURATION_NAME)
     route_metadata_fd: int | None = None
     try:
@@ -863,10 +867,13 @@ def _validate_platform_only_route_binding(generation: PinnedCaddyGeneration) -> 
             os.pread(configuration_fd, MAX_CADDY_CONFIGURATION_BYTES + 1, 0),
             maximum_bytes=MAX_CADDY_CONFIGURATION_BYTES,
         )
-        route_metadata = os.pread(
-            route_metadata_fd,
-            MAX_CADDY_ROUTE_METADATA_BYTES + 1,
-            0,
+        route_metadata = decode_json_object(
+            os.pread(
+                route_metadata_fd,
+                MAX_CADDY_ROUTE_METADATA_BYTES + 1,
+                0,
+            ),
+            maximum_bytes=MAX_CADDY_ROUTE_METADATA_BYTES,
         )
     finally:
         if route_metadata_fd is not None:
@@ -874,15 +881,74 @@ def _validate_platform_only_route_binding(generation: PinnedCaddyGeneration) -> 
         os.close(configuration_fd)
 
     origin_pull_ca_der, origin_pull_required = _configured_origin_pull_policy(configuration)
-    expected = build_platform_only_caddy_routes(
-        origin_pull_ca_der=origin_pull_ca_der,
-        origin_pull_required=origin_pull_required,
-    )
-    if configuration != expected.configuration or route_metadata != canonical_json_bytes(
-        expected.route_metadata,
-        maximum_bytes=MAX_CADDY_ROUTE_METADATA_BYTES,
-    ):
+    route_state = route_metadata.get("routeState")
+    if type(route_state) is not dict:
+        raise CaddyRuntimeError("selected Caddy route state is malformed")
+    generation_class = route_state.get("generationClass")
+    try:
+        expected: PlatformOnlyCaddyRoutes | TenantCaddyRoutes
+        if generation_class == "platform-only":
+            expected = build_platform_only_caddy_routes(
+                origin_pull_ca_der=origin_pull_ca_der,
+                origin_pull_required=origin_pull_required,
+            )
+        elif generation_class == "tenant-capable":
+            namespace, tenants = _tenant_route_inputs(
+                route_state,
+                generation_id=generation.manifest.generation_id,
+            )
+            expected = build_tenant_caddy_routes(
+                platform_namespace=namespace,
+                tenants=tenants,
+                runtime_generation_id=generation.manifest.generation_id,
+                origin_pull_ca_der=origin_pull_ca_der,
+                origin_pull_required=origin_pull_required,
+            )
+        else:
+            raise CaddyRuntimeError("selected Caddy generation class is not recognized")
+    except (ContractError, CaddyRouteError, KeyError, TypeError, ValueError) as error:
+        raise CaddyRuntimeError("selected Caddy route state is malformed") from error
+    if configuration != expected.configuration or route_metadata != expected.route_metadata:
         raise CaddyRuntimeError("selected Caddy configuration and declared route state disagree")
+
+
+def _tenant_route_inputs(
+    route_state: dict[str, object],
+    *,
+    generation_id: str,
+) -> tuple[dict[str, object], tuple[TenantRouteInput, ...]]:
+    if route_state.get("runtimeGenerationId") != generation_id:
+        raise CaddyRuntimeError("selected Caddy route generation identity disagrees")
+    namespace = route_state.get("platformNamespace")
+    raw_tenants = route_state.get("tenantStates")
+    if type(namespace) is not dict or type(raw_tenants) is not list:
+        raise CaddyRuntimeError("selected Caddy tenant route inputs are malformed")
+    tenants: list[TenantRouteInput] = []
+    for raw_tenant in raw_tenants:
+        if type(raw_tenant) is not dict or set(raw_tenant) != {
+            "activeDeployment",
+            "desiredManifest",
+            "observedState",
+            "routeSet",
+        }:
+            raise CaddyRuntimeError("selected Caddy tenant route inputs are malformed")
+        manifest = raw_tenant["desiredManifest"]
+        observed = raw_tenant["observedState"]
+        deployment = raw_tenant["activeDeployment"]
+        if (
+            type(manifest) is not dict
+            or type(observed) is not dict
+            or (deployment is not None and type(deployment) is not dict)
+        ):
+            raise CaddyRuntimeError("selected Caddy tenant route inputs are malformed")
+        tenants.append(
+            TenantRouteInput(
+                manifest=cast(dict[str, object], manifest),
+                observed_state=cast(dict[str, object], observed),
+                deployment=cast(dict[str, object] | None, deployment),
+            )
+        )
+    return cast(dict[str, object], namespace), tuple(tenants)
 
 
 def _configured_origin_pull_policy(
