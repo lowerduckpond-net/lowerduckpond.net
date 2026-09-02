@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 import re
 import stat
+from collections import deque
+from collections.abc import Iterable, Iterator
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Final
@@ -260,7 +262,7 @@ def _read_segments(
     expected_directory_mode: int,
     expected_record_mode: int,
     limits: AuditLimits,
-) -> tuple[_Segment, ...]:
+) -> list[_Segment]:
     directory.remove_abandoned_publication_temporaries(
         expected_owner=expected_owner,
         expected_mode=expected_record_mode,
@@ -331,29 +333,60 @@ def _read_segments(
         )
         if final_names != names or _metadata_generation(after) != _metadata_generation(final):
             raise AuditError("audit directory changed while its segments were read")
-        return tuple(segments)
+        return segments
     finally:
         os.close(descriptor)
 
 
 def _validate_chain(
-    segments: tuple[_Segment, ...],
+    segments: list[_Segment],
     *,
     limits: AuditLimits,
 ) -> AuditState:
-    return _validate_chain_snapshot(segments, limits=limits).state
+    return _validate_chain_records(
+        segments,
+        segment_count=len(segments),
+        limits=limits,
+        entries=None,
+    )
 
 
 def _validate_chain_snapshot(
-    segments: tuple[_Segment, ...],
+    segments: list[_Segment],
     *,
     limits: AuditLimits,
 ) -> AuditSnapshot:
+    segment_count = len(segments)
+    entries: list[dict[str, object]] = []
+    state = _validate_chain_records(
+        _consume_segments(segments),
+        segment_count=segment_count,
+        limits=limits,
+        entries=entries,
+    )
+    return AuditSnapshot(state=state, entries=tuple(entries))
+
+
+def _consume_segments(segments: list[_Segment]) -> Iterator[_Segment]:
+    """Release raw segment data as the explicit decoded snapshot grows."""
+
+    pending = deque(segments)
+    segments.clear()
+    while pending:
+        yield pending.popleft()
+
+
+def _validate_chain_records(
+    segments: Iterable[_Segment],
+    *,
+    segment_count: int,
+    limits: AuditLimits,
+    entries: list[dict[str, object]] | None,
+) -> AuditState:
     sequence = 0
     terminal: dict[str, str] | None = None
     allocated = 0
     previous_segment_bytes: int | None = None
-    entries: list[dict[str, object]] = []
     for segment in segments:
         if not segment.data or not segment.data.endswith(b"\n"):
             raise AuditError("audit segment is not nonempty canonical JSON lines")
@@ -381,20 +414,18 @@ def _validate_chain_snapshot(
                 raise AuditError("audit entry sequence is not contiguous")
             if document["previousEntryDigest"] != terminal:
                 raise AuditError("audit entry predecessor breaks the chain")
-            entries.append(document)
+            if entries is not None:
+                entries.append(document)
             terminal = audit_entry_digest(document).to_dict()
             sequence += 1
         previous_segment_bytes = len(segment.data)
     if allocated > limits.maximum_administrator_bytes:
         raise AuditCapacityError("audit allocation exceeds its absolute ceiling")
-    return AuditSnapshot(
-        state=AuditState(
-            entry_count=sequence,
-            segment_count=len(segments),
-            allocated_bytes=allocated,
-            terminal_digest=terminal,
-        ),
-        entries=tuple(entries),
+    return AuditState(
+        entry_count=sequence,
+        segment_count=segment_count,
+        allocated_bytes=allocated,
+        terminal_digest=terminal,
     )
 
 
