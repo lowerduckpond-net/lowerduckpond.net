@@ -60,7 +60,12 @@ def verify_running_caddy(
         raise CaddyAdminError("running Caddy binary disagrees with its generation")
     response = (configuration_source or _read_caddy_admin_configuration)()
     configuration = decode_json_object(response, maximum_bytes=MAX_CADDY_CONFIGURATION_BYTES)
-    configuration_digest = hashlib.sha256(canonical_json_bytes(configuration)).hexdigest()
+    configuration_digest = hashlib.sha256(
+        canonical_json_bytes(
+            configuration,
+            maximum_bytes=MAX_CADDY_CONFIGURATION_BYTES,
+        )
+    ).hexdigest()
     if not secrets.compare_digest(
         configuration_digest,
         expected[CADDY_CONFIGURATION_NAME],
@@ -86,7 +91,13 @@ def load_caddy_configuration(
         configuration,
         maximum_bytes=MAX_CADDY_CONFIGURATION_BYTES,
     )
-    if canonical_json_bytes(decoded) != configuration:
+    if (
+        canonical_json_bytes(
+            decoded,
+            maximum_bytes=MAX_CADDY_CONFIGURATION_BYTES,
+        )
+        != configuration
+    ):
         raise CaddyAdminError("Caddy configuration is not canonical")
     request = (
         b"POST /load HTTP/1.0\r\n"

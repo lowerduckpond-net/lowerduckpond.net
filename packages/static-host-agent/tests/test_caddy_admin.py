@@ -42,6 +42,18 @@ def _payload(tmp_path: Path, *, binary: bytes = b"caddy\n") -> CaddyGenerationPa
     )
 
 
+def _large_payload(tmp_path: Path) -> CaddyGenerationPayload:
+    payload = _payload(tmp_path)
+    configuration = dict(payload.configuration)
+    configuration["review-only-padding"] = "x" * (17 * 1024)
+    return CaddyGenerationPayload(
+        payload.binary,
+        payload.environment,
+        configuration,
+        payload.route_metadata,
+    )
+
+
 def _store(tmp_path: Path) -> CaddyGenerationStore:
     root = tmp_path / "generations"
     root.mkdir(mode=CADDY_GENERATION_ROOT_MODE)
@@ -146,6 +158,34 @@ def test_load_sends_exact_pinned_configuration(tmp_path: Path) -> None:
             ).configuration
         )
     )
+
+
+def test_load_and_verifier_accept_a_valid_configuration_over_16_kib(
+    tmp_path: Path,
+) -> None:
+    requests: list[bytes] = []
+
+    def accept(request: bytes) -> bytes:
+        requests.append(request)
+        return b"HTTP/1.0 200 OK\r\n\r\n"
+
+    with _store(tmp_path) as store:
+        store.publish(_GENERATION_A, _large_payload(tmp_path))
+        with store.open_verified(_GENERATION_A) as generation:
+            expected = _configuration(generation)
+            assert len(expected) > 16 * 1024
+            load_caddy_configuration(
+                generation,
+                requester=accept,
+            )
+            verify_running_caddy(
+                generation,
+                main_pid_source=lambda: str(_CADDY_PID),
+                executable_digest_source=lambda _pid: hashlib.sha256(b"caddy\n").hexdigest(),
+                configuration_source=lambda: expected,
+            )
+
+    assert requests[0].endswith(expected)
 
 
 def test_load_rejects_admin_failure(tmp_path: Path) -> None:
