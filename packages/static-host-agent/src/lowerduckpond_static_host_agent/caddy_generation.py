@@ -1024,7 +1024,7 @@ def _copy_payload_binary(
         )
     source_fd = payload.source.duplicate_payload_descriptor(CADDY_BINARY_NAME)
     try:
-        return _copy_binary_descriptor(
+        copied = _copy_binary_descriptor(
             directory_fd,
             source_fd,
             source_owner=owner,
@@ -1034,6 +1034,8 @@ def _copy_payload_binary(
             group=group,
             label="derived",
         )
+        _require_derived_source_file(payload.source, copied)
+        return copied
     finally:
         os.close(source_fd)
 
@@ -1114,6 +1116,15 @@ def _payload_environment(
         if _snapshot(before) != _snapshot(after) or len(data) != before.st_size:
             raise CaddyGenerationError("derived Caddy environment changed while reading")
         _validate_environment(data)
+        _require_derived_source_file(
+            payload.source,
+            CaddyGenerationFile(
+                CADDY_ENVIRONMENT_NAME,
+                CADDY_PRIVATE_FILE_MODE,
+                len(data),
+                hashlib.sha256(data).hexdigest(),
+            ),
+        )
         return data
     finally:
         os.close(descriptor)
@@ -1137,6 +1148,18 @@ def _validate_derived_payload_metadata(
         or metadata.st_size <= 0
     ):
         raise CaddyGenerationError("derived Caddy host-input metadata is unsafe")
+
+
+def _require_derived_source_file(
+    source: PinnedCaddyGeneration,
+    actual: CaddyGenerationFile,
+) -> None:
+    expected = next(
+        (item for item in source.manifest.files if item.name == actual.name),
+        None,
+    )
+    if expected != actual:
+        raise CaddyGenerationError("derived Caddy host input disagrees with source manifest")
 
 
 def _write_payload(  # noqa: PLR0913

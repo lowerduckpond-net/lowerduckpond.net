@@ -278,6 +278,49 @@ def test_derived_generation_rejects_unsafe_pinned_host_input_metadata(
     assert list(root.glob(".ldp-generation-*")) == []
 
 
+@pytest.mark.parametrize(
+    ("name", "replacement"),
+    [
+        (CADDY_BINARY_NAME, b"altered-caddy-bytes\n"),
+        (
+            CADDY_ENVIRONMENT_NAME,
+            b"CADDY_ADMIN=127.0.0.1:2019\nCADDY_DEBUG=maybe\n",
+        ),
+    ],
+)
+def test_derived_generation_rejects_same_size_host_input_mutation(
+    tmp_path: Path,
+    name: str,
+    replacement: bytes,
+) -> None:
+    root = _make_root(tmp_path)
+
+    with _open_store(root) as store:
+        store.publish(_GENERATION_ID, _payload(tmp_path))
+        source = store.open_verified(_GENERATION_ID)
+        try:
+            target = root / _GENERATION_ID / name
+            assert len(replacement) == target.stat().st_size
+            target.chmod(0o750 if name == CADDY_BINARY_NAME else 0o640)
+            target.write_bytes(replacement)
+            target.chmod(
+                caddy_generation_module.CADDY_BINARY_MODE
+                if name == CADDY_BINARY_NAME
+                else caddy_generation_module.CADDY_PRIVATE_FILE_MODE
+            )
+            derived = CaddyDerivedGenerationPayload(
+                source,
+                {"apps": {"http": {"servers": {}}}},
+                _route_metadata(publication_enabled=True),
+            )
+            with pytest.raises(CaddyGenerationError, match="source manifest"):
+                store.publish(_SECOND_GENERATION_ID, derived)
+        finally:
+            source.close()
+
+    assert list(root.glob(".ldp-generation-*")) == []
+
+
 def test_derived_generation_uses_the_pinned_source_after_namespace_rename(
     tmp_path: Path,
 ) -> None:
