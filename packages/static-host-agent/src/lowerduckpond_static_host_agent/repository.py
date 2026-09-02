@@ -973,11 +973,17 @@ class _StateTransaction:
         canonical_id = validate_uuid7(tenant_id)
         intent = self._require_create_intent(canonical_id).document
         recovery = intent["lifecycleRecovery"]
+        candidate_manifest_digest = manifest_digest(manifest).to_dict()
         if type(recovery) is not dict:  # pragma: no cover - schema validation proves this
             raise StateRecordError("create intent lifecycle recovery is malformed")
+        spec = manifest["spec"]
+        if type(spec) is not dict:  # pragma: no cover - schema validation proves this
+            raise StateRecordError("create candidate manifest spec is malformed")
+        if spec["desiredState"] != "undeployed" or "desiredDeployment" in spec:
+            raise StateRecordError("create candidate manifest is not undeployed")
         if (
             intent["sourceManifestDigest"] is not None
-            or intent["candidateManifestDigest"] != manifest_digest(manifest).to_dict()
+            or intent["candidateManifestDigest"] != candidate_manifest_digest
             or recovery["sourceObservedState"] is not None
             or recovery["sourceRouteSet"] != "absent"
             or recovery["candidateObservedState"] != observed_state

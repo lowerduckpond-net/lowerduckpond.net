@@ -18,6 +18,7 @@ from lowerduckpond_static_contracts import (
     ContractError,
     ContractKind,
     canonical_json_bytes,
+    manifest_digest,
     platform_state_digest,
 )
 from lowerduckpond_static_host_agent import (
@@ -726,6 +727,35 @@ def test_create_tenant_state_rejects_a_candidate_outside_its_intent(tmp_path: Pa
         root / "tenants" / plan.tenant_id / "archives",
         root / "tenants" / plan.tenant_id / "deployments",
     ]
+
+
+def test_create_tenant_state_requires_an_undeployed_manifest(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    plan = _create_plan()
+    active = _fixture("site.json")
+    active["metadata"] = deepcopy(plan.manifest["metadata"])
+    active_digest = manifest_digest(active).to_dict()
+    observed = deepcopy(plan.observed_state)
+    observed["desiredManifestDigest"] = active_digest
+    intent = deepcopy(plan.intent)
+    intent["candidateManifestDigest"] = active_digest
+    recovery = intent["lifecycleRecovery"]
+    assert type(recovery) is dict
+    recovery["candidateObservedState"] = observed
+
+    with _repository(root) as repository, repository.publication_transaction() as transaction:
+        transaction.create_immutable(
+            StateRecordPath.transaction_intent(plan.intent_id),
+            intent,
+        )
+        with pytest.raises(StateRecordError, match="undeployed"):
+            transaction.ensure_create_tenant_state(
+                plan.tenant_id,
+                active,
+                observed,
+            )
+
+    assert not (root / "tenants" / plan.tenant_id).exists()
 
 
 def test_create_tenant_state_rejects_mismatched_partial_state(tmp_path: Path) -> None:
