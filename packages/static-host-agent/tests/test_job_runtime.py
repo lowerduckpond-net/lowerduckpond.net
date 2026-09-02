@@ -186,13 +186,19 @@ def _issue(repository: StateRepository) -> IssuedAuthorization:
 
 def _create_intent(correlation_id: object) -> dict[str, object]:
     intent = _fixture("transaction-intent.json")
+    result = _fixture("operation-result.json")
+    candidate_manifest = result["manifest"]
+    assert type(candidate_manifest) is dict
+    candidate_digest = manifest_digest(candidate_manifest).to_dict()
     intent["correlationId"] = correlation_id
     intent["operation"] = "create"
     intent["sourceManifestDigest"] = None
+    intent["candidateManifest"] = candidate_manifest
+    intent["candidateManifestDigest"] = candidate_digest
     candidate = _fixture("tenant-observed-state.json")
     candidate.update(
         {
-            "desiredManifestDigest": intent["candidateManifestDigest"],
+            "desiredManifestDigest": candidate_digest,
             "observedState": "undeployed",
             "activeDeploymentId": None,
             "runtimeGenerationId": None,
@@ -660,7 +666,7 @@ def test_startup_reconciliation_retains_artifact_for_active_intent_replay(
         candidate_deployment = candidate_spec["desiredDeployment"]
         assert type(candidate_deployment) is dict
         candidate_deployment["id"] = "0198d17f-6f4a-7000-8000-000000000005"
-        candidate_deployment["archiveSha256"] = "d" * 64
+        candidate_deployment["archiveSha256"] = artifact.sha256
         candidate_digest = manifest_digest(candidate_manifest).to_dict()
         source_observed = _fixture("tenant-observed-state.json")
         source_observed["desiredManifestDigest"] = source_digest
@@ -675,6 +681,7 @@ def test_startup_reconciliation_retains_artifact_for_active_intent_replay(
                 "correlationId": correlation_id,
                 "operation": "deploy",
                 "sourceManifestDigest": source_digest,
+                "candidateManifest": candidate_manifest,
                 "candidateManifestDigest": candidate_digest,
                 "lifecycleRecovery": {
                     "sourceObservedState": source_observed,

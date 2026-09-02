@@ -66,6 +66,7 @@ def _matching_delete_transaction() -> dict[str, object]:
     document = _load("transaction-intent.json")
     observed = _load("tenant-observed-state.json")
     document["operation"] = "delete"
+    document["candidateManifest"] = None
     document["candidateManifestDigest"] = None
     observed["desiredManifestDigest"] = document["sourceManifestDigest"]
     observed["observedState"] = "archived"

@@ -100,6 +100,7 @@ def test_create_plan_is_one_complete_absent_to_undeployed_transaction() -> None:
     assert observed["runtimeGenerationId"] is None
     assert observed["desiredManifestDigest"] == manifest_digest(manifest).to_dict()
     assert intent["sourceManifestDigest"] is None
+    assert intent["candidateManifest"] == manifest
     assert intent["candidateManifestDigest"] == manifest_digest(manifest).to_dict()
     recovery = intent["lifecycleRecovery"]
     assert type(recovery) is dict

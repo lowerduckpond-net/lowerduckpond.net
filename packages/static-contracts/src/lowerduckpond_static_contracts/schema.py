@@ -270,34 +270,64 @@ def _manifest_digest(document: dict[str, object]) -> dict[str, str]:
     ).to_dict()
 
 
+def _validated_transaction_candidate(
+    document: dict[str, object],
+    operation: str,
+) -> dict[str, object] | None:
+    candidate = document["candidateManifest"]
+    if operation == "delete":
+        return None
+    candidate_manifest = cast(dict[str, object], candidate)
+    _validate_site(candidate_manifest)
+    candidate_metadata = cast(dict[str, object], candidate_manifest["metadata"])
+    if candidate_metadata["id"] != document["tenantId"]:
+        raise ContractError(
+            ErrorCode.SCHEMA_INVALID,
+            "transaction candidate tenant identity drifted",
+        )
+    if _manifest_digest(candidate_manifest) != document["candidateManifestDigest"]:
+        raise ContractError(
+            ErrorCode.SCHEMA_INVALID,
+            "transaction candidate manifest binding is invalid",
+        )
+    return candidate_manifest
+
+
 def _validate_transaction_intent(document: dict[str, object]) -> None:
     _validate_restart_fence(document)
-    operation = document["operation"]
+    operation = cast(str, document["operation"])
+    candidate = _validated_transaction_candidate(document, operation)
     if operation != "archive":
-        _validate_nonarchive_transaction_intent(document, cast(str, operation))
+        _validate_nonarchive_transaction_intent(document, operation)
         return
+    candidate = cast(dict[str, object], candidate)
     recovery = cast(dict[str, object], document["archiveRecovery"])
     source = cast(dict[str, object], recovery["sourceManifest"])
-    candidate = cast(dict[str, object], recovery["candidateManifest"])
+    archive_candidate = cast(dict[str, object], recovery["candidateManifest"])
     observed = cast(dict[str, object], recovery["sourceObservedState"])
     archive = cast(dict[str, object], recovery["candidateArchiveRecord"])
     _validate_site(source)
-    _validate_site(candidate)
+    _validate_site(archive_candidate)
 
     tenant_id = document["tenantId"]
     source_metadata = cast(dict[str, object], source["metadata"])
-    candidate_metadata = cast(dict[str, object], candidate["metadata"])
+    candidate_metadata = cast(dict[str, object], archive_candidate["metadata"])
     if source_metadata["id"] != tenant_id or candidate_metadata != source_metadata:
         raise ContractError(ErrorCode.SCHEMA_INVALID, "archive intent tenant identity drifted")
     if document["sourceManifestDigest"] != _manifest_digest(source):
         raise ContractError(ErrorCode.SCHEMA_INVALID, "archive source manifest binding is invalid")
-    if document["candidateManifestDigest"] != _manifest_digest(candidate):
+    if candidate != archive_candidate:
+        raise ContractError(
+            ErrorCode.SCHEMA_INVALID,
+            "archive candidate manifest copies drifted",
+        )
+    if document["candidateManifestDigest"] != _manifest_digest(archive_candidate):
         raise ContractError(
             ErrorCode.SCHEMA_INVALID, "archive candidate manifest binding is invalid"
         )
 
     source_spec = cast(dict[str, object], source["spec"])
-    candidate_spec = cast(dict[str, object], candidate["spec"])
+    candidate_spec = cast(dict[str, object], archive_candidate["spec"])
     source_state = source_spec["desiredState"]
     expected_candidate_spec = deepcopy(source_spec)
     expected_candidate_spec["desiredState"] = "archived"

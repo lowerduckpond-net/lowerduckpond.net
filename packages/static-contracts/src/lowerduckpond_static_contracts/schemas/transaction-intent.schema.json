@@ -233,6 +233,32 @@
     {
       "else": {
         "properties": {
+          "candidateManifest": {
+            "$ref": "site.schema.json"
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "delete"
+          }
+        },
+        "required": [
+          "operation"
+        ]
+      },
+      "then": {
+        "properties": {
+          "candidateManifest": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "else": {
+        "properties": {
           "archiveRecovery": {
             "type": "null"
           }
@@ -294,6 +320,16 @@
       "oneOf": [
         {
           "$ref": "#/$defs/archiveRecovery"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "candidateManifest": {
+      "oneOf": [
+        {
+          "$ref": "site.schema.json"
         },
         {
           "type": "null"
@@ -381,6 +417,7 @@
     "archiveRecovery",
     "lifecycleRecovery",
     "sourceManifestDigest",
+    "candidateManifest",
     "candidateManifestDigest",
     "phase",
     "restartFence",

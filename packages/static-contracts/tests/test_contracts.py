@@ -1130,10 +1130,49 @@ def test_non_delete_intents_require_a_candidate_manifest_digest(operation: Opera
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
 
+@pytest.mark.parametrize(
+    "operation",
+    [operation for operation in Operation if operation is not Operation.DELETE],
+)
+def test_non_delete_intents_require_an_exact_candidate_manifest(operation: Operation) -> None:
+    intent = _load_object(FIXTURE_ROOT / "accepted/transaction-intent.json")
+    intent["operation"] = operation.value
+    if operation is Operation.CREATE:
+        intent["sourceManifestDigest"] = None
+    del intent["candidateManifest"]
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(intent)
+
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+def test_transaction_candidate_manifest_binds_its_digest_and_tenant() -> None:
+    intent = _load_object(FIXTURE_ROOT / "accepted/transaction-intent.json")
+    candidate = intent["candidateManifest"]
+    assert type(candidate) is dict
+    metadata = candidate["metadata"]
+    assert type(metadata) is dict
+    metadata["slug"] = "digest-drift"
+
+    with pytest.raises(ContractError, match="candidate manifest binding") as captured:
+        validate_contract(intent)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+    metadata["id"] = "0198d17f-6f4a-7000-8000-000000000099"
+    metadata["canonicalOrigin"] = "t-0198d17f6f4a70008000000000000099.lowerduckpond.com"
+    intent["candidateManifestDigest"] = manifest_digest(candidate).to_dict()
+    with pytest.raises(ContractError, match="tenant identity") as captured:
+        validate_contract(intent)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
 def test_delete_intent_requires_an_absent_candidate_manifest() -> None:
     intent = _load_object(FIXTURE_ROOT / "accepted/transaction-intent.json")
+    candidate_manifest = intent["candidateManifest"]
     candidate_digest = intent["candidateManifestDigest"]
     intent["operation"] = "delete"
+    intent["candidateManifest"] = None
     intent["candidateManifestDigest"] = None
     source = _load_object(FIXTURE_ROOT / "accepted/tenant-observed-state.json")
     source.update(
@@ -1155,6 +1194,7 @@ def test_delete_intent_requires_an_absent_candidate_manifest() -> None:
 
     assert validate_contract(intent) is ContractKind.TRANSACTION_INTENT
 
+    intent["candidateManifest"] = candidate_manifest
     intent["candidateManifestDigest"] = candidate_digest
     with pytest.raises(ContractError) as captured:
         validate_contract(intent)
@@ -1168,15 +1208,31 @@ def _route_only_transaction_intent(
     candidate_state: str,
 ) -> dict[str, object]:
     intent = _load_object(FIXTURE_ROOT / "accepted/transaction-intent.json")
-    if operation != "reconcile":
-        candidate_digest = deepcopy(intent["candidateManifestDigest"])
-        assert type(candidate_digest) is dict
-        candidate_digest["value"] = "b" * 64
-        intent["candidateManifestDigest"] = candidate_digest
+    source_manifest = _load_object(FIXTURE_ROOT / "accepted/site.json")
+    source_spec = source_manifest["spec"]
+    assert type(source_spec) is dict
+    source_spec["desiredState"] = source_state
+    candidate_manifest = deepcopy(source_manifest)
+    candidate_spec = candidate_manifest["spec"]
+    assert type(candidate_spec) is dict
+    candidate_spec["desiredState"] = candidate_state
+    if operation == "rename":
+        metadata = candidate_manifest["metadata"]
+        assert type(metadata) is dict
+        metadata["slug"] = "renamed-duck"
+    if operation in {"deploy", "rollback"}:
+        deployment = candidate_spec["desiredDeployment"]
+        assert type(deployment) is dict
+        deployment["id"] = "0198d17f-6f4a-7000-8000-000000000009"
+    source_digest = manifest_digest(source_manifest).to_dict()
+    candidate_digest = manifest_digest(candidate_manifest).to_dict()
+    intent["sourceManifestDigest"] = source_digest
+    intent["candidateManifest"] = candidate_manifest
+    intent["candidateManifestDigest"] = candidate_digest
     source = _load_object(FIXTURE_ROOT / "accepted/tenant-observed-state.json")
     source.update(
         {
-            "desiredManifestDigest": intent["sourceManifestDigest"],
+            "desiredManifestDigest": source_digest,
             "observedState": source_state,
             "runtimeGenerationId": (
                 "0198d17f-6f4a-7000-8000-000000000004" if source_state == "active" else None
@@ -1186,7 +1242,7 @@ def _route_only_transaction_intent(
     candidate = deepcopy(source)
     candidate.update(
         {
-            "desiredManifestDigest": intent["candidateManifestDigest"],
+            "desiredManifestDigest": candidate_digest,
             "observedState": candidate_state,
             "runtimeGenerationId": (
                 "0198d17f-6f4a-7000-8000-000000000006" if candidate_state == "active" else None
@@ -1325,19 +1381,22 @@ def test_satisfied_route_transition_preserves_the_manifest_generation(
     state: str,
 ) -> None:
     intent = _route_only_transaction_intent(operation, state, state)
-    candidate_digest = deepcopy(intent["candidateManifestDigest"])
-    source_digest = deepcopy(intent["sourceManifestDigest"])
-    intent["candidateManifestDigest"] = source_digest
+
+    assert validate_contract(intent) is ContractKind.TRANSACTION_INTENT
+
+    drifted_manifest = deepcopy(intent["candidateManifest"])
+    assert type(drifted_manifest) is dict
+    metadata = drifted_manifest["metadata"]
+    assert type(metadata) is dict
+    metadata["slug"] = "drifted-duck"
+    drifted_digest = manifest_digest(drifted_manifest).to_dict()
+    intent["candidateManifest"] = drifted_manifest
+    intent["candidateManifestDigest"] = drifted_digest
     recovery = intent["lifecycleRecovery"]
     assert type(recovery) is dict
     candidate = recovery["candidateObservedState"]
     assert type(candidate) is dict
-    candidate["desiredManifestDigest"] = source_digest
-
-    assert validate_contract(intent) is ContractKind.TRANSACTION_INTENT
-
-    intent["candidateManifestDigest"] = candidate_digest
-    candidate["desiredManifestDigest"] = candidate_digest
+    candidate["desiredManifestDigest"] = drifted_digest
     with pytest.raises(ContractError) as captured:
         validate_contract(intent)
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
@@ -1362,9 +1421,15 @@ def test_rename_intent_requires_a_distinct_manifest_generation() -> None:
 
 def test_runtime_mutation_intent_requires_exact_recovery_generations() -> None:
     intent = _load_object(FIXTURE_ROOT / "accepted/transaction-intent.json")
-    candidate_digest = deepcopy(intent["candidateManifestDigest"])
-    assert type(candidate_digest) is dict
-    candidate_digest["value"] = "b" * 64
+    candidate_manifest = deepcopy(intent["candidateManifest"])
+    assert type(candidate_manifest) is dict
+    candidate_spec = candidate_manifest["spec"]
+    assert type(candidate_spec) is dict
+    candidate_deployment = candidate_spec["desiredDeployment"]
+    assert type(candidate_deployment) is dict
+    candidate_deployment["id"] = "0198d17f-6f4a-7000-8000-000000000009"
+    candidate_digest = manifest_digest(candidate_manifest).to_dict()
+    intent["candidateManifest"] = candidate_manifest
     intent["candidateManifestDigest"] = candidate_digest
     source = _load_object(FIXTURE_ROOT / "accepted/tenant-observed-state.json")
     source["desiredManifestDigest"] = intent["sourceManifestDigest"]
@@ -1409,6 +1474,7 @@ def _archive_transaction_intent() -> dict[str, object]:
         {
             "operation": "archive",
             "sourceManifestDigest": source_digest,
+            "candidateManifest": candidate,
             "candidateManifestDigest": candidate_digest,
             "archiveRecovery": {
                 "sourceManifest": source,
@@ -1434,6 +1500,24 @@ def test_archive_transaction_intent_binds_both_recovery_outcomes() -> None:
     assert type(recovery) is dict
     recovery["sourceRouteSet"] = "absent"
     with pytest.raises(ContractError) as captured:
+        validate_contract(intent)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+def test_archive_transaction_intent_rejects_drift_between_candidate_copies() -> None:
+    intent = _archive_transaction_intent()
+    recovery = intent["archiveRecovery"]
+    assert type(recovery) is dict
+    candidate = deepcopy(recovery["candidateManifest"])
+    assert type(candidate) is dict
+    recovery["candidateManifest"] = candidate
+    spec = candidate["spec"]
+    assert type(spec) is dict
+    quotas = spec["quotas"]
+    assert type(quotas) is dict
+    quotas["entries"] = 4999
+
+    with pytest.raises(ContractError, match="candidate manifest copies") as captured:
         validate_contract(intent)
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
 

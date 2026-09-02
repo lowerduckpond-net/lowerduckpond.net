@@ -798,6 +798,7 @@ def test_create_tenant_state_requires_an_undeployed_manifest(tmp_path: Path) -> 
     observed = deepcopy(plan.observed_state)
     observed["desiredManifestDigest"] = active_digest
     intent = deepcopy(plan.intent)
+    intent["candidateManifest"] = active
     intent["candidateManifestDigest"] = active_digest
     recovery = intent["lifecycleRecovery"]
     assert type(recovery) is dict

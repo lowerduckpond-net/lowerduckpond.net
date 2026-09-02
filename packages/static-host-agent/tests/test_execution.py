@@ -368,13 +368,19 @@ def _issue_create(repository: StateRepository) -> IssuedAuthorization:
 
 def _create_intent(correlation_id: object) -> dict[str, object]:
     intent = _fixture("transaction-intent.json")
+    result = _fixture("operation-result.json")
+    candidate_manifest = result["manifest"]
+    assert type(candidate_manifest) is dict
+    candidate_digest = manifest_digest(candidate_manifest).to_dict()
     intent["correlationId"] = correlation_id
     intent["operation"] = "create"
     intent["sourceManifestDigest"] = None
+    intent["candidateManifest"] = candidate_manifest
+    intent["candidateManifestDigest"] = candidate_digest
     candidate = _fixture("tenant-observed-state.json")
     candidate.update(
         {
-            "desiredManifestDigest": intent["candidateManifestDigest"],
+            "desiredManifestDigest": candidate_digest,
             "observedState": "undeployed",
             "activeDeploymentId": None,
             "runtimeGenerationId": None,
@@ -488,6 +494,7 @@ def test_executor_preserves_result_bearing_recovery_without_its_handler(
         result["correlationId"] = request["correlationId"]
         intent = _create_intent(request["correlationId"])
         candidate_digest = manifest_digest(manifest).to_dict()
+        intent["candidateManifest"] = manifest
         intent["candidateManifestDigest"] = candidate_digest
         recovery = intent["lifecycleRecovery"]
         assert type(recovery) is dict
@@ -649,13 +656,6 @@ def test_executor_binds_a_successful_create_result_to_its_active_intent(
             result["canonicalOrigin"] = other_origin
             metadata["id"] = other_tenant
             metadata["canonicalOrigin"] = other_origin
-        candidate_digest = manifest_digest(manifest).to_dict()
-        intent["candidateManifestDigest"] = candidate_digest
-        recovery = intent["lifecycleRecovery"]
-        assert type(recovery) is dict
-        candidate_observed = recovery["candidateObservedState"]
-        assert type(candidate_observed) is dict
-        candidate_observed["desiredManifestDigest"] = candidate_digest
         if drift == "candidate":
             metadata["slug"] = "different-duck"
         repository.create_immutable(
@@ -713,6 +713,7 @@ def test_executor_binds_a_successful_create_candidate_to_its_request(
             quotas["storageMiB"] = 99
         candidate_digest = manifest_digest(manifest).to_dict()
         intent = _create_intent(request["correlationId"])
+        intent["candidateManifest"] = manifest
         intent["candidateManifestDigest"] = candidate_digest
         recovery = intent["lifecycleRecovery"]
         assert type(recovery) is dict
@@ -795,6 +796,7 @@ def test_executor_binds_a_successful_rename_result_to_its_active_intent(
             "correlationId": request["correlationId"],
             "operation": "rename",
             "sourceManifestDigest": source_digest,
+            "candidateManifest": candidate_manifest,
             "candidateManifestDigest": candidate_digest,
             "lifecycleRecovery": {
                 "sourceObservedState": source_observed,
@@ -838,6 +840,95 @@ def test_executor_binds_a_successful_rename_result_to_its_active_intent(
                 intake,
                 handlers={"rename": handler},
             ).execute(job["jobId"])
+
+    assert handler.phases == []
+
+
+def test_executor_rejects_an_unauthorized_claimed_candidate_before_dispatch(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    source_manifest = _fixture("site.json")
+    source_digest = manifest_digest(source_manifest).to_dict()
+    candidate_manifest = json.loads(json.dumps(source_manifest))
+    candidate_metadata = candidate_manifest["metadata"]
+    assert type(candidate_metadata) is dict
+    candidate_metadata["slug"] = "different-duck"
+    candidate_digest = manifest_digest(candidate_manifest).to_dict()
+
+    job = _fixture("authorization-job.json")
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "rename",
+        "correlationId": "0198d17f-6f4a-7000-8000-000000000001",
+        "tenantId": _TENANT_ID,
+        "slug": "renamed-duck",
+    }
+    job["request"] = request
+    job["requestDigest"] = request_digest(request).to_dict()
+    job["phase"] = "claimed"
+    expected = job["expectedSource"]
+    assert type(expected) is dict
+    expected.update(
+        {
+            "expectsTenantAbsent": False,
+            "lifecycle": "active",
+            "manifestDigest": source_digest,
+            "deploymentDigest": deployment_record_digest(
+                _fixture("deployment-record.json")
+            ).to_dict(),
+            "archiveRecordDigest": None,
+        }
+    )
+    correlation = json.loads(json.dumps(job))
+    correlation["phase"] = "pending"
+
+    source_observed = _fixture("tenant-observed-state.json")
+    source_observed["desiredManifestDigest"] = source_digest
+    candidate_observed = json.loads(json.dumps(source_observed))
+    candidate_observed["desiredManifestDigest"] = candidate_digest
+    candidate_observed["runtimeGenerationId"] = "0198d17f-6f4a-7000-8000-000000000006"
+    intent = _fixture("transaction-intent.json")
+    intent.update(
+        {
+            "tenantId": _TENANT_ID,
+            "correlationId": request["correlationId"],
+            "operation": "rename",
+            "sourceManifestDigest": source_digest,
+            "candidateManifest": candidate_manifest,
+            "candidateManifestDigest": candidate_digest,
+            "lifecycleRecovery": {
+                "sourceObservedState": source_observed,
+                "sourceRuntimeGenerationId": "0198d17f-6f4a-7000-8000-000000000004",
+                "sourceRouteSet": "both",
+                "candidateObservedState": candidate_observed,
+                "candidateRuntimeGenerationId": "0198d17f-6f4a-7000-8000-000000000006",
+                "candidateRouteSet": "both",
+            },
+        }
+    )
+    _write(root, StateRecordPath.authorization_job(job["jobId"]), job)
+    _write(
+        root,
+        StateRecordPath.authorization_correlation(request["correlationId"]),
+        correlation,
+    )
+    _write(root, StateRecordPath.transaction_intent(intent["intentId"]), intent)
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        handler = _CompletingCreateHandler(repository)
+        with pytest.raises(ExecutionError, match="request target"):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={"rename": handler},
+            ).execute(job["jobId"])
+        with pytest.raises(FileNotFoundError):
+            repository.read(StateRecordPath.authorization_result(job["jobId"]))
 
     assert handler.phases == []
 
@@ -905,6 +996,7 @@ def test_executor_binds_a_deployment_candidate_to_its_request(
             "correlationId": request["correlationId"],
             "operation": operation,
             "sourceManifestDigest": source_digest,
+            "candidateManifest": candidate_manifest,
             "candidateManifestDigest": candidate_digest,
             "lifecycleRecovery": {
                 "sourceObservedState": source_observed,
@@ -1489,8 +1581,6 @@ def test_executor_retains_artifact_when_handler_leaves_its_intent(tmp_path: Path
     candidate_deployment = candidate_spec["desiredDeployment"]
     assert type(candidate_deployment) is dict
     candidate_deployment["id"] = "0198d17f-6f4a-7000-8000-000000000005"
-    candidate_deployment["archiveSha256"] = "d" * 64
-    candidate_digest = manifest_digest(candidate_manifest).to_dict()
     _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
     _write(root, StateRecordPath.tenant_desired(_TENANT_ID), manifest)
     _write(
@@ -1500,6 +1590,8 @@ def test_executor_retains_artifact_when_handler_leaves_its_intent(tmp_path: Path
     )
     payload = b"intent-bound deployment"
     artifact = VerifiedArtifact(len(payload), hashlib.sha256(payload).hexdigest())
+    candidate_deployment["archiveSha256"] = artifact.sha256
+    candidate_digest = manifest_digest(candidate_manifest).to_dict()
     correlation_id = "0198d17f-6f4a-7000-8000-000000000003"
     request: dict[str, object] = {
         "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
@@ -1544,6 +1636,7 @@ def test_executor_retains_artifact_when_handler_leaves_its_intent(tmp_path: Path
                 "correlationId": correlation_id,
                 "operation": "deploy",
                 "sourceManifestDigest": source_digest,
+                "candidateManifest": candidate_manifest,
                 "candidateManifestDigest": candidate_digest,
                 "lifecycleRecovery": {
                     "sourceObservedState": source_observed,
@@ -1585,8 +1678,6 @@ def test_executor_reacquires_the_bound_artifact_for_lifecycle_replay(
     candidate_deployment = candidate_spec["desiredDeployment"]
     assert type(candidate_deployment) is dict
     candidate_deployment["id"] = "0198d17f-6f4a-7000-8000-000000000005"
-    candidate_deployment["archiveSha256"] = "d" * 64
-    candidate_manifest_digest = manifest_digest(candidate_manifest).to_dict()
     _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
     _write(root, StateRecordPath.tenant_desired(_TENANT_ID), manifest)
     _write(
@@ -1596,6 +1687,8 @@ def test_executor_reacquires_the_bound_artifact_for_lifecycle_replay(
     )
     payload = b"recoverable replay deployment"
     artifact = VerifiedArtifact(len(payload), hashlib.sha256(payload).hexdigest())
+    candidate_deployment["archiveSha256"] = artifact.sha256
+    candidate_manifest_digest = manifest_digest(candidate_manifest).to_dict()
     correlation_id = "0198d17f-6f4a-7000-8000-000000000003"
     request: dict[str, object] = {
         "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
@@ -1649,6 +1742,7 @@ def test_executor_reacquires_the_bound_artifact_for_lifecycle_replay(
                 "correlationId": correlation_id,
                 "operation": "deploy",
                 "sourceManifestDigest": manifest_digest_value,
+                "candidateManifest": candidate_manifest,
                 "candidateManifestDigest": candidate_manifest_digest,
                 "lifecycleRecovery": {
                     "sourceObservedState": source_observed,
@@ -1764,6 +1858,7 @@ def test_executor_returns_a_completed_replay_after_losing_the_artifact_race(
                 "correlationId": correlation_id,
                 "operation": "deploy",
                 "sourceManifestDigest": source_digest,
+                "candidateManifest": candidate_manifest,
                 "candidateManifestDigest": candidate_digest,
                 "lifecycleRecovery": {
                     "sourceObservedState": source_observed,
@@ -1986,6 +2081,7 @@ def test_executor_recovers_a_claimed_lifecycle_job_without_its_artifact(
                 "correlationId": correlation_id,
                 "operation": "deploy",
                 "sourceManifestDigest": source_digest,
+                "candidateManifest": candidate_manifest,
                 "candidateManifestDigest": candidate_digest,
                 "lifecycleRecovery": {
                     "sourceObservedState": source_observed,

@@ -122,6 +122,7 @@ def plan_create_transition(  # noqa: PLR0913 - each authority input is explicit
             "candidateRouteSet": "absent",
         },
         "sourceManifestDigest": None,
+        "candidateManifest": created.manifest,
         "candidateManifestDigest": desired_digest,
         "phase": "prepared",
         "restartFence": None,
