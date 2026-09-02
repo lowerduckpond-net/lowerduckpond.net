@@ -13,10 +13,10 @@ OpenTofu, Ansible, documentation, and security checks.
 Use `mise` for executable versions, `just` for documented commands, and
 pre-commit for fast local checks. Use Dependabot for controlled updates to
 supported dependency ecosystems. Retain Renovate only for the custom Caddy
-release reference in `platform/versions.yml`, which is outside Dependabot's
-manifest support. Use one `just check` command as the local acceptance gate.
-Pre-commit may apply safe hygiene fixes and then fail so the contributor can
-review and rerun it.
+release reference in `platform/versions.yml` and the tool pins in `mise.toml`,
+which are outside Dependabot's manifest support. Use one `just check` command
+as the local acceptance gate. Pre-commit may apply safe hygiene fixes and then
+fail so the contributor can review and rerun it.
 
 ## Consequences
 
