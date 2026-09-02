@@ -43,6 +43,7 @@ from lowerduckpond_static_host_agent.caddy_generation import (
     caddy_route_state_digest,
 )
 from lowerduckpond_static_host_agent.caddy_routes import (
+    ALIAS_REDIRECT_BODY,
     CLOUDFLARE_PROXY_CIDRS,
     GENERIC_NOT_FOUND_BODY,
     NO_STORE_NO_TRANSFORM,
@@ -56,9 +57,14 @@ from lowerduckpond_static_host_agent.caddy_routes import (
     PLATFORM_WILDCARD,
     TENANT_APEX,
     TENANT_DOMAIN,
+    TENANT_RELEASE_ROOT,
     TENANT_WILDCARD,
+    CaddyRouteError,
     PlatformOnlyCaddyRoutes,
+    TenantCaddyRoutes,
+    TenantRouteInput,
     build_platform_only_caddy_routes,
+    build_tenant_caddy_routes,
 )
 from lowerduckpond_static_host_agent.caddy_runtime import (
     CADDY_ACTIVE_REFERENCE_MODE,
@@ -242,6 +248,7 @@ from lowerduckpond_static_host_agent.zip_structure import (
 )
 
 __all__ = [
+    "ALIAS_REDIRECT_BODY",
     "ARCHIVE_SANDBOX_STATIC_PROPERTIES",
     "CADDY_ACTIVE_REFERENCE_MODE",
     "CADDY_ACTIVE_REFERENCE_NAME",
@@ -279,6 +286,7 @@ __all__ = [
     "PORTABLE_ENVELOPE",
     "TENANT_APEX",
     "TENANT_DOMAIN",
+    "TENANT_RELEASE_ROOT",
     "TENANT_WILDCARD",
     "AdmittedArtifact",
     "ArchiveSandboxError",
@@ -302,6 +310,7 @@ __all__ = [
     "CaddyGenerationManifest",
     "CaddyGenerationPayload",
     "CaddyGenerationStore",
+    "CaddyRouteError",
     "CaddyRuntime",
     "CaddyRuntimeError",
     "CaddySelectionBoundary",
@@ -400,6 +409,8 @@ __all__ = [
     "StreamTimeoutError",
     "SubprocessRequestDecoder",
     "SystemdJobHandoff",
+    "TenantCaddyRoutes",
+    "TenantRouteInput",
     "VerifiedArtifact",
     "ZipEntryType",
     "ZipExtraction",
@@ -415,6 +426,7 @@ __all__ = [
     "build_expected_source",
     "build_platform_only_caddy_routes",
     "build_portable_bundle",
+    "build_tenant_caddy_routes",
     "caddy_route_state_digest",
     "decoder_main",
     "digest_path",
