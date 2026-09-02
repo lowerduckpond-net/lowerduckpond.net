@@ -153,6 +153,11 @@ from lowerduckpond_static_host_agent.job_runtime import (
     StartupReconciler,
     SystemdJobHandoff,
 )
+from lowerduckpond_static_host_agent.lifecycle_plan import (
+    CreateTransitionPlan,
+    LifecyclePlanError,
+    plan_create_transition,
+)
 from lowerduckpond_static_host_agent.locks import (
     LockManager,
     LockMode,
@@ -318,6 +323,7 @@ __all__ = [
     "CorrelationRateLimitError",
     "CorrelationReconciliation",
     "CorrelationResolution",
+    "CreateTransitionPlan",
     "DeadlineReader",
     "DeadlineWriter",
     "DiscoveredIntent",
@@ -342,6 +348,7 @@ __all__ = [
     "IssuanceError",
     "IssuedAuthorization",
     "JobHandoff",
+    "LifecyclePlanError",
     "LocalRequestDecoder",
     "LockManager",
     "LockMode",
@@ -419,6 +426,7 @@ __all__ = [
     "measure_filesystem_capacity",
     "measure_release_tree",
     "measure_release_tree_snapshot",
+    "plan_create_transition",
     "platform_generation_matches",
     "platform_generation_state",
     "prepare_active_caddy_execution",
