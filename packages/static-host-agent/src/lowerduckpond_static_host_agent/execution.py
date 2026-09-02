@@ -737,9 +737,11 @@ def _validate_result_intent_binding(
     if type(manifest) is not dict:
         raise ExecutionError("successful lifecycle result manifest is malformed")
     candidate_digest = manifest_digest(manifest).to_dict()
+    intent_candidate = intent["candidateManifest"]
     if (
         result["tenantId"] != intent["tenantId"]
         or candidate_digest != intent["candidateManifestDigest"]
+        or manifest != intent_candidate
     ):
         raise ExecutionError("successful result disagrees with its lifecycle intent")
     _validate_candidate_request_binding(request, manifest)
@@ -782,7 +784,7 @@ def _validate_candidate_request_binding(
         deployment = cast(dict[str, object], spec["desiredDeployment"])
         matches = deployment["id"] == request["deploymentId"]
     if not matches:
-        raise ExecutionError("successful lifecycle result disagrees with its request target")
+        raise ExecutionError("lifecycle candidate disagrees with its request target")
 
 
 def _validate_archive_result_intent_binding(
@@ -839,6 +841,11 @@ def _transaction_intent_binds_job(
         or (request["operation"] != "create" and intent["tenantId"] != request["tenantId"])
     ):
         raise ExecutionError("lifecycle intent authority does not match its job")
+    candidate = intent["candidateManifest"]
+    if candidate is not None:
+        if type(candidate) is not dict:  # pragma: no cover - validated reads prove this
+            raise ExecutionError("lifecycle candidate authority is not an object")
+        _validate_candidate_request_binding(request, candidate)
     return True
 
 

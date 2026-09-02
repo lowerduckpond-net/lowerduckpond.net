@@ -470,6 +470,7 @@
     "archiveRecovery",
     "lifecycleRecovery",
     "sourceManifestDigest",
+    "candidateManifest",
     "candidateManifestDigest",
     "phase",
     "restartFence",
