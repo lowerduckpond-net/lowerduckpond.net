@@ -30,9 +30,12 @@ from lowerduckpond_static_host_agent import (
     StateRecordPath,
     StateRepository,
     StoredContract,
+    TenantRouteInput,
     TenantRouteOverlay,
+    TenantRouteSnapshot,
     activate_create_transition,
     prepare_create_transition,
+    recover_create_transition,
 )
 
 _FIXTURE_ROOT = Path(__file__).parents[3] / "tests/static-publication/fixtures/accepted"
@@ -93,6 +96,7 @@ class _Runtime:
         self.active = _SOURCE_GENERATION
         self.running = _SOURCE_GENERATION
         self.reference_temporaries = 0
+        self.extra_tenants: tuple[TenantRouteInput, ...] = ()
 
     @contextmanager
     def using_held_publication_lock(self, _repository: StateRepository) -> Iterator[None]:
@@ -114,6 +118,19 @@ class _Runtime:
     def read_active(self) -> str:
         self.events.append("read-active")
         return self.active
+
+    def read_generation_route_snapshot(self, generation_id: str) -> TenantRouteSnapshot:
+        self.events.append(f"snapshot:{generation_id}")
+        if (
+            self.candidate is None
+            or generation_id != self.candidate.generation_id
+            or self.overlay is None
+        ):
+            raise FileNotFoundError(generation_id)
+        return TenantRouteSnapshot(
+            _fixture("platform-namespace.json"),
+            (self.overlay.tenant, *self.extra_tenants),
+        )
 
     def select_active(self, generation_id: str) -> None:
         self.events.append(f"selected:{generation_id}")
@@ -239,6 +256,19 @@ def _prepared_repository(root: Path) -> tuple[StateRepository, dict[str, object]
     _write(root, StateRecordPath.platform_namespace(), namespace)
     _write(root, StateRecordPath.authorization_job(job["jobId"]), job)
     return StateRepository(root, expected_owner=os.geteuid()), job
+
+
+def _write_correlation(root: Path, job: dict[str, object]) -> None:
+    correlation = json.loads(json.dumps(job))
+    assert type(correlation) is dict
+    request = correlation["request"]
+    assert type(request) is dict
+    correlation["phase"] = "pending"
+    _write(
+        root,
+        StateRecordPath.authorization_correlation(request["correlationId"]),
+        correlation,
+    )
 
 
 def _prepare(
@@ -398,6 +428,139 @@ def test_create_activation_selects_reloads_and_commits_terminal_state(
         )
         assert repository.measure_intent_records().records == ()
         assert repository.measure_inventory().tenant_ids == (prepared.plan.tenant_id,)
+    finally:
+        repository.close()
+
+
+def test_create_recovery_reconstructs_and_activates_durable_preparation(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root)
+    _write_correlation(root, job)
+    runtime = _Runtime()
+    try:
+        prepared = _prepare(repository, runtime, job)
+        intent_id = prepared.plan.intent_id
+        runtime.events.clear()
+
+        result = recover_create_transition(
+            repository,
+            cast(CaddyRuntime, runtime),
+            _Gate(),
+            intent_id,
+            reloader=runtime.reload,
+            restorer=runtime.restore,
+            verifier=runtime.verify,
+        )
+
+        assert result == prepared.plan.result
+        assert runtime.active == runtime.running == prepared.candidate_manifest.generation_id
+        assert repository.measure_intent_records().records == ()
+        assert repository.measure_inventory().tenant_ids == (prepared.plan.tenant_id,)
+    finally:
+        repository.close()
+
+
+def test_create_recovery_replays_an_already_appended_audit_entry(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root)
+    _write_correlation(root, job)
+    runtime = _Runtime()
+    try:
+        prepared = _prepare(repository, runtime, job)
+
+        def interrupt(boundary: CreateCommitBoundary) -> None:
+            if boundary is CreateCommitBoundary.AUDIT_SYNC:
+                raise RuntimeError("interrupted after audit append")
+
+        with pytest.raises(RuntimeError, match="interrupted after audit append"):
+            activate_create_transition(
+                repository,
+                cast(CaddyRuntime, runtime),
+                _Gate(),
+                prepared,
+                reloader=runtime.reload,
+                restorer=runtime.restore,
+                verifier=runtime.verify,
+                commit_failure_hook=interrupt,
+            )
+
+        assert repository.inspect_audit().entry_count == 1
+        assert (
+            recover_create_transition(
+                repository,
+                cast(CaddyRuntime, runtime),
+                _Gate(),
+                prepared.plan.intent_id,
+                reloader=runtime.reload,
+                restorer=runtime.restore,
+                verifier=runtime.verify,
+            )
+            == prepared.plan.result
+        )
+        assert repository.inspect_audit().entry_count == 1
+    finally:
+        repository.close()
+
+
+def test_create_recovery_rejects_candidate_state_outside_the_intent(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root)
+    _write_correlation(root, job)
+    runtime = _Runtime()
+    try:
+        prepared = _prepare(repository, runtime, job)
+        assert runtime.overlay is not None
+        runtime.overlay.tenant.observed_state["observedState"] = "suspended"
+
+        with pytest.raises(RuntimeError, match="candidate tenant disagrees"):
+            recover_create_transition(
+                repository,
+                cast(CaddyRuntime, runtime),
+                _Gate(),
+                prepared.plan.intent_id,
+                reloader=runtime.reload,
+                restorer=runtime.restore,
+                verifier=runtime.verify,
+            )
+
+        assert runtime.active == runtime.running == _SOURCE_GENERATION
+        assert len(repository.measure_intent_records().records) == 1
+        assert repository.measure_inventory().tenant_ids == ()
+    finally:
+        repository.close()
+
+
+def test_create_recovery_rejects_an_unbound_candidate_route(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root)
+    _write_correlation(root, job)
+    runtime = _Runtime()
+    try:
+        prepared = _prepare(repository, runtime, job)
+        runtime.extra_tenants = (
+            TenantRouteInput(
+                {"metadata": {"id": "0191e2c4-8f7a-7c3b-8d1e-5f62047a2101"}},
+                {},
+                None,
+            ),
+        )
+
+        with pytest.raises(RuntimeError, match="route snapshot disagrees"):
+            recover_create_transition(
+                repository,
+                cast(CaddyRuntime, runtime),
+                _Gate(),
+                prepared.plan.intent_id,
+                reloader=runtime.reload,
+                restorer=runtime.restore,
+                verifier=runtime.verify,
+            )
+
+        assert runtime.active == runtime.running == _SOURCE_GENERATION
+        assert len(repository.measure_intent_records().records) == 1
+        assert repository.measure_inventory().tenant_ids == ()
     finally:
         repository.close()
 
