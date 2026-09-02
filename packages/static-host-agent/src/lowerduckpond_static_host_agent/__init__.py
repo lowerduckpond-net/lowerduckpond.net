@@ -264,6 +264,12 @@ from lowerduckpond_static_host_agent.request_decoder import (
     SubprocessRequestDecoder,
     decoder_main,
 )
+from lowerduckpond_static_host_agent.route_prepare import (
+    PreparedRouteTransition,
+    RouteAuthorityDriftError,
+    RoutePreparationError,
+    prepare_route_transition,
+)
 from lowerduckpond_static_host_agent.route_snapshot import (
     RouteOverlayMode,
     RouteSnapshotError,
@@ -448,6 +454,7 @@ __all__ = [
     "PortableBundleInspection",
     "PreparedCaddyExecution",
     "PreparedCreateTransition",
+    "PreparedRouteTransition",
     "PublicationDisabledError",
     "PublicationGate",
     "ReadDeadline",
@@ -460,7 +467,9 @@ __all__ = [
     "RequestDecodeError",
     "RequestDecoder",
     "ResultWaiter",
+    "RouteAuthorityDriftError",
     "RouteOverlayMode",
+    "RoutePreparationError",
     "RouteSnapshotError",
     "RouteTransitionPlan",
     "RuntimeBoundaryError",
@@ -531,6 +540,7 @@ __all__ = [
     "platform_generation_state",
     "prepare_active_caddy_execution",
     "prepare_create_transition",
+    "prepare_route_transition",
     "recover_create_transition",
     "reload_caddy_generation",
     "require_exact_file",
