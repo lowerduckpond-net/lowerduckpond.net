@@ -948,6 +948,10 @@ class _StateTransaction:
             tenant_root.close()
 
     def _require_create_intent(self, tenant_id: str) -> None:
+        self._repository.require_held(
+            LockName.PUBLICATION,
+            mode=LockMode.EXCLUSIVE,
+        )
         inventory = self.measure_intent_records()
         matching = 0
         for identity in inventory.records:

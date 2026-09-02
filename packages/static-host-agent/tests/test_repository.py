@@ -409,6 +409,31 @@ def test_tenant_namespace_requires_and_preserves_one_create_intent(
     )
 
 
+@pytest.mark.parametrize("operation", ["ensure", "remove"])
+def test_tenant_namespace_mutation_requires_the_publication_lock(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    root = _state_root(tmp_path)
+    tenant_id, intent = _create_intent()
+
+    with (
+        _repository(root) as repository,
+        repository.transaction(mode=LockMode.EXCLUSIVE) as transaction,
+    ):
+        transaction.create_immutable(
+            StateRecordPath.transaction_intent(intent["intentId"]),
+            intent,
+        )
+        with pytest.raises(LockOrderError, match=r"publication\.lock must already be held"):
+            if operation == "ensure":
+                transaction.ensure_create_tenant_namespace(tenant_id)
+            else:
+                transaction.remove_empty_create_tenant_namespace(tenant_id)
+
+    assert not (root / "tenants" / tenant_id).exists()
+
+
 def test_tenant_namespace_syncs_its_validated_intent_before_mutation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
