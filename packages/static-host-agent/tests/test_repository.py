@@ -702,6 +702,41 @@ def test_create_tenant_state_retry_completes_an_interrupted_pair(tmp_path: Path)
         )
 
 
+def test_create_tenant_state_freezes_candidates_before_running_hooks(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    plan = _create_plan()
+    manifest = deepcopy(plan.manifest)
+    observed = deepcopy(plan.observed_state)
+
+    with _repository(root) as repository, repository.publication_transaction() as transaction:
+        transaction.create_immutable(
+            StateRecordPath.transaction_intent(plan.intent_id),
+            plan.intent,
+        )
+
+        def mutate_candidates(boundary: CreateStateBoundary) -> None:
+            if boundary is CreateStateBoundary.DESIRED_STATE_SYNC:
+                metadata = manifest["metadata"]
+                assert type(metadata) is dict
+                metadata["slug"] = "mutated"
+                observed["reconciledAt"] = "2026-09-02T12:31:00Z"
+
+        transaction.ensure_create_tenant_state(
+            plan.tenant_id,
+            manifest,
+            observed,
+            failure_hook=mutate_candidates,
+        )
+        assert (
+            transaction.read(StateRecordPath.tenant_desired(plan.tenant_id)).document
+            == plan.manifest
+        )
+        assert (
+            transaction.read(StateRecordPath.tenant_observed(plan.tenant_id)).document
+            == plan.observed_state
+        )
+
+
 def test_create_tenant_state_rejects_a_candidate_outside_its_intent(tmp_path: Path) -> None:
     root = _state_root(tmp_path)
     plan = _create_plan()

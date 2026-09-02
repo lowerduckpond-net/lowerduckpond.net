@@ -972,11 +972,13 @@ class _StateTransaction:
         self._require_exclusive()
         canonical_id = validate_uuid7(tenant_id)
         intent = self._require_create_intent(canonical_id).document
+        candidate_manifest = deepcopy(manifest)
+        candidate_observed = deepcopy(observed_state)
         recovery = intent["lifecycleRecovery"]
-        candidate_manifest_digest = manifest_digest(manifest).to_dict()
+        candidate_manifest_digest = manifest_digest(candidate_manifest).to_dict()
         if type(recovery) is not dict:  # pragma: no cover - schema validation proves this
             raise StateRecordError("create intent lifecycle recovery is malformed")
-        spec = manifest["spec"]
+        spec = candidate_manifest["spec"]
         if type(spec) is not dict:  # pragma: no cover - schema validation proves this
             raise StateRecordError("create candidate manifest spec is malformed")
         if spec["desiredState"] != "undeployed" or "desiredDeployment" in spec:
@@ -986,7 +988,7 @@ class _StateTransaction:
             or intent["candidateManifestDigest"] != candidate_manifest_digest
             or recovery["sourceObservedState"] is not None
             or recovery["sourceRouteSet"] != "absent"
-            or recovery["candidateObservedState"] != observed_state
+            or recovery["candidateObservedState"] != candidate_observed
             or recovery["candidateRouteSet"] != "absent"
         ):
             raise StateRecordError("create state disagrees with its active intent")
@@ -995,12 +997,12 @@ class _StateTransaction:
         self._require_empty_create_namespace(canonical_id)
         self._ensure_immutable_exact(
             StateRecordPath.tenant_desired(canonical_id),
-            manifest,
+            candidate_manifest,
         )
         _notify_create_state(failure_hook, CreateStateBoundary.DESIRED_STATE_SYNC)
         self._ensure_immutable_exact(
             StateRecordPath.tenant_observed(canonical_id),
-            observed_state,
+            candidate_observed,
         )
         _notify_create_state(failure_hook, CreateStateBoundary.OBSERVED_STATE_SYNC)
 
