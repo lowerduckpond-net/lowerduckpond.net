@@ -127,7 +127,7 @@ class ResultWaiter:
         """Return an existing result or enqueue and await the exact accepted job."""
 
         result = self._read(issued.job_id)
-        if result is None:
+        if result is None or self._has_active_lifecycle_intent(issued):
             self._handoff.enqueue(issued.job_id)
         deadline = self._clock() + self._total_seconds
         while result is None:
@@ -137,6 +137,31 @@ class ResultWaiter:
             result = self._read(issued.job_id)
         _validate_result_for_job(issued.document, result)
         return result
+
+    def _has_active_lifecycle_intent(self, issued: IssuedAuthorization) -> bool:
+        correlation_id = _correlation_id(issued.document)
+        try:
+            with self._repository.transaction(
+                mode=LockMode.EXCLUSIVE,
+                blocking=False,
+            ) as transaction:
+                for identity in transaction.measure_intent_records().records:
+                    _path, intent = transaction.read_intent(identity.intent_id)
+                    provenance = intent.document.get("provenance")
+                    if (
+                        intent.document["kind"] == "ArchiveRetirementIntent"
+                        and type(provenance) is dict
+                        and provenance.get("kind") == "emergency-administrator"
+                    ):
+                        continue
+                    if intent.document["correlationId"] == correlation_id:
+                        return True
+                return False
+        except StateBusyError:
+            # A successful immutable result does not prove lifecycle cleanup is
+            # complete while the authority lock is contended. Queue the exact
+            # opaque job so the worker rechecks under its normal boundaries.
+            return True
 
     def _read(self, job_id: str) -> dict[str, object] | None:
         try:
