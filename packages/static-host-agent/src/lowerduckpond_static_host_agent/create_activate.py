@@ -231,8 +231,10 @@ def _reject_capacity_before_activation(  # noqa: PLR0913 - callbacks stay inject
     if active_id == source.manifest.generation_id:
         try:
             verifier(source)
-        except BaseException:
+        except Exception:
             _restore_source(runtime, source, restorer=restorer, error=error)
+        except BaseException as control_error:
+            _restore_source(runtime, source, restorer=restorer, error=control_error)
         raise error from None
     if active_id == candidate.manifest.generation_id:
         _restore_source(runtime, source, restorer=restorer, error=error)
