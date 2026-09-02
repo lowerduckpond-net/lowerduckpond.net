@@ -68,32 +68,31 @@ class _CompletingCreateHandler:
         self.phases.append(job.document["phase"])
         self.claims.append(claim)
         try:
-            return self._repository.read(
+            result = self._repository.read(
                 StateRecordPath.authorization_result(job_id),
                 blocking=blocking,
             ).document
         except FileNotFoundError:
-            pass
-        request = job.document["request"]
-        assert type(request) is dict
-        result = _fixture("operation-result.json")
-        provenance = result["provenance"]
-        assert type(provenance) is dict
-        provenance["jobId"] = job_id
-        result["correlationId"] = request["correlationId"]
-        if self._persist_result:
-            self._repository.create_immutable(
-                StateRecordPath.authorization_result(job_id),
-                result,
-                blocking=blocking,
-            )
+            request = job.document["request"]
+            assert type(request) is dict
+            result = _fixture("operation-result.json")
+            provenance = result["provenance"]
+            assert type(provenance) is dict
+            provenance["jobId"] = job_id
+            result["correlationId"] = request["correlationId"]
+            if self._persist_result:
+                self._repository.create_immutable(
+                    StateRecordPath.authorization_result(job_id),
+                    result,
+                    blocking=blocking,
+                )
         if self._commit_job:
             current = self._repository.read(
                 StateRecordPath.authorization_job(job_id),
                 blocking=blocking,
             )
             completed = current.document
-            completed["phase"] = "completed"
+            completed["phase"] = "completed" if result["status"] == "succeeded" else "failed"
             self._repository.compare_and_swap(
                 StateRecordPath.authorization_job(job_id),
                 current.revision,
@@ -550,7 +549,7 @@ def test_executor_uses_bound_intent_not_error_code_to_select_handler_replay(
         ).execute(issued.job_id)
 
     assert outcome.result == result
-    assert handler.phases == ["failed"]
+    assert handler.phases == ["claimed"]
 
 
 def test_executor_dispatches_a_claimed_job_without_rechecking_its_source(
