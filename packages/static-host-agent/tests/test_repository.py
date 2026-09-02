@@ -513,6 +513,38 @@ def test_empty_tenant_namespace_removal_retries_each_interrupted_boundary(
     assert not (root / "tenants" / tenant_id).exists()
 
 
+def test_empty_tenant_namespace_absent_retry_syncs_its_parent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _state_root(tmp_path)
+    tenant_id, intent = _create_intent()
+    tenant_root_inode = (root / "tenants").stat().st_ino
+    synced_inodes: list[int] = []
+    original_fsync = os.fsync
+
+    def record_fsync(descriptor: int) -> None:
+        synced_inodes.append(os.fstat(descriptor).st_ino)
+        original_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", record_fsync)
+    boundaries: list[TenantNamespaceBoundary] = []
+
+    with _repository(root) as repository, repository.publication_transaction() as transaction:
+        transaction.create_immutable(
+            StateRecordPath.transaction_intent(intent["intentId"]),
+            intent,
+        )
+        synced_inodes.clear()
+        transaction.remove_empty_create_tenant_namespace(
+            tenant_id,
+            failure_hook=boundaries.append,
+        )
+
+    assert tenant_root_inode in synced_inodes
+    assert boundaries == [TenantNamespaceBoundary.TENANT_DIRECTORY_REMOVED]
+
+
 def test_empty_tenant_namespace_removal_refuses_state_or_release_history(
     tmp_path: Path,
 ) -> None:

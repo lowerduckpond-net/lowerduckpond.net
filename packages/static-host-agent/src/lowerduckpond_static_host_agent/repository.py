@@ -887,6 +887,11 @@ class _StateTransaction:
                         dir_fd=root_fd,
                     )
                 except FileNotFoundError:
+                    os.fsync(root_fd)
+                    _notify_tenant_namespace(
+                        failure_hook,
+                        TenantNamespaceBoundary.TENANT_DIRECTORY_REMOVED,
+                    )
                     return
                 try:
                     validate_state_directory(
