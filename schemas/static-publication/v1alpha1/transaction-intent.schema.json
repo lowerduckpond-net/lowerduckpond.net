@@ -469,6 +469,7 @@
     "operation",
     "archiveRecovery",
     "lifecycleRecovery",
+    "sourceManifest",
     "sourceManifestDigest",
     "candidateManifest",
     "candidateManifestDigest",

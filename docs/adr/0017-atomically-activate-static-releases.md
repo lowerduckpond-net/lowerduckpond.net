@@ -235,9 +235,11 @@ ordered persistence protocol:
    file, `fsync` their directories from leaves upward, rename each temporary
    generation to its final immutable name, and `fsync` each parent directory.
    The Ansible Caddy transaction applies the same ordering to its candidate.
-2. Write the transaction intent, including previous and proposed generations,
-   to a temporary file; `fsync` it, rename it into place, and `fsync` the state
-   directory.
+2. Write the transaction intent, including the exact previous source manifest
+   and proposed candidate manifest plus their canonical digests, to a temporary
+   file; `fsync` it, rename it into place, and `fsync` the state directory. The
+   candidate must be the exact operation-specific transformation of that source;
+   recovery rejects any unrelated field change before dispatch.
 3. Create a temporary active-Caddy-generation reference, atomically rename it
    over the old reference, and `fsync` its containing directory. A reference is
    never selected before its release and complete runtime generation are

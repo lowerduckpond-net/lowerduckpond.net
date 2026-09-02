@@ -192,6 +192,7 @@ def _create_intent(correlation_id: object) -> dict[str, object]:
     candidate_digest = manifest_digest(candidate_manifest).to_dict()
     intent["correlationId"] = correlation_id
     intent["operation"] = "create"
+    intent["sourceManifest"] = None
     intent["sourceManifestDigest"] = None
     intent["candidateManifest"] = candidate_manifest
     intent["candidateManifestDigest"] = candidate_digest
@@ -715,6 +716,7 @@ def test_startup_reconciliation_retains_artifact_for_active_intent_replay(
                 "tenantId": tenant_id,
                 "correlationId": correlation_id,
                 "operation": "deploy",
+                "sourceManifest": source_manifest,
                 "sourceManifestDigest": source_digest,
                 "candidateManifest": candidate_manifest,
                 "candidateManifestDigest": candidate_digest,

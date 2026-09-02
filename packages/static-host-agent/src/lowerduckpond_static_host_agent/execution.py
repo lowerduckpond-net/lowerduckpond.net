@@ -709,7 +709,7 @@ def _bound_lifecycle_intents(
             raise ExecutionError("lifecycle intent kind is not recognized") from error
         if path != expected_path:
             raise ExecutionError("lifecycle intent path disagrees with its identity")
-        if not _intent_binds_job(intent.document, job, request):
+        if not _intent_binds_job(transaction, intent.document, job, request):
             continue
         if kind in matching_kinds:
             raise ExecutionError("authorization job repeats one lifecycle intent kind")
@@ -755,7 +755,6 @@ def _validate_result_intent_binding(
         or manifest != intent_candidate
     ):
         raise ExecutionError("successful result disagrees with its lifecycle intent")
-    _validate_candidate_request_binding(request, manifest)
     if request["operation"] != "create":
         return
     recovery = intent["lifecycleRecovery"]
@@ -776,6 +775,7 @@ def _validate_result_intent_binding(
 
 
 def _validate_candidate_request_binding(
+    transaction: ExecutionTransaction,
     request: dict[str, object],
     manifest: dict[str, object],
 ) -> None:
@@ -787,13 +787,24 @@ def _validate_candidate_request_binding(
         matches = metadata["slug"] == request["slug"] and spec["quotas"] == request["quotas"]
     elif operation == "rename":
         matches = metadata["slug"] == request["slug"]
-    elif operation == "deploy":
+    elif operation in {"deploy", "import"}:
         artifact = cast(dict[str, object], request["artifact"])
         deployment = cast(dict[str, object], spec["desiredDeployment"])
         matches = deployment["archiveSha256"] == artifact["sha256"]
     elif operation == "rollback":
         deployment = cast(dict[str, object], spec["desiredDeployment"])
-        matches = deployment["id"] == request["deploymentId"]
+        tenant_id = request["tenantId"]
+        deployment_id = request["deploymentId"]
+        try:
+            record = transaction.read(
+                StateRecordPath.tenant_deployment(tenant_id, deployment_id)
+            ).document
+        except FileNotFoundError as error:
+            raise ExecutionError("rollback target deployment is unavailable") from error
+        matches = deployment == {
+            "id": record["id"],
+            "archiveSha256": record["archiveSha256"],
+        }
     if not matches:
         raise ExecutionError("lifecycle candidate disagrees with its request target")
 
@@ -822,13 +833,14 @@ def _validate_archive_result_intent_binding(
 
 
 def _intent_binds_job(
+    transaction: ExecutionTransaction,
     intent: dict[str, object],
     job: dict[str, object],
     request: dict[str, object],
 ) -> bool:
     kind = intent["kind"]
     if kind == "TransactionIntent":
-        return _transaction_intent_binds_job(intent, job, request)
+        return _transaction_intent_binds_job(transaction, intent, job, request)
     if kind == "ArchiveConstructionIntent":
         return _archive_construction_intent_binds_job(intent, job, request)
     if kind == "ArchiveRetirementIntent":
@@ -837,6 +849,7 @@ def _intent_binds_job(
 
 
 def _transaction_intent_binds_job(
+    transaction: ExecutionTransaction,
     intent: dict[str, object],
     job: dict[str, object],
     request: dict[str, object],
@@ -856,7 +869,7 @@ def _transaction_intent_binds_job(
     if candidate is not None:
         if type(candidate) is not dict:  # pragma: no cover - validated reads prove this
             raise ExecutionError("lifecycle candidate authority is not an object")
-        _validate_candidate_request_binding(request, candidate)
+        _validate_candidate_request_binding(transaction, request, candidate)
     return True
 
 
