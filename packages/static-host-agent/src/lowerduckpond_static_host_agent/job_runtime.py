@@ -297,6 +297,13 @@ class StartupReconciler:
         ) as transaction:
             for identity in transaction.measure_intent_records().records:
                 _path, intent = transaction.read_intent(identity.intent_id)
+                provenance = intent.document.get("provenance")
+                if (
+                    intent.document["kind"] == "ArchiveRetirementIntent"
+                    and type(provenance) is dict
+                    and provenance.get("kind") == "emergency-administrator"
+                ):
+                    continue
                 correlation_id = validate_uuid7(intent.document["correlationId"])
                 try:
                     job_id = jobs_by_correlation[correlation_id]
