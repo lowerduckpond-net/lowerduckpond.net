@@ -521,21 +521,120 @@ def _has_bound_lifecycle_intent(
     correlation_id = validate_uuid7(request["correlationId"])
     correlation = transaction.read(StateRecordPath.authorization_correlation(correlation_id))
     _require_same_authority(job, correlation.document)
-    operation = request["operation"]
-    matching = 0
+    matching_kinds: set[str] = set()
     for identity in transaction.measure_intent_records().records:
         path, intent = transaction.read_intent(identity.intent_id)
-        if path != StateRecordPath.transaction_intent(identity.intent_id):
+        kind = cast(str, intent.document["kind"])
+        expected_paths = {
+            "TransactionIntent": StateRecordPath.transaction_intent,
+            "ArchiveConstructionIntent": StateRecordPath.archive_construction_intent,
+            "ArchiveRetirementIntent": StateRecordPath.archive_retirement_intent,
+        }
+        try:
+            expected_path = expected_paths[kind](identity.intent_id)
+        except KeyError as error:  # pragma: no cover - repository reads recognize intent kinds
+            raise ExecutionError("lifecycle intent kind is not recognized") from error
+        if path != expected_path:
             raise ExecutionError("lifecycle intent path disagrees with its identity")
-        if intent.document["correlationId"] == correlation_id:
-            if intent.document["operation"] != operation:
-                raise ExecutionError("lifecycle intent operation does not match its job")
-            if operation != "create" and intent.document["tenantId"] != request["tenantId"]:
-                raise ExecutionError("lifecycle intent tenant does not match its job")
-            matching += 1
-    if matching > 1:
-        raise ExecutionError("authorization job is bound to multiple lifecycle intents")
-    return matching == 1
+        if not _intent_binds_job(intent.document, job, request):
+            continue
+        if kind in matching_kinds:
+            raise ExecutionError("authorization job repeats one lifecycle intent kind")
+        matching_kinds.add(kind)
+    return bool(matching_kinds)
+
+
+def _intent_binds_job(
+    intent: dict[str, object],
+    job: dict[str, object],
+    request: dict[str, object],
+) -> bool:
+    kind = intent["kind"]
+    if kind == "TransactionIntent":
+        return _transaction_intent_binds_job(intent, job, request)
+    if kind == "ArchiveConstructionIntent":
+        return _archive_construction_intent_binds_job(intent, job, request)
+    if kind == "ArchiveRetirementIntent":
+        return _archive_retirement_intent_binds_job(intent, job, request)
+    raise ExecutionError("lifecycle intent kind is not recognized")
+
+
+def _transaction_intent_binds_job(
+    intent: dict[str, object],
+    job: dict[str, object],
+    request: dict[str, object],
+) -> bool:
+    if intent["correlationId"] != request["correlationId"]:
+        return False
+    expected = job["expectedSource"]
+    if type(expected) is not dict:  # pragma: no cover - validated reads prove this
+        raise ExecutionError("authorization expected source is not an object")
+    if (
+        intent["operation"] != request["operation"]
+        or intent["sourceManifestDigest"] != expected["manifestDigest"]
+        or (request["operation"] != "create" and intent["tenantId"] != request["tenantId"])
+    ):
+        raise ExecutionError("lifecycle intent authority does not match its job")
+    return True
+
+
+def _archive_construction_intent_binds_job(
+    intent: dict[str, object],
+    job: dict[str, object],
+    request: dict[str, object],
+) -> bool:
+    overlaps = (
+        intent["jobId"] == job["jobId"] or intent["correlationId"] == request["correlationId"]
+    )
+    if not overlaps:
+        return False
+    expected = job["expectedSource"]
+    if type(expected) is not dict:  # pragma: no cover - validated reads prove this
+        raise ExecutionError("authorization expected source is not an object")
+    if (
+        request["operation"] != "archive"
+        or intent["jobId"] != job["jobId"]
+        or intent["operatorPrincipal"] != job["operatorPrincipal"]
+        or intent["tenantId"] != request["tenantId"]
+        or intent["correlationId"] != request["correlationId"]
+        or intent["sourceManifestDigest"] != expected["manifestDigest"]
+        or intent["deploymentRecordDigest"] != expected["deploymentDigest"]
+    ):
+        raise ExecutionError("archive construction authority does not match its job")
+    return True
+
+
+def _archive_retirement_intent_binds_job(
+    intent: dict[str, object],
+    job: dict[str, object],
+    request: dict[str, object],
+) -> bool:
+    provenance = intent["provenance"]
+    if type(provenance) is not dict:  # pragma: no cover - validated reads prove this
+        raise ExecutionError("archive retirement provenance is not an object")
+    if provenance["kind"] == "emergency-administrator":
+        if intent["correlationId"] == request["correlationId"]:
+            raise ExecutionError("emergency intent collides with job authority")
+        return False
+    overlaps = (
+        provenance["jobId"] == job["jobId"] or intent["correlationId"] == request["correlationId"]
+    )
+    if not overlaps:
+        return False
+    expected = job["expectedSource"]
+    if type(expected) is not dict:  # pragma: no cover - validated reads prove this
+        raise ExecutionError("authorization expected source is not an object")
+    if (
+        intent["transition"] != request["operation"]
+        or provenance != {"kind": "authorization-job", "jobId": job["jobId"]}
+        or intent["operatorPrincipal"] != job["operatorPrincipal"]
+        or intent["tenantId"] != request["tenantId"]
+        or intent["correlationId"] != request["correlationId"]
+        or intent["sourceManifestDigest"] != expected["manifestDigest"]
+        or intent["archiveRecordDigest"] != expected["archiveRecordDigest"]
+    ):
+        raise ExecutionError("archive retirement authority does not match its job")
+    return True
 
 
 def _repair_terminal_phase_transaction(

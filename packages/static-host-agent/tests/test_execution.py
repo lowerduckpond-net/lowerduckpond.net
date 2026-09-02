@@ -8,7 +8,7 @@ from io import BytesIO
 from pathlib import Path
 
 import pytest
-from lowerduckpond_static_contracts import canonical_json_bytes
+from lowerduckpond_static_contracts import canonical_json_bytes, request_digest
 from lowerduckpond_static_host_agent import (
     ArtifactClaim,
     ArtifactIntake,
@@ -630,7 +630,7 @@ def test_executor_rejects_an_intent_for_another_operation_before_handler_replay(
         ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
     ):
         handler = _CompletingCreateHandler(repository)
-        with pytest.raises(RuntimeError, match="intent operation does not match"):
+        with pytest.raises(RuntimeError, match="intent authority does not match"):
             AuthorizationExecutor(
                 repository,
                 intake,
@@ -638,6 +638,92 @@ def test_executor_rejects_an_intent_for_another_operation_before_handler_replay(
             ).execute(issued.job_id)
 
     assert handler.phases == []
+
+
+@pytest.mark.parametrize(
+    ("intent_fixture", "operation", "lifecycle"),
+    [
+        ("archive-construction-intent.json", "archive", "active"),
+        ("archive-retirement-intent.json", "delete", "archived"),
+    ],
+)
+def test_executor_recognizes_archive_intent_paths_for_handler_replay(
+    tmp_path: Path,
+    intent_fixture: str,
+    operation: str,
+    lifecycle: str,
+) -> None:
+    root = _state_root(tmp_path)
+    job = _fixture("authorization-job.json")
+    intent = _fixture(intent_fixture)
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": operation,
+        "correlationId": intent["correlationId"],
+        "tenantId": intent["tenantId"],
+    }
+    job["request"] = request
+    job["requestDigest"] = request_digest(request).to_dict()
+    job["phase"] = "failed"
+    expected = job["expectedSource"]
+    assert type(expected) is dict
+    expected.update(
+        {
+            "expectsTenantAbsent": False,
+            "lifecycle": lifecycle,
+            "manifestDigest": intent["sourceManifestDigest"],
+            "deploymentDigest": intent.get(
+                "deploymentRecordDigest",
+                {
+                    "format": "lowerduckpond-deployment-record-v1",
+                    "algorithm": "sha256",
+                    "value": "c" * 64,
+                },
+            ),
+            "archiveRecordDigest": intent.get("archiveRecordDigest"),
+        }
+    )
+    correlation = dict(job)
+    correlation["phase"] = "pending"
+    result: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationResult",
+        "provenance": {"kind": "authorization-job", "jobId": job["jobId"]},
+        "correlationId": request["correlationId"],
+        "operation": operation,
+        "status": "failed",
+        "errorCode": "state_drift",
+        "tenantId": request["tenantId"],
+    }
+    _write(root, StateRecordPath.authorization_job(job["jobId"]), job)
+    _write(
+        root,
+        StateRecordPath.authorization_correlation(request["correlationId"]),
+        correlation,
+    )
+    _write(root, StateRecordPath.authorization_result(job["jobId"]), result)
+    intent_path = (
+        StateRecordPath.archive_construction_intent(intent["intentId"])
+        if intent_fixture == "archive-construction-intent.json"
+        else StateRecordPath.archive_retirement_intent(intent["intentId"])
+    )
+    _write(root, intent_path, intent)
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        handler = _CompletingCreateHandler(repository)
+        outcome = AuthorizationExecutor(
+            repository,
+            intake,
+            handlers={operation: handler},
+        ).execute(job["jobId"])
+
+    assert outcome.result == result
+    assert outcome.created is False
+    assert handler.phases == ["failed"]
 
 
 def test_executor_dispatches_a_claimed_job_without_rechecking_its_source(
