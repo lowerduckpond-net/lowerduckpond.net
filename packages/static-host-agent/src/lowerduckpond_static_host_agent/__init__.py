@@ -220,6 +220,13 @@ from lowerduckpond_static_host_agent.request_decoder import (
     SubprocessRequestDecoder,
     decoder_main,
 )
+from lowerduckpond_static_host_agent.route_snapshot import (
+    RouteOverlayMode,
+    RouteSnapshotError,
+    TenantRouteOverlay,
+    TenantRouteSnapshot,
+    snapshot_tenant_routes,
+)
 from lowerduckpond_static_host_agent.state_inventory import (
     DEFAULT_INTENT_INVENTORY_LIMITS,
     AuthorizationRecordInventory,
@@ -387,6 +394,8 @@ __all__ = [
     "RequestDecodeError",
     "RequestDecoder",
     "ResultWaiter",
+    "RouteOverlayMode",
+    "RouteSnapshotError",
     "RuntimeBoundaryError",
     "SelectedCaddyGeneration",
     "StartupReconciler",
@@ -411,6 +420,8 @@ __all__ = [
     "SystemdJobHandoff",
     "TenantCaddyRoutes",
     "TenantRouteInput",
+    "TenantRouteOverlay",
+    "TenantRouteSnapshot",
     "VerifiedArtifact",
     "ZipEntryType",
     "ZipExtraction",
@@ -443,5 +454,6 @@ __all__ = [
     "platform_generation_state",
     "prepare_active_caddy_execution",
     "require_exact_file",
+    "snapshot_tenant_routes",
     "start_target",
 ]
