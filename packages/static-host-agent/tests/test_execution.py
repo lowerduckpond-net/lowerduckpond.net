@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from contextlib import contextmanager
+from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
@@ -172,7 +172,7 @@ class _UnavailableArtifactHandler:
         raise IntakeArtifactUnavailableError("handler recovery requires its artifact")
 
 
-class _CompletingUnavailableIntake:
+class _CompletingUnavailableClaim(AbstractContextManager[ArtifactClaim]):
     def __init__(
         self,
         repository: StateRepository,
@@ -184,17 +184,7 @@ class _CompletingUnavailableIntake:
         self._job_id = job_id
         self._intent_id = intent_id
 
-    @contextmanager
-    def claim(
-        self,
-        *,
-        correlation_id: object,
-        declared: VerifiedArtifact,
-        blocking: bool = False,
-    ) -> object:
-        assert correlation_id
-        assert declared.size > 0
-        assert blocking is True
+    def __enter__(self) -> ArtifactClaim:
         path = StateRecordPath.transaction_intent(self._intent_id)
         intent = self._repository.read(path)
         inventory = self._repository.measure_intent_records()
@@ -216,7 +206,38 @@ class _CompletingUnavailableIntake:
             failed,
         )
         raise IntakeArtifactUnavailableError("concurrent replay consumed the artifact")
-        yield  # pragma: no cover - contextmanager generator marker
+
+    def __exit__(self, *_exception: object) -> None:
+        return
+
+
+class _CompletingUnavailableIntake:
+    def __init__(
+        self,
+        repository: StateRepository,
+        *,
+        job_id: str,
+        intent_id: str,
+    ) -> None:
+        self._repository = repository
+        self._job_id = job_id
+        self._intent_id = intent_id
+
+    def claim(
+        self,
+        *,
+        correlation_id: object,
+        declared: VerifiedArtifact,
+        blocking: bool = False,
+    ) -> AbstractContextManager[ArtifactClaim]:
+        assert correlation_id
+        assert declared.size > 0
+        assert blocking is True
+        return _CompletingUnavailableClaim(
+            self._repository,
+            job_id=self._job_id,
+            intent_id=self._intent_id,
+        )
 
 
 @pytest.fixture(autouse=True)
@@ -1449,15 +1470,19 @@ def test_executor_returns_a_completed_replay_after_losing_the_artifact_race(
             result,
         )
         handler = _CompletingFailureHandler(repository)
+        intent_id = intent["intentId"]
+        assert type(intent_id) is str
         intake = _CompletingUnavailableIntake(
             repository,
             job_id=issued.job_id,
-            intent_id=intent["intentId"],
+            intent_id=intent_id,
         )
 
+        # The intake double preserves the production claim protocol without
+        # constructing a privileged filesystem-backed ArtifactIntake.
         outcome = AuthorizationExecutor(
             repository,
-            intake,  # type: ignore[arg-type] - deterministic race double
+            intake,  # type: ignore[arg-type]
             handlers={"deploy": handler},
         ).execute(issued.job_id, blocking=True)
 
