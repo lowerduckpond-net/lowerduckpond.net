@@ -2,6 +2,7 @@
 
 - Status: accepted
 - Date: 2026-08-25
+- Amended: 2026-09-01
 - Supersedes: [ADR 0003](0003-caddy-cloudflare-dns.md)
 
 ## Context
@@ -132,15 +133,27 @@ markup. A provider security block or challenge may replace an origin response
 as an explicit availability/security event; it is not tenant content and may
 not be cached as one.
 
-Reserve Cloudflare's `/cdn-cgi/` path namespace. A managed zone WAF rule blocks
-`/cdn-cgi` and every descendant on public platform, alias, and tenant hostnames;
-the archive validator rejects `cdn-cgi` as a normalized, ASCII-case-insensitive
-first path component so a tenant cannot publish unreachable or provider-owned
-URLs. Because Cloudflare owns this endpoint and the Free plan cannot customize
-its block response, that provider block is an explicit exception to Caddy's
-generic `404` contract and must never reach Caddy. M3.0 must prove the WAF rule
-preempts Cloudflare's diagnostic endpoints; if it cannot, the edge design
-requires review rather than silently accepting `/cdn-cgi/trace`.
+Reserve Cloudflare's `/cdn-cgi/` path namespace. The archive validator rejects
+`cdn-cgi` as a normalized, ASCII-case-insensitive first path component so a
+tenant cannot publish unreachable or provider-owned URLs. A managed zone WAF
+rule blocks requests under the prefix when they enter Cloudflare's custom-rules
+phase, including ordinary, unclaimed, and case-variant paths. Those blocks are
+an explicit exception to Caddy's generic `404` contract and never reach Caddy.
+
+Cloudflare handles exact internal endpoints ahead of that custom-rules phase.
+In particular, lowercase `/cdn-cgi/trace` is provider-managed, cannot be
+customized, and returns Cloudflare's diagnostic response even while the WAF
+blocks `/CDN-CGI/trace`. Internal endpoint responses are outside the Lower Duck
+Pond platform, alias, and tenant representation contracts. Qualification must
+observe the bounded provider response without retaining its visitor-specific
+fields, prove it carries no origin marker, and separately prove the WAF blocks
+representative unclaimed and case-variant paths before Caddy.
+
+This distinction resolves the architecture review required by the original
+decision. The 2026-08-27 M3.0 probe tested uppercase `/CDN-CGI/trace`, which
+proved case-insensitive WAF matching but did not exercise Cloudflare's exact
+lowercase internal route. Production validation on 2026-09-01 exposed that
+coverage gap; the corrected probe now tests both outcomes.
 
 Cloudflare caching is fail-closed during Milestone 3. Explicit edge rules bypass
 cache for the entire `.com` namespace and `secure.lowerduckpond.net`, while
@@ -179,7 +192,8 @@ gate. Use proxied disposable hostnames, Full (strict), a disposable
 per-hostname origin-pull certificate, Cloudflare-only web ingress, and the real
 supported browsers. Prove edge and origin certificates separately, direct
 origin bypass, forwarding-header authenticity, cookie and response-header
-behavior, response-body fidelity, `/cdn-cgi/` denial, cache bypass across
+behavior, response-body fidelity, `/cdn-cgi/` tenant-path denial and internal
+endpoint isolation, cache bypass across
 repeated requests and lifecycle-shaped status changes, strict unknown-host
 handling, and complete teardown. A read-only preflight must observe Always
 Online disabled on both zones before provisioning. Qualification then makes

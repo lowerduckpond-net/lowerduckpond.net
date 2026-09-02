@@ -361,9 +361,11 @@ fonts, insecure-looking URLs, and analytics-shaped markup; they require
 `no-transform`, disabled optional transformations, and byte-identical bodies
 without injected provider markup. A separate provider-security fixture may
 return a Cloudflare block or challenge but cannot be mistaken for tenant
-content or cached. Requests to `/cdn-cgi`, `/cdn-cgi/trace`, descendants, case
-variants, and encoded lookalikes prove the managed WAF blocks the reserved
-namespace before Caddy and exposes no diagnostic body.
+content or cached. Requests to `/cdn-cgi`, an unclaimed descendant, and a case
+variant of `/cdn-cgi/trace` prove the managed WAF blocks paths that enter its
+custom-rules phase before Caddy. A separate exact lowercase `/cdn-cgi/trace`
+probe accepts only Cloudflare's bounded internal response, records none of its
+visitor-specific fields, and proves it never reached Caddy.
 
 Import identity tests export active, suspended, and archived tenant A fixtures,
 create an undeployed tenant B through the ordinary serialized slug-allocation
@@ -410,8 +412,9 @@ state from the preceding canonical origin. Logging tests send sensitive path,
 query, cookie, authorization, and referrer values to aliases and prove none
 persist in access logs or diagnostics.
 The Cloudflare-owned `/cdn-cgi/` namespace is the sole exception to the Caddy
-alias `404` body: edge tests require the managed provider denial and prove the
-request never selects an alias or tenant route.
+alias `404` body: edge tests require either the managed WAF denial or a
+recognized Cloudflare internal endpoint and prove the request never selects an
+alias or tenant route.
 
 Export concurrency tests overlap snapshot capture with deploy, rollback,
 rename, suspension, and garbage collection. Every resulting bundle must contain

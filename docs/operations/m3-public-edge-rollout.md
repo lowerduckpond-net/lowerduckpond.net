@@ -285,9 +285,10 @@ for a later boundary from an earlier one.
    the exact plan, then dispatch `apply` with the recorded run ID and the same
    inputs.
 3. Prove both zones through the edge, Full (strict), the selected account-only
-   client leaves, cache and transform policy, `/cdn-cgi/` denial, forwarded
-   address authenticity, exact representations, strict host handling, and
-   continued direct-origin availability for rollback.
+   client leaves, cache and transform policy, `/cdn-cgi/` tenant-path denial
+   and internal-endpoint isolation, forwarded address authenticity, exact
+   representations, strict host handling, and continued direct-origin
+   availability for rollback.
 4. With `CADDY_ORIGIN_PULL_ENFORCEMENT_ENABLED=true`, run the separately
    authorized guarded production convergence. The wrapper reads the reserved
    origin IPv4 address from the exact encrypted-state inventory and pins its
@@ -298,8 +299,11 @@ for a later boundary from an earlier one.
    `origin_pull_host_state=required`. This narrows DigitalOcean ingress to the
    same committed Cloudflare network union already used by the host and Caddy.
 6. Repeat edge, direct-origin-denial, reboot, selected-generation, browser, and
-   disabled-publication proofs. Revoke the temporary certificate-lifecycle
-   token before its deadline.
+   disabled-publication proofs. Run
+   `just check-m3-7-production-reserved-namespace`; its sanitized result must
+   prove WAF denial for blockable paths and a provider-owned lowercase trace
+   that never reached Caddy. Revoke the temporary certificate-lifecycle token
+   before its deadline.
 
 Rollback from `enforced` first applies the reviewed `proxied` phase, then
 converges the host with enforcement false, and only then applies `direct` with

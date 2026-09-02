@@ -469,8 +469,10 @@ Implement idempotent commands or jobs for:
 - Manage Always Online as disabled for both zones and prove a disposable origin
   outage cannot serve stale cache or Internet Archive content.
 - Disable optional Cloudflare body rewriting and script injection, require
-  `Cache-Control: no-transform`, block the provider-reserved `/cdn-cgi/`
-  namespace, and reject its colliding first path component from tenant archives.
+  `Cache-Control: no-transform`, block unclaimed requests in the
+  provider-reserved `/cdn-cgi/` namespace, isolate Cloudflare's exact internal
+  endpoints from Caddy, and reject the colliding first path component from
+  tenant archives.
 - Validate, select, reload, and advance every restart or rollback phase under
   one publication lock, while releasing it before any systemd job must
   reacquire it.

@@ -118,8 +118,9 @@ Cloudflare is the public web entry point for both owned zones. It:
 - bypasses cache for every route during Milestone 3;
 - keeps Always Online disabled so an origin outage cannot republish stale or
   externally archived content;
-- disables optional body rewriting and blocks the provider-reserved
-  `/cdn-cgi/` namespace; and
+- disables optional body rewriting, blocks unclaimed requests in the
+  provider-reserved `/cdn-cgi/` namespace, and keeps every provider-owned
+  internal endpoint outside tenant routing; and
 - forwards HTTP and Full (strict) HTTPS to Caddy without becoming tenant or
   lifecycle authority.
 
@@ -301,10 +302,13 @@ replacement, and only a later verified convergence removes the old CA. A leaf
 never outlives its issuer.
 
 OpenTofu also disables Cloudflare response-body rewriting and script injection,
-while Caddy emits `Cache-Control: no-transform`. The edge blocks `/cdn-cgi/`
-before a provider diagnostic can answer, and static archive admission reserves
-the matching first path component. Provider security blocks and challenges are
-explicit availability events rather than tenant representations.
+while Caddy emits `Cache-Control: no-transform`. Static archive admission
+reserves the `cdn-cgi` first path component. The edge blocks ordinary and
+unclaimed requests under that prefix, while Cloudflare may answer its exact
+internal endpoints, including lowercase `/cdn-cgi/trace`, before custom WAF
+rules. Neither response class reaches Caddy or belongs to the platform or
+tenant representation contract. Provider security blocks, internal endpoints,
+and challenges are explicit provider events rather than tenant representations.
 
 Milestone 3 explicitly bypasses Cloudflare cache and keeps Always Online
 disabled for both zones. An origin outage returns a provider error rather than

@@ -3,7 +3,9 @@
 This module owns one complete Lower Duck Pond public zone: apex and wildcard A
 records, Full (strict), Always Online and Always Use HTTPS disabled, zone-level
 authenticated origin pulls, cache bypass, representation-preserving settings, and the reserved
-`/cdn-cgi/` block.
+`/cdn-cgi/` WAF defense. Cloudflare may serve exact internal endpoints before
+custom rules; those endpoints remain provider-owned, unpublishable, and
+isolated from Caddy.
 
 `rollout_phase` makes the fail-safe sequence explicit:
 
