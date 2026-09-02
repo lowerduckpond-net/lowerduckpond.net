@@ -278,11 +278,11 @@ def test_executor_dispatches_claimed_create_and_replays_its_handler(tmp_path: Pa
     assert first.result == second.result == stored
     assert first.result["status"] == "succeeded"
     assert phase == "completed"
-    assert handler.phases == ["claimed", "completed"]
-    assert handler.claims == [None, None]
+    assert handler.phases == ["claimed"]
+    assert handler.claims == [None]
 
 
-def test_executor_repairs_a_lagging_job_phase_before_handler_replay(tmp_path: Path) -> None:
+def test_executor_repairs_a_lagging_job_phase_without_handler_replay(tmp_path: Path) -> None:
     root = _state_root(tmp_path)
     _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
 
@@ -313,7 +313,7 @@ def test_executor_repairs_a_lagging_job_phase_before_handler_replay(tmp_path: Pa
 
     assert outcome.created is False
     assert outcome.result == result
-    assert handler.phases == ["completed"]
+    assert handler.phases == []
 
 
 def test_executor_rejects_a_misbound_result_before_handler_dispatch(tmp_path: Path) -> None:
@@ -413,6 +413,58 @@ def test_executor_revalidates_expected_source_before_claiming(tmp_path: Path) ->
     assert replay.result == outcome.result
     assert replay.created is False
     assert handler.phases == []
+
+
+def test_executor_uses_bound_intent_not_error_code_to_select_handler_replay(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    with StateRepository(root, expected_owner=os.geteuid()) as repository:
+        issued = _issue_create(repository)
+        job = repository.read(StateRecordPath.authorization_job(issued.job_id))
+        claimed = job.document
+        claimed["phase"] = "claimed"
+        repository.compare_and_swap(
+            StateRecordPath.authorization_job(issued.job_id),
+            job.revision,
+            claimed,
+        )
+        intent = _fixture("transaction-intent.json")
+        repository.create_immutable(
+            StateRecordPath.transaction_intent(intent["intentId"]),
+            intent,
+        )
+        request = issued.document["request"]
+        assert type(request) is dict
+        result: dict[str, object] = {
+            "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+            "kind": "OperationResult",
+            "provenance": {"kind": "authorization-job", "jobId": issued.job_id},
+            "correlationId": request["correlationId"],
+            "operation": "create",
+            "status": "failed",
+            "errorCode": "state_drift",
+            "tenantId": None,
+        }
+        repository.create_immutable(
+            StateRecordPath.authorization_result(issued.job_id),
+            result,
+        )
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        handler = _CompletingCreateHandler(repository)
+        outcome = AuthorizationExecutor(
+            repository,
+            intake,
+            handlers={"create": handler},
+        ).execute(issued.job_id)
+
+    assert outcome.result == result
+    assert handler.phases == ["failed"]
 
 
 def test_executor_dispatches_a_claimed_job_without_rechecking_its_source(

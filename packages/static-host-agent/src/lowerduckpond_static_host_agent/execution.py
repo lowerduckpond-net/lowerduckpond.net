@@ -40,15 +40,13 @@ from lowerduckpond_static_host_agent.repository import (
     StoredContract,
 )
 from lowerduckpond_static_host_agent.state_inventory import (
+    IntentRecordInventory,
     StateInventory,
     StateInventoryProjection,
     StateInventoryReservation,
 )
 
 _NOT_IMPLEMENTED: Final = "not_implemented"
-_PREDISPATCH_FAILURE_CODES: Final[frozenset[str]] = frozenset(
-    {"invalid_artifact", _NOT_IMPLEMENTED, "state_drift"}
-)
 
 
 class ExecutionError(RuntimeError):
@@ -78,6 +76,10 @@ class ExecutionTransaction(Protocol):
     ) -> StoredContract: ...
 
     def measure_inventory(self) -> StateInventory: ...
+
+    def measure_intent_records(self) -> IntentRecordInventory: ...
+
+    def read_intent(self, intent_id: object) -> tuple[StateRecordPath, StoredContract]: ...
 
     def allocation_upper_bound(self, byte_count: int) -> int: ...
 
@@ -136,8 +138,31 @@ class AuthorizationExecutor:
         handler = self._handler_for(initial.document)
         existing = self._read_result(canonical_id, blocking=blocking)
         if existing is not None:
-            if handler is not None and not _is_predispatch_failure(existing.document):
-                self._repair_terminal_phase(initial, existing, blocking=blocking)
+            result: dict[str, object] | None = None
+            with self._repository.transaction(
+                mode=LockMode.EXCLUSIVE,
+                blocking=blocking,
+            ) as transaction:
+                current = transaction.read(path)
+                _require_same_authority(initial.document, current.document)
+                durable = _read_result_transaction(transaction, canonical_id)
+                if durable is None or durable.document != existing.document:
+                    raise ExecutionError("terminal result changed during replay")
+                dispatch = handler is not None and _has_bound_lifecycle_intent(
+                    transaction,
+                    current.document,
+                )
+                if dispatch:
+                    _repair_terminal_phase_transaction(transaction, current, durable)
+                else:
+                    result = _repair_terminal_phase_transaction(
+                        transaction,
+                        current,
+                        durable,
+                    )
+            if dispatch:
+                if handler is None:  # pragma: no cover - dispatch proves a handler
+                    raise ExecutionError("authorization handler selection was lost")
                 outcome = self._execute_handler(
                     canonical_id,
                     initial,
@@ -148,7 +173,8 @@ class AuthorizationExecutor:
                 )
                 self._consume_terminal_artifact(initial.document, blocking=blocking)
                 return outcome
-            result = self._repair_terminal_phase(initial, existing, blocking=blocking)
+            if result is None:  # pragma: no cover - direct replay assigns the result
+                raise ExecutionError("terminal result selection was lost")
             self._consume_terminal_artifact(initial.document, blocking=blocking)
             return ExecutionOutcome(result, False)
 
@@ -224,7 +250,10 @@ class AuthorizationExecutor:
             _require_same_authority(initial.document, current.document)
             existing = _read_result_transaction(transaction, job_id)
             if existing is not None:
-                if handler is None or _is_predispatch_failure(existing.document):
+                if handler is None or not _has_bound_lifecycle_intent(
+                    transaction,
+                    current.document,
+                ):
                     result = _repair_terminal_phase_transaction(transaction, current, existing)
                     return ExecutionOutcome(result, False)
                 _repair_terminal_phase_transaction(transaction, current, existing)
@@ -331,21 +360,6 @@ class AuthorizationExecutor:
             )
         except FileNotFoundError:
             return None
-
-    def _repair_terminal_phase(
-        self,
-        job: StoredContract,
-        result: StoredContract,
-        *,
-        blocking: bool,
-    ) -> dict[str, object]:
-        with self._repository.transaction(
-            mode=LockMode.EXCLUSIVE,
-            blocking=blocking,
-        ) as transaction:
-            current = transaction.read(StateRecordPath.authorization_job(job.document["jobId"]))
-            _require_same_authority(job.document, current.document)
-            return _repair_terminal_phase_transaction(transaction, current, result)
 
 
 def _job_artifact(job: dict[str, object]) -> VerifiedArtifact | None:
@@ -493,8 +507,22 @@ def _read_result_transaction(
         return None
 
 
-def _is_predispatch_failure(result: dict[str, object]) -> bool:
-    return result["status"] == "failed" and result.get("errorCode") in _PREDISPATCH_FAILURE_CODES
+def _has_bound_lifecycle_intent(
+    transaction: ExecutionTransaction,
+    job: dict[str, object],
+) -> bool:
+    request = job["request"]
+    if type(request) is not dict:  # pragma: no cover - validated reads prove this
+        raise ExecutionError("authorization job request is not an object")
+    correlation_id = request["correlationId"]
+    matching = 0
+    for identity in transaction.measure_intent_records().records:
+        _path, intent = transaction.read_intent(identity.intent_id)
+        if intent.document["correlationId"] == correlation_id:
+            matching += 1
+    if matching > 1:
+        raise ExecutionError("authorization job is bound to multiple lifecycle intents")
+    return matching == 1
 
 
 def _repair_terminal_phase_transaction(
