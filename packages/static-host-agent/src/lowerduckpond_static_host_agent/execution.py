@@ -392,9 +392,16 @@ class AuthorizationExecutor:
                     return ExecutionOutcome(result, False)
             else:
                 _validate_job_integrity(current.document, claim=claim)
+                has_lifecycle_intent = False
                 if current.document["phase"] == "claimed":
-                    _bound_lifecycle_intents(transaction, current.document)
-                if current.document["phase"] == "pending":
+                    _request, intents = _bound_lifecycle_intents(
+                        transaction,
+                        current.document,
+                    )
+                    has_lifecycle_intent = bool(intents)
+                if current.document["phase"] == "pending" or (
+                    current.document["phase"] == "claimed" and not has_lifecycle_intent
+                ):
                     error_code = _expected_source_error(transaction, current.document)
                     if error_code is not None:
                         result = _failure_result(current.document, error_code)
