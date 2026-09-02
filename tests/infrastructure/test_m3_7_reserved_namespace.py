@@ -141,7 +141,7 @@ def test_origin_probe_uses_the_pinned_production_ssh_contract(
         assert not check
         assert capture_output
         assert timeout == production_check.SSH_TIMEOUT_SECONDS
-        return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
+        return subprocess.CompletedProcess(command, 1, stdout=b"", stderr=b"")
 
     monkeypatch.setattr(production_check.subprocess, "run", run)
 
@@ -192,3 +192,23 @@ def test_origin_probe_fails_closed_when_the_journal_contains_the_marker(
     )
 
     assert production_check._origin_was_reached(marker)
+
+
+def test_origin_probe_rejects_a_journal_or_transport_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    marker = "m3-7-reserved-0123456789abcdef0123456789abcdef"
+    private_key = tmp_path / "production-key"
+    private_key.touch(mode=0o600)
+    monkeypatch.setenv("ANSIBLE_PRIVATE_KEY_FILE", str(private_key))
+    monkeypatch.setenv("PRODUCTION_ORIGIN_IPV4", "8.8.8.8")
+    monkeypatch.setattr(
+        production_check.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], 1, stdout=b"", stderr=b"journal read failed\n"
+        ),
+    )
+
+    with pytest.raises(ReservedNamespaceError, match="journal read failed"):
+        production_check._origin_was_reached(marker)

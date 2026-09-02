@@ -123,11 +123,13 @@ def _origin_was_reached(marker: str) -> bool:
         )
     except (OSError, subprocess.TimeoutExpired) as error:
         raise ReservedNamespaceError("production Caddy journal read failed") from error
-    if completed.returncode != 0:
+    if completed.returncode == 1 and not completed.stdout and not completed.stderr:
+        return False
+    if completed.returncode != 0 or not completed.stdout.strip():
         raise ReservedNamespaceError("production Caddy journal read failed")
     if len(completed.stdout) > MAXIMUM_JOURNAL_BYTES:
         raise ReservedNamespaceError("production Caddy journal result exceeded its bound")
-    return bool(completed.stdout.strip())
+    return True
 
 
 def run(
