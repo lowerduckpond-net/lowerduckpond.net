@@ -438,6 +438,12 @@ class AuthorizationExecutor:
             if stored is None or stored.document != result:
                 raise ExecutionError("lifecycle handler result is not durably exact")
             _validate_result_binding(current.document, result)
+            if _has_bound_lifecycle_intent(
+                transaction,
+                current.document,
+                result=stored.document,
+            ):
+                raise ExecutionError("lifecycle handler returned before clearing its intent")
             expected_phase = "completed" if result["status"] == "succeeded" else "failed"
             if current.document["phase"] != expected_phase:
                 raise ExecutionError("lifecycle handler returned before terminal job commit")
