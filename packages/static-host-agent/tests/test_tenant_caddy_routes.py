@@ -252,6 +252,7 @@ def test_route_metadata_binds_all_authoritative_state_and_is_deterministic() -> 
     assert state["generationClass"] == "tenant-capable"
     assert state["publicationEnabled"] is True
     assert state["tenantRouteCount"] == _ACTIVE_ROUTE_COUNT
+    assert state["runtimeGenerationId"] == _GENERATION
     assert state["platformNamespace"] == _fixture("platform-namespace.json")
     tenant_states = state["tenantStates"]
     assert type(tenant_states) is list
@@ -290,7 +291,6 @@ def test_alias_and_unknown_com_logs_drop_raw_uri_and_all_headers() -> None:
     ("mutation", "message"),
     [
         ("digest", "desired manifest"),
-        ("runtime", "runtime generation"),
         ("deployment", "bound across"),
     ],
 )
@@ -303,14 +303,26 @@ def test_route_derivation_rejects_cross_record_binding_drift(
         digest = active.observed_state["desiredManifestDigest"]
         assert type(digest) is dict
         digest["value"] = "f" * 64
-    elif mutation == "runtime":
-        active.observed_state["runtimeGenerationId"] = "0198d17f-6f4a-7000-8000-000000000005"
     else:
         assert active.deployment is not None
         active.deployment["tenantId"] = _UNDEPLOYED_TENANT
 
     with pytest.raises(CaddyRouteError, match=message):
         _generated(tenants=(active,))
+
+
+def test_new_generation_accepts_an_active_tenant_retained_from_an_earlier_commit() -> None:
+    active = _inputs()[0]
+    earlier_generation = "0198d17f-6f4a-7000-8000-000000000005"
+    active.observed_state["runtimeGenerationId"] = earlier_generation
+
+    generated = _generated(tenants=(active,))
+    state = generated.route_metadata["routeState"]
+    assert type(state) is dict
+    tenant_states = state["tenantStates"]
+    assert type(tenant_states) is list
+    assert tenant_states[0]["observedState"]["runtimeGenerationId"] == earlier_generation
+    assert state["runtimeGenerationId"] == _GENERATION
 
 
 def test_route_derivation_rejects_duplicate_live_or_reserved_slugs() -> None:

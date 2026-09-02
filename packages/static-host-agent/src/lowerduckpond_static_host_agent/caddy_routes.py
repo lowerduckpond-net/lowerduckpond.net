@@ -256,7 +256,7 @@ def build_tenant_caddy_routes(
 
     validated = tuple(
         sorted(
-            (_validate_tenant_route_input(item, generation_id=generation_id) for item in tenants),
+            (_validate_tenant_route_input(item) for item in tenants),
             key=lambda item: item.tenant_id,
         )
     )
@@ -330,6 +330,7 @@ def build_tenant_caddy_routes(
     route_state = _tenant_route_state(
         namespace=namespace,
         tenants=validated,
+        runtime_generation_id=generation_id,
         origin_pull_ca_der=origin_pull_ca_der,
         origin_pull_required=origin_pull_required,
     )
@@ -362,10 +363,8 @@ def build_tenant_caddy_routes(
     )
 
 
-def _validate_tenant_route_input(  # noqa: PLR0912, PLR0915 - explicit fail-closed bindings
+def _validate_tenant_route_input(  # noqa: PLR0912 - explicit fail-closed bindings
     source: TenantRouteInput,
-    *,
-    generation_id: str,
 ) -> _ValidatedTenantRoute:
     manifest = deepcopy(source.manifest)
     observed = deepcopy(source.observed_state)
@@ -423,8 +422,6 @@ def _validate_tenant_route_input(  # noqa: PLR0912, PLR0915 - explicit fail-clos
             or observed["activeDeploymentId"] != deployment["id"]
         ):
             raise CaddyRouteError("selected deployment is not bound across tenant state")
-        if lifecycle == "active" and observed["runtimeGenerationId"] != generation_id:
-            raise CaddyRouteError("active tenant does not bind the candidate runtime generation")
         if lifecycle == "suspended" and observed["runtimeGenerationId"] is not None:
             raise CaddyRouteError("suspended tenant unexpectedly retains a runtime generation")
         release_root = f"{TENANT_RELEASE_ROOT}/{tenant_id}/releases/{deployment['id']}"
@@ -461,6 +458,7 @@ def _tenant_route_state(
     *,
     namespace: dict[str, object],
     tenants: tuple[_ValidatedTenantRoute, ...],
+    runtime_generation_id: str,
     origin_pull_ca_der: tuple[bytes, ...],
     origin_pull_required: bool,
 ) -> dict[str, object]:
@@ -471,6 +469,7 @@ def _tenant_route_state(
     state["generationClass"] = "tenant-capable"
     state["publicationEnabled"] = True
     state["platformNamespace"] = deepcopy(namespace)
+    state["runtimeGenerationId"] = runtime_generation_id
     state["tenantStates"] = [
         {
             "activeDeployment": deepcopy(item.deployment),
@@ -566,6 +565,7 @@ def _tenant_alias_route(tenant: _ValidatedTenantRoute) -> dict[str, object]:
                 "host": [f"{tenant.slug}.{TENANT_DOMAIN}"],
                 "method": ["GET", "HEAD"],
                 "path": ["/"],
+                # Caddy's MatchQuery defines an empty object as an empty query string.
                 "query": {},
             }
         ],
