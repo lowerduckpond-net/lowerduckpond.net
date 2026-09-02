@@ -20,6 +20,7 @@ from lowerduckpond_static_contracts import (
     ContractKind,
     canonical_json_bytes,
     decode_contract,
+    manifest_digest,
     validate_contract,
     validate_uuid7,
 )
@@ -94,6 +95,16 @@ class TenantNamespaceBoundary(StrEnum):
 
 
 TenantNamespaceFailureHook = Callable[[TenantNamespaceBoundary], None]
+
+
+class CreateStateBoundary(StrEnum):
+    """Durable record boundaries for an intent-authorized create commit."""
+
+    DESIRED_STATE_SYNC = "desired-state-sync"
+    OBSERVED_STATE_SYNC = "observed-state-sync"
+
+
+CreateStateFailureHook = Callable[[CreateStateBoundary], None]
 
 
 class _StateRecordName(StrEnum):
@@ -794,6 +805,7 @@ class _StateTransaction:
         self._require_exclusive()
         canonical_id = validate_uuid7(tenant_id)
         self._require_create_intent(canonical_id)
+        self._admit_create_tenant_identity(canonical_id)
         tenant_root = self._repository._durable.open_descendant(("tenants",))
         try:
             root_fd = tenant_root.duplicate_descriptor()
@@ -947,13 +959,52 @@ class _StateTransaction:
         finally:
             tenant_root.close()
 
-    def _require_create_intent(self, tenant_id: str) -> None:
+    def ensure_create_tenant_state(
+        self,
+        tenant_id: object,
+        manifest: dict[str, object],
+        observed_state: dict[str, object],
+        *,
+        failure_hook: CreateStateFailureHook | None = None,
+    ) -> None:
+        """Durably complete one absent-to-undeployed state pair under its intent."""
+
+        self._require_exclusive()
+        canonical_id = validate_uuid7(tenant_id)
+        intent = self._require_create_intent(canonical_id).document
+        recovery = intent["lifecycleRecovery"]
+        if type(recovery) is not dict:  # pragma: no cover - schema validation proves this
+            raise StateRecordError("create intent lifecycle recovery is malformed")
+        if (
+            intent["sourceManifestDigest"] is not None
+            or intent["candidateManifestDigest"] != manifest_digest(manifest).to_dict()
+            or recovery["sourceObservedState"] is not None
+            or recovery["sourceRouteSet"] != "absent"
+            or recovery["candidateObservedState"] != observed_state
+            or recovery["candidateRouteSet"] != "absent"
+        ):
+            raise StateRecordError("create state disagrees with its active intent")
+
+        self.ensure_create_tenant_namespace(canonical_id)
+        self._require_empty_create_namespace(canonical_id)
+        self._ensure_immutable_exact(
+            StateRecordPath.tenant_desired(canonical_id),
+            manifest,
+        )
+        _notify_create_state(failure_hook, CreateStateBoundary.DESIRED_STATE_SYNC)
+        self._ensure_immutable_exact(
+            StateRecordPath.tenant_observed(canonical_id),
+            observed_state,
+        )
+        _notify_create_state(failure_hook, CreateStateBoundary.OBSERVED_STATE_SYNC)
+
+    def _require_create_intent(self, tenant_id: str) -> StoredContract:
         self._repository.require_held(
             LockName.PUBLICATION,
             mode=LockMode.EXCLUSIVE,
         )
         inventory = self.measure_intent_records()
-        matching = 0
+        matching: list[StoredContract] = []
         for identity in inventory.records:
             path, record = self.read_intent(identity.intent_id)
             document = record.document
@@ -962,9 +1013,9 @@ class _StateTransaction:
                 and document["operation"] == "create"
                 and document["tenantId"] == tenant_id
             ):
-                matching += 1
-        if matching != 1 or len(inventory.records) != 1:
-            raise StateRecordError("tenant namespace requires one matching active create intent")
+                matching.append(record)
+        if len(matching) != 1 or len(inventory.records) != 1:
+            raise StateRecordError("create mutation requires one matching active create intent")
         intents = self._repository._durable.open_descendant(("intents",))
         try:
             descriptor = intents.duplicate_descriptor()
@@ -974,6 +1025,79 @@ class _StateTransaction:
                 os.close(descriptor)
         finally:
             intents.close()
+        return matching[0]
+
+    def _require_empty_create_namespace(self, tenant_id: str) -> None:
+        desired_name = StateRecordPath.tenant_desired(tenant_id).components[-1]
+        observed_name = StateRecordPath.tenant_observed(tenant_id).components[-1]
+        allowed = {*_TENANT_CHILD_DIRECTORIES, desired_name, observed_name}
+        tenant_root = self._repository._durable.open_descendant(("tenants",))
+        try:
+            root_fd = tenant_root.duplicate_descriptor()
+            try:
+                tenant_fd = os.open(tenant_id, _DIRECTORY_OPEN_FLAGS, dir_fd=root_fd)
+                try:
+                    validate_state_directory(
+                        tenant_fd,
+                        expected_owner=self._repository._expected_owner,
+                        expected_mode=self._repository._expected_directory_mode,
+                    )
+                    with os.scandir(tenant_fd) as entries:
+                        names_list: list[str] = []
+                        for entry in entries:
+                            names_list.append(entry.name)
+                            if len(names_list) > len(allowed):
+                                raise StateRecordError(
+                                    "create tenant namespace contains unexpected state"
+                                )
+                    names = frozenset(names_list)
+                    if not set(_TENANT_CHILD_DIRECTORIES).issubset(names) or not names.issubset(
+                        allowed
+                    ):
+                        raise StateRecordError("create tenant namespace contains unexpected state")
+                    for name in _TENANT_CHILD_DIRECTORIES:
+                        child_fd = os.open(name, _DIRECTORY_OPEN_FLAGS, dir_fd=tenant_fd)
+                        try:
+                            validate_state_directory(
+                                child_fd,
+                                expected_owner=self._repository._expected_owner,
+                                expected_mode=self._repository._expected_directory_mode,
+                            )
+                            with os.scandir(child_fd) as entries:
+                                if next(entries, None) is not None:
+                                    raise StateRecordError(
+                                        "create tenant namespace contains release history"
+                                    )
+                        finally:
+                            os.close(child_fd)
+                finally:
+                    os.close(tenant_fd)
+            finally:
+                os.close(root_fd)
+        finally:
+            tenant_root.close()
+
+    def _admit_create_tenant_identity(self, tenant_id: str) -> None:
+        inventory = self.measure_inventory()
+        if tenant_id not in inventory.tenant_ids:
+            admit_state_inventory(
+                inventory,
+                StateInventoryReservation(tenants=1),
+            )
+
+    def _ensure_immutable_exact(
+        self,
+        path: StateRecordPath,
+        document: dict[str, object],
+    ) -> StoredContract:
+        candidate = self._repository._encode(path, document)
+        try:
+            current = self._repository._read_locked(path)
+        except FileNotFoundError:
+            return self._create_immutable_bytes(path, candidate)
+        if current.revision != _revision(path.contract_kind, candidate):
+            raise StateConflictError("existing immutable state disagrees with create intent")
+        return current
 
     def _create_immutable_bytes(
         self,
@@ -1175,6 +1299,14 @@ class _StateTransaction:
 def _notify_tenant_namespace(
     hook: TenantNamespaceFailureHook | None,
     boundary: TenantNamespaceBoundary,
+) -> None:
+    if hook is not None:
+        hook(boundary)
+
+
+def _notify_create_state(
+    hook: CreateStateFailureHook | None,
+    boundary: CreateStateBoundary,
 ) -> None:
     if hook is not None:
         hook(boundary)
