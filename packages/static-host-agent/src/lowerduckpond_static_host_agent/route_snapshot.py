@@ -34,12 +34,22 @@ class TenantRouteOverlay:
 
     mode: RouteOverlayMode
     tenant: TenantRouteInput
+    source: TenantRouteInput | None = None
 
     def __post_init__(self) -> None:
         if type(self.mode) is not RouteOverlayMode:
             raise TypeError("route overlay mode must be explicit")
         if type(self.tenant) is not TenantRouteInput:
             raise TypeError("route overlay tenant must be one immutable route input")
+        if self.source is not None and type(self.source) is not TenantRouteInput:
+            raise TypeError("route overlay source must be one immutable route input")
+        if self.mode is RouteOverlayMode.ADD and self.source is not None:
+            raise ValueError("add route overlay cannot have a source tenant")
+        if self.mode is RouteOverlayMode.REPLACE:
+            if self.source is None:
+                raise ValueError("replace route overlay requires a source tenant")
+            if _tenant_id(self.source) != _tenant_id(self.tenant):
+                raise ValueError("route overlay source and candidate tenants differ")
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +79,7 @@ def snapshot_tenant_routes(
     validate_contract(namespace, expected_kind=ContractKind.PLATFORM_NAMESPACE)
     inventory = transaction.measure_inventory()
     candidate = None if overlay is None else _copy_tenant(overlay.tenant)
+    source = None if overlay is None or overlay.source is None else _copy_tenant(overlay.source)
     overlay_id = None if candidate is None else _tenant_id(candidate)
     if overlay is not None:
         exists = overlay_id in inventory.tenant_ids
@@ -81,6 +92,11 @@ def snapshot_tenant_routes(
         if tenant_id == overlay_id:
             if candidate is None:  # pragma: no cover - equality proves otherwise
                 raise RouteSnapshotError("route overlay identity was lost")
+            current = _read_tenant(transaction, tenant_id)
+            if source is None or current != source:
+                raise RouteSnapshotError(
+                    "replace route overlay source changed before the locked snapshot"
+                )
             tenants.append(candidate)
         else:
             tenants.append(_read_tenant(transaction, tenant_id))
