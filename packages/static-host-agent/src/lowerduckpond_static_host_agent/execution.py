@@ -735,6 +735,7 @@ def _validate_result_intent_binding(
         or candidate_digest != intent["candidateManifestDigest"]
     ):
         raise ExecutionError("successful result disagrees with its lifecycle intent")
+    _validate_candidate_request_binding(request, manifest)
     if request["operation"] != "create":
         return
     recovery = intent["lifecycleRecovery"]
@@ -752,6 +753,29 @@ def _validate_result_intent_binding(
         or candidate_observed["desiredManifestDigest"] != candidate_digest
     ):
         raise ExecutionError("successful create result disagrees with its lifecycle intent")
+
+
+def _validate_candidate_request_binding(
+    request: dict[str, object],
+    manifest: dict[str, object],
+) -> None:
+    operation = request["operation"]
+    metadata = cast(dict[str, object], manifest["metadata"])
+    spec = cast(dict[str, object], manifest["spec"])
+    matches = True
+    if operation == "create":
+        matches = metadata["slug"] == request["slug"] and spec["quotas"] == request["quotas"]
+    elif operation == "rename":
+        matches = metadata["slug"] == request["slug"]
+    elif operation == "deploy":
+        artifact = cast(dict[str, object], request["artifact"])
+        deployment = cast(dict[str, object], spec["desiredDeployment"])
+        matches = deployment["archiveSha256"] == artifact["sha256"]
+    elif operation == "rollback":
+        deployment = cast(dict[str, object], spec["desiredDeployment"])
+        matches = deployment["id"] == request["deploymentId"]
+    if not matches:
+        raise ExecutionError("successful lifecycle result disagrees with its request target")
 
 
 def _validate_archive_result_intent_binding(

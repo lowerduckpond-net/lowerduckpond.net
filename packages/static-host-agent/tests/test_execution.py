@@ -692,6 +692,67 @@ def test_executor_binds_a_successful_create_result_to_its_active_intent(
     assert handler.phases == []
 
 
+@pytest.mark.parametrize("drift", ["slug", "quotas"])
+def test_executor_binds_a_successful_create_candidate_to_its_request(
+    tmp_path: Path,
+    drift: str,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+
+    with StateRepository(root, expected_owner=os.geteuid()) as repository:
+        issued = _issue_create(repository)
+        request = issued.document["request"]
+        assert type(request) is dict
+        result = _fixture("operation-result.json")
+        provenance = result["provenance"]
+        manifest = result["manifest"]
+        assert type(provenance) is dict
+        assert type(manifest) is dict
+        provenance["jobId"] = issued.job_id
+        result["correlationId"] = request["correlationId"]
+        metadata = manifest["metadata"]
+        spec = manifest["spec"]
+        assert type(metadata) is dict
+        assert type(spec) is dict
+        if drift == "slug":
+            metadata["slug"] = "different-duck"
+        else:
+            quotas = spec["quotas"]
+            assert type(quotas) is dict
+            quotas["storageMiB"] = 99
+        candidate_digest = manifest_digest(manifest).to_dict()
+        intent = _create_intent(request["correlationId"])
+        intent["candidateManifestDigest"] = candidate_digest
+        recovery = intent["lifecycleRecovery"]
+        assert type(recovery) is dict
+        candidate_observed = recovery["candidateObservedState"]
+        assert type(candidate_observed) is dict
+        candidate_observed["desiredManifestDigest"] = candidate_digest
+        repository.create_immutable(
+            StateRecordPath.authorization_result(issued.job_id),
+            result,
+        )
+        repository.create_immutable(
+            StateRecordPath.transaction_intent(intent["intentId"]),
+            intent,
+        )
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        handler = _CompletingCreateHandler(repository)
+        with pytest.raises(RuntimeError, match="request target"):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={"create": handler},
+            ).execute(issued.job_id)
+
+    assert handler.phases == []
+
+
 def test_executor_binds_a_successful_rename_result_to_its_active_intent(
     tmp_path: Path,
 ) -> None:
@@ -701,7 +762,7 @@ def test_executor_binds_a_successful_rename_result_to_its_active_intent(
     candidate_manifest = json.loads(json.dumps(source_manifest))
     candidate_metadata = candidate_manifest["metadata"]
     assert type(candidate_metadata) is dict
-    candidate_metadata["slug"] = "renamed-duck"
+    candidate_metadata["slug"] = "different-duck"
     candidate_digest = manifest_digest(candidate_manifest).to_dict()
 
     job = _fixture("authorization-job.json")
@@ -767,11 +828,116 @@ def test_executor_binds_a_successful_rename_result_to_its_active_intent(
             "manifest": candidate_manifest,
         }
     )
-    result_manifest = result["manifest"]
-    assert type(result_manifest) is dict
-    result_metadata = result_manifest["metadata"]
-    assert type(result_metadata) is dict
-    result_metadata["slug"] = "different-duck"
+    _write(root, StateRecordPath.authorization_job(job["jobId"]), job)
+    _write(
+        root,
+        StateRecordPath.authorization_correlation(request["correlationId"]),
+        correlation,
+    )
+    _write(root, StateRecordPath.transaction_intent(intent["intentId"]), intent)
+    _write(root, StateRecordPath.authorization_result(job["jobId"]), result)
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        handler = _CompletingCreateHandler(repository)
+        with pytest.raises(RuntimeError, match="request target"):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={"rename": handler},
+            ).execute(job["jobId"])
+
+    assert handler.phases == []
+
+
+@pytest.mark.parametrize("operation", ["deploy", "rollback"])
+def test_executor_binds_a_deployment_candidate_to_its_request(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    root = _state_root(tmp_path)
+    source_manifest = _fixture("site.json")
+    source_digest = manifest_digest(source_manifest).to_dict()
+    candidate_manifest = json.loads(json.dumps(source_manifest))
+    candidate_spec = candidate_manifest["spec"]
+    assert type(candidate_spec) is dict
+    candidate_deployment = candidate_spec["desiredDeployment"]
+    assert type(candidate_deployment) is dict
+    candidate_deployment["id"] = "0198d17f-6f4a-7000-8000-000000000005"
+    candidate_deployment["archiveSha256"] = "e" * 64
+    candidate_digest = manifest_digest(candidate_manifest).to_dict()
+
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": operation,
+        "correlationId": "0198d17f-6f4a-7000-8000-000000000001",
+        "tenantId": _TENANT_ID,
+    }
+    if operation == "deploy":
+        request["artifact"] = {"size": 32, "sha256": "d" * 64}
+    else:
+        request["deploymentId"] = "0198d17f-6f4a-7000-8000-000000000007"
+
+    job = _fixture("authorization-job.json")
+    job["request"] = request
+    job["requestDigest"] = request_digest(request).to_dict()
+    job["artifact"] = request.get("artifact")
+    job["phase"] = "claimed"
+    expected = job["expectedSource"]
+    assert type(expected) is dict
+    expected.update(
+        {
+            "expectsTenantAbsent": False,
+            "lifecycle": "active",
+            "manifestDigest": source_digest,
+            "deploymentDigest": deployment_record_digest(
+                _fixture("deployment-record.json")
+            ).to_dict(),
+            "archiveRecordDigest": None,
+        }
+    )
+    correlation = json.loads(json.dumps(job))
+    correlation["phase"] = "pending"
+
+    source_observed = _fixture("tenant-observed-state.json")
+    source_observed["desiredManifestDigest"] = source_digest
+    candidate_observed = json.loads(json.dumps(source_observed))
+    candidate_observed["desiredManifestDigest"] = candidate_digest
+    candidate_observed["activeDeploymentId"] = candidate_deployment["id"]
+    candidate_observed["runtimeGenerationId"] = "0198d17f-6f4a-7000-8000-000000000006"
+    intent = _fixture("transaction-intent.json")
+    intent.update(
+        {
+            "tenantId": _TENANT_ID,
+            "correlationId": request["correlationId"],
+            "operation": operation,
+            "sourceManifestDigest": source_digest,
+            "candidateManifestDigest": candidate_digest,
+            "lifecycleRecovery": {
+                "sourceObservedState": source_observed,
+                "sourceRuntimeGenerationId": "0198d17f-6f4a-7000-8000-000000000004",
+                "sourceRouteSet": "both",
+                "candidateObservedState": candidate_observed,
+                "candidateRuntimeGenerationId": ("0198d17f-6f4a-7000-8000-000000000006"),
+                "candidateRouteSet": "both",
+            },
+        }
+    )
+    result = _fixture("operation-result.json")
+    provenance = result["provenance"]
+    assert type(provenance) is dict
+    provenance["jobId"] = job["jobId"]
+    result.update(
+        {
+            "correlationId": request["correlationId"],
+            "operation": operation,
+            "tenantId": _TENANT_ID,
+            "manifest": candidate_manifest,
+        }
+    )
 
     _write(root, StateRecordPath.authorization_job(job["jobId"]), job)
     _write(
@@ -787,11 +953,11 @@ def test_executor_binds_a_successful_rename_result_to_its_active_intent(
         ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
     ):
         handler = _CompletingCreateHandler(repository)
-        with pytest.raises(RuntimeError, match="result disagrees with its lifecycle intent"):
+        with pytest.raises(RuntimeError, match="request target"):
             AuthorizationExecutor(
                 repository,
                 intake,
-                handlers={"rename": handler},
+                handlers={operation: handler},
             ).execute(job["jobId"])
 
     assert handler.phases == []
