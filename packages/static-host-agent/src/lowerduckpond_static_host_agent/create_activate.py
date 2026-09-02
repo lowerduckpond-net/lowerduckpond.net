@@ -186,6 +186,7 @@ def _ensure_candidate_running(  # noqa: PLR0913 - keep recovery callbacks explic
         return
     if active_id == candidate_id:
         try:
+            runtime.select_active(candidate_id)
             verifier(candidate)
         except Exception:
             try:

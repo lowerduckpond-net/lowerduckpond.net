@@ -556,6 +556,39 @@ def test_create_activation_repairs_running_source_before_reselecting_candidate(
         repository.close()
 
 
+def test_create_activation_durably_reselects_an_already_running_candidate(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root)
+    runtime = _Runtime()
+    try:
+        prepared = _prepare(repository, runtime, job)
+        candidate_id = prepared.candidate_manifest.generation_id
+        runtime.active = runtime.running = candidate_id
+        runtime.events.clear()
+
+        activate_create_transition(
+            repository,
+            cast(CaddyRuntime, runtime),
+            _Gate(),
+            prepared,
+            reloader=runtime.reload,
+            restorer=runtime.restore,
+            verifier=runtime.verify,
+        )
+
+        assert runtime.active == runtime.running == candidate_id
+        assert runtime.events[-3:] == [
+            "read-active",
+            f"selected:{candidate_id}",
+            f"verified:{candidate_id}",
+        ]
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
 def test_create_activation_restores_source_on_control_interruption(
     tmp_path: Path,
 ) -> None:
