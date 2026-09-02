@@ -6,7 +6,7 @@ import hashlib
 import os
 import re
 from bisect import bisect_right
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
@@ -40,7 +40,11 @@ from lowerduckpond_static_host_agent.capacity import (
     FilesystemCapacity,
     measure_filesystem_capacity_descriptor,
 )
-from lowerduckpond_static_host_agent.durable import DurableDirectory, FailureHook
+from lowerduckpond_static_host_agent.durable import (
+    DurableDirectory,
+    FailureHook,
+    validate_state_directory,
+)
 from lowerduckpond_static_host_agent.locks import (
     LockManager,
     LockMode,
@@ -67,6 +71,8 @@ _STATE_REVISION_FORMAT: Final = b"lowerduckpond-state-revision-v1"
 _SHA256_PATTERN: Final = re.compile(r"[0-9a-f]{64}", flags=re.ASCII)
 _RECOVERY_CURSOR_COMPONENTS: Final = ("locks", "authorization-recovery.cursor")
 _RECOVERY_CURSOR_MAXIMUM_BYTES: Final = 36
+_DIRECTORY_OPEN_FLAGS: Final = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+_TENANT_CHILD_DIRECTORIES: Final = ("archives", "deployments")
 
 
 class StateRecordError(RuntimeError):
@@ -75,6 +81,19 @@ class StateRecordError(RuntimeError):
 
 class StateConflictError(RuntimeError):
     """A compare-and-swap source revision is no longer current."""
+
+
+class TenantNamespaceBoundary(StrEnum):
+    """Durability barriers for an intent-authorized tenant namespace."""
+
+    TENANT_DIRECTORY_SYNC = "tenant-directory-sync"
+    TENANT_ROOT_SYNC = "tenant-root-sync"
+    CHILD_DIRECTORIES_SYNC = "child-directories-sync"
+    CHILD_DIRECTORIES_REMOVED = "child-directories-removed"
+    TENANT_DIRECTORY_REMOVED = "tenant-directory-removed"
+
+
+TenantNamespaceFailureHook = Callable[[TenantNamespaceBoundary], None]
 
 
 class _StateRecordName(StrEnum):
@@ -764,6 +783,180 @@ class _StateTransaction:
         candidate = self._repository._encode(path, document)
         return self._create_immutable_bytes(path, candidate)
 
+    def ensure_create_tenant_namespace(
+        self,
+        tenant_id: object,
+        *,
+        failure_hook: TenantNamespaceFailureHook | None = None,
+    ) -> None:
+        """Durably ensure one tenant tree only under its active create intent."""
+
+        self._require_exclusive()
+        canonical_id = validate_uuid7(tenant_id)
+        self._require_create_intent(canonical_id)
+        tenant_root = self._repository._durable.open_descendant(("tenants",))
+        try:
+            root_fd = tenant_root.duplicate_descriptor()
+            try:
+                try:
+                    os.mkdir(
+                        canonical_id,
+                        mode=self._repository._expected_directory_mode,
+                        dir_fd=root_fd,
+                    )
+                except FileExistsError:
+                    created = False
+                else:
+                    created = True
+                tenant_fd = os.open(canonical_id, _DIRECTORY_OPEN_FLAGS, dir_fd=root_fd)
+                try:
+                    if created:
+                        os.fchmod(tenant_fd, self._repository._expected_directory_mode)
+                    validate_state_directory(
+                        tenant_fd,
+                        expected_owner=self._repository._expected_owner,
+                        expected_mode=self._repository._expected_directory_mode,
+                    )
+                    os.fsync(tenant_fd)
+                    _notify_tenant_namespace(
+                        failure_hook,
+                        TenantNamespaceBoundary.TENANT_DIRECTORY_SYNC,
+                    )
+                    os.fsync(root_fd)
+                    _notify_tenant_namespace(
+                        failure_hook,
+                        TenantNamespaceBoundary.TENANT_ROOT_SYNC,
+                    )
+                    for name in _TENANT_CHILD_DIRECTORIES:
+                        try:
+                            os.mkdir(
+                                name,
+                                mode=self._repository._expected_directory_mode,
+                                dir_fd=tenant_fd,
+                            )
+                        except FileExistsError:
+                            child_created = False
+                        else:
+                            child_created = True
+                        child_fd = os.open(name, _DIRECTORY_OPEN_FLAGS, dir_fd=tenant_fd)
+                        try:
+                            if child_created:
+                                os.fchmod(
+                                    child_fd,
+                                    self._repository._expected_directory_mode,
+                                )
+                            validate_state_directory(
+                                child_fd,
+                                expected_owner=self._repository._expected_owner,
+                                expected_mode=self._repository._expected_directory_mode,
+                            )
+                            os.fsync(child_fd)
+                        finally:
+                            os.close(child_fd)
+                    os.fsync(tenant_fd)
+                    _notify_tenant_namespace(
+                        failure_hook,
+                        TenantNamespaceBoundary.CHILD_DIRECTORIES_SYNC,
+                    )
+                finally:
+                    os.close(tenant_fd)
+            finally:
+                os.close(root_fd)
+        finally:
+            tenant_root.close()
+
+    def remove_empty_create_tenant_namespace(
+        self,
+        tenant_id: object,
+        *,
+        failure_hook: TenantNamespaceFailureHook | None = None,
+    ) -> None:
+        """Durably remove an uncommitted empty tree under its create intent."""
+
+        self._require_exclusive()
+        canonical_id = validate_uuid7(tenant_id)
+        self._require_create_intent(canonical_id)
+        tenant_root = self._repository._durable.open_descendant(("tenants",))
+        try:
+            root_fd = tenant_root.duplicate_descriptor()
+            try:
+                try:
+                    tenant_fd = os.open(
+                        canonical_id,
+                        _DIRECTORY_OPEN_FLAGS,
+                        dir_fd=root_fd,
+                    )
+                except FileNotFoundError:
+                    return
+                try:
+                    validate_state_directory(
+                        tenant_fd,
+                        expected_owner=self._repository._expected_owner,
+                        expected_mode=self._repository._expected_directory_mode,
+                    )
+                    with os.scandir(tenant_fd) as entries:
+                        names_list: list[str] = []
+                        for entry in entries:
+                            names_list.append(entry.name)
+                            if len(names_list) > len(_TENANT_CHILD_DIRECTORIES):
+                                raise StateRecordError(
+                                    "uncommitted tenant namespace contains state records"
+                                )
+                    names = tuple(sorted(names_list))
+                    if any(name not in _TENANT_CHILD_DIRECTORIES for name in names):
+                        raise StateRecordError(
+                            "uncommitted tenant namespace contains state records"
+                        )
+                    for name in names:
+                        child_fd = os.open(name, _DIRECTORY_OPEN_FLAGS, dir_fd=tenant_fd)
+                        try:
+                            validate_state_directory(
+                                child_fd,
+                                expected_owner=self._repository._expected_owner,
+                                expected_mode=self._repository._expected_directory_mode,
+                            )
+                            with os.scandir(child_fd) as entries:
+                                if next(entries, None) is not None:
+                                    raise StateRecordError(
+                                        "uncommitted tenant child directory is not empty"
+                                    )
+                        finally:
+                            os.close(child_fd)
+                    for name in names:
+                        os.rmdir(name, dir_fd=tenant_fd)
+                    os.fsync(tenant_fd)
+                    _notify_tenant_namespace(
+                        failure_hook,
+                        TenantNamespaceBoundary.CHILD_DIRECTORIES_REMOVED,
+                    )
+                finally:
+                    os.close(tenant_fd)
+                os.rmdir(canonical_id, dir_fd=root_fd)
+                os.fsync(root_fd)
+                _notify_tenant_namespace(
+                    failure_hook,
+                    TenantNamespaceBoundary.TENANT_DIRECTORY_REMOVED,
+                )
+            finally:
+                os.close(root_fd)
+        finally:
+            tenant_root.close()
+
+    def _require_create_intent(self, tenant_id: str) -> None:
+        inventory = self.measure_intent_records()
+        matching = 0
+        for identity in inventory.records:
+            path, record = self.read_intent(identity.intent_id)
+            document = record.document
+            if (
+                path.contract_kind is ContractKind.TRANSACTION_INTENT
+                and document["operation"] == "create"
+                and document["tenantId"] == tenant_id
+            ):
+                matching += 1
+        if matching != 1 or len(inventory.records) != 1:
+            raise StateRecordError("tenant namespace requires one matching active create intent")
+
     def _create_immutable_bytes(
         self,
         path: StateRecordPath,
@@ -959,6 +1152,14 @@ class _StateTransaction:
         self._require_active()
         if self._mode is not LockMode.EXCLUSIVE:
             raise RuntimeError("state mutation requires an exclusive tenant-state lock")
+
+
+def _notify_tenant_namespace(
+    hook: TenantNamespaceFailureHook | None,
+    boundary: TenantNamespaceBoundary,
+) -> None:
+    if hook is not None:
+        hook(boundary)
 
 
 def _revision(kind: ContractKind, canonical: bytes) -> StateRevision:

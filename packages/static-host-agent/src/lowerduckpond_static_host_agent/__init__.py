@@ -221,6 +221,7 @@ from lowerduckpond_static_host_agent.repository import (
     StateRepository,
     StateRevision,
     StoredContract,
+    TenantNamespaceBoundary,
 )
 from lowerduckpond_static_host_agent.request_decoder import (
     LocalRequestDecoder,
@@ -435,6 +436,7 @@ __all__ = [
     "SystemdJobHandoff",
     "TenantCaddyRoutes",
     "TenantGenerationError",
+    "TenantNamespaceBoundary",
     "TenantRouteInput",
     "TenantRouteOverlay",
     "TenantRouteSnapshot",
