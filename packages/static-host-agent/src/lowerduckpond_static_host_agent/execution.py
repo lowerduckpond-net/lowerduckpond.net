@@ -581,6 +581,7 @@ def _validate_result_intent_binding(
 ) -> None:
     if result["status"] != "succeeded":
         return
+    _validate_archive_result_intent_binding(result, request, intents)
     matching = [intent for intent in intents if intent["kind"] == "TransactionIntent"]
     if request["operation"] == "create" and len(matching) != 1:
         raise ExecutionError("successful create result has no exact lifecycle intent")
@@ -617,6 +618,29 @@ def _validate_result_intent_binding(
         or candidate_observed["desiredManifestDigest"] != candidate_digest
     ):
         raise ExecutionError("successful create result disagrees with its lifecycle intent")
+
+
+def _validate_archive_result_intent_binding(
+    result: dict[str, object],
+    request: dict[str, object],
+    intents: list[dict[str, object]],
+) -> None:
+    if request["operation"] != "archive":
+        return
+    matching = [intent for intent in intents if intent["kind"] == "ArchiveConstructionIntent"]
+    if not matching:
+        return
+    if len(matching) != 1:  # pragma: no cover - duplicate kinds fail during collection
+        raise ExecutionError("successful archive result has no exact construction intent")
+    manifest = result.get("manifest")
+    if type(manifest) is not dict:
+        raise ExecutionError("successful archive result manifest is malformed")
+    intent = matching[0]
+    if (
+        result["tenantId"] != intent["tenantId"]
+        or manifest_digest(manifest).to_dict() != intent["candidateManifestDigest"]
+    ):
+        raise ExecutionError("successful archive result disagrees with its construction intent")
 
 
 def _intent_binds_job(
