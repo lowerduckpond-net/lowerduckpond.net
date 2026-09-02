@@ -231,11 +231,17 @@ class AuthorizationExecutor:
                 created = False
             else:
                 _validate_job_integrity(current.document, claim=claim)
-                error_code = _expected_source_error(transaction, current.document)
-                if error_code is not None:
-                    result = _failure_result(current.document, error_code)
-                    _publish_result(transaction, current, result, limits=self._capacity_limits)
-                    return ExecutionOutcome(result, True)
+                if current.document["phase"] == "pending":
+                    error_code = _expected_source_error(transaction, current.document)
+                    if error_code is not None:
+                        result = _failure_result(current.document, error_code)
+                        _publish_result(
+                            transaction,
+                            current,
+                            result,
+                            limits=self._capacity_limits,
+                        )
+                        return ExecutionOutcome(result, True)
                 claimed = _claim_pending(transaction, current)
                 if handler is None:
                     # Unsupported lifecycle operations remain mutation-free until
