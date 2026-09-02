@@ -31,7 +31,11 @@ from lowerduckpond_static_host_agent.create_activate import (
     GenerationVerifier,
     activate_create_transition,
 )
-from lowerduckpond_static_host_agent.create_commit import CreateCommitFailureHook
+from lowerduckpond_static_host_agent.create_commit import (
+    CreateCommitFailureHook,
+    CreateCommitTransaction,
+    admit_create_transition,
+)
 from lowerduckpond_static_host_agent.create_prepare import PreparedCreateTransition
 from lowerduckpond_static_host_agent.issuance import PublicationGate, build_expected_source
 from lowerduckpond_static_host_agent.lifecycle_plan import CreateTransitionPlan
@@ -40,11 +44,7 @@ from lowerduckpond_static_host_agent.repository import (
     StateRepository,
     StoredContract,
 )
-from lowerduckpond_static_host_agent.route_snapshot import (
-    RouteOverlayMode,
-    TenantRouteOverlay,
-    snapshot_tenant_routes,
-)
+from lowerduckpond_static_host_agent.route_snapshot import snapshot_tenant_routes
 from lowerduckpond_static_host_agent.state_inventory import (
     IntentRecordInventory,
     StateInventory,
@@ -65,6 +65,13 @@ class CreateRecoveryTransaction(Protocol):
     def measure_inventory(self) -> StateInventory: ...
 
     def read_intent(self, intent_id: object) -> tuple[StateRecordPath, StoredContract]: ...
+
+    def ensure_create_tenant_state(
+        self,
+        tenant_id: object,
+        manifest: dict[str, object],
+        observed_state: dict[str, object],
+    ) -> None: ...
 
     def inspect_audit_correlation(
         self,
@@ -140,19 +147,6 @@ def _reconstruct_create(
         route_snapshot.tenants,
         intent.document,
     )
-    candidate_tenant = TenantRouteInput(
-        candidate_manifest,
-        candidate_observed,
-        None,
-    )
-    tenant_id = validate_uuid7(intent.document["tenantId"])
-    overlay = (
-        None
-        if tenant_id in transaction.measure_inventory().tenant_ids
-        else TenantRouteOverlay(RouteOverlayMode.ADD, candidate_tenant)
-    )
-    if route_snapshot != snapshot_tenant_routes(transaction, overlay=overlay):
-        raise CreateRecoveryError("create candidate route snapshot disagrees with authority")
     with runtime.open_verified_generation(candidate_id) as generation:
         generation_manifest = generation.manifest
 
@@ -172,6 +166,23 @@ def _reconstruct_create(
         result=result,
         audit_entry=audit_entry,
     )
+    # A create can be interrupted at any durable namespace or state-record
+    # boundary. Admit the complete terminal replay before filling only the exact
+    # intent-authorized state prefix, then compare the candidate against the now
+    # complete authoritative route snapshot before any runtime activation.
+    admit_create_transition(
+        cast(CreateCommitTransaction, transaction),
+        job,
+        plan,
+        capacity_limits=capacity_limits,
+    )
+    transaction.ensure_create_tenant_state(
+        plan.tenant_id,
+        plan.manifest,
+        plan.observed_state,
+    )
+    if route_snapshot != snapshot_tenant_routes(transaction):
+        raise CreateRecoveryError("create candidate route snapshot disagrees with authority")
     return PreparedCreateTransition(job, plan, generation_manifest, capacity_limits)
 
 

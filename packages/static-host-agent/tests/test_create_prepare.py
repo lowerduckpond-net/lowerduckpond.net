@@ -22,6 +22,7 @@ from lowerduckpond_static_host_agent import (
     CreateActivationError,
     CreateCommitBoundary,
     CreatePreparationError,
+    CreateStateBoundary,
     FilesystemCapacity,
     HostCapacityLimits,
     LockManager,
@@ -462,6 +463,54 @@ def test_create_recovery_reconstructs_and_activates_durable_preparation(
         repository.close()
 
 
+def test_create_recovery_repairs_a_partial_tenant_state_pair(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root)
+    _write_correlation(root, job)
+    runtime = _Runtime()
+    try:
+        prepared = _prepare(repository, runtime, job)
+
+        def interrupt(boundary: CreateStateBoundary) -> None:
+            if boundary is CreateStateBoundary.DESIRED_STATE_SYNC:
+                raise RuntimeError("interrupted after desired state")
+
+        with (
+            pytest.raises(RuntimeError, match="interrupted after desired state"),
+            repository.publication_transaction() as transaction,
+        ):
+            transaction.ensure_create_tenant_state(
+                prepared.plan.tenant_id,
+                prepared.plan.manifest,
+                prepared.plan.observed_state,
+                failure_hook=interrupt,
+            )
+
+        assert (
+            repository.read(StateRecordPath.tenant_desired(prepared.plan.tenant_id)).document
+            == prepared.plan.manifest
+        )
+        with pytest.raises(FileNotFoundError):
+            repository.read(StateRecordPath.tenant_observed(prepared.plan.tenant_id))
+
+        assert (
+            recover_create_transition(
+                repository,
+                cast(CaddyRuntime, runtime),
+                _Gate(),
+                prepared.plan.intent_id,
+                reloader=runtime.reload,
+                restorer=runtime.restore,
+                verifier=runtime.verify,
+            )
+            == prepared.plan.result
+        )
+        assert repository.measure_intent_records().records == ()
+        assert repository.measure_inventory().tenant_ids == (prepared.plan.tenant_id,)
+    finally:
+        repository.close()
+
+
 def test_create_recovery_replays_an_already_appended_audit_entry(tmp_path: Path) -> None:
     root = _state_root(tmp_path)
     repository, job = _prepared_repository(root)
@@ -560,7 +609,15 @@ def test_create_recovery_rejects_an_unbound_candidate_route(tmp_path: Path) -> N
 
         assert runtime.active == runtime.running == _SOURCE_GENERATION
         assert len(repository.measure_intent_records().records) == 1
-        assert repository.measure_inventory().tenant_ids == ()
+        assert repository.measure_inventory().tenant_ids == (prepared.plan.tenant_id,)
+        assert (
+            repository.read(StateRecordPath.tenant_desired(prepared.plan.tenant_id)).document
+            == prepared.plan.manifest
+        )
+        assert (
+            repository.read(StateRecordPath.tenant_observed(prepared.plan.tenant_id)).document
+            == prepared.plan.observed_state
+        )
     finally:
         repository.close()
 
