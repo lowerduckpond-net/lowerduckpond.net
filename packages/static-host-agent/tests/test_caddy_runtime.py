@@ -445,6 +445,18 @@ def test_runtime_publishes_and_validates_one_unselected_derived_candidate(
         assert runtime.read_active() == _TENANT_GENERATION
 
 
+def test_runtime_opens_one_explicit_verified_generation(
+    runtime_fixture: RuntimeFixture,
+) -> None:
+    with runtime_fixture.open() as runtime, runtime.locked():
+        runtime.select_active(GENERATION_A)
+
+        with runtime.open_verified_generation(GENERATION_B) as generation:
+            assert generation.manifest.generation_id == GENERATION_B
+
+        assert runtime.read_active() == GENERATION_A
+
+
 def test_runtime_refuses_candidate_publication_while_the_gate_is_closed(
     runtime_fixture: RuntimeFixture,
 ) -> None:

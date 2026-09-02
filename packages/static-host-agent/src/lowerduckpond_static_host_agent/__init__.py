@@ -120,10 +120,15 @@ from lowerduckpond_static_host_agent.correlations import (
     CorrelationReconciliation,
     CorrelationResolution,
 )
+from lowerduckpond_static_host_agent.create_activate import (
+    CreateActivationError,
+    activate_create_transition,
+)
 from lowerduckpond_static_host_agent.create_commit import (
     CreateCommitBoundary,
     CreateCommitError,
     finalize_create_transition,
+    validate_create_transition,
 )
 from lowerduckpond_static_host_agent.create_prepare import (
     CreatePreparationError,
@@ -366,6 +371,7 @@ __all__ = [
     "CorrelationRateLimitError",
     "CorrelationReconciliation",
     "CorrelationResolution",
+    "CreateActivationError",
     "CreateCommitBoundary",
     "CreateCommitError",
     "CreatePreparationError",
@@ -464,6 +470,7 @@ __all__ = [
     "ZipMember",
     "ZipStructure",
     "ZipStructureError",
+    "activate_create_transition",
     "admit_release_capacity",
     "admit_state_inventory",
     "aggregate_release_usage",
@@ -497,5 +504,6 @@ __all__ = [
     "restore_caddy_generation",
     "snapshot_tenant_routes",
     "start_target",
+    "validate_create_transition",
     "verify_running_caddy",
 ]

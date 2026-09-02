@@ -171,6 +171,32 @@ def finalize_create_transition(
     return deepcopy(documents.result)
 
 
+def validate_create_transition(job: StoredContract, plan: CreateTransitionPlan) -> None:
+    """Validate every create document relationship without mutating state."""
+
+    _freeze_and_validate(job, plan)
+
+
+def admit_create_transition(
+    transaction: CreateCommitTransaction,
+    job: StoredContract,
+    plan: CreateTransitionPlan,
+    *,
+    capacity_limits: HostCapacityLimits = DEFAULT_HOST_CAPACITY_LIMITS,
+) -> None:
+    """Prove terminal create capacity and inventory before runtime mutation."""
+
+    documents = _freeze_and_validate(job, plan)
+    current_job = _require_same_job(transaction, job)
+    _require_exact_intent(transaction, documents)
+    _admit_missing_state(
+        transaction,
+        current_job,
+        documents,
+        capacity_limits=capacity_limits,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class _MissingState:
     result: bool
@@ -386,6 +412,9 @@ def _admit_missing_state(
         transient_allocations.append(
             transaction.allocation_upper_bound(len(canonical_json_bytes(completed)))
         )
+    entry_count = len(missing) + directory_inodes + int(audit_missing) + int(job_transition)
+    if entry_count == 0:
+        return _MissingState(result_missing)
     transaction.admit_inventory(
         StateInventoryReservation(
             tenants=int(tenant_missing),
@@ -393,7 +422,6 @@ def _admit_missing_state(
             authorization_allocated_bytes=result_allocation,
         )
     )
-    entry_count = len(missing) + directory_inodes + int(audit_missing) + int(job_transition)
     admit_release_capacity(
         ReleaseCapacityUsage(()),
         CapacityReservation(
