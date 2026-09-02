@@ -1,39 +1,13 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended"],
+  "enabledManagers": ["custom.regex"],
   "dependencyDashboard": true,
   "minimumReleaseAge": "7 days",
-  "prConcurrentLimit": 5,
+  "prConcurrentLimit": 1,
   "schedule": ["before 6am on monday"],
   "semanticCommits": "enabled",
   "automerge": false,
-  "lockFileMaintenance": {
-    "enabled": true,
-    "schedule": ["before 6am on the first day of the month"]
-  },
-  "packageRules": [
-    {
-      "description": "Pin GitHub Actions to immutable commits",
-      "matchManagers": ["github-actions"],
-      "pinDigests": true
-    },
-    {
-      "description": "Group non-major Python development updates",
-      "matchManagers": ["pep621", "pre-commit"],
-      "matchUpdateTypes": ["digest", "patch", "minor"],
-      "groupName": "Python development dependencies"
-    },
-    {
-      "description": "Do not delay vulnerability remediation",
-      "matchCategories": ["security"],
-      "minimumReleaseAge": null
-    },
-    {
-      "description": "Keep major upgrades isolated for review",
-      "matchUpdateTypes": ["major"],
-      "groupName": null
-    }
-  ],
   "customManagers": [
     {
       "customType": "regex",

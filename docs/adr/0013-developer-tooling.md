@@ -10,15 +10,20 @@ OpenTofu, Ansible, documentation, and security checks.
 
 ## Decision
 
-Use `mise` for executable versions, `just` for documented commands, pre-commit
-for fast local checks, and Renovate for controlled dependency updates. Use one
-`just check` command as the local acceptance gate. Pre-commit may apply safe
-hygiene fixes and then fail so the contributor can review and rerun it.
+Use `mise` for executable versions, `just` for documented commands, and
+pre-commit for fast local checks. Use Dependabot for controlled updates to
+supported dependency ecosystems. Retain Renovate only for the custom Caddy
+release reference in `platform/versions.yml`, which is outside Dependabot's
+manifest support. Use one `just check` command as the local acceptance gate.
+Pre-commit may apply safe hygiene fixes and then fail so the contributor can
+review and rerun it.
 
 ## Consequences
 
 The repository must pin a patched `mise` version, lock Python dependencies, pin
 CI actions by commit, and keep narrow `just` recipes callable independently.
+Dependabot and Renovate must have non-overlapping ownership so a dependency has
+only one update source.
 
 ## Alternatives considered
 
