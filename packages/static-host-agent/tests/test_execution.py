@@ -438,7 +438,6 @@ def test_executor_terminalizes_delete_that_becomes_ineligible(tmp_path: Path) ->
     request.update({"operation": "delete", "tenantId": _TENANT_ID})
     request.pop("slug", None)
     request.pop("quotas", None)
-
     with (
         StateRepository(root, expected_owner=os.geteuid()) as repository,
         ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
@@ -500,6 +499,45 @@ def test_executor_archive_failure_includes_explicit_absent_record(tmp_path: Path
     assert outcome.result["status"] == "failed"
     assert outcome.result["errorCode"] == "not_implemented"
     assert outcome.result["archiveRecord"] is None
+
+
+def test_executor_dispatches_a_claimed_job_without_rechecking_its_source(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    namespace = _fixture("platform-namespace.json")
+    _write(root, StateRecordPath.platform_namespace(), namespace)
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued = _issue_create(repository)
+        job = repository.read(StateRecordPath.authorization_job(issued.job_id))
+        claimed = job.document
+        claimed["phase"] = "claimed"
+        repository.compare_and_swap(
+            StateRecordPath.authorization_job(issued.job_id),
+            job.revision,
+            claimed,
+        )
+        current = repository.read(StateRecordPath.platform_namespace())
+        namespace["initializedAt"] = "2026-08-30T12:01:00Z"
+        repository.compare_and_swap(
+            StateRecordPath.platform_namespace(),
+            current.revision,
+            namespace,
+        )
+        handler = _CompletingCreateHandler(repository)
+
+        outcome = AuthorizationExecutor(
+            repository,
+            intake,
+            handlers={"create": handler},
+        ).execute(issued.job_id)
+
+    assert outcome.result["status"] == "succeeded"
+    assert handler.phases == ["claimed"]
 
 
 def test_executor_consumes_only_the_artifact_bound_to_the_job(tmp_path: Path) -> None:
