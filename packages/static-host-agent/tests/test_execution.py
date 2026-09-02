@@ -1331,7 +1331,59 @@ def test_executor_binds_a_successful_archive_result_to_its_construction_intent(
     assert handler.phases == []
 
 
-def test_executor_dispatches_a_claimed_job_without_rechecking_its_source(
+def test_executor_dispatches_a_claimed_job_with_an_intent_without_source_recheck(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    namespace = _fixture("platform-namespace.json")
+    _write(root, StateRecordPath.platform_namespace(), namespace)
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued = _issue_create(repository)
+        job = repository.read(StateRecordPath.authorization_job(issued.job_id))
+        claimed = job.document
+        claimed["phase"] = "claimed"
+        repository.compare_and_swap(
+            StateRecordPath.authorization_job(issued.job_id),
+            job.revision,
+            claimed,
+        )
+        request = issued.document["request"]
+        assert type(request) is dict
+        intent = _create_intent(request["correlationId"])
+        intent_id = intent["intentId"]
+        assert type(intent_id) is str
+        repository.create_immutable(
+            StateRecordPath.transaction_intent(intent_id),
+            intent,
+        )
+        current = repository.read(StateRecordPath.platform_namespace())
+        namespace["initializedAt"] = "2026-08-30T12:01:00Z"
+        repository.compare_and_swap(
+            StateRecordPath.platform_namespace(),
+            current.revision,
+            namespace,
+        )
+        handler = _CompletingIntentHandler(
+            repository,
+            intent_path=StateRecordPath.transaction_intent(intent_id),
+            delegate=_CompletingCreateHandler(repository),
+        )
+
+        outcome = AuthorizationExecutor(
+            repository,
+            intake,
+            handlers={"create": handler},
+        ).execute(issued.job_id)
+
+    assert outcome.result["status"] == "succeeded"
+    assert handler.phases == ["claimed"]
+
+
+def test_executor_revalidates_a_claimed_job_without_a_recovery_intent(
     tmp_path: Path,
 ) -> None:
     root = _state_root(tmp_path)
@@ -1366,8 +1418,9 @@ def test_executor_dispatches_a_claimed_job_without_rechecking_its_source(
             handlers={"create": handler},
         ).execute(issued.job_id)
 
-    assert outcome.result["status"] == "succeeded"
-    assert handler.phases == ["claimed"]
+    assert outcome.result["status"] == "failed"
+    assert outcome.result["errorCode"] == "state_drift"
+    assert handler.phases == []
 
 
 def test_executor_consumes_only_the_artifact_bound_to_the_job(tmp_path: Path) -> None:
