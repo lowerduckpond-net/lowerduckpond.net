@@ -881,6 +881,14 @@ def test_completed_create_cleans_its_intent_after_capacity_falls(
                 available_inodes=0,
             ),
         )
+        runtime.events.clear()
+
+        def reject_candidate_reselection(generation_id: str) -> None:
+            if generation_id == candidate_id:
+                raise OSError("no inode is available for active-reference staging")
+            raise AssertionError("completed create must not select another generation")
+
+        monkeypatch.setattr(runtime, "select_active", reject_candidate_reselection)
         assert (
             activate_create_transition(
                 repository,
@@ -895,6 +903,7 @@ def test_completed_create_cleans_its_intent_after_capacity_falls(
         )
 
         assert runtime.active == runtime.running == candidate_id
+        assert not any(event.startswith("selected:") for event in runtime.events)
         assert repository.measure_intent_records().records == ()
     finally:
         repository.close()

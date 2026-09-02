@@ -122,6 +122,7 @@ def activate_create_transition(  # noqa: PLR0913 - recovery mechanisms stay inje
                 reloader=reloader,
                 restorer=restorer,
                 verifier=verifier,
+                candidate_selection_is_durable=current_job.document["phase"] == "completed",
             )
             try:
                 return finalize_create_transition(
@@ -170,6 +171,7 @@ def _ensure_candidate_running(  # noqa: PLR0913 - keep recovery callbacks explic
     reloader: GenerationReloader,
     restorer: GenerationRestorer,
     verifier: GenerationVerifier,
+    candidate_selection_is_durable: bool,
 ) -> None:
     active_id = runtime.read_active()
     source_id = source.manifest.generation_id
@@ -186,10 +188,11 @@ def _ensure_candidate_running(  # noqa: PLR0913 - keep recovery callbacks explic
             _restore_source(runtime, source, restorer=restorer, error=error)
         return
     if active_id == candidate_id:
-        try:
-            runtime.select_active(candidate_id)
-        except BaseException as error:
-            _restore_source(runtime, source, restorer=restorer, error=error)
+        if not candidate_selection_is_durable:
+            try:
+                runtime.select_active(candidate_id)
+            except BaseException as error:
+                _restore_source(runtime, source, restorer=restorer, error=error)
         try:
             verifier(candidate)
         except Exception:
