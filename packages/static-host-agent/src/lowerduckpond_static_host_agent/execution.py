@@ -565,21 +565,36 @@ def _validate_result_intent_binding(
     request: dict[str, object],
     intents: list[dict[str, object]],
 ) -> None:
-    if request["operation"] != "create" or result["status"] != "succeeded":
+    if result["status"] != "succeeded":
         return
     matching = [intent for intent in intents if intent["kind"] == "TransactionIntent"]
-    if len(matching) != 1:
+    if request["operation"] == "create" and len(matching) != 1:
         raise ExecutionError("successful create result has no exact lifecycle intent")
+    if not matching:
+        return
+    if len(matching) != 1:  # pragma: no cover - duplicate kinds fail during collection
+        raise ExecutionError("successful result has no exact lifecycle intent")
     intent = matching[0]
-    manifest = result["manifest"]
+    manifest = result.get("manifest")
+    if manifest is None:
+        return
+    if type(manifest) is not dict:
+        raise ExecutionError("successful lifecycle result manifest is malformed")
+    candidate_digest = manifest_digest(manifest).to_dict()
+    if (
+        result["tenantId"] != intent["tenantId"]
+        or candidate_digest != intent["candidateManifestDigest"]
+    ):
+        raise ExecutionError("successful result disagrees with its lifecycle intent")
+    if request["operation"] != "create":
+        return
     recovery = intent["lifecycleRecovery"]
-    if type(manifest) is not dict or type(recovery) is not dict:
+    if type(recovery) is not dict:
         raise ExecutionError("successful create recovery authority is malformed")
     metadata = manifest["metadata"]
     candidate_observed = recovery["candidateObservedState"]
     if type(metadata) is not dict or type(candidate_observed) is not dict:
         raise ExecutionError("successful create candidate authority is malformed")
-    candidate_digest = manifest_digest(manifest).to_dict()
     if (
         not result["tenantId"] == metadata["id"] == intent["tenantId"]
         or result["canonicalOrigin"] != metadata["canonicalOrigin"]
