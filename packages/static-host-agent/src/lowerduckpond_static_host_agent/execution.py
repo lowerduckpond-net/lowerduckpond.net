@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from contextlib import nullcontext
+from contextlib import ExitStack
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Final, Protocol, cast
@@ -187,36 +187,43 @@ class AuthorizationExecutor:
             return ExecutionOutcome(result, False)
 
         artifact = _job_artifact(initial.document)
-        claim_context = (
-            self._intake.claim(
-                correlation_id=_correlation_id(initial.document),
-                declared=artifact,
-                blocking=blocking,
-            )
-            if artifact is not None
-            else nullcontext(None)
-        )
-        try:
-            with claim_context as claim:
-                outcome = self._execute_with_claim(
-                    canonical_id,
-                    initial,
-                    claim=claim,
-                    handler=handler,
-                    blocking=blocking,
-                )
-                if claim is not None:
-                    claim.consume()
-                return outcome
-        except IntakeArtifactUnavailableError:
-            return self._fail_without_claim(
+        if artifact is None:
+            return self._execute_with_claim(
                 canonical_id,
                 initial,
-                error_code="invalid_artifact",
+                claim=None,
+                handler=handler,
                 blocking=blocking,
             )
-        except IntakeError as error:
-            raise ExecutionError("authorized artifact failed its root-owned validation") from error
+        with ExitStack() as claim_stack:
+            try:
+                claim = claim_stack.enter_context(
+                    self._intake.claim(
+                        correlation_id=_correlation_id(initial.document),
+                        declared=artifact,
+                        blocking=blocking,
+                    )
+                )
+            except IntakeArtifactUnavailableError:
+                return self._fail_without_claim(
+                    canonical_id,
+                    initial,
+                    error_code="invalid_artifact",
+                    blocking=blocking,
+                )
+            except IntakeError as error:
+                raise ExecutionError(
+                    "authorized artifact failed its root-owned validation"
+                ) from error
+            outcome = self._execute_with_claim(
+                canonical_id,
+                initial,
+                claim=claim,
+                handler=handler,
+                blocking=blocking,
+            )
+            claim.consume()
+            return outcome
 
     def _consume_terminal_artifact(
         self,
