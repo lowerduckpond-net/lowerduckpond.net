@@ -158,11 +158,13 @@ class AuthorizationExecutor:
                 if durable is None or durable.document != existing.document:
                     raise ExecutionError("terminal result changed during replay")
                 _validate_result_binding(current.document, durable.document)
-                dispatch = handler is not None and _has_bound_lifecycle_intent(
+                has_lifecycle_intent = _has_bound_lifecycle_intent(
                     transaction,
                     current.document,
                     result=durable.document,
                 )
+                _require_available_lifecycle_handler(has_lifecycle_intent, handler)
+                dispatch = has_lifecycle_intent
                 if not dispatch:
                     result = _repair_terminal_phase_transaction(
                         transaction,
@@ -289,11 +291,13 @@ class AuthorizationExecutor:
             existing = _read_result_transaction(transaction, job_id)
             if existing is not None:
                 _validate_result_binding(current.document, existing.document)
-                if handler is None or not _has_bound_lifecycle_intent(
+                has_lifecycle_intent = _has_bound_lifecycle_intent(
                     transaction,
                     current.document,
                     result=existing.document,
-                ):
+                )
+                _require_available_lifecycle_handler(has_lifecycle_intent, handler)
+                if not has_lifecycle_intent:
                     result = _repair_terminal_phase_transaction(transaction, current, existing)
                     return ExecutionOutcome(result, False)
             else:
@@ -584,6 +588,14 @@ def _has_bound_lifecycle_intent(
     if matching_intents:
         _validate_result_intent_binding(result, request, matching_intents)
     return bool(matching_kinds)
+
+
+def _require_available_lifecycle_handler(
+    has_lifecycle_intent: bool,
+    handler: LifecycleJobHandler | None,
+) -> None:
+    if has_lifecycle_intent and handler is None:
+        raise ExecutionError("result-bearing lifecycle job handler is unavailable")
 
 
 def _validate_result_intent_binding(

@@ -353,6 +353,67 @@ def test_executor_preserves_a_claimed_job_when_its_handler_is_unavailable(
     assert preserved_intent == intent
 
 
+def test_executor_preserves_result_bearing_recovery_without_its_handler(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued = _issue_create(repository)
+        job = repository.read(StateRecordPath.authorization_job(issued.job_id))
+        claimed = job.document
+        claimed["phase"] = "claimed"
+        repository.compare_and_swap(
+            StateRecordPath.authorization_job(issued.job_id),
+            job.revision,
+            claimed,
+        )
+        request = claimed["request"]
+        assert type(request) is dict
+        result = _fixture("operation-result.json")
+        provenance = result["provenance"]
+        manifest = result["manifest"]
+        assert type(provenance) is dict
+        assert type(manifest) is dict
+        provenance["jobId"] = issued.job_id
+        result["correlationId"] = request["correlationId"]
+        intent = _create_intent(request["correlationId"])
+        candidate_digest = manifest_digest(manifest).to_dict()
+        intent["candidateManifestDigest"] = candidate_digest
+        recovery = intent["lifecycleRecovery"]
+        assert type(recovery) is dict
+        candidate_observed = recovery["candidateObservedState"]
+        assert type(candidate_observed) is dict
+        candidate_observed["desiredManifestDigest"] = candidate_digest
+        repository.create_immutable(
+            StateRecordPath.transaction_intent(intent["intentId"]),
+            intent,
+        )
+        repository.create_immutable(
+            StateRecordPath.authorization_result(issued.job_id),
+            result,
+        )
+
+        with pytest.raises(RuntimeError, match=r"result-bearing.*handler is unavailable"):
+            AuthorizationExecutor(repository, intake).execute(issued.job_id)
+
+        preserved = repository.read(StateRecordPath.authorization_job(issued.job_id)).document
+        preserved_result = repository.read(
+            StateRecordPath.authorization_result(issued.job_id)
+        ).document
+        preserved_intent = repository.read(
+            StateRecordPath.transaction_intent(intent["intentId"])
+        ).document
+
+    assert preserved["phase"] == "claimed"
+    assert preserved_result == result
+    assert preserved_intent == intent
+
+
 def test_executor_dispatches_claimed_create_and_replays_its_handler(tmp_path: Path) -> None:
     root = _state_root(tmp_path)
     _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
