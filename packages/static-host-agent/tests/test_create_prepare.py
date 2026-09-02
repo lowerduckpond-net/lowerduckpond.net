@@ -379,6 +379,7 @@ def test_create_activation_selects_reloads_and_commits_terminal_state(
             f"opened:{_SOURCE_GENERATION}",
             f"opened:{candidate_id}",
             "read-active",
+            f"verified:{_SOURCE_GENERATION}",
             f"selected:{candidate_id}",
             "reloaded",
         ]
@@ -514,6 +515,43 @@ def test_create_activation_replays_selected_candidate_before_reload(
         assert runtime.active == runtime.running == candidate_id
         assert f"verified:{candidate_id}" in runtime.events
         assert "reloaded" in runtime.events
+    finally:
+        repository.close()
+
+
+def test_create_activation_repairs_running_source_before_reselecting_candidate(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root)
+    runtime = _Runtime()
+    try:
+        prepared = _prepare(repository, runtime, job)
+        candidate_id = prepared.candidate_manifest.generation_id
+        runtime.active = _SOURCE_GENERATION
+        runtime.running = candidate_id
+        runtime.events.clear()
+
+        activate_create_transition(
+            repository,
+            cast(CaddyRuntime, runtime),
+            _Gate(),
+            prepared,
+            reloader=runtime.reload,
+            restorer=runtime.restore,
+            verifier=runtime.verify,
+        )
+
+        assert runtime.active == runtime.running == candidate_id
+        assert runtime.events[:6] == [
+            "locked",
+            f"opened:{_SOURCE_GENERATION}",
+            f"opened:{candidate_id}",
+            "read-active",
+            f"verified:{_SOURCE_GENERATION}",
+            "restored",
+        ]
+        assert runtime.events[-2:] == [f"selected:{candidate_id}", "reloaded"]
     finally:
         repository.close()
 

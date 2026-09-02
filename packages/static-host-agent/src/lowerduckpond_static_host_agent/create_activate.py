@@ -175,6 +175,10 @@ def _ensure_candidate_running(  # noqa: PLR0913 - keep recovery callbacks explic
     candidate_id = candidate.manifest.generation_id
     if active_id == source_id:
         try:
+            try:
+                verifier(source)
+            except Exception:
+                restorer(source)
             runtime.select_active(candidate_id)
             reloader(source, candidate)
         except BaseException as error:
