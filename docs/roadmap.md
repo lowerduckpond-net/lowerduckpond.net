@@ -121,7 +121,8 @@ Create short architecture decision records for:
 10. State backend and serialization strategy.
 11. Initial license for original project code is Apache-2.0.
 12. Control-plane application stack: FastAPI with SQLAlchemy 2 and `uv`.
-13. Developer workflow: `mise`, `just`, pre-commit, and Renovate.
+13. Developer workflow: `mise`, `just`, pre-commit, Dependabot, and narrowly
+    scoped Renovate-only updates.
 14. Initial host baseline: Ubuntu 26.04 LTS with its distribution Podman package.
 15. Start on a small Droplet and preserve reversible CPU/RAM resizing.
 

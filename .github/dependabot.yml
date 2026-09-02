@@ -1,0 +1,93 @@
+---
+version: 2
+
+# Keep routine update traffic bounded. Dependabot security updates are not
+# subject to the version-update pull-request limits below.
+updates:
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: monthly
+      time: "06:00"
+      timezone: Etc/UTC
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 1
+    rebase-strategy: disabled
+    commit-message:
+      prefix: deps
+    groups:
+      python-dependencies:
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+      time: "06:15"
+      timezone: Etc/UTC
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 1
+    rebase-strategy: disabled
+    commit-message:
+      prefix: deps
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  - package-ecosystem: pre-commit
+    directory: /
+    schedule:
+      interval: monthly
+      time: "06:30"
+      timezone: Etc/UTC
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 1
+    rebase-strategy: disabled
+    commit-message:
+      prefix: deps
+    groups:
+      pre-commit-hooks:
+        patterns: ["*"]
+
+  - package-ecosystem: opentofu
+    directories:
+      - /infra/opentofu/bootstrap-state
+      - /infra/opentofu/environments/development
+      - /infra/opentofu/environments/production
+      - /infra/opentofu/environments/qualification
+      - /infra/opentofu/modules/cloudflare-public-edge
+      - /infra/opentofu/modules/digitalocean-host
+      - /infra/opentofu/modules/digitalocean-spaces
+      - /infra/opentofu/modules/digitalocean-tenant-archives
+    schedule:
+      interval: monthly
+      time: "06:45"
+      timezone: Etc/UTC
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 1
+    rebase-strategy: disabled
+    commit-message:
+      prefix: deps
+    groups:
+      opentofu-dependencies:
+        patterns: ["*"]
+
+  - package-ecosystem: docker
+    directory: /tools/m3-archive-qualification
+    schedule:
+      interval: monthly
+      time: "07:00"
+      timezone: Etc/UTC
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 1
+    rebase-strategy: disabled
+    commit-message:
+      prefix: deps
+    groups:
+      container-images:
+        patterns: ["*"]
