@@ -12,6 +12,7 @@ from lowerduckpond_static_contracts import (
     ContractKind,
     audit_entry_digest,
     canonical_json_bytes,
+    manifest_digest,
     result_digest,
     validate_contract,
 )
@@ -225,14 +226,39 @@ def _freeze_and_validate(job: StoredContract, plan: CreateTransitionPlan) -> _Cr
     request = job_document["request"]
     provenance = documents.result["provenance"]
     metadata = documents.manifest["metadata"]
-    if not all(type(value) is dict for value in (request, provenance, metadata)):
+    spec = documents.manifest["spec"]
+    recovery = documents.intent["lifecycleRecovery"]
+    if not all(type(value) is dict for value in (request, provenance, metadata, spec, recovery)):
         raise CreateCommitError("create terminal binding is malformed")
     request = cast(dict[str, object], request)
     provenance = cast(dict[str, object], provenance)
     metadata = cast(dict[str, object], metadata)
+    spec = cast(dict[str, object], spec)
+    recovery = cast(dict[str, object], recovery)
+    desired_digest = manifest_digest(documents.manifest).to_dict()
     if (
         job_document["phase"] not in {"claimed", "completed"}
         or request["operation"] != "create"
+        or metadata["slug"] != request["slug"]
+        or spec
+        != {
+            "runtime": "static",
+            "desiredState": "undeployed",
+            "quotas": request["quotas"],
+        }
+        or documents.observed_state["desiredManifestDigest"] != desired_digest
+        or documents.observed_state["observedState"] != "undeployed"
+        or documents.observed_state["activeDeploymentId"] is not None
+        or documents.observed_state["runtimeGenerationId"] is not None
+        or documents.intent["operation"] != "create"
+        or documents.intent["phase"] != "prepared"
+        or documents.intent["sourceManifestDigest"] is not None
+        or documents.intent["candidateManifestDigest"] != desired_digest
+        or recovery["sourceObservedState"] is not None
+        or recovery["sourceRouteSet"] != "absent"
+        or recovery["candidateObservedState"] != documents.observed_state
+        or recovery["candidateRouteSet"] != "absent"
+        or recovery["sourceRuntimeGenerationId"] == recovery["candidateRuntimeGenerationId"]
         or provenance != {"kind": "authorization-job", "jobId": job_document["jobId"]}
         or documents.intent_id != documents.intent["intentId"]
         or documents.tenant_id
@@ -246,9 +272,13 @@ def _freeze_and_validate(job: StoredContract, plan: CreateTransitionPlan) -> _Cr
         != documents.intent["correlationId"]
         != documents.audit_entry["correlationId"]
         or documents.result["manifest"] != documents.manifest
+        or documents.result["operation"] != "create"
+        or documents.result["status"] != "succeeded"
         or documents.audit_entry["operatorPrincipal"] != job_document["operatorPrincipal"]
         or documents.audit_entry["operation"] != "create"
         or documents.audit_entry["resultStatus"] != "succeeded"
+        or documents.audit_entry["timestamp"] != documents.intent["createdAt"]
+        or documents.audit_entry["timestamp"] != documents.observed_state["reconciledAt"]
         or documents.audit_entry["resultDigest"] != result_digest(documents.result).to_dict()
     ):
         raise CreateCommitError("create terminal documents disagree")

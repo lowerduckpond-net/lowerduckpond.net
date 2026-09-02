@@ -266,6 +266,27 @@ def test_create_commit_rejects_a_plan_bound_to_another_job(tmp_path: Path) -> No
         repository.close()
 
 
+def test_create_commit_rejects_cross_document_state_drift_before_mutation(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    repository, job, plan = _prepared_create(root)
+    digest = plan.observed_state["desiredManifestDigest"]
+    assert type(digest) is dict
+    digest["value"] = "b" * 64
+    try:
+        with (
+            repository.publication_transaction() as transaction,
+            pytest.raises(CreateCommitError, match="disagree"),
+        ):
+            finalize_create_transition(transaction, job, plan)
+
+        with pytest.raises(FileNotFoundError):
+            repository.read(StateRecordPath.tenant_desired(plan.tenant_id))
+    finally:
+        repository.close()
+
+
 def test_create_commit_admits_all_growth_before_first_mutation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
