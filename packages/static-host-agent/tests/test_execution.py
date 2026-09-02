@@ -370,6 +370,13 @@ def test_executor_rejects_a_misbound_result_before_handler_dispatch(tmp_path: Pa
             StateRecordPath.authorization_result(issued.job_id),
             result,
         )
+        request = issued.document["request"]
+        assert type(request) is dict
+        intent = _create_intent(request["correlationId"])
+        repository.create_immutable(
+            StateRecordPath.transaction_intent(intent["intentId"]),
+            intent,
+        )
 
     with (
         StateRepository(root, expected_owner=os.geteuid()) as repository,
