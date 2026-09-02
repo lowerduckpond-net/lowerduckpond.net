@@ -1008,6 +1008,127 @@ def test_executor_consumes_only_the_artifact_bound_to_the_job(tmp_path: Path) ->
     assert list((root / "intake").iterdir()) == []
 
 
+def test_executor_reacquires_the_bound_artifact_for_lifecycle_replay(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    manifest = _fixture("site.json")
+    manifest_digest_value = manifest_digest(manifest).to_dict()
+    candidate_manifest = json.loads(json.dumps(manifest))
+    candidate_spec = candidate_manifest["spec"]
+    assert type(candidate_spec) is dict
+    candidate_deployment = candidate_spec["desiredDeployment"]
+    assert type(candidate_deployment) is dict
+    candidate_deployment["id"] = "0198d17f-6f4a-7000-8000-000000000005"
+    candidate_deployment["archiveSha256"] = "d" * 64
+    candidate_manifest_digest = manifest_digest(candidate_manifest).to_dict()
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), manifest)
+    _write(
+        root,
+        StateRecordPath.tenant_deployment(_TENANT_ID, _DEPLOYMENT_ID),
+        _fixture("deployment-record.json"),
+    )
+    payload = b"recoverable replay deployment"
+    artifact = VerifiedArtifact(len(payload), hashlib.sha256(payload).hexdigest())
+    correlation_id = "0198d17f-6f4a-7000-8000-000000000003"
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "deploy",
+        "correlationId": correlation_id,
+        "tenantId": _TENANT_ID,
+        "artifact": {"size": artifact.size, "sha256": artifact.sha256},
+    }
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        with intake.admit(
+            operation="deploy",
+            correlation_id=correlation_id,
+            declared=artifact,
+            read=BytesIO(payload).read,
+        ) as lease:
+            issued = AuthorizationIssuer(
+                repository,
+                gate=_OpenGate(),
+                entropy=_Entropy(),
+            ).issue(
+                canonical_json_bytes(request),
+                operator_principal="operator@example.test",
+                now=_NOW,
+                artifact=artifact,
+            )
+            lease.commit()
+
+        job = repository.read(StateRecordPath.authorization_job(issued.job_id))
+        claimed = job.document
+        claimed["phase"] = "claimed"
+        repository.compare_and_swap(
+            StateRecordPath.authorization_job(issued.job_id),
+            job.revision,
+            claimed,
+        )
+        source_observed = _fixture("tenant-observed-state.json")
+        source_observed["desiredManifestDigest"] = manifest_digest_value
+        candidate_observed = json.loads(json.dumps(source_observed))
+        candidate_observed["desiredManifestDigest"] = candidate_manifest_digest
+        candidate_observed["activeDeploymentId"] = "0198d17f-6f4a-7000-8000-000000000005"
+        candidate_observed["runtimeGenerationId"] = "0198d17f-6f4a-7000-8000-000000000006"
+        intent = _fixture("transaction-intent.json")
+        intent.update(
+            {
+                "tenantId": _TENANT_ID,
+                "correlationId": correlation_id,
+                "operation": "deploy",
+                "sourceManifestDigest": manifest_digest_value,
+                "candidateManifestDigest": candidate_manifest_digest,
+                "lifecycleRecovery": {
+                    "sourceObservedState": source_observed,
+                    "sourceRuntimeGenerationId": "0198d17f-6f4a-7000-8000-000000000004",
+                    "sourceRouteSet": "both",
+                    "candidateObservedState": candidate_observed,
+                    "candidateRuntimeGenerationId": "0198d17f-6f4a-7000-8000-000000000006",
+                    "candidateRouteSet": "both",
+                },
+            }
+        )
+        repository.create_immutable(
+            StateRecordPath.transaction_intent(intent["intentId"]),
+            intent,
+        )
+        result: dict[str, object] = {
+            "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+            "kind": "OperationResult",
+            "provenance": {"kind": "authorization-job", "jobId": issued.job_id},
+            "correlationId": correlation_id,
+            "operation": "deploy",
+            "status": "failed",
+            "errorCode": "state_drift",
+            "tenantId": _TENANT_ID,
+        }
+        repository.create_immutable(
+            StateRecordPath.authorization_result(issued.job_id),
+            result,
+        )
+
+        handler = _CompletingCreateHandler(repository)
+        outcome = AuthorizationExecutor(
+            repository,
+            intake,
+            handlers={"deploy": handler},
+        ).execute(issued.job_id)
+
+    assert outcome.result == result
+    assert outcome.created is False
+    assert len(handler.claims) == 1
+    assert handler.claims[0] is not None
+    assert handler.claims[0].artifact.verified == artifact
+    assert list((root / "intake").iterdir()) == []
+
+
 def test_executor_does_not_terminalize_handler_artifact_errors(tmp_path: Path) -> None:
     root = _state_root(tmp_path)
     _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
