@@ -136,6 +136,10 @@ from lowerduckpond_static_host_agent.create_prepare import (
     PreparedCreateTransition,
     prepare_create_transition,
 )
+from lowerduckpond_static_host_agent.create_recover import (
+    CreateRecoveryError,
+    recover_create_transition,
+)
 from lowerduckpond_static_host_agent.durable import (
     DurabilityBoundary,
     DurableDirectory,
@@ -377,6 +381,7 @@ __all__ = [
     "CreateCommitBoundary",
     "CreateCommitError",
     "CreatePreparationError",
+    "CreateRecoveryError",
     "CreateStateBoundary",
     "CreateTransitionPlan",
     "DeadlineReader",
@@ -501,6 +506,7 @@ __all__ = [
     "platform_generation_state",
     "prepare_active_caddy_execution",
     "prepare_create_transition",
+    "recover_create_transition",
     "reload_caddy_generation",
     "require_exact_file",
     "restore_caddy_generation",
