@@ -127,7 +127,7 @@ class ResultWaiter:
         """Return an existing result or enqueue and await the exact accepted job."""
 
         result = self._read(issued.job_id)
-        if result is None or self._has_active_lifecycle_intent(issued):
+        if result is None:
             self._handoff.enqueue(issued.job_id)
         deadline = self._clock() + self._total_seconds
         while result is None:
@@ -135,6 +135,8 @@ class ResultWaiter:
                 raise RuntimeBoundaryError("authorized job result timed out")
             self._sleep(_RESULT_POLL_SECONDS)
             result = self._read(issued.job_id)
+        if self._has_active_lifecycle_intent(issued):
+            self._handoff.enqueue(issued.job_id)
         _validate_result_for_job(issued.document, result)
         return result
 

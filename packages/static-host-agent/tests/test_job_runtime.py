@@ -288,6 +288,63 @@ def test_result_waiter_hands_off_an_existing_result_with_an_active_intent(
     assert handoff.enqueued == [issued.job_id]
 
 
+def test_result_waiter_rechecks_intents_after_a_polled_result_appears(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    with StateRepository(root, expected_owner=os.geteuid()) as repository:
+        issued = _issue(repository)
+        request = issued.document["request"]
+        assert type(request) is dict
+        correlation_id = request["correlationId"]
+        result: dict[str, object] = {
+            "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+            "kind": "OperationResult",
+            "provenance": {"kind": "authorization-job", "jobId": issued.job_id},
+            "correlationId": correlation_id,
+            "operation": "create",
+            "status": "failed",
+            "errorCode": "state_drift",
+            "tenantId": None,
+        }
+
+        class _ResultThenIntentHandoff:
+            def __init__(self) -> None:
+                self.enqueued: list[str] = []
+
+            def enqueue(self, job_id: str) -> None:
+                self.enqueued.append(job_id)
+                if len(self.enqueued) != 1:
+                    return
+                job = repository.read(StateRecordPath.authorization_job(job_id))
+                claimed = job.document
+                claimed["phase"] = "claimed"
+                repository.compare_and_swap(
+                    StateRecordPath.authorization_job(job_id),
+                    job.revision,
+                    claimed,
+                )
+                intent = _create_intent(correlation_id)
+                repository.create_immutable(
+                    StateRecordPath.transaction_intent(intent["intentId"]),
+                    intent,
+                )
+                repository.create_immutable(
+                    StateRecordPath.authorization_result(job_id),
+                    result,
+                )
+
+        handoff = _ResultThenIntentHandoff()
+        retrieved = ResultWaiter(
+            repository,
+            handoff,
+            sleep=lambda _seconds: None,
+        ).retrieve(issued)
+
+    assert retrieved == result
+    assert handoff.enqueued == [issued.job_id, issued.job_id]
+
+
 def test_operator_session_returns_one_bound_versioned_response_frame(tmp_path: Path) -> None:
     root = _state_root(tmp_path)
     read_fd, write_fd = os.pipe()
