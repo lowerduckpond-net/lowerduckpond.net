@@ -635,6 +635,50 @@ def test_create_activation_durably_reselects_an_already_running_candidate(
         repository.close()
 
 
+def test_create_activation_restores_source_when_candidate_reselection_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root)
+    runtime = _Runtime()
+    try:
+        prepared = _prepare(repository, runtime, job)
+        candidate_id = prepared.candidate_manifest.generation_id
+        runtime.active = runtime.running = candidate_id
+        runtime.events.clear()
+        select_active = runtime.select_active
+
+        def fail_candidate_selection(generation_id: str) -> None:
+            if generation_id == candidate_id:
+                runtime.events.append("candidate-selection-failed")
+                raise RuntimeError("injected candidate reselection failure")
+            select_active(generation_id)
+
+        monkeypatch.setattr(runtime, "select_active", fail_candidate_selection)
+        with pytest.raises(RuntimeError, match="candidate reselection failure"):
+            activate_create_transition(
+                repository,
+                cast(CaddyRuntime, runtime),
+                _Gate(),
+                prepared,
+                reloader=runtime.reload,
+                restorer=runtime.restore,
+                verifier=runtime.verify,
+            )
+
+        assert runtime.active == runtime.running == _SOURCE_GENERATION
+        assert runtime.events[-3:] == [
+            "candidate-selection-failed",
+            f"selected:{_SOURCE_GENERATION}",
+            "restored",
+        ]
+        assert len(repository.measure_intent_records().records) == 1
+        assert repository.measure_inventory().tenant_ids == ()
+    finally:
+        repository.close()
+
+
 def test_create_activation_restores_source_on_control_interruption(
     tmp_path: Path,
 ) -> None:
