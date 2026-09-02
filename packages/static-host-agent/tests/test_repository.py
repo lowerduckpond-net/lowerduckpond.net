@@ -6,6 +6,7 @@ import os
 import stat
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
+from datetime import UTC, datetime
 from multiprocessing import get_context
 from multiprocessing.connection import Connection
 from pathlib import Path
@@ -17,8 +18,10 @@ from lowerduckpond_static_contracts import (
     ContractError,
     ContractKind,
     canonical_json_bytes,
+    platform_state_digest,
 )
 from lowerduckpond_static_host_agent import (
+    AuditState,
     LockManager,
     LockMode,
     LockName,
@@ -30,6 +33,8 @@ from lowerduckpond_static_host_agent import (
     StateRecordPath,
     StateRepository,
     StateRevision,
+    TenantNamespaceBoundary,
+    plan_create_transition,
 )
 
 _FIXTURE_ROOT = Path(__file__).parents[3] / "tests/static-publication/fixtures/accepted"
@@ -42,8 +47,18 @@ _INTENT_ID = "0198d17f-6f4a-7000-8000-000000000003"
 _ARCHIVE_CONSTRUCTION_INTENT_ID = "0198d17f-6f4a-7000-8000-000000000004"
 _ARCHIVE_RETIREMENT_INTENT_ID = "0198d17f-6f4a-7000-8000-000000000005"
 _DIRECTORY_MODE = 0o700
+_UNSAFE_DIRECTORY_MODE = 0o755
 _RECORD_MODE = 0o600
 _PROCESS_TIMEOUT_SECONDS = 10
+
+
+class _Entropy:
+    def __init__(self) -> None:
+        self._value = 0
+
+    def __call__(self, length: int) -> bytes:
+        self._value += 1
+        return self._value.to_bytes(length, byteorder="big")
 
 
 def _fixture(name: str) -> dict[str, object]:
@@ -90,6 +105,26 @@ def _write_record(root: Path, path: StateRecordPath, document: dict[str, object]
     target.write_bytes(canonical_json_bytes(document))
     target.chmod(_RECORD_MODE)
     return target
+
+
+def _create_intent() -> tuple[str, dict[str, object]]:
+    namespace = _fixture("platform-namespace.json")
+    job = _fixture("authorization-job.json")
+    job["phase"] = "claimed"
+    expected = job["expectedSource"]
+    assert type(expected) is dict
+    expected["platformStateDigest"] = platform_state_digest(namespace).to_dict()
+    plan = plan_create_transition(
+        job,
+        namespace,
+        source_runtime_generation_id="0198d17f-6f4a-7000-8000-000000000004",
+        candidate_runtime_generation_id="0198d17f-6f4a-7000-8000-000000000006",
+        audit_state=AuditState(0, 0, 0, None),
+        now=datetime(2026, 9, 2, 12, 30, tzinfo=UTC),
+        clock=lambda: 1_777_000_000_000,
+        entropy=_Entropy(),
+    )
+    return plan.tenant_id, plan.intent
 
 
 def _process_compare_and_swap(
@@ -347,6 +382,240 @@ def test_publication_transaction_does_not_expose_shared_tenant_state(
         repository.publication_transaction(mode=LockMode.SHARED),  # type: ignore[call-arg]
     ):
         pass
+
+
+def test_tenant_namespace_requires_and_preserves_one_create_intent(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    tenant_id, intent = _create_intent()
+
+    with _repository(root) as repository, repository.publication_transaction() as transaction:
+        with pytest.raises(StateRecordError, match="matching active create intent"):
+            transaction.ensure_create_tenant_namespace(tenant_id)
+        transaction.create_immutable(
+            StateRecordPath.transaction_intent(intent["intentId"]),
+            intent,
+        )
+        transaction.ensure_create_tenant_namespace(tenant_id)
+        transaction.ensure_create_tenant_namespace(tenant_id)
+
+    tenant_root = root / "tenants" / tenant_id
+    assert stat.S_IMODE(tenant_root.stat().st_mode) == _DIRECTORY_MODE
+    assert sorted(path.name for path in tenant_root.iterdir()) == ["archives", "deployments"]
+    assert all(
+        path.is_dir() and stat.S_IMODE(path.stat().st_mode) == _DIRECTORY_MODE
+        for path in tenant_root.iterdir()
+    )
+
+
+@pytest.mark.parametrize("operation", ["ensure", "remove"])
+def test_tenant_namespace_mutation_requires_the_publication_lock(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    root = _state_root(tmp_path)
+    tenant_id, intent = _create_intent()
+
+    with (
+        _repository(root) as repository,
+        repository.transaction(mode=LockMode.EXCLUSIVE) as transaction,
+    ):
+        transaction.create_immutable(
+            StateRecordPath.transaction_intent(intent["intentId"]),
+            intent,
+        )
+        with pytest.raises(LockOrderError, match=r"publication\.lock must already be held"):
+            if operation == "ensure":
+                transaction.ensure_create_tenant_namespace(tenant_id)
+            else:
+                transaction.remove_empty_create_tenant_namespace(tenant_id)
+
+    assert not (root / "tenants" / tenant_id).exists()
+
+
+def test_tenant_namespace_syncs_its_validated_intent_before_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _state_root(tmp_path)
+    tenant_id, intent = _create_intent()
+    intents_inode = (root / "intents").stat().st_ino
+    synced_inodes: list[int] = []
+    original_fsync = os.fsync
+
+    def record_fsync(descriptor: int) -> None:
+        synced_inodes.append(os.fstat(descriptor).st_ino)
+        original_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", record_fsync)
+
+    with _repository(root) as repository, repository.publication_transaction() as transaction:
+        transaction.create_immutable(
+            StateRecordPath.transaction_intent(intent["intentId"]),
+            intent,
+        )
+        synced_inodes.clear()
+        transaction.ensure_create_tenant_namespace(tenant_id)
+
+    assert synced_inodes[0] == intents_inode
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        TenantNamespaceBoundary.TENANT_DIRECTORY_SYNC,
+        TenantNamespaceBoundary.TENANT_ROOT_SYNC,
+        TenantNamespaceBoundary.CHILD_DIRECTORIES_SYNC,
+    ],
+)
+def test_tenant_namespace_retry_completes_each_interrupted_durability_boundary(
+    tmp_path: Path,
+    boundary: TenantNamespaceBoundary,
+) -> None:
+    root = _state_root(tmp_path)
+    tenant_id, intent = _create_intent()
+
+    with _repository(root) as repository, repository.publication_transaction() as transaction:
+        transaction.create_immutable(
+            StateRecordPath.transaction_intent(intent["intentId"]),
+            intent,
+        )
+
+        def interrupt(current: TenantNamespaceBoundary) -> None:
+            if current is boundary:
+                raise RuntimeError("interrupted")
+
+        with pytest.raises(RuntimeError, match="interrupted"):
+            transaction.ensure_create_tenant_namespace(
+                tenant_id,
+                failure_hook=interrupt,
+            )
+        transaction.ensure_create_tenant_namespace(tenant_id)
+
+    assert sorted(path.name for path in (root / "tenants" / tenant_id).iterdir()) == [
+        "archives",
+        "deployments",
+    ]
+
+
+@pytest.mark.parametrize("unsafe", ["link", "mode"])
+def test_tenant_namespace_rejects_an_unsafe_existing_target(
+    tmp_path: Path,
+    unsafe: str,
+) -> None:
+    root = _state_root(tmp_path)
+    tenant_id, intent = _create_intent()
+    target = root / "tenants" / tenant_id
+    if unsafe == "link":
+        target.symlink_to(root / "platform", target_is_directory=True)
+    else:
+        target.mkdir(mode=_UNSAFE_DIRECTORY_MODE)
+        target.chmod(_UNSAFE_DIRECTORY_MODE)
+
+    with (
+        _repository(root) as repository,
+        repository.publication_transaction() as transaction,
+    ):
+        transaction.create_immutable(
+            StateRecordPath.transaction_intent(intent["intentId"]),
+            intent,
+        )
+        with pytest.raises((OSError, StatePathError)):
+            transaction.ensure_create_tenant_namespace(tenant_id)
+
+    if unsafe == "link":
+        assert list((root / "platform").iterdir()) == []
+    else:
+        assert stat.S_IMODE(target.stat().st_mode) == _UNSAFE_DIRECTORY_MODE
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        TenantNamespaceBoundary.CHILD_DIRECTORIES_REMOVED,
+        TenantNamespaceBoundary.TENANT_DIRECTORY_REMOVED,
+    ],
+)
+def test_empty_tenant_namespace_removal_retries_each_interrupted_boundary(
+    tmp_path: Path,
+    boundary: TenantNamespaceBoundary,
+) -> None:
+    root = _state_root(tmp_path)
+    tenant_id, intent = _create_intent()
+
+    with _repository(root) as repository, repository.publication_transaction() as transaction:
+        transaction.create_immutable(
+            StateRecordPath.transaction_intent(intent["intentId"]),
+            intent,
+        )
+        transaction.ensure_create_tenant_namespace(tenant_id)
+
+        def interrupt(current: TenantNamespaceBoundary) -> None:
+            if current is boundary:
+                raise RuntimeError("interrupted")
+
+        with pytest.raises(RuntimeError, match="interrupted"):
+            transaction.remove_empty_create_tenant_namespace(
+                tenant_id,
+                failure_hook=interrupt,
+            )
+        transaction.remove_empty_create_tenant_namespace(tenant_id)
+
+    assert not (root / "tenants" / tenant_id).exists()
+
+
+def test_empty_tenant_namespace_absent_retry_syncs_its_parent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _state_root(tmp_path)
+    tenant_id, intent = _create_intent()
+    tenant_root_inode = (root / "tenants").stat().st_ino
+    synced_inodes: list[int] = []
+    original_fsync = os.fsync
+
+    def record_fsync(descriptor: int) -> None:
+        synced_inodes.append(os.fstat(descriptor).st_ino)
+        original_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", record_fsync)
+    boundaries: list[TenantNamespaceBoundary] = []
+
+    with _repository(root) as repository, repository.publication_transaction() as transaction:
+        transaction.create_immutable(
+            StateRecordPath.transaction_intent(intent["intentId"]),
+            intent,
+        )
+        synced_inodes.clear()
+        transaction.remove_empty_create_tenant_namespace(
+            tenant_id,
+            failure_hook=boundaries.append,
+        )
+
+    assert tenant_root_inode in synced_inodes
+    assert boundaries == [TenantNamespaceBoundary.TENANT_DIRECTORY_REMOVED]
+
+
+def test_empty_tenant_namespace_removal_refuses_state_or_release_history(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    tenant_id, intent = _create_intent()
+
+    with _repository(root) as repository, repository.publication_transaction() as transaction:
+        transaction.create_immutable(
+            StateRecordPath.transaction_intent(intent["intentId"]),
+            intent,
+        )
+        transaction.ensure_create_tenant_namespace(tenant_id)
+        deployment = root / "tenants" / tenant_id / "deployments" / "retained"
+        deployment.write_text("must survive", encoding="utf-8")
+        with pytest.raises(StateRecordError, match="not empty"):
+            transaction.remove_empty_create_tenant_namespace(tenant_id)
+
+    assert deployment.read_text(encoding="utf-8") == "must survive"
+    assert (root / "tenants" / tenant_id / "archives").is_dir()
 
 
 def test_reader_rejects_schema_valid_but_noncanonical_bytes(tmp_path: Path) -> None:
