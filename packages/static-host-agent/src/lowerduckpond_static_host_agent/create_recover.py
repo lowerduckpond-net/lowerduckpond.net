@@ -29,10 +29,11 @@ from lowerduckpond_static_host_agent.create_activate import (
     GenerationReloader,
     GenerationRestorer,
     GenerationVerifier,
-    activate_create_transition,
+    activate_create_transition_outcome,
 )
 from lowerduckpond_static_host_agent.create_commit import (
     CreateCommitFailureHook,
+    CreateCommitOutcome,
     CreateCommitTransaction,
     admit_create_transition,
 )
@@ -96,6 +97,35 @@ def recover_create_transition(  # noqa: PLR0913 - recovery mechanisms stay injec
 ) -> dict[str, object]:
     """Reconstruct one prepared create from durable evidence and activate it."""
 
+    return recover_create_transition_outcome(
+        repository,
+        runtime,
+        gate,
+        intent_id,
+        capacity_limits=capacity_limits,
+        reloader=reloader,
+        restorer=restorer,
+        verifier=verifier,
+        commit_failure_hook=commit_failure_hook,
+        blocking=blocking,
+    ).result
+
+
+def recover_create_transition_outcome(  # noqa: PLR0913
+    repository: StateRepository,
+    runtime: CaddyRuntime,
+    gate: PublicationGate,
+    intent_id: object,
+    *,
+    capacity_limits: HostCapacityLimits = DEFAULT_HOST_CAPACITY_LIMITS,
+    reloader: GenerationReloader = reload_caddy_generation,
+    restorer: GenerationRestorer = restore_caddy_generation,
+    verifier: GenerationVerifier = verify_running_caddy,
+    commit_failure_hook: CreateCommitFailureHook | None = None,
+    blocking: bool = False,
+) -> CreateCommitOutcome:
+    """Recover a prepared create and report result-publication ownership."""
+
     canonical_intent_id = validate_uuid7(intent_id)
     with (
         repository.publication_transaction(blocking=blocking) as transaction,
@@ -108,7 +138,7 @@ def recover_create_transition(  # noqa: PLR0913 - recovery mechanisms stay injec
             canonical_intent_id,
             capacity_limits=capacity_limits,
         )
-    return activate_create_transition(
+    return activate_create_transition_outcome(
         repository,
         runtime,
         gate,

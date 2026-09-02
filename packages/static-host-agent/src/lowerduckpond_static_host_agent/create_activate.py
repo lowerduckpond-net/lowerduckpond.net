@@ -16,8 +16,9 @@ from lowerduckpond_static_host_agent.caddy_runtime import CaddyRuntime
 from lowerduckpond_static_host_agent.capacity import CapacityError
 from lowerduckpond_static_host_agent.create_commit import (
     CreateCommitFailureHook,
+    CreateCommitOutcome,
     admit_create_transition,
-    finalize_create_transition,
+    finalize_create_transition_outcome,
     validate_create_transition,
 )
 from lowerduckpond_static_host_agent.create_prepare import PreparedCreateTransition
@@ -65,6 +66,33 @@ def activate_create_transition(  # noqa: PLR0913 - recovery mechanisms stay inje
 ) -> dict[str, object]:
     """Activate or replay one candidate, then commit its exact create state."""
 
+    return activate_create_transition_outcome(
+        repository,
+        runtime,
+        gate,
+        prepared,
+        reloader=reloader,
+        restorer=restorer,
+        verifier=verifier,
+        commit_failure_hook=commit_failure_hook,
+        blocking=blocking,
+    ).result
+
+
+def activate_create_transition_outcome(  # noqa: PLR0913
+    repository: StateRepository,
+    runtime: CaddyRuntime,
+    gate: PublicationGate,
+    prepared: PreparedCreateTransition,
+    *,
+    reloader: GenerationReloader = reload_caddy_generation,
+    restorer: GenerationRestorer = restore_caddy_generation,
+    verifier: GenerationVerifier = verify_running_caddy,
+    commit_failure_hook: CreateCommitFailureHook | None = None,
+    blocking: bool = False,
+) -> CreateCommitOutcome:
+    """Activate or replay a candidate and report result-publication ownership."""
+
     if type(prepared) is not PreparedCreateTransition:
         raise TypeError("create activation requires one prepared transition")
     plan = deepcopy(prepared.plan)
@@ -76,7 +104,7 @@ def activate_create_transition(  # noqa: PLR0913 - recovery mechanisms stay inje
         gate.require_enabled()
         current_job = _require_exact_job(transaction, prepared.job)
         if not transaction.measure_intent_records().records:
-            return finalize_create_transition(
+            return finalize_create_transition_outcome(
                 transaction,
                 current_job,
                 plan,
@@ -125,7 +153,7 @@ def activate_create_transition(  # noqa: PLR0913 - recovery mechanisms stay inje
                 candidate_selection_is_durable=current_job.document["phase"] == "completed",
             )
             try:
-                return finalize_create_transition(
+                return finalize_create_transition_outcome(
                     transaction,
                     current_job,
                     plan,

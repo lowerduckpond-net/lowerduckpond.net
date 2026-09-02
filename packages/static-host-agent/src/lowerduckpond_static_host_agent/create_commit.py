@@ -131,6 +131,14 @@ class _CreateDocuments:
     audit_entry: dict[str, object]
 
 
+@dataclass(frozen=True, slots=True)
+class CreateCommitOutcome:
+    """One exact result and whether this finalizer published it."""
+
+    result: dict[str, object]
+    created: bool
+
+
 def finalize_create_transition(
     transaction: CreateCommitTransaction,
     job: StoredContract,
@@ -141,11 +149,30 @@ def finalize_create_transition(
 ) -> dict[str, object]:
     """Commit and replay one successful create after its runtime reload."""
 
+    return finalize_create_transition_outcome(
+        transaction,
+        job,
+        plan,
+        capacity_limits=capacity_limits,
+        failure_hook=failure_hook,
+    ).result
+
+
+def finalize_create_transition_outcome(
+    transaction: CreateCommitTransaction,
+    job: StoredContract,
+    plan: CreateTransitionPlan,
+    *,
+    capacity_limits: HostCapacityLimits = DEFAULT_HOST_CAPACITY_LIMITS,
+    failure_hook: CreateCommitFailureHook | None = None,
+) -> CreateCommitOutcome:
+    """Commit or replay a create and report result-publication ownership."""
+
     documents = _freeze_and_validate(job, plan)
     current_job = _require_same_job(transaction, job)
     terminal = _terminal_create_without_intent(transaction, current_job, documents)
     if terminal is not None:
-        return terminal
+        return CreateCommitOutcome(terminal, False)
     intent_removal = _require_exact_intent(transaction, documents)
     missing = _admit_missing_state(
         transaction,
@@ -168,7 +195,7 @@ def finalize_create_transition(
     _notify(failure_hook, CreateCommitBoundary.JOB_SYNC)
     transaction.remove_reconciled_intent(intent_removal.path, intent_removal.token)
     _notify(failure_hook, CreateCommitBoundary.INTENT_REMOVED)
-    return deepcopy(documents.result)
+    return CreateCommitOutcome(deepcopy(documents.result), missing.result)
 
 
 def validate_create_transition(job: StoredContract, plan: CreateTransitionPlan) -> None:

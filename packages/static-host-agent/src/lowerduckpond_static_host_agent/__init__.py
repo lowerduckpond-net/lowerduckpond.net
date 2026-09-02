@@ -132,7 +132,12 @@ from lowerduckpond_static_host_agent.create_commit import (
     finalize_create_transition,
     validate_create_transition,
 )
+from lowerduckpond_static_host_agent.create_handler import (
+    CreateLifecycleError,
+    CreateLifecycleHandler,
+)
 from lowerduckpond_static_host_agent.create_prepare import (
+    CreateAuthorityDriftError,
     CreatePreparationError,
     PreparedCreateTransition,
     prepare_create_transition,
@@ -154,6 +159,7 @@ from lowerduckpond_static_host_agent.execution import (
     JobHandoff,
     LifecycleArtifact,
     LifecycleJobHandler,
+    LifecycleJobRejectionError,
 )
 from lowerduckpond_static_host_agent.intake import (
     AdmittedArtifact,
@@ -384,8 +390,11 @@ __all__ = [
     "CorrelationReconciliation",
     "CorrelationResolution",
     "CreateActivationError",
+    "CreateAuthorityDriftError",
     "CreateCommitBoundary",
     "CreateCommitError",
+    "CreateLifecycleError",
+    "CreateLifecycleHandler",
     "CreatePreparationError",
     "CreateRecoveryError",
     "CreateStateBoundary",
@@ -416,6 +425,7 @@ __all__ = [
     "JobHandoff",
     "LifecycleArtifact",
     "LifecycleJobHandler",
+    "LifecycleJobRejectionError",
     "LifecyclePlanError",
     "LocalRequestDecoder",
     "LockManager",

@@ -159,6 +159,30 @@ def test_create_commit_publishes_one_exact_terminal_transaction(tmp_path: Path) 
         repository.close()
 
 
+def test_create_commit_reports_exact_result_publication_ownership(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    repository, job, plan = _prepared_create(root)
+    try:
+        with repository.publication_transaction() as transaction:
+            first = create_commit_module.finalize_create_transition_outcome(
+                transaction,
+                job,
+                plan,
+            )
+        with repository.publication_transaction() as transaction:
+            second = create_commit_module.finalize_create_transition_outcome(
+                transaction,
+                job,
+                plan,
+            )
+
+        assert first.result == second.result == plan.result
+        assert first.created is True
+        assert second.created is False
+    finally:
+        repository.close()
+
+
 @pytest.mark.parametrize(
     "boundary",
     [

@@ -81,6 +81,25 @@ class _InvalidArtifactContentError(ExecutionError):
     """A hash-bound admitted artifact violates its operation-specific format."""
 
 
+class LifecycleJobRejectionError(ExecutionError):
+    """A handler rejected a claimed job before creating lifecycle intent."""
+
+    def __init__(self, error_code: str) -> None:
+        if error_code not in {
+            "capacity_exceeded",
+            "conflict",
+            "denied",
+            "invalid_artifact",
+            "invalid_request",
+            "not_found",
+            "publication_disabled",
+            "state_drift",
+        }:
+            raise ValueError("lifecycle rejection error code is not terminal")
+        self.error_code = error_code
+        super().__init__(error_code)
+
+
 class JobHandoff(Protocol):
     """Queue one validated opaque UUID without carrying operation authority."""
 
@@ -750,7 +769,17 @@ class AuthorizationExecutor:
         handler_claim = (
             None if prepared.claim is None else LifecycleArtifact(prepared.claim.artifact)
         )
-        returned = handler.execute(job_id, claim=handler_claim, blocking=blocking)
+        try:
+            returned = handler.execute(job_id, claim=handler_claim, blocking=blocking)
+        except LifecycleJobRejectionError as error:
+            return self._fail_without_claim(
+                job_id,
+                initial,
+                error_code=error.error_code,
+                handler=handler,
+                require_pending=False,
+                blocking=blocking,
+            )
         if type(returned) is not ExecutionOutcome:
             raise ExecutionError("lifecycle handler returned a malformed outcome")
         result = deepcopy(returned.result)
@@ -1157,13 +1186,14 @@ class AuthorizationExecutor:
             raise ExecutionError("authorization operation is not a string")
         return self._handlers.get(operation)
 
-    def _fail_without_claim(
+    def _fail_without_claim(  # noqa: PLR0913 - terminalization policy stays explicit
         self,
         job_id: str,
         initial: StoredContract,
         *,
         error_code: str,
         handler: LifecycleJobHandler | None,
+        require_pending: bool = True,
         blocking: bool,
     ) -> ExecutionOutcome:
         existing: StoredContract | None = None
@@ -1174,8 +1204,14 @@ class AuthorizationExecutor:
             current = transaction.read(StateRecordPath.authorization_job(job_id))
             _require_same_authority(initial.document, current.document)
             existing = _read_result_transaction(transaction, job_id)
+            if not require_pending and _has_bound_lifecycle_intent(
+                transaction,
+                current.document,
+                result=existing.document if existing is not None else None,
+            ):
+                raise ExecutionError("rejected lifecycle job retains an active intent")
             if existing is None:
-                if current.document["phase"] != "pending":
+                if require_pending and current.document["phase"] != "pending":
                     raise ExecutionError("artifact failure publication lost pending job authority")
                 result = _failure_result(current.document, error_code)
                 _publish_result(transaction, current, result, limits=self._capacity_limits)
@@ -2148,10 +2184,10 @@ def _has_bound_lifecycle_intent(
     transaction: ExecutionTransaction,
     job: dict[str, object],
     *,
-    result: dict[str, object],
+    result: dict[str, object] | None = None,
 ) -> bool:
     request, matching_intents = _bound_lifecycle_intents(transaction, job)
-    if matching_intents:
+    if result is not None and matching_intents:
         _validate_result_intent_binding(result, request, matching_intents)
     return bool(matching_intents)
 

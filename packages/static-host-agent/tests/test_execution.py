@@ -40,6 +40,7 @@ from lowerduckpond_static_host_agent import (
     IssuedAuthorization,
     LifecycleArtifact,
     LifecycleJobHandler,
+    LifecycleJobRejectionError,
     LockManager,
     LockMode,
     LockName,
@@ -1197,6 +1198,19 @@ class _ClearingIntentHandler:
                 blocking=blocking,
             )
         return outcome
+
+
+class _RejectingHandler:
+    @staticmethod
+    def execute(
+        _job_id: str,
+        *,
+        claim: LifecycleArtifact | None,
+        blocking: bool,
+    ) -> ExecutionOutcome:
+        assert claim is None
+        assert blocking is False
+        raise LifecycleJobRejectionError("state_drift")
 
 
 class _UnavailableArtifactHandler:
@@ -5496,6 +5510,92 @@ def test_executor_rejects_an_incomplete_handler_commit(
                 intake,
                 handlers={"create": handler},
             ).execute(issued.job_id)
+
+
+def test_executor_commits_explicit_preintent_handler_rejection(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued = _issue_create(repository)
+        outcome = AuthorizationExecutor(
+            repository,
+            intake,
+            handlers={"create": _RejectingHandler()},
+        ).execute(issued.job_id)
+        job = repository.read(StateRecordPath.authorization_job(issued.job_id)).document
+
+    assert outcome.created is True
+    assert outcome.result["status"] == "failed"
+    assert outcome.result["errorCode"] == "state_drift"
+    assert job["phase"] == "failed"
+
+
+@pytest.mark.parametrize("existing_result", [False, True])
+def test_executor_refuses_handler_rejection_after_intent_creation(
+    tmp_path: Path,
+    existing_result: bool,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    with StateRepository(root, expected_owner=os.geteuid()) as repository:
+        issued = _issue_create(repository)
+        job = repository.read(StateRecordPath.authorization_job(issued.job_id))
+        claimed = job.document
+        claimed["phase"] = "claimed"
+        repository.compare_and_swap(
+            StateRecordPath.authorization_job(issued.job_id),
+            job.revision,
+            claimed,
+        )
+        request = issued.document["request"]
+        assert type(request) is dict
+        intent = _create_intent(request["correlationId"])
+        repository.create_immutable(
+            StateRecordPath.transaction_intent(intent["intentId"]),
+            intent,
+        )
+        if existing_result:
+            result: dict[str, object] = {
+                "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+                "kind": "OperationResult",
+                "provenance": {"kind": "authorization-job", "jobId": issued.job_id},
+                "correlationId": request["correlationId"],
+                "operation": "create",
+                "status": "failed",
+                "errorCode": "state_drift",
+                "tenantId": None,
+            }
+            repository.create_immutable(
+                StateRecordPath.authorization_result(issued.job_id),
+                result,
+            )
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        with pytest.raises(RuntimeError, match="rejected lifecycle job retains"):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={"create": _RejectingHandler()},
+            ).execute(issued.job_id)
+        if existing_result:
+            assert (
+                repository.read(StateRecordPath.authorization_result(issued.job_id)).document
+                == result
+            )
+        else:
+            with pytest.raises(FileNotFoundError):
+                repository.read(StateRecordPath.authorization_result(issued.job_id))
+        assert (
+            repository.read(StateRecordPath.authorization_job(issued.job_id)).document["phase"]
+            == "claimed"
+        )
 
 
 def test_executor_revalidates_expected_source_before_claiming(tmp_path: Path) -> None:
