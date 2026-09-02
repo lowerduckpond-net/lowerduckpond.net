@@ -148,6 +148,7 @@ class AuthorizationExecutor:
                 durable = _read_result_transaction(transaction, canonical_id)
                 if durable is None or durable.document != existing.document:
                     raise ExecutionError("terminal result changed during replay")
+                _validate_result_binding(current.document, durable.document)
                 dispatch = handler is not None and _has_bound_lifecycle_intent(
                     transaction,
                     current.document,
@@ -246,6 +247,7 @@ class AuthorizationExecutor:
             _require_same_authority(initial.document, current.document)
             existing = _read_result_transaction(transaction, job_id)
             if existing is not None:
+                _validate_result_binding(current.document, existing.document)
                 if handler is None or not _has_bound_lifecycle_intent(
                     transaction,
                     current.document,
