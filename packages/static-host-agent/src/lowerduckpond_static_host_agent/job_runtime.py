@@ -25,8 +25,12 @@ from lowerduckpond_static_host_agent.correlations import CorrelationAdmission
 from lowerduckpond_static_host_agent.execution import ExecutionError, JobHandoff
 from lowerduckpond_static_host_agent.intake import ArtifactIntake
 from lowerduckpond_static_host_agent.issuance import IssuedAuthorization, VerifiedArtifact
-from lowerduckpond_static_host_agent.locks import StateBusyError
-from lowerduckpond_static_host_agent.repository import StateRecordPath, StateRepository
+from lowerduckpond_static_host_agent.locks import LockMode, StateBusyError
+from lowerduckpond_static_host_agent.repository import (
+    StateRecordPath,
+    StateRepository,
+    StoredContract,
+)
 
 _SYSTEMCTL: Final = Path("/usr/bin/systemctl")
 _WORKER_UNIT: Final = "lowerduckpond-static-worker@{job_id}.service"
@@ -221,6 +225,7 @@ class StartupReconciler:
             nonlocal batch, repaired_pairs
             repaired = CorrelationAdmission(self._repository).reconcile(blocking=True)
             repaired_pairs = repaired.repaired_records
+            active_intent_jobs = self._active_intent_job_ids(repaired.jobs)
             authorized: dict[str, VerifiedArtifact] = {}
             terminal: set[str] = set()
             for stored in repaired.jobs:
@@ -235,7 +240,7 @@ class StartupReconciler:
                 elif artifact is not None:
                     authorized[filename] = artifact
                 if result_exists:
-                    if job["phase"] not in {"completed", "failed"}:
+                    if job["phase"] not in {"completed", "failed"} or job_id in active_intent_jobs:
                         queued.append(job_id)
                 elif job["phase"] in {"pending", "claimed"}:
                     queued.append(job_id)
@@ -274,6 +279,33 @@ class StartupReconciler:
         except FileNotFoundError:
             return False
         return True
+
+    def _active_intent_job_ids(
+        self,
+        jobs: tuple[StoredContract, ...],
+    ) -> set[str]:
+        jobs_by_correlation: dict[str, str] = {}
+        for stored in jobs:
+            correlation_id = _correlation_id(stored.document)
+            if correlation_id in jobs_by_correlation:
+                raise ExecutionError("authorization inventory repeats a correlation")
+            jobs_by_correlation[correlation_id] = validate_uuid7(stored.document["jobId"])
+        active: set[str] = set()
+        with self._repository.transaction(
+            mode=LockMode.EXCLUSIVE,
+            blocking=True,
+        ) as transaction:
+            for identity in transaction.measure_intent_records().records:
+                _path, intent = transaction.read_intent(identity.intent_id)
+                correlation_id = validate_uuid7(intent.document["correlationId"])
+                try:
+                    job_id = jobs_by_correlation[correlation_id]
+                except KeyError as error:
+                    raise ExecutionError(
+                        "active lifecycle intent has no authorization job"
+                    ) from error
+                active.add(job_id)
+        return active
 
 
 class OperatorSession:

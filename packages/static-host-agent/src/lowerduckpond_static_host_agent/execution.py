@@ -152,9 +152,7 @@ class AuthorizationExecutor:
                     transaction,
                     current.document,
                 )
-                if dispatch:
-                    _repair_terminal_phase_transaction(transaction, current, durable)
-                else:
+                if not dispatch:
                     result = _repair_terminal_phase_transaction(
                         transaction,
                         current,
@@ -256,7 +254,6 @@ class AuthorizationExecutor:
                 ):
                     result = _repair_terminal_phase_transaction(transaction, current, existing)
                     return ExecutionOutcome(result, False)
-                _repair_terminal_phase_transaction(transaction, current, existing)
                 created = False
             else:
                 _validate_job_integrity(current.document, claim=claim)

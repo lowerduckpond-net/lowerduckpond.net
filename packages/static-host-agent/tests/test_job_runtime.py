@@ -412,6 +412,53 @@ def test_startup_reconciliation_requeues_a_result_phase_repair(tmp_path: Path) -
     assert handoff.enqueued == [pending.job_id]
 
 
+def test_startup_reconciliation_requeues_a_terminal_job_with_active_intent(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    with StateRepository(root, expected_owner=os.geteuid()) as repository:
+        issued = _issue(repository)
+        request = issued.document["request"]
+        assert type(request) is dict
+        result: dict[str, object] = {
+            "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+            "kind": "OperationResult",
+            "provenance": {"kind": "authorization-job", "jobId": issued.job_id},
+            "correlationId": request["correlationId"],
+            "operation": "create",
+            "status": "failed",
+            "errorCode": "state_drift",
+            "tenantId": None,
+        }
+        repository.create_immutable(
+            StateRecordPath.authorization_result(issued.job_id),
+            result,
+        )
+        job = repository.read(StateRecordPath.authorization_job(issued.job_id))
+        failed = job.document
+        failed["phase"] = "failed"
+        repository.compare_and_swap(
+            StateRecordPath.authorization_job(issued.job_id),
+            job.revision,
+            failed,
+        )
+        intent = _fixture("transaction-intent.json")
+        repository.create_immutable(
+            StateRecordPath.transaction_intent(intent["intentId"]),
+            intent,
+        )
+
+    handoff = _CaptureHandoff()
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        outcome = StartupReconciler(repository, intake, handoff).reconcile()
+
+    assert outcome.enqueued_jobs == (issued.job_id,)
+    assert handoff.enqueued == [issued.job_id]
+
+
 def test_startup_reconciliation_batches_backlog_under_the_aggregate_limit(
     tmp_path: Path,
 ) -> None:
