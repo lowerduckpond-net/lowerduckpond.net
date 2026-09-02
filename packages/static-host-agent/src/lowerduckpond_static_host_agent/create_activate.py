@@ -70,6 +70,13 @@ def activate_create_transition(  # noqa: PLR0913 - recovery mechanisms stay inje
     ):
         gate.require_enabled()
         current_job = _require_exact_job(transaction, prepared.job)
+        if not transaction.measure_intent_records().records:
+            return finalize_create_transition(
+                transaction,
+                current_job,
+                plan,
+                failure_hook=commit_failure_hook,
+            )
         _require_exact_intent(transaction, plan.intent_id, plan.intent)
         recovery = plan.intent["lifecycleRecovery"]
         if type(recovery) is not dict:  # pragma: no cover - plan validation proves this

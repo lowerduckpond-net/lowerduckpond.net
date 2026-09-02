@@ -494,7 +494,11 @@ def test_create_activation_restores_source_when_reload_fails(tmp_path: Path) -> 
 
 @pytest.mark.parametrize(
     "interrupted_boundary",
-    [CreateCommitBoundary.STATE_SYNC, CreateCommitBoundary.JOB_SYNC],
+    [
+        CreateCommitBoundary.STATE_SYNC,
+        CreateCommitBoundary.JOB_SYNC,
+        CreateCommitBoundary.INTENT_REMOVED,
+    ],
 )
 def test_create_activation_keeps_candidate_during_terminal_commit_replay(
     tmp_path: Path,
@@ -524,7 +528,8 @@ def test_create_activation_keeps_candidate_during_terminal_commit_replay(
             )
 
         assert runtime.active == runtime.running == candidate_id
-        assert len(repository.measure_intent_records().records) == 1
+        expected_intents = int(interrupted_boundary is not CreateCommitBoundary.INTENT_REMOVED)
+        assert len(repository.measure_intent_records().records) == expected_intents
 
         assert (
             activate_create_transition(
