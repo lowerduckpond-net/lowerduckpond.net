@@ -140,7 +140,7 @@ def test_add_overlay_extends_the_complete_snapshot_without_persisting(
 def test_replace_overlay_substitutes_exactly_one_existing_tenant(tmp_path: Path) -> None:
     root = _state_root(tmp_path)
     _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
-    _active_tenant(root)
+    source = _active_tenant(root)
     candidate = _undeployed_tenant(_TENANT_ID, slug="duck-repair")
 
     with (
@@ -149,7 +149,7 @@ def test_replace_overlay_substitutes_exactly_one_existing_tenant(tmp_path: Path)
     ):
         snapshot = snapshot_tenant_routes(
             transaction,
-            overlay=TenantRouteOverlay(RouteOverlayMode.REPLACE, candidate),
+            overlay=TenantRouteOverlay(RouteOverlayMode.REPLACE, candidate, source),
         )
 
     assert snapshot.tenants == (candidate,)
@@ -172,6 +172,11 @@ def test_overlay_disposition_must_match_the_inventory(
     _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
     _active_tenant(root)
     candidate = _undeployed_tenant(candidate_id, slug="candidate")
+    overlay_source = (
+        _undeployed_tenant(candidate_id, slug="source")
+        if mode is RouteOverlayMode.REPLACE
+        else None
+    )
 
     with (
         StateRepository(root, expected_owner=os.geteuid()) as repository,
@@ -180,7 +185,29 @@ def test_overlay_disposition_must_match_the_inventory(
     ):
         snapshot_tenant_routes(
             transaction,
-            overlay=TenantRouteOverlay(mode, candidate),
+            overlay=TenantRouteOverlay(mode, candidate, overlay_source),
+        )
+
+
+def test_replace_overlay_rejects_source_state_that_changed_before_the_lock(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    source = _active_tenant(root)
+    candidate = _undeployed_tenant(_TENANT_ID, slug="duck-repair")
+    changed = deepcopy(source.observed_state)
+    changed["reconciledAt"] = "2026-09-02T12:31:00Z"
+    _write(root, StateRecordPath.tenant_observed(_TENANT_ID), changed)
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        repository.transaction(mode=LockMode.EXCLUSIVE) as transaction,
+        pytest.raises(RouteSnapshotError, match="source changed"),
+    ):
+        snapshot_tenant_routes(
+            transaction,
+            overlay=TenantRouteOverlay(RouteOverlayMode.REPLACE, candidate, source),
         )
 
 

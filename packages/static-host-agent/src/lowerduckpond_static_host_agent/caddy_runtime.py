@@ -52,7 +52,16 @@ from lowerduckpond_static_host_agent.caddy_routes import (
     build_tenant_caddy_routes,
     configured_origin_pull_policy,
 )
+from lowerduckpond_static_host_agent.issuance import PublicationGate
 from lowerduckpond_static_host_agent.locks import LockMode, LockName
+from lowerduckpond_static_host_agent.route_snapshot import (
+    RouteSnapshotTransaction,
+    TenantRouteOverlay,
+    snapshot_tenant_routes,
+)
+from lowerduckpond_static_host_agent.tenant_generation import (
+    derive_tenant_generation_payload,
+)
 
 CADDY_ACTIVE_REFERENCE_NAME: Final = "active"
 CADDY_GENERATIONS_DIRECTORY_NAME: Final = "generations"
@@ -401,6 +410,52 @@ class CaddyRuntime:
         finally:
             store.close()
         return SelectedCaddyGeneration(generation_id, generation)
+
+    def publish_candidate(
+        self,
+        generation_id: str,
+        *,
+        transaction: RouteSnapshotTransaction,
+        overlay: TenantRouteOverlay,
+        gate: PublicationGate,
+    ) -> CaddyGenerationManifest:
+        """Derive, admit, and validate one unselected tenant generation."""
+
+        self._require_locked()
+        gate.require_enabled()
+        candidate_id = _canonical_generation_id(generation_id)
+        active = self.open_active_verified()
+        try:
+            if candidate_id == active.generation_id:
+                raise CaddyRuntimeError("candidate Caddy generation is already active")
+            payload = derive_tenant_generation_payload(
+                active.generation,
+                snapshot_tenant_routes(transaction, overlay=overlay),
+                candidate_generation_id=candidate_id,
+            )
+
+            store = self._open_generation_store()
+            try:
+                retained = store.list_verified()
+                if active.generation_id not in retained:
+                    raise CaddyRuntimeError("active Caddy generation is absent from storage")
+                store.admit_candidate(payload, retained)
+                manifest = store.publish(candidate_id, payload)
+                try:
+                    with store.open_verified(candidate_id) as candidate:
+                        if self._expected_binary_sha256 is not None:
+                            _validate_trusted_binary(candidate, self._expected_binary_sha256)
+                        _validate_route_binding(candidate)
+                        environment = _read_generation_environment(candidate)
+                        self._candidate_validator(candidate, environment)
+                except BaseException:
+                    store.discard_published(candidate_id, manifest)
+                    raise
+                return manifest
+            finally:
+                store.close()
+        finally:
+            active.generation.close()
 
     def select_active(
         self,

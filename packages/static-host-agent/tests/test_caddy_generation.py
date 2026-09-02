@@ -4,6 +4,7 @@ import json
 import os
 import stat
 from collections.abc import Callable
+from dataclasses import replace
 from multiprocessing import get_context
 from pathlib import Path
 
@@ -611,6 +612,54 @@ def test_tampered_payload_fails_manifest_verification(tmp_path: Path) -> None:
 
     with _open_store(root) as store, pytest.raises(CaddyGenerationError):
         store.open_verified(_GENERATION_ID)
+
+
+def test_discard_published_removes_a_manifest_bound_corrupt_candidate(
+    tmp_path: Path,
+) -> None:
+    root = _make_root(tmp_path)
+    with _open_store(root) as store:
+        manifest = store.publish(_GENERATION_ID, _payload(tmp_path))
+
+    target = root / _GENERATION_ID / CADDY_CONFIGURATION_NAME
+    target.chmod(0o640)
+    target.write_bytes(b'{"tampered":true}\n')
+    target.chmod(0o440)
+
+    with _open_store(root) as store:
+        store.discard_published(_GENERATION_ID, manifest)
+        assert store.list_verified() == ()
+
+
+def test_discard_published_refuses_a_changed_manifest_binding(tmp_path: Path) -> None:
+    root = _make_root(tmp_path)
+    with _open_store(root) as store:
+        manifest = store.publish(_GENERATION_ID, _payload(tmp_path))
+        files = (replace(manifest.files[0], sha256="f" * 64), *manifest.files[1:])
+        changed = replace(manifest, files=files)
+        with pytest.raises(CaddyGenerationError, match="manifest changed"):
+            store.discard_published(_GENERATION_ID, changed)
+
+    assert (root / _GENERATION_ID).is_dir()
+
+
+def test_discard_published_refuses_an_unbound_candidate_entry(tmp_path: Path) -> None:
+    root = _make_root(tmp_path)
+    with _open_store(root) as store:
+        manifest = store.publish(_GENERATION_ID, _payload(tmp_path))
+
+    generation = root / _GENERATION_ID
+    generation.chmod(0o750)
+    (generation / "unbound").write_bytes(b"not in the manifest")
+    generation.chmod(CADDY_GENERATION_MODE)
+
+    with (
+        _open_store(root) as store,
+        pytest.raises(CaddyGenerationError, match="inventory is not exact"),
+    ):
+        store.discard_published(_GENERATION_ID, manifest)
+
+    assert generation.is_dir()
 
 
 def test_generation_with_an_extra_entry_fails_closed(tmp_path: Path) -> None:
