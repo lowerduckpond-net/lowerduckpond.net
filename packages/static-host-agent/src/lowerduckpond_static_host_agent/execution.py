@@ -481,6 +481,8 @@ class AuthorizationExecutor:
         ) as transaction:
             current = transaction.read(StateRecordPath.authorization_job(job_id))
             _require_same_authority(initial.document, current.document)
+            if current.document["phase"] != "pending":
+                raise ExecutionError("artifact failure publication lost pending job authority")
             existing = _read_result_transaction(transaction, job_id)
             if existing is not None:
                 return ExecutionOutcome(
