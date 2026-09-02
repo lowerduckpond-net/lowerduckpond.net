@@ -27,9 +27,11 @@ from lowerduckpond_static_host_agent import (
     IntakeArtifactUnavailableError,
     IntentRemovalToken,
     IssuedAuthorization,
+    LifecycleJobHandler,
     LockManager,
     StateRecordPath,
     StateRepository,
+    StoredContract,
     VerifiedArtifact,
 )
 
@@ -2130,6 +2132,86 @@ def test_executor_fails_terminally_when_bound_artifact_is_absent(tmp_path: Path)
         outcome = AuthorizationExecutor(repository, intake).execute(issued.job_id)
 
     assert outcome.result["errorCode"] == "invalid_artifact"
+
+
+def test_executor_does_not_publish_artifact_failure_after_a_concurrent_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), _fixture("site.json"))
+    _write(
+        root,
+        StateRecordPath.tenant_deployment(_TENANT_ID, _DEPLOYMENT_ID),
+        _fixture("deployment-record.json"),
+    )
+    artifact = VerifiedArtifact(7, "a" * 64)
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "deploy",
+        "correlationId": "0198d17f-6f4a-7000-8000-000000000004",
+        "tenantId": _TENANT_ID,
+        "artifact": {"size": artifact.size, "sha256": artifact.sha256},
+    }
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued = AuthorizationIssuer(
+            repository,
+            gate=_OpenGate(),
+            entropy=_Entropy(),
+        ).issue(
+            canonical_json_bytes(request),
+            operator_principal="operator@example.test",
+            now=_NOW,
+            artifact=artifact,
+        )
+        original = AuthorizationExecutor._recover_claimed_lifecycle_without_artifact
+
+        def claim_after_absence(
+            executor: AuthorizationExecutor,
+            job_id: str,
+            initial: StoredContract,
+            *,
+            handler: LifecycleJobHandler | None,
+            blocking: bool,
+        ) -> ExecutionOutcome | None:
+            recovered = original(
+                executor,
+                job_id,
+                initial,
+                handler=handler,
+                blocking=blocking,
+            )
+            assert recovered is None
+            job = repository.read(StateRecordPath.authorization_job(job_id))
+            claimed = job.document
+            claimed["phase"] = "claimed"
+            repository.compare_and_swap(
+                StateRecordPath.authorization_job(job_id),
+                job.revision,
+                claimed,
+            )
+            return None
+
+        monkeypatch.setattr(
+            AuthorizationExecutor,
+            "_recover_claimed_lifecycle_without_artifact",
+            claim_after_absence,
+        )
+
+        with pytest.raises(ExecutionError, match="lost pending job authority"):
+            AuthorizationExecutor(repository, intake).execute(issued.job_id)
+
+        job = repository.read(StateRecordPath.authorization_job(issued.job_id))
+        with pytest.raises(FileNotFoundError):
+            repository.read(StateRecordPath.authorization_result(issued.job_id))
+
+    assert job.document["phase"] == "claimed"
 
 
 def test_executor_recovers_a_claimed_lifecycle_job_without_its_artifact(
