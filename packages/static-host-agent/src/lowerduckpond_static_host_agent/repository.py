@@ -497,20 +497,19 @@ class StateRepository:
     def publication_transaction(
         self,
         *,
-        mode: LockMode = LockMode.EXCLUSIVE,
         blocking: bool = False,
     ) -> Iterator[_StateTransaction]:
-        """Hold publication before tenant-state for one coherent lifecycle mutation."""
+        """Hold publication before exclusive tenant-state for lifecycle mutation."""
 
         self._require_open()
         with self._locks.acquire_many(
             (
                 LockRequest(LockName.PUBLICATION, LockMode.EXCLUSIVE),
-                LockRequest(LockName.TENANT_STATE, mode),
+                LockRequest(LockName.TENANT_STATE, LockMode.EXCLUSIVE),
             ),
             blocking=blocking,
         ):
-            transaction = _StateTransaction(self, mode=mode)
+            transaction = _StateTransaction(self, mode=LockMode.EXCLUSIVE)
             try:
                 yield transaction
             finally:

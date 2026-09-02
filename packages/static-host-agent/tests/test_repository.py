@@ -336,6 +336,19 @@ def test_publication_transaction_rejects_tenant_state_to_publication_inversion(
         pass
 
 
+def test_publication_transaction_does_not_expose_shared_tenant_state(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+
+    with (
+        _repository(root) as repository,
+        pytest.raises(TypeError, match="mode"),
+        repository.publication_transaction(mode=LockMode.SHARED),  # type: ignore[call-arg]
+    ):
+        pass
+
+
 def test_reader_rejects_schema_valid_but_noncanonical_bytes(tmp_path: Path) -> None:
     root = _state_root(tmp_path)
     path = StateRecordPath.tenant_desired(_TENANT_ID)
