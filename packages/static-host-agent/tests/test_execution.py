@@ -8,7 +8,11 @@ from io import BytesIO
 from pathlib import Path
 
 import pytest
-from lowerduckpond_static_contracts import canonical_json_bytes, request_digest
+from lowerduckpond_static_contracts import (
+    canonical_json_bytes,
+    manifest_digest,
+    request_digest,
+)
 from lowerduckpond_static_host_agent import (
     ArtifactClaim,
     ArtifactIntake,
@@ -384,6 +388,68 @@ def test_executor_rejects_a_misbound_result_before_handler_dispatch(tmp_path: Pa
     ):
         handler = _CompletingCreateHandler(repository)
         with pytest.raises(RuntimeError, match="does not match its authorization job"):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={"create": handler},
+            ).execute(issued.job_id)
+
+    assert handler.phases == []
+
+
+@pytest.mark.parametrize("drift", ["tenant", "candidate"])
+def test_executor_binds_a_successful_create_result_to_its_active_intent(
+    tmp_path: Path,
+    drift: str,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+
+    with StateRepository(root, expected_owner=os.geteuid()) as repository:
+        issued = _issue_create(repository)
+        request = issued.document["request"]
+        assert type(request) is dict
+        result = _fixture("operation-result.json")
+        provenance = result["provenance"]
+        manifest = result["manifest"]
+        assert type(provenance) is dict
+        assert type(manifest) is dict
+        provenance["jobId"] = issued.job_id
+        result["correlationId"] = request["correlationId"]
+        intent = _create_intent(request["correlationId"])
+        metadata = manifest["metadata"]
+        assert type(metadata) is dict
+        if drift == "tenant":
+            other_tenant = "0198d17f-6f4a-7000-8000-000000000099"
+            other_origin = f"t-{other_tenant.replace('-', '')}.lowerduckpond.com"
+            result["tenantId"] = other_tenant
+            result["canonicalOrigin"] = other_origin
+            metadata["id"] = other_tenant
+            metadata["canonicalOrigin"] = other_origin
+        candidate_digest = manifest_digest(manifest).to_dict()
+        intent["candidateManifestDigest"] = candidate_digest
+        recovery = intent["lifecycleRecovery"]
+        assert type(recovery) is dict
+        candidate_observed = recovery["candidateObservedState"]
+        assert type(candidate_observed) is dict
+        candidate_observed["desiredManifestDigest"] = candidate_digest
+        if drift == "candidate":
+            metadata["slug"] = "different-duck"
+        repository.create_immutable(
+            StateRecordPath.authorization_result(issued.job_id),
+            result,
+        )
+        repository.create_immutable(
+            StateRecordPath.transaction_intent(intent["intentId"]),
+            intent,
+        )
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        handler = _CompletingCreateHandler(repository)
+        with pytest.raises(RuntimeError, match="result disagrees with its lifecycle intent"):
             AuthorizationExecutor(
                 repository,
                 intake,

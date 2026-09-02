@@ -11,6 +11,7 @@ from typing import Final, Protocol, cast
 from lowerduckpond_static_contracts import (
     ContractKind,
     canonical_json_bytes,
+    manifest_digest,
     request_digest,
     validate_contract,
     validate_uuid7,
@@ -160,6 +161,7 @@ class AuthorizationExecutor:
                 dispatch = handler is not None and _has_bound_lifecycle_intent(
                     transaction,
                     current.document,
+                    result=durable.document,
                 )
                 if not dispatch:
                     result = _repair_terminal_phase_transaction(
@@ -259,6 +261,7 @@ class AuthorizationExecutor:
                 if handler is None or not _has_bound_lifecycle_intent(
                     transaction,
                     current.document,
+                    result=existing.document,
                 ):
                     result = _repair_terminal_phase_transaction(transaction, current, existing)
                     return ExecutionOutcome(result, False)
@@ -514,6 +517,8 @@ def _read_result_transaction(
 def _has_bound_lifecycle_intent(
     transaction: ExecutionTransaction,
     job: dict[str, object],
+    *,
+    result: dict[str, object],
 ) -> bool:
     request = job["request"]
     if type(request) is not dict:  # pragma: no cover - validated reads prove this
@@ -522,6 +527,7 @@ def _has_bound_lifecycle_intent(
     correlation = transaction.read(StateRecordPath.authorization_correlation(correlation_id))
     _require_same_authority(job, correlation.document)
     matching_kinds: set[str] = set()
+    matching_intents: list[dict[str, object]] = []
     for identity in transaction.measure_intent_records().records:
         path, intent = transaction.read_intent(identity.intent_id)
         kind = cast(str, intent.document["kind"])
@@ -541,7 +547,40 @@ def _has_bound_lifecycle_intent(
         if kind in matching_kinds:
             raise ExecutionError("authorization job repeats one lifecycle intent kind")
         matching_kinds.add(kind)
+        matching_intents.append(intent.document)
+    if matching_intents:
+        _validate_result_intent_binding(result, request, matching_intents)
     return bool(matching_kinds)
+
+
+def _validate_result_intent_binding(
+    result: dict[str, object],
+    request: dict[str, object],
+    intents: list[dict[str, object]],
+) -> None:
+    if request["operation"] != "create" or result["status"] != "succeeded":
+        return
+    matching = [intent for intent in intents if intent["kind"] == "TransactionIntent"]
+    if len(matching) != 1:
+        raise ExecutionError("successful create result has no exact lifecycle intent")
+    intent = matching[0]
+    manifest = result["manifest"]
+    recovery = intent["lifecycleRecovery"]
+    if type(manifest) is not dict or type(recovery) is not dict:
+        raise ExecutionError("successful create recovery authority is malformed")
+    metadata = manifest["metadata"]
+    candidate_observed = recovery["candidateObservedState"]
+    if type(metadata) is not dict or type(candidate_observed) is not dict:
+        raise ExecutionError("successful create candidate authority is malformed")
+    candidate_digest = manifest_digest(manifest).to_dict()
+    if (
+        not result["tenantId"] == metadata["id"] == intent["tenantId"]
+        or result["canonicalOrigin"] != metadata["canonicalOrigin"]
+        or candidate_digest != intent["candidateManifestDigest"]
+        or candidate_observed["tenantId"] != intent["tenantId"]
+        or candidate_observed["desiredManifestDigest"] != candidate_digest
+    ):
+        raise ExecutionError("successful create result disagrees with its lifecycle intent")
 
 
 def _intent_binds_job(
