@@ -8,9 +8,7 @@ import os
 import pwd
 import re
 import secrets
-import socket
 import ssl
-import stat
 import subprocess
 import sys
 import time
@@ -20,26 +18,21 @@ from typing import Final
 from lowerduckpond_static_contracts import (
     ContractError,
     ProtocolError,
-    canonical_json_bytes,
-    decode_json_object,
     validate_uuid7,
 )
 from lowerduckpond_static_domain import generate_uuid7
 
+from lowerduckpond_static_host_agent.caddy_admin import verify_running_caddy
 from lowerduckpond_static_host_agent.caddy_bootstrap import (
     ensure_platform_generation,
     platform_generation_state,
     require_exact_file,
 )
 from lowerduckpond_static_host_agent.caddy_generation import (
-    CADDY_BINARY_NAME,
-    CADDY_CONFIGURATION_NAME,
     CADDY_GENERATION_ROOT_MODE,
-    MAX_CADDY_CONFIGURATION_BYTES,
     MAX_CADDY_ENVIRONMENT_BYTES,
     CaddyBinarySource,
     CaddyGenerationStore,
-    PinnedCaddyGeneration,
 )
 from lowerduckpond_static_host_agent.caddy_runtime import (
     CADDY_PUBLICATION_LOCK_MODE,
@@ -56,7 +49,10 @@ from lowerduckpond_static_host_agent.caddy_startup import (
 )
 from lowerduckpond_static_host_agent.capacity import CapacityError
 from lowerduckpond_static_host_agent.correlations import CorrelationError
-from lowerduckpond_static_host_agent.execution import AuthorizationExecutor, ExecutionError
+from lowerduckpond_static_host_agent.execution import (
+    AuthorizationExecutor,
+    ExecutionError,
+)
 from lowerduckpond_static_host_agent.intake import ArtifactIntake, IntakeError
 from lowerduckpond_static_host_agent.issuance import (
     AuthorizationIssuer,
@@ -73,7 +69,10 @@ from lowerduckpond_static_host_agent.job_runtime import (
     SystemdJobHandoff,
 )
 from lowerduckpond_static_host_agent.locks import StateBusyError
-from lowerduckpond_static_host_agent.operator_adapter import OperatorAdapter, OperatorAdapterError
+from lowerduckpond_static_host_agent.operator_adapter import (
+    OperatorAdapter,
+    OperatorAdapterError,
+)
 from lowerduckpond_static_host_agent.operator_stream import DeadlineReader, StreamError
 from lowerduckpond_static_host_agent.repository import StateRecordError, StateRepository
 from lowerduckpond_static_host_agent.request_decoder import (
@@ -99,8 +98,6 @@ _CADDY_ORIGIN_PULL_MODES: Final = {
     "--origin-pull-staged": False,
     "--origin-pull-required": True,
 }
-_CADDY_ADMIN_SOCKET: Final = Path("/run/caddy/admin.sock")
-_CADDY_ADMIN_RESPONSE_BYTES: Final = MAX_CADDY_CONFIGURATION_BYTES + 64 * 1024
 
 _SAFE_ERRORS: Final = (
     ContractError,
@@ -299,7 +296,7 @@ def caddy_start_verifier_main(arguments: list[str] | None = None) -> int:
                     active=start_target(selected.generation_id, generation.manifest.to_bytes()),
                     invocation_id=invocation_id,
                 )
-                _verify_running_caddy(generation)
+                verify_running_caddy(generation)
                 startup.commit_success(intent)
     except (
         ContractError,
@@ -457,7 +454,14 @@ def caddy_bootstrap_main(arguments: list[str] | None = None) -> int:
                     origin_pull_required=origin_pull_required,
                     startup=startup,
                 )
-    except CaddyRuntimeError, ContractError, KeyError, OSError, RuntimeError, ValueError:
+    except (
+        CaddyRuntimeError,
+        ContractError,
+        KeyError,
+        OSError,
+        RuntimeError,
+        ValueError,
+    ):
         return _fail("caddy_generation_bootstrap_failed", 1)
     if check_only:
         os.write(sys.stdout.fileno(), f"{state.value}\n".encode("ascii"))
@@ -521,69 +525,6 @@ def _open_caddy_control_runtime() -> CaddyRuntime:
         root_mode=CADDY_RUNTIME_ROOT_MODE,
         lock_mode=CADDY_PUBLICATION_LOCK_MODE,
     )
-
-
-def _verify_running_caddy(generation: PinnedCaddyGeneration) -> None:
-    manifest = generation.manifest
-    expected = {item.name: item.sha256 for item in manifest.files}
-    main_pid = subprocess.run(
-        ["/usr/bin/systemctl", "show", "--property=MainPID", "--value", "caddy.service"],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=5,
-    ).stdout.strip()
-    if not main_pid.isascii() or not main_pid.isdecimal() or int(main_pid) <= 1:
-        raise CaddyRuntimeError("Caddy main PID is invalid")
-    if _digest_running_executable(Path(f"/proc/{main_pid}/exe")) != expected[CADDY_BINARY_NAME]:
-        raise CaddyRuntimeError("running Caddy binary disagrees with its generation")
-    response = _read_caddy_admin_configuration()
-    configuration = decode_json_object(response, maximum_bytes=MAX_CADDY_CONFIGURATION_BYTES)
-    if _digest_bytes(canonical_json_bytes(configuration)) != expected[CADDY_CONFIGURATION_NAME]:
-        raise CaddyRuntimeError("running Caddy configuration disagrees with its generation")
-
-
-def _read_caddy_admin_configuration() -> bytes:
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-        client.settimeout(5)
-        client.connect(str(_CADDY_ADMIN_SOCKET))
-        client.sendall(b"GET /config/ HTTP/1.0\r\nHost: localhost\r\n\r\n")
-        chunks: list[bytes] = []
-        total = 0
-        while chunk := client.recv(64 * 1024):
-            total += len(chunk)
-            if total > _CADDY_ADMIN_RESPONSE_BYTES:
-                raise CaddyRuntimeError("Caddy admin response exceeds its bound")
-            chunks.append(chunk)
-    head, separator, body = b"".join(chunks).partition(b"\r\n\r\n")
-    if not separator or re.match(rb"HTTP/1\.[01] 200 ", head) is None:
-        raise CaddyRuntimeError("Caddy admin health response is invalid")
-    return body
-
-
-def _digest_running_executable(path: Path) -> str:
-    descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
-    digest = hashlib.sha256()
-    try:
-        metadata = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(metadata.st_mode)
-            or metadata.st_uid != 0
-            or not 0 < metadata.st_size <= 128 * 1024 * 1024
-        ):
-            raise CaddyRuntimeError("running Caddy executable metadata is unsafe")
-        remaining = metadata.st_size
-        while remaining:
-            chunk = os.read(descriptor, min(remaining, 64 * 1024))
-            if not chunk:
-                raise CaddyRuntimeError("running Caddy executable changed while reading")
-            digest.update(chunk)
-            remaining -= len(chunk)
-        if os.read(descriptor, 1):
-            raise CaddyRuntimeError("running Caddy executable exceeds its bound")
-    finally:
-        os.close(descriptor)
-    return digest.hexdigest()
 
 
 def _systemd_publication_lock_descriptor() -> int:
