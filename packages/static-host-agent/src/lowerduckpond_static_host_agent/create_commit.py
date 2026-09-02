@@ -412,6 +412,9 @@ def _admit_missing_state(
         transient_allocations.append(
             transaction.allocation_upper_bound(len(canonical_json_bytes(completed)))
         )
+    entry_count = len(missing) + directory_inodes + int(audit_missing) + int(job_transition)
+    if entry_count == 0:
+        return _MissingState(result_missing)
     transaction.admit_inventory(
         StateInventoryReservation(
             tenants=int(tenant_missing),
@@ -419,7 +422,6 @@ def _admit_missing_state(
             authorization_allocated_bytes=result_allocation,
         )
     )
-    entry_count = len(missing) + directory_inodes + int(audit_missing) + int(job_transition)
     admit_release_capacity(
         ReleaseCapacityUsage(()),
         CapacityReservation(

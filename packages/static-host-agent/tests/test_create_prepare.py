@@ -609,6 +609,63 @@ def test_create_activation_keeps_candidate_during_terminal_commit_replay(
         repository.close()
 
 
+def test_completed_create_cleans_its_intent_after_capacity_falls(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root)
+    runtime = _Runtime()
+    try:
+        prepared = _prepare(repository, runtime, job)
+        candidate_id = prepared.candidate_manifest.generation_id
+
+        def interrupt(boundary: CreateCommitBoundary) -> None:
+            if boundary is CreateCommitBoundary.JOB_SYNC:
+                raise RuntimeError("interrupted after completed job")
+
+        with pytest.raises(RuntimeError, match="interrupted after completed job"):
+            activate_create_transition(
+                repository,
+                cast(CaddyRuntime, runtime),
+                _Gate(),
+                prepared,
+                reloader=runtime.reload,
+                restorer=runtime.restore,
+                verifier=runtime.verify,
+                commit_failure_hook=interrupt,
+            )
+
+        monkeypatch.setattr(
+            "lowerduckpond_static_host_agent.repository._StateTransaction.measure_filesystem_capacity",
+            lambda _transaction: FilesystemCapacity(
+                device=1,
+                fragment_size=4096,
+                total_blocks=10_000_000,
+                available_blocks=0,
+                total_inodes=1_000_000,
+                available_inodes=0,
+            ),
+        )
+        assert (
+            activate_create_transition(
+                repository,
+                cast(CaddyRuntime, runtime),
+                _Gate(),
+                prepared,
+                reloader=runtime.reload,
+                restorer=runtime.restore,
+                verifier=runtime.verify,
+            )
+            == prepared.plan.result
+        )
+
+        assert runtime.active == runtime.running == candidate_id
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
 def test_create_activation_rejects_an_unrelated_active_generation_before_mutation(
     tmp_path: Path,
 ) -> None:
