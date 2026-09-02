@@ -23,6 +23,8 @@ from lowerduckpond_static_host_agent import (
     AuthorizationExecutor,
     AuthorizationIssuer,
     CapacityProjection,
+    CorrelationAdmission,
+    CorrelationReconciliation,
     DeadlineWriter,
     FilesystemCapacity,
     IssuedAuthorization,
@@ -555,6 +557,46 @@ def test_startup_reconciliation_requeues_only_unfinished_authority(tmp_path: Pat
     assert first.enqueued_jobs == (pending.job_id,)
     assert handoff.enqueued == [pending.job_id]
     assert second.enqueued_jobs == ()
+
+
+def test_startup_reconciliation_snapshots_jobs_and_intents_in_one_transaction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _state_root(tmp_path)
+    snapshots: list[object] = []
+
+    def reconcile_transaction(
+        _admission: CorrelationAdmission,
+        transaction: object,
+    ) -> CorrelationReconciliation:
+        snapshots.append(transaction)
+        return CorrelationReconciliation(jobs=(), repaired_records=0)
+
+    def active_intents(transaction: object, jobs: object) -> set[str]:
+        assert snapshots == [transaction]
+        assert jobs == ()
+        return set()
+
+    monkeypatch.setattr(
+        CorrelationAdmission,
+        "reconcile_transaction",
+        reconcile_transaction,
+    )
+    monkeypatch.setattr(
+        StartupReconciler,
+        "_active_intent_job_ids",
+        staticmethod(active_intents),
+    )
+    handoff = _CaptureHandoff()
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        outcome = StartupReconciler(repository, intake, handoff).reconcile()
+
+    assert len(snapshots) == 1
+    assert outcome.enqueued_jobs == ()
 
 
 def test_startup_reconciliation_requeues_a_result_phase_repair(tmp_path: Path) -> None:
