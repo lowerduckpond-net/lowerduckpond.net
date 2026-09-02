@@ -301,6 +301,8 @@ class AuthorizationExecutor:
                             limits=self._capacity_limits,
                         )
                         return ExecutionOutcome(result, True)
+                if current.document["phase"] == "claimed" and handler is None:
+                    raise ExecutionError("claimed lifecycle job handler is unavailable")
                 claimed = _claim_pending(transaction, current)
                 if handler is None:
                     # Unsupported lifecycle operations remain mutation-free until
