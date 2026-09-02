@@ -111,6 +111,7 @@ def activate_create_transition(  # noqa: PLR0913 - recovery mechanisms stay inje
                     source,
                     candidate,
                     restorer=restorer,
+                    verifier=verifier,
                     error=error,
                 )
             _ensure_candidate_running(
@@ -208,16 +209,21 @@ def _restore_source(
     raise error from None
 
 
-def _reject_capacity_before_activation(
+def _reject_capacity_before_activation(  # noqa: PLR0913 - callbacks stay injectable
     runtime: CaddyRuntime,
     source: PinnedCaddyGeneration,
     candidate: PinnedCaddyGeneration,
     *,
     restorer: GenerationRestorer,
+    verifier: GenerationVerifier,
     error: BaseException,
 ) -> NoReturn:
     active_id = runtime.read_active()
     if active_id == source.manifest.generation_id:
+        try:
+            verifier(source)
+        except BaseException:
+            _restore_source(runtime, source, restorer=restorer, error=error)
         raise error from None
     if active_id == candidate.manifest.generation_id:
         _restore_source(runtime, source, restorer=restorer, error=error)
