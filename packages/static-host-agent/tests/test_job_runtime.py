@@ -351,6 +351,41 @@ def test_result_waiter_rechecks_intents_after_a_polled_result_appears(
     assert handoff.enqueued == [issued.job_id, issued.job_id]
 
 
+def test_result_waiter_rejects_a_result_that_disagrees_with_its_active_intent(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    handoff = _CaptureHandoff()
+    with StateRepository(root, expected_owner=os.geteuid()) as repository:
+        issued = _issue(repository)
+        request = issued.document["request"]
+        assert type(request) is dict
+        intent = _create_intent(request["correlationId"])
+        repository.create_immutable(
+            StateRecordPath.transaction_intent(intent["intentId"]),
+            intent,
+        )
+        result = _fixture("operation-result.json")
+        provenance = result["provenance"]
+        manifest = result["manifest"]
+        assert type(provenance) is dict
+        assert type(manifest) is dict
+        metadata = manifest["metadata"]
+        assert type(metadata) is dict
+        provenance["jobId"] = issued.job_id
+        result["correlationId"] = request["correlationId"]
+        metadata["slug"] = "unauthorized-result"
+        repository.create_immutable(
+            StateRecordPath.authorization_result(issued.job_id),
+            result,
+        )
+
+        with pytest.raises(RuntimeBoundaryError, match="lifecycle authority"):
+            ResultWaiter(repository, handoff).retrieve(issued)
+
+    assert handoff.enqueued == []
+
+
 def test_operator_session_returns_one_bound_versioned_response_frame(tmp_path: Path) -> None:
     root = _state_root(tmp_path)
     read_fd, write_fd = os.pipe()
