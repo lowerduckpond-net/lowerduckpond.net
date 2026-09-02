@@ -151,6 +151,7 @@ from lowerduckpond_static_host_agent.execution import (
     ExecutionError,
     ExecutionOutcome,
     JobHandoff,
+    LifecycleJobHandler,
 )
 from lowerduckpond_static_host_agent.intake import (
     AdmittedArtifact,
@@ -408,6 +409,7 @@ __all__ = [
     "IssuanceError",
     "IssuedAuthorization",
     "JobHandoff",
+    "LifecycleJobHandler",
     "LifecyclePlanError",
     "LocalRequestDecoder",
     "LockManager",

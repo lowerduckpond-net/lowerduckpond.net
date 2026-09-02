@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from lowerduckpond_static_contracts import canonical_json_bytes
 from lowerduckpond_static_host_agent import (
+    ArtifactClaim,
     ArtifactIntake,
     AuthorizationExecutor,
     AuthorizationIssuer,
@@ -37,6 +38,114 @@ class _OpenGate:
 class _Entropy:
     def __call__(self, length: int) -> bytes:
         return b"\x08" * length
+
+
+class _CompletingCreateHandler:
+    def __init__(
+        self,
+        repository: StateRepository,
+        *,
+        persist_result: bool = True,
+        commit_job: bool = True,
+    ) -> None:
+        self._repository = repository
+        self._persist_result = persist_result
+        self._commit_job = commit_job
+        self.phases: list[object] = []
+        self.claims: list[ArtifactClaim | None] = []
+
+    def execute(
+        self,
+        job_id: str,
+        *,
+        claim: ArtifactClaim | None,
+        blocking: bool,
+    ) -> dict[str, object]:
+        job = self._repository.read(
+            StateRecordPath.authorization_job(job_id),
+            blocking=blocking,
+        )
+        self.phases.append(job.document["phase"])
+        self.claims.append(claim)
+        try:
+            return self._repository.read(
+                StateRecordPath.authorization_result(job_id),
+                blocking=blocking,
+            ).document
+        except FileNotFoundError:
+            pass
+        request = job.document["request"]
+        assert type(request) is dict
+        result = _fixture("operation-result.json")
+        provenance = result["provenance"]
+        assert type(provenance) is dict
+        provenance["jobId"] = job_id
+        result["correlationId"] = request["correlationId"]
+        if self._persist_result:
+            self._repository.create_immutable(
+                StateRecordPath.authorization_result(job_id),
+                result,
+                blocking=blocking,
+            )
+        if self._commit_job:
+            current = self._repository.read(
+                StateRecordPath.authorization_job(job_id),
+                blocking=blocking,
+            )
+            completed = current.document
+            completed["phase"] = "completed"
+            self._repository.compare_and_swap(
+                StateRecordPath.authorization_job(job_id),
+                current.revision,
+                completed,
+                blocking=blocking,
+            )
+        return result
+
+
+class _CompletingFailureHandler:
+    def __init__(self, repository: StateRepository) -> None:
+        self._repository = repository
+        self.claims: list[ArtifactClaim | None] = []
+
+    def execute(
+        self,
+        job_id: str,
+        *,
+        claim: ArtifactClaim | None,
+        blocking: bool,
+    ) -> dict[str, object]:
+        self.claims.append(claim)
+        job = self._repository.read(
+            StateRecordPath.authorization_job(job_id),
+            blocking=blocking,
+        )
+        request = job.document["request"]
+        assert type(request) is dict
+        result: dict[str, object] = {
+            "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+            "kind": "OperationResult",
+            "provenance": {"kind": "authorization-job", "jobId": job_id},
+            "correlationId": request["correlationId"],
+            "operation": request["operation"],
+            "status": "failed",
+            "errorCode": "not_implemented",
+            "tenantId": request["tenantId"],
+        }
+        self._repository.create_immutable(
+            StateRecordPath.authorization_result(job_id),
+            result,
+            blocking=blocking,
+        )
+        failed = job.document
+        failed["phase"] = "failed"
+        self._repository.compare_and_swap(
+            StateRecordPath.authorization_job(job_id),
+            job.revision,
+            failed,
+            blocking=blocking,
+        )
+        return result
 
 
 @pytest.fixture(autouse=True)
@@ -156,6 +265,100 @@ def test_executor_publishes_one_immutable_mutation_free_terminal_result(
     assert list((root / "tenants").iterdir()) == before_tenants
 
 
+def test_executor_dispatches_claimed_create_and_replays_its_handler(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued = _issue_create(repository)
+        handler = _CompletingCreateHandler(repository)
+        executor = AuthorizationExecutor(repository, intake, handlers={"create": handler})
+
+        first = executor.execute(issued.job_id)
+        second = executor.execute(issued.job_id)
+
+        stored = repository.read(StateRecordPath.authorization_result(issued.job_id)).document
+        phase = repository.read(StateRecordPath.authorization_job(issued.job_id)).document["phase"]
+
+    assert first.created is True
+    assert second.created is False
+    assert first.result == second.result == stored
+    assert first.result["status"] == "succeeded"
+    assert phase == "completed"
+    assert handler.phases == ["claimed", "completed"]
+    assert handler.claims == [None, None]
+
+
+def test_executor_rejects_a_misbound_result_before_handler_dispatch(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+
+    with StateRepository(root, expected_owner=os.geteuid()) as repository:
+        issued = _issue_create(repository)
+        request = issued.document["request"]
+        assert type(request) is dict
+        result = _fixture("operation-result.json")
+        provenance = result["provenance"]
+        assert type(provenance) is dict
+        provenance["jobId"] = issued.job_id
+        result["correlationId"] = "0198d17f-6f4a-7000-8000-000000000099"
+        repository.create_immutable(
+            StateRecordPath.authorization_result(issued.job_id),
+            result,
+        )
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        handler = _CompletingCreateHandler(repository)
+        with pytest.raises(RuntimeError, match="does not match its authorization job"):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={"create": handler},
+            ).execute(issued.job_id)
+
+    assert handler.phases == []
+
+
+@pytest.mark.parametrize(
+    ("persist_result", "commit_job", "message"),
+    [
+        (False, True, "result is not durably exact"),
+        (True, False, "before terminal job commit"),
+    ],
+)
+def test_executor_rejects_an_incomplete_handler_commit(
+    tmp_path: Path,
+    persist_result: bool,
+    commit_job: bool,
+    message: str,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued = _issue_create(repository)
+        handler = _CompletingCreateHandler(
+            repository,
+            persist_result=persist_result,
+            commit_job=commit_job,
+        )
+        with pytest.raises(RuntimeError, match=message):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={"create": handler},
+            ).execute(issued.job_id)
+
+
 def test_executor_revalidates_expected_source_before_claiming(tmp_path: Path) -> None:
     root = _state_root(tmp_path)
     namespace = _fixture("platform-namespace.json")
@@ -173,9 +376,15 @@ def test_executor_revalidates_expected_source_before_claiming(tmp_path: Path) ->
             current.revision,
             namespace,
         )
-        outcome = AuthorizationExecutor(repository, intake).execute(issued.job_id)
+        handler = _CompletingCreateHandler(repository)
+        outcome = AuthorizationExecutor(
+            repository,
+            intake,
+            handlers={"create": handler},
+        ).execute(issued.job_id)
 
     assert outcome.result["errorCode"] == "state_drift"
+    assert handler.phases == []
 
 
 def test_executor_terminalizes_delete_that_becomes_ineligible(tmp_path: Path) -> None:
@@ -297,9 +506,17 @@ def test_executor_consumes_only_the_artifact_bound_to_the_job(tmp_path: Path) ->
                 artifact=artifact,
             )
             lease.commit()
-        outcome = AuthorizationExecutor(repository, intake).execute(issued.job_id)
+        handler = _CompletingFailureHandler(repository)
+        outcome = AuthorizationExecutor(
+            repository,
+            intake,
+            handlers={"deploy": handler},
+        ).execute(issued.job_id)
 
     assert outcome.result["errorCode"] == "not_implemented"
+    assert len(handler.claims) == 1
+    assert handler.claims[0] is not None
+    assert handler.claims[0].artifact == lease.artifact
     assert list((root / "intake").iterdir()) == []
 
 

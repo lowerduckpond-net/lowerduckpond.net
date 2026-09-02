@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from contextlib import nullcontext
 from copy import deepcopy
 from dataclasses import dataclass
@@ -103,18 +104,32 @@ class ExecutionOutcome:
     created: bool
 
 
+class LifecycleJobHandler(Protocol):
+    """Complete one validated root-owned lifecycle job and its durable result."""
+
+    def execute(
+        self,
+        job_id: str,
+        *,
+        claim: ArtifactClaim | None,
+        blocking: bool,
+    ) -> dict[str, object]: ...
+
+
 class AuthorizationExecutor:
-    """Validate only a root-owned job and produce a mutation-free M3.6 result."""
+    """Validate, claim, and dispatch only one root-owned authorization job."""
 
     def __init__(
         self,
         repository: StateRepository,
         intake: ArtifactIntake,
         *,
+        handlers: Mapping[str, LifecycleJobHandler] | None = None,
         capacity_limits: HostCapacityLimits = DEFAULT_HOST_CAPACITY_LIMITS,
     ) -> None:
         self._repository = repository
         self._intake = intake
+        self._handlers = dict(handlers or {})
         self._capacity_limits = capacity_limits
 
     def execute(self, job_id: object, *, blocking: bool = False) -> ExecutionOutcome:
@@ -123,8 +138,21 @@ class AuthorizationExecutor:
         canonical_id = validate_uuid7(job_id)
         path = StateRecordPath.authorization_job(canonical_id)
         initial = self._repository.read(path, blocking=blocking)
+        handler = self._handler_for(initial.document)
         existing = self._read_result(canonical_id, blocking=blocking)
         if existing is not None:
+            if handler is not None:
+                _validate_result_binding(initial.document, existing.document)
+                outcome = self._execute_handler(
+                    canonical_id,
+                    initial,
+                    handler,
+                    claim=None,
+                    created=False,
+                    blocking=blocking,
+                )
+                self._consume_terminal_artifact(initial.document, blocking=blocking)
+                return outcome
             result = self._repair_terminal_phase(initial, existing, blocking=blocking)
             self._consume_terminal_artifact(initial.document, blocking=blocking)
             return ExecutionOutcome(result, False)
@@ -145,6 +173,7 @@ class AuthorizationExecutor:
                     canonical_id,
                     initial,
                     claim=claim,
+                    handler=handler,
                     blocking=blocking,
                 )
                 if claim is not None:
@@ -187,9 +216,11 @@ class AuthorizationExecutor:
         initial: StoredContract,
         *,
         claim: ArtifactClaim | None,
+        handler: LifecycleJobHandler | None,
         blocking: bool,
     ) -> ExecutionOutcome:
         path = StateRecordPath.authorization_job(job_id)
+        created = True
         with self._repository.transaction(
             mode=LockMode.EXCLUSIVE,
             blocking=blocking,
@@ -198,21 +229,74 @@ class AuthorizationExecutor:
             _require_same_authority(initial.document, current.document)
             existing = _read_result_transaction(transaction, job_id)
             if existing is not None:
-                result = _repair_terminal_phase_transaction(transaction, current, existing)
-                return ExecutionOutcome(result, False)
-            _validate_job_integrity(current.document, claim=claim)
-            error_code = _expected_source_error(transaction, current.document)
-            if error_code is not None:
-                result = _failure_result(current.document, error_code)
-                _publish_result(transaction, current, result, limits=self._capacity_limits)
-                return ExecutionOutcome(result, True)
-            claimed = _claim_pending(transaction, current)
-            # Lifecycle handlers deliberately remain unavailable in M3.6. The
-            # validated/claimed envelope is the compatibility boundary later
-            # handlers consume; no tenant or publication state is mutated here.
-            result = _failure_result(claimed.document, _NOT_IMPLEMENTED)
-            _publish_result(transaction, claimed, result, limits=self._capacity_limits)
-            return ExecutionOutcome(result, True)
+                if handler is None:
+                    result = _repair_terminal_phase_transaction(transaction, current, existing)
+                    return ExecutionOutcome(result, False)
+                _validate_result_binding(current.document, existing.document)
+                created = False
+            else:
+                _validate_job_integrity(current.document, claim=claim)
+                error_code = _expected_source_error(transaction, current.document)
+                if error_code is not None:
+                    result = _failure_result(current.document, error_code)
+                    _publish_result(transaction, current, result, limits=self._capacity_limits)
+                    return ExecutionOutcome(result, True)
+                claimed = _claim_pending(transaction, current)
+                if handler is None:
+                    # Unsupported lifecycle operations remain mutation-free until
+                    # their independently reviewed handlers become available.
+                    result = _failure_result(claimed.document, _NOT_IMPLEMENTED)
+                    _publish_result(transaction, claimed, result, limits=self._capacity_limits)
+                    return ExecutionOutcome(result, True)
+        if handler is None:  # pragma: no cover - every in-lock branch returns
+            raise ExecutionError("authorization handler selection was lost")
+        return self._execute_handler(
+            job_id,
+            initial,
+            handler,
+            claim=claim,
+            created=created,
+            blocking=blocking,
+        )
+
+    def _execute_handler(  # noqa: PLR0913 - handler trust inputs stay explicit
+        self,
+        job_id: str,
+        initial: StoredContract,
+        handler: LifecycleJobHandler,
+        *,
+        claim: ArtifactClaim | None,
+        created: bool,
+        blocking: bool,
+    ) -> ExecutionOutcome:
+        returned = handler.execute(job_id, claim=claim, blocking=blocking)
+        if type(returned) is not dict:
+            raise ExecutionError("lifecycle handler returned a malformed result")
+        result = deepcopy(returned)
+        validate_contract(result, expected_kind=ContractKind.OPERATION_RESULT)
+        with self._repository.transaction(
+            mode=LockMode.EXCLUSIVE,
+            blocking=blocking,
+        ) as transaction:
+            current = transaction.read(StateRecordPath.authorization_job(job_id))
+            _require_same_authority(initial.document, current.document)
+            stored = _read_result_transaction(transaction, job_id)
+            if stored is None or stored.document != result:
+                raise ExecutionError("lifecycle handler result is not durably exact")
+            _validate_result_binding(current.document, result)
+            expected_phase = "completed" if result["status"] == "succeeded" else "failed"
+            if current.document["phase"] != expected_phase:
+                raise ExecutionError("lifecycle handler returned before terminal job commit")
+        return ExecutionOutcome(result, created)
+
+    def _handler_for(self, job: dict[str, object]) -> LifecycleJobHandler | None:
+        request = job["request"]
+        if type(request) is not dict:  # pragma: no cover - validated reads prove this
+            raise ExecutionError("authorization job request is not an object")
+        operation = request["operation"]
+        if type(operation) is not str:  # pragma: no cover - schema validation proves this
+            raise ExecutionError("authorization operation is not a string")
+        return self._handlers.get(operation)
 
     def _fail_without_claim(
         self,
