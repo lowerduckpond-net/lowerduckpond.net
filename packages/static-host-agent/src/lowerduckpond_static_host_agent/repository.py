@@ -1041,15 +1041,15 @@ class _StateTransaction:
         allowed = {*_TENANT_CHILD_DIRECTORIES, desired_name, observed_name}
         tenant_root = self._repository._durable.open_descendant(("tenants",))
         try:
-            root_fd = tenant_root.duplicate_descriptor()
+            tenant_directory = tenant_root.open_descendant((tenant_id,))
             try:
-                tenant_fd = os.open(tenant_id, _DIRECTORY_OPEN_FLAGS, dir_fd=root_fd)
+                tenant_directory.remove_abandoned_publication_temporaries(
+                    expected_owner=self._repository._expected_owner,
+                    expected_mode=self._repository._expected_record_mode,
+                    maximum_entries=len(allowed) + 1,
+                )
+                tenant_fd = tenant_directory.duplicate_descriptor()
                 try:
-                    validate_state_directory(
-                        tenant_fd,
-                        expected_owner=self._repository._expected_owner,
-                        expected_mode=self._repository._expected_directory_mode,
-                    )
                     with os.scandir(tenant_fd) as entries:
                         names_list: list[str] = []
                         for entry in entries:
@@ -1081,7 +1081,7 @@ class _StateTransaction:
                 finally:
                     os.close(tenant_fd)
             finally:
-                os.close(root_fd)
+                tenant_directory.close()
         finally:
             tenant_root.close()
 

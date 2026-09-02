@@ -702,6 +702,31 @@ def test_create_tenant_state_retry_completes_an_interrupted_pair(tmp_path: Path)
         )
 
 
+def test_create_tenant_state_recovers_an_abandoned_record_temporary(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    plan = _create_plan()
+
+    with _repository(root) as repository, repository.publication_transaction() as transaction:
+        transaction.create_immutable(
+            StateRecordPath.transaction_intent(plan.intent_id),
+            plan.intent,
+        )
+        transaction.ensure_create_tenant_namespace(plan.tenant_id)
+        temporary = root / "tenants" / plan.tenant_id / f".ldp-state-{'a' * 32}"
+        temporary.write_bytes(b"abandoned")
+        temporary.chmod(_RECORD_MODE)
+
+        transaction.ensure_create_tenant_state(
+            plan.tenant_id,
+            plan.manifest,
+            plan.observed_state,
+        )
+
+    assert not temporary.exists()
+
+
 def test_create_tenant_state_freezes_candidates_before_running_hooks(tmp_path: Path) -> None:
     root = _state_root(tmp_path)
     plan = _create_plan()
