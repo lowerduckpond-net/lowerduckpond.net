@@ -50,6 +50,9 @@ from lowerduckpond_static_host_agent.state_inventory import (
 )
 
 _NOT_IMPLEMENTED: Final = "not_implemented"
+_PREDISPATCH_FAILURE_CODES: Final[frozenset[str]] = frozenset(
+    {"invalid_artifact", _NOT_IMPLEMENTED, "state_drift"}
+)
 
 
 class ExecutionError(RuntimeError):
@@ -141,7 +144,7 @@ class AuthorizationExecutor:
         handler = self._handler_for(initial.document)
         existing = self._read_result(canonical_id, blocking=blocking)
         if existing is not None:
-            if handler is not None:
+            if handler is not None and not _is_predispatch_failure(existing.document):
                 self._repair_terminal_phase(initial, existing, blocking=blocking)
                 outcome = self._execute_handler(
                     canonical_id,
@@ -229,7 +232,7 @@ class AuthorizationExecutor:
             _require_same_authority(initial.document, current.document)
             existing = _read_result_transaction(transaction, job_id)
             if existing is not None:
-                if handler is None:
+                if handler is None or _is_predispatch_failure(existing.document):
                     result = _repair_terminal_phase_transaction(transaction, current, existing)
                     return ExecutionOutcome(result, False)
                 _repair_terminal_phase_transaction(transaction, current, existing)
@@ -492,6 +495,10 @@ def _read_result_transaction(
         return transaction.read(StateRecordPath.authorization_result(job_id))
     except FileNotFoundError:
         return None
+
+
+def _is_predispatch_failure(result: dict[str, object]) -> bool:
+    return result["status"] == "failed" and result.get("errorCode") in _PREDISPATCH_FAILURE_CODES
 
 
 def _repair_terminal_phase_transaction(

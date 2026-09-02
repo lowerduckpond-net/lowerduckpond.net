@@ -411,13 +411,17 @@ def test_executor_revalidates_expected_source_before_claiming(tmp_path: Path) ->
             namespace,
         )
         handler = _CompletingCreateHandler(repository)
-        outcome = AuthorizationExecutor(
+        executor = AuthorizationExecutor(
             repository,
             intake,
             handlers={"create": handler},
-        ).execute(issued.job_id)
+        )
+        outcome = executor.execute(issued.job_id)
+        replay = executor.execute(issued.job_id)
 
     assert outcome.result["errorCode"] == "state_drift"
+    assert replay.result == outcome.result
+    assert replay.created is False
     assert handler.phases == []
 
 
