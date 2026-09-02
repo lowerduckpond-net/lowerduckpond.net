@@ -241,6 +241,31 @@ def _issue_create(repository: StateRepository) -> IssuedAuthorization:
     )
 
 
+def _create_intent(correlation_id: object) -> dict[str, object]:
+    intent = _fixture("transaction-intent.json")
+    intent["correlationId"] = correlation_id
+    intent["operation"] = "create"
+    intent["sourceManifestDigest"] = None
+    candidate = _fixture("tenant-observed-state.json")
+    candidate.update(
+        {
+            "desiredManifestDigest": intent["candidateManifestDigest"],
+            "observedState": "undeployed",
+            "activeDeploymentId": None,
+            "runtimeGenerationId": None,
+        }
+    )
+    intent["lifecycleRecovery"] = {
+        "sourceObservedState": None,
+        "sourceRuntimeGenerationId": "0198d17f-6f4a-7000-8000-000000000004",
+        "sourceRouteSet": "absent",
+        "candidateObservedState": candidate,
+        "candidateRuntimeGenerationId": "0198d17f-6f4a-7000-8000-000000000006",
+        "candidateRouteSet": "absent",
+    }
+    return intent
+
+
 def test_executor_publishes_one_immutable_mutation_free_terminal_result(
     tmp_path: Path,
 ) -> None:
@@ -518,13 +543,13 @@ def test_executor_uses_bound_intent_not_error_code_to_select_handler_replay(
             job.revision,
             claimed,
         )
-        intent = _fixture("transaction-intent.json")
+        request = issued.document["request"]
+        assert type(request) is dict
+        intent = _create_intent(request["correlationId"])
         repository.create_immutable(
             StateRecordPath.transaction_intent(intent["intentId"]),
             intent,
         )
-        request = issued.document["request"]
-        assert type(request) is dict
         result: dict[str, object] = {
             "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
             "kind": "OperationResult",
@@ -554,6 +579,58 @@ def test_executor_uses_bound_intent_not_error_code_to_select_handler_replay(
     assert outcome.result == result
     assert outcome.created is False
     assert handler.phases == ["claimed"]
+
+
+def test_executor_rejects_an_intent_for_another_operation_before_handler_replay(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    with StateRepository(root, expected_owner=os.geteuid()) as repository:
+        issued = _issue_create(repository)
+        job = repository.read(StateRecordPath.authorization_job(issued.job_id))
+        claimed = job.document
+        claimed["phase"] = "claimed"
+        repository.compare_and_swap(
+            StateRecordPath.authorization_job(issued.job_id),
+            job.revision,
+            claimed,
+        )
+        intent = _fixture("transaction-intent.json")
+        repository.create_immutable(
+            StateRecordPath.transaction_intent(intent["intentId"]),
+            intent,
+        )
+        request = issued.document["request"]
+        assert type(request) is dict
+        result: dict[str, object] = {
+            "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+            "kind": "OperationResult",
+            "provenance": {"kind": "authorization-job", "jobId": issued.job_id},
+            "correlationId": request["correlationId"],
+            "operation": "create",
+            "status": "failed",
+            "errorCode": "state_drift",
+            "tenantId": None,
+        }
+        repository.create_immutable(
+            StateRecordPath.authorization_result(issued.job_id),
+            result,
+        )
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        handler = _CompletingCreateHandler(repository)
+        with pytest.raises(RuntimeError, match="intent operation does not match"):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={"create": handler},
+            ).execute(issued.job_id)
+
+    assert handler.phases == []
 
 
 def test_executor_dispatches_a_claimed_job_without_rechecking_its_source(

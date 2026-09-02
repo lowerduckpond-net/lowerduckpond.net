@@ -516,11 +516,20 @@ def _has_bound_lifecycle_intent(
     request = job["request"]
     if type(request) is not dict:  # pragma: no cover - validated reads prove this
         raise ExecutionError("authorization job request is not an object")
-    correlation_id = request["correlationId"]
+    correlation_id = validate_uuid7(request["correlationId"])
+    correlation = transaction.read(StateRecordPath.authorization_correlation(correlation_id))
+    _require_same_authority(job, correlation.document)
+    operation = request["operation"]
     matching = 0
     for identity in transaction.measure_intent_records().records:
-        _path, intent = transaction.read_intent(identity.intent_id)
+        path, intent = transaction.read_intent(identity.intent_id)
+        if path != StateRecordPath.transaction_intent(identity.intent_id):
+            raise ExecutionError("lifecycle intent path disagrees with its identity")
         if intent.document["correlationId"] == correlation_id:
+            if intent.document["operation"] != operation:
+                raise ExecutionError("lifecycle intent operation does not match its job")
+            if operation != "create" and intent.document["tenantId"] != request["tenantId"]:
+                raise ExecutionError("lifecycle intent tenant does not match its job")
             matching += 1
     if matching > 1:
         raise ExecutionError("authorization job is bound to multiple lifecycle intents")
