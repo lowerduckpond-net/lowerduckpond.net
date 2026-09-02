@@ -18,16 +18,21 @@ from lowerduckpond_static_contracts import (
     ContractError,
     ContractKind,
     canonical_json_bytes,
+    manifest_digest,
     platform_state_digest,
 )
 from lowerduckpond_static_host_agent import (
     AuditState,
+    CreateStateBoundary,
+    CreateTransitionPlan,
     LockManager,
     LockMode,
     LockName,
     LockOrderError,
+    StateAdmissionRejectedError,
     StateAlreadyExistsError,
     StateConflictError,
+    StateInventoryError,
     StatePathError,
     StateRecordError,
     StateRecordPath,
@@ -107,14 +112,14 @@ def _write_record(root: Path, path: StateRecordPath, document: dict[str, object]
     return target
 
 
-def _create_intent() -> tuple[str, dict[str, object]]:
+def _create_plan() -> CreateTransitionPlan:
     namespace = _fixture("platform-namespace.json")
     job = _fixture("authorization-job.json")
     job["phase"] = "claimed"
     expected = job["expectedSource"]
     assert type(expected) is dict
     expected["platformStateDigest"] = platform_state_digest(namespace).to_dict()
-    plan = plan_create_transition(
+    return plan_create_transition(
         job,
         namespace,
         source_runtime_generation_id="0198d17f-6f4a-7000-8000-000000000004",
@@ -124,6 +129,10 @@ def _create_intent() -> tuple[str, dict[str, object]]:
         clock=lambda: 1_777_000_000_000,
         entropy=_Entropy(),
     )
+
+
+def _create_intent() -> tuple[str, dict[str, object]]:
+    plan = _create_plan()
     return plan.tenant_id, plan.intent
 
 
@@ -409,7 +418,7 @@ def test_tenant_namespace_requires_and_preserves_one_create_intent(
     )
 
 
-@pytest.mark.parametrize("operation", ["ensure", "remove"])
+@pytest.mark.parametrize("operation", ["ensure", "remove", "state"])
 def test_tenant_namespace_mutation_requires_the_publication_lock(
     tmp_path: Path,
     operation: str,
@@ -428,8 +437,15 @@ def test_tenant_namespace_mutation_requires_the_publication_lock(
         with pytest.raises(LockOrderError, match=r"publication\.lock must already be held"):
             if operation == "ensure":
                 transaction.ensure_create_tenant_namespace(tenant_id)
-            else:
+            elif operation == "remove":
                 transaction.remove_empty_create_tenant_namespace(tenant_id)
+            else:
+                plan = _create_plan()
+                transaction.ensure_create_tenant_state(
+                    tenant_id,
+                    plan.manifest,
+                    plan.observed_state,
+                )
 
     assert not (root / "tenants" / tenant_id).exists()
 
@@ -521,13 +537,30 @@ def test_tenant_namespace_rejects_an_unsafe_existing_target(
             StateRecordPath.transaction_intent(intent["intentId"]),
             intent,
         )
-        with pytest.raises((OSError, StatePathError)):
+        with pytest.raises((OSError, StateInventoryError, StatePathError)):
             transaction.ensure_create_tenant_namespace(tenant_id)
 
     if unsafe == "link":
         assert list((root / "platform").iterdir()) == []
     else:
         assert stat.S_IMODE(target.stat().st_mode) == _UNSAFE_DIRECTORY_MODE
+
+
+def test_tenant_namespace_admits_the_identity_before_creation(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    tenant_id, intent = _create_intent()
+    for index in range(1, 25):
+        _mkdir(root / "tenants" / f"0198d17f-6f4a-7000-8000-{index:012x}")
+
+    with _repository(root) as repository, repository.publication_transaction() as transaction:
+        transaction.create_immutable(
+            StateRecordPath.transaction_intent(intent["intentId"]),
+            intent,
+        )
+        with pytest.raises(StateAdmissionRejectedError, match="tenant reservation"):
+            transaction.ensure_create_tenant_namespace(tenant_id)
+
+    assert not (root / "tenants" / tenant_id).exists()
 
 
 @pytest.mark.parametrize(
@@ -616,6 +649,234 @@ def test_empty_tenant_namespace_removal_refuses_state_or_release_history(
 
     assert deployment.read_text(encoding="utf-8") == "must survive"
     assert (root / "tenants" / tenant_id / "archives").is_dir()
+
+
+def test_create_tenant_state_retry_completes_an_interrupted_pair(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    plan = _create_plan()
+
+    with _repository(root) as repository, repository.publication_transaction() as transaction:
+        transaction.create_immutable(
+            StateRecordPath.transaction_intent(plan.intent_id),
+            plan.intent,
+        )
+        transaction.ensure_create_tenant_namespace(plan.tenant_id)
+
+        def interrupt(boundary: CreateStateBoundary) -> None:
+            if boundary is CreateStateBoundary.DESIRED_STATE_SYNC:
+                raise RuntimeError("interrupted")
+
+        with pytest.raises(RuntimeError, match="interrupted"):
+            transaction.ensure_create_tenant_state(
+                plan.tenant_id,
+                plan.manifest,
+                plan.observed_state,
+                failure_hook=interrupt,
+            )
+        assert (
+            transaction.read(StateRecordPath.tenant_desired(plan.tenant_id)).document
+            == plan.manifest
+        )
+        with pytest.raises(FileNotFoundError):
+            transaction.read(StateRecordPath.tenant_observed(plan.tenant_id))
+
+        transaction.ensure_create_tenant_state(
+            plan.tenant_id,
+            plan.manifest,
+            plan.observed_state,
+        )
+        transaction.ensure_create_tenant_state(
+            plan.tenant_id,
+            plan.manifest,
+            plan.observed_state,
+        )
+
+    with _repository(root) as repository:
+        assert (
+            repository.read(StateRecordPath.tenant_desired(plan.tenant_id)).document
+            == plan.manifest
+        )
+        assert (
+            repository.read(StateRecordPath.tenant_observed(plan.tenant_id)).document
+            == plan.observed_state
+        )
+
+
+def test_create_tenant_state_recovers_an_abandoned_record_temporary(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    plan = _create_plan()
+
+    with _repository(root) as repository, repository.publication_transaction() as transaction:
+        transaction.create_immutable(
+            StateRecordPath.transaction_intent(plan.intent_id),
+            plan.intent,
+        )
+        transaction.ensure_create_tenant_namespace(plan.tenant_id)
+        temporary = root / "tenants" / plan.tenant_id / f".ldp-state-{'a' * 32}"
+        temporary.write_bytes(b"abandoned")
+        temporary.chmod(_RECORD_MODE)
+
+        transaction.ensure_create_tenant_state(
+            plan.tenant_id,
+            plan.manifest,
+            plan.observed_state,
+        )
+
+    assert not temporary.exists()
+
+
+def test_create_tenant_state_freezes_candidates_before_running_hooks(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    plan = _create_plan()
+    manifest = deepcopy(plan.manifest)
+    observed = deepcopy(plan.observed_state)
+
+    with _repository(root) as repository, repository.publication_transaction() as transaction:
+        transaction.create_immutable(
+            StateRecordPath.transaction_intent(plan.intent_id),
+            plan.intent,
+        )
+
+        def mutate_candidates(boundary: CreateStateBoundary) -> None:
+            if boundary is CreateStateBoundary.DESIRED_STATE_SYNC:
+                metadata = manifest["metadata"]
+                assert type(metadata) is dict
+                metadata["slug"] = "mutated"
+                observed["reconciledAt"] = "2026-09-02T12:31:00Z"
+
+        transaction.ensure_create_tenant_state(
+            plan.tenant_id,
+            manifest,
+            observed,
+            failure_hook=mutate_candidates,
+        )
+        assert (
+            transaction.read(StateRecordPath.tenant_desired(plan.tenant_id)).document
+            == plan.manifest
+        )
+        assert (
+            transaction.read(StateRecordPath.tenant_observed(plan.tenant_id)).document
+            == plan.observed_state
+        )
+
+
+def test_create_tenant_state_rejects_a_candidate_outside_its_intent(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    plan = _create_plan()
+    manifest = deepcopy(plan.manifest)
+    metadata = manifest["metadata"]
+    assert type(metadata) is dict
+    metadata["slug"] = "different"
+
+    with _repository(root) as repository, repository.publication_transaction() as transaction:
+        transaction.create_immutable(
+            StateRecordPath.transaction_intent(plan.intent_id),
+            plan.intent,
+        )
+        transaction.ensure_create_tenant_namespace(plan.tenant_id)
+        with pytest.raises(StateRecordError, match="disagrees with its active intent"):
+            transaction.ensure_create_tenant_state(
+                plan.tenant_id,
+                manifest,
+                plan.observed_state,
+            )
+
+    assert sorted((root / "tenants" / plan.tenant_id).iterdir()) == [
+        root / "tenants" / plan.tenant_id / "archives",
+        root / "tenants" / plan.tenant_id / "deployments",
+    ]
+
+
+def test_create_tenant_state_requires_an_undeployed_manifest(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    plan = _create_plan()
+    active = _fixture("site.json")
+    active["metadata"] = deepcopy(plan.manifest["metadata"])
+    active_digest = manifest_digest(active).to_dict()
+    observed = deepcopy(plan.observed_state)
+    observed["desiredManifestDigest"] = active_digest
+    intent = deepcopy(plan.intent)
+    intent["candidateManifestDigest"] = active_digest
+    recovery = intent["lifecycleRecovery"]
+    assert type(recovery) is dict
+    recovery["candidateObservedState"] = observed
+
+    with _repository(root) as repository, repository.publication_transaction() as transaction:
+        transaction.create_immutable(
+            StateRecordPath.transaction_intent(plan.intent_id),
+            intent,
+        )
+        with pytest.raises(StateRecordError, match="undeployed"):
+            transaction.ensure_create_tenant_state(
+                plan.tenant_id,
+                active,
+                observed,
+            )
+
+    assert not (root / "tenants" / plan.tenant_id).exists()
+
+
+def test_create_tenant_state_rejects_mismatched_partial_state(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    plan = _create_plan()
+    mismatched = deepcopy(plan.manifest)
+    metadata = mismatched["metadata"]
+    assert type(metadata) is dict
+    metadata["slug"] = "different"
+
+    with _repository(root) as repository, repository.publication_transaction() as transaction:
+        transaction.create_immutable(
+            StateRecordPath.transaction_intent(plan.intent_id),
+            plan.intent,
+        )
+        transaction.ensure_create_tenant_namespace(plan.tenant_id)
+        _write_record(
+            root,
+            StateRecordPath.tenant_desired(plan.tenant_id),
+            mismatched,
+        )
+        with pytest.raises(StateConflictError, match="disagrees with create intent"):
+            transaction.ensure_create_tenant_state(
+                plan.tenant_id,
+                plan.manifest,
+                plan.observed_state,
+            )
+
+    observed_path = StateRecordPath.tenant_observed(plan.tenant_id)
+    assert not root.joinpath(*observed_path.components).exists()
+
+
+@pytest.mark.parametrize("unsafe", ["unexpected", "history"])
+def test_create_tenant_state_refuses_uncommitted_namespace_content(
+    tmp_path: Path,
+    unsafe: str,
+) -> None:
+    root = _state_root(tmp_path)
+    plan = _create_plan()
+
+    with _repository(root) as repository, repository.publication_transaction() as transaction:
+        transaction.create_immutable(
+            StateRecordPath.transaction_intent(plan.intent_id),
+            plan.intent,
+        )
+        transaction.ensure_create_tenant_namespace(plan.tenant_id)
+        tenant_root = root / "tenants" / plan.tenant_id
+        if unsafe == "unexpected":
+            (tenant_root / "unknown").write_bytes(b"state")
+        else:
+            (tenant_root / "deployments" / "release").write_bytes(b"state")
+
+        with pytest.raises(StateRecordError, match=r"unexpected state|release history"):
+            transaction.ensure_create_tenant_state(
+                plan.tenant_id,
+                plan.manifest,
+                plan.observed_state,
+            )
+
+    desired_path = StateRecordPath.tenant_desired(plan.tenant_id)
+    assert not root.joinpath(*desired_path.components).exists()
 
 
 def test_reader_rejects_schema_valid_but_noncanonical_bytes(tmp_path: Path) -> None:

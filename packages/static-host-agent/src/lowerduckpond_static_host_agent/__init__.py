@@ -214,6 +214,7 @@ from lowerduckpond_static_host_agent.release_tree import (
     measure_release_tree_snapshot,
 )
 from lowerduckpond_static_host_agent.repository import (
+    CreateStateBoundary,
     IntentRemovalToken,
     StateConflictError,
     StateRecordError,
@@ -355,6 +356,7 @@ __all__ = [
     "CorrelationRateLimitError",
     "CorrelationReconciliation",
     "CorrelationResolution",
+    "CreateStateBoundary",
     "CreateTransitionPlan",
     "DeadlineReader",
     "DeadlineWriter",
