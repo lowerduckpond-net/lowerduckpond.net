@@ -310,6 +310,11 @@ the complete durable tenant state and selected runtime match a successful
 result, or the intent-authorized source state and runtime have both been
 restored for a failed transition. Create recovery retains the complete
 candidate generation, route-set, and observed-state authority through terminal
+validation. When a first dispatch has not yet created a lifecycle intent, root
+captures the validated post-handler desired and observed state before releasing
+tenant-state serialization and requires the complete selected runtime to match
+it. This applies to active transitions and state-preserving export alike; the
+absence of a pre-handler intent never exempts a successful result from runtime
 validation. A terminal retry revalidates current durable state and runtime
 before returning its immutable result. Immutable job, result, and audit
 bindings preserve the authority needed after intent cleanup: each current job
@@ -339,7 +344,14 @@ after rollback; a candidate record cannot silently consume retention or block
 a later archive or delete. Operations that are not allowed to create or retire
 history (`create`, `export`, `rename`, `reconcile`, `resume`, `rollback`, and
 `suspend`) must leave both sets exact even when their handler reports success.
-For deploy and import, root independently derives the normalized release-tree
+Deploy and import may add exactly their selected deployment record, but must
+preserve the complete prior deployment set and the archive set exactly; a
+second deployment or any archive record exceeds their authority. Every newly
+dispatched job also binds the complete tenant-ID inventory. A failed create must
+restore that inventory exactly, projected only through later successful create
+or delete entries in the validated audit chain, so residue under an unrelated
+slug is rejected while a legitimate later create remains recoverable. For
+deploy and import, root independently derives the normalized release-tree
 digest and binds it to the job before invoking the handler: deploy is measured
 directly from its admitted flat ZIP, while import is measured from the
 validated `lowerduckpond-export-v1/content/` envelope under the portable-bundle

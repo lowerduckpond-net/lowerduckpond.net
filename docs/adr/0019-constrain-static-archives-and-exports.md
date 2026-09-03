@@ -313,6 +313,10 @@ Conversely, a failed restore or archived deletion is terminally valid only
 after an independent exact-version check proves that the source object still
 exists and matches its bound archive record. A failed retirement cannot clear
 its intent after merely restoring local state while customer bytes are missing.
+A successful archive is likewise terminally valid only after an independent
+version-aware check proves that the exact object named by its new archive record
+exists and matches. Clearing the construction intent and committing mutually
+consistent local records cannot substitute for retained customer bytes.
 
 Produce a portable ZIP export with this fixed versioned envelope:
 
@@ -349,6 +353,14 @@ path consumes a caller-held portable bundle, while authoritative restore reads
 the exact remote version bound by the archived source tenant. Export does not
 change site state. A later Git integration must produce the same validated
 internal deployment artifact.
+
+Before recording a successful export as execution-validated, root safely opens
+and fully parses the completed spool object under the portable-bundle limits.
+The canonical bundle's embedded manifest must equal the authorization-bound
+source manifest, and its measured release-tree digest must equal the exact
+source deployment record. Its size and whole-bundle digest must also equal the
+immutable result binding. Matching handler-authored bytes and hashes alone are
+not export authority.
 
 The v1 bundle has one canonical byte representation. Serialize `format.json`
 and `manifest.json` as the UTF-8 JSON Canonicalization Scheme defined by RFC

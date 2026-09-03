@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from contextlib import ExitStack
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Final, Protocol, cast
 
 from lowerduckpond_static_contracts import (
@@ -99,6 +99,9 @@ class ExecutionTransaction(Protocol):
         self,
         job_id: object,
         binding: dict[str, object],
+        *,
+        source_manifest: dict[str, object],
+        source_release_tree_digest: dict[str, object],
     ) -> None: ...
 
     def compare_and_swap(
@@ -180,6 +183,7 @@ class _LifecycleDispatchAuthority:
     artifact_release_tree_digest: dict[str, object] | None = None
     source_archive_deployment_ids: tuple[str, ...] | None = None
     source_deployment_ids: tuple[str, ...] | None = None
+    source_tenant_ids: tuple[str, ...] | None = None
     execution_validation_committed: bool = False
 
 
@@ -719,6 +723,12 @@ class AuthorizationExecutor:
                 authority=authority,
                 audit_is_latest_for_tenant=audit_is_latest_for_tenant,
             )
+            authority = _capture_terminal_runtime_authority(
+                transaction,
+                result,
+                authority=authority,
+                audit_is_latest_for_tenant=audit_is_latest_for_tenant,
+            )
             expected_phase = "completed" if result["status"] == "succeeded" else "failed"
             if current.document["phase"] != expected_phase:
                 raise ExecutionError("lifecycle handler returned before terminal job commit")
@@ -783,6 +793,13 @@ class AuthorizationExecutor:
                 blocking=blocking,
             )
             return
+        if result["operation"] == "archive":
+            archive = result.get("archiveRecord")
+            validator = self._retained_archive_validator
+            if type(archive) is not dict or validator is None or validator(archive) is not True:
+                raise ExecutionError(
+                    "successful archive result has no exact retained archive object"
+                )
         tenant_id = validate_uuid7(result["tenantId"])
         if result["operation"] == "delete":
             self._validate_deleted_external_terminal_state(
@@ -1047,6 +1064,8 @@ def _require_same_authority(
     second.pop("dispatchArtifactReleaseTreeDigest", None)
     first.pop("dispatchDeploymentIds", None)
     second.pop("dispatchDeploymentIds", None)
+    first.pop("dispatchTenantIds", None)
+    second.pop("dispatchTenantIds", None)
     if first != second:
         raise ExecutionError("authorization job authority changed before execution")
 
@@ -1144,6 +1163,7 @@ def _capture_authorized_lifecycle_authority(  # noqa: PLR0912,PLR0915 - authorit
             artifact_release_tree_digest=_dispatch_artifact_release_tree_digest(job),
             source_archive_deployment_ids=_dispatch_archive_deployment_ids(job),
             source_deployment_ids=_dispatch_deployment_ids(job),
+            source_tenant_ids=_dispatch_tenant_ids(job),
         )
     _request, intents = _bound_lifecycle_intents(transaction, job)
     transaction_intent = next(
@@ -1179,6 +1199,7 @@ def _capture_authorized_lifecycle_authority(  # noqa: PLR0912,PLR0915 - authorit
             artifact_release_tree_digest=_dispatch_artifact_release_tree_digest(job),
             source_archive_deployment_ids=_dispatch_archive_deployment_ids(job),
             source_deployment_ids=_dispatch_deployment_ids(job),
+            source_tenant_ids=_dispatch_tenant_ids(job),
         )
     if transaction_intent is None:
         source = transaction.read(StateRecordPath.tenant_desired(request["tenantId"])).document
@@ -1278,6 +1299,7 @@ def _capture_authorized_lifecycle_authority(  # noqa: PLR0912,PLR0915 - authorit
         artifact_release_tree_digest=_dispatch_artifact_release_tree_digest(job),
         source_archive_deployment_ids=_dispatch_archive_deployment_ids(job),
         source_deployment_ids=_dispatch_deployment_ids(job),
+        source_tenant_ids=_dispatch_tenant_ids(job),
     )
 
 
@@ -1382,6 +1404,7 @@ def _capture_replay_authority(
             artifact_release_tree_digest=_dispatch_artifact_release_tree_digest(job),
             source_archive_deployment_ids=_dispatch_archive_deployment_ids(job),
             source_deployment_ids=_dispatch_deployment_ids(job),
+            source_tenant_ids=_dispatch_tenant_ids(job),
             execution_validation_committed=validation_was_committed,
         )
     operation = result["operation"]
@@ -1416,7 +1439,44 @@ def _capture_replay_authority(
         artifact_release_tree_digest=_dispatch_artifact_release_tree_digest(job),
         source_archive_deployment_ids=_dispatch_archive_deployment_ids(job),
         source_deployment_ids=_dispatch_deployment_ids(job),
+        source_tenant_ids=_dispatch_tenant_ids(job),
         execution_validation_committed=validation_was_committed,
+    )
+
+
+def _capture_terminal_runtime_authority(
+    transaction: ExecutionTransaction,
+    result: dict[str, object],
+    *,
+    authority: _LifecycleDispatchAuthority,
+    audit_is_latest_for_tenant: bool,
+) -> _LifecycleDispatchAuthority:
+    """Bind post-handler runtime validation to already validated durable state."""
+
+    if (
+        not audit_is_latest_for_tenant
+        or result["status"] != "succeeded"
+        or result["operation"] == "delete"
+        or authority.candidate_route_set is not None
+    ):
+        return authority
+    manifest = result.get("manifest")
+    if type(manifest) is not dict:
+        raise ExecutionError("successful lifecycle result has no runtime manifest")
+    tenant_id = validate_uuid7(result["tenantId"])
+    observed = transaction.read(StateRecordPath.tenant_observed(tenant_id)).document
+    validate_contract(observed, expected_kind=ContractKind.TENANT_OBSERVED_STATE)
+    spec = manifest["spec"]
+    if type(spec) is not dict:
+        raise ExecutionError("successful lifecycle runtime manifest is malformed")
+    route_set = "both" if spec["desiredState"] == "active" else "absent"
+    raw_generation = observed.get("runtimeGenerationId")
+    generation = None if raw_generation is None else validate_uuid7(raw_generation)
+    return replace(
+        authority,
+        candidate_observed_state=deepcopy(observed),
+        candidate_runtime_generation_id=generation,
+        candidate_route_set=route_set,
     )
 
 
@@ -1557,6 +1617,7 @@ def _bind_dispatch_authority(
         return current
     existing_archives = _dispatch_archive_deployment_ids(job)
     existing_deployments = _dispatch_deployment_ids(job)
+    existing_tenants = _dispatch_tenant_ids(job)
     existing_release_digest = _dispatch_artifact_release_tree_digest(job)
     request = job["request"]
     if type(request) is not dict:
@@ -1564,7 +1625,11 @@ def _bind_dispatch_authority(
     artifact_operation = request["operation"] in {"deploy", "import"}
     if not artifact_operation and existing_release_digest is not None:
         raise ExecutionError("non-artifact dispatch carries artifact release authority")
-    if existing_archives is not None and existing_deployments is not None:
+    if (
+        existing_archives is not None
+        and existing_deployments is not None
+        and existing_tenants is not None
+    ):
         if artifact_operation and existing_release_digest is None:
             raise ExecutionError("dispatch artifact authority is not bound")
         if (
@@ -1573,7 +1638,16 @@ def _bind_dispatch_authority(
         ):
             raise ExecutionError("dispatch artifact release authority changed")
         return current
-    if (existing_archives is None) != (existing_deployments is None):
+    if (
+        len(
+            {
+                existing_archives is None,
+                existing_deployments is None,
+                existing_tenants is None,
+            }
+        )
+        != 1
+    ):
         raise ExecutionError("dispatch record-history authority is only partially bound")
     if artifact_operation and artifact_release_tree_digest is None:
         raise ExecutionError("dispatch artifact release authority is unavailable")
@@ -1587,6 +1661,7 @@ def _bind_dispatch_authority(
     bound["dispatchArchiveDeploymentIds"] = list(archive_ids)
     bound["dispatchArtifactReleaseTreeDigest"] = artifact_release_tree_digest
     bound["dispatchDeploymentIds"] = list(deployment_ids)
+    bound["dispatchTenantIds"] = list(transaction.measure_inventory().tenant_ids)
     try:
         return transaction.compare_and_swap(
             StateRecordPath.authorization_job(bound["jobId"]),
@@ -1621,6 +1696,14 @@ def _dispatch_deployment_ids(job: dict[str, object]) -> tuple[str, ...] | None:
         job,
         field="dispatchDeploymentIds",
         label="deployment-history",
+    )
+
+
+def _dispatch_tenant_ids(job: dict[str, object]) -> tuple[str, ...] | None:
+    return _dispatch_record_ids(
+        job,
+        field="dispatchTenantIds",
+        label="tenant-inventory",
     )
 
 
@@ -2025,6 +2108,14 @@ def _validate_failed_handler_result_state(
     *,
     authority: _LifecycleDispatchAuthority,
 ) -> None:
+    if result["operation"] == "create":
+        _validate_failed_create_tenant_inventory(
+            transaction,
+            job,
+            result,
+            authority=authority,
+        )
+        return
     tenant_id = result["tenantId"]
     source_archive_ids = authority.source_archive_deployment_ids
     source_deployment_ids = authority.source_deployment_ids
@@ -2046,13 +2137,47 @@ def _validate_failed_handler_result_state(
         raise ExecutionError("failed lifecycle handler did not restore its authorized source")
 
 
+def _validate_failed_create_tenant_inventory(
+    transaction: ExecutionTransaction,
+    job: dict[str, object],
+    result: dict[str, object],
+    *,
+    authority: _LifecycleDispatchAuthority,
+) -> None:
+    source_tenant_ids = authority.source_tenant_ids
+    if source_tenant_ids is None:
+        if _is_executor_failure(result):
+            # The executor publishes before any lifecycle handler can mutate
+            # tenant state, including for legacy jobs without inventory
+            # authority. Replaying that terminal failure must remain safe.
+            return
+        # Terminal jobs committed before the inventory-binding boundary remain
+        # replayable. Every newly dispatched v2 handler binds this field first.
+        if _expected_source_error(transaction, job) is not None:
+            raise ExecutionError("failed lifecycle handler did not restore its authorized source")
+        return
+    try:
+        snapshot = transaction.inspect_audit_correlation(result["correlationId"])
+    except AuditError as error:
+        raise ExecutionError("failed create audit authority is invalid") from error
+    expected = set(source_tenant_ids)
+    for operation, tenant_id in snapshot.later_tenant_inventory_transitions:
+        if operation == "create":
+            expected.add(tenant_id)
+        else:
+            expected.discard(tenant_id)
+    if transaction.measure_inventory().tenant_ids != tuple(sorted(expected)):
+        raise ExecutionError("failed create changed the authorized tenant inventory")
+
+
 def _validate_success_record_history(
     transaction: ExecutionTransaction,
     result: dict[str, object],
     *,
     authority: _LifecycleDispatchAuthority,
 ) -> None:
-    if result["operation"] not in {
+    operation = result["operation"]
+    no_history_operation = operation in {
         "create",
         "export",
         "rename",
@@ -2060,7 +2185,8 @@ def _validate_success_record_history(
         "resume",
         "rollback",
         "suspend",
-    }:
+    }
+    if not no_history_operation and operation not in {"deploy", "import"}:
         return
     tenant_id = result["tenantId"]
     source_archive_ids = authority.source_archive_deployment_ids
@@ -2069,14 +2195,24 @@ def _validate_success_record_history(
         # Jobs committed before this dispatch boundary remain replayable; no
         # lifecycle handler can create such a terminal job after this upgrade.
         return
+    if tenant_id is None or source_archive_ids is None or source_deployment_ids is None:
+        raise ExecutionError("successful lifecycle result lost retained-history authority")
+    expected_deployment_ids = source_deployment_ids
+    if operation in {"deploy", "import"}:
+        manifest = result.get("manifest")
+        spec = manifest.get("spec") if type(manifest) is dict else None
+        selected = spec.get("desiredDeployment") if type(spec) is dict else None
+        selected_id = selected.get("id") if type(selected) is dict else None
+        if type(selected_id) is not str:
+            raise ExecutionError("successful deployment result has no history identity")
+        expected_deployment_ids = tuple(sorted({*source_deployment_ids, selected_id}))
     if (
-        tenant_id is None
-        or source_archive_ids is None
-        or source_deployment_ids is None
-        or transaction.tenant_archive_ids(tenant_id) != source_archive_ids
-        or transaction.tenant_deployment_ids(tenant_id) != source_deployment_ids
+        transaction.tenant_archive_ids(tenant_id) != source_archive_ids
+        or transaction.tenant_deployment_ids(tenant_id) != expected_deployment_ids
     ):
-        raise ExecutionError("successful no-history lifecycle result changed retained history")
+        raise ExecutionError(
+            "successful lifecycle result changed retained history outside authority"
+        )
 
 
 def _validate_export_bundle(
@@ -2087,8 +2223,27 @@ def _validate_export_bundle(
     binding = result.get("exportBundle")
     if type(binding) is not dict:
         raise ExecutionError("successful export result has no bundle binding")
+    source_manifest, _archive = _job_source_authority(job)
+    expected = job["expectedSource"]
+    if source_manifest is None or type(expected) is not dict:
+        raise ExecutionError("successful export lost its source authority")
+    deployment_digest = expected["deploymentDigest"]
+    if type(deployment_digest) is not dict:
+        raise ExecutionError("successful export has no source deployment authority")
     try:
-        transaction.validate_export_bundle(job["jobId"], binding)
+        deployment = transaction.deployment_for_digest(
+            result["tenantId"],
+            deployment_digest,
+        )
+        release_tree_digest = deployment["releaseTreeDigest"]
+        if type(release_tree_digest) is not dict:
+            raise ExecutionError("successful export source release authority is malformed")
+        transaction.validate_export_bundle(
+            job["jobId"],
+            binding,
+            source_manifest=source_manifest,
+            source_release_tree_digest=release_tree_digest,
+        )
     except (FileNotFoundError, OSError, StatePathError, StateRecordError) as error:
         raise ExecutionError("successful export result has no exact bundle") from error
 

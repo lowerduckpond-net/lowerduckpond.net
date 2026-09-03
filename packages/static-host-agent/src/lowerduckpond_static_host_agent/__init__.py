@@ -225,6 +225,7 @@ from lowerduckpond_static_host_agent.portable_bundle import (
     build_portable_bundle,
     import_portable_bundle,
     inspect_portable_bundle,
+    inspect_portable_bundle_descriptor,
 )
 from lowerduckpond_static_host_agent.release_tree import (
     InodeAllocation,
@@ -503,6 +504,7 @@ __all__ = [
     "import_portable_bundle",
     "inspect_deployment_zip",
     "inspect_portable_bundle",
+    "inspect_portable_bundle_descriptor",
     "load_caddy_configuration",
     "measure_filesystem_capacity",
     "measure_release_tree",
