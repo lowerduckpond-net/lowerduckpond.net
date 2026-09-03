@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import ast
+import fcntl
 import json
 import os
 import shlex
 import subprocess
 import sys
 import tarfile
+import time
 from collections import Counter
 from pathlib import Path
 
+import pytest
 from lowerduckpond_static_host_agent import ARCHIVE_SANDBOX_STATIC_PROPERTIES
 
 REPOSITORY_ROOT = Path(__file__).parents[2]
@@ -29,6 +32,7 @@ WORKER_UNIT_TEMPLATE = (
     REPOSITORY_ROOT
     / "config/ansible/roles/static_host_agent/templates/lowerduckpond-static-worker@.service.j2"
 )
+SELECTION_LOCK_NAME = "selection.lock"
 
 
 def run(*arguments: str | os.PathLike[str]) -> subprocess.CompletedProcess[str]:
@@ -56,6 +60,13 @@ def verifier_for_test(tmp_path: Path) -> Path:
     )
     verifier.chmod(0o755)
     return verifier
+
+
+def create_selection_lock(install_root: Path) -> Path:
+    selection_lock = install_root / SELECTION_LOCK_NAME
+    selection_lock.touch(mode=0o600)
+    selection_lock.chmod(0o600)
+    return selection_lock
 
 
 def test_host_agent_artifact_is_locked_reproducible_and_installable(
@@ -89,6 +100,7 @@ def test_host_agent_artifact_is_locked_reproducible_and_installable(
 
     install_root = tmp_path / "install"
     install_root.mkdir()
+    create_selection_lock(install_root)
     state_root = tmp_path / "state"
     verifier = verifier_for_test(tmp_path)
     installed = run(INSTALLER, first, digest, install_root, verifier, state_root)
@@ -113,6 +125,7 @@ def test_installer_refuses_drift_in_an_existing_version(tmp_path: Path) -> None:
     digest = build.stdout.strip()
     install_root = tmp_path / "install"
     install_root.mkdir()
+    create_selection_lock(install_root)
     state_root = tmp_path / "state"
     verifier = verifier_for_test(tmp_path)
     assert run(INSTALLER, artifact, digest, install_root, verifier, state_root).returncode == 0
@@ -137,6 +150,7 @@ def test_installer_refuses_to_select_an_upgrade_with_an_active_intent(
     digest = build.stdout.strip()
     install_root = tmp_path / "install"
     install_root.mkdir()
+    create_selection_lock(install_root)
     previous = install_root / "previous"
     previous.mkdir()
     (install_root / "current").symlink_to(previous, target_is_directory=True)
@@ -156,6 +170,60 @@ def test_installer_refuses_to_select_an_upgrade_with_an_active_intent(
     installed = run(INSTALLER, artifact, digest, install_root, verifier, state_root)
     assert installed.returncode == 0, installed.stderr
     assert (install_root / "current").resolve(strict=True) == install_root / digest
+
+
+def test_installer_holds_selection_exclusion_across_intent_scan_and_switch(
+    tmp_path: Path,
+) -> None:
+    artifact = tmp_path / "artifact.tar"
+    build = run(BUILDER, artifact)
+    assert build.returncode == 0, build.stderr
+    digest = build.stdout.strip()
+    install_root = tmp_path / "install"
+    install_root.mkdir()
+    selection_lock = create_selection_lock(install_root)
+    previous = install_root / "previous"
+    previous.mkdir()
+    (install_root / "current").symlink_to(previous, target_is_directory=True)
+    state_root = tmp_path / "state"
+    intents = state_root / "intents"
+    intents.mkdir(parents=True)
+    verifier = verifier_for_test(tmp_path)
+
+    descriptor = os.open(selection_lock, os.O_RDONLY | os.O_CLOEXEC)
+    fcntl.flock(descriptor, fcntl.LOCK_SH)
+    process = subprocess.Popen(  # noqa: S603 - fixed reviewed test helper path.
+        [
+            os.fspath(INSTALLER),
+            os.fspath(artifact),
+            digest,
+            os.fspath(install_root),
+            os.fspath(verifier),
+            os.fspath(state_root),
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not (install_root / digest).exists() and time.monotonic() < deadline:
+            assert process.poll() is None
+            time.sleep(0.01)
+        assert (install_root / digest).is_dir()
+        with pytest.raises(subprocess.TimeoutExpired):
+            process.wait(timeout=0.1)
+        (intents / "concurrent.json").write_text("{}", encoding="utf-8")
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+    stdout, stderr = process.communicate(timeout=10)
+    assert process.returncode != 0
+    assert stdout == ""
+    assert "active lifecycle intent blocks" in stderr
+    assert (install_root / "current").resolve(strict=True) == previous
 
 
 def test_preflight_extraction_preserves_reviewed_modes_under_restrictive_umask(

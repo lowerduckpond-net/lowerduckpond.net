@@ -904,6 +904,21 @@ def test_static_host_agent_is_hash_pinned_and_immutable(host: Host) -> None:
     assert host.run(f"find {STATIC_HOST_AGENT_ROOT} -maxdepth 1 -name '.install-*'").stdout == ""
 
 
+def test_static_host_agent_selection_is_locked(host: Host) -> None:
+    selection_lock = host.file(f"{STATIC_HOST_AGENT_ROOT}/selection.lock")
+    assert selection_lock.is_file
+    assert selection_lock.user == "root"
+    assert selection_lock.group == "root"
+    assert selection_lock.mode == STATIC_STATE_LOCK_MODE
+    assert selection_lock.size == 0
+    for command in (STATIC_JOB_EXECUTOR, STATIC_JOB_RECONCILER):
+        wrapper = host.file(command)
+        assert wrapper.contains(
+            f'SELECTION_LOCK = pathlib.Path("{STATIC_HOST_AGENT_ROOT}/selection.lock")'
+        )
+        assert wrapper.contains("fcntl.LOCK_SH")
+
+
 def test_static_state_migration_is_empty_root_owned_and_private(host: Host) -> None:
     for legacy in ("provisioner", "jobs", "manifests", "audit"):
         assert not host.file(f"/var/lib/lowerduckpond/{legacy}").exists

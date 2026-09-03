@@ -1,6 +1,7 @@
 #!/usr/bin/python3 -I
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import os
 import pathlib
@@ -14,6 +15,8 @@ import tarfile
 ARGUMENT_COUNT = 6
 DIGEST_LENGTH = 64
 COPY_BUFFER_SIZE = 1024 * 1024
+SELECTION_LOCK_NAME = "selection.lock"
+SELECTION_LOCK_MODE = 0o600
 
 
 def fail(message: str) -> None:
@@ -159,6 +162,28 @@ def select_current(install_root: pathlib.Path, destination: pathlib.Path) -> boo
     return True
 
 
+def open_selection_lock(install_root: pathlib.Path) -> int:
+    try:
+        descriptor = os.open(
+            install_root / SELECTION_LOCK_NAME,
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        )
+    except OSError as error:
+        fail(f"host-agent selection lock is unavailable: {error.strerror}")
+    metadata = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or stat.S_IMODE(metadata.st_mode) != SELECTION_LOCK_MODE
+        or metadata.st_uid != os.geteuid()
+        or metadata.st_gid != os.getegid()
+        or metadata.st_nlink != 1
+        or metadata.st_size != 0
+    ):
+        os.close(descriptor)
+        fail("host-agent selection lock metadata is unsafe")
+    return descriptor
+
+
 def require_no_active_intents(state_root: pathlib.Path) -> None:
     """Refuse an in-place schema upgrade until the old agent has recovered."""
 
@@ -185,6 +210,30 @@ def require_no_active_intents(state_root: pathlib.Path) -> None:
                 fail("active lifecycle intent blocks host-agent schema upgrade")
     finally:
         os.close(descriptor)
+
+
+def select_destination(
+    install_root: pathlib.Path,
+    destination: pathlib.Path,
+    state_root: pathlib.Path,
+) -> bool:
+    current = install_root / "current"
+    try:
+        selected = current.resolve(strict=True)
+    except FileNotFoundError:
+        selected = None
+    except RuntimeError:
+        selected = None
+    if selected == destination:
+        return False
+    selection_lock = open_selection_lock(install_root)
+    try:
+        fcntl.flock(selection_lock, fcntl.LOCK_EX)
+        require_no_active_intents(state_root)
+        return select_current(install_root, destination)
+    finally:
+        fcntl.flock(selection_lock, fcntl.LOCK_UN)
+        os.close(selection_lock)
 
 
 def parse_arguments() -> tuple[pathlib.Path, str, pathlib.Path, pathlib.Path, pathlib.Path]:
@@ -243,16 +292,7 @@ def main() -> None:
             if staging.exists() or staging.is_symlink():
                 discard_staging(staging)
 
-    current = install_root / "current"
-    try:
-        selected = current.resolve(strict=True)
-    except FileNotFoundError:
-        selected = None
-    except RuntimeError:
-        selected = None
-    if selected != destination:
-        require_no_active_intents(state_root)
-    if select_current(install_root, destination):
+    if select_destination(install_root, destination, state_root):
         changed = True
     print("changed" if changed else "unchanged")
 
