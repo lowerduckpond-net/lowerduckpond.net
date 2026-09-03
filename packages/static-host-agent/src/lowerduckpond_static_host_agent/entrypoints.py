@@ -178,7 +178,12 @@ def executor_main(arguments: list[str] | None = None) -> int:
             StateRepository(_STATE_ROOT, expected_owner=_EXPECTED_OWNER) as repository,
             ArtifactIntake(_STATE_ROOT, expected_owner=_EXPECTED_OWNER) as intake,
         ):
-            AuthorizationExecutor(repository, intake).execute(job_id, blocking=True)
+            AuthorizationExecutor(
+                repository,
+                intake,
+                deleted_tenant_route_validator=_selected_tenant_routes_absent,
+                tenant_runtime_validator=_selected_tenant_runtime_matches,
+            ).execute(job_id, blocking=True)
     except (
         CapacityError,
         ContractError,
@@ -524,6 +529,69 @@ def _open_caddy_control_runtime() -> CaddyRuntime:
         expected_lock_group=0,
         root_mode=CADDY_RUNTIME_ROOT_MODE,
         lock_mode=CADDY_PUBLICATION_LOCK_MODE,
+    )
+
+
+def _selected_tenant_routes_absent(tenant_id: str) -> bool:
+    """Require the selected verified generation to omit one deleted tenant."""
+
+    try:
+        with _open_caddy_control_runtime() as runtime, runtime.locked():
+            generation_id = runtime.read_active()
+            snapshot = runtime.read_generation_route_snapshot(generation_id)
+    except CaddyRuntimeError, KeyError, OSError, TypeError, ValueError:
+        return False
+    for tenant in snapshot.tenants:
+        metadata = tenant.manifest.get("metadata")
+        if type(metadata) is dict and metadata.get("id") == tenant_id:
+            return False
+    return True
+
+
+def _selected_tenant_runtime_matches(  # noqa: PLR0911 - fail-closed shape checks
+    tenant_id: str,
+    route_set: str,
+    generation_id: str,
+    manifest: dict[str, object],
+    observed_state: dict[str, object] | None,
+) -> bool:
+    """Bind one lifecycle candidate to the selected verified route snapshot."""
+
+    if route_set not in {"absent", "both"}:
+        return False
+    try:
+        with _open_caddy_control_runtime() as runtime, runtime.locked():
+            if runtime.read_active() != generation_id:
+                return False
+            snapshot = runtime.read_generation_route_snapshot(generation_id)
+    except CaddyRuntimeError, KeyError, OSError, TypeError, ValueError:
+        return False
+    matching = []
+    for tenant in snapshot.tenants:
+        metadata = tenant.manifest.get("metadata")
+        if type(metadata) is dict and metadata.get("id") == tenant_id:
+            matching.append(tenant)
+    if len(matching) != 1:
+        return False
+    tenant = matching[0]
+    if tenant.manifest != manifest or (
+        observed_state is not None and tenant.observed_state != observed_state
+    ):
+        return False
+    spec = tenant.manifest.get("spec")
+    observed = tenant.observed_state
+    if type(spec) is not dict:
+        return False
+    if route_set == "both":
+        return (
+            spec.get("desiredState") == "active"
+            and observed.get("observedState") == "active"
+            and observed.get("runtimeGenerationId") == generation_id
+        )
+    return (
+        spec.get("desiredState") != "active"
+        and observed.get("observedState") == spec.get("desiredState")
+        and observed.get("runtimeGenerationId") is None
     )
 
 

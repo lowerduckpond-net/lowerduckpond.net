@@ -115,6 +115,98 @@ def test_caddy_control_runtime_opens_the_validated_lock_path(
     ]
 
 
+def test_selected_tenant_runtime_binds_the_active_verified_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenant_id = "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100"
+    generation_id = "0198d17f-6f4a-7000-8000-000000000001"
+    active = SimpleNamespace(
+        manifest={
+            "metadata": {"id": tenant_id},
+            "spec": {"desiredState": "active"},
+        },
+        observed_state={
+            "observedState": "active",
+            "runtimeGenerationId": generation_id,
+        },
+    )
+    suspended = SimpleNamespace(
+        manifest={
+            "metadata": {"id": tenant_id},
+            "spec": {"desiredState": "suspended"},
+        },
+        observed_state={
+            "observedState": "suspended",
+            "runtimeGenerationId": None,
+        },
+    )
+
+    class Runtime:
+        tenant = active
+
+        def __enter__(self) -> Runtime:
+            return self
+
+        def __exit__(self, *_exception: object) -> None:
+            pass
+
+        def locked(self) -> nullcontext[None]:
+            return nullcontext()
+
+        @staticmethod
+        def read_active() -> str:
+            return generation_id
+
+        def read_generation_route_snapshot(self, requested: str) -> SimpleNamespace:
+            assert requested == generation_id
+            return SimpleNamespace(tenants=(self.tenant,))
+
+    runtime = Runtime()
+    monkeypatch.setattr(entrypoints, "_open_caddy_control_runtime", lambda: runtime)
+
+    assert entrypoints._selected_tenant_runtime_matches(
+        tenant_id,
+        "both",
+        generation_id,
+        active.manifest,
+        active.observed_state,
+    )
+    assert not entrypoints._selected_tenant_runtime_matches(
+        tenant_id,
+        "both",
+        "0198d17f-6f4a-7000-8000-000000000002",
+        active.manifest,
+        active.observed_state,
+    )
+    runtime.tenant = suspended
+    assert entrypoints._selected_tenant_runtime_matches(
+        tenant_id,
+        "absent",
+        generation_id,
+        suspended.manifest,
+        suspended.observed_state,
+    )
+    assert not entrypoints._selected_tenant_runtime_matches(
+        tenant_id,
+        "both",
+        generation_id,
+        suspended.manifest,
+        suspended.observed_state,
+    )
+    assert not entrypoints._selected_tenant_routes_absent(tenant_id)
+    runtime.tenant = SimpleNamespace(
+        manifest={
+            "metadata": {"id": "0191e2c4-8f7a-7c3b-8d1e-5f62047a2101"},
+            "spec": {"desiredState": "active"},
+        },
+        observed_state={
+            "observedState": "active",
+            "runtimeGenerationId": generation_id,
+        },
+    )
+    assert entrypoints._selected_tenant_routes_absent(tenant_id)
+
+
 def test_caddy_pre_start_gate_uses_the_control_lock_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
