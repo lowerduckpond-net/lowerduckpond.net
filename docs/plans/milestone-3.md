@@ -202,10 +202,11 @@ The root executor opens and verifies the job without following links, durably
 claims it, independently revalidates all bindings, and commits one immutable
 result. It marks that result validated only after checking the complete durable
 tenant state and selected runtime. An exact retry rechecks current durable
-state and runtime before returning the result; the marker preserves only the
-intent-bound facts that a completed transition necessarily consumed. A lost
-handoff or SSH response is recovered by correlation and job reconciliation,
-never by reconstructing authority from an artifact.
+state and runtime before returning the result. Immutable jobs, results, and
+audit history preserve the authority needed after a completed transition
+consumes its intents; an archive result additionally binds the exact archive
+record digest. A lost handoff or SSH response is recovered by correlation and
+job reconciliation, never by reconstructing authority from an artifact.
 
 ## 5. Delivery sequence
 

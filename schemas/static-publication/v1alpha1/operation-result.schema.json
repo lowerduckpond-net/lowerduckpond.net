@@ -4,6 +4,27 @@
   "additionalProperties": false,
   "allOf": [
     {
+      "if": {
+        "required": [
+          "archiveRecordDigest"
+        ]
+      },
+      "then": {
+        "properties": {
+          "operation": {
+            "const": "archive"
+          },
+          "status": {
+            "const": "succeeded"
+          }
+        },
+        "required": [
+          "operation",
+          "status"
+        ]
+      }
+    },
+    {
       "else": {
         "properties": {
           "tenantId": {
@@ -430,6 +451,9 @@
   "properties": {
     "apiVersion": {
       "$ref": "common.schema.json#/$defs/apiVersion"
+    },
+    "archiveRecordDigest": {
+      "$ref": "common.schema.json#/$defs/archiveRecordDigest"
     },
     "canonicalOrigin": {
       "$ref": "common.schema.json#/$defs/canonicalOrigin"

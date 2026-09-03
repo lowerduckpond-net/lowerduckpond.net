@@ -367,6 +367,28 @@ def test_current_authorization_job_requires_executor_validation_state() -> None:
     assert validate_contract(job) is ContractKind.AUTHORIZATION_JOB
 
 
+def test_archive_record_digest_is_reserved_for_successful_archive_results() -> None:
+    result = _load_object(FIXTURE_ROOT / "accepted/operation-result.json")
+    result["archiveRecordDigest"] = {
+        "format": "lowerduckpond-archive-record-v1",
+        "algorithm": "sha256",
+        "value": "a" * 64,
+    }
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(result)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+    manifest = _load_object(FIXTURE_ROOT / "accepted/site.json")
+    spec = manifest["spec"]
+    assert type(spec) is dict
+    spec["desiredState"] = "archived"
+    result["operation"] = "archive"
+    result["manifest"] = manifest
+
+    assert validate_contract(result) is ContractKind.OPERATION_RESULT
+
+
 @pytest.mark.parametrize("field", ["tenantId", "canonicalOrigin", "manifest"])
 def test_successful_create_result_requires_generated_identity_fields(field: str) -> None:
     result = _load_object(FIXTURE_ROOT / "accepted/operation-result.json")

@@ -10,6 +10,7 @@ from typing import Final, Protocol, cast
 
 from lowerduckpond_static_contracts import (
     ContractKind,
+    archive_record_digest,
     canonical_json_bytes,
     deployment_record_digest,
     manifest_digest,
@@ -1013,9 +1014,7 @@ def _capture_replay_authority(
         raise ExecutionError("terminal replay request authority is malformed")
     operation = result["operation"]
     source: dict[str, object] | None = None
-    if not validation_was_committed and operation not in {"create", "delete"}:
-        if operation in {"archive", "restore"}:
-            raise ExecutionError("terminal replay lost uncommitted archive lifecycle authority")
+    if operation not in {"create", "delete"}:
         source = _previous_audited_source_manifest(transaction, job, result)
     elif not validation_was_committed and operation == "delete":
         _previous_audited_source_manifest(transaction, job, result)
@@ -1487,11 +1486,7 @@ def _validate_handler_result_state(
 ) -> None:
     if result["status"] == "succeeded" and result["operation"] == "export":
         _validate_export_bundle(transaction, job, result)
-    if (
-        result["status"] == "succeeded"
-        and result["operation"] != "delete"
-        and not authority.execution_validation_committed
-    ):
+    if result["status"] == "succeeded" and result["operation"] != "delete":
         committed_manifest = result.get("manifest")
         if type(committed_manifest) is not dict:
             raise ExecutionError("successful lifecycle result has no exact manifest")
@@ -1732,6 +1727,12 @@ def _validate_selected_deployment_state(  # noqa: PLR0912 - explicit operation m
     )
     if not archive_matches:
         raise ExecutionError("successful lifecycle result has an unbound archive record")
+    if (
+        operation == "archive"
+        and result.get("archiveRecordDigest") is not None
+        and result.get("archiveRecordDigest") != archive_record_digest(archive).to_dict()
+    ):
+        raise ExecutionError("successful archive result lost its durable archive authority")
     if authority.archive_construction_present and authority.archive_record is None:
         raise ExecutionError("successful archive result lost its construction authority")
     if authority.archive_record is not None and archive != authority.archive_record:
@@ -1910,6 +1911,19 @@ def _validate_archive_result_intent_binding(
     if type(manifest) is not dict:
         raise ExecutionError("successful archive result manifest is malformed")
     intent = matching[0]
+    transaction_intents = [
+        candidate for candidate in intents if candidate["kind"] == "TransactionIntent"
+    ]
+    if len(transaction_intents) == 1 and result.get("archiveRecordDigest") is not None:
+        recovery = transaction_intents[0]["archiveRecovery"]
+        if type(recovery) is not dict:
+            raise ExecutionError("successful archive result has no recovery authority")
+        candidate_archive = recovery["candidateArchiveRecord"]
+        if (
+            type(candidate_archive) is not dict
+            or result["archiveRecordDigest"] != archive_record_digest(candidate_archive).to_dict()
+        ):
+            raise ExecutionError("successful archive result exceeds its recovery authority")
     if (
         result["tenantId"] != intent["tenantId"]
         or manifest_digest(manifest).to_dict() != intent["candidateManifestDigest"]
@@ -2140,6 +2154,13 @@ def _validate_result_binding(job: dict[str, object], result: dict[str, object]) 
         or result["tenantId"] != tenant_id
     ):
         raise ExecutionError("terminal result does not match its authorization job")
+    if (
+        job["compatibilityVersion"] == "static-job-v2"
+        and result["operation"] == "archive"
+        and result["status"] == "succeeded"
+        and type(result.get("archiveRecordDigest")) is not dict
+    ):
+        raise ExecutionError("successful archive result has no durable archive authority")
 
 
 def _expected_result_tenant(
