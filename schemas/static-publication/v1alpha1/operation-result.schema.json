@@ -6,7 +6,7 @@
     {
       "if": {
         "required": [
-          "archiveRecordDigest"
+          "archiveRecord"
         ]
       },
       "then": {
@@ -452,8 +452,8 @@
     "apiVersion": {
       "$ref": "common.schema.json#/$defs/apiVersion"
     },
-    "archiveRecordDigest": {
-      "$ref": "common.schema.json#/$defs/archiveRecordDigest"
+    "archiveRecord": {
+      "$ref": "archive-record.schema.json"
     },
     "canonicalOrigin": {
       "$ref": "common.schema.json#/$defs/canonicalOrigin"

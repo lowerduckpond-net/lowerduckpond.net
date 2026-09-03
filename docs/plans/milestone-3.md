@@ -204,9 +204,10 @@ result. It marks that result validated only after checking the complete durable
 tenant state and selected runtime. An exact retry rechecks current durable
 state and runtime before returning the result. Immutable jobs, results, and
 audit history preserve the authority needed after a completed transition
-consumes its intents; an archive result additionally binds the exact archive
-record digest. A lost handoff or SSH response is recovered by correlation and
-job reconciliation, never by reconstructing authority from an artifact.
+consumes its intents: each current job retains its exact source manifest and
+any source archive record, while an archive result binds the exact new archive
+record. A lost handoff or SSH response is recovered by correlation and job
+reconciliation, never by reconstructing authority from an artifact.
 
 ## 5. Delivery sequence
 

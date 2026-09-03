@@ -233,6 +233,7 @@ def test_create_issues_immutable_platform_bound_job_and_exact_retry(tmp_path: Pa
         "archiveRecordDigest": None,
         "platformStateDigest": platform_state_digest(namespace).to_dict(),
     }
+    assert first.document["sourceAuthority"] is None
 
 
 def test_exact_retry_recognition_requires_the_original_full_binding(tmp_path: Path) -> None:
@@ -362,6 +363,10 @@ def test_noncreate_job_binds_manifest_and_current_deployment(tmp_path: Path) -> 
     assert expected["manifestDigest"] == manifest_digest(desired).to_dict()
     assert expected["deploymentDigest"] == deployment_record_digest(deployment).to_dict()
     assert expected["archiveRecordDigest"] is None
+    assert issued.document["sourceAuthority"] == {
+        "manifest": desired,
+        "archiveRecord": None,
+    }
 
 
 def test_undeployed_delete_requires_empty_deployment_history(tmp_path: Path) -> None:

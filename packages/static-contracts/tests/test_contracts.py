@@ -335,21 +335,23 @@ def test_legacy_delete_job_without_deletion_evidence_remains_decodable() -> None
     request["operation"] = "delete"
     request["tenantId"] = "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100"
     job["requestDigest"] = request_digest(request).to_dict()
+    source = _load_object(FIXTURE_ROOT / "accepted/site.json")
+    source_spec = source["spec"]
+    assert type(source_spec) is dict
+    source_spec["desiredState"] = "undeployed"
+    source_spec.pop("desiredDeployment")
     expected.update(
         {
             "expectsTenantAbsent": False,
             "lifecycle": "undeployed",
-            "manifestDigest": {
-                "format": "lowerduckpond-manifest-v1",
-                "algorithm": "sha256",
-                "value": "a" * 64,
-            },
+            "manifestDigest": manifest_digest(source).to_dict(),
         }
     )
 
     assert validate_contract(job) is ContractKind.AUTHORIZATION_JOB
     job["compatibilityVersion"] = "static-job-v2"
     job["executionValidated"] = False
+    job["sourceAuthority"] = {"manifest": source, "archiveRecord": None}
     with pytest.raises(ContractError) as captured:
         validate_contract(job)
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
@@ -364,16 +366,57 @@ def test_current_authorization_job_requires_executor_validation_state() -> None:
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
     job["executionValidated"] = False
+    job["sourceAuthority"] = None
     assert validate_contract(job) is ContractKind.AUTHORIZATION_JOB
 
 
-def test_archive_record_digest_is_reserved_for_successful_archive_results() -> None:
+def test_current_authorization_job_binds_its_exact_source_manifest() -> None:
+    job = _load_object(FIXTURE_ROOT / "accepted/authorization-job.json")
+    request = job["request"]
+    expected = job["expectedSource"]
+    assert type(request) is dict
+    assert type(expected) is dict
+    request.pop("quotas")
+    request.update(
+        {
+            "operation": "rename",
+            "tenantId": "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100",
+        }
+    )
+    job.update(
+        {
+            "compatibilityVersion": "static-job-v2",
+            "executionValidated": False,
+            "requestDigest": request_digest(request).to_dict(),
+        }
+    )
+    source = _load_object(FIXTURE_ROOT / "accepted/site.json")
+    expected.update(
+        {
+            "expectsTenantAbsent": False,
+            "lifecycle": "active",
+            "manifestDigest": manifest_digest(source).to_dict(),
+            "deploymentDigest": {
+                "format": "lowerduckpond-deployment-record-v1",
+                "algorithm": "sha256",
+                "value": "a" * 64,
+            },
+        }
+    )
+    job["sourceAuthority"] = {"manifest": source, "archiveRecord": None}
+
+    assert validate_contract(job) is ContractKind.AUTHORIZATION_JOB
+    metadata = source["metadata"]
+    assert type(metadata) is dict
+    metadata["slug"] = "substituted-source"
+    with pytest.raises(ContractError) as captured:
+        validate_contract(job)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+def test_archive_record_is_reserved_for_successful_archive_results() -> None:
     result = _load_object(FIXTURE_ROOT / "accepted/operation-result.json")
-    result["archiveRecordDigest"] = {
-        "format": "lowerduckpond-archive-record-v1",
-        "algorithm": "sha256",
-        "value": "a" * 64,
-    }
+    result["archiveRecord"] = _load_object(FIXTURE_ROOT / "accepted/archive-record.json")
 
     with pytest.raises(ContractError) as captured:
         validate_contract(result)

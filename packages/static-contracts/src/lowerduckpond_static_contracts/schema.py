@@ -209,6 +209,7 @@ def _validate_job(document: dict[str, object]) -> None:
     if document["artifact"] != request.get("artifact"):
         raise ContractError(ErrorCode.SCHEMA_INVALID, "job artifact binding does not match")
     expected = cast(dict[str, object], document["expectedSource"])
+    _validate_job_source_authority(document, request, expected)
     if request["operation"] == "create":
         if expected != {
             "expectsTenantAbsent": True,
@@ -240,6 +241,65 @@ def _validate_job(document: dict[str, object]) -> None:
         archive,
         compatibility_version=document["compatibilityVersion"],
     )
+
+
+def _validate_job_source_authority(
+    document: dict[str, object],
+    request: dict[str, object],
+    expected: dict[str, object],
+) -> None:
+    if document["compatibilityVersion"] == "static-job-v1":
+        if "sourceAuthority" in document:
+            raise ContractError(
+                ErrorCode.SCHEMA_INVALID,
+                "legacy job carries current source authority",
+            )
+        return
+    authority = document["sourceAuthority"]
+    if request["operation"] == "create":
+        if authority is not None:
+            raise ContractError(
+                ErrorCode.SCHEMA_INVALID,
+                "create job carries tenant source authority",
+            )
+        return
+    if type(authority) is not dict:
+        raise ContractError(ErrorCode.SCHEMA_INVALID, "tenant job source authority is absent")
+    manifest = cast(dict[str, object], authority["manifest"])
+    metadata = cast(dict[str, object], manifest["metadata"])
+    spec = cast(dict[str, object], manifest["spec"])
+    manifest_binding = digest_bytes(
+        canonical_json_bytes(manifest),
+        format_identifier=MANIFEST_DIGEST_FORMAT,
+    ).to_dict()
+    archive = authority["archiveRecord"]
+    if (
+        metadata["id"] != request["tenantId"]
+        or spec["desiredState"] != expected["lifecycle"]
+        or manifest_binding != expected["manifestDigest"]
+    ):
+        raise ContractError(ErrorCode.SCHEMA_INVALID, "tenant job source authority disagrees")
+    if expected["lifecycle"] != "archived":
+        if archive is not None:
+            raise ContractError(
+                ErrorCode.SCHEMA_INVALID,
+                "non-archived job carries archive source authority",
+            )
+        return
+    reference = cast(dict[str, object], spec["desiredDeployment"])
+    if type(archive) is not dict:
+        raise ContractError(ErrorCode.SCHEMA_INVALID, "archived job source authority is absent")
+    archive_binding = digest_bytes(
+        canonical_json_bytes(archive),
+        format_identifier=ARCHIVE_RECORD_DIGEST_FORMAT,
+    ).to_dict()
+    if (
+        archive_binding != expected["archiveRecordDigest"]
+        or archive["tenantId"] != request["tenantId"]
+        or archive["deploymentId"] != reference["id"]
+        or archive["manifestDigest"] != manifest_binding
+    ):
+        raise ContractError(ErrorCode.SCHEMA_INVALID, "archived job source authority disagrees")
 
 
 def _validate_job_deletion_authority(

@@ -150,6 +150,10 @@ class AuthorizationIssuer:
             clock=lambda: _unix_milliseconds(accepted_at),
             entropy=self._entropy,
         )
+        expected_source, source_authority = _build_source_bindings(
+            self._repository,
+            request,
+        )
         candidate: dict[str, object] = {
             "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
             "kind": "AuthorizationJob",
@@ -159,7 +163,8 @@ class AuthorizationIssuer:
             "request": request,
             "requestDigest": request_digest(request).to_dict(),
             "artifact": request.get("artifact"),
-            "expectedSource": build_expected_source(self._repository, request),
+            "expectedSource": expected_source,
+            "sourceAuthority": source_authority,
             "executionValidated": False,
             "acceptedAt": accepted_at.isoformat().replace("+00:00", "Z"),
             "phase": "pending",
@@ -274,17 +279,30 @@ def build_expected_source(
 ) -> dict[str, object]:
     """Derive the complete expected-source binding from one trusted reader."""
 
+    expected, _authority = _build_source_bindings(reader, request)
+    return expected
+
+
+def _build_source_bindings(
+    reader: StateReader,
+    request: dict[str, object],
+) -> tuple[dict[str, object], dict[str, object] | None]:
+    """Derive digest and exact replay authority from the same source snapshot."""
+
     namespace = reader.read(StateRecordPath.platform_namespace()).document
     platform_digest = platform_state_digest(namespace).to_dict()
     if request["operation"] == "create":
-        return {
-            "expectsTenantAbsent": True,
-            "lifecycle": None,
-            "manifestDigest": None,
-            "deploymentDigest": None,
-            "archiveRecordDigest": None,
-            "platformStateDigest": platform_digest,
-        }
+        return (
+            {
+                "expectsTenantAbsent": True,
+                "lifecycle": None,
+                "manifestDigest": None,
+                "deploymentDigest": None,
+                "archiveRecordDigest": None,
+                "platformStateDigest": platform_digest,
+            },
+            None,
+        )
 
     tenant_id = validate_uuid7(request["tenantId"])
     desired = reader.read(StateRecordPath.tenant_desired(tenant_id)).document
@@ -339,4 +357,4 @@ def build_expected_source(
         else:
             raise IssuanceError("tenant lifecycle is not eligible for ordinary deletion")
         expected["deletionEvidence"] = deletion_evidence
-    return expected
+    return expected, {"manifest": desired, "archiveRecord": archive}

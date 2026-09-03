@@ -16,7 +16,8 @@
       },
       "then": {
         "required": [
-          "executionValidated"
+          "executionValidated",
+          "sourceAuthority"
         ]
       }
     }
@@ -140,6 +141,36 @@
     },
     "requestDigest": {
       "$ref": "common.schema.json#/$defs/requestDigest"
+    },
+    "sourceAuthority": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "archiveRecord": {
+              "oneOf": [
+                {
+                  "$ref": "archive-record.schema.json"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "manifest": {
+              "$ref": "site.schema.json"
+            }
+          },
+          "required": [
+            "manifest",
+            "archiveRecord"
+          ],
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "required": [

@@ -595,7 +595,7 @@ class StateRepository:
     ) -> bool:
         """Return whether one tenant has any durable deployment-store entry."""
 
-        with self.transaction(mode=LockMode.SHARED, blocking=blocking) as transaction:
+        with self.transaction(mode=LockMode.EXCLUSIVE, blocking=blocking) as transaction:
             return transaction.tenant_has_deployment_history(tenant_id)
 
     def create_immutable(
@@ -809,6 +809,7 @@ class _StateTransaction:
         """Inspect one deployment directory while tenant state is serialized."""
 
         self._require_active()
+        self._require_exclusive()
         canonical_id = validate_uuid7(tenant_id)
         deployments = self._repository._durable.open_descendant(
             ("tenants", canonical_id, "deployments")
@@ -836,6 +837,7 @@ class _StateTransaction:
         """Resolve one retained deployment from its authorization-bound digest."""
 
         self._require_active()
+        self._require_exclusive()
         canonical_id = validate_uuid7(tenant_id)
         deployments = self._repository._durable.open_descendant(
             ("tenants", canonical_id, "deployments")

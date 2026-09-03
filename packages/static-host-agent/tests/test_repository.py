@@ -4,7 +4,9 @@ import hashlib
 import json
 import os
 import stat
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from copy import deepcopy
 from datetime import UTC, datetime
 from multiprocessing import get_context
@@ -1170,6 +1172,36 @@ def test_transaction_can_read_a_coherent_multi_record_snapshot(tmp_path: Path) -
 
     assert desired.document["kind"] == "Site"
     assert observed.document["kind"] == "TenantObservedState"
+
+
+def test_deployment_history_cleanup_acquires_the_exclusive_state_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _state_root(tmp_path)
+    modes: list[LockMode] = []
+    original_transaction = StateRepository.transaction
+
+    @contextmanager
+    def recording_transaction(
+        repository: StateRepository,
+        *,
+        mode: LockMode,
+        blocking: bool = False,
+    ) -> Iterator[object]:
+        modes.append(mode)
+        with original_transaction(
+            repository,
+            mode=mode,
+            blocking=blocking,
+        ) as transaction:
+            yield transaction
+
+    monkeypatch.setattr(StateRepository, "transaction", recording_transaction)
+    with _repository(root) as repository:
+        assert repository.tenant_has_deployment_history(_TENANT_ID) is False
+
+    assert modes == [LockMode.EXCLUSIVE]
 
 
 def test_shared_and_expired_transactions_cannot_mutate_state(tmp_path: Path) -> None:
