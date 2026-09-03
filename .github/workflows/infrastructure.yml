@@ -92,7 +92,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install pinned tools
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        env:
+          MISE_GITHUB_TOKEN: ${{ github.token }}
         with:
+          github_token: ${{ github.token }}
           version: 2026.8.8
           install_args: python opentofu
       - name: Prepare isolated local backend
@@ -165,7 +168,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install pinned tools
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        env:
+          MISE_GITHUB_TOKEN: ${{ github.token }}
         with:
+          github_token: ${{ github.token }}
           version: 2026.8.8
           install_args: python opentofu
       - name: Initialize the production backend
@@ -371,7 +377,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install pinned tools
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        env:
+          MISE_GITHUB_TOKEN: ${{ github.token }}
         with:
+          github_token: ${{ github.token }}
           version: 2026.8.8
           install_args: opentofu python uv
       - name: Install the locked archive migration preflight
