@@ -355,6 +355,8 @@ def _require_same_job(
     second.pop("phase", None)
     first.pop("dispatchArchiveDeploymentIds", None)
     second.pop("dispatchArchiveDeploymentIds", None)
+    first.pop("dispatchArtifactReleaseTreeDigest", None)
+    second.pop("dispatchArtifactReleaseTreeDigest", None)
     first.pop("dispatchDeploymentIds", None)
     second.pop("dispatchDeploymentIds", None)
     if first != second or current.document["phase"] not in {"claimed", "completed"}:

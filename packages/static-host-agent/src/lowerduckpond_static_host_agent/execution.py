@@ -164,6 +164,7 @@ class _LifecycleDispatchAuthority:
     candidate_route_set: str | None
     archive_record: dict[str, object] | None
     archive_construction_present: bool
+    artifact_release_tree_digest: dict[str, object] | None = None
     source_archive_deployment_ids: tuple[str, ...] | None = None
     source_deployment_ids: tuple[str, ...] | None = None
     execution_validation_committed: bool = False
@@ -192,6 +193,7 @@ class AuthorizationExecutor:
         handlers: Mapping[str, LifecycleJobHandler] | None = None,
         deleted_tenant_release_validator: Callable[[str], bool] | None = None,
         deleted_tenant_route_validator: Callable[[str], bool] | None = None,
+        retired_archive_validator: Callable[[dict[str, object]], bool] | None = None,
         tenant_runtime_validator: Callable[
             [str, str, str | None, dict[str, object], dict[str, object] | None],
             bool,
@@ -205,6 +207,7 @@ class AuthorizationExecutor:
         self._handlers = dict(handlers or {})
         self._deleted_tenant_release_validator = deleted_tenant_release_validator
         self._deleted_tenant_route_validator = deleted_tenant_route_validator
+        self._retired_archive_validator = retired_archive_validator
         self._tenant_runtime_validator = tenant_runtime_validator
         self._tenant_release_validator = tenant_release_validator
         self._capacity_limits = capacity_limits
@@ -623,13 +626,21 @@ class AuthorizationExecutor:
         claim: ArtifactClaim | None,
         blocking: bool,
     ) -> ExecutionOutcome:
+        artifact_release_tree_digest = self._derive_artifact_release_tree_digest(
+            initial.document,
+            claim,
+        )
         with self._repository.transaction(
             mode=LockMode.EXCLUSIVE,
             blocking=blocking,
         ) as transaction:
             current = transaction.read(StateRecordPath.authorization_job(job_id))
             _require_same_authority(initial.document, current.document)
-            current = _bind_dispatch_record_ids(transaction, current)
+            current = _bind_dispatch_authority(
+                transaction,
+                current,
+                artifact_release_tree_digest=artifact_release_tree_digest,
+            )
             authority = _capture_authorized_lifecycle_authority(
                 transaction,
                 current.document,
@@ -691,6 +702,26 @@ class AuthorizationExecutor:
         )
         return ExecutionOutcome(result, returned.created)
 
+    def _derive_artifact_release_tree_digest(
+        self,
+        job: dict[str, object],
+        claim: ArtifactClaim | None,
+    ) -> dict[str, object] | None:
+        request = job["request"]
+        if type(request) is not dict:
+            raise ExecutionError("authorization request authority is malformed")
+        if request["operation"] not in {"deploy", "import"} or claim is None:
+            return None
+        try:
+            release_authority = self._intake.deployment_release_tree_digest(
+                claim.artifact
+            ).to_dict()
+            return dict[str, object](release_authority)
+        except IntakeError as error:
+            raise ExecutionError(
+                "authorized artifact release content failed independent validation"
+            ) from error
+
     def _validate_external_terminal_state(  # noqa: PLR0911 - terminal-state matrix
         self,
         job: dict[str, object],
@@ -700,7 +731,10 @@ class AuthorizationExecutor:
         audit_is_latest_for_tenant: bool = True,
         blocking: bool = False,
     ) -> None:
-        if authority is None or not audit_is_latest_for_tenant:
+        if authority is None:
+            return
+        self._validate_retired_archive_absence(result, authority=authority)
+        if not audit_is_latest_for_tenant:
             return
         if result["status"] == "failed":
             self._validate_failed_external_terminal_state(
@@ -751,6 +785,24 @@ class AuthorizationExecutor:
             if self._result_was_superseded(job, result, blocking=blocking):
                 return
             raise ExecutionError("successful lifecycle result did not select its authorized routes")
+
+    def _validate_retired_archive_absence(
+        self,
+        result: dict[str, object],
+        *,
+        authority: _LifecycleDispatchAuthority,
+    ) -> None:
+        if result["status"] != "succeeded" or result["operation"] not in {
+            "delete",
+            "restore",
+        }:
+            return
+        archive = authority.archive_record
+        if archive is None:
+            return
+        validator = self._retired_archive_validator
+        if validator is None or validator(archive) is not True:
+            raise ExecutionError("successful lifecycle result retained its retired archive object")
 
     def _validate_deleted_external_terminal_state(
         self,
@@ -947,6 +999,8 @@ def _require_same_authority(
     second.pop("executionValidated", None)
     first.pop("dispatchArchiveDeploymentIds", None)
     second.pop("dispatchArchiveDeploymentIds", None)
+    first.pop("dispatchArtifactReleaseTreeDigest", None)
+    second.pop("dispatchArtifactReleaseTreeDigest", None)
     first.pop("dispatchDeploymentIds", None)
     second.pop("dispatchDeploymentIds", None)
     if first != second:
@@ -1021,6 +1075,18 @@ def _capture_authorized_lifecycle_authority(  # noqa: PLR0912,PLR0915 - authorit
     if type(request) is not dict or type(expected) is not dict:
         raise ExecutionError("authorization source authority is malformed")
     if request["operation"] == "delete":
+        _request, intents = _bound_lifecycle_intents(transaction, job)
+        retirement_intent = next(
+            (intent for intent in intents if intent["kind"] == "ArchiveRetirementIntent"),
+            None,
+        )
+        if retirement_intent is None:
+            _source_manifest, delete_archive_record = _job_source_authority(job)
+        else:
+            raw_archive = retirement_intent.get("archiveRecord")
+            if type(raw_archive) is not dict:
+                raise ExecutionError("delete retirement authority is malformed")
+            delete_archive_record = deepcopy(raw_archive)
         return _LifecycleDispatchAuthority(
             source_manifest=None,
             source_observed_state=None,
@@ -1029,8 +1095,9 @@ def _capture_authorized_lifecycle_authority(  # noqa: PLR0912,PLR0915 - authorit
             candidate_observed_state=None,
             candidate_runtime_generation_id=None,
             candidate_route_set=None,
-            archive_record=None,
+            archive_record=delete_archive_record,
             archive_construction_present=False,
+            artifact_release_tree_digest=_dispatch_artifact_release_tree_digest(job),
             source_archive_deployment_ids=_dispatch_archive_deployment_ids(job),
             source_deployment_ids=_dispatch_deployment_ids(job),
         )
@@ -1065,6 +1132,7 @@ def _capture_authorized_lifecycle_authority(  # noqa: PLR0912,PLR0915 - authorit
             candidate_route_set=None,
             archive_record=None,
             archive_construction_present=False,
+            artifact_release_tree_digest=_dispatch_artifact_release_tree_digest(job),
             source_archive_deployment_ids=_dispatch_archive_deployment_ids(job),
             source_deployment_ids=_dispatch_deployment_ids(job),
         )
@@ -1163,6 +1231,7 @@ def _capture_authorized_lifecycle_authority(  # noqa: PLR0912,PLR0915 - authorit
         candidate_route_set=candidate_route_set,
         archive_record=archive_record,
         archive_construction_present=construction_intent is not None,
+        artifact_release_tree_digest=_dispatch_artifact_release_tree_digest(job),
         source_archive_deployment_ids=_dispatch_archive_deployment_ids(job),
         source_deployment_ids=_dispatch_deployment_ids(job),
     )
@@ -1266,6 +1335,7 @@ def _capture_replay_authority(
             candidate_route_set=None,
             archive_record=archive_record,
             archive_construction_present=False,
+            artifact_release_tree_digest=_dispatch_artifact_release_tree_digest(job),
             source_archive_deployment_ids=_dispatch_archive_deployment_ids(job),
             source_deployment_ids=_dispatch_deployment_ids(job),
             execution_validation_committed=validation_was_committed,
@@ -1299,6 +1369,7 @@ def _capture_replay_authority(
         candidate_route_set=route_set,
         archive_record=archive_record,
         archive_construction_present=False,
+        artifact_release_tree_digest=_dispatch_artifact_release_tree_digest(job),
         source_archive_deployment_ids=_dispatch_archive_deployment_ids(job),
         source_deployment_ids=_dispatch_deployment_ids(job),
         execution_validation_committed=validation_was_committed,
@@ -1429,24 +1500,39 @@ def _claim_pending(
     )
 
 
-def _bind_dispatch_record_ids(
+def _bind_dispatch_authority(
     transaction: ExecutionTransaction,
     current: StoredContract,
+    *,
+    artifact_release_tree_digest: dict[str, object] | None,
 ) -> StoredContract:
-    """Persist exact pre-dispatch deployment and archive boundaries once."""
+    """Persist exact pre-dispatch history and admitted release content once."""
 
     job = current.document
     if job["compatibilityVersion"] != "static-job-v2":
         return current
     existing_archives = _dispatch_archive_deployment_ids(job)
     existing_deployments = _dispatch_deployment_ids(job)
-    if existing_archives is not None and existing_deployments is not None:
-        return current
-    if (existing_archives is None) != (existing_deployments is None):
-        raise ExecutionError("dispatch record-history authority is only partially bound")
+    existing_release_digest = _dispatch_artifact_release_tree_digest(job)
     request = job["request"]
     if type(request) is not dict:
         raise ExecutionError("authorization request authority is malformed")
+    artifact_operation = request["operation"] in {"deploy", "import"}
+    if not artifact_operation and existing_release_digest is not None:
+        raise ExecutionError("non-artifact dispatch carries artifact release authority")
+    if existing_archives is not None and existing_deployments is not None:
+        if artifact_operation and existing_release_digest is None:
+            raise ExecutionError("dispatch artifact authority is not bound")
+        if (
+            artifact_release_tree_digest is not None
+            and existing_release_digest != artifact_release_tree_digest
+        ):
+            raise ExecutionError("dispatch artifact release authority changed")
+        return current
+    if (existing_archives is None) != (existing_deployments is None):
+        raise ExecutionError("dispatch record-history authority is only partially bound")
+    if artifact_operation and artifact_release_tree_digest is None:
+        raise ExecutionError("dispatch artifact release authority is unavailable")
     if request["operation"] == "create":
         archive_ids: tuple[str, ...] = ()
         deployment_ids: tuple[str, ...] = ()
@@ -1455,6 +1541,7 @@ def _bind_dispatch_record_ids(
         deployment_ids = transaction.tenant_deployment_ids(request["tenantId"])
     bound = job
     bound["dispatchArchiveDeploymentIds"] = list(archive_ids)
+    bound["dispatchArtifactReleaseTreeDigest"] = artifact_release_tree_digest
     bound["dispatchDeploymentIds"] = list(deployment_ids)
     try:
         return transaction.compare_and_swap(
@@ -1472,6 +1559,17 @@ def _dispatch_archive_deployment_ids(job: dict[str, object]) -> tuple[str, ...] 
         field="dispatchArchiveDeploymentIds",
         label="archive-history",
     )
+
+
+def _dispatch_artifact_release_tree_digest(
+    job: dict[str, object],
+) -> dict[str, object] | None:
+    raw = job.get("dispatchArtifactReleaseTreeDigest")
+    if raw is None:
+        return None
+    if type(raw) is not dict:
+        raise ExecutionError("dispatch artifact release authority is malformed")
+    return deepcopy(raw)
 
 
 def _dispatch_deployment_ids(job: dict[str, object]) -> tuple[str, ...] | None:
@@ -1837,6 +1935,7 @@ def _validate_handler_result_state(
     if result["status"] == "failed":
         _validate_failed_handler_result_state(transaction, job, result, authority=authority)
         return
+    _validate_success_record_history(transaction, result, authority=authority)
     tenant_id = validate_uuid7(result["tenantId"])
     desired_path = StateRecordPath.tenant_desired(tenant_id)
     if result["operation"] == "delete":
@@ -1896,6 +1995,31 @@ def _validate_failed_handler_result_state(
         return
     if _expected_source_error(transaction, job) is not None:
         raise ExecutionError("failed lifecycle handler did not restore its authorized source")
+
+
+def _validate_success_record_history(
+    transaction: ExecutionTransaction,
+    result: dict[str, object],
+    *,
+    authority: _LifecycleDispatchAuthority,
+) -> None:
+    if result["operation"] not in {"create", "export", "rename", "reconcile", "resume", "suspend"}:
+        return
+    tenant_id = result["tenantId"]
+    source_archive_ids = authority.source_archive_deployment_ids
+    source_deployment_ids = authority.source_deployment_ids
+    if source_archive_ids is None and source_deployment_ids is None:
+        # Jobs committed before this dispatch boundary remain replayable; no
+        # lifecycle handler can create such a terminal job after this upgrade.
+        return
+    if (
+        tenant_id is None
+        or source_archive_ids is None
+        or source_deployment_ids is None
+        or transaction.tenant_archive_ids(tenant_id) != source_archive_ids
+        or transaction.tenant_deployment_ids(tenant_id) != source_deployment_ids
+    ):
+        raise ExecutionError("successful no-history lifecycle result changed retained history")
 
 
 def _validate_export_bundle(
@@ -2047,11 +2171,13 @@ def _validate_selected_deployment_state(  # noqa: PLR0912 - explicit operation m
     )
     if operation in {"deploy", "import"}:
         artifact = request["artifact"]
-        if type(artifact) is not dict:
+        artifact_release_digest = authority.artifact_release_tree_digest
+        if type(artifact) is not dict or type(artifact_release_digest) is not dict:
             raise ExecutionError("successful deployment artifact authority is malformed")
         matches = (
             matches
             and deployment["archiveSha256"] == artifact["sha256"]
+            and deployment["releaseTreeDigest"] == artifact_release_digest
             and deployment["correlationId"] == result["correlationId"]
         )
     elif operation == "restore":

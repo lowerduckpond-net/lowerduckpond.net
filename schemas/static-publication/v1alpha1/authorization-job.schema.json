@@ -130,6 +130,16 @@
         }
       ]
     },
+    "dispatchArtifactReleaseTreeDigest": {
+      "oneOf": [
+        {
+          "$ref": "common.schema.json#/$defs/releaseTreeDigest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "dispatchDeploymentIds": {
       "oneOf": [
         {
