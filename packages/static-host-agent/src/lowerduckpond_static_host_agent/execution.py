@@ -6,6 +6,7 @@ from collections.abc import Callable, Mapping
 from contextlib import ExitStack
 from copy import deepcopy
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Final, Protocol, cast
 
 from lowerduckpond_static_contracts import (
@@ -2083,11 +2084,32 @@ def _validate_result_audit(
         or entry["correlationId"] != result["correlationId"]
         or entry["resultDigest"] != result_digest(result).to_dict()
         or entry["resultStatus"] != result["status"]
+        or entry["timestamp"] != job["acceptedAt"]
     ):
         raise ExecutionError("lifecycle result disagrees with durable audit authority")
     if result["operation"] == "delete" and result["status"] == "succeeded":
         _validate_delete_audit_evidence(job, entry)
-    return not snapshot.has_later_tenant_state_transition
+    repaired_after_superseding_transition = (
+        _is_executor_failure(result)
+        and snapshot.previous_tenant_state_transition is not None
+        and _audit_timestamp(snapshot.previous_tenant_state_transition) > _audit_timestamp(entry)
+    )
+    return not (snapshot.has_later_tenant_state_transition or repaired_after_superseding_transition)
+
+
+def _audit_timestamp(entry: dict[str, object]) -> datetime:
+    """Return one schema-validated audit timestamp as an aware UTC value."""
+
+    value = entry["timestamp"]
+    if type(value) is not str:  # pragma: no cover - audit schema validation proves this
+        raise ExecutionError("lifecycle audit timestamp is malformed")
+    try:
+        timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:  # pragma: no cover - audit schema validation proves this
+        raise ExecutionError("lifecycle audit timestamp is malformed") from error
+    if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+        raise ExecutionError("lifecycle audit timestamp has no timezone")
+    return timestamp.astimezone(UTC)
 
 
 def _failure_audit_snapshot(
