@@ -58,10 +58,14 @@ class _CompletingCreateHandler:
         *,
         persist_result: bool = True,
         commit_job: bool = True,
+        state_root: Path | None = None,
+        result_slug: str | None = None,
     ) -> None:
         self._repository = repository
         self._persist_result = persist_result
         self._commit_job = commit_job
+        self._state_root = state_root
+        self._result_slug = result_slug
         self.phases: list[object] = []
         self.claims: list[ArtifactClaim | None] = []
 
@@ -89,9 +93,22 @@ class _CompletingCreateHandler:
             assert type(request) is dict
             result = _fixture("operation-result.json")
             provenance = result["provenance"]
+            manifest = result["manifest"]
             assert type(provenance) is dict
+            assert type(manifest) is dict
             provenance["jobId"] = job_id
             result["correlationId"] = request["correlationId"]
+            committed_manifest = json.loads(json.dumps(manifest))
+            if self._result_slug is not None:
+                metadata = manifest["metadata"]
+                assert type(metadata) is dict
+                metadata["slug"] = self._result_slug
+            if result["status"] == "succeeded" and self._state_root is not None:
+                _write(
+                    self._state_root,
+                    StateRecordPath.tenant_desired(result["tenantId"]),
+                    committed_manifest,
+                )
             if self._persist_result:
                 self._repository.create_immutable(
                     StateRecordPath.authorization_result(job_id),
@@ -613,7 +630,7 @@ def test_executor_dispatches_claimed_create_and_replays_its_handler(tmp_path: Pa
         ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
     ):
         issued = _issue_create(repository)
-        handler = _CompletingCreateHandler(repository)
+        handler = _CompletingCreateHandler(repository, state_root=root)
         executor = AuthorizationExecutor(repository, intake, handlers={"create": handler})
 
         first = executor.execute(issued.job_id)
@@ -644,6 +661,13 @@ def test_executor_repairs_a_lagging_job_phase_without_handler_replay(tmp_path: P
         assert type(provenance) is dict
         provenance["jobId"] = issued.job_id
         result["correlationId"] = request["correlationId"]
+        manifest = result["manifest"]
+        assert type(manifest) is dict
+        _write(
+            root,
+            StateRecordPath.tenant_desired(result["tenantId"]),
+            manifest,
+        )
         repository.create_immutable(
             StateRecordPath.authorization_result(issued.job_id),
             result,
@@ -758,6 +782,63 @@ def test_executor_binds_a_successful_create_result_to_its_active_intent(
             ).execute(issued.job_id)
 
     assert handler.phases == []
+
+
+def test_executor_binds_a_handler_result_after_its_intent_is_cleared(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued = _issue_create(repository)
+        job = repository.read(StateRecordPath.authorization_job(issued.job_id))
+        claimed = job.document
+        claimed["phase"] = "claimed"
+        repository.compare_and_swap(
+            StateRecordPath.authorization_job(issued.job_id),
+            job.revision,
+            claimed,
+        )
+        request = issued.document["request"]
+        assert type(request) is dict
+        intent = _create_intent(request["correlationId"])
+        candidate = intent["candidateManifest"]
+        intent_id = intent["intentId"]
+        assert type(candidate) is dict
+        assert type(intent_id) is str
+        intent_path = StateRecordPath.transaction_intent(intent_id)
+        repository.create_immutable(intent_path, intent)
+        handler = _CompletingIntentHandler(
+            repository,
+            intent_path=intent_path,
+            delegate=_CompletingCreateHandler(
+                repository,
+                state_root=root,
+                result_slug="different-duck",
+            ),
+        )
+
+        with pytest.raises(ExecutionError, match="authoritative tenant state"):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={"create": handler},
+            ).execute(issued.job_id)
+
+        stored = repository.read(StateRecordPath.authorization_result(issued.job_id)).document
+        assert repository.read(StateRecordPath.tenant_desired(_TENANT_ID)).document == candidate
+        with pytest.raises(FileNotFoundError):
+            repository.read(intent_path)
+
+    stored_manifest = stored["manifest"]
+    assert type(stored_manifest) is dict
+    stored_metadata = stored_manifest["metadata"]
+    assert type(stored_metadata) is dict
+    assert stored_metadata["slug"] == "different-duck"
 
 
 @pytest.mark.parametrize("drift", ["slug", "quotas"])
@@ -1157,6 +1238,7 @@ def test_executor_rejects_an_incomplete_handler_commit(
             repository,
             persist_result=persist_result,
             commit_job=commit_job,
+            state_root=root,
         )
         with pytest.raises(RuntimeError, match=message):
             AuthorizationExecutor(
@@ -1616,7 +1698,7 @@ def test_executor_dispatches_a_claimed_job_with_an_intent_without_source_recheck
         handler = _CompletingIntentHandler(
             repository,
             intent_path=StateRecordPath.transaction_intent(intent_id),
-            delegate=_CompletingCreateHandler(repository),
+            delegate=_CompletingCreateHandler(repository, state_root=root),
         )
 
         outcome = AuthorizationExecutor(

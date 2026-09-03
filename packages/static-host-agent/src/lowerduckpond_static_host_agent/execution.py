@@ -380,6 +380,7 @@ class AuthorizationExecutor:
                 )
                 _require_available_lifecycle_handler(has_lifecycle_intent, handler)
                 if not has_lifecycle_intent:
+                    _validate_successful_result_state(transaction, existing.document)
                     result = _repair_terminal_phase_transaction(transaction, current, existing)
                     return ExecutionOutcome(result, False)
             else:
@@ -453,6 +454,7 @@ class AuthorizationExecutor:
                 result=stored.document,
             ):
                 raise ExecutionError("lifecycle handler returned before clearing its intent")
+            _validate_successful_result_state(transaction, result)
             expected_phase = "completed" if result["status"] == "succeeded" else "failed"
             if current.document["phase"] != expected_phase:
                 raise ExecutionError("lifecycle handler returned before terminal job commit")
@@ -796,6 +798,35 @@ def _validate_result_intent_binding(
         or candidate_observed["desiredManifestDigest"] != candidate_digest
     ):
         raise ExecutionError("successful create result disagrees with its lifecycle intent")
+
+
+def _validate_successful_result_state(
+    transaction: ExecutionTransaction,
+    result: dict[str, object],
+) -> None:
+    if result["status"] != "succeeded":
+        return
+    tenant_id = validate_uuid7(result["tenantId"])
+    desired_path = StateRecordPath.tenant_desired(tenant_id)
+    if result["operation"] == "delete":
+        try:
+            transaction.read(desired_path)
+        except FileNotFoundError:
+            return
+        raise ExecutionError("successful delete result retained authoritative tenant state")
+    manifest = result.get("manifest")
+    if type(manifest) is not dict:
+        raise ExecutionError("successful lifecycle result has no exact manifest")
+    try:
+        desired = transaction.read(desired_path).document
+    except FileNotFoundError as error:
+        raise ExecutionError(
+            "successful lifecycle result has no authoritative tenant state"
+        ) from error
+    if desired != manifest:
+        raise ExecutionError(
+            "successful lifecycle result disagrees with authoritative tenant state"
+        )
 
 
 def _validate_candidate_request_binding(
