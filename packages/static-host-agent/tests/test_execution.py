@@ -914,6 +914,100 @@ def test_executor_preserves_a_claimed_job_when_its_handler_is_unavailable(
     assert preserved_intent == intent
 
 
+def test_executor_finishes_intent_free_claimed_fallback_without_a_handler(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued = _issue_create(repository)
+        job = repository.read(StateRecordPath.authorization_job(issued.job_id))
+        claimed = job.document
+        claimed["phase"] = "claimed"
+        repository.compare_and_swap(
+            StateRecordPath.authorization_job(issued.job_id),
+            job.revision,
+            claimed,
+        )
+
+        outcome = AuthorizationExecutor(repository, intake).execute(issued.job_id)
+        terminal = repository.read(StateRecordPath.authorization_job(issued.job_id)).document
+        replay = AuthorizationExecutor(repository, intake).execute(issued.job_id)
+
+    assert outcome.created is True
+    assert outcome.result["errorCode"] == "not_implemented"
+    assert terminal["phase"] == "failed"
+    assert replay.created is False
+    assert replay.result == outcome.result
+
+
+def test_executor_finishes_intent_free_claimed_fallback_after_artifact_loss(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), _fixture("site.json"))
+    _write(
+        root,
+        StateRecordPath.tenant_deployment(_TENANT_ID, _DEPLOYMENT_ID),
+        _fixture("deployment-record.json"),
+    )
+    payload = b"claimed fallback artifact"
+    artifact = VerifiedArtifact(len(payload), hashlib.sha256(payload).hexdigest())
+    correlation_id = "0198d17f-6f4a-7000-8000-000000000003"
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "deploy",
+        "correlationId": correlation_id,
+        "tenantId": _TENANT_ID,
+        "artifact": {"size": artifact.size, "sha256": artifact.sha256},
+    }
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        with intake.admit(
+            operation="deploy",
+            correlation_id=correlation_id,
+            declared=artifact,
+            read=BytesIO(payload).read,
+        ) as lease:
+            issued = AuthorizationIssuer(
+                repository,
+                gate=_OpenGate(),
+                entropy=_Entropy(),
+            ).issue(
+                canonical_json_bytes(request),
+                operator_principal="operator@example.test",
+                now=_NOW,
+                artifact=artifact,
+            )
+            lease.commit()
+        job = repository.read(StateRecordPath.authorization_job(issued.job_id))
+        claimed = job.document
+        claimed["phase"] = "claimed"
+        repository.compare_and_swap(
+            StateRecordPath.authorization_job(issued.job_id),
+            job.revision,
+            claimed,
+        )
+        for path in (root / "intake").iterdir():
+            path.unlink()
+
+        outcome = AuthorizationExecutor(repository, intake).execute(issued.job_id)
+        terminal = repository.read(StateRecordPath.authorization_job(issued.job_id)).document
+
+    assert outcome.created is True
+    assert outcome.result["errorCode"] == "not_implemented"
+    assert terminal["phase"] == "failed"
+
+
 def test_executor_preserves_result_bearing_recovery_without_its_handler(
     tmp_path: Path,
 ) -> None:

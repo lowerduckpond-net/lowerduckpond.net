@@ -172,6 +172,68 @@ def test_installer_refuses_to_select_an_upgrade_with_an_active_intent(
     assert (install_root / "current").resolve(strict=True) == install_root / digest
 
 
+def test_installer_removes_a_safe_abandoned_intent_temporary_before_selection(
+    tmp_path: Path,
+) -> None:
+    artifact = tmp_path / "artifact.tar"
+    build = run(BUILDER, artifact)
+    assert build.returncode == 0, build.stderr
+    digest = build.stdout.strip()
+    install_root = tmp_path / "install"
+    install_root.mkdir()
+    create_selection_lock(install_root)
+    previous = install_root / "previous"
+    previous.mkdir()
+    (install_root / "current").symlink_to(previous, target_is_directory=True)
+    state_root = tmp_path / "state"
+    intents = state_root / "intents"
+    intents.mkdir(parents=True)
+    temporary = intents / f".ldp-state-{'a' * 32}"
+    temporary.write_bytes(b"interrupted")
+    temporary.chmod(0o600)
+    verifier = verifier_for_test(tmp_path)
+
+    installed = run(INSTALLER, artifact, digest, install_root, verifier, state_root)
+
+    assert installed.returncode == 0, installed.stderr
+    assert not temporary.exists()
+    assert (install_root / "current").resolve(strict=True) == install_root / digest
+
+
+@pytest.mark.parametrize("unsafe_shape", ["name", "mode", "symlink"])
+def test_installer_refuses_an_unsafe_reserved_intent_temporary(
+    tmp_path: Path,
+    unsafe_shape: str,
+) -> None:
+    artifact = tmp_path / "artifact.tar"
+    build = run(BUILDER, artifact)
+    assert build.returncode == 0, build.stderr
+    digest = build.stdout.strip()
+    install_root = tmp_path / "install"
+    install_root.mkdir()
+    create_selection_lock(install_root)
+    previous = install_root / "previous"
+    previous.mkdir()
+    (install_root / "current").symlink_to(previous, target_is_directory=True)
+    state_root = tmp_path / "state"
+    intents = state_root / "intents"
+    intents.mkdir(parents=True)
+    name = ".ldp-state-not-random" if unsafe_shape == "name" else f".ldp-state-{'a' * 32}"
+    temporary = intents / name
+    if unsafe_shape == "symlink":
+        temporary.symlink_to(tmp_path / "outside")
+    else:
+        temporary.write_bytes(b"interrupted")
+        temporary.chmod(0o644 if unsafe_shape == "mode" else 0o600)
+    verifier = verifier_for_test(tmp_path)
+
+    refused = run(INSTALLER, artifact, digest, install_root, verifier, state_root)
+
+    assert refused.returncode != 0
+    assert "reserved intent temporary" in refused.stderr
+    assert (install_root / "current").resolve(strict=True) == previous
+
+
 def test_installer_holds_selection_exclusion_across_intent_scan_and_switch(
     tmp_path: Path,
 ) -> None:

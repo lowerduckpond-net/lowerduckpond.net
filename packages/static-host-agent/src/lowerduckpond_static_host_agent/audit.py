@@ -42,6 +42,7 @@ _TENANT_STATE_TRANSITIONS: Final = frozenset(
         "resume",
         "rename",
         "import",
+        "archive",
         "restore",
         "delete",
     }

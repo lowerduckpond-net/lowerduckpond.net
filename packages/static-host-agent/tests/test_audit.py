@@ -61,6 +61,7 @@ def test_append_builds_one_exact_canonical_hash_chain(tmp_path: Path) -> None:
     first = _entry(0, None)
     first_digest = audit_entry_digest(first).to_dict()
     second = _entry(1, first_digest)
+    second["operation"] = "archive"
 
     with _repository(root) as repository:
         first_result = repository.append_audit(first)

@@ -5,6 +5,7 @@ import fcntl
 import hashlib
 import os
 import pathlib
+import re
 import secrets
 import shutil
 import stat
@@ -17,6 +18,9 @@ DIGEST_LENGTH = 64
 COPY_BUFFER_SIZE = 1024 * 1024
 SELECTION_LOCK_NAME = "selection.lock"
 SELECTION_LOCK_MODE = 0o600
+INTENT_RECORD_MODE = 0o600
+INTENT_SCAN_LIMIT = 3
+INTENT_TEMPORARY_PATTERN = re.compile(r"\.ldp-state-[0-9a-f]{32}", flags=re.ASCII)
 
 
 def fail(message: str) -> None:
@@ -184,6 +188,19 @@ def open_selection_lock(install_root: pathlib.Path) -> int:
     return descriptor
 
 
+def require_safe_intent_temporary(descriptor: int, name: str) -> None:
+    if INTENT_TEMPORARY_PATTERN.fullmatch(name) is None:
+        fail("reserved intent temporary name has an invalid shape")
+    metadata = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_uid != os.geteuid()
+        or stat.S_IMODE(metadata.st_mode) != INTENT_RECORD_MODE
+        or metadata.st_nlink != 1
+    ):
+        fail("reserved intent temporary has an unsafe inode shape")
+
+
 def require_no_active_intents(state_root: pathlib.Path) -> None:
     """Refuse an in-place schema upgrade until the old agent has recovered."""
 
@@ -205,9 +222,23 @@ def require_no_active_intents(state_root: pathlib.Path) -> None:
         os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
     )
     try:
+        temporary_names: list[str] = []
+        has_active_intent = False
         with os.scandir(descriptor) as entries:
-            if next(entries, None) is not None:
-                fail("active lifecycle intent blocks host-agent schema upgrade")
+            for entry_count, entry in enumerate(entries, start=1):
+                if entry_count > INTENT_SCAN_LIMIT:
+                    fail("static intent store exceeds its recovery ceiling")
+                if not entry.name.startswith(".ldp-state-"):
+                    has_active_intent = True
+                    continue
+                require_safe_intent_temporary(descriptor, entry.name)
+                temporary_names.append(entry.name)
+        for name in sorted(temporary_names):
+            os.unlink(name, dir_fd=descriptor)
+        if temporary_names:
+            os.fsync(descriptor)
+        if has_active_intent:
+            fail("active lifecycle intent blocks host-agent schema upgrade")
     finally:
         os.close(descriptor)
 
