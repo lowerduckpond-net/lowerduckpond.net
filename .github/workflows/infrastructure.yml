@@ -70,6 +70,8 @@ jobs:
   speculative-plan:
     name: Speculative pull-request plan
     if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
