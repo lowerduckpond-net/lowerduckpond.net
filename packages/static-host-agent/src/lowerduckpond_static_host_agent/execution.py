@@ -154,6 +154,7 @@ class _LifecycleDispatchAuthority:
     candidate_route_set: str | None
     archive_record: dict[str, object] | None
     archive_construction_present: bool
+    execution_validation_committed: bool = False
 
 
 class LifecycleJobHandler(Protocol):
@@ -179,7 +180,7 @@ class AuthorizationExecutor:
         handlers: Mapping[str, LifecycleJobHandler] | None = None,
         deleted_tenant_route_validator: Callable[[str], bool] | None = None,
         tenant_runtime_validator: Callable[
-            [str, str, str, dict[str, object], dict[str, object] | None],
+            [str, str, str | None, dict[str, object], dict[str, object] | None],
             bool,
         ]
         | None = None,
@@ -319,8 +320,7 @@ class AuthorizationExecutor:
         blocking: bool,
     ) -> ExecutionOutcome:
         _validate_result_binding(initial.document, existing.document)
-        self._validate_external_terminal_state(existing.document)
-        result: dict[str, object] | None = None
+        _validate_request_integrity(initial.document)
         with self._repository.transaction(
             mode=LockMode.EXCLUSIVE,
             blocking=blocking,
@@ -337,18 +337,17 @@ class AuthorizationExecutor:
                 result=durable.document,
             )
             _require_available_lifecycle_handler(dispatch, handler)
-            if not dispatch:
-                _validate_result_audit(
-                    transaction,
-                    current.document,
-                    durable.document,
-                )
-                result = _repair_terminal_phase_transaction(transaction, current, durable)
         if not dispatch:
-            if result is None:  # pragma: no cover - direct replay assigns the result
-                raise ExecutionError("terminal result selection was lost")
+            completed = self._validated_completed_replay(
+                job_id,
+                initial,
+                existing.document,
+                blocking=blocking,
+            )
+            if completed is None:  # pragma: no cover - intent was checked under the same lock
+                raise ExecutionError("terminal lifecycle intent changed during replay")
             self._consume_terminal_artifact(initial.document, blocking=blocking)
-            return ExecutionOutcome(result, False)
+            return completed
         if handler is None:  # pragma: no cover - dispatch proves a handler
             raise ExecutionError("authorization handler selection was lost")
         artifact = _job_artifact(initial.document)
@@ -409,8 +408,27 @@ class AuthorizationExecutor:
         *,
         blocking: bool,
     ) -> ExecutionOutcome | None:
+        return self._validated_completed_replay(
+            job_id,
+            initial,
+            expected_result,
+            blocking=blocking,
+        )
+
+    def _validated_completed_replay(
+        self,
+        job_id: str,
+        initial: StoredContract,
+        expected_result: dict[str, object],
+        *,
+        blocking: bool,
+    ) -> ExecutionOutcome | None:
+        """Revalidate one intent-free result before exact retry acceptance."""
+
         _validate_result_binding(initial.document, expected_result)
-        self._validate_external_terminal_state(expected_result)
+        authority: _LifecycleDispatchAuthority | None = None
+        audit_is_latest_for_tenant = False
+        job: dict[str, object] | None = None
         with self._repository.transaction(
             mode=LockMode.EXCLUSIVE,
             blocking=blocking,
@@ -427,13 +445,44 @@ class AuthorizationExecutor:
                 result=durable.document,
             ):
                 return None
-            _validate_result_audit(
+            audit_is_latest_for_tenant = _validate_result_audit(
                 transaction,
                 current.document,
                 durable.document,
             )
+            if current.document["compatibilityVersion"] == "static-job-v2":
+                authority = _capture_replay_authority(
+                    transaction,
+                    current.document,
+                    durable.document,
+                    validation_was_committed=current.document["executionValidated"] is True,
+                    audit_is_latest_for_tenant=audit_is_latest_for_tenant,
+                )
+                _validate_handler_result_state(
+                    transaction,
+                    current.document,
+                    durable.document,
+                    authority=authority,
+                    audit_is_latest_for_tenant=audit_is_latest_for_tenant,
+                )
             result = _repair_terminal_phase_transaction(transaction, current, durable)
-            return ExecutionOutcome(result, False)
+            job = current.document
+        if job is None:  # pragma: no cover - the locked branch assigns terminal state
+            raise ExecutionError("terminal replay job selection was lost")
+        self._validate_external_terminal_state(
+            job,
+            result,
+            authority=authority,
+            audit_is_latest_for_tenant=audit_is_latest_for_tenant,
+            blocking=blocking,
+        )
+        self._mark_execution_validated(
+            job_id,
+            initial,
+            result,
+            blocking=blocking,
+        )
+        return ExecutionOutcome(result, False)
 
     def _consume_terminal_artifact(
         self,
@@ -602,27 +651,39 @@ class AuthorizationExecutor:
             if current.document["phase"] != expected_phase:
                 raise ExecutionError("lifecycle handler returned before terminal job commit")
         self._validate_external_terminal_state(
+            current.document,
             result,
             authority=authority,
             audit_is_latest_for_tenant=audit_is_latest_for_tenant,
+            blocking=blocking,
+        )
+        self._mark_execution_validated(
+            job_id,
+            initial,
+            result,
+            blocking=blocking,
         )
         return ExecutionOutcome(result, returned.created)
 
     def _validate_external_terminal_state(
         self,
+        job: dict[str, object],
         result: dict[str, object],
         *,
         authority: _LifecycleDispatchAuthority | None = None,
         audit_is_latest_for_tenant: bool = True,
+        blocking: bool = False,
     ) -> None:
         if result["status"] != "succeeded":
             return
         tenant_id = validate_uuid7(result["tenantId"])
         if result["operation"] == "delete":
             validator = self._deleted_tenant_route_validator
-            if validator is None or validator(tenant_id) is not True:
-                raise ExecutionError("successful delete retained an active tenant route")
-            return
+            if validator is not None and validator(tenant_id) is True:
+                return
+            if self._result_was_superseded(job, result, blocking=blocking):
+                return
+            raise ExecutionError("successful delete retained an active tenant route")
         if (
             not audit_is_latest_for_tenant
             or authority is None
@@ -632,8 +693,10 @@ class AuthorizationExecutor:
         generation_id = authority.candidate_runtime_generation_id
         runtime_validator = self._tenant_runtime_validator
         manifest = result.get("manifest")
+        if runtime_validator is None and authority.execution_validation_committed:
+            return
         if (
-            generation_id is None
+            (generation_id is None and authority.candidate_route_set == "both")
             or runtime_validator is None
             or type(manifest) is not dict
             or runtime_validator(
@@ -645,7 +708,65 @@ class AuthorizationExecutor:
             )
             is not True
         ):
+            if self._result_was_superseded(job, result, blocking=blocking):
+                return
             raise ExecutionError("successful lifecycle result did not select its authorized routes")
+
+    def _result_was_superseded(
+        self,
+        job: dict[str, object],
+        result: dict[str, object],
+        *,
+        blocking: bool,
+    ) -> bool:
+        with self._repository.transaction(
+            mode=LockMode.EXCLUSIVE,
+            blocking=blocking,
+        ) as transaction:
+            job_id = validate_uuid7(job["jobId"])
+            current = transaction.read(StateRecordPath.authorization_job(job_id))
+            _require_same_authority(job, current.document)
+            stored = _read_result_transaction(transaction, job_id)
+            if stored is None or stored.document != result:
+                raise ExecutionError("terminal result changed during runtime validation")
+            return not _validate_result_audit(transaction, current.document, result)
+
+    def _mark_execution_validated(
+        self,
+        job_id: str,
+        initial: StoredContract,
+        result: dict[str, object],
+        *,
+        blocking: bool,
+    ) -> None:
+        if initial.document["compatibilityVersion"] != "static-job-v2":
+            return
+        with self._repository.transaction(
+            mode=LockMode.EXCLUSIVE,
+            blocking=blocking,
+        ) as transaction:
+            current = transaction.read(StateRecordPath.authorization_job(job_id))
+            _require_same_authority(initial.document, current.document)
+            stored = _read_result_transaction(transaction, job_id)
+            if stored is None or stored.document != result:
+                raise ExecutionError("validated lifecycle result is no longer durable")
+            if current.document["executionValidated"] is True:
+                return
+            expected_phase = "completed" if result["status"] == "succeeded" else "failed"
+            if current.document["phase"] != expected_phase:
+                raise ExecutionError("validated lifecycle job is not terminal")
+            validated = current.document
+            validated["executionValidated"] = True
+            try:
+                transaction.compare_and_swap(
+                    StateRecordPath.authorization_job(job_id),
+                    current.revision,
+                    validated,
+                )
+            except StateConflictError as error:
+                raise ExecutionError(
+                    "authorization validation marker changed during commit"
+                ) from error
 
     def _handler_for(self, job: dict[str, object]) -> LifecycleJobHandler | None:
         request = job["request"]
@@ -721,6 +842,8 @@ def _require_same_authority(
     second = deepcopy(current)
     first.pop("phase", None)
     second.pop("phase", None)
+    first.pop("executionValidated", None)
+    second.pop("executionValidated", None)
     if first != second:
         raise ExecutionError("authorization job authority changed before execution")
 
@@ -863,6 +986,99 @@ def _capture_authorized_lifecycle_authority(  # noqa: PLR0912 - explicit authori
         archive_record,
         construction_intent is not None,
     )
+
+
+def _capture_replay_authority(
+    transaction: ExecutionTransaction,
+    job: dict[str, object],
+    result: dict[str, object],
+    *,
+    validation_was_committed: bool,
+    audit_is_latest_for_tenant: bool,
+) -> _LifecycleDispatchAuthority:
+    """Reconstruct only authority that remains provable after intent cleanup."""
+
+    if result["status"] != "succeeded":
+        return _LifecycleDispatchAuthority(
+            None,
+            None,
+            None,
+            None,
+            None,
+            False,
+            validation_was_committed,
+        )
+    request = job["request"]
+    if type(request) is not dict:
+        raise ExecutionError("terminal replay request authority is malformed")
+    operation = result["operation"]
+    source: dict[str, object] | None = None
+    if not validation_was_committed and operation not in {"create", "delete"}:
+        if operation in {"archive", "restore"}:
+            raise ExecutionError("terminal replay lost uncommitted archive lifecycle authority")
+        source = _previous_audited_source_manifest(transaction, job, result)
+    elif not validation_was_committed and operation == "delete":
+        _previous_audited_source_manifest(transaction, job, result)
+
+    observed: dict[str, object] | None = None
+    generation: str | None = None
+    route_set: str | None = None
+    if audit_is_latest_for_tenant and operation != "delete":
+        manifest = result.get("manifest")
+        if type(manifest) is not dict:
+            raise ExecutionError("successful replay has no exact manifest")
+        tenant_id = validate_uuid7(result["tenantId"])
+        observed = transaction.read(StateRecordPath.tenant_observed(tenant_id)).document
+        validate_contract(observed, expected_kind=ContractKind.TENANT_OBSERVED_STATE)
+        spec = manifest["spec"]
+        if type(spec) is not dict:
+            raise ExecutionError("successful replay manifest is malformed")
+        route_set = "both" if spec["desiredState"] == "active" else "absent"
+        raw_generation = observed.get("runtimeGenerationId")
+        if raw_generation is not None:
+            generation = validate_uuid7(raw_generation)
+    return _LifecycleDispatchAuthority(
+        source,
+        observed,
+        generation,
+        route_set,
+        None,
+        False,
+        validation_was_committed,
+    )
+
+
+def _previous_audited_source_manifest(
+    transaction: ExecutionTransaction,
+    job: dict[str, object],
+    result: dict[str, object],
+) -> dict[str, object]:
+    """Resolve the exact preceding successful tenant manifest from the chain."""
+
+    snapshot = transaction.inspect_audit_correlation(result["correlationId"])
+    previous = snapshot.previous_tenant_state_transition
+    expected = job["expectedSource"]
+    if type(previous) is not dict or type(expected) is not dict:
+        raise ExecutionError("terminal replay has no preceding source authority")
+    correlation = transaction.read(
+        StateRecordPath.authorization_correlation(previous["correlationId"])
+    ).document
+    previous_result = transaction.read(
+        StateRecordPath.authorization_result(correlation["jobId"])
+    ).document
+    _validate_result_binding(correlation, previous_result)
+    manifest = previous_result.get("manifest")
+    if (
+        previous["tenantId"] != result["tenantId"]
+        or previous["resultStatus"] != "succeeded"
+        or previous_result["status"] != "succeeded"
+        or previous["operation"] != previous_result["operation"]
+        or previous["resultDigest"] != result_digest(previous_result).to_dict()
+        or type(manifest) is not dict
+        or manifest_digest(manifest).to_dict() != expected["manifestDigest"]
+    ):
+        raise ExecutionError("terminal replay preceding source authority disagrees")
+    return manifest
 
 
 def _archive_record_for_construction_authority(
@@ -1030,7 +1246,12 @@ def _publish_result(
         StateRecordPath.authorization_result(job.document["jobId"]),
         result,
     )
-    _set_terminal_phase(transaction, job, result)
+    _set_terminal_phase(
+        transaction,
+        job,
+        result,
+        execution_validated=True,
+    )
 
 
 def _read_result_transaction(
@@ -1266,7 +1487,11 @@ def _validate_handler_result_state(
 ) -> None:
     if result["status"] == "succeeded" and result["operation"] == "export":
         _validate_export_bundle(transaction, job, result)
-    if result["status"] == "succeeded" and result["operation"] != "delete":
+    if (
+        result["status"] == "succeeded"
+        and result["operation"] != "delete"
+        and not authority.execution_validation_committed
+    ):
         committed_manifest = result.get("manifest")
         if type(committed_manifest) is not dict:
             raise ExecutionError("successful lifecycle result has no exact manifest")
@@ -1283,6 +1508,8 @@ def _validate_handler_result_state(
         # serialization.
         return
     if result["status"] == "failed":
+        if authority.execution_validation_committed:
+            return
         if _expected_source_error(transaction, job) is not None:
             raise ExecutionError("failed lifecycle handler did not restore its authorized source")
         return
@@ -1875,12 +2102,21 @@ def _set_terminal_phase(
     transaction: ExecutionTransaction,
     job: StoredContract,
     result: dict[str, object],
+    *,
+    execution_validated: bool = False,
 ) -> None:
     expected_phase = "completed" if result["status"] == "succeeded" else "failed"
-    if job.document["phase"] == expected_phase:
+    marker_is_current = (
+        job.document["compatibilityVersion"] != "static-job-v2"
+        or job.document["executionValidated"] is execution_validated
+        or not execution_validated
+    )
+    if job.document["phase"] == expected_phase and marker_is_current:
         return
     terminal = job.document
     terminal["phase"] = expected_phase
+    if terminal["compatibilityVersion"] == "static-job-v2" and execution_validated:
+        terminal["executionValidated"] = True
     try:
         transaction.compare_and_swap(
             StateRecordPath.authorization_job(terminal["jobId"]),

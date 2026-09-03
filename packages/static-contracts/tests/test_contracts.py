@@ -349,9 +349,22 @@ def test_legacy_delete_job_without_deletion_evidence_remains_decodable() -> None
 
     assert validate_contract(job) is ContractKind.AUTHORIZATION_JOB
     job["compatibilityVersion"] = "static-job-v2"
+    job["executionValidated"] = False
     with pytest.raises(ContractError) as captured:
         validate_contract(job)
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+def test_current_authorization_job_requires_executor_validation_state() -> None:
+    job = _load_object(FIXTURE_ROOT / "accepted/authorization-job.json")
+    job["compatibilityVersion"] = "static-job-v2"
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(job)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+    job["executionValidated"] = False
+    assert validate_contract(job) is ContractKind.AUTHORIZATION_JOB
 
 
 @pytest.mark.parametrize("field", ["tenantId", "canonicalOrigin", "manifest"])

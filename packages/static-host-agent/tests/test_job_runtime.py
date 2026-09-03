@@ -391,6 +391,51 @@ def test_result_waiter_rechecks_intents_after_worker_completion(
     assert handoff.enqueued == [issued.job_id]
 
 
+def test_result_waiter_retries_a_contended_read_after_worker_completion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _state_root(tmp_path)
+    handoff = _CaptureHandoff()
+    sleeps: list[float] = []
+
+    def record_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    with StateRepository(root, expected_owner=os.geteuid()) as repository:
+        issued = _issue(repository)
+        request = issued.document["request"]
+        assert type(request) is dict
+        result: dict[str, object] = {
+            "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+            "kind": "OperationResult",
+            "provenance": {"kind": "authorization-job", "jobId": issued.job_id},
+            "correlationId": request["correlationId"],
+            "operation": "create",
+            "status": "failed",
+            "errorCode": "not_implemented",
+            "tenantId": None,
+        }
+        repository.create_immutable(
+            StateRecordPath.authorization_result(issued.job_id),
+            result,
+        )
+        _append_result_audit(repository, issued.document, result)
+        waiter = ResultWaiter(
+            repository,
+            handoff,
+            sleep=record_sleep,
+        )
+        reads = iter((None, None, result))
+        monkeypatch.setattr(waiter, "_read", lambda _job_id: next(reads))
+
+        retrieved = waiter.retrieve(issued)
+
+    assert retrieved == result
+    assert handoff.enqueued == [issued.job_id]
+    assert sleeps == [0.05]
+
+
 def test_result_waiter_rejects_a_result_that_disagrees_with_its_active_intent(
     tmp_path: Path,
 ) -> None:

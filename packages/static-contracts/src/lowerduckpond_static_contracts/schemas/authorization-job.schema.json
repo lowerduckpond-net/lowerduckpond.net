@@ -2,6 +2,25 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://schemas.lowerduckpond.net/static-publication/v1alpha1/authorization-job.schema.json",
   "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "compatibilityVersion": {
+            "const": "static-job-v2"
+          }
+        },
+        "required": [
+          "compatibilityVersion"
+        ]
+      },
+      "then": {
+        "required": [
+          "executionValidated"
+        ]
+      }
+    }
+  ],
   "properties": {
     "acceptedAt": {
       "$ref": "common.schema.json#/$defs/timestamp"
@@ -94,6 +113,9 @@
         "platformStateDigest"
       ],
       "type": "object"
+    },
+    "executionValidated": {
+      "type": "boolean"
     },
     "jobId": {
       "$ref": "common.schema.json#/$defs/uuidv7"

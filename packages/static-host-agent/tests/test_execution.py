@@ -1767,6 +1767,12 @@ def test_executor_dispatches_claimed_create_and_replays_its_handler(tmp_path: Pa
         executor = AuthorizationExecutor(repository, intake, handlers={"create": handler})
 
         first = executor.execute(issued.job_id)
+        assert (
+            repository.read(StateRecordPath.authorization_job(issued.job_id)).document[
+                "executionValidated"
+            ]
+            is True
+        )
         second = executor.execute(issued.job_id)
 
         stored = repository.read(StateRecordPath.authorization_result(issued.job_id)).document
@@ -1824,6 +1830,7 @@ def test_executor_repairs_a_lagging_job_phase_without_handler_replay(tmp_path: P
             StateRecordPath.tenant_desired(result["tenantId"]),
             manifest,
         )
+        _write_observed_for_manifest(root, manifest)
         repository.create_immutable(
             StateRecordPath.authorization_result(issued.job_id),
             result,
@@ -1839,6 +1846,7 @@ def test_executor_repairs_a_lagging_job_phase_without_handler_replay(tmp_path: P
             repository,
             intake,
             handlers={"create": handler},
+            tenant_runtime_validator=lambda *_arguments: True,
         ).execute(issued.job_id)
 
     assert outcome.created is False
@@ -1869,6 +1877,7 @@ def test_executor_replays_an_audited_historical_success_after_later_state_change
         assert type(metadata) is dict
         metadata["slug"] = "later-duck"
         _write(root, StateRecordPath.tenant_desired(result["tenantId"]), desired)
+        _write_observed_for_manifest(root, desired)
         repository.create_immutable(
             StateRecordPath.authorization_result(issued.job_id),
             result,
@@ -1877,11 +1886,9 @@ def test_executor_replays_an_audited_historical_success_after_later_state_change
     with (
         StateRepository(root, expected_owner=os.geteuid()) as repository,
         ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+        pytest.raises(ExecutionError, match="authoritative tenant state"),
     ):
-        outcome = AuthorizationExecutor(repository, intake).execute(issued.job_id)
-
-    assert outcome.result == result
-    assert outcome.created is False
+        AuthorizationExecutor(repository, intake).execute(issued.job_id)
 
 
 def test_executor_replays_audited_legacy_manifestless_success(
@@ -4085,12 +4092,12 @@ def test_executor_requires_the_authorized_selected_runtime_generation(
     root = _state_root(tmp_path)
     job, intent, result = _write_committed_transition_replay(root, operation=operation)
     intent_path = StateRecordPath.transaction_intent(intent["intentId"])
-    calls: list[tuple[str, str, str]] = []
+    calls: list[tuple[str, str, str | None]] = []
 
     def reject_unselected(
         tenant_id: str,
         candidate_route_set: str,
-        generation_id: str,
+        generation_id: str | None,
         _manifest: dict[str, object],
         _observed_state: dict[str, object] | None,
     ) -> bool:
@@ -4118,6 +4125,42 @@ def test_executor_requires_the_authorized_selected_runtime_generation(
             "0198d17f-6f4a-7000-8000-000000000006",
         )
     ]
+
+
+def test_executor_rechecks_supersession_after_runtime_validation(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    job, intent, result = _write_committed_transition_replay(root, operation="rename")
+    intent_path = StateRecordPath.transaction_intent(intent["intentId"])
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        _append_result_audit(repository, job, result)
+
+        def supersede_before_recheck(*_arguments: object) -> bool:
+            later = json.loads(json.dumps(result))
+            provenance = _mapping(later["provenance"])
+            manifest = _mapping(later["manifest"])
+            metadata = _mapping(manifest["metadata"])
+            provenance["jobId"] = "0198d17f-6f4a-7000-8000-000000000007"
+            later["correlationId"] = "0198d17f-6f4a-7000-8000-000000000008"
+            metadata["slug"] = "later-authorized-operation"
+            _append_result_audit(repository, job, later)
+            return False
+
+        handler = _ClearingIntentHandler(repository, intent_paths=(intent_path,))
+        outcome = AuthorizationExecutor(
+            repository,
+            intake,
+            handlers={"rename": handler},
+            tenant_runtime_validator=supersede_before_recheck,
+        ).execute(job["jobId"])
+
+    assert outcome.result == result
+    assert handler.dispatched is True
 
 
 def test_executor_binds_restore_candidate_content_to_retirement_authority(
@@ -5310,6 +5353,7 @@ def test_executor_repairs_a_successful_create_with_its_generated_tenant(
         manifest = result["manifest"]
         assert type(manifest) is dict
         _write(root, StateRecordPath.tenant_desired(result["tenantId"]), manifest)
+        _write_observed_for_manifest(root, manifest)
         repository.create_immutable(StateRecordPath.authorization_result(issued.job_id), result)
         _append_result_audit(repository, issued.document, result)
 
@@ -5317,7 +5361,11 @@ def test_executor_repairs_a_successful_create_with_its_generated_tenant(
         StateRepository(root, expected_owner=os.geteuid()) as repository,
         ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
     ):
-        outcome = AuthorizationExecutor(repository, intake).execute(issued.job_id)
+        outcome = AuthorizationExecutor(
+            repository,
+            intake,
+            tenant_runtime_validator=lambda *_arguments: True,
+        ).execute(issued.job_id)
         phase = repository.read(StateRecordPath.authorization_job(issued.job_id)).document["phase"]
 
     assert outcome.created is False

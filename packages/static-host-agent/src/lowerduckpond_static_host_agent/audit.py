@@ -111,6 +111,7 @@ class AuditCorrelationSnapshot:
 
     state: AuditState
     entry: dict[str, object] | None
+    previous_tenant_state_transition: dict[str, object] | None
     has_later_tenant_state_transition: bool
 
 
@@ -180,7 +181,12 @@ def inspect_audit_correlation(  # noqa: PLR0913 - keep every audit boundary expl
         )
     finally:
         audit_directory.close()
-    state, entry, has_later_tenant_state_transition = _validate_chain_records(
+    (
+        state,
+        entry,
+        previous_tenant_state_transition,
+        has_later_tenant_state_transition,
+    ) = _validate_chain_records(
         segments,
         limits=limits,
         correlation_id=canonical_correlation_id,
@@ -188,6 +194,7 @@ def inspect_audit_correlation(  # noqa: PLR0913 - keep every audit boundary expl
     return AuditCorrelationSnapshot(
         state=state,
         entry=entry,
+        previous_tenant_state_transition=previous_tenant_state_transition,
         has_later_tenant_state_transition=has_later_tenant_state_transition,
     )
 
@@ -368,7 +375,12 @@ def _validate_chain(
     *,
     limits: AuditLimits,
 ) -> AuditState:
-    state, _entry, _has_later_tenant_state_transition = _validate_chain_records(
+    (
+        state,
+        _entry,
+        _previous_tenant_state_transition,
+        _has_later_tenant_state_transition,
+    ) = _validate_chain_records(
         segments,
         limits=limits,
         correlation_id=None,
@@ -376,17 +388,24 @@ def _validate_chain(
     return state
 
 
-def _validate_chain_records(
+def _validate_chain_records(  # noqa: PLR0912 - one bounded chain-validation pass
     segments: list[_Segment],
     *,
     limits: AuditLimits,
     correlation_id: str | None,
-) -> tuple[AuditState, dict[str, object] | None, bool]:
+) -> tuple[
+    AuditState,
+    dict[str, object] | None,
+    dict[str, object] | None,
+    bool,
+]:
     sequence = 0
     terminal: dict[str, str] | None = None
     allocated = 0
     previous_segment_bytes: int | None = None
     matching_entry: dict[str, object] | None = None
+    previous_tenant_state_transition: dict[str, object] | None = None
+    latest_tenant_state_transitions: dict[str, dict[str, object]] = {}
     has_later_tenant_state_transition = False
     for segment in segments:
         if not segment.data or not segment.data.endswith(b"\n"):
@@ -420,10 +439,22 @@ def _validate_chain_records(
                 if matching_entry is not None:
                     raise AuditError("audit correlation appears multiple times")
                 matching_entry = document
+                tenant_id = document["tenantId"]
+                if type(tenant_id) is str:
+                    previous_tenant_state_transition = latest_tenant_state_transitions.get(
+                        tenant_id
+                    )
             has_later_tenant_state_transition = (
                 has_later_tenant_state_transition
                 or _is_later_tenant_state_transition(preceding_match, document)
             )
+            tenant_id = document["tenantId"]
+            if (
+                type(tenant_id) is str
+                and document["resultStatus"] == "succeeded"
+                and document["operation"] in _TENANT_STATE_TRANSITIONS
+            ):
+                latest_tenant_state_transitions[tenant_id] = document
             terminal = audit_entry_digest(document).to_dict()
             sequence += 1
         previous_segment_bytes = len(segment.data)
@@ -437,6 +468,7 @@ def _validate_chain_records(
             terminal_digest=terminal,
         ),
         matching_entry,
+        previous_tenant_state_transition,
         has_later_tenant_state_transition,
     )
 

@@ -160,6 +160,7 @@ class AuthorizationIssuer:
             "requestDigest": request_digest(request).to_dict(),
             "artifact": request.get("artifact"),
             "expectedSource": build_expected_source(self._repository, request),
+            "executionValidated": False,
             "acceptedAt": accepted_at.isoformat().replace("+00:00", "Z"),
             "phase": "pending",
         }
