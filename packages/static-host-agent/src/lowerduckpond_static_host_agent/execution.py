@@ -218,6 +218,7 @@ class AuthorizationExecutor:
         ]
         | None = None,
         tenant_release_validator: Callable[[str, dict[str, object]], bool] | None = None,
+        tenant_release_inventory_validator: Callable[[], bool] | None = None,
         capacity_limits: HostCapacityLimits = DEFAULT_HOST_CAPACITY_LIMITS,
     ) -> None:
         self._repository = repository
@@ -229,6 +230,7 @@ class AuthorizationExecutor:
         self._retired_archive_validator = retired_archive_validator
         self._tenant_runtime_validator = tenant_runtime_validator
         self._tenant_release_validator = tenant_release_validator
+        self._tenant_release_inventory_validator = tenant_release_inventory_validator
         self._capacity_limits = capacity_limits
 
     def execute(self, job_id: object, *, blocking: bool = False) -> ExecutionOutcome:
@@ -783,6 +785,11 @@ class AuthorizationExecutor:
         if authority is None:
             return
         self._validate_retired_archive_absence(result, authority=authority)
+        release_inventory_validator = self._tenant_release_inventory_validator
+        if release_inventory_validator is not None and release_inventory_validator() is not True:
+            raise ExecutionError(
+                "lifecycle handler changed tenant release inventory outside authority"
+            )
         if not audit_is_latest_for_tenant:
             return
         if result["status"] == "failed":
