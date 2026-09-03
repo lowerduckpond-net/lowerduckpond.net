@@ -4472,8 +4472,10 @@ def test_executor_requires_the_authorized_source_runtime_after_handler_failure(
     ]
 
 
+@pytest.mark.parametrize("execution_validated", [False, True])
 def test_executor_revalidates_source_runtime_after_failure_intent_cleanup(
     tmp_path: Path,
+    execution_validated: bool,
 ) -> None:
     root = _state_root(tmp_path)
     job, intent, result = _write_committed_transition_replay(root, operation="rename")
@@ -4481,7 +4483,7 @@ def test_executor_revalidates_source_runtime_after_failure_intent_cleanup(
     recovery = _mapping(intent["lifecycleRecovery"])
     source_observed = _mapping(recovery["sourceObservedState"])
     job["compatibilityVersion"] = "static-job-v2"
-    job["executionValidated"] = False
+    job["executionValidated"] = execution_validated
     job["sourceAuthority"] = {"manifest": source, "archiveRecord": None}
     job["phase"] = "failed"
     result.update({"status": "failed", "errorCode": "state_drift"})
@@ -4530,6 +4532,43 @@ def test_executor_revalidates_source_runtime_after_failure_intent_cleanup(
             source_observed["runtimeGenerationId"],
         )
     ]
+
+
+def test_executor_revalidates_external_state_after_a_validated_failure(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    job, intent, result = _write_committed_transition_replay(root, operation="rename")
+    source = _mapping(intent["sourceManifest"])
+    job["compatibilityVersion"] = "static-job-v2"
+    job["executionValidated"] = True
+    job["sourceAuthority"] = {"manifest": source, "archiveRecord": None}
+    job["phase"] = "failed"
+    result.update({"status": "failed", "errorCode": "state_drift"})
+    result.pop("canonicalOrigin")
+    result.pop("manifest")
+    _write(root, StateRecordPath.authorization_job(job["jobId"]), job)
+    correlation = json.loads(json.dumps(job))
+    correlation["phase"] = "pending"
+    _write(
+        root,
+        StateRecordPath.authorization_correlation(result["correlationId"]),
+        correlation,
+    )
+    _write(root, StateRecordPath.authorization_result(job["jobId"]), result)
+    root.joinpath(*StateRecordPath.transaction_intent(intent["intentId"]).components).unlink()
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        _append_result_audit(repository, job, result)
+        with pytest.raises(ExecutionError, match="did not restore its authorized routes"):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                tenant_runtime_validator=lambda *_arguments: False,
+            ).execute(job["jobId"])
 
 
 def test_executor_requires_the_create_intent_candidate_runtime(
@@ -5779,8 +5818,10 @@ def test_executor_recovers_a_claimed_lifecycle_job_without_its_artifact(
     assert handler.claims == [None]
 
 
-def test_executor_repairs_a_terminal_result_published_before_job_phase(
+@pytest.mark.parametrize("audit_present", [False, True])
+def test_executor_handles_a_result_first_terminal_failure_commit(
     tmp_path: Path,
+    audit_present: bool,
 ) -> None:
     root = _state_root(tmp_path)
     _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
@@ -5799,17 +5840,35 @@ def test_executor_repairs_a_terminal_result_published_before_job_phase(
             "tenantId": None,
         }
         repository.create_immutable(StateRecordPath.authorization_result(issued.job_id), result)
-        _append_result_audit(repository, issued.document, result)
+        if audit_present:
+            _append_result_audit(repository, issued.document, result)
 
     with (
         StateRepository(root, expected_owner=os.geteuid()) as repository,
         ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
     ):
-        outcome = AuthorizationExecutor(repository, intake).execute(issued.job_id)
-        phase = repository.read(StateRecordPath.authorization_job(issued.job_id)).document["phase"]
+        executor = AuthorizationExecutor(repository, intake)
+        if not audit_present:
+            with pytest.raises(ExecutionError, match="no durable audit authority"):
+                executor.execute(issued.job_id)
+            pending = repository.read(StateRecordPath.authorization_job(issued.job_id)).document
+            assert pending["phase"] == "pending"
+            assert pending["executionValidated"] is False
+            assert (
+                repository.read(StateRecordPath.authorization_result(issued.job_id)).document
+                == result
+            )
+            return
+        outcome = executor.execute(issued.job_id)
+        terminal = repository.read(StateRecordPath.authorization_job(issued.job_id)).document
+        audit = repository.inspect_audit_correlation(result["correlationId"]).entry
 
     assert outcome.created is False
-    assert phase == "failed"
+    assert terminal["phase"] == "failed"
+    assert terminal["executionValidated"] is True
+    assert audit is not None
+    assert audit["resultDigest"] == result_digest(result).to_dict()
+    assert audit["resultStatus"] == "failed"
 
 
 def test_executor_repairs_a_successful_create_with_its_generated_tenant(

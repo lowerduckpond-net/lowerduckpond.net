@@ -728,14 +728,14 @@ class AuthorizationExecutor:
         authority: _LifecycleDispatchAuthority,
         blocking: bool,
     ) -> None:
-        if authority.execution_validation_committed:
-            return
         source_manifest = authority.source_manifest
         source_route_set = authority.source_route_set
         if source_manifest is None or source_route_set is None:
             return
         tenant_id = validate_uuid7(result["tenantId"])
         runtime_validator = self._tenant_runtime_validator
+        if runtime_validator is None and authority.execution_validation_committed:
+            return
         if (
             runtime_validator is not None
             and runtime_validator(
@@ -1161,11 +1161,7 @@ def _capture_replay_authority(
         source_observed: dict[str, object] | None = None
         source_generation: str | None = None
         source_route_set: str | None = None
-        if (
-            not validation_was_committed
-            and audit_is_latest_for_tenant
-            and request["operation"] != "create"
-        ):
+        if audit_is_latest_for_tenant and request["operation"] != "create":
             if source is None:  # pragma: no cover - current contract validation proves this
                 raise ExecutionError("failed replay lost its exact source manifest")
             tenant_id = validate_uuid7(result["tenantId"])
@@ -1173,19 +1169,20 @@ def _capture_replay_authority(
                 source_observed = transaction.read(
                     StateRecordPath.tenant_observed(tenant_id)
                 ).document
-            except FileNotFoundError as error:
-                raise ExecutionError(
-                    "failed replay has no restored observed tenant state"
-                ) from error
-            validate_contract(
-                source_observed,
-                expected_kind=ContractKind.TENANT_OBSERVED_STATE,
-            )
+            except FileNotFoundError:
+                source_observed = None
+            if source_observed is not None:
+                validate_contract(
+                    source_observed,
+                    expected_kind=ContractKind.TENANT_OBSERVED_STATE,
+                )
             source_spec = source["spec"]
             if type(source_spec) is not dict:
                 raise ExecutionError("failed replay source manifest is malformed")
             source_route_set = "both" if source_spec["desiredState"] == "active" else "absent"
-            raw_generation = source_observed.get("runtimeGenerationId")
+            raw_generation = (
+                None if source_observed is None else source_observed.get("runtimeGenerationId")
+            )
             if raw_generation is not None:
                 source_generation = validate_uuid7(raw_generation)
         return _LifecycleDispatchAuthority(
@@ -1410,15 +1407,15 @@ def _publish_result(
         transaction.measure_filesystem_capacity(),
         limits=limits,
     )
+    transaction.create_immutable(
+        StateRecordPath.authorization_result(job.document["jobId"]),
+        result,
+    )
     _ensure_failure_audit(
         transaction,
         job.document,
         result,
         snapshot=audit_snapshot,
-    )
-    transaction.create_immutable(
-        StateRecordPath.authorization_result(job.document["jobId"]),
-        result,
     )
     _set_terminal_phase(
         transaction,
