@@ -80,7 +80,12 @@ from lowerduckpond_static_host_agent.release_tree import (
     ReleaseTreeError,
     measure_release_tree,
 )
-from lowerduckpond_static_host_agent.repository import StateRecordError, StateRepository
+from lowerduckpond_static_host_agent.repository import (
+    StateRecordError,
+    StateRecordPath,
+    StateRepository,
+    StoredContract,
+)
 from lowerduckpond_static_host_agent.request_decoder import (
     RequestDecodeError,
     SubprocessRequestDecoder,
@@ -112,6 +117,8 @@ _CADDY_ORIGIN_PULL_MODES: Final = {
 
 
 class _ReleaseStateTransaction(Protocol):
+    def read(self, path: StateRecordPath) -> StoredContract: ...
+
     def tenant_deployment_ids(self, tenant_id: object) -> tuple[str, ...]: ...
 
 
@@ -710,22 +717,28 @@ def _tenant_release_state_matches(  # noqa: PLR0911 - explicit fail-closed matri
     tenant_id = validate_uuid7(metadata.get("id"))
     deployment_ids = transaction.tenant_deployment_ids(tenant_id)
     release_ids = _tenant_release_ids(tenant_id)
-    if not set(release_ids).issubset(deployment_ids):
+    if release_ids != deployment_ids:
         return False
+    retained: dict[str, dict[str, object]] = {}
+    for deployment_id in deployment_ids:
+        record = transaction.read(
+            StateRecordPath.tenant_deployment(tenant_id, deployment_id)
+        ).document
+        measurement = measure_release_tree(
+            Path(TENANT_RELEASE_ROOT) / tenant_id / "releases" / deployment_id,
+            lock_manager=repository,
+            expected_owner=_EXPECTED_OWNER,
+        )
+        if measurement.digest.to_dict() != record.get("releaseTreeDigest"):
+            return False
+        retained[deployment_id] = record
     if spec.get("desiredState") not in {"active", "suspended"}:
         return True
     selected = spec.get("desiredDeployment")
     if type(selected) is not dict or type(deployment) is not dict:
         return False
     deployment_id = validate_uuid7(selected.get("id"))
-    if deployment_id not in deployment_ids or deployment.get("id") != deployment_id:
-        return False
-    measurement = measure_release_tree(
-        Path(TENANT_RELEASE_ROOT) / tenant_id / "releases" / deployment_id,
-        lock_manager=repository,
-        expected_owner=_EXPECTED_OWNER,
-    )
-    return measurement.digest.to_dict() == deployment.get("releaseTreeDigest")
+    return deployment_id in retained and deployment == retained[deployment_id]
 
 
 def _tenant_release_ids(tenant_id: str) -> tuple[str, ...]:
