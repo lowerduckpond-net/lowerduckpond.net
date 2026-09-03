@@ -63,6 +63,7 @@ from lowerduckpond_static_host_agent.state_inventory import (
 )
 
 _NOT_IMPLEMENTED: Final = "not_implemented"
+_AUTHORIZATION_EXECUTOR: Final = "authorization-executor"
 
 
 class ExecutionError(RuntimeError):
@@ -451,6 +452,13 @@ class AuthorizationExecutor:
                 result=durable.document,
             ):
                 return None
+            if _is_executor_failure(durable.document):
+                _repair_executor_failure_audit(
+                    transaction,
+                    current.document,
+                    durable.document,
+                    limits=self._capacity_limits,
+                )
             audit_is_latest_for_tenant = _validate_result_audit(
                 transaction,
                 current.document,
@@ -622,6 +630,8 @@ class AuthorizationExecutor:
             raise ExecutionError("lifecycle handler returned a malformed outcome")
         result = deepcopy(returned.result)
         validate_contract(result, expected_kind=ContractKind.OPERATION_RESULT)
+        if _is_executor_failure(result):
+            raise ExecutionError("lifecycle handler claimed executor failure publication")
         audit_is_latest_for_tenant = False
         with self._repository.transaction(
             mode=LockMode.EXCLUSIVE,
@@ -1368,6 +1378,7 @@ def _failure_result(job: dict[str, object], error_code: str) -> dict[str, object
         "operation": request["operation"],
         "status": "failed",
         "errorCode": error_code,
+        "failurePublisher": _AUTHORIZATION_EXECUTOR,
         "tenantId": None if request["operation"] == "create" else request["tenantId"],
     }
     if request["operation"] == "archive":
@@ -1385,6 +1396,8 @@ def _publish_result(
 ) -> None:
     if result["status"] != "failed":  # pragma: no cover - only internal failures publish here
         raise ExecutionError("direct result publication is limited to failures")
+    if not _is_executor_failure(result):
+        raise ExecutionError("direct failure has no executor publication authority")
     canonical = canonical_json_bytes(result)
     allocation = transaction.allocation_upper_bound(len(canonical))
     audit_snapshot = _failure_audit_snapshot(transaction, result)
@@ -1461,6 +1474,15 @@ def validate_result_lifecycle_authority(
     _validate_result_binding(job, result)
     has_lifecycle_intent = _has_bound_lifecycle_intent(transaction, job, result=result)
     if not has_lifecycle_intent:
+        if (
+            _is_executor_failure(result)
+            and _failure_audit_snapshot(
+                transaction,
+                result,
+            ).entry
+            is None
+        ):
+            return True
         _validate_result_audit(transaction, job, result)
     return has_lifecycle_intent
 
@@ -1998,6 +2020,8 @@ def _ensure_failure_audit(
 ) -> None:
     """Idempotently bind an executor-produced terminal failure to the audit chain."""
 
+    if not _is_executor_failure(result):
+        raise ExecutionError("failure result has no executor publication authority")
     if snapshot is None:
         snapshot = _failure_audit_snapshot(transaction, result)
     if snapshot.entry is not None:
@@ -2020,6 +2044,44 @@ def _ensure_failure_audit(
         transaction.append_audit(entry)
     except AuditError as error:
         raise ExecutionError("failure audit authority could not be committed") from error
+
+
+def _repair_executor_failure_audit(
+    transaction: ExecutionTransaction,
+    job: dict[str, object],
+    result: dict[str, object],
+    *,
+    limits: HostCapacityLimits,
+) -> None:
+    """Complete the audit half of one immutable executor failure publication."""
+
+    snapshot = _failure_audit_snapshot(transaction, result)
+    if snapshot.entry is None:
+        audit_allocation = transaction.allocation_upper_bound(
+            DEFAULT_AUDIT_LIMITS.maximum_segment_bytes
+        ) + transaction.namespace_allocation_upper_bound(1)
+        admit_release_capacity(
+            ReleaseCapacityUsage(()),
+            CapacityReservation(
+                allocated_bytes=audit_allocation,
+                unique_inodes=1,
+            ),
+            transaction.measure_filesystem_capacity(),
+            limits=limits,
+        )
+    _ensure_failure_audit(
+        transaction,
+        job,
+        result,
+        snapshot=snapshot,
+    )
+
+
+def _is_executor_failure(result: dict[str, object]) -> bool:
+    return (
+        result.get("failurePublisher") == _AUTHORIZATION_EXECUTOR
+        and result.get("status") == "failed"
+    )
 
 
 def _validate_delete_audit_evidence(

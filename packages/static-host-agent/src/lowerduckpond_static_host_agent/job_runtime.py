@@ -174,7 +174,9 @@ class ResultWaiter:
             raise RuntimeBoundaryError("authorized job result changed during completion")
         _validate_result_for_job(issued.document, result)
         if self._validate_lifecycle_result(issued, result, deadline=deadline):
-            raise RuntimeBoundaryError("authorized job completed with active lifecycle intent")
+            raise RuntimeBoundaryError(
+                "authorized job completed with incomplete lifecycle authority"
+            )
         return result
 
     def _read_until(

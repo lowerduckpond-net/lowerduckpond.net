@@ -287,6 +287,46 @@ def test_result_waiter_hands_off_only_the_issued_uuid_and_returns_its_result(
     assert result["errorCode"] == "not_implemented"
 
 
+def test_result_waiter_replays_an_executor_failure_missing_its_audit(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued = _issue(repository)
+        request = issued.document["request"]
+        assert type(request) is dict
+        result: dict[str, object] = {
+            "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+            "kind": "OperationResult",
+            "provenance": {"kind": "authorization-job", "jobId": issued.job_id},
+            "correlationId": request["correlationId"],
+            "operation": "create",
+            "status": "failed",
+            "errorCode": "not_implemented",
+            "failurePublisher": "authorization-executor",
+            "tenantId": None,
+        }
+        repository.create_immutable(
+            StateRecordPath.authorization_result(issued.job_id),
+            result,
+        )
+        handoff = _ExecutorHandoff(AuthorizationExecutor(repository, intake))
+
+        retrieved = ResultWaiter(repository, handoff).retrieve(issued)
+        terminal = repository.read(StateRecordPath.authorization_job(issued.job_id)).document
+        audit = repository.inspect_audit_correlation(request["correlationId"]).entry
+
+    assert retrieved == result
+    assert handoff.enqueued == [issued.job_id]
+    assert terminal["phase"] == "failed"
+    assert terminal["executionValidated"] is True
+    assert audit is not None
+    assert audit["resultStatus"] == "failed"
+
+
 def test_result_waiter_rejects_worker_completion_with_an_active_intent(
     tmp_path: Path,
 ) -> None:
@@ -324,7 +364,7 @@ def test_result_waiter_rejects_worker_completion_with_an_active_intent(
             result,
         )
 
-        with pytest.raises(RuntimeBoundaryError, match="active lifecycle intent"):
+        with pytest.raises(RuntimeBoundaryError, match="incomplete lifecycle authority"):
             ResultWaiter(repository, handoff).retrieve(issued)
 
     assert handoff.enqueued == [issued.job_id]
@@ -381,7 +421,7 @@ def test_result_waiter_rechecks_intents_after_worker_completion(
                 self.enqueue(job_id)
 
         handoff = _ResultThenIntentHandoff()
-        with pytest.raises(RuntimeBoundaryError, match="active lifecycle intent"):
+        with pytest.raises(RuntimeBoundaryError, match="incomplete lifecycle authority"):
             ResultWaiter(
                 repository,
                 handoff,
