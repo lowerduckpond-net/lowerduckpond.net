@@ -281,7 +281,9 @@ authoritative archive record unreferenced take the export lock before their
 publication and tenant-state transaction. Before changing authoritative state,
 root creates and syncs a retirement intent that binds the correlation ID,
 authenticated operator, tenant ID, transition, exact preceding manifest and
-archive record, bucket, unique key, version ID, bundle digest, and size.
+complete embedded archive record, its canonical digest, bucket, unique key,
+version ID, bundle digest, and size. The duplicated object coordinates must
+exactly agree with that embedded record.
 Ordinary retirement also binds its authorization-job ID; emergency deletion
 instead binds distinct emergency-administrator provenance and its mandatory
 reason, without inventing an ordinary job. The lifecycle transaction may

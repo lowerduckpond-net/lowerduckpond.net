@@ -15,6 +15,7 @@ from jsonschema.exceptions import ValidationError
 from referencing import Registry, Resource
 
 from lowerduckpond_static_contracts._digest import (
+    ARCHIVE_RECORD_DIGEST_FORMAT,
     MANIFEST_DIGEST_FORMAT,
     REQUEST_DIGEST_FORMAT,
     digest_bytes,
@@ -260,6 +261,32 @@ def _validate_archive_construction_intent(document: dict[str, object]) -> None:
         raise ContractError(
             ErrorCode.SCHEMA_INVALID,
             "archive construction did not change the manifest generation",
+        )
+
+
+def _validate_archive_retirement_intent(document: dict[str, object]) -> None:
+    archive = cast(dict[str, object], document["archiveRecord"])
+    archive_digest = digest_bytes(
+        canonical_json_bytes(archive),
+        format_identifier=ARCHIVE_RECORD_DIGEST_FORMAT,
+    ).to_dict()
+    if document["archiveRecordDigest"] != archive_digest:
+        raise ContractError(
+            ErrorCode.SCHEMA_INVALID,
+            "archive retirement record digest binding is invalid",
+        )
+    if (
+        document["tenantId"] != archive["tenantId"]
+        or document["sourceManifestDigest"] != archive["manifestDigest"]
+        or document["bundleDigest"] != archive["bundleDigest"]
+        or document["bundleSize"] != archive["bundleSize"]
+        or document["bucket"] != archive["bucket"]
+        or document["key"] != archive["key"]
+        or document["versionId"] != archive["versionId"]
+    ):
+        raise ContractError(
+            ErrorCode.SCHEMA_INVALID,
+            "archive retirement object authority disagrees with its record",
         )
 
 
@@ -676,6 +703,7 @@ _SEMANTIC_VALIDATORS: Final[dict[ContractKind, Callable[[dict[str, object]], Non
     ContractKind.AUTHORIZATION_JOB: _validate_job,
     ContractKind.OPERATION_RESULT: _validate_result,
     ContractKind.ARCHIVE_CONSTRUCTION_INTENT: _validate_archive_construction_intent,
+    ContractKind.ARCHIVE_RETIREMENT_INTENT: _validate_archive_retirement_intent,
     ContractKind.TRANSACTION_INTENT: _validate_transaction_intent,
     ContractKind.AUDIT_ENTRY: _validate_audit_entry,
 }

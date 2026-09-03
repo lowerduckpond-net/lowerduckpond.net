@@ -1690,6 +1690,28 @@ def test_archive_construction_key_is_bound_to_the_upload_attempt() -> None:
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
 
+def test_archive_retirement_binds_exact_object_coordinates_to_its_record() -> None:
+    intent = _load_object(FIXTURE_ROOT / "accepted/archive-retirement-intent.json")
+
+    assert validate_contract(intent) is ContractKind.ARCHIVE_RETIREMENT_INTENT
+
+    intent["key"] = "archives/0198d17f-6f4a-7000-8000-000000000006.zip"
+    with pytest.raises(ContractError, match="object authority") as captured:
+        validate_contract(intent)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+def test_archive_retirement_binds_the_complete_record_digest() -> None:
+    intent = _load_object(FIXTURE_ROOT / "accepted/archive-retirement-intent.json")
+    archive = intent["archiveRecord"]
+    assert type(archive) is dict
+    archive["key"] = "archives/0198d17f-6f4a-7000-8000-000000000006.zip"
+
+    with pytest.raises(ContractError, match="record digest") as captured:
+        validate_contract(intent)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
 @pytest.mark.parametrize(
     ("field", "wrong_format"),
     [
