@@ -533,6 +533,30 @@ def test_executor_failure_publisher_is_reserved_for_failed_results() -> None:
     assert validate_contract(result) is ContractKind.OPERATION_RESULT
 
 
+@pytest.mark.parametrize(
+    "missing",
+    ["failureAuditPredecessorDigest", "failureAuditSequence", "failurePublisher"],
+)
+def test_executor_failure_audit_position_is_an_atomic_authority(missing: str) -> None:
+    result = _load_object(FIXTURE_ROOT / "accepted/operation-result.json")
+    del result["canonicalOrigin"]
+    del result["manifest"]
+    result.update(
+        {
+            "status": "failed",
+            "errorCode": "state_drift",
+            "failurePublisher": "authorization-executor",
+            "failureAuditPredecessorDigest": None,
+            "failureAuditSequence": 0,
+        }
+    )
+    del result[missing]
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(result)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
 def test_existing_tenant_intent_requires_a_source_manifest_digest() -> None:
     intent = _load_object(FIXTURE_ROOT / "accepted/transaction-intent.json")
     intent["sourceManifestDigest"] = None

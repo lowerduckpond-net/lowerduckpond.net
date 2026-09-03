@@ -5,6 +5,29 @@
   "allOf": [
     {
       "if": {
+        "anyOf": [
+          {
+            "required": [
+              "failureAuditPredecessorDigest"
+            ]
+          },
+          {
+            "required": [
+              "failureAuditSequence"
+            ]
+          }
+        ]
+      },
+      "then": {
+        "required": [
+          "failureAuditPredecessorDigest",
+          "failureAuditSequence",
+          "failurePublisher"
+        ]
+      }
+    },
+    {
+      "if": {
         "required": [
           "failurePublisher"
         ]
@@ -508,6 +531,20 @@
     },
     "exportBundle": {
       "$ref": "#/$defs/exportBundle"
+    },
+    "failureAuditPredecessorDigest": {
+      "oneOf": [
+        {
+          "$ref": "common.schema.json#/$defs/auditEntryDigest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "failureAuditSequence": {
+      "minimum": 0,
+      "type": "integer"
     },
     "failurePublisher": {
       "const": "authorization-executor"

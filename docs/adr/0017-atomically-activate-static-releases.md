@@ -312,11 +312,15 @@ authority needed after intent cleanup: each current job retains its exact
 source manifest and any source archive record, and a successful archive result
 retains its exact new archive record. An executor-produced failure carries an
 immutable publisher discriminator, so a result-first crash can complete only
-that trusted failure's missing audit and terminal phase; lifecycle-handler
-failures without their own audit remain rejected. If a newer successful tenant
-transition commits before that missing failure audit is repaired, the repaired
-entry's original acceptance timestamp preserves the supersession relationship;
-replay does not mistake its later chain position for current tenant authority.
+that trusted failure's missing audit and terminal phase. The failure result
+also binds the exact audit sequence and predecessor present before publication;
+repair uses that chain position, never the independently assigned acceptance
+timestamp, to recognize a tenant transition that committed during the crash
+window. Lifecycle-handler failures without their own audit remain rejected. If
+a newer successful tenant transition commits before that missing failure audit
+is repaired, replay recognizes it from the preserved chain boundary rather
+than mistaking the repaired entry's later position for current tenant
+authority.
 An older preexisting transition does not suppress source-state validation. A
 nonterminal retry reconciles its phase; a changed binding, state drift, unknown
 job ID, or provisioner-supplied raw request fails without mutation. The sudo
@@ -330,9 +334,11 @@ after rollback; a candidate record cannot silently consume retention or block
 a later archive or delete. Operations that are not allowed to create or retire
 history (`create`, `export`, `rename`, `reconcile`, `resume`, and `suspend`)
 must leave both sets exact even when their handler reports success. For deploy
-and import, root independently derives the normalized release-tree digest
-directly from the admitted ZIP and binds it to the job before invoking the
-handler; the committed deployment record must match both that digest and the
+and import, root independently derives the normalized release-tree digest and
+binds it to the job before invoking the handler: deploy is measured directly
+from its admitted flat ZIP, while import is measured from the validated
+`lowerduckpond-export-v1/content/` envelope under the portable-bundle limits.
+The committed deployment record must match both that digest and the
 artifact-byte digest. A handler-authored pair of internally consistent but
 unrelated digests is not release authority. A successful delete is terminally
 valid only after

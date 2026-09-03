@@ -6,7 +6,6 @@ from collections.abc import Callable, Mapping
 from contextlib import ExitStack
 from copy import deepcopy
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from typing import Final, Protocol, cast
 
 from lowerduckpond_static_contracts import (
@@ -193,6 +192,7 @@ class AuthorizationExecutor:
         handlers: Mapping[str, LifecycleJobHandler] | None = None,
         deleted_tenant_release_validator: Callable[[str], bool] | None = None,
         deleted_tenant_route_validator: Callable[[str], bool] | None = None,
+        retained_archive_validator: Callable[[dict[str, object]], bool] | None = None,
         retired_archive_validator: Callable[[dict[str, object]], bool] | None = None,
         tenant_runtime_validator: Callable[
             [str, str, str | None, dict[str, object], dict[str, object] | None],
@@ -207,6 +207,7 @@ class AuthorizationExecutor:
         self._handlers = dict(handlers or {})
         self._deleted_tenant_release_validator = deleted_tenant_release_validator
         self._deleted_tenant_route_validator = deleted_tenant_route_validator
+        self._retained_archive_validator = retained_archive_validator
         self._retired_archive_validator = retired_archive_validator
         self._tenant_runtime_validator = tenant_runtime_validator
         self._tenant_release_validator = tenant_release_validator
@@ -710,12 +711,16 @@ class AuthorizationExecutor:
         request = job["request"]
         if type(request) is not dict:
             raise ExecutionError("authorization request authority is malformed")
-        if request["operation"] not in {"deploy", "import"} or claim is None:
+        operation = request["operation"]
+        if operation not in {"deploy", "import"} or claim is None:
             return None
         try:
-            release_authority = self._intake.deployment_release_tree_digest(
-                claim.artifact
-            ).to_dict()
+            digest = (
+                self._intake.deployment_release_tree_digest(claim.artifact)
+                if operation == "deploy"
+                else self._intake.import_release_tree_digest(claim.artifact)
+            )
+            release_authority = digest.to_dict()
             return dict[str, object](release_authority)
         except IntakeError as error:
             raise ExecutionError(
@@ -833,6 +838,11 @@ class AuthorizationExecutor:
     ) -> None:
         source_manifest = authority.source_manifest
         source_route_set = authority.source_route_set
+        archive = authority.archive_record
+        if result["operation"] in {"delete", "restore"} and archive is not None:
+            validator = self._retained_archive_validator
+            if validator is None or validator(archive) is not True:
+                raise ExecutionError("failed lifecycle result lost its retained archive object")
         if source_manifest is None:
             return
         tenant_id = validate_uuid7(result["tenantId"])
@@ -1630,9 +1640,12 @@ def _publish_result(
         raise ExecutionError("direct result publication is limited to failures")
     if not _is_executor_failure(result):
         raise ExecutionError("direct failure has no executor publication authority")
+    audit_snapshot = _failure_audit_snapshot(transaction, result)
+    result["failureAuditPredecessorDigest"] = audit_snapshot.state.terminal_digest
+    result["failureAuditSequence"] = audit_snapshot.state.entry_count
+    validate_contract(result, expected_kind=ContractKind.OPERATION_RESULT)
     canonical = canonical_json_bytes(result)
     allocation = transaction.allocation_upper_bound(len(canonical))
-    audit_snapshot = _failure_audit_snapshot(transaction, result)
     audit_allocation = 0
     audit_inodes = 0
     if audit_snapshot.entry is None:
@@ -2284,27 +2297,43 @@ def _validate_result_audit(
         raise ExecutionError("lifecycle result disagrees with durable audit authority")
     if result["operation"] == "delete" and result["status"] == "succeeded":
         _validate_delete_audit_evidence(job, entry)
+    failure_audit_sequence = _validate_failure_audit_position(result, entry)
+    previous_transition = snapshot.previous_tenant_state_transition
+    previous_transition_sequence = (
+        None if previous_transition is None else previous_transition["sequence"]
+    )
+    if previous_transition_sequence is not None and type(previous_transition_sequence) is not int:
+        raise ExecutionError("previous tenant audit position is malformed")
     repaired_after_superseding_transition = (
-        _is_executor_failure(result)
-        and snapshot.previous_tenant_state_transition is not None
-        and _audit_timestamp(snapshot.previous_tenant_state_transition) > _audit_timestamp(entry)
+        failure_audit_sequence is not None
+        and previous_transition_sequence is not None
+        and previous_transition_sequence >= failure_audit_sequence
     )
     return not (snapshot.has_later_tenant_state_transition or repaired_after_superseding_transition)
 
 
-def _audit_timestamp(entry: dict[str, object]) -> datetime:
-    """Return one schema-validated audit timestamp as an aware UTC value."""
+def _validate_failure_audit_position(
+    result: dict[str, object],
+    entry: dict[str, object],
+) -> int | None:
+    """Validate an executor failure's pre-publication audit-chain position."""
 
-    value = entry["timestamp"]
-    if type(value) is not str:  # pragma: no cover - audit schema validation proves this
-        raise ExecutionError("lifecycle audit timestamp is malformed")
-    try:
-        timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError as error:  # pragma: no cover - audit schema validation proves this
-        raise ExecutionError("lifecycle audit timestamp is malformed") from error
-    if timestamp.tzinfo is None or timestamp.utcoffset() is None:
-        raise ExecutionError("lifecycle audit timestamp has no timezone")
-    return timestamp.astimezone(UTC)
+    if not _is_executor_failure(result):
+        return None
+    sequence = result.get("failureAuditSequence")
+    predecessor = result.get("failureAuditPredecessorDigest")
+    if sequence is None and "failureAuditPredecessorDigest" not in result:
+        # Pre-upgrade executor failures remain replayable but cannot infer
+        # supersession from timestamps that are independent of chain order.
+        return None
+    if type(sequence) is not int or sequence < 0:
+        raise ExecutionError("executor failure audit position is malformed")
+    entry_sequence = entry["sequence"]
+    if type(entry_sequence) is not int or entry_sequence < sequence:
+        raise ExecutionError("executor failure audit position exceeds its durable entry")
+    if entry_sequence == sequence and entry["previousEntryDigest"] != predecessor:
+        raise ExecutionError("executor failure audit predecessor changed")
+    return sequence
 
 
 def _failure_audit_snapshot(
