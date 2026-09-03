@@ -4479,8 +4479,10 @@ def test_executor_requires_the_authorized_selected_runtime_generation(
     ]
 
 
+@pytest.mark.parametrize("later_operation", ["rename", "reconcile"])
 def test_executor_rechecks_supersession_after_runtime_validation(
     tmp_path: Path,
+    later_operation: str,
 ) -> None:
     root = _state_root(tmp_path)
     job, intent, result = _write_committed_transition_replay(root, operation="rename")
@@ -4499,7 +4501,9 @@ def test_executor_rechecks_supersession_after_runtime_validation(
             metadata = _mapping(manifest["metadata"])
             provenance["jobId"] = "0198d17f-6f4a-7000-8000-000000000007"
             later["correlationId"] = "0198d17f-6f4a-7000-8000-000000000008"
-            metadata["slug"] = "later-authorized-operation"
+            later["operation"] = later_operation
+            if later_operation == "rename":
+                metadata["slug"] = "later-authorized-operation"
             _append_result_audit(repository, job, later)
             return False
 
