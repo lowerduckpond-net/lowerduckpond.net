@@ -103,6 +103,7 @@ def _state_root(tmp_path: Path) -> Path:
         ("authorization", "correlations"),
         ("authorization", "jobs"),
         ("authorization", "results"),
+        ("audit",),
         ("intents",),
         ("intake",),
         ("locks",),

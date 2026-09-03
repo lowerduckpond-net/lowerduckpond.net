@@ -97,6 +97,8 @@ class ExecutionTransaction(Protocol):
         correlation_id: object,
     ) -> AuditCorrelationSnapshot: ...
 
+    def append_audit(self, document: dict[str, object]) -> object: ...
+
     def allocation_upper_bound(self, byte_count: int) -> int: ...
 
     def namespace_allocation_upper_bound(self, entry_count: int) -> int: ...
@@ -271,7 +273,7 @@ class AuthorizationExecutor:
             )
             _require_available_lifecycle_handler(dispatch, handler)
             if not dispatch:
-                _validate_successful_result_audit(
+                _validate_result_audit(
                     transaction,
                     current.document,
                     durable.document,
@@ -350,7 +352,7 @@ class AuthorizationExecutor:
                 result=durable.document,
             ):
                 return None
-            _validate_successful_result_audit(
+            _validate_result_audit(
                 transaction,
                 current.document,
                 durable.document,
@@ -405,7 +407,7 @@ class AuthorizationExecutor:
                 )
                 _require_available_lifecycle_handler(has_lifecycle_intent, handler)
                 if not has_lifecycle_intent:
-                    _validate_successful_result_audit(
+                    _validate_result_audit(
                         transaction,
                         current.document,
                         existing.document,
@@ -484,11 +486,12 @@ class AuthorizationExecutor:
             ):
                 raise ExecutionError("lifecycle handler returned before clearing its intent")
             _require_current_success_result_shape(result)
-            _validate_successful_result_state(transaction, result)
-            _validate_successful_result_audit(
+            _validate_handler_result_state(transaction, current.document, result)
+            _validate_result_audit(
                 transaction,
                 current.document,
                 result,
+                require_failure=True,
             )
             expected_phase = "completed" if result["status"] == "succeeded" else "failed"
             if current.document["phase"] != expected_phase:
@@ -520,6 +523,8 @@ class AuthorizationExecutor:
             _require_same_authority(initial.document, current.document)
             existing = _read_result_transaction(transaction, job_id)
             if existing is not None:
+                _validate_result_binding(current.document, existing.document)
+                _validate_result_audit(transaction, current.document, existing.document)
                 return ExecutionOutcome(
                     _repair_terminal_phase_transaction(transaction, current, existing),
                     False,
@@ -596,11 +601,23 @@ def _expected_source_error(
     request = job["request"]
     if type(request) is not dict:  # pragma: no cover - schema validation proves this
         raise ExecutionError("authorization job request is not an object")
+    expected = job["expectedSource"]
+    if type(expected) is not dict:  # pragma: no cover - contract validation proves this
+        raise ExecutionError("authorization expected source is not an object")
+    if (
+        request["operation"] == "delete"
+        and job["compatibilityVersion"] == "static-job-v1"
+        and "deletionEvidence" not in expected
+    ):
+        # The legacy envelope remains decodable for startup reconciliation, but
+        # it never crosses the mutation boundary without the durable authority
+        # introduced by static-job-v2.
+        return "state_drift"
     try:
         actual = build_expected_source(transaction, request)
     except FileNotFoundError, SourceStateError:
         return "state_drift"
-    if actual != job["expectedSource"]:
+    if actual != expected:
         return "state_drift"
     if request["operation"] == "create":
         inventory = transaction.measure_inventory()
@@ -658,6 +675,8 @@ def _publish_result(
     *,
     limits: HostCapacityLimits,
 ) -> None:
+    if result["status"] != "failed":  # pragma: no cover - only internal failures publish here
+        raise ExecutionError("direct result publication is limited to failures")
     canonical = canonical_json_bytes(result)
     allocation = transaction.allocation_upper_bound(len(canonical))
     reservation = StateInventoryReservation(
@@ -674,6 +693,7 @@ def _publish_result(
         transaction.measure_filesystem_capacity(),
         limits=limits,
     )
+    _ensure_failure_audit(transaction, job.document, result)
     transaction.create_immutable(
         StateRecordPath.authorization_result(job.document["jobId"]),
         result,
@@ -713,7 +733,7 @@ def validate_result_lifecycle_authority(
     _validate_result_binding(job, result)
     has_lifecycle_intent = _has_bound_lifecycle_intent(transaction, job, result=result)
     if not has_lifecycle_intent:
-        _validate_successful_result_audit(transaction, job, result)
+        _validate_result_audit(transaction, job, result)
     return has_lifecycle_intent
 
 
@@ -898,11 +918,16 @@ def _validate_result_intent_binding(
         raise ExecutionError("successful create result disagrees with its lifecycle intent")
 
 
-def _validate_successful_result_state(
+def _validate_handler_result_state(
     transaction: ExecutionTransaction,
+    job: dict[str, object],
     result: dict[str, object],
 ) -> None:
-    if result["status"] != "succeeded":
+    if result["status"] == "failed":
+        if job["compatibilityVersion"] == "static-job-v1":
+            return
+        if _expected_source_error(transaction, job) is not None:
+            raise ExecutionError("failed lifecycle handler did not restore its authorized source")
         return
     tenant_id = validate_uuid7(result["tenantId"])
     desired_path = StateRecordPath.tenant_desired(tenant_id)
@@ -927,31 +952,70 @@ def _validate_successful_result_state(
         )
 
 
-def _validate_successful_result_audit(
+def _validate_result_audit(
     transaction: ExecutionTransaction,
     job: dict[str, object],
     result: dict[str, object],
+    *,
+    require_failure: bool = False,
 ) -> None:
-    if result["status"] != "succeeded":
+    if (
+        result["status"] == "failed"
+        and not require_failure
+        and job["compatibilityVersion"] == "static-job-v1"
+    ):
         return
     try:
         snapshot = transaction.inspect_audit_correlation(result["correlationId"])
     except AuditError as error:
-        raise ExecutionError("successful lifecycle audit authority is invalid") from error
+        raise ExecutionError("lifecycle audit authority is invalid") from error
     entry = snapshot.entry
     if entry is None:
-        raise ExecutionError("successful lifecycle result has no durable audit authority")
+        raise ExecutionError("lifecycle result has no durable audit authority")
     if (
         entry["operatorPrincipal"] != job["operatorPrincipal"]
         or entry["operation"] != result["operation"]
         or entry["tenantId"] != result["tenantId"]
         or entry["correlationId"] != result["correlationId"]
         or entry["resultDigest"] != result_digest(result).to_dict()
-        or entry["resultStatus"] != "succeeded"
+        or entry["resultStatus"] != result["status"]
     ):
-        raise ExecutionError("successful lifecycle result disagrees with durable audit authority")
-    if result["operation"] == "delete":
+        raise ExecutionError("lifecycle result disagrees with durable audit authority")
+    if result["operation"] == "delete" and result["status"] == "succeeded":
         _validate_delete_audit_evidence(job, entry)
+
+
+def _ensure_failure_audit(
+    transaction: ExecutionTransaction,
+    job: dict[str, object],
+    result: dict[str, object],
+) -> None:
+    """Idempotently bind an executor-produced terminal failure to the audit chain."""
+
+    try:
+        snapshot = transaction.inspect_audit_correlation(result["correlationId"])
+    except AuditError as error:
+        raise ExecutionError("failure audit authority is invalid") from error
+    if snapshot.entry is not None:
+        _validate_result_audit(transaction, job, result, require_failure=True)
+        return
+    entry: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "AuditEntry",
+        "sequence": snapshot.state.entry_count,
+        "previousEntryDigest": snapshot.state.terminal_digest,
+        "timestamp": job["acceptedAt"],
+        "operatorPrincipal": job["operatorPrincipal"],
+        "operation": result["operation"],
+        "tenantId": result["tenantId"],
+        "correlationId": result["correlationId"],
+        "resultDigest": result_digest(result).to_dict(),
+        "resultStatus": "failed",
+    }
+    try:
+        transaction.append_audit(entry)
+    except AuditError as error:
+        raise ExecutionError("failure audit authority could not be committed") from error
 
 
 def _validate_delete_audit_evidence(
