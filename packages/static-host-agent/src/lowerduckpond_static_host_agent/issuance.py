@@ -335,5 +335,7 @@ def build_expected_source(
                 "versionId": archive["versionId"],
                 "emergencyReason": None,
             }
+        else:
+            raise IssuanceError("tenant lifecycle is not eligible for ordinary deletion")
         expected["deletionEvidence"] = deletion_evidence
     return expected

@@ -40,7 +40,11 @@ from lowerduckpond_static_host_agent.intake import (
     IntakeArtifactUnavailableError,
     IntakeError,
 )
-from lowerduckpond_static_host_agent.issuance import VerifiedArtifact, build_expected_source
+from lowerduckpond_static_host_agent.issuance import (
+    IssuanceError,
+    VerifiedArtifact,
+    build_expected_source,
+)
 from lowerduckpond_static_host_agent.locks import LockMode
 from lowerduckpond_static_host_agent.repository import (
     StateConflictError,
@@ -74,6 +78,12 @@ class ExecutionTransaction(Protocol):
     def read(self, path: StateRecordPath) -> StoredContract: ...
 
     def tenant_has_deployment_history(self, tenant_id: object) -> bool: ...
+
+    def deployment_for_digest(
+        self,
+        tenant_id: object,
+        expected_digest: dict[str, object],
+    ) -> dict[str, object]: ...
 
     def validate_export_bundle(
         self,
@@ -690,9 +700,11 @@ def _expected_source_error(
         # it never crosses the mutation boundary without the durable authority
         # introduced by static-job-v2.
         return "state_drift"
+    if request["operation"] == "delete" and expected.get("deletionEvidence") is None:
+        return "state_drift"
     try:
         actual = build_expected_source(transaction, request)
-    except FileNotFoundError:
+    except FileNotFoundError, IssuanceError:
         return "state_drift"
     if actual != expected:
         return "state_drift"
@@ -1021,6 +1033,8 @@ def _validate_handler_result_state(
     *,
     audit_is_latest_for_tenant: bool,
 ) -> None:
+    if result["status"] == "succeeded" and result["operation"] == "export":
+        _validate_export_bundle(transaction, job, result)
     if not audit_is_latest_for_tenant:
         # A later fully audited lifecycle operation may legitimately supersede
         # this result for the same tenant before the executor reacquires
@@ -1050,14 +1064,20 @@ def _validate_handler_result_state(
         )
     _validate_observed_state(transaction, result, manifest)
     _validate_selected_deployment_state(transaction, job, result, manifest)
-    if result["operation"] == "export":
-        binding = result.get("exportBundle")
-        if type(binding) is not dict:
-            raise ExecutionError("successful export result has no bundle binding")
-        try:
-            transaction.validate_export_bundle(job["jobId"], binding)
-        except (FileNotFoundError, OSError, StatePathError, StateRecordError) as error:
-            raise ExecutionError("successful export result has no exact bundle") from error
+
+
+def _validate_export_bundle(
+    transaction: ExecutionTransaction,
+    job: dict[str, object],
+    result: dict[str, object],
+) -> None:
+    binding = result.get("exportBundle")
+    if type(binding) is not dict:
+        raise ExecutionError("successful export result has no bundle binding")
+    try:
+        transaction.validate_export_bundle(job["jobId"], binding)
+    except (FileNotFoundError, OSError, StatePathError, StateRecordError) as error:
+        raise ExecutionError("successful export result has no exact bundle") from error
 
 
 def _validate_deleted_tenant_state(
@@ -1149,7 +1169,13 @@ def _validate_selected_deployment_state(
             and deployment["correlationId"] == result["correlationId"]
         )
     elif operation == "restore":
-        matches = matches and deployment["correlationId"] == result["correlationId"]
+        matches = matches and _restore_deployment_matches(
+            transaction,
+            job,
+            result,
+            tenant_id,
+            deployment,
+        )
     else:
         matches = matches and (operation != "rollback" or deployment_id == request["deploymentId"])
     if not matches:
@@ -1172,6 +1198,29 @@ def _validate_selected_deployment_state(
     )
     if not archive_matches:
         raise ExecutionError("successful lifecycle result has an unbound archive record")
+
+
+def _restore_deployment_matches(
+    transaction: ExecutionTransaction,
+    job: dict[str, object],
+    result: dict[str, object],
+    tenant_id: str,
+    deployment: dict[str, object],
+) -> bool:
+    expected = job["expectedSource"]
+    if type(expected) is not dict or type(expected["deploymentDigest"]) is not dict:
+        raise ExecutionError("restore source deployment authority is malformed")
+    try:
+        archived_deployment = transaction.deployment_for_digest(
+            tenant_id,
+            expected["deploymentDigest"],
+        )
+    except (FileNotFoundError, StatePathError, StateRecordError) as error:
+        raise ExecutionError("restore source deployment authority is unavailable") from error
+    return (
+        deployment["correlationId"] == result["correlationId"]
+        and deployment["releaseTreeDigest"] == archived_deployment["releaseTreeDigest"]
+    )
 
 
 def _validate_result_audit(
@@ -1374,7 +1423,7 @@ def _intent_binds_job(
     if kind == "ArchiveConstructionIntent":
         return _archive_construction_intent_binds_job(transaction, intent, job, request)
     if kind == "ArchiveRetirementIntent":
-        return _archive_retirement_intent_binds_job(intent, job, request)
+        return _archive_retirement_intent_binds_job(transaction, intent, job, request)
     raise ExecutionError("lifecycle intent kind is not recognized")
 
 
@@ -1452,6 +1501,7 @@ def _archive_construction_intent_binds_job(
 
 
 def _archive_retirement_intent_binds_job(
+    transaction: ExecutionTransaction,
     intent: dict[str, object],
     job: dict[str, object],
     request: dict[str, object],
@@ -1481,6 +1531,20 @@ def _archive_retirement_intent_binds_job(
         or intent["archiveRecordDigest"] != expected["archiveRecordDigest"]
     ):
         raise ExecutionError("archive retirement authority does not match its job")
+    if request["operation"] != "restore":
+        return True
+    archive = intent["archiveRecord"]
+    if type(archive) is not dict or type(expected["deploymentDigest"]) is not dict:
+        raise ExecutionError("archive retirement release authority is malformed")
+    try:
+        source_deployment = transaction.deployment_for_digest(
+            request["tenantId"],
+            expected["deploymentDigest"],
+        )
+    except (FileNotFoundError, StatePathError, StateRecordError) as error:
+        raise ExecutionError("archive retirement source deployment is unavailable") from error
+    if source_deployment["releaseTreeDigest"] != archive["releaseTreeDigest"]:
+        raise ExecutionError("archive retirement release is not source-authorized")
     return True
 
 

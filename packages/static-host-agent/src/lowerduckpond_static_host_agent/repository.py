@@ -22,6 +22,7 @@ from lowerduckpond_static_contracts import (
     ContractKind,
     canonical_json_bytes,
     decode_contract,
+    deployment_record_digest,
     manifest_digest,
     validate_contract,
     validate_uuid7,
@@ -81,6 +82,7 @@ _RECOVERY_CURSOR_MAXIMUM_BYTES: Final = 36
 _DIRECTORY_OPEN_FLAGS: Final = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 _TENANT_CHILD_DIRECTORIES: Final = ("archives", "deployments")
 _EXPORT_CHUNK_BYTES: Final = 64 * 1024
+_MAX_RETAINED_DEPLOYMENT_RECORDS: Final = 3
 
 
 class StateRecordError(RuntimeError):
@@ -812,6 +814,11 @@ class _StateTransaction:
             ("tenants", canonical_id, "deployments")
         )
         try:
+            deployments.remove_abandoned_publication_temporaries(
+                expected_owner=self._repository._expected_owner,
+                expected_mode=self._repository._expected_record_mode,
+                maximum_entries=_MAX_RETAINED_DEPLOYMENT_RECORDS + 1,
+            )
             descriptor = deployments.duplicate_descriptor()
             try:
                 with os.scandir(descriptor) as entries:
@@ -820,6 +827,46 @@ class _StateTransaction:
                 os.close(descriptor)
         finally:
             deployments.close()
+
+    def deployment_for_digest(
+        self,
+        tenant_id: object,
+        expected_digest: dict[str, object],
+    ) -> dict[str, object]:
+        """Resolve one retained deployment from its authorization-bound digest."""
+
+        self._require_active()
+        canonical_id = validate_uuid7(tenant_id)
+        deployments = self._repository._durable.open_descendant(
+            ("tenants", canonical_id, "deployments")
+        )
+        try:
+            deployments.remove_abandoned_publication_temporaries(
+                expected_owner=self._repository._expected_owner,
+                expected_mode=self._repository._expected_record_mode,
+                maximum_entries=_MAX_RETAINED_DEPLOYMENT_RECORDS + 1,
+            )
+            descriptor = deployments.duplicate_descriptor()
+            try:
+                with os.scandir(descriptor) as entries:
+                    names = tuple(sorted(entry.name for entry in entries))
+            finally:
+                os.close(descriptor)
+        finally:
+            deployments.close()
+        if len(names) > _MAX_RETAINED_DEPLOYMENT_RECORDS:
+            raise StateRecordError("tenant deployment history exceeds its retention bound")
+        matches: list[dict[str, object]] = []
+        for name in names:
+            if not name.endswith(".json"):
+                raise StateRecordError("tenant deployment history has an invalid record name")
+            path = StateRecordPath.tenant_deployment(canonical_id, name.removesuffix(".json"))
+            record = self.read(path).document
+            if deployment_record_digest(record).to_dict() == expected_digest:
+                matches.append(record)
+        if len(matches) != 1:
+            raise StateRecordError("authorization-bound deployment record is not unique")
+        return matches[0]
 
     def validate_export_bundle(
         self,

@@ -405,6 +405,82 @@ def test_undeployed_delete_requires_empty_deployment_history(tmp_path: Path) -> 
         )
 
 
+def test_undeployed_delete_recovers_an_abandoned_deployment_temporary(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    namespace = _fixture("platform-namespace.json")
+    desired = _fixture("site.json")
+    spec = desired["spec"]
+    assert type(spec) is dict
+    spec["desiredState"] = "undeployed"
+    del spec["desiredDeployment"]
+    _write(root, StateRecordPath.platform_namespace(), namespace)
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), desired)
+    temporary = root / "tenants" / _TENANT_ID / "deployments" / f".ldp-state-{'a' * 32}"
+    temporary.write_bytes(b"incomplete")
+    temporary.chmod(0o600)
+    request = _fixture("operation-request.json")
+    request.update({"operation": "delete", "tenantId": _TENANT_ID})
+    request.pop("slug", None)
+    request.pop("quotas", None)
+
+    with _repository(root) as repository:
+        issued = AuthorizationIssuer(
+            repository,
+            gate=_OpenGate(),
+            entropy=_Entropy(),
+        ).issue(
+            canonical_json_bytes(request),
+            operator_principal="operator@example.test",
+            now=_NOW,
+            artifact=None,
+        )
+
+    expected = issued.document["expectedSource"]
+    assert type(expected) is dict
+    assert expected["deletionEvidence"] is not None
+    assert not temporary.exists()
+
+
+@pytest.mark.parametrize("lifecycle", ["active", "suspended"])
+def test_delete_rejects_an_ineligible_lifecycle_before_issuance(
+    tmp_path: Path,
+    lifecycle: str,
+) -> None:
+    root = _state_root(tmp_path)
+    desired = _fixture("site.json")
+    spec = desired["spec"]
+    assert type(spec) is dict
+    spec["desiredState"] = lifecycle
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), desired)
+    _write(
+        root,
+        StateRecordPath.tenant_deployment(_TENANT_ID, _DEPLOYMENT_ID),
+        _fixture("deployment-record.json"),
+    )
+    request = _fixture("operation-request.json")
+    request.update({"operation": "delete", "tenantId": _TENANT_ID})
+    request.pop("slug", None)
+    request.pop("quotas", None)
+
+    with (
+        _repository(root) as repository,
+        pytest.raises(IssuanceError, match="not eligible for ordinary deletion"),
+    ):
+        AuthorizationIssuer(
+            repository,
+            gate=_OpenGate(),
+            entropy=_Entropy(),
+        ).issue(
+            canonical_json_bytes(request),
+            operator_principal="operator@example.test",
+            now=_NOW,
+            artifact=None,
+        )
+
+
 def test_changed_source_or_artifact_binding_cannot_reuse_correlation(tmp_path: Path) -> None:
     root = _state_root(tmp_path)
     namespace = _fixture("platform-namespace.json")
