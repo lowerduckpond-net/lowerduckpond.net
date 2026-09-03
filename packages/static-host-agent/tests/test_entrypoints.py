@@ -238,6 +238,9 @@ def test_selected_tenant_runtime_binds_the_active_verified_snapshot(  # noqa: PL
         tenant_id,
         active.manifest,
     )
+    assert entrypoints._all_tenant_release_state_matches(
+        repository,  # type: ignore[arg-type]
+    )
     assert not entrypoints._selected_tenant_runtime_matches(
         repository,  # type: ignore[arg-type]
         tenant_id,
@@ -261,6 +264,9 @@ def test_selected_tenant_runtime_binds_the_active_verified_snapshot(  # noqa: PL
         repository,  # type: ignore[arg-type]
         tenant_id,
         active.manifest,
+    )
+    assert not entrypoints._all_tenant_release_state_matches(
+        repository,  # type: ignore[arg-type]
     )
     measured_digests[deployment_id] = release_tree_digest
     monkeypatch.setattr(
@@ -349,6 +355,40 @@ def test_selected_tenant_runtime_binds_the_active_verified_snapshot(  # noqa: PL
         repository,  # type: ignore[arg-type]
         tenant_id,
     )
+
+
+def test_all_tenant_release_validation_remeasures_untouched_tenants(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected = SimpleNamespace(name="selected")
+    untouched = SimpleNamespace(name="untouched")
+    measured: list[str] = []
+
+    class Repository:
+        @staticmethod
+        def publication_transaction(*, blocking: bool) -> nullcontext[object]:
+            assert blocking is True
+            return nullcontext(object())
+
+    def release_matches(
+        _repository: object,
+        _transaction: object,
+        tenant: SimpleNamespace,
+    ) -> bool:
+        measured.append(tenant.name)
+        return tenant is not untouched
+
+    monkeypatch.setattr(
+        entrypoints,
+        "snapshot_tenant_routes",
+        lambda _transaction: SimpleNamespace(tenants=(selected, untouched)),
+    )
+    monkeypatch.setattr(entrypoints, "_tenant_release_state_matches", release_matches)
+
+    assert not entrypoints._all_tenant_release_state_matches(
+        Repository(),  # type: ignore[arg-type]
+    )
+    assert measured == ["selected", "untouched"]
 
 
 def test_deleted_tenant_publication_requires_the_complete_namespace_absent(

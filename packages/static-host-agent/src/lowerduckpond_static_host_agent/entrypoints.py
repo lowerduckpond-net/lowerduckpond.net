@@ -220,6 +220,10 @@ def executor_main(arguments: list[str] | None = None) -> int:
                     _selected_tenant_release_matches,
                     repository,
                 ),
+                tenant_release_inventory_validator=partial(
+                    _all_tenant_release_state_matches,
+                    repository,
+                ),
             ).execute(job_id, blocking=True)
     except (
         CapacityError,
@@ -710,6 +714,29 @@ def _selected_tenant_release_matches(
                 len(matching) == 1
                 and matching[0].manifest == manifest
                 and _tenant_release_state_matches(repository, transaction, matching[0])
+            )
+    except (
+        KeyError,
+        OSError,
+        ReleaseTreeError,
+        RouteSnapshotError,
+        StateInventoryError,
+        StateRecordError,
+        TypeError,
+        ValueError,
+    ):
+        return False
+
+
+def _all_tenant_release_state_matches(repository: StateRepository) -> bool:
+    """Remeasure every tenant release while holding the publication lock."""
+
+    try:
+        with repository.publication_transaction(blocking=True) as transaction:
+            expected = snapshot_tenant_routes(transaction)
+            return all(
+                _tenant_release_state_matches(repository, transaction, tenant)
+                for tenant in expected.tenants
             )
     except (
         KeyError,

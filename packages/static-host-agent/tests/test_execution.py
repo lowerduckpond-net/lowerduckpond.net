@@ -3112,6 +3112,37 @@ def test_executor_requires_selected_release_validation_after_successful_deploy(
     assert candidate_deployment["id"] == "0198d17f-6f4a-7000-8000-000000000009"
 
 
+def test_executor_rejects_cross_tenant_release_corruption_after_handler(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    _write_deployment_record(root, _DEPLOYMENT_ID, "0" * 64)
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), _fixture("site.json"))
+    validations: list[bool] = []
+
+    def reject_corrupted_inventory() -> bool:
+        validations.append(True)
+        return False
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued, _artifact, _correlation_id = _issue_deploy(repository, intake)
+        with pytest.raises(ExecutionError, match="release inventory outside authority"):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={"deploy": _CompletingDeployHandler(repository, root)},
+                tenant_release_inventory_validator=reject_corrupted_inventory,
+            ).execute(issued.job_id)
+        job = repository.read(StateRecordPath.authorization_job(issued.job_id)).document
+
+    assert validations == [True]
+    assert job["executionValidated"] is False
+
+
 def test_executor_rejects_a_failed_deploy_that_retains_deployment_history(
     tmp_path: Path,
 ) -> None:
