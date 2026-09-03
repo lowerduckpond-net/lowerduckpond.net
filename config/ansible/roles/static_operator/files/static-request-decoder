@@ -11,7 +11,7 @@ sys.dont_write_bytecode = True
 
 SITE_PACKAGES = pathlib.Path("/opt/lowerduckpond/static-host-agent/current/site-packages")
 SELECTION_LOCK = pathlib.Path("/opt/lowerduckpond/static-host-agent/selection.lock")
-SELECTION_LOCK_MODE = 0o644
+SELECTION_LOCK_MODE = 0o600
 
 
 def acquire_selection_lock() -> int:

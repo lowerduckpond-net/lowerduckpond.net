@@ -32,6 +32,7 @@ from lowerduckpond_static_host_agent.capacity import (
     ReleaseCapacityUsage,
     admit_release_capacity,
 )
+from lowerduckpond_static_host_agent.durable import StatePathError
 from lowerduckpond_static_host_agent.intake import (
     AdmittedArtifact,
     ArtifactClaim,
@@ -47,6 +48,7 @@ from lowerduckpond_static_host_agent.issuance import (
 from lowerduckpond_static_host_agent.locks import LockMode
 from lowerduckpond_static_host_agent.repository import (
     StateConflictError,
+    StateRecordError,
     StateRecordPath,
     StateRepository,
     StateRevision,
@@ -76,6 +78,12 @@ class ExecutionTransaction(Protocol):
     def read(self, path: StateRecordPath) -> StoredContract: ...
 
     def tenant_has_deployment_history(self, tenant_id: object) -> bool: ...
+
+    def validate_export_bundle(
+        self,
+        job_id: object,
+        binding: dict[str, object],
+    ) -> None: ...
 
     def compare_and_swap(
         self,
@@ -1021,12 +1029,7 @@ def _validate_handler_result_state(
     tenant_id = validate_uuid7(result["tenantId"])
     desired_path = StateRecordPath.tenant_desired(tenant_id)
     if result["operation"] == "delete":
-        for path in (desired_path, StateRecordPath.tenant_observed(tenant_id)):
-            try:
-                transaction.read(path)
-            except FileNotFoundError:
-                continue
-            raise ExecutionError("successful delete result retained authoritative tenant state")
+        _validate_deleted_tenant_state(transaction, tenant_id)
         return
     manifest = result.get("manifest")
     if type(manifest) is not dict:
@@ -1043,6 +1046,31 @@ def _validate_handler_result_state(
         )
     _validate_observed_state(transaction, result, manifest)
     _validate_selected_deployment_state(transaction, job, result, manifest)
+    if result["operation"] == "export":
+        binding = result.get("exportBundle")
+        if type(binding) is not dict:
+            raise ExecutionError("successful export result has no bundle binding")
+        try:
+            transaction.validate_export_bundle(job["jobId"], binding)
+        except (FileNotFoundError, OSError, StatePathError, StateRecordError) as error:
+            raise ExecutionError("successful export result has no exact bundle") from error
+
+
+def _validate_deleted_tenant_state(
+    transaction: ExecutionTransaction,
+    tenant_id: str,
+) -> None:
+    for path in (
+        StateRecordPath.tenant_desired(tenant_id),
+        StateRecordPath.tenant_observed(tenant_id),
+    ):
+        try:
+            transaction.read(path)
+        except FileNotFoundError:
+            continue
+        raise ExecutionError("successful delete result retained authoritative tenant state")
+    if tenant_id in transaction.measure_inventory().tenant_ids:
+        raise ExecutionError("successful delete result retained its tenant namespace")
 
 
 def _validate_observed_state(
