@@ -61,8 +61,8 @@
     - role: podman
     - role: database
     - role: provisioner
-    - role: static_host_agent
     - role: static_operator
+    - role: static_host_agent
     - role: caddy
     - role: backup
     - role: monitoring

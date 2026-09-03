@@ -71,6 +71,10 @@ class _AuthorizationReceiver(Protocol):
     ) -> IssuedAuthorization: ...
 
 
+class _ResultHandoff(Protocol):
+    def await_completion(self, job_id: str, *, timeout_seconds: float) -> None: ...
+
+
 class _StartupTransaction(Protocol):
     def read(self, path: StateRecordPath) -> StoredContract: ...
 
@@ -99,15 +103,23 @@ class SystemdJobHandoff:
         self._executable = executable
 
     def enqueue(self, job_id: str) -> None:
+        self._start(job_id, wait=False, timeout_seconds=_HANDOFF_SECONDS)
+
+    def await_completion(self, job_id: str, *, timeout_seconds: float) -> None:
+        """Start or join one worker and wait for executor validation to finish."""
+
+        if timeout_seconds <= 0:
+            raise RuntimeBoundaryError("authorized job completion timed out")
+        self._start(job_id, wait=True, timeout_seconds=timeout_seconds)
+
+    def _start(self, job_id: str, *, wait: bool, timeout_seconds: float) -> None:
         canonical_id = validate_uuid7(job_id)
+        arguments = [os.fspath(self._executable), "start"]
+        arguments.append("--wait" if wait else "--no-block")
+        arguments.append(_WORKER_UNIT.format(job_id=canonical_id))
         try:
             completed = subprocess.run(  # noqa: S603
-                [
-                    os.fspath(self._executable),
-                    "start",
-                    "--no-block",
-                    _WORKER_UNIT.format(job_id=canonical_id),
-                ],
+                arguments,
                 check=False,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
@@ -115,7 +127,7 @@ class SystemdJobHandoff:
                 close_fds=True,
                 cwd="/",
                 env={"LANG": "C.UTF-8"},
-                timeout=_HANDOFF_SECONDS,
+                timeout=timeout_seconds,
             )
         except (OSError, subprocess.TimeoutExpired) as error:
             raise RuntimeBoundaryError("authorized job handoff failed") from error
@@ -129,7 +141,7 @@ class ResultWaiter:
     def __init__(
         self,
         repository: StateRepository,
-        handoff: JobHandoff,
+        handoff: _ResultHandoff,
         *,
         clock: MonotonicClock = time.monotonic,
         sleep: Sleep = _sleep,
@@ -146,18 +158,23 @@ class ResultWaiter:
     def retrieve(self, issued: IssuedAuthorization) -> dict[str, object]:
         """Return an existing result or enqueue and await the exact accepted job."""
 
+        deadline = self._clock() + self._total_seconds
+        existing = self._read(issued.job_id)
+        if existing is not None:
+            _validate_result_for_job(issued.document, existing)
+            self._validate_lifecycle_result(issued, existing, deadline=deadline)
+        remaining = deadline - self._clock()
+        if remaining <= 0:
+            raise RuntimeBoundaryError("authorized job completion timed out")
+        self._handoff.await_completion(issued.job_id, timeout_seconds=remaining)
         result = self._read(issued.job_id)
         if result is None:
-            self._handoff.enqueue(issued.job_id)
-        deadline = self._clock() + self._total_seconds
-        while result is None:
-            if self._clock() >= deadline:
-                raise RuntimeBoundaryError("authorized job result timed out")
-            self._sleep(_RESULT_POLL_SECONDS)
-            result = self._read(issued.job_id)
+            raise RuntimeBoundaryError("authorized job completed without a durable result")
+        if existing is not None and result != existing:
+            raise RuntimeBoundaryError("authorized job result changed during completion")
         _validate_result_for_job(issued.document, result)
         if self._validate_lifecycle_result(issued, result, deadline=deadline):
-            self._handoff.enqueue(issued.job_id)
+            raise RuntimeBoundaryError("authorized job completed with active lifecycle intent")
         return result
 
     def _validate_lifecycle_result(
