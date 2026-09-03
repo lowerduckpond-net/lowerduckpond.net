@@ -236,14 +236,24 @@ class AuthorizationExecutor:
                 return None
             _validate_request_integrity(current.document)
             _request, intents = _bound_lifecycle_intents(transaction, current.document)
+            existing = _read_result_transaction(transaction, job_id)
             if not intents:
                 if phase == "claimed":
-                    raise ExecutionError(
-                        "claimed artifact job has no active lifecycle recovery intent"
+                    if existing is not None:
+                        return None
+                    error_code = _expected_source_error(transaction, current.document)
+                    if error_code is None:
+                        error_code = _NOT_IMPLEMENTED if handler is None else "invalid_artifact"
+                    result = _failure_result(current.document, error_code)
+                    _publish_result(
+                        transaction,
+                        current,
+                        result,
+                        limits=self._capacity_limits,
                     )
+                    return ExecutionOutcome(result, True)
                 return None
             _require_available_lifecycle_handler(True, handler)
-            existing = _read_result_transaction(transaction, job_id)
             if phase != "claimed" and existing is None:
                 raise ExecutionError("terminal lifecycle job has no durable result")
             if existing is not None:
@@ -458,6 +468,15 @@ class AuthorizationExecutor:
                         )
                         return ExecutionOutcome(result, True)
                 if current.document["phase"] == "claimed" and handler is None:
+                    if not has_lifecycle_intent:
+                        result = _failure_result(current.document, _NOT_IMPLEMENTED)
+                        _publish_result(
+                            transaction,
+                            current,
+                            result,
+                            limits=self._capacity_limits,
+                        )
+                        return ExecutionOutcome(result, True)
                     raise ExecutionError("claimed lifecycle job handler is unavailable")
                 claimed = _claim_pending(transaction, current)
                 if handler is None:
