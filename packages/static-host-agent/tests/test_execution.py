@@ -699,6 +699,41 @@ def test_executor_repairs_a_lagging_job_phase_without_handler_replay(tmp_path: P
     assert handler.phases == []
 
 
+def test_executor_rejects_an_intent_free_success_that_disagrees_with_state(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+
+    with StateRepository(root, expected_owner=os.geteuid()) as repository:
+        issued = _issue_create(repository)
+        request = issued.document["request"]
+        assert type(request) is dict
+        result = _fixture("operation-result.json")
+        provenance = result["provenance"]
+        manifest = result["manifest"]
+        assert type(provenance) is dict
+        assert type(manifest) is dict
+        provenance["jobId"] = issued.job_id
+        result["correlationId"] = request["correlationId"]
+        desired = json.loads(json.dumps(manifest))
+        metadata = manifest["metadata"]
+        assert type(metadata) is dict
+        metadata["slug"] = "different-duck"
+        _write(root, StateRecordPath.tenant_desired(result["tenantId"]), desired)
+        repository.create_immutable(
+            StateRecordPath.authorization_result(issued.job_id),
+            result,
+        )
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+        pytest.raises(ExecutionError, match="authoritative tenant state"),
+    ):
+        AuthorizationExecutor(repository, intake).execute(issued.job_id)
+
+
 def test_executor_rejects_a_misbound_result_before_handler_dispatch(tmp_path: Path) -> None:
     root = _state_root(tmp_path)
     _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
@@ -2649,6 +2684,9 @@ def test_executor_repairs_a_successful_create_with_its_generated_tenant(
         assert type(provenance) is dict
         provenance["jobId"] = issued.job_id
         result["correlationId"] = request["correlationId"]
+        manifest = result["manifest"]
+        assert type(manifest) is dict
+        _write(root, StateRecordPath.tenant_desired(result["tenantId"]), manifest)
         repository.create_immutable(StateRecordPath.authorization_result(issued.job_id), result)
 
     with (
