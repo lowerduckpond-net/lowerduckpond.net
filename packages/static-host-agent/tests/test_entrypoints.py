@@ -21,6 +21,7 @@ from lowerduckpond_static_host_agent.caddy_startup import (
     CaddyStartPhase,
     start_target,
 )
+from lowerduckpond_static_host_agent.repository import StateRecordPath
 
 _DISABLED_STATUS = 78
 _USAGE_STATUS = 64
@@ -158,6 +159,7 @@ def test_selected_tenant_runtime_binds_the_active_verified_snapshot(
         },
         deployment=deployment,
     )
+    retained_deployments = {deployment_id: deployment}
 
     class Runtime:
         tenant = active
@@ -181,9 +183,15 @@ def test_selected_tenant_runtime_binds_the_active_verified_snapshot(
 
     class Transaction:
         @staticmethod
+        def read(path: StateRecordPath) -> SimpleNamespace:
+            assert path.tenant_id == tenant_id
+            assert path.deployment_id is not None
+            return SimpleNamespace(document=retained_deployments[path.deployment_id])
+
+        @staticmethod
         def tenant_deployment_ids(requested: object) -> tuple[str, ...]:
             assert requested == tenant_id
-            return (deployment_id,)
+            return tuple(sorted(retained_deployments))
 
     class Repository:
         @staticmethod
@@ -200,12 +208,12 @@ def test_selected_tenant_runtime_binds_the_active_verified_snapshot(
         "_tenant_release_ids",
         lambda _tenant_id: (deployment_id,),
     )
-    measured_digest = [release_tree_digest]
+    measured_digests = {deployment_id: release_tree_digest}
     monkeypatch.setattr(
         entrypoints,
         "measure_release_tree",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            digest=SimpleNamespace(to_dict=lambda: measured_digest[0])
+        lambda root, **_kwargs: SimpleNamespace(
+            digest=SimpleNamespace(to_dict=lambda: measured_digests[root.name])
         ),
     )
     monkeypatch.setattr(
@@ -238,13 +246,13 @@ def test_selected_tenant_runtime_binds_the_active_verified_snapshot(
         active.manifest,
         active.observed_state,
     )
-    measured_digest[0] = {**release_tree_digest, "value": "d" * 64}
+    measured_digests[deployment_id] = {**release_tree_digest, "value": "d" * 64}
     assert not entrypoints._selected_tenant_release_matches(
         repository,  # type: ignore[arg-type]
         tenant_id,
         active.manifest,
     )
-    measured_digest[0] = release_tree_digest
+    measured_digests[deployment_id] = release_tree_digest
     monkeypatch.setattr(
         entrypoints,
         "_tenant_release_ids",
@@ -263,6 +271,32 @@ def test_selected_tenant_runtime_binds_the_active_verified_snapshot(
         "_tenant_release_ids",
         lambda _tenant_id: (deployment_id,),
     )
+    predecessor_id = "0198d17f-6f4a-7000-8000-000000000009"
+    predecessor = {"id": predecessor_id, "releaseTreeDigest": release_tree_digest}
+    retained_deployments[predecessor_id] = predecessor
+    measured_digests[predecessor_id] = release_tree_digest
+    assert not entrypoints._selected_tenant_release_matches(
+        repository,  # type: ignore[arg-type]
+        tenant_id,
+        active.manifest,
+    )
+    monkeypatch.setattr(
+        entrypoints,
+        "_tenant_release_ids",
+        lambda _tenant_id: tuple(sorted(retained_deployments)),
+    )
+    assert entrypoints._selected_tenant_release_matches(
+        repository,  # type: ignore[arg-type]
+        tenant_id,
+        active.manifest,
+    )
+    measured_digests[predecessor_id] = {**release_tree_digest, "value": "e" * 64}
+    assert not entrypoints._selected_tenant_release_matches(
+        repository,  # type: ignore[arg-type]
+        tenant_id,
+        active.manifest,
+    )
+    measured_digests[predecessor_id] = release_tree_digest
     runtime.tenant = suspended
     authoritative[:] = [suspended]
     assert entrypoints._selected_tenant_runtime_matches(
