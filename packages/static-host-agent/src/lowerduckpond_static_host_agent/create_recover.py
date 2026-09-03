@@ -222,6 +222,8 @@ def _require_bound_job(
     immutable_job = job.document
     immutable_correlation.pop("phase", None)
     immutable_job.pop("phase", None)
+    immutable_correlation.pop("dispatchArchiveDeploymentIds", None)
+    immutable_job.pop("dispatchArchiveDeploymentIds", None)
     immutable_correlation.pop("dispatchDeploymentIds", None)
     immutable_job.pop("dispatchDeploymentIds", None)
     request = job.document["request"]

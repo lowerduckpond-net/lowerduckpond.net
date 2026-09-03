@@ -115,6 +115,21 @@
       ],
       "type": "object"
     },
+    "dispatchArchiveDeploymentIds": {
+      "oneOf": [
+        {
+          "items": {
+            "$ref": "common.schema.json#/$defs/uuidv7"
+          },
+          "maxItems": 3,
+          "type": "array",
+          "uniqueItems": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "dispatchDeploymentIds": {
       "oneOf": [
         {

@@ -341,6 +341,43 @@ def test_selected_tenant_runtime_binds_the_active_verified_snapshot(
     )
 
 
+def test_deleted_tenant_publication_requires_the_complete_namespace_absent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenant_id = "0198d17f-6f4a-7000-8000-000000000001"
+    sites = tmp_path / "sites"
+    sites.mkdir()
+    transactions: list[bool] = []
+
+    class Repository:
+        @staticmethod
+        def publication_transaction(*, blocking: bool) -> nullcontext[None]:
+            transactions.append(blocking)
+            return nullcontext()
+
+    repository = Repository()
+    tenant_root = sites / tenant_id
+    monkeypatch.setattr(entrypoints, "TENANT_RELEASE_ROOT", str(sites))
+
+    assert entrypoints._deleted_tenant_publication_absent(
+        repository,  # type: ignore[arg-type]
+        tenant_id,
+    )
+    tenant_root.mkdir()
+    assert not entrypoints._deleted_tenant_publication_absent(
+        repository,  # type: ignore[arg-type]
+        tenant_id,
+    )
+    tenant_root.rmdir()
+    tenant_root.symlink_to(tmp_path / "missing-target", target_is_directory=True)
+    assert not entrypoints._deleted_tenant_publication_absent(
+        repository,  # type: ignore[arg-type]
+        tenant_id,
+    )
+    assert transactions == [True, True, True]
+
+
 def test_caddy_pre_start_gate_uses_the_control_lock_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

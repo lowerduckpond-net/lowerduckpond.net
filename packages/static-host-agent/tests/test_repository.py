@@ -1196,6 +1196,28 @@ def test_transaction_returns_the_complete_sorted_deployment_identity_set(
     assert deployment_ids == tuple(sorted((_DEPLOYMENT_ID, _OTHER_DEPLOYMENT_ID)))
 
 
+def test_transaction_returns_the_complete_sorted_archive_identity_set(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    for deployment_id in (_OTHER_DEPLOYMENT_ID, _DEPLOYMENT_ID):
+        archive = _fixture("archive-record.json")
+        archive["deploymentId"] = deployment_id
+        _write_record(
+            root,
+            StateRecordPath.tenant_archive(_TENANT_ID, deployment_id),
+            archive,
+        )
+
+    with (
+        _repository(root) as repository,
+        repository.transaction(mode=LockMode.EXCLUSIVE) as transaction,
+    ):
+        archive_ids = transaction.tenant_archive_ids(_TENANT_ID)
+
+    assert archive_ids == tuple(sorted((_DEPLOYMENT_ID, _OTHER_DEPLOYMENT_ID)))
+
+
 def test_deployment_history_cleanup_acquires_the_exclusive_state_lock(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

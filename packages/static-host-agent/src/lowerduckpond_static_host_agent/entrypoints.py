@@ -204,6 +204,10 @@ def executor_main(arguments: list[str] | None = None) -> int:
             AuthorizationExecutor(
                 repository,
                 intake,
+                deleted_tenant_release_validator=partial(
+                    _deleted_tenant_publication_absent,
+                    repository,
+                ),
                 deleted_tenant_route_validator=partial(
                     _selected_tenant_routes_absent,
                     repository,
@@ -598,6 +602,24 @@ def _selected_tenant_routes_absent(
         if type(metadata) is dict and metadata.get("id") == tenant_id:
             return False
     return True
+
+
+def _deleted_tenant_publication_absent(
+    repository: StateRepository,
+    tenant_id: str,
+) -> bool:
+    """Require the complete tenant publication namespace to be absent."""
+
+    try:
+        canonical_id = validate_uuid7(tenant_id)
+        with repository.publication_transaction(blocking=True):
+            try:
+                (Path(TENANT_RELEASE_ROOT) / canonical_id).lstat()
+            except FileNotFoundError:
+                return True
+            return False
+    except OSError, StateRecordError, TypeError, ValueError:
+        return False
 
 
 def _selected_tenant_runtime_matches(  # noqa: PLR0911,PLR0913,PLR0917

@@ -863,6 +863,38 @@ class _StateTransaction:
             identities.append(deployment_id)
         return tuple(identities)
 
+    def tenant_archive_ids(self, tenant_id: object) -> tuple[str, ...]:
+        """Return the complete bounded archive-record deployment identity set."""
+
+        self._require_active()
+        self._require_exclusive()
+        canonical_id = validate_uuid7(tenant_id)
+        archives = self._repository._durable.open_descendant(("tenants", canonical_id, "archives"))
+        try:
+            archives.remove_abandoned_publication_temporaries(
+                expected_owner=self._repository._expected_owner,
+                expected_mode=self._repository._expected_record_mode,
+                maximum_entries=_MAX_RETAINED_DEPLOYMENT_RECORDS + 1,
+            )
+            descriptor = archives.duplicate_descriptor()
+            try:
+                with os.scandir(descriptor) as entries:
+                    names = tuple(sorted(entry.name for entry in entries))
+            finally:
+                os.close(descriptor)
+        finally:
+            archives.close()
+        if len(names) > _MAX_RETAINED_DEPLOYMENT_RECORDS:
+            raise StateRecordError("tenant archive history exceeds its retention bound")
+        identities: list[str] = []
+        for name in names:
+            if not name.endswith(".json"):
+                raise StateRecordError("tenant archive history has an invalid record name")
+            deployment_id = validate_uuid7(name.removesuffix(".json"))
+            self.read(StateRecordPath.tenant_archive(canonical_id, deployment_id))
+            identities.append(deployment_id)
+        return tuple(identities)
+
     def deployment_for_digest(
         self,
         tenant_id: object,
