@@ -45,6 +45,7 @@ _FIXTURE_ROOT = Path(__file__).parents[3] / "tests/static-publication/fixtures/a
 _NOW = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
 _TENANT_ID = "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100"
 _DEPLOYMENT_ID = "0191e2ca-49f2-7608-8cf3-f80ab2cab151"
+_TENANT_ROOTED_RECORD_COMPONENTS = 3
 _RESULT_AND_AUDIT_INODES = 2
 
 
@@ -59,7 +60,7 @@ class _Entropy:
 
 
 class _CompletingCreateHandler:
-    def __init__(
+    def __init__(  # noqa: PLR0913 - test handler toggles independent corruption boundaries
         self,
         repository: StateRepository,
         *,
@@ -67,12 +68,14 @@ class _CompletingCreateHandler:
         commit_job: bool = True,
         state_root: Path | None = None,
         result_slug: str | None = None,
+        write_observed: bool = True,
     ) -> None:
         self._repository = repository
         self._persist_result = persist_result
         self._commit_job = commit_job
         self._state_root = state_root
         self._result_slug = result_slug
+        self._write_observed = write_observed
         self.phases: list[object] = []
         self.claims: list[LifecycleArtifact | None] = []
 
@@ -116,6 +119,8 @@ class _CompletingCreateHandler:
                     StateRecordPath.tenant_desired(result["tenantId"]),
                     committed_manifest,
                 )
+                if self._write_observed:
+                    _write_observed_for_manifest(self._state_root, committed_manifest)
             if self._persist_result:
                 self._repository.create_immutable(
                     StateRecordPath.authorization_result(job_id),
@@ -222,11 +227,13 @@ class _CompletingDeployHandler:
         *,
         deployment_record: bool = True,
         deployment_archive_sha256: str | None = None,
+        write_observed: bool = True,
     ) -> None:
         self._repository = repository
         self._root = root
         self._deployment_record = deployment_record
         self._deployment_archive_sha256 = deployment_archive_sha256
+        self._write_observed = write_observed
         self.claims: list[LifecycleArtifact | None] = []
 
     def execute(
@@ -264,7 +271,7 @@ class _CompletingDeployHandler:
             "kind": "OperationResult",
             "provenance": {"kind": "authorization-job", "jobId": job_id},
             "correlationId": request["correlationId"],
-            "operation": "deploy",
+            "operation": request["operation"],
             "status": "succeeded",
             "tenantId": request["tenantId"],
             "canonicalOrigin": metadata["canonicalOrigin"],
@@ -275,6 +282,8 @@ class _CompletingDeployHandler:
             StateRecordPath.tenant_desired(request["tenantId"]),
             manifest,
         )
+        if self._write_observed:
+            _write_observed_for_manifest(self._root, manifest)
         if self._deployment_record:
             deployment = _fixture("deployment-record.json")
             deployment.update(
@@ -390,8 +399,99 @@ class _CompletingRollbackHandler:
             StateRecordPath.tenant_desired(request["tenantId"]),
             manifest,
         )
+        _write_observed_for_manifest(self._root, manifest)
         if self._remove_deployment_record:
             self._root.joinpath(*deployment_path.components).unlink()
+        self._repository.create_immutable(
+            StateRecordPath.authorization_result(job_id),
+            result,
+            blocking=blocking,
+        )
+        _append_result_audit(self._repository, job.document, result)
+        current = self._repository.read(
+            StateRecordPath.authorization_job(job_id),
+            blocking=blocking,
+        )
+        terminal = current.document
+        terminal["phase"] = "completed"
+        self._repository.compare_and_swap(
+            StateRecordPath.authorization_job(job_id),
+            current.revision,
+            terminal,
+            blocking=blocking,
+        )
+        return ExecutionOutcome(result, True)
+
+
+class _CompletingTransitionHandler:
+    def __init__(
+        self,
+        repository: StateRepository,
+        root: Path,
+        *,
+        manifest: dict[str, object],
+        deployment: dict[str, object] | None = None,
+        archive: dict[str, object] | None = None,
+    ) -> None:
+        self._repository = repository
+        self._root = root
+        self._manifest = manifest
+        self._deployment = deployment
+        self._archive = archive
+
+    def execute(
+        self,
+        job_id: str,
+        *,
+        claim: LifecycleArtifact | None,
+        blocking: bool,
+    ) -> ExecutionOutcome:
+        assert claim is None
+        job = self._repository.read(
+            StateRecordPath.authorization_job(job_id),
+            blocking=blocking,
+        )
+        request = job.document["request"]
+        metadata = self._manifest["metadata"]
+        spec = self._manifest["spec"]
+        assert type(request) is dict
+        assert type(metadata) is dict
+        assert type(spec) is dict
+        result: dict[str, object] = {
+            "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+            "kind": "OperationResult",
+            "provenance": {"kind": "authorization-job", "jobId": job_id},
+            "correlationId": request["correlationId"],
+            "operation": request["operation"],
+            "status": "succeeded",
+            "tenantId": request["tenantId"],
+            "canonicalOrigin": metadata["canonicalOrigin"],
+            "manifest": self._manifest,
+        }
+        _write(
+            self._root,
+            StateRecordPath.tenant_desired(request["tenantId"]),
+            self._manifest,
+        )
+        _write_observed_for_manifest(self._root, self._manifest)
+        if self._deployment is not None:
+            _write(
+                self._root,
+                StateRecordPath.tenant_deployment(
+                    request["tenantId"],
+                    self._deployment["id"],
+                ),
+                self._deployment,
+            )
+        if self._archive is not None:
+            _write(
+                self._root,
+                StateRecordPath.tenant_archive(
+                    request["tenantId"],
+                    self._archive["deploymentId"],
+                ),
+                self._archive,
+            )
         self._repository.create_immutable(
             StateRecordPath.authorization_result(job_id),
             result,
@@ -454,6 +554,7 @@ class _SupersedingCreateHandler:
             StateRecordPath.tenant_desired(later["tenantId"]),
             later_manifest,
         )
+        _write_observed_for_manifest(self._root, later_manifest)
         audit_result = json.loads(json.dumps(later))
         if self._audit_tenant_id is not None:
             audit_manifest = audit_result["manifest"]
@@ -525,6 +626,8 @@ class _CompletingDeleteHandler:
         )
         desired_path = StateRecordPath.tenant_desired(request["tenantId"])
         self._root.joinpath(*desired_path.components).unlink()
+        observed_path = StateRecordPath.tenant_observed(request["tenantId"])
+        self._root.joinpath(*observed_path.components).unlink(missing_ok=True)
         current = self._repository.read(
             StateRecordPath.authorization_job(job_id),
             blocking=blocking,
@@ -730,8 +833,43 @@ def _write(root: Path, path: StateRecordPath, document: dict[str, object]) -> No
     target = root.joinpath(*path.components)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.parent.chmod(0o700)
+    if (
+        path.components[:1] == ("tenants",)
+        and len(path.components) == _TENANT_ROOTED_RECORD_COMPONENTS
+    ):
+        for name in ("archives", "deployments"):
+            child = target.parent / name
+            child.mkdir(exist_ok=True)
+            child.chmod(0o700)
     target.write_bytes(canonical_json_bytes(document))
     target.chmod(0o600)
+
+
+def _write_observed_for_manifest(root: Path, manifest: dict[str, object]) -> None:
+    metadata = manifest["metadata"]
+    spec = manifest["spec"]
+    assert type(metadata) is dict
+    assert type(spec) is dict
+    lifecycle = spec["desiredState"]
+    deployment = spec.get("desiredDeployment")
+    active_deployment_id = None
+    runtime_generation_id = None
+    if lifecycle in {"active", "suspended"}:
+        assert type(deployment) is dict
+        active_deployment_id = deployment["id"]
+    if lifecycle == "active":
+        runtime_generation_id = "0198d17f-6f4a-7000-8000-000000000006"
+    observed = _fixture("tenant-observed-state.json")
+    observed.update(
+        {
+            "tenantId": metadata["id"],
+            "desiredManifestDigest": manifest_digest(manifest).to_dict(),
+            "observedState": lifecycle,
+            "activeDeploymentId": active_deployment_id,
+            "runtimeGenerationId": runtime_generation_id,
+        }
+    )
+    _write(root, StateRecordPath.tenant_observed(metadata["id"]), observed)
 
 
 def _append_result_audit(
@@ -828,19 +966,20 @@ def _issue_deploy(
     intake: ArtifactIntake,
     *,
     payload: bytes = b"authorized deployment",
+    operation: str = "deploy",
 ) -> tuple[IssuedAuthorization, VerifiedArtifact, str]:
     artifact = VerifiedArtifact(len(payload), hashlib.sha256(payload).hexdigest())
     correlation_id = "0198d17f-6f4a-7000-8000-000000000003"
     request: dict[str, object] = {
         "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
         "kind": "OperationRequest",
-        "operation": "deploy",
+        "operation": operation,
         "correlationId": correlation_id,
         "tenantId": _TENANT_ID,
         "artifact": {"size": artifact.size, "sha256": artifact.sha256},
     }
     with intake.admit(
-        operation="deploy",
+        operation=operation,
         correlation_id=correlation_id,
         declared=artifact,
         read=BytesIO(payload).read,
@@ -1335,6 +1474,29 @@ def test_executor_dispatches_claimed_create_and_replays_its_handler(tmp_path: Pa
     assert handler.claims == [None]
 
 
+def test_executor_rejects_success_without_observed_tenant_state(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+        pytest.raises(ExecutionError, match="no observed tenant state"),
+    ):
+        issued = _issue_create(repository)
+        AuthorizationExecutor(
+            repository,
+            intake,
+            handlers={
+                "create": _CompletingCreateHandler(
+                    repository,
+                    state_root=root,
+                    write_observed=False,
+                ),
+            },
+        ).execute(issued.job_id)
+
+
 def test_executor_repairs_a_lagging_job_phase_without_handler_replay(tmp_path: Path) -> None:
     root = _state_root(tmp_path)
     _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
@@ -1628,31 +1790,41 @@ def test_executor_rejects_a_legacy_handler_failure_that_retains_candidate_state(
         ).execute(issued.job_id)
 
 
-@pytest.mark.parametrize(
-    ("deployment_record", "archive_sha256"),
-    [(False, None), (True, "e" * 64)],
-)
+@pytest.mark.parametrize("operation", ["deploy", "import"])
+@pytest.mark.parametrize(("deployment_record", "archive_sha256"), [(False, None), (True, "e" * 64)])
 def test_executor_rejects_an_incomplete_successful_deployment_commit(
     tmp_path: Path,
+    operation: str,
     deployment_record: bool,
     archive_sha256: str | None,
 ) -> None:
     root = _state_root(tmp_path)
     _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
-    _write_deployment_record(root, _DEPLOYMENT_ID, "0" * 64)
-    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), _fixture("site.json"))
+    source = _fixture("site.json")
+    if operation == "import":
+        source_spec = source["spec"]
+        assert type(source_spec) is dict
+        source_spec["desiredState"] = "undeployed"
+        del source_spec["desiredDeployment"]
+    else:
+        _write_deployment_record(root, _DEPLOYMENT_ID, "0" * 64)
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), source)
 
     with (
         StateRepository(root, expected_owner=os.geteuid()) as repository,
         ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
     ):
-        issued, _artifact, correlation_id = _issue_deploy(repository, intake)
+        issued, _artifact, correlation_id = _issue_deploy(
+            repository,
+            intake,
+            operation=operation,
+        )
         with pytest.raises(ExecutionError, match="deployment record"):
             AuthorizationExecutor(
                 repository,
                 intake,
                 handlers={
-                    "deploy": _CompletingDeployHandler(
+                    operation: _CompletingDeployHandler(
                         repository,
                         root,
                         deployment_record=deployment_record,
@@ -1686,6 +1858,153 @@ def test_executor_accepts_a_complete_successful_deployment_commit(tmp_path: Path
     assert handler.claims[0] is not None
     assert handler.claims[0].artifact.verified == artifact
     assert list((root / "intake").iterdir()) == []
+
+
+@pytest.mark.parametrize("include_archive", [False, True])
+def test_executor_requires_the_archive_record_for_an_archived_commit(
+    tmp_path: Path,
+    include_archive: bool,
+) -> None:
+    root = _state_root(tmp_path)
+    source = _fixture("site.json")
+    deployment = _fixture("deployment-record.json")
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), source)
+    _write(root, StateRecordPath.tenant_deployment(_TENANT_ID, _DEPLOYMENT_ID), deployment)
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "archive",
+        "correlationId": "0198d17f-6f4a-7000-8000-000000000003",
+        "tenantId": _TENANT_ID,
+    }
+    candidate = json.loads(json.dumps(source))
+    candidate_spec = candidate["spec"]
+    assert type(candidate_spec) is dict
+    candidate_spec["desiredState"] = "archived"
+    archive = _fixture("archive-record.json")
+    archive.update(
+        {
+            "manifestDigest": manifest_digest(candidate).to_dict(),
+            "releaseTreeDigest": deployment["releaseTreeDigest"],
+            "correlationId": request["correlationId"],
+        }
+    )
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued = AuthorizationIssuer(
+            repository,
+            gate=_OpenGate(),
+            entropy=_Entropy(),
+        ).issue(
+            canonical_json_bytes(request),
+            operator_principal="operator@example.test",
+            now=_NOW,
+            artifact=None,
+        )
+        executor = AuthorizationExecutor(
+            repository,
+            intake,
+            handlers={
+                "archive": _CompletingTransitionHandler(
+                    repository,
+                    root,
+                    manifest=candidate,
+                    archive=archive if include_archive else None,
+                )
+            },
+        )
+        if include_archive:
+            outcome = executor.execute(issued.job_id)
+            assert outcome.result["status"] == "succeeded"
+        else:
+            with pytest.raises(ExecutionError, match="no archive record"):
+                executor.execute(issued.job_id)
+
+
+@pytest.mark.parametrize("include_deployment", [False, True])
+def test_executor_requires_the_new_deployment_record_for_a_restore_commit(
+    tmp_path: Path,
+    include_deployment: bool,
+) -> None:
+    root = _state_root(tmp_path)
+    source = _fixture("site.json")
+    source_spec = source["spec"]
+    deployment = _fixture("deployment-record.json")
+    archive = _fixture("archive-record.json")
+    assert type(source_spec) is dict
+    source_spec["desiredState"] = "archived"
+    archive["manifestDigest"] = manifest_digest(source).to_dict()
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), source)
+    _write(root, StateRecordPath.tenant_deployment(_TENANT_ID, _DEPLOYMENT_ID), deployment)
+    _write(root, StateRecordPath.tenant_archive(_TENANT_ID, _DEPLOYMENT_ID), archive)
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "restore",
+        "correlationId": "0198d17f-6f4a-7000-8000-000000000003",
+        "tenantId": _TENANT_ID,
+    }
+    candidate = json.loads(json.dumps(source))
+    candidate_spec = candidate["spec"]
+    bundle_digest = archive["bundleDigest"]
+    assert type(candidate_spec) is dict
+    assert type(bundle_digest) is dict
+    candidate_spec["desiredState"] = "active"
+    candidate_reference = candidate_spec["desiredDeployment"]
+    assert type(candidate_reference) is dict
+    candidate_reference.update(
+        {
+            "id": "0198d17f-6f4a-7000-8000-000000000009",
+            "archiveSha256": bundle_digest["value"],
+        }
+    )
+    restored = json.loads(json.dumps(deployment))
+    restored.update(
+        {
+            "id": candidate_reference["id"],
+            "archiveSha256": candidate_reference["archiveSha256"],
+            "releaseTreeDigest": archive["releaseTreeDigest"],
+            "correlationId": request["correlationId"],
+        }
+    )
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued = AuthorizationIssuer(
+            repository,
+            gate=_OpenGate(),
+            entropy=_Entropy(),
+        ).issue(
+            canonical_json_bytes(request),
+            operator_principal="operator@example.test",
+            now=_NOW,
+            artifact=None,
+        )
+        executor = AuthorizationExecutor(
+            repository,
+            intake,
+            handlers={
+                "restore": _CompletingTransitionHandler(
+                    repository,
+                    root,
+                    manifest=candidate,
+                    deployment=restored if include_deployment else None,
+                )
+            },
+        )
+        if include_deployment:
+            outcome = executor.execute(issued.job_id)
+            assert outcome.result["status"] == "succeeded"
+        else:
+            with pytest.raises(ExecutionError, match="no deployment record"):
+                executor.execute(issued.job_id)
 
 
 def test_executor_does_not_expose_artifact_consumption_to_handlers(tmp_path: Path) -> None:

@@ -54,6 +54,8 @@ class StateReader(Protocol):
 
     def read(self, path: StateRecordPath) -> StoredContract: ...
 
+    def tenant_has_deployment_history(self, tenant_id: object) -> bool: ...
+
 
 class ClosedPublicationGate:
     """The production-inert M3 gate used until publication is separately enabled."""
@@ -312,6 +314,8 @@ def build_expected_source(
         metadata = cast(dict[str, object], desired["metadata"])
         deletion_evidence: dict[str, object] | None = None
         if lifecycle == "undeployed":
+            if reader.tenant_has_deployment_history(tenant_id):
+                raise IssuanceError("undeployed tenant retains deployment history")
             deletion_evidence = {
                 "mode": "never-deployed",
                 "releasedSlugs": [metadata["slug"]],

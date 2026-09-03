@@ -582,6 +582,17 @@ class StateRepository:
         with self.transaction(mode=LockMode.SHARED, blocking=blocking) as transaction:
             return transaction.read(path)
 
+    def tenant_has_deployment_history(
+        self,
+        tenant_id: object,
+        *,
+        blocking: bool = False,
+    ) -> bool:
+        """Return whether one tenant has any durable deployment-store entry."""
+
+        with self.transaction(mode=LockMode.SHARED, blocking=blocking) as transaction:
+            return transaction.tenant_has_deployment_history(tenant_id)
+
     def create_immutable(
         self,
         path: StateRecordPath,
@@ -788,6 +799,24 @@ class _StateTransaction:
     def read(self, path: StateRecordPath) -> StoredContract:
         self._require_active()
         return self._repository._read_locked(path)
+
+    def tenant_has_deployment_history(self, tenant_id: object) -> bool:
+        """Inspect one deployment directory while tenant state is serialized."""
+
+        self._require_active()
+        canonical_id = validate_uuid7(tenant_id)
+        deployments = self._repository._durable.open_descendant(
+            ("tenants", canonical_id, "deployments")
+        )
+        try:
+            descriptor = deployments.duplicate_descriptor()
+            try:
+                with os.scandir(descriptor) as entries:
+                    return next(entries, None) is not None
+            finally:
+                os.close(descriptor)
+        finally:
+            deployments.close()
 
     def create_immutable(
         self,
