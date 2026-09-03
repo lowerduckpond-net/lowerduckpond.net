@@ -116,7 +116,7 @@ def test_caddy_control_runtime_opens_the_validated_lock_path(
     ]
 
 
-def test_selected_tenant_runtime_binds_the_active_verified_snapshot(
+def test_selected_tenant_runtime_binds_the_active_verified_snapshot(  # noqa: PLR0915
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     tenant_id = "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100"
@@ -163,6 +163,7 @@ def test_selected_tenant_runtime_binds_the_active_verified_snapshot(
 
     class Runtime:
         tenant = active
+        active_generation_id = generation_id
 
         def __enter__(self) -> Runtime:
             return self
@@ -173,12 +174,11 @@ def test_selected_tenant_runtime_binds_the_active_verified_snapshot(
         def using_held_publication_lock(self, _repository: object) -> nullcontext[None]:
             return nullcontext()
 
-        @staticmethod
-        def read_active() -> str:
-            return generation_id
+        def read_active(self) -> str:
+            return self.active_generation_id
 
         def read_generation_route_snapshot(self, requested: str) -> SimpleNamespace:
-            assert requested == generation_id
+            assert requested == self.active_generation_id
             return SimpleNamespace(platform_namespace={}, tenants=(self.tenant,))
 
     class Transaction:
@@ -246,6 +246,16 @@ def test_selected_tenant_runtime_binds_the_active_verified_snapshot(
         active.manifest,
         active.observed_state,
     )
+    runtime.active_generation_id = "0198d17f-6f4a-7000-8000-000000000002"
+    assert entrypoints._selected_tenant_runtime_matches(
+        repository,  # type: ignore[arg-type]
+        tenant_id,
+        "both",
+        None,
+        active.manifest,
+        active.observed_state,
+    )
+    runtime.active_generation_id = generation_id
     measured_digests[deployment_id] = {**release_tree_digest, "value": "d" * 64}
     assert not entrypoints._selected_tenant_release_matches(
         repository,  # type: ignore[arg-type]

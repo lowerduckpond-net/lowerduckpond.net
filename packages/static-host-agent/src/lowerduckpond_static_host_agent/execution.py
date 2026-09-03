@@ -771,7 +771,7 @@ class AuthorizationExecutor:
                 "authorized artifact release content failed independent validation"
             ) from error
 
-    def _validate_external_terminal_state(  # noqa: PLR0911 - terminal-state matrix
+    def _validate_external_terminal_state(  # noqa: PLR0911,PLR0912 - explicit matrix
         self,
         job: dict[str, object],
         result: dict[str, object],
@@ -838,9 +838,66 @@ class AuthorizationExecutor:
             )
             is not True
         ):
+            if runtime_validator is not None and self._current_runtime_matches_after_cross_tenant(
+                job,
+                result,
+                tenant_id=tenant_id,
+                route_set=authority.candidate_route_set,
+                manifest=candidate_manifest,
+                observed_state=authority.candidate_observed_state,
+                runtime_validator=runtime_validator,
+                blocking=blocking,
+            ):
+                return
             if self._result_was_superseded(job, result, blocking=blocking):
                 return
             raise ExecutionError("successful lifecycle result did not select its authorized routes")
+
+    def _current_runtime_matches_after_cross_tenant(  # noqa: PLR0913
+        self,
+        job: dict[str, object],
+        result: dict[str, object],
+        *,
+        tenant_id: str,
+        route_set: str,
+        manifest: dict[str, object],
+        observed_state: dict[str, object] | None,
+        runtime_validator: Callable[
+            [str, str, str | None, dict[str, object], dict[str, object] | None],
+            bool,
+        ],
+        blocking: bool,
+    ) -> bool:
+        """Accept a newer complete generation selected by another tenant."""
+
+        with self._repository.transaction(
+            mode=LockMode.EXCLUSIVE,
+            blocking=blocking,
+        ) as transaction:
+            job_id = validate_uuid7(job["jobId"])
+            current = transaction.read(StateRecordPath.authorization_job(job_id))
+            _require_same_authority(job, current.document)
+            stored = _read_result_transaction(transaction, job_id)
+            if stored is None or stored.document != result:
+                raise ExecutionError("terminal result changed during runtime validation")
+            audit_is_latest = _validate_result_audit(transaction, current.document, result)
+            snapshot = transaction.inspect_audit_correlation(result["correlationId"])
+            has_later_cross_tenant_transition = any(
+                later_tenant_id != tenant_id
+                for _operation, later_tenant_id in snapshot.later_tenant_state_transitions
+            )
+        return (
+            audit_is_latest
+            and has_later_cross_tenant_transition
+            and runtime_validator(
+                tenant_id,
+                route_set,
+                None,
+                manifest,
+                observed_state,
+            )
+            is True
+        )
 
     def _validate_retired_archive_absence(
         self,
@@ -2063,6 +2120,12 @@ def _validate_handler_result_state(
         # A later fully audited lifecycle operation may legitimately supersede
         # this result for the same tenant before the executor reacquires
         # serialization.
+        if result["status"] == "succeeded":
+            _validate_success_tenant_inventory(
+                transaction,
+                result,
+                authority=authority,
+            )
         return
     if result["status"] == "failed":
         _validate_failed_handler_result_state(transaction, job, result, authority=authority)
@@ -2072,6 +2135,11 @@ def _validate_handler_result_state(
     desired_path = StateRecordPath.tenant_desired(tenant_id)
     if result["operation"] == "delete":
         _validate_deleted_tenant_state(transaction, tenant_id)
+        _validate_success_tenant_inventory(
+            transaction,
+            result,
+            authority=authority,
+        )
         return
     manifest = result.get("manifest")
     if type(manifest) is not dict:
@@ -2097,6 +2165,11 @@ def _validate_handler_result_state(
         job,
         result,
         manifest,
+        authority=authority,
+    )
+    _validate_success_tenant_inventory(
+        transaction,
+        result,
         authority=authority,
     )
 
@@ -2168,6 +2241,41 @@ def _validate_failed_create_tenant_inventory(
             expected.discard(tenant_id)
     if transaction.measure_inventory().tenant_ids != tuple(sorted(expected)):
         raise ExecutionError("failed create changed the authorized tenant inventory")
+
+
+def _validate_success_tenant_inventory(
+    transaction: ExecutionTransaction,
+    result: dict[str, object],
+    *,
+    authority: _LifecycleDispatchAuthority,
+) -> None:
+    """Require exactly the requested tenant delta plus later audited work."""
+
+    source_tenant_ids = authority.source_tenant_ids
+    if source_tenant_ids is None:
+        # Terminal jobs committed before this dispatch boundary remain
+        # replayable. Every newly dispatched v2 handler binds this field first.
+        return
+    tenant_id = validate_uuid7(result["tenantId"])
+    expected = set(source_tenant_ids)
+    operation = result["operation"]
+    if operation == "create":
+        expected.add(tenant_id)
+    elif operation == "delete":
+        expected.discard(tenant_id)
+    try:
+        snapshot = transaction.inspect_audit_correlation(result["correlationId"])
+    except AuditError as error:
+        raise ExecutionError("successful lifecycle audit authority is invalid") from error
+    for later_operation, later_tenant_id in snapshot.later_tenant_inventory_transitions:
+        if later_operation == "create":
+            expected.add(later_tenant_id)
+        else:
+            expected.discard(later_tenant_id)
+    if transaction.measure_inventory().tenant_ids != tuple(sorted(expected)):
+        raise ExecutionError(
+            "successful lifecycle handler changed tenant inventory outside authority"
+        )
 
 
 def _validate_success_record_history(
@@ -2491,9 +2599,15 @@ def _validate_result_audit(
         or entry["correlationId"] != result["correlationId"]
         or entry["resultDigest"] != result_digest(result).to_dict()
         or entry["resultStatus"] != result["status"]
-        or entry["timestamp"] != job["acceptedAt"]
     ):
         raise ExecutionError("lifecycle result disagrees with durable audit authority")
+    _validate_result_audit_timestamp(
+        transaction,
+        job,
+        result,
+        entry,
+        snapshot=snapshot,
+    )
     if result["operation"] == "delete" and result["status"] == "succeeded":
         _validate_delete_audit_evidence(job, entry)
     failure_audit_sequence = _validate_failure_audit_position(result, entry)
@@ -2509,6 +2623,49 @@ def _validate_result_audit(
         and previous_transition_sequence >= failure_audit_sequence
     )
     return not (snapshot.has_later_tenant_state_transition or repaired_after_superseding_transition)
+
+
+def _validate_result_audit_timestamp(
+    transaction: ExecutionTransaction,
+    job: dict[str, object],
+    result: dict[str, object],
+    entry: dict[str, object],
+    *,
+    snapshot: AuditCorrelationSnapshot,
+) -> None:
+    """Bind audit time to transition state without backdating to issuance."""
+
+    if job["compatibilityVersion"] == "static-job-v1":
+        return
+    observed_transitions = {
+        "archive",
+        "create",
+        "deploy",
+        "import",
+        "reconcile",
+        "rename",
+        "restore",
+        "resume",
+        "rollback",
+        "suspend",
+    }
+    exact_observed_transition = (
+        result["status"] == "succeeded"
+        and result["operation"] in observed_transitions
+        and type(result.get("manifest")) is dict
+        and not snapshot.has_later_tenant_state_transition
+    )
+    if exact_observed_transition:
+        tenant_id = validate_uuid7(result["tenantId"])
+        try:
+            observed = transaction.read(StateRecordPath.tenant_observed(tenant_id)).document
+        except FileNotFoundError as error:
+            raise ExecutionError(
+                "successful lifecycle audit has no observed tenant state"
+            ) from error
+        validate_contract(observed, expected_kind=ContractKind.TENANT_OBSERVED_STATE)
+        if entry["timestamp"] != observed["reconciledAt"]:
+            raise ExecutionError("lifecycle audit disagrees with durable transition time")
 
 
 def _validate_failure_audit_position(

@@ -667,7 +667,10 @@ def _selected_tenant_runtime_matches(  # noqa: PLR0911,PLR0913,PLR0917
                 return (
                     spec.get("desiredState") == "active"
                     and observed.get("observedState") == "active"
-                    and observed.get("runtimeGenerationId") == generation_id
+                    and (
+                        generation_id is None
+                        or observed.get("runtimeGenerationId") == generation_id
+                    )
                 )
             return (
                 spec.get("desiredState") != "active"

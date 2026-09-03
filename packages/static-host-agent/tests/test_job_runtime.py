@@ -183,19 +183,46 @@ def _write(root: Path, path: StateRecordPath, document: dict[str, object]) -> No
     target.chmod(0o600)
 
 
+def _write_observed_for_manifest(root: Path, manifest: dict[str, object]) -> None:
+    metadata = manifest["metadata"]
+    spec = manifest["spec"]
+    assert type(metadata) is dict
+    assert type(spec) is dict
+    observed = _fixture("tenant-observed-state.json")
+    observed.update(
+        {
+            "tenantId": metadata["id"],
+            "desiredManifestDigest": manifest_digest(manifest).to_dict(),
+            "observedState": spec["desiredState"],
+            "activeDeploymentId": None,
+            "runtimeGenerationId": None,
+        }
+    )
+    _write(root, StateRecordPath.tenant_observed(metadata["id"]), observed)
+
+
 def _append_result_audit(
     repository: StateRepository,
     job: dict[str, object],
     result: dict[str, object],
 ) -> None:
     state = repository.inspect_audit()
+    timestamp = job["acceptedAt"]
+    tenant_id = result["tenantId"]
+    if result["status"] == "succeeded" and type(tenant_id) is str:
+        try:
+            observed = repository.read(StateRecordPath.tenant_observed(tenant_id)).document
+        except FileNotFoundError:
+            pass
+        else:
+            timestamp = observed["reconciledAt"]
     repository.append_audit(
         {
             "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
             "kind": "AuditEntry",
             "sequence": state.entry_count,
             "previousEntryDigest": state.terminal_digest,
-            "timestamp": job["acceptedAt"],
+            "timestamp": timestamp,
             "operatorPrincipal": job["operatorPrincipal"],
             "operation": result["operation"],
             "tenantId": result["tenantId"],
@@ -599,6 +626,7 @@ def test_result_waiter_accepts_the_generated_tenant_from_a_successful_create(
         provenance["jobId"] = issued.job_id
         result["correlationId"] = request["correlationId"]
         _write(root, StateRecordPath.tenant_desired(result["tenantId"]), manifest)
+        _write_observed_for_manifest(root, manifest)
         repository.create_immutable(
             StateRecordPath.authorization_result(issued.job_id),
             result,
@@ -627,6 +655,7 @@ def test_result_waiter_returns_an_audited_success_after_later_state_change(
         assert type(manifest) is dict
         provenance["jobId"] = issued.job_id
         result["correlationId"] = request["correlationId"]
+        _write_observed_for_manifest(root, manifest)
         _append_result_audit(repository, issued.document, result)
         desired = json.loads(json.dumps(manifest))
         metadata = desired["metadata"]
