@@ -309,6 +309,10 @@ retirement intent disappeared: the executor also requires an independent,
 version-aware exact-key listing to prove that every version and delete marker
 of the retired object is absent. That proof is required even when a later
 tenant transition has superseded the result being replayed.
+Conversely, a failed restore or archived deletion is terminally valid only
+after an independent exact-version check proves that the source object still
+exists and matches its bound archive record. A failed retirement cannot clear
+its intent after merely restoring local state while customer bytes are missing.
 
 Produce a portable ZIP export with this fixed versioned envelope:
 

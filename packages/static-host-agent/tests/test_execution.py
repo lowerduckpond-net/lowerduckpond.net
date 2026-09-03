@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 from lowerduckpond_static_contracts import (
     archive_record_digest,
+    audit_entry_digest,
     canonical_json_bytes,
     deployment_record_digest,
     manifest_digest,
@@ -38,10 +39,12 @@ from lowerduckpond_static_host_agent import (
     LifecycleArtifact,
     LifecycleJobHandler,
     LockManager,
+    LockName,
     StateRecordPath,
     StateRepository,
     StoredContract,
     VerifiedArtifact,
+    build_portable_bundle,
 )
 
 _FIXTURE_ROOT = Path(__file__).parents[3] / "tests/static-publication/fixtures/accepted"
@@ -1151,6 +1154,33 @@ def _deployment_zip_payload(content: bytes = b"authorized deployment") -> bytes:
     return stream.getvalue()
 
 
+def _portable_bundle_payload(tmp_path: Path) -> tuple[bytes, dict[str, str]]:
+    release = tmp_path / "portable-release"
+    release.mkdir()
+    release.chmod(0o755)
+    index = release / "index.html"
+    index.write_bytes(b"authorized import")
+    index.chmod(0o644)
+    lock_root = tmp_path / "portable-locks"
+    output_root = tmp_path / "portable-output"
+    for directory in (lock_root, output_root):
+        directory.mkdir()
+        directory.chmod(0o700)
+    with (
+        LockManager.initialize(lock_root, expected_owner=os.geteuid()) as manager,
+        manager.acquire(LockName.EXPORT),
+    ):
+        bundle = build_portable_bundle(
+            release,
+            _fixture("site.json"),
+            output_parent=output_root,
+            output_name="import.zip",
+            lock_manager=manager,
+            expected_owner=os.geteuid(),
+        )
+    return (output_root / "import.zip").read_bytes(), bundle.release_tree.digest.to_dict()
+
+
 def _issue_deploy(
     repository: StateRepository,
     intake: ArtifactIntake,
@@ -1718,6 +1748,8 @@ def test_executor_publishes_one_immutable_mutation_free_terminal_result(
     assert first.created is True
     assert first.result["status"] == "failed"
     assert first.result["errorCode"] == "not_implemented"
+    assert first.result["failureAuditPredecessorDigest"] is None
+    assert first.result["failureAuditSequence"] == 0
     assert second.created is False
     assert second.result == first.result == stored
     assert job["phase"] == "failed"
@@ -2363,9 +2395,13 @@ def test_executor_rejects_an_incomplete_successful_deployment_commit(
         StateRepository(root, expected_owner=os.geteuid()) as repository,
         ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
     ):
+        payload = None
+        if operation == "import":
+            payload, _release_digest = _portable_bundle_payload(tmp_path)
         issued, _artifact, correlation_id = _issue_deploy(
             repository,
             intake,
+            payload=payload,
             operation=operation,
         )
         with pytest.raises(ExecutionError, match="deployment record"):
@@ -2407,6 +2443,37 @@ def test_executor_accepts_a_complete_successful_deployment_commit(tmp_path: Path
     assert handler.claims[0] is not None
     assert handler.claims[0].artifact.verified == artifact
     assert list((root / "intake").iterdir()) == []
+
+
+def test_executor_derives_import_content_from_the_portable_envelope(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    source = _fixture("site.json")
+    source_spec = _mapping(source["spec"])
+    source_spec["desiredState"] = "undeployed"
+    source_spec.pop("desiredDeployment")
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), source)
+    payload, release_digest = _portable_bundle_payload(tmp_path)
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued, _artifact, _correlation_id = _issue_deploy(
+            repository,
+            intake,
+            payload=payload,
+            operation="import",
+        )
+        outcome = AuthorizationExecutor(
+            repository,
+            intake,
+            handlers={"import": _CompletingDeployHandler(repository, root)},
+        ).execute(issued.job_id)
+        job = repository.read(StateRecordPath.authorization_job(issued.job_id)).document
+
+    assert outcome.result["status"] == "succeeded"
+    assert job["dispatchArtifactReleaseTreeDigest"] == release_digest
 
 
 def test_executor_rejects_a_deployment_digest_not_derived_from_its_artifact(
@@ -4361,6 +4428,7 @@ def test_executor_recognizes_archive_intent_paths_for_handler_replay(
         outcome = AuthorizationExecutor(
             repository,
             intake,
+            retained_archive_validator=lambda _archive: True,
             handlers={operation: handler},
         ).execute(job["jobId"])
 
@@ -4694,6 +4762,47 @@ def test_executor_requires_remote_absence_for_a_retired_restore_archive(
 
     source_authority = _mapping(job["sourceAuthority"])
     assert checked == [source_authority["archiveRecord"]]
+
+
+def test_executor_requires_remote_presence_after_a_failed_restore(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    job, result, _previous, _previous_result = _write_committed_restore_replay(root)
+    source_authority = _mapping(job["sourceAuthority"])
+    source = _mapping(source_authority["manifest"])
+    archive = _mapping(source_authority["archiveRecord"])
+    job["phase"] = "failed"
+    result.update({"status": "failed", "errorCode": "archive_unavailable"})
+    result.pop("canonicalOrigin")
+    result.pop("manifest")
+    _write(root, StateRecordPath.authorization_job(job["jobId"]), job)
+    _write(root, StateRecordPath.authorization_result(job["jobId"]), result)
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), source)
+    _write(
+        root,
+        StateRecordPath.tenant_archive(_TENANT_ID, archive["deploymentId"]),
+        archive,
+    )
+    checked: list[dict[str, object]] = []
+
+    def reject_missing_archive(candidate: dict[str, object]) -> bool:
+        checked.append(candidate)
+        return False
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        _append_result_audit(repository, job, result)
+        with pytest.raises(ExecutionError, match="lost its retained archive object"):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                retained_archive_validator=reject_missing_archive,
+            ).execute(job["jobId"])
+
+    assert checked == [archive]
 
 
 def test_executor_rejects_an_archive_record_outside_construction_authority(
@@ -6344,16 +6453,9 @@ def test_executor_repairs_a_result_first_terminal_failure_commit(
     assert audit["resultStatus"] == "failed"
 
 
-@pytest.mark.parametrize(
-    ("transition_timestamp", "superseded"),
-    [
-        ("2026-08-29T12:00:00Z", False),
-        ("2026-08-29T12:00:02Z", True),
-    ],
-)
+@pytest.mark.parametrize("superseded", [False, True])
 def test_executor_preserves_supersession_when_repairing_a_late_failure_audit(
     tmp_path: Path,
-    transition_timestamp: str,
     superseded: bool,
 ) -> None:
     root = _state_root(tmp_path)
@@ -6373,6 +6475,29 @@ def test_executor_preserves_supersession_when_repairing_a_late_failure_audit(
     )
     correlation = json.loads(json.dumps(job))
     correlation["phase"] = "pending"
+    later_result = json.loads(json.dumps(later_result))
+    later_provenance = _mapping(later_result["provenance"])
+    later_provenance["jobId"] = "0198d17f-6f4a-7000-8000-000000000007"
+    later_result["correlationId"] = "0198d17f-6f4a-7000-8000-000000000008"
+    later_job = {
+        # This job was accepted before the failed job even though its audit
+        # transition is committed after that failure's publication boundary.
+        "acceptedAt": "2026-08-29T11:59:59Z",
+        "operatorPrincipal": job["operatorPrincipal"],
+    }
+    later_entry: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "AuditEntry",
+        "sequence": 0,
+        "previousEntryDigest": None,
+        "timestamp": later_job["acceptedAt"],
+        "operatorPrincipal": later_job["operatorPrincipal"],
+        "operation": later_result["operation"],
+        "tenantId": later_result["tenantId"],
+        "correlationId": later_result["correlationId"],
+        "resultDigest": result_digest(later_result).to_dict(),
+        "resultStatus": later_result["status"],
+    }
     failure: dict[str, object] = {
         "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
         "kind": "OperationResult",
@@ -6382,6 +6507,10 @@ def test_executor_preserves_supersession_when_repairing_a_late_failure_audit(
         "status": "failed",
         "errorCode": "state_drift",
         "failurePublisher": "authorization-executor",
+        "failureAuditPredecessorDigest": (
+            None if superseded else audit_entry_digest(later_entry).to_dict()
+        ),
+        "failureAuditSequence": 0 if superseded else 1,
         "tenantId": _TENANT_ID,
     }
     _write(root, StateRecordPath.authorization_job(job["jobId"]), job)
@@ -6393,14 +6522,6 @@ def test_executor_preserves_supersession_when_repairing_a_late_failure_audit(
     _write(root, StateRecordPath.authorization_result(job["jobId"]), failure)
     root.joinpath(*StateRecordPath.transaction_intent(intent["intentId"]).components).unlink()
 
-    later_result = json.loads(json.dumps(later_result))
-    later_provenance = _mapping(later_result["provenance"])
-    later_provenance["jobId"] = "0198d17f-6f4a-7000-8000-000000000007"
-    later_result["correlationId"] = "0198d17f-6f4a-7000-8000-000000000008"
-    later_job = {
-        "acceptedAt": transition_timestamp,
-        "operatorPrincipal": job["operatorPrincipal"],
-    }
     validator_calls: list[str] = []
 
     def reject_stale_source(*_arguments: object) -> bool:
