@@ -932,6 +932,14 @@ def _append_result_audit_if_absent(
         _append_result_audit(repository, job, result)
 
 
+def _deleted_tenant_routes_absent(_tenant_id: str) -> bool:
+    return True
+
+
+def _deleted_tenant_routes_present(_tenant_id: str) -> bool:
+    return False
+
+
 def _write_deployment_record(
     root: Path,
     deployment_id: object,
@@ -2321,9 +2329,14 @@ def test_executor_binds_delete_audit_evidence_to_its_exact_source(
                 repository,
                 intake,
                 handlers={"delete": handler},
+                deleted_tenant_route_validator=_deleted_tenant_routes_absent,
             ).execute(issued.job_id)
         with pytest.raises(ExecutionError, match="source authority"):
-            AuthorizationExecutor(repository, intake).execute(issued.job_id)
+            AuthorizationExecutor(
+                repository,
+                intake,
+                deleted_tenant_route_validator=_deleted_tenant_routes_absent,
+            ).execute(issued.job_id)
 
 
 def test_executor_accepts_exact_durable_delete_evidence_and_replays_it(
@@ -2356,9 +2369,16 @@ def test_executor_accepts_exact_durable_delete_evidence_and_replays_it(
             repository,
             intake,
             handlers={"delete": handler},
+            deleted_tenant_route_validator=_deleted_tenant_routes_absent,
         )
         outcome = executor.execute(issued.job_id)
         replay = executor.execute(issued.job_id)
+        with pytest.raises(ExecutionError, match="retained an active tenant route"):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                deleted_tenant_route_validator=_deleted_tenant_routes_present,
+            ).execute(issued.job_id)
 
     assert outcome.result["status"] == "succeeded"
     assert replay.result == outcome.result
@@ -2396,6 +2416,41 @@ def test_executor_rejects_delete_that_retains_the_tenant_namespace(tmp_path: Pat
                         remove_namespace=False,
                     )
                 },
+                deleted_tenant_route_validator=_deleted_tenant_routes_absent,
+            ).execute(issued.job_id)
+
+
+def test_executor_rejects_delete_that_retains_an_active_route(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    manifest = _fixture("site.json")
+    spec = manifest["spec"]
+    assert type(spec) is dict
+    spec["desiredState"] = "undeployed"
+    del spec["desiredDeployment"]
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), manifest)
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued = _issue_delete(repository)
+        expected = issued.document["expectedSource"]
+        assert type(expected) is dict
+        deletion_evidence = expected["deletionEvidence"]
+        assert type(deletion_evidence) is dict
+        with pytest.raises(ExecutionError, match="retained an active tenant route"):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={
+                    "delete": _CompletingDeleteHandler(
+                        repository,
+                        root,
+                        deletion_evidence=deletion_evidence,
+                    )
+                },
+                deleted_tenant_route_validator=_deleted_tenant_routes_present,
             ).execute(issued.job_id)
 
 
@@ -3667,7 +3722,11 @@ def test_executor_binds_a_lone_restore_retirement_intent_to_its_result(
     assert type(metadata) is dict
     deployment = candidate_spec["desiredDeployment"]
     assert type(deployment) is dict
-    deployment["archiveSha256"] = "e" * 64
+    archive = retirement_intent["archiveRecord"]
+    assert type(archive) is dict
+    bundle_digest = archive["bundleDigest"]
+    assert type(bundle_digest) is dict
+    deployment["archiveSha256"] = bundle_digest["value"]
     result: dict[str, object] = {
         "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
         "kind": "OperationResult",
@@ -3690,21 +3749,40 @@ def test_executor_binds_a_lone_restore_retirement_intent_to_its_result(
         StateRecordPath.archive_retirement_intent(retirement_intent["intentId"]),
         retirement_intent,
     )
+    _write(root, StateRecordPath.tenant_desired(request["tenantId"]), candidate)
+    _write_observed_for_manifest(root, candidate)
+    durable_deployment = _fixture("deployment-record.json")
+    durable_deployment["id"] = deployment["id"]
+    durable_deployment["archiveSha256"] = deployment["archiveSha256"]
+    durable_deployment["correlationId"] = request["correlationId"]
+    _write(
+        root,
+        StateRecordPath.tenant_deployment(request["tenantId"], deployment["id"]),
+        durable_deployment,
+    )
     _write(root, StateRecordPath.authorization_result(job["jobId"]), result)
 
     with (
         StateRepository(root, expected_owner=os.geteuid()) as repository,
         ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
     ):
-        handler = _CompletingCreateHandler(repository)
-        with pytest.raises(ExecutionError, match="no transaction authority"):
-            AuthorizationExecutor(
-                repository,
-                intake,
-                handlers={"restore": handler},
-            ).execute(job["jobId"])
+        _append_result_audit(repository, job, result)
+        retirement_id = retirement_intent["intentId"]
+        assert type(retirement_id) is str
+        handler = _CompletingIntentHandler(
+            repository,
+            intent_path=StateRecordPath.archive_retirement_intent(retirement_id),
+            delegate=_CompletingCreateHandler(repository),
+        )
+        outcome = AuthorizationExecutor(
+            repository,
+            intake,
+            handlers={"restore": handler},
+        ).execute(job["jobId"])
 
-    assert handler.phases == []
+    assert outcome.result == result
+    assert outcome.created is False
+    assert handler.phases == ["claimed"]
 
 
 def test_executor_dispatches_a_claimed_job_with_an_intent_without_source_recheck(

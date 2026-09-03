@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import ExitStack
 from copy import deepcopy
 from dataclasses import dataclass
@@ -161,11 +161,13 @@ class AuthorizationExecutor:
         intake: ArtifactIntake,
         *,
         handlers: Mapping[str, LifecycleJobHandler] | None = None,
+        deleted_tenant_route_validator: Callable[[str], bool] | None = None,
         capacity_limits: HostCapacityLimits = DEFAULT_HOST_CAPACITY_LIMITS,
     ) -> None:
         self._repository = repository
         self._intake = intake
         self._handlers = dict(handlers or {})
+        self._deleted_tenant_route_validator = deleted_tenant_route_validator
         self._capacity_limits = capacity_limits
 
     def execute(self, job_id: object, *, blocking: bool = False) -> ExecutionOutcome:
@@ -294,6 +296,8 @@ class AuthorizationExecutor:
         handler: LifecycleJobHandler | None,
         blocking: bool,
     ) -> ExecutionOutcome:
+        _validate_result_binding(initial.document, existing.document)
+        self._validate_external_terminal_state(existing.document)
         result: dict[str, object] | None = None
         with self._repository.transaction(
             mode=LockMode.EXCLUSIVE,
@@ -383,6 +387,8 @@ class AuthorizationExecutor:
         *,
         blocking: bool,
     ) -> ExecutionOutcome | None:
+        _validate_result_binding(initial.document, expected_result)
+        self._validate_external_terminal_state(expected_result)
         with self._repository.transaction(
             mode=LockMode.EXCLUSIVE,
             blocking=blocking,
@@ -438,6 +444,7 @@ class AuthorizationExecutor:
         blocking: bool,
     ) -> ExecutionOutcome:
         path = StateRecordPath.authorization_job(job_id)
+        replay: StoredContract | None = None
         with self._repository.transaction(
             mode=LockMode.EXCLUSIVE,
             blocking=blocking,
@@ -454,13 +461,7 @@ class AuthorizationExecutor:
                 )
                 _require_available_lifecycle_handler(has_lifecycle_intent, handler)
                 if not has_lifecycle_intent:
-                    _validate_result_audit(
-                        transaction,
-                        current.document,
-                        existing.document,
-                    )
-                    result = _repair_terminal_phase_transaction(transaction, current, existing)
-                    return ExecutionOutcome(result, False)
+                    replay = existing
             else:
                 _validate_job_integrity(current.document, claim=claim)
                 has_lifecycle_intent = False
@@ -501,6 +502,14 @@ class AuthorizationExecutor:
                     result = _failure_result(claimed.document, _NOT_IMPLEMENTED)
                     _publish_result(transaction, claimed, result, limits=self._capacity_limits)
                     return ExecutionOutcome(result, True)
+        if replay is not None:
+            return self._replay_existing_result(
+                job_id,
+                initial,
+                replay,
+                handler=handler,
+                blocking=blocking,
+            )
         if handler is None:  # pragma: no cover - every in-lock branch returns
             raise ExecutionError("authorization handler selection was lost")
         return self._execute_handler(
@@ -526,6 +535,7 @@ class AuthorizationExecutor:
             raise ExecutionError("lifecycle handler returned a malformed outcome")
         result = deepcopy(returned.result)
         validate_contract(result, expected_kind=ContractKind.OPERATION_RESULT)
+        self._validate_external_terminal_state(result)
         with self._repository.transaction(
             mode=LockMode.EXCLUSIVE,
             blocking=blocking,
@@ -559,6 +569,14 @@ class AuthorizationExecutor:
             if current.document["phase"] != expected_phase:
                 raise ExecutionError("lifecycle handler returned before terminal job commit")
         return ExecutionOutcome(result, returned.created)
+
+    def _validate_external_terminal_state(self, result: dict[str, object]) -> None:
+        if result["status"] != "succeeded" or result["operation"] != "delete":
+            return
+        tenant_id = validate_uuid7(result["tenantId"])
+        validator = self._deleted_tenant_route_validator
+        if validator is None or validator(tenant_id) is not True:
+            raise ExecutionError("successful delete retained an active tenant route")
 
     def _handler_for(self, job: dict[str, object]) -> LifecycleJobHandler | None:
         request = job["request"]
@@ -872,12 +890,6 @@ def _validate_archive_intent_relationships(intents: list[dict[str, object]]) -> 
         and retirement_intent is None
     ):
         raise ExecutionError("restore transaction has no retirement authority")
-    if (
-        retirement_intent is not None
-        and retirement_intent["transition"] == "restore"
-        and transaction_intent is None
-    ):
-        raise ExecutionError("restore retirement has no transaction authority")
     if transaction_intent is not None and retirement_intent is not None:
         _validate_retirement_transaction_relationship(
             transaction_intent,
