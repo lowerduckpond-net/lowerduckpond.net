@@ -33,6 +33,19 @@ _INITIAL_MAXIMUM_ADMINISTRATOR_RESERVE_BYTES: Final = 8 * MEBIBYTE
 _SEGMENT_PATTERN: Final = re.compile(r"segment-([0-9]{20})\.jsonl", flags=re.ASCII)
 _BLOCK_BYTES: Final = 512
 _DIRECTORY_SCAN_MARGIN: Final = 1
+_TENANT_STATE_TRANSITIONS: Final = frozenset(
+    {
+        "create",
+        "deploy",
+        "rollback",
+        "suspend",
+        "resume",
+        "rename",
+        "import",
+        "restore",
+        "delete",
+    }
+)
 
 
 class AuditError(RuntimeError):
@@ -97,6 +110,7 @@ class AuditCorrelationSnapshot:
 
     state: AuditState
     entry: dict[str, object] | None
+    has_later_tenant_state_transition: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,12 +179,16 @@ def inspect_audit_correlation(  # noqa: PLR0913 - keep every audit boundary expl
         )
     finally:
         audit_directory.close()
-    state, entry = _validate_chain_records(
+    state, entry, has_later_tenant_state_transition = _validate_chain_records(
         segments,
         limits=limits,
         correlation_id=canonical_correlation_id,
     )
-    return AuditCorrelationSnapshot(state=state, entry=entry)
+    return AuditCorrelationSnapshot(
+        state=state,
+        entry=entry,
+        has_later_tenant_state_transition=has_later_tenant_state_transition,
+    )
 
 
 def append_audit(  # noqa: PLR0913 - keep every security boundary explicit
@@ -349,7 +367,7 @@ def _validate_chain(
     *,
     limits: AuditLimits,
 ) -> AuditState:
-    state, _entry = _validate_chain_records(
+    state, _entry, _has_later_tenant_state_transition = _validate_chain_records(
         segments,
         limits=limits,
         correlation_id=None,
@@ -362,12 +380,13 @@ def _validate_chain_records(
     *,
     limits: AuditLimits,
     correlation_id: str | None,
-) -> tuple[AuditState, dict[str, object] | None]:
+) -> tuple[AuditState, dict[str, object] | None, bool]:
     sequence = 0
     terminal: dict[str, str] | None = None
     allocated = 0
     previous_segment_bytes: int | None = None
     matching_entry: dict[str, object] | None = None
+    has_later_tenant_state_transition = False
     for segment in segments:
         if not segment.data or not segment.data.endswith(b"\n"):
             raise AuditError("audit segment is not nonempty canonical JSON lines")
@@ -395,10 +414,15 @@ def _validate_chain_records(
                 raise AuditError("audit entry sequence is not contiguous")
             if document["previousEntryDigest"] != terminal:
                 raise AuditError("audit entry predecessor breaks the chain")
+            preceding_match = matching_entry
             if correlation_id is not None and document["correlationId"] == correlation_id:
                 if matching_entry is not None:
                     raise AuditError("audit correlation appears multiple times")
                 matching_entry = document
+            has_later_tenant_state_transition = (
+                has_later_tenant_state_transition
+                or _is_later_tenant_state_transition(preceding_match, document)
+            )
             terminal = audit_entry_digest(document).to_dict()
             sequence += 1
         previous_segment_bytes = len(segment.data)
@@ -412,6 +436,20 @@ def _validate_chain_records(
             terminal_digest=terminal,
         ),
         matching_entry,
+        has_later_tenant_state_transition,
+    )
+
+
+def _is_later_tenant_state_transition(
+    matching_entry: dict[str, object] | None,
+    candidate: dict[str, object],
+) -> bool:
+    return (
+        matching_entry is not None
+        and matching_entry["tenantId"] is not None
+        and candidate["tenantId"] == matching_entry["tenantId"]
+        and candidate["resultStatus"] == "succeeded"
+        and candidate["operation"] in _TENANT_STATE_TRANSITIONS
     )
 
 

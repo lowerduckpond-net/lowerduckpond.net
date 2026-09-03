@@ -91,7 +91,7 @@
     argv:
       - /usr/bin/systemctl
       - list-units
-      - --state=active
+      - --state=active,activating,deactivating,reloading,refreshing,maintenance
       - --plain
       - --no-legend
       - lowerduckpond-static-reconcile.service
