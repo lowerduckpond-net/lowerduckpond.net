@@ -150,6 +150,9 @@ class _LifecycleDispatchAuthority:
     """Durable lifecycle authority retained while an external handler runs."""
 
     source_manifest: dict[str, object] | None
+    source_observed_state: dict[str, object] | None
+    source_runtime_generation_id: str | None
+    source_route_set: str | None
     candidate_observed_state: dict[str, object] | None
     candidate_runtime_generation_id: str | None
     candidate_route_set: str | None
@@ -666,7 +669,7 @@ class AuthorizationExecutor:
         )
         return ExecutionOutcome(result, returned.created)
 
-    def _validate_external_terminal_state(
+    def _validate_external_terminal_state(  # noqa: PLR0911 - terminal-state matrix
         self,
         job: dict[str, object],
         result: dict[str, object],
@@ -675,7 +678,15 @@ class AuthorizationExecutor:
         audit_is_latest_for_tenant: bool = True,
         blocking: bool = False,
     ) -> None:
-        if result["status"] != "succeeded":
+        if authority is None or not audit_is_latest_for_tenant:
+            return
+        if result["status"] == "failed":
+            self._validate_failed_external_terminal_state(
+                job,
+                result,
+                authority=authority,
+                blocking=blocking,
+            )
             return
         tenant_id = validate_uuid7(result["tenantId"])
         if result["operation"] == "delete":
@@ -685,26 +696,22 @@ class AuthorizationExecutor:
             if self._result_was_superseded(job, result, blocking=blocking):
                 return
             raise ExecutionError("successful delete retained an active tenant route")
-        if (
-            not audit_is_latest_for_tenant
-            or authority is None
-            or authority.candidate_route_set is None
-        ):
+        if authority.candidate_route_set is None:
             return
         generation_id = authority.candidate_runtime_generation_id
         runtime_validator = self._tenant_runtime_validator
-        manifest = result.get("manifest")
+        candidate_manifest = result.get("manifest")
         if runtime_validator is None and authority.execution_validation_committed:
             return
         if (
             (generation_id is None and authority.candidate_route_set == "both")
             or runtime_validator is None
-            or type(manifest) is not dict
+            or type(candidate_manifest) is not dict
             or runtime_validator(
                 tenant_id,
                 authority.candidate_route_set,
                 generation_id,
-                manifest,
+                candidate_manifest,
                 authority.candidate_observed_state,
             )
             is not True
@@ -712,6 +719,38 @@ class AuthorizationExecutor:
             if self._result_was_superseded(job, result, blocking=blocking):
                 return
             raise ExecutionError("successful lifecycle result did not select its authorized routes")
+
+    def _validate_failed_external_terminal_state(
+        self,
+        job: dict[str, object],
+        result: dict[str, object],
+        *,
+        authority: _LifecycleDispatchAuthority,
+        blocking: bool,
+    ) -> None:
+        if authority.execution_validation_committed:
+            return
+        source_manifest = authority.source_manifest
+        source_route_set = authority.source_route_set
+        if source_manifest is None or source_route_set is None:
+            return
+        tenant_id = validate_uuid7(result["tenantId"])
+        runtime_validator = self._tenant_runtime_validator
+        if (
+            runtime_validator is not None
+            and runtime_validator(
+                tenant_id,
+                source_route_set,
+                authority.source_runtime_generation_id,
+                source_manifest,
+                authority.source_observed_state,
+            )
+            is True
+        ):
+            return
+        if self._result_was_superseded(job, result, blocking=blocking):
+            return
+        raise ExecutionError("failed lifecycle result did not restore its authorized routes")
 
     def _result_was_superseded(
         self,
@@ -908,7 +947,7 @@ def _expected_source_error(
     return None
 
 
-def _capture_authorized_lifecycle_authority(  # noqa: PLR0912 - explicit authority matrix
+def _capture_authorized_lifecycle_authority(  # noqa: PLR0912,PLR0915 - authority matrix
     transaction: ExecutionTransaction,
     job: dict[str, object],
 ) -> _LifecycleDispatchAuthority:
@@ -916,8 +955,18 @@ def _capture_authorized_lifecycle_authority(  # noqa: PLR0912 - explicit authori
     expected = job["expectedSource"]
     if type(request) is not dict or type(expected) is not dict:
         raise ExecutionError("authorization source authority is malformed")
-    if request["operation"] in {"create", "delete"}:
-        return _LifecycleDispatchAuthority(None, None, None, None, None, False)
+    if request["operation"] == "delete":
+        return _LifecycleDispatchAuthority(
+            source_manifest=None,
+            source_observed_state=None,
+            source_runtime_generation_id=None,
+            source_route_set=None,
+            candidate_observed_state=None,
+            candidate_runtime_generation_id=None,
+            candidate_route_set=None,
+            archive_record=None,
+            archive_construction_present=False,
+        )
     _request, intents = _bound_lifecycle_intents(transaction, job)
     transaction_intent = next(
         (intent for intent in intents if intent["kind"] == "TransactionIntent"),
@@ -931,10 +980,25 @@ def _capture_authorized_lifecycle_authority(  # noqa: PLR0912 - explicit authori
         (intent for intent in intents if intent["kind"] == "ArchiveRetirementIntent"),
         None,
     )
+    source_observed: dict[str, object] | None = None
+    source_generation: str | None = None
+    source_route_set: str | None = None
     candidate_observed: dict[str, object] | None = None
     candidate_generation: str | None = None
     candidate_route_set: str | None = None
     archive_record: dict[str, object] | None = None
+    if transaction_intent is None and request["operation"] == "create":
+        return _LifecycleDispatchAuthority(
+            source_manifest=None,
+            source_observed_state=None,
+            source_runtime_generation_id=None,
+            source_route_set=None,
+            candidate_observed_state=None,
+            candidate_runtime_generation_id=None,
+            candidate_route_set=None,
+            archive_record=None,
+            archive_construction_present=False,
+        )
     if transaction_intent is None:
         source = transaction.read(StateRecordPath.tenant_desired(request["tenantId"])).document
         if construction_intent is not None:
@@ -954,20 +1018,39 @@ def _capture_authorized_lifecycle_authority(  # noqa: PLR0912 - explicit authori
             )
     else:
         source_value = transaction_intent["sourceManifest"]
-        if type(source_value) is not dict:
+        if request["operation"] == "create":
+            if source_value is not None:
+                raise ExecutionError("create lifecycle source authority is malformed")
+            source = None
+        elif type(source_value) is not dict:
             raise ExecutionError("lifecycle source manifest is not authorization-bound")
-        source = source_value
+        else:
+            source = source_value
         recovery_name = (
             "archiveRecovery" if request["operation"] == "archive" else "lifecycleRecovery"
         )
         recovery = transaction_intent[recovery_name]
         if type(recovery) is dict:
+            raw_source_generation = recovery["sourceRuntimeGenerationId"]
+            raw_source_route_set = recovery["sourceRouteSet"]
             raw_generation = recovery["candidateRuntimeGenerationId"]
             raw_route_set = recovery["candidateRouteSet"]
-            if type(raw_generation) is not str or type(raw_route_set) is not str:
+            if (
+                type(raw_source_generation) is not str
+                or type(raw_source_route_set) is not str
+                or type(raw_generation) is not str
+                or type(raw_route_set) is not str
+            ):
                 raise ExecutionError("lifecycle runtime authority is malformed")
+            source_generation = validate_uuid7(raw_source_generation)
+            source_route_set = raw_source_route_set
             candidate_generation = validate_uuid7(raw_generation)
             candidate_route_set = raw_route_set
+            raw_source_observed = recovery.get("sourceObservedState")
+            if raw_source_observed is not None:
+                if type(raw_source_observed) is not dict:
+                    raise ExecutionError("lifecycle source observed authority is malformed")
+                source_observed = deepcopy(raw_source_observed)
             raw_observed = recovery.get("candidateObservedState")
             if raw_observed is not None:
                 if type(raw_observed) is not dict:
@@ -978,7 +1061,12 @@ def _capture_authorized_lifecycle_authority(  # noqa: PLR0912 - explicit authori
                 if type(raw_archive) is not dict:
                     raise ExecutionError("archive record authority is malformed")
                 archive_record = deepcopy(raw_archive)
-    if request["operation"] == "restore":
+    if request["operation"] == "create":
+        if expected["manifestDigest"] is not None:
+            raise ExecutionError("create lifecycle source authority is malformed")
+    elif request["operation"] == "restore":
+        if type(source) is not dict:
+            raise ExecutionError("restore source manifest is not authorization-bound")
         archive_record = _restore_source_archive_authority(
             transaction,
             request,
@@ -986,19 +1074,26 @@ def _capture_authorized_lifecycle_authority(  # noqa: PLR0912 - explicit authori
             source,
             retirement_intent,
         )
-    if (
+    if request["operation"] != "create" and (
         type(expected["manifestDigest"]) is not dict
+        or type(source) is not dict
         or manifest_digest(source).to_dict() != expected["manifestDigest"]
     ):
         raise ExecutionError("lifecycle source manifest is not authorization-bound")
-    _validate_durable_source_authority(job, request, source, archive_record)
+    if request["operation"] != "create":
+        if type(source) is not dict:  # pragma: no cover - checked immediately above
+            raise ExecutionError("lifecycle source manifest is not authorization-bound")
+        _validate_durable_source_authority(job, request, source, archive_record)
     return _LifecycleDispatchAuthority(
-        deepcopy(source),
-        candidate_observed,
-        candidate_generation,
-        candidate_route_set,
-        archive_record,
-        construction_intent is not None,
+        source_manifest=deepcopy(source),
+        source_observed_state=source_observed,
+        source_runtime_generation_id=source_generation,
+        source_route_set=source_route_set,
+        candidate_observed_state=candidate_observed,
+        candidate_runtime_generation_id=candidate_generation,
+        candidate_route_set=candidate_route_set,
+        archive_record=archive_record,
+        archive_construction_present=construction_intent is not None,
     )
 
 
@@ -1058,21 +1153,54 @@ def _capture_replay_authority(
 ) -> _LifecycleDispatchAuthority:
     """Reconstruct only authority that remains provable after intent cleanup."""
 
-    if result["status"] != "succeeded":
-        return _LifecycleDispatchAuthority(
-            None,
-            None,
-            None,
-            None,
-            None,
-            False,
-            validation_was_committed,
-        )
     request = job["request"]
     if type(request) is not dict:
         raise ExecutionError("terminal replay request authority is malformed")
-    operation = result["operation"]
     source, archive_record = _job_source_authority(job)
+    if result["status"] != "succeeded":
+        source_observed: dict[str, object] | None = None
+        source_generation: str | None = None
+        source_route_set: str | None = None
+        if (
+            not validation_was_committed
+            and audit_is_latest_for_tenant
+            and request["operation"] != "create"
+        ):
+            if source is None:  # pragma: no cover - current contract validation proves this
+                raise ExecutionError("failed replay lost its exact source manifest")
+            tenant_id = validate_uuid7(result["tenantId"])
+            try:
+                source_observed = transaction.read(
+                    StateRecordPath.tenant_observed(tenant_id)
+                ).document
+            except FileNotFoundError as error:
+                raise ExecutionError(
+                    "failed replay has no restored observed tenant state"
+                ) from error
+            validate_contract(
+                source_observed,
+                expected_kind=ContractKind.TENANT_OBSERVED_STATE,
+            )
+            source_spec = source["spec"]
+            if type(source_spec) is not dict:
+                raise ExecutionError("failed replay source manifest is malformed")
+            source_route_set = "both" if source_spec["desiredState"] == "active" else "absent"
+            raw_generation = source_observed.get("runtimeGenerationId")
+            if raw_generation is not None:
+                source_generation = validate_uuid7(raw_generation)
+        return _LifecycleDispatchAuthority(
+            source_manifest=source,
+            source_observed_state=source_observed,
+            source_runtime_generation_id=source_generation,
+            source_route_set=source_route_set,
+            candidate_observed_state=None,
+            candidate_runtime_generation_id=None,
+            candidate_route_set=None,
+            archive_record=archive_record,
+            archive_construction_present=False,
+            execution_validation_committed=validation_was_committed,
+        )
+    operation = result["operation"]
 
     observed: dict[str, object] | None = None
     generation: str | None = None
@@ -1092,13 +1220,16 @@ def _capture_replay_authority(
         if raw_generation is not None:
             generation = validate_uuid7(raw_generation)
     return _LifecycleDispatchAuthority(
-        source,
-        observed,
-        generation,
-        route_set,
-        archive_record,
-        False,
-        validation_was_committed,
+        source_manifest=source,
+        source_observed_state=None,
+        source_runtime_generation_id=None,
+        source_route_set=None,
+        candidate_observed_state=observed,
+        candidate_runtime_generation_id=generation,
+        candidate_route_set=route_set,
+        archive_record=archive_record,
+        archive_construction_present=False,
+        execution_validation_committed=validation_was_committed,
     )
 
 
