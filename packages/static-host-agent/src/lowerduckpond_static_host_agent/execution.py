@@ -9,7 +9,10 @@ from dataclasses import dataclass, replace
 from typing import Final, Protocol, cast
 
 from lowerduckpond_static_contracts import (
+    LIFECYCLE_MATRIX,
     ContractKind,
+    LifecycleState,
+    Operation,
     archive_record_digest,
     canonical_json_bytes,
     deployment_record_digest,
@@ -56,6 +59,7 @@ from lowerduckpond_static_host_agent.repository import (
     StoredContract,
 )
 from lowerduckpond_static_host_agent.state_inventory import (
+    AuthorizationRecordInventory,
     IntentRecordInventory,
     StateInventory,
     StateInventoryProjection,
@@ -121,6 +125,8 @@ class ExecutionTransaction(Protocol):
     def measure_inventory(self) -> StateInventory: ...
 
     def tenant_has_identity_history(self, tenant_id: object) -> bool: ...
+
+    def measure_authorization_records(self) -> AuthorizationRecordInventory: ...
 
     def measure_intent_records(self) -> IntentRecordInventory: ...
 
@@ -189,6 +195,14 @@ class _LifecycleDispatchAuthority:
     execution_validation_committed: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class _AuditedTransition:
+    """One exact later result plus authority not carried by that result."""
+
+    result: dict[str, object]
+    restore_archive_id: str | None = None
+
+
 class LifecycleJobHandler(Protocol):
     """Complete one validated root-owned lifecycle job and its durable result."""
 
@@ -221,6 +235,7 @@ class AuthorizationExecutor:
         | None = None,
         tenant_release_validator: Callable[[str, dict[str, object]], bool] | None = None,
         tenant_release_inventory_validator: Callable[[], bool] | None = None,
+        tenant_runtime_inventory_validator: Callable[[], bool] | None = None,
         capacity_limits: HostCapacityLimits = DEFAULT_HOST_CAPACITY_LIMITS,
     ) -> None:
         self._repository = repository
@@ -233,6 +248,7 @@ class AuthorizationExecutor:
         self._tenant_runtime_validator = tenant_runtime_validator
         self._tenant_release_validator = tenant_release_validator
         self._tenant_release_inventory_validator = tenant_release_inventory_validator
+        self._tenant_runtime_inventory_validator = tenant_runtime_inventory_validator
         self._capacity_limits = capacity_limits
 
     def execute(self, job_id: object, *, blocking: bool = False) -> ExecutionOutcome:
@@ -792,6 +808,9 @@ class AuthorizationExecutor:
             raise ExecutionError(
                 "lifecycle handler changed tenant release inventory outside authority"
             )
+        runtime_inventory_validator = self._tenant_runtime_inventory_validator
+        if runtime_inventory_validator is not None and runtime_inventory_validator() is not True:
+            raise ExecutionError("lifecycle handler changed selected runtime outside authority")
         if not audit_is_latest_for_tenant:
             return
         if result["status"] == "failed":
@@ -2212,6 +2231,18 @@ def _validate_handler_result_state(
                 result,
                 authority=authority,
             )
+        else:
+            _validate_failed_create_tenant_inventory(
+                transaction,
+                job,
+                result,
+                authority=authority,
+            )
+        _validate_superseded_record_history(
+            transaction,
+            result,
+            authority=authority,
+        )
         return
     if result["status"] == "failed":
         _validate_failed_handler_result_state(transaction, job, result, authority=authority)
@@ -2345,6 +2376,8 @@ def _validate_success_tenant_inventory(
     tenant_id = validate_uuid7(result["tenantId"])
     expected = set(source_tenant_ids)
     operation = result["operation"]
+    if type(operation) is not str:
+        raise ExecutionError("successful lifecycle operation authority is malformed")
     if operation == "create":
         expected.add(tenant_id)
     elif operation == "delete":
@@ -2397,31 +2430,23 @@ def _validate_success_record_history(
         return
     if tenant_id is None or source_archive_ids is None or source_deployment_ids is None:
         raise ExecutionError("successful lifecycle result lost retained-history authority")
-    expected_archive_ids = source_archive_ids
-    expected_deployment_ids = source_deployment_ids
-    if operation in {"deploy", "import", "restore"}:
-        selected_id = _successful_selected_deployment_id(result)
-        expected_deployment_ids = _retained_deployment_history(
-            (*source_deployment_ids, selected_id),
-            selected_id=selected_id,
-        )
-    elif operation == "rollback":
-        selected_id = _successful_selected_deployment_id(result)
-        expected_deployment_ids = _retained_deployment_history(
-            source_deployment_ids,
-            selected_id=selected_id,
-        )
-    if operation == "archive":
-        selected_id = _successful_selected_deployment_id(result)
-        expected_archive_ids = tuple(sorted({*source_archive_ids, selected_id}))
-    elif operation == "restore":
-        source_archive = authority.archive_record
-        if type(source_archive) is not dict:
-            raise ExecutionError("successful restore lost its source archive authority")
-        restored_archive_id = validate_uuid7(source_archive["deploymentId"])
-        expected_archive_ids = tuple(
-            archive_id for archive_id in source_archive_ids if archive_id != restored_archive_id
-        )
+    expected_archive_ids, expected_deployment_ids, tenant_present = _project_record_history(
+        source_archive_ids,
+        source_deployment_ids,
+        tenant_present=(
+            result["operation"] != "create"
+            if authority.source_tenant_ids is None
+            else validate_uuid7(tenant_id) in authority.source_tenant_ids
+        ),
+        result=result,
+        restore_archive_id=(
+            None
+            if authority.archive_record is None
+            else validate_uuid7(authority.archive_record["deploymentId"])
+        ),
+    )
+    if not tenant_present:  # pragma: no cover - delete bypasses this validator
+        raise ExecutionError("successful lifecycle result unexpectedly removed its tenant")
     if (
         transaction.tenant_archive_ids(tenant_id) != expected_archive_ids
         or transaction.tenant_deployment_ids(tenant_id) != expected_deployment_ids
@@ -2429,6 +2454,181 @@ def _validate_success_record_history(
         raise ExecutionError(
             "successful lifecycle result changed retained history outside authority"
         )
+
+
+def _validate_superseded_record_history(
+    transaction: ExecutionTransaction,
+    result: dict[str, object],
+    *,
+    authority: _LifecycleDispatchAuthority,
+) -> None:
+    """Project exact later audited transitions before accepting final history."""
+
+    source_archive_ids = authority.source_archive_deployment_ids
+    source_deployment_ids = authority.source_deployment_ids
+    source_tenant_ids = authority.source_tenant_ids
+    if source_archive_ids is None and source_deployment_ids is None and source_tenant_ids is None:
+        # Results dispatched before the history-binding boundary remain
+        # replayable. New handlers cannot publish an unbound terminal result.
+        return
+    tenant_id = result.get("tenantId")
+    if tenant_id is None and result["status"] == "failed" and result["operation"] == "create":
+        return
+    if (
+        type(tenant_id) is not str
+        or source_archive_ids is None
+        or source_deployment_ids is None
+        or source_tenant_ids is None
+    ):
+        raise ExecutionError("superseded lifecycle result lost retained-history authority")
+    canonical_tenant_id = validate_uuid7(tenant_id)
+    archive_ids = source_archive_ids
+    deployment_ids = source_deployment_ids
+    tenant_present = canonical_tenant_id in source_tenant_ids
+    archive_ids, deployment_ids, tenant_present = _project_record_history(
+        archive_ids,
+        deployment_ids,
+        tenant_present=tenant_present,
+        result=result,
+        restore_archive_id=(
+            None
+            if authority.archive_record is None
+            else validate_uuid7(authority.archive_record["deploymentId"])
+        ),
+    )
+    for transition in _later_audited_tenant_results(
+        transaction,
+        result,
+        tenant_id=canonical_tenant_id,
+    ):
+        archive_ids, deployment_ids, tenant_present = _project_record_history(
+            archive_ids,
+            deployment_ids,
+            tenant_present=tenant_present,
+            result=transition.result,
+            restore_archive_id=transition.restore_archive_id,
+        )
+    if not tenant_present:
+        return
+    if (
+        transaction.tenant_archive_ids(canonical_tenant_id) != archive_ids
+        or transaction.tenant_deployment_ids(canonical_tenant_id) != deployment_ids
+    ):
+        raise ExecutionError("superseded lifecycle history exceeds its audited transitions")
+
+
+def _later_audited_tenant_results(
+    transaction: ExecutionTransaction,
+    result: dict[str, object],
+    *,
+    tenant_id: str,
+) -> tuple[_AuditedTransition, ...]:
+    try:
+        snapshot = transaction.inspect_audit_correlation(result["correlationId"])
+    except AuditError as error:
+        raise ExecutionError("superseded lifecycle audit authority is invalid") from error
+    entries = tuple(
+        entry for entry in snapshot.later_tenant_state_entries if entry["tenantId"] == tenant_id
+    )
+    expected_correlations = {validate_uuid7(entry["correlationId"]) for entry in entries}
+    matched: dict[str, dict[str, object]] = {}
+    for job_id in transaction.measure_authorization_records().result_ids:
+        candidate = transaction.read(StateRecordPath.authorization_result(job_id)).document
+        correlation_id = validate_uuid7(candidate["correlationId"])
+        if correlation_id not in expected_correlations:
+            continue
+        provenance = candidate.get("provenance")
+        if (
+            correlation_id in matched
+            or type(provenance) is not dict
+            or provenance.get("kind") != "authorization-job"
+            or provenance.get("jobId") != job_id
+        ):
+            raise ExecutionError("later audited lifecycle result identity is invalid")
+        matched[correlation_id] = candidate
+    if set(matched) != expected_correlations:
+        raise ExecutionError("later audited lifecycle result is not durably exact")
+    ordered: list[_AuditedTransition] = []
+    for entry in entries:
+        correlation_id = validate_uuid7(entry["correlationId"])
+        candidate = matched[correlation_id]
+        if (
+            candidate["status"] != "succeeded"
+            or candidate["operation"] != entry["operation"]
+            or candidate["tenantId"] != entry["tenantId"]
+            or result_digest(candidate).to_dict() != entry["resultDigest"]
+            or entry["resultStatus"] != candidate["status"]
+        ):
+            raise ExecutionError("later lifecycle result disagrees with durable audit authority")
+        restore_archive_id: str | None = None
+        if candidate["operation"] == "restore":
+            provenance = candidate["provenance"]
+            if type(provenance) is not dict:
+                raise ExecutionError("later restore provenance is malformed")
+            later_job = transaction.read(
+                StateRecordPath.authorization_job(provenance["jobId"])
+            ).document
+            request = later_job.get("request")
+            source_authority = later_job.get("sourceAuthority")
+            archive = (
+                source_authority.get("archiveRecord") if type(source_authority) is dict else None
+            )
+            if (
+                type(request) is not dict
+                or request.get("correlationId") != candidate["correlationId"]
+                or request.get("operation") != candidate["operation"]
+                or request.get("tenantId") != candidate["tenantId"]
+                or type(archive) is not dict
+            ):
+                raise ExecutionError("later restore source authority is invalid")
+            restore_archive_id = validate_uuid7(archive["deploymentId"])
+        ordered.append(_AuditedTransition(candidate, restore_archive_id))
+    return tuple(ordered)
+
+
+def _project_record_history(
+    archive_ids: tuple[str, ...],
+    deployment_ids: tuple[str, ...],
+    *,
+    tenant_present: bool,
+    result: dict[str, object],
+    restore_archive_id: str | None = None,
+) -> tuple[tuple[str, ...], tuple[str, ...], bool]:
+    if result["status"] != "succeeded":
+        return archive_ids, deployment_ids, tenant_present
+    operation = result["operation"]
+    if operation == "create":
+        if tenant_present:
+            raise ExecutionError("audited create reused an existing tenant identity")
+        return (), (), True
+    if operation == "delete":
+        if not tenant_present:
+            raise ExecutionError("audited delete selected an absent tenant identity")
+        return (), (), False
+    if not tenant_present:
+        raise ExecutionError("audited lifecycle transition selected an absent tenant")
+    if operation in {"deploy", "import", "restore"}:
+        selected_id = _successful_selected_deployment_id(result)
+        deployment_ids = _retained_deployment_history(
+            (*deployment_ids, selected_id),
+            selected_id=selected_id,
+        )
+        if operation == "restore":
+            if restore_archive_id is None:
+                raise ExecutionError("successful restore lost its source archive authority")
+            archive_ids = tuple(
+                archive_id for archive_id in archive_ids if archive_id != restore_archive_id
+            )
+    elif operation == "rollback":
+        selected_id = _successful_selected_deployment_id(result)
+        deployment_ids = _retained_deployment_history(
+            deployment_ids,
+            selected_id=selected_id,
+        )
+    elif operation == "archive":
+        selected_id = _successful_selected_deployment_id(result)
+        archive_ids = tuple(sorted({*archive_ids, selected_id}))
+    return archive_ids, deployment_ids, tenant_present
 
 
 def _successful_selected_deployment_id(result: dict[str, object]) -> str:
@@ -2507,6 +2707,8 @@ def _validate_committed_manifest_request_binding(  # noqa: PLR0912 - explicit li
     if type(request) is not dict:
         raise ExecutionError("successful lifecycle request authority is malformed")
     operation = result["operation"]
+    if type(operation) is not str:
+        raise ExecutionError("successful lifecycle operation authority is malformed")
     if operation == "create":
         _validate_candidate_request_binding(transaction, request, manifest)
         return
@@ -2517,6 +2719,14 @@ def _validate_committed_manifest_request_binding(  # noqa: PLR0912 - explicit li
     result_spec = manifest["spec"]
     if type(expected_spec) is not dict or type(result_spec) is not dict:
         raise ExecutionError("successful lifecycle manifest authority is malformed")
+    try:
+        source_state = LifecycleState(expected_spec["desiredState"])
+        candidate_state = LifecycleState(result_spec["desiredState"])
+        lifecycle_operation = Operation(operation)
+    except (KeyError, TypeError, ValueError) as error:
+        raise ExecutionError("successful lifecycle state authority is malformed") from error
+    if LIFECYCLE_MATRIX.get((lifecycle_operation, source_state)) != candidate_state:
+        raise ExecutionError("successful lifecycle transition violates lifecycle matrix")
     if operation == "rename":
         metadata = expected["metadata"]
         if type(metadata) is not dict:

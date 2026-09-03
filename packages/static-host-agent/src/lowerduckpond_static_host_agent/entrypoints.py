@@ -224,6 +224,10 @@ def executor_main(arguments: list[str] | None = None) -> int:
                     _all_tenant_release_state_matches,
                     repository,
                 ),
+                tenant_runtime_inventory_validator=partial(
+                    _all_tenant_runtime_state_matches,
+                    repository,
+                ),
             ).execute(job_id, blocking=True)
     except (
         CapacityError,
@@ -739,6 +743,33 @@ def _all_tenant_release_state_matches(repository: StateRepository) -> bool:
                 for tenant in expected.tenants
             )
     except (
+        KeyError,
+        OSError,
+        ReleaseTreeError,
+        RouteSnapshotError,
+        StateInventoryError,
+        StateRecordError,
+        TypeError,
+        ValueError,
+    ):
+        return False
+
+
+def _all_tenant_runtime_state_matches(repository: StateRepository) -> bool:
+    """Bind the selected runtime generation to all authoritative tenants."""
+
+    try:
+        with (
+            _open_caddy_control_runtime() as runtime,
+            repository.publication_transaction(blocking=True) as transaction,
+            runtime.using_held_publication_lock(repository),
+        ):
+            active_generation_id = runtime.read_active()
+            return runtime.read_generation_route_snapshot(
+                active_generation_id
+            ) == snapshot_tenant_routes(transaction)
+    except (
+        CaddyRuntimeError,
         KeyError,
         OSError,
         ReleaseTreeError,
