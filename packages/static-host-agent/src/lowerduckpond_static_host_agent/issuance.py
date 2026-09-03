@@ -170,6 +170,7 @@ class AuthorizationIssuer:
             "dispatchSourceReleaseTreeDigest": None,
             "dispatchDeploymentIds": None,
             "dispatchTenantIds": None,
+            "dispatchTenantRecordHistories": None,
             "executionValidated": False,
             "acceptedAt": accepted_at.isoformat().replace("+00:00", "Z"),
             "phase": "pending",

@@ -232,6 +232,8 @@ def _require_bound_job(
     immutable_job.pop("dispatchDeploymentIds", None)
     immutable_correlation.pop("dispatchTenantIds", None)
     immutable_job.pop("dispatchTenantIds", None)
+    immutable_correlation.pop("dispatchTenantRecordHistories", None)
+    immutable_job.pop("dispatchTenantRecordHistories", None)
     request = job.document["request"]
     if (
         immutable_correlation != immutable_job

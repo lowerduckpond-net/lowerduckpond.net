@@ -190,6 +190,7 @@ class _LifecycleDispatchAuthority:
     source_archive_deployment_ids: tuple[str, ...] | None = None
     source_deployment_ids: tuple[str, ...] | None = None
     source_tenant_ids: tuple[str, ...] | None = None
+    source_tenant_record_histories: tuple[_TenantRecordHistory, ...] | None = None
     execution_validation_committed: bool = False
 
 
@@ -199,6 +200,15 @@ class _AuditedTransition:
 
     result: dict[str, object]
     restore_archive_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _TenantRecordHistory:
+    """Exact retained-history inventory for one tenant at dispatch."""
+
+    tenant_id: str
+    archive_deployment_ids: tuple[str, ...]
+    deployment_ids: tuple[str, ...]
 
 
 class LifecycleJobHandler(Protocol):
@@ -1153,6 +1163,8 @@ def _require_same_authority(
     second.pop("dispatchDeploymentIds", None)
     first.pop("dispatchTenantIds", None)
     second.pop("dispatchTenantIds", None)
+    first.pop("dispatchTenantRecordHistories", None)
+    second.pop("dispatchTenantRecordHistories", None)
     if first != second:
         raise ExecutionError("authorization job authority changed before execution")
 
@@ -1252,6 +1264,7 @@ def _capture_authorized_lifecycle_authority(  # noqa: PLR0912,PLR0915 - authorit
             source_archive_deployment_ids=_dispatch_archive_deployment_ids(job),
             source_deployment_ids=_dispatch_deployment_ids(job),
             source_tenant_ids=_dispatch_tenant_ids(job),
+            source_tenant_record_histories=_dispatch_tenant_record_histories(job),
         )
     _request, intents = _bound_lifecycle_intents(transaction, job)
     transaction_intent = next(
@@ -1289,6 +1302,7 @@ def _capture_authorized_lifecycle_authority(  # noqa: PLR0912,PLR0915 - authorit
             source_archive_deployment_ids=_dispatch_archive_deployment_ids(job),
             source_deployment_ids=_dispatch_deployment_ids(job),
             source_tenant_ids=_dispatch_tenant_ids(job),
+            source_tenant_record_histories=_dispatch_tenant_record_histories(job),
         )
     if transaction_intent is None:
         source = transaction.read(StateRecordPath.tenant_desired(request["tenantId"])).document
@@ -1390,6 +1404,7 @@ def _capture_authorized_lifecycle_authority(  # noqa: PLR0912,PLR0915 - authorit
         source_archive_deployment_ids=_dispatch_archive_deployment_ids(job),
         source_deployment_ids=_dispatch_deployment_ids(job),
         source_tenant_ids=_dispatch_tenant_ids(job),
+        source_tenant_record_histories=_dispatch_tenant_record_histories(job),
     )
 
 
@@ -1496,6 +1511,7 @@ def _capture_replay_authority(
             source_archive_deployment_ids=_dispatch_archive_deployment_ids(job),
             source_deployment_ids=_dispatch_deployment_ids(job),
             source_tenant_ids=_dispatch_tenant_ids(job),
+            source_tenant_record_histories=_dispatch_tenant_record_histories(job),
             execution_validation_committed=validation_was_committed,
         )
     operation = result["operation"]
@@ -1532,6 +1548,7 @@ def _capture_replay_authority(
         source_archive_deployment_ids=_dispatch_archive_deployment_ids(job),
         source_deployment_ids=_dispatch_deployment_ids(job),
         source_tenant_ids=_dispatch_tenant_ids(job),
+        source_tenant_record_histories=_dispatch_tenant_record_histories(job),
         execution_validation_committed=validation_was_committed,
     )
 
@@ -1710,6 +1727,7 @@ def _bind_dispatch_authority(  # noqa: PLR0912,PLR0915 - dispatch authority matr
     existing_archives = _dispatch_archive_deployment_ids(job)
     existing_deployments = _dispatch_deployment_ids(job)
     existing_tenants = _dispatch_tenant_ids(job)
+    existing_tenant_histories = _dispatch_tenant_record_histories(job)
     existing_release_digest = _dispatch_artifact_release_tree_digest(job)
     existing_source_release_digest = _dispatch_source_release_tree_digest(job)
     request = job["request"]
@@ -1727,12 +1745,14 @@ def _bind_dispatch_authority(  # noqa: PLR0912,PLR0915 - dispatch authority matr
         and existing_archives is None
         and existing_deployments is None
         and existing_tenants is None
+        and existing_tenant_histories is None
     ):
         raise ExecutionError("dispatch export authority is only partially bound")
     if (
         existing_archives is not None
         and existing_deployments is not None
         and existing_tenants is not None
+        and existing_tenant_histories is not None
     ):
         if artifact_operation and existing_release_digest is None:
             raise ExecutionError("dispatch artifact authority is not bound")
@@ -1761,6 +1781,7 @@ def _bind_dispatch_authority(  # noqa: PLR0912,PLR0915 - dispatch authority matr
                 existing_archives is None,
                 existing_deployments is None,
                 existing_tenants is None,
+                existing_tenant_histories is None,
             }
         )
         != 1
@@ -1781,12 +1802,22 @@ def _bind_dispatch_authority(  # noqa: PLR0912,PLR0915 - dispatch authority matr
     else:
         archive_ids = transaction.tenant_archive_ids(request["tenantId"])
         deployment_ids = transaction.tenant_deployment_ids(request["tenantId"])
+    inventory = transaction.measure_inventory()
+    tenant_histories = [
+        {
+            "tenantId": tenant_id,
+            "archiveDeploymentIds": list(transaction.tenant_archive_ids(tenant_id)),
+            "deploymentIds": list(transaction.tenant_deployment_ids(tenant_id)),
+        }
+        for tenant_id in inventory.tenant_ids
+    ]
     bound = job
     bound["dispatchArchiveDeploymentIds"] = list(archive_ids)
     bound["dispatchArtifactReleaseTreeDigest"] = artifact_release_tree_digest
     bound["dispatchSourceReleaseTreeDigest"] = source_release_tree_digest
     bound["dispatchDeploymentIds"] = list(deployment_ids)
-    bound["dispatchTenantIds"] = list(transaction.measure_inventory().tenant_ids)
+    bound["dispatchTenantIds"] = list(inventory.tenant_ids)
+    bound["dispatchTenantRecordHistories"] = tenant_histories
     try:
         return transaction.compare_and_swap(
             StateRecordPath.authorization_job(bound["jobId"]),
@@ -1865,6 +1896,45 @@ def _dispatch_tenant_ids(job: dict[str, object]) -> tuple[str, ...] | None:
         field="dispatchTenantIds",
         label="tenant-inventory",
     )
+
+
+def _dispatch_tenant_record_histories(
+    job: dict[str, object],
+) -> tuple[_TenantRecordHistory, ...] | None:
+    raw = job.get("dispatchTenantRecordHistories")
+    if raw is None:
+        return None
+    if type(raw) is not list:
+        raise ExecutionError("dispatch tenant retained-history authority is malformed")
+    histories: list[_TenantRecordHistory] = []
+    try:
+        for entry in raw:
+            if type(entry) is not dict or set(entry) != {
+                "tenantId",
+                "archiveDeploymentIds",
+                "deploymentIds",
+            }:
+                raise TypeError
+            tenant_id = validate_uuid7(entry["tenantId"])
+            archive_ids = _validated_dispatch_record_id_list(entry["archiveDeploymentIds"])
+            deployment_ids = _validated_dispatch_record_id_list(entry["deploymentIds"])
+            histories.append(_TenantRecordHistory(tenant_id, archive_ids, deployment_ids))
+    except (TypeError, ValueError) as error:
+        raise ExecutionError("dispatch tenant retained-history authority is malformed") from error
+    if tuple(history.tenant_id for history in histories) != tuple(
+        sorted({history.tenant_id for history in histories})
+    ):
+        raise ExecutionError("dispatch tenant retained-history authority is malformed")
+    return tuple(histories)
+
+
+def _validated_dispatch_record_id_list(raw: object) -> tuple[str, ...]:
+    if type(raw) is not list:
+        raise TypeError
+    values = tuple(validate_uuid7(value) for value in raw)
+    if values != tuple(sorted(set(values))):
+        raise ValueError
+    return values
 
 
 def _dispatch_record_ids(
@@ -2217,6 +2287,11 @@ def _validate_handler_result_state(
             committed_manifest,
             source_manifest=authority.source_manifest,
         )
+    _validate_unrelated_tenant_record_histories(
+        transaction,
+        result,
+        authority=authority,
+    )
     if not audit_is_latest_for_tenant:
         # A later fully audited lifecycle operation may legitimately supersede
         # this result for the same tenant before the executor reacquires
@@ -2452,6 +2527,70 @@ def _validate_success_record_history(
         )
 
 
+def _validate_unrelated_tenant_record_histories(
+    transaction: ExecutionTransaction,
+    result: dict[str, object],
+    *,
+    authority: _LifecycleDispatchAuthority,
+) -> None:
+    """Preserve every other tenant's history, including later audited work."""
+
+    source_histories = authority.source_tenant_record_histories
+    source_tenant_ids = authority.source_tenant_ids
+    if source_histories is None:
+        # Terminal jobs dispatched before the global-history boundary remain
+        # replayable. Newly dispatched handlers bind this inventory durably.
+        return
+    if (
+        source_tenant_ids is None
+        or tuple(history.tenant_id for history in source_histories) != source_tenant_ids
+    ):
+        raise ExecutionError("dispatch tenant retained-history authority is incomplete")
+    projected: dict[str, tuple[tuple[str, ...], tuple[str, ...], bool]] = {
+        history.tenant_id: (
+            history.archive_deployment_ids,
+            history.deployment_ids,
+            True,
+        )
+        for history in source_histories
+    }
+    raw_target_tenant_id = result.get("tenantId")
+    target_tenant_id = (
+        None if raw_target_tenant_id is None else validate_uuid7(raw_target_tenant_id)
+    )
+    if target_tenant_id is not None:
+        archives, deployments, present = projected.get(target_tenant_id, ((), (), False))
+        projected[target_tenant_id] = _project_record_history(
+            archives,
+            deployments,
+            tenant_present=present,
+            result=result,
+            restore_archive_id=(
+                None
+                if authority.archive_record is None
+                else validate_uuid7(authority.archive_record["deploymentId"])
+            ),
+        )
+    for transition in _later_audited_results(transaction, result):
+        tenant_id = validate_uuid7(transition.result["tenantId"])
+        archives, deployments, present = projected.get(tenant_id, ((), (), False))
+        projected[tenant_id] = _project_record_history(
+            archives,
+            deployments,
+            tenant_present=present,
+            result=transition.result,
+            restore_archive_id=transition.restore_archive_id,
+        )
+    for tenant_id, (archive_ids, deployment_ids, present) in projected.items():
+        if tenant_id == target_tenant_id or not present:
+            continue
+        if (
+            transaction.tenant_archive_ids(tenant_id) != archive_ids
+            or transaction.tenant_deployment_ids(tenant_id) != deployment_ids
+        ):
+            raise ExecutionError("lifecycle handler changed unrelated tenant retained history")
+
+
 def _validate_superseded_record_history(
     transaction: ExecutionTransaction,
     result: dict[str, object],
@@ -2519,13 +2658,22 @@ def _later_audited_tenant_results(
     *,
     tenant_id: str,
 ) -> tuple[_AuditedTransition, ...]:
+    return tuple(
+        transition
+        for transition in _later_audited_results(transaction, result)
+        if transition.result["tenantId"] == tenant_id
+    )
+
+
+def _later_audited_results(
+    transaction: ExecutionTransaction,
+    result: dict[str, object],
+) -> tuple[_AuditedTransition, ...]:
     try:
         snapshot = transaction.inspect_audit_correlation(result["correlationId"])
     except AuditError as error:
         raise ExecutionError("superseded lifecycle audit authority is invalid") from error
-    entries = tuple(
-        entry for entry in snapshot.later_tenant_state_entries if entry["tenantId"] == tenant_id
-    )
+    entries = snapshot.later_tenant_state_entries
     expected_correlations = {validate_uuid7(entry["correlationId"]) for entry in entries}
     matched: dict[str, dict[str, object]] = {}
     for job_id in transaction.measure_authorization_records().result_ids:

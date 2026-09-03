@@ -180,6 +180,47 @@
         }
       ]
     },
+    "dispatchTenantRecordHistories": {
+      "oneOf": [
+        {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "archiveDeploymentIds": {
+                "items": {
+                  "$ref": "common.schema.json#/$defs/uuidv7"
+                },
+                "maxItems": 3,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "deploymentIds": {
+                "items": {
+                  "$ref": "common.schema.json#/$defs/uuidv7"
+                },
+                "maxItems": 3,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "tenantId": {
+                "$ref": "common.schema.json#/$defs/uuidv7"
+              }
+            },
+            "required": [
+              "tenantId",
+              "archiveDeploymentIds",
+              "deploymentIds"
+            ],
+            "type": "object"
+          },
+          "maxItems": 25,
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "executionValidated": {
       "type": "boolean"
     },

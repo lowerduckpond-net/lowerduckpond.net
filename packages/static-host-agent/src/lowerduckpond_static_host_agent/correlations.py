@@ -382,6 +382,7 @@ def _retry_binding(document: dict[str, object]) -> bytes:
     binding.pop("dispatchSourceReleaseTreeDigest", None)
     binding.pop("dispatchDeploymentIds", None)
     binding.pop("dispatchTenantIds", None)
+    binding.pop("dispatchTenantRecordHistories", None)
     return canonical_json_bytes(binding)
 
 
@@ -405,6 +406,7 @@ def _durable_binding(document: dict[str, object]) -> bytes:
     binding.pop("dispatchSourceReleaseTreeDigest", None)
     binding.pop("dispatchDeploymentIds", None)
     binding.pop("dispatchTenantIds", None)
+    binding.pop("dispatchTenantRecordHistories", None)
     return canonical_json_bytes(binding)
 
 

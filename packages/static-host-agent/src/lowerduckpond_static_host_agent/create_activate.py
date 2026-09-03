@@ -155,6 +155,8 @@ def _require_exact_job(
     current_document.pop("dispatchDeploymentIds", None)
     expected_document.pop("dispatchTenantIds", None)
     current_document.pop("dispatchTenantIds", None)
+    expected_document.pop("dispatchTenantRecordHistories", None)
+    current_document.pop("dispatchTenantRecordHistories", None)
     if expected_document != current_document or current_phase not in {"claimed", "completed"}:
         raise CreateActivationError("prepared create job changed before activation")
     return current

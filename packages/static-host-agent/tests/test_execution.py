@@ -485,7 +485,40 @@ class _AddingUnrelatedTenantHandler:
                     "manifest": manifest,
                 }
             )
+            _persist_result(self._repository, later)
             _append_result_audit(self._repository, job, later)
+        return outcome
+
+
+class _CorruptingUnrelatedTenantHistoryHandler:
+    def __init__(
+        self,
+        delegate: LifecycleJobHandler,
+        root: Path,
+        tenant_id: str,
+        archive: dict[str, object],
+    ) -> None:
+        self._delegate = delegate
+        self._root = root
+        self._tenant_id = tenant_id
+        self._archive = archive
+
+    def execute(
+        self,
+        job_id: str,
+        *,
+        claim: LifecycleArtifact | None,
+        blocking: bool,
+    ) -> ExecutionOutcome:
+        outcome = self._delegate.execute(job_id, claim=claim, blocking=blocking)
+        _write(
+            self._root,
+            StateRecordPath.tenant_archive(
+                self._tenant_id,
+                self._archive["deploymentId"],
+            ),
+            self._archive,
+        )
         return outcome
 
 
@@ -3181,6 +3214,69 @@ def test_executor_rejects_cross_tenant_release_corruption_after_handler(
     assert job["executionValidated"] is False
 
 
+def test_executor_rejects_cross_tenant_history_corruption_after_handler(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    unrelated_tenant_id = "0198d17f-6f4a-7000-8000-000000000010"
+    extra_archive_id = "0198d17f-6f4a-7000-8000-000000000011"
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    _write_deployment_record(root, _DEPLOYMENT_ID, "0" * 64)
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), _fixture("site.json"))
+    unrelated = _fixture("site.json")
+    unrelated_metadata = _mapping(unrelated["metadata"])
+    unrelated_metadata.update(
+        {
+            "id": unrelated_tenant_id,
+            "slug": "unrelated-history-target",
+            "canonicalOrigin": ("t-0198d17f6f4a70008000000000000010.lowerduckpond.com"),
+        }
+    )
+    _write(root, StateRecordPath.tenant_desired(unrelated_tenant_id), unrelated)
+    _write_observed_for_manifest(root, unrelated)
+    extra_archive = _fixture("archive-record.json")
+    extra_archive.update(
+        {
+            "tenantId": unrelated_tenant_id,
+            "deploymentId": extra_archive_id,
+        }
+    )
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued, _artifact, _correlation_id = _issue_deploy(repository, intake)
+        handler = _CorruptingUnrelatedTenantHistoryHandler(
+            _CompletingDeployHandler(repository, root),
+            root,
+            unrelated_tenant_id,
+            extra_archive,
+        )
+
+        with pytest.raises(ExecutionError, match="unrelated tenant retained history"):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={"deploy": handler},
+            ).execute(issued.job_id)
+        job = repository.read(StateRecordPath.authorization_job(issued.job_id)).document
+
+    assert job["dispatchTenantRecordHistories"] == [
+        {
+            "tenantId": _TENANT_ID,
+            "archiveDeploymentIds": [],
+            "deploymentIds": [_DEPLOYMENT_ID],
+        },
+        {
+            "tenantId": unrelated_tenant_id,
+            "archiveDeploymentIds": [],
+            "deploymentIds": [],
+        },
+    ]
+    assert job["executionValidated"] is False
+
+
 def test_executor_rejects_a_failed_create_that_selects_a_stale_runtime(
     tmp_path: Path,
 ) -> None:
@@ -4232,7 +4328,7 @@ def test_executor_rejects_a_handler_result_followed_only_by_another_tenants_audi
         issued = _issue_create(repository)
         with pytest.raises(
             ExecutionError,
-            match="disagrees with authoritative tenant state",
+            match="audited lifecycle transition selected an absent tenant",
         ):
             AuthorizationExecutor(
                 repository,
@@ -7505,6 +7601,13 @@ def test_executor_recovers_a_claimed_lifecycle_job_without_its_artifact(  # noqa
         ]
         claimed["dispatchDeploymentIds"] = [_DEPLOYMENT_ID]
         claimed["dispatchTenantIds"] = [_TENANT_ID]
+        claimed["dispatchTenantRecordHistories"] = [
+            {
+                "tenantId": _TENANT_ID,
+                "archiveDeploymentIds": [],
+                "deploymentIds": [_DEPLOYMENT_ID],
+            }
+        ]
         repository.compare_and_swap(
             StateRecordPath.authorization_job(issued.job_id),
             job.revision,
