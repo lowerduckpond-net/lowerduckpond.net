@@ -18,6 +18,7 @@ from typing import Final
 from lowerduckpond_static_contracts import (
     MAX_DEPLOY_ARTIFACT_BYTES,
     MAX_IMPORT_ARTIFACT_BYTES,
+    Digest,
     validate_uuid7,
 )
 
@@ -32,6 +33,10 @@ from lowerduckpond_static_host_agent.capacity import (
 from lowerduckpond_static_host_agent.durable import validate_state_directory
 from lowerduckpond_static_host_agent.issuance import VerifiedArtifact
 from lowerduckpond_static_host_agent.locks import LockManager, LockMode, LockName
+from lowerduckpond_static_host_agent.zip_structure import (
+    ZipStructureError,
+    deployment_zip_release_tree_digest,
+)
 
 _CREATE_FLAGS: Final = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
 _READ_FLAGS: Final = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -250,6 +255,23 @@ class ArtifactIntake:
             finally:
                 if claim.consumed:
                     self._remove(filename)
+
+    def deployment_release_tree_digest(self, artifact: AdmittedArtifact) -> Digest:
+        """Derive exact normalized release content while the intake claim is held."""
+
+        self._require_open()
+        self._locks.require_held(LockName.INTAKE, mode=LockMode.EXCLUSIVE)
+        if not _ADMITTED.fullmatch(artifact.filename):
+            raise IntakeError("claimed artifact filename is not canonical")
+        self._validate_entry(artifact.filename)
+        self._verify_existing(artifact.filename, declared=artifact.verified)
+        try:
+            return deployment_zip_release_tree_digest(
+                self._intake_path / artifact.filename,
+                expected_owner=self._expected_owner,
+            )
+        except (OSError, ValueError, ZipStructureError) as error:
+            raise IntakeError("claimed deployment artifact cannot be derived safely") from error
 
     def reconcile(
         self,

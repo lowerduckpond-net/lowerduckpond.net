@@ -327,7 +327,15 @@ Before dispatch, a current authorization job also records the complete bounded
 sets of that tenant's retained deployment- and archive-record identities. A
 failed lifecycle handler is terminally valid only when both sets remain exact
 after rollback; a candidate record cannot silently consume retention or block
-a later archive or delete. A successful delete is terminally valid only after
+a later archive or delete. Operations that are not allowed to create or retire
+history (`create`, `export`, `rename`, `reconcile`, `resume`, and `suspend`)
+must leave both sets exact even when their handler reports success. For deploy
+and import, root independently derives the normalized release-tree digest
+directly from the admitted ZIP and binds it to the job before invoking the
+handler; the committed deployment record must match both that digest and the
+artifact-byte digest. A handler-authored pair of internally consistent but
+unrelated digests is not release authority. A successful delete is terminally
+valid only after
 the complete tenant publication directory is absent and the selected Caddy
 generation contains no tenant route. The production executor separately
 enumerates the bounded release directory while holding publication and

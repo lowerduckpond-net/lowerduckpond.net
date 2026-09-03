@@ -287,6 +287,7 @@ from lowerduckpond_static_host_agent.zip_structure import (
     ZipMember,
     ZipStructure,
     ZipStructureError,
+    deployment_zip_release_tree_digest,
     extract_deployment_zip,
     inspect_deployment_zip,
 )
@@ -493,6 +494,7 @@ __all__ = [
     "caddy_route_state_digest",
     "configured_origin_pull_policy",
     "decoder_main",
+    "deployment_zip_release_tree_digest",
     "derive_tenant_generation_payload",
     "digest_path",
     "ensure_platform_generation",

@@ -303,7 +303,12 @@ confirmation leaves the intent or quarantine ledger durable, keeps its full
 remote capacity charged, and closes archive admission. Audit tombstones retain
 the evidence digest and object identity needed to explain the deletion, not an
 authority to preserve or restore the retired bytes. No cleanup may delete a key
-while any authoritative tenant record still binds one of its versions.
+while any authoritative tenant record still binds one of its versions. A
+successful restore or deletion is not terminally validated merely because its
+retirement intent disappeared: the executor also requires an independent,
+version-aware exact-key listing to prove that every version and delete marker
+of the retired object is absent. That proof is required even when a later
+tenant transition has superseded the result being replayed.
 
 Produce a portable ZIP export with this fixed versioned envelope:
 
