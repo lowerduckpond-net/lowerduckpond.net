@@ -530,6 +530,50 @@ class _CompletingTransitionHandler:
         return ExecutionOutcome(result, True)
 
 
+class _SupersedingTransitionHandler:
+    """Append a later same-tenant commit before executor validation."""
+
+    def __init__(
+        self,
+        repository: StateRepository,
+        root: Path,
+        delegate: _CompletingTransitionHandler,
+    ) -> None:
+        self._repository = repository
+        self._root = root
+        self._delegate = delegate
+
+    def execute(
+        self,
+        job_id: str,
+        *,
+        claim: LifecycleArtifact | None,
+        blocking: bool,
+    ) -> ExecutionOutcome:
+        outcome = self._delegate.execute(job_id, claim=claim, blocking=blocking)
+        later = json.loads(json.dumps(outcome.result))
+        provenance = later["provenance"]
+        manifest = later["manifest"]
+        assert type(provenance) is dict
+        assert type(manifest) is dict
+        metadata = manifest["metadata"]
+        assert type(metadata) is dict
+        provenance["jobId"] = "0198d17f-6f4a-7000-8000-000000000007"
+        later["correlationId"] = "0198d17f-6f4a-7000-8000-000000000008"
+        later["operation"] = "rename"
+        later.pop("exportBundle", None)
+        metadata["slug"] = "later-authorized-operation"
+        _write(
+            self._root,
+            StateRecordPath.tenant_desired(later["tenantId"]),
+            manifest,
+        )
+        _write_observed_for_manifest(self._root, manifest)
+        job = self._repository.read(StateRecordPath.authorization_job(job_id)).document
+        _append_result_audit(self._repository, job, later)
+        return outcome
+
+
 class _SupersedingCreateHandler:
     """Model a later audited lifecycle commit before executor validation."""
 
@@ -823,6 +867,11 @@ def _capacity_isolated(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _fixture(name: str) -> dict[str, object]:
     value = json.loads((_FIXTURE_ROOT / name).read_text(encoding="utf-8"))
+    assert type(value) is dict
+    return value
+
+
+def _mapping(value: object) -> dict[str, object]:
     assert type(value) is dict
     return value
 
@@ -2092,6 +2141,58 @@ def test_executor_requires_the_exact_export_bundle_for_success(
                 executor.execute(issued.job_id)
 
 
+def test_executor_requires_export_bundle_after_a_later_tenant_commit(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    manifest = _fixture("site.json")
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), manifest)
+    _write(
+        root,
+        StateRecordPath.tenant_deployment(_TENANT_ID, _DEPLOYMENT_ID),
+        _fixture("deployment-record.json"),
+    )
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "export",
+        "correlationId": "0198d17f-6f4a-7000-8000-000000000003",
+        "tenantId": _TENANT_ID,
+    }
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued = AuthorizationIssuer(
+            repository,
+            gate=_OpenGate(),
+            entropy=_Entropy(),
+        ).issue(
+            canonical_json_bytes(request),
+            operator_principal="operator@example.test",
+            now=_NOW,
+            artifact=None,
+        )
+        handler = _SupersedingTransitionHandler(
+            repository,
+            root,
+            _CompletingTransitionHandler(
+                repository,
+                root,
+                manifest=manifest,
+                write_export=False,
+            ),
+        )
+        with pytest.raises(ExecutionError, match="no exact bundle"):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={"export": handler},
+            ).execute(issued.job_id)
+
+
 def test_executor_does_not_expose_artifact_consumption_to_handlers(tmp_path: Path) -> None:
     root = _state_root(tmp_path)
     _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
@@ -2223,6 +2324,75 @@ def test_executor_rejects_a_handler_result_followed_only_by_another_tenants_audi
                     ),
                 },
             ).execute(issued.job_id)
+
+
+@pytest.mark.parametrize("lifecycle", ["active", "suspended"])
+def test_executor_rejects_an_ineligible_delete_before_handler_dispatch(
+    tmp_path: Path,
+    lifecycle: str,
+) -> None:
+    root = _state_root(tmp_path)
+    namespace = _fixture("platform-namespace.json")
+    manifest = _fixture("site.json")
+    spec = manifest["spec"]
+    assert type(spec) is dict
+    spec["desiredState"] = lifecycle
+    deployment = _fixture("deployment-record.json")
+    _write(root, StateRecordPath.platform_namespace(), namespace)
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), manifest)
+    _write(
+        root,
+        StateRecordPath.tenant_deployment(_TENANT_ID, _DEPLOYMENT_ID),
+        deployment,
+    )
+    job = _fixture("authorization-job.json")
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "delete",
+        "correlationId": "0198d17f-6f4a-7000-8000-000000000001",
+        "tenantId": _TENANT_ID,
+    }
+    job["request"] = request
+    job["requestDigest"] = request_digest(request).to_dict()
+    job["expectedSource"] = {
+        "expectsTenantAbsent": False,
+        "lifecycle": lifecycle,
+        "manifestDigest": manifest_digest(manifest).to_dict(),
+        "deploymentDigest": deployment_record_digest(deployment).to_dict(),
+        "archiveRecordDigest": None,
+        "platformStateDigest": platform_state_digest(namespace).to_dict(),
+        "deletionEvidence": None,
+    }
+    job["phase"] = "pending"
+    correlation = json.loads(json.dumps(job))
+    _write(root, StateRecordPath.authorization_job(job["jobId"]), job)
+    _write(
+        root,
+        StateRecordPath.authorization_correlation(request["correlationId"]),
+        correlation,
+    )
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        outcome = AuthorizationExecutor(
+            repository,
+            intake,
+            handlers={
+                "delete": _CompletingDeleteHandler(
+                    repository,
+                    root,
+                    deletion_evidence={"mode": "never-deployed"},
+                )
+            },
+            deleted_tenant_route_validator=_deleted_tenant_routes_absent,
+        ).execute(job["jobId"])
+
+    assert outcome.result["status"] == "failed"
+    assert outcome.result["errorCode"] == "state_drift"
+    assert root.joinpath(*StateRecordPath.tenant_desired(_TENANT_ID).components).exists()
 
 
 def test_executor_decodes_but_never_mutates_for_a_legacy_delete_job(
@@ -3556,6 +3726,9 @@ def test_executor_binds_restore_candidate_content_to_retirement_authority(
     job["request"] = request
     job["requestDigest"] = request_digest(request).to_dict()
     job["phase"] = "claimed"
+    archive = _mapping(retirement_intent["archiveRecord"])
+    source_deployment = _fixture("deployment-record.json")
+    source_deployment["id"] = archive["deploymentId"]
     expected = job["expectedSource"]
     assert type(expected) is dict
     expected.update(
@@ -3563,11 +3736,7 @@ def test_executor_binds_restore_candidate_content_to_retirement_authority(
             "expectsTenantAbsent": False,
             "lifecycle": "archived",
             "manifestDigest": retirement_intent["sourceManifestDigest"],
-            "deploymentDigest": {
-                "format": "lowerduckpond-deployment-record-v1",
-                "algorithm": "sha256",
-                "value": "c" * 64,
-            },
+            "deploymentDigest": deployment_record_digest(source_deployment).to_dict(),
             "archiveRecordDigest": retirement_intent["archiveRecordDigest"],
         }
     )
@@ -3604,6 +3773,13 @@ def test_executor_binds_restore_candidate_content_to_retirement_authority(
         root,
         StateRecordPath.archive_retirement_intent(retirement_intent["intentId"]),
         retirement_intent,
+    )
+    source_manifest = _mapping(transaction_intent["sourceManifest"])
+    _write(root, StateRecordPath.tenant_desired(request["tenantId"]), source_manifest)
+    _write(
+        root,
+        StateRecordPath.tenant_deployment(request["tenantId"], source_deployment["id"]),
+        source_deployment,
     )
 
     with (
@@ -3681,8 +3857,10 @@ def test_executor_requires_retirement_authority_for_a_restore_transaction(
     assert handler.phases == []
 
 
+@pytest.mark.parametrize("restored_release_matches_source", [True, False])
 def test_executor_binds_a_lone_restore_retirement_intent_to_its_result(
     tmp_path: Path,
+    restored_release_matches_source: bool,
 ) -> None:
     root = _state_root(tmp_path)
     job = _fixture("authorization-job.json")
@@ -3697,36 +3875,27 @@ def test_executor_binds_a_lone_restore_retirement_intent_to_its_result(
     job["request"] = request
     job["requestDigest"] = request_digest(request).to_dict()
     job["phase"] = "claimed"
-    expected = job["expectedSource"]
-    assert type(expected) is dict
+    candidate = _mapping(transaction_intent["candidateManifest"])
+    candidate_spec = _mapping(candidate["spec"])
+    metadata = _mapping(candidate["metadata"])
+    deployment = _mapping(candidate_spec["desiredDeployment"])
+    archive = _mapping(retirement_intent["archiveRecord"])
+    bundle_digest = _mapping(archive["bundleDigest"])
+    deployment["archiveSha256"] = bundle_digest["value"]
+    source_deployment = _fixture("deployment-record.json")
+    source_deployment["id"] = archive["deploymentId"]
+    expected = _mapping(job["expectedSource"])
     expected.update(
         {
             "expectsTenantAbsent": False,
             "lifecycle": "archived",
             "manifestDigest": retirement_intent["sourceManifestDigest"],
-            "deploymentDigest": {
-                "format": "lowerduckpond-deployment-record-v1",
-                "algorithm": "sha256",
-                "value": "c" * 64,
-            },
+            "deploymentDigest": deployment_record_digest(source_deployment).to_dict(),
             "archiveRecordDigest": retirement_intent["archiveRecordDigest"],
         }
     )
     correlation = json.loads(json.dumps(job))
     correlation["phase"] = "pending"
-    candidate = transaction_intent["candidateManifest"]
-    assert type(candidate) is dict
-    candidate_spec = candidate["spec"]
-    metadata = candidate["metadata"]
-    assert type(candidate_spec) is dict
-    assert type(metadata) is dict
-    deployment = candidate_spec["desiredDeployment"]
-    assert type(deployment) is dict
-    archive = retirement_intent["archiveRecord"]
-    assert type(archive) is dict
-    bundle_digest = archive["bundleDigest"]
-    assert type(bundle_digest) is dict
-    deployment["archiveSha256"] = bundle_digest["value"]
     result: dict[str, object] = {
         "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
         "kind": "OperationResult",
@@ -3755,6 +3924,14 @@ def test_executor_binds_a_lone_restore_retirement_intent_to_its_result(
     durable_deployment["id"] = deployment["id"]
     durable_deployment["archiveSha256"] = deployment["archiveSha256"]
     durable_deployment["correlationId"] = request["correlationId"]
+    if not restored_release_matches_source:
+        release_tree_digest = _mapping(durable_deployment["releaseTreeDigest"])
+        release_tree_digest["value"] = "e" * 64
+    _write(
+        root,
+        StateRecordPath.tenant_deployment(request["tenantId"], source_deployment["id"]),
+        source_deployment,
+    )
     _write(
         root,
         StateRecordPath.tenant_deployment(request["tenantId"], deployment["id"]),
@@ -3774,14 +3951,19 @@ def test_executor_binds_a_lone_restore_retirement_intent_to_its_result(
             intent_path=StateRecordPath.archive_retirement_intent(retirement_id),
             delegate=_CompletingCreateHandler(repository),
         )
-        outcome = AuthorizationExecutor(
+        executor = AuthorizationExecutor(
             repository,
             intake,
             handlers={"restore": handler},
-        ).execute(job["jobId"])
+        )
+        if restored_release_matches_source:
+            outcome = executor.execute(job["jobId"])
+            assert outcome.result == result
+            assert outcome.created is False
+        else:
+            with pytest.raises(ExecutionError, match="unbound deployment record"):
+                executor.execute(job["jobId"])
 
-    assert outcome.result == result
-    assert outcome.created is False
     assert handler.phases == ["claimed"]
 
 
