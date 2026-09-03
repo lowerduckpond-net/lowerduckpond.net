@@ -24,6 +24,7 @@ from lowerduckpond_static_host_agent.correlations import (
     CorrelationAdmission,
     CorrelationResolution,
 )
+from lowerduckpond_static_host_agent.locks import LockMode
 from lowerduckpond_static_host_agent.repository import (
     StateRecordPath,
     StateRepository,
@@ -200,13 +201,25 @@ class AuthorizationIssuer:
         if issued.created:
             raise IssuanceError("new authorization is not an exact retry")
         job_id = validate_uuid7(issued.job_id)
-        try:
-            self._repository.read(StateRecordPath.authorization_result(job_id))
-        except FileNotFoundError:
-            job = self._repository.read(StateRecordPath.authorization_job(job_id)).document
-            if job["phase"] in {"pending", "claimed"}:
-                return True
-            raise IssuanceError("terminal authorization job has no immutable result") from None
+        with self._repository.transaction(mode=LockMode.EXCLUSIVE) as transaction:
+            job = transaction.read(StateRecordPath.authorization_job(job_id)).document
+            try:
+                transaction.read(StateRecordPath.authorization_result(job_id))
+            except FileNotFoundError:
+                if job["phase"] in {"pending", "claimed"}:
+                    return True
+                raise IssuanceError("terminal authorization job has no immutable result") from None
+            request = job["request"]
+            if type(request) is not dict:  # pragma: no cover - validated reads prove this
+                raise IssuanceError("authorization request is malformed")
+            correlation_id = request["correlationId"]
+            for identity in transaction.measure_intent_records().records:
+                _path, intent = transaction.read_intent(identity.intent_id)
+                if (
+                    intent.document["kind"] == "TransactionIntent"
+                    and intent.document["correlationId"] == correlation_id
+                ):
+                    return True
         return False
 
 
