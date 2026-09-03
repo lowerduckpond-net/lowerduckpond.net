@@ -740,10 +740,10 @@ def test_audit_predecessor_is_pinned_to_the_audit_entry_digest_domain() -> None:
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
 
-def test_manifestless_result_origin_is_bound_to_its_tenant_identity() -> None:
+def test_manifestless_delete_result_origin_is_bound_to_its_tenant_identity() -> None:
     result = _load_object(FIXTURE_ROOT / "accepted/operation-result.json")
     del result["manifest"]
-    result["operation"] = "deploy"
+    result["operation"] = "delete"
     result["canonicalOrigin"] = "t-0198d17f6f4a70008000000000000001.lowerduckpond.com"
 
     with pytest.raises(ContractError) as captured:
@@ -752,6 +752,16 @@ def test_manifestless_result_origin_is_bound_to_its_tenant_identity() -> None:
 
     result["canonicalOrigin"] = "t-0191e2c48f7a7c3b8d1e5f62047a2100.lowerduckpond.com"
     assert validate_contract(result) is ContractKind.OPERATION_RESULT
+
+
+def test_successful_nondelete_result_requires_its_manifest() -> None:
+    result = _load_object(FIXTURE_ROOT / "accepted/operation-result.json")
+    del result["manifest"]
+    result["operation"] = "deploy"
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(result)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
 
 def test_successful_delete_result_cannot_return_a_desired_manifest() -> None:
