@@ -754,6 +754,51 @@ class _CompletingIntentHandler:
         return outcome
 
 
+class _ClearingIntentHandler:
+    def __init__(
+        self,
+        repository: StateRepository,
+        *,
+        intent_paths: tuple[StateRecordPath, ...],
+        delegate: LifecycleJobHandler | None = None,
+    ) -> None:
+        self._repository = repository
+        self._intent_paths = intent_paths
+        self._delegate = delegate
+        self.dispatched = False
+
+    def execute(
+        self,
+        job_id: str,
+        *,
+        claim: LifecycleArtifact | None,
+        blocking: bool,
+    ) -> ExecutionOutcome:
+        self.dispatched = True
+        if self._delegate is None:
+            result = self._repository.read(
+                StateRecordPath.authorization_result(job_id),
+                blocking=blocking,
+            ).document
+            outcome = ExecutionOutcome(result, False)
+        else:
+            outcome = self._delegate.execute(job_id, claim=claim, blocking=blocking)
+        for path in self._intent_paths:
+            intent = self._repository.read(path, blocking=blocking)
+            inventory = self._repository.measure_intent_records(blocking=blocking)
+            generation = next(
+                record.metadata_generation
+                for record in inventory.records
+                if record.intent_id == path.record_id
+            )
+            self._repository.remove_reconciled_intent(
+                path,
+                IntentRemovalToken(intent.revision, generation),
+                blocking=blocking,
+            )
+        return outcome
+
+
 class _UnavailableArtifactHandler:
     def execute(
         self,
@@ -1168,6 +1213,187 @@ def _archive_transaction_intent(
         }
     )
     return intent
+
+
+def _write_committed_archive_replay(
+    root: Path,
+) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
+    namespace = _fixture("platform-namespace.json")
+    construction = _fixture("archive-construction-intent.json")
+    source = _write_archive_source_authority(root, construction)
+    transaction_intent = _archive_transaction_intent(construction)
+    candidate = _mapping(transaction_intent["candidateManifest"])
+    recovery = _mapping(transaction_intent["archiveRecovery"])
+    archive = _mapping(recovery["candidateArchiveRecord"])
+    _write(root, StateRecordPath.platform_namespace(), namespace)
+    _write(root, StateRecordPath.tenant_desired(construction["tenantId"]), candidate)
+    _write_observed_for_manifest(root, candidate)
+    _write(
+        root,
+        StateRecordPath.tenant_archive(construction["tenantId"], archive["deploymentId"]),
+        archive,
+    )
+
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "archive",
+        "correlationId": construction["correlationId"],
+        "tenantId": construction["tenantId"],
+    }
+    job = _fixture("authorization-job.json")
+    job["request"] = request
+    job["requestDigest"] = request_digest(request).to_dict()
+    job["phase"] = "completed"
+    expected = _mapping(job["expectedSource"])
+    expected.update(
+        {
+            "expectsTenantAbsent": False,
+            "lifecycle": _mapping(source["spec"])["desiredState"],
+            "manifestDigest": manifest_digest(source).to_dict(),
+            "deploymentDigest": construction["deploymentRecordDigest"],
+            "archiveRecordDigest": None,
+            "platformStateDigest": platform_state_digest(namespace).to_dict(),
+        }
+    )
+    correlation = json.loads(json.dumps(job))
+    correlation["phase"] = "pending"
+    metadata = _mapping(candidate["metadata"])
+    result: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationResult",
+        "provenance": {"kind": "authorization-job", "jobId": job["jobId"]},
+        "correlationId": construction["correlationId"],
+        "operation": "archive",
+        "status": "succeeded",
+        "tenantId": construction["tenantId"],
+        "canonicalOrigin": metadata["canonicalOrigin"],
+        "manifest": candidate,
+    }
+    _write(root, StateRecordPath.authorization_job(job["jobId"]), job)
+    _write(
+        root,
+        StateRecordPath.authorization_correlation(construction["correlationId"]),
+        correlation,
+    )
+    _write(root, StateRecordPath.authorization_result(job["jobId"]), result)
+    _write(
+        root,
+        StateRecordPath.archive_construction_intent(construction["intentId"]),
+        construction,
+    )
+    return job, construction, result
+
+
+def _write_committed_transition_replay(
+    root: Path,
+    *,
+    operation: str,
+) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
+    namespace = _fixture("platform-namespace.json")
+    source = _fixture("site.json")
+    candidate = json.loads(json.dumps(source))
+    candidate_metadata = _mapping(candidate["metadata"])
+    candidate_spec = _mapping(candidate["spec"])
+    if operation == "rename":
+        candidate_metadata["slug"] = "authorized-rename"
+        candidate_route_set = "both"
+        candidate_runtime = "0198d17f-6f4a-7000-8000-000000000006"
+    elif operation == "suspend":
+        candidate_spec["desiredState"] = "suspended"
+        candidate_route_set = "absent"
+        candidate_runtime = None
+    else:  # pragma: no cover - tests call only the explicit lifecycle matrix
+        raise AssertionError("unsupported transition fixture")
+    source_digest = manifest_digest(source).to_dict()
+    candidate_digest = manifest_digest(candidate).to_dict()
+    source_observed = _fixture("tenant-observed-state.json")
+    source_observed["desiredManifestDigest"] = source_digest
+    candidate_observed = json.loads(json.dumps(source_observed))
+    candidate_observed.update(
+        {
+            "desiredManifestDigest": candidate_digest,
+            "observedState": candidate_spec["desiredState"],
+            "runtimeGenerationId": candidate_runtime,
+        }
+    )
+
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": operation,
+        "correlationId": "0198d17f-6f4a-7000-8000-000000000001",
+        "tenantId": _TENANT_ID,
+    }
+    if operation == "rename":
+        request["slug"] = candidate_metadata["slug"]
+    job = _fixture("authorization-job.json")
+    job["request"] = request
+    job["requestDigest"] = request_digest(request).to_dict()
+    job["phase"] = "completed"
+    expected = _mapping(job["expectedSource"])
+    deployment = _fixture("deployment-record.json")
+    expected.update(
+        {
+            "expectsTenantAbsent": False,
+            "lifecycle": "active",
+            "manifestDigest": source_digest,
+            "deploymentDigest": deployment_record_digest(deployment).to_dict(),
+            "archiveRecordDigest": None,
+            "platformStateDigest": platform_state_digest(namespace).to_dict(),
+        }
+    )
+    correlation = json.loads(json.dumps(job))
+    correlation["phase"] = "pending"
+    intent = _fixture("transaction-intent.json")
+    intent.update(
+        {
+            "tenantId": _TENANT_ID,
+            "correlationId": request["correlationId"],
+            "operation": operation,
+            "sourceManifest": source,
+            "sourceManifestDigest": source_digest,
+            "candidateManifest": candidate,
+            "candidateManifestDigest": candidate_digest,
+            "archiveRecovery": None,
+            "lifecycleRecovery": {
+                "sourceObservedState": source_observed,
+                "sourceRuntimeGenerationId": source_observed["runtimeGenerationId"],
+                "sourceRouteSet": "both",
+                "candidateObservedState": candidate_observed,
+                "candidateRuntimeGenerationId": ("0198d17f-6f4a-7000-8000-000000000006"),
+                "candidateRouteSet": candidate_route_set,
+            },
+        }
+    )
+    result: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationResult",
+        "provenance": {"kind": "authorization-job", "jobId": job["jobId"]},
+        "correlationId": request["correlationId"],
+        "operation": operation,
+        "status": "succeeded",
+        "tenantId": _TENANT_ID,
+        "canonicalOrigin": candidate_metadata["canonicalOrigin"],
+        "manifest": candidate,
+    }
+    _write(root, StateRecordPath.platform_namespace(), namespace)
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), candidate)
+    _write(root, StateRecordPath.tenant_observed(_TENANT_ID), candidate_observed)
+    _write(
+        root,
+        StateRecordPath.tenant_deployment(_TENANT_ID, deployment["id"]),
+        deployment,
+    )
+    _write(root, StateRecordPath.authorization_job(job["jobId"]), job)
+    _write(
+        root,
+        StateRecordPath.authorization_correlation(request["correlationId"]),
+        correlation,
+    )
+    _write(root, StateRecordPath.authorization_result(job["jobId"]), result)
+    _write(root, StateRecordPath.transaction_intent(intent["intentId"]), intent)
+    return job, intent, result
 
 
 def _write_archive_source_authority(
@@ -3684,6 +3910,214 @@ def test_executor_rejects_disagreeing_archive_intents_before_handler_dispatch(
             ).execute(job["jobId"])
 
     assert handler.phases == []
+
+
+def test_executor_reconstructs_an_archived_source_for_construction_cleanup(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    job, construction, result = _write_committed_archive_replay(root)
+    intent_path = StateRecordPath.archive_construction_intent(construction["intentId"])
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        _append_result_audit(repository, job, result)
+        handler = _ClearingIntentHandler(
+            repository,
+            intent_paths=(intent_path,),
+        )
+        outcome = AuthorizationExecutor(
+            repository,
+            intake,
+            handlers={"archive": handler},
+        ).execute(job["jobId"])
+
+    assert handler.dispatched is True
+    assert outcome.result == result
+    assert outcome.created is False
+
+
+def test_executor_rejects_an_archive_record_outside_construction_authority(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    job, construction, result = _write_committed_archive_replay(root)
+    manifest = _mapping(result["manifest"])
+    deployment = _mapping(_mapping(manifest["spec"])["desiredDeployment"])
+    archive_path = StateRecordPath.tenant_archive(construction["tenantId"], deployment["id"])
+    archive = json.loads(root.joinpath(*archive_path.components).read_text(encoding="utf-8"))
+    archive["bucket"] = "lowerduckpond-net-production-tenant-archives-wrong"
+    _write(root, archive_path, archive)
+    intent_path = StateRecordPath.archive_construction_intent(construction["intentId"])
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        _append_result_audit(repository, job, result)
+        handler = _ClearingIntentHandler(
+            repository,
+            intent_paths=(intent_path,),
+        )
+        with pytest.raises(ExecutionError, match="construction authority"):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={"archive": handler},
+            ).execute(job["jobId"])
+
+    assert handler.dispatched is False
+
+
+def test_executor_rejects_an_archive_handler_that_commits_another_remote_object(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    namespace = _fixture("platform-namespace.json")
+    construction = _fixture("archive-construction-intent.json")
+    source = _write_archive_source_authority(root, construction)
+    transaction_intent = _archive_transaction_intent(construction)
+    candidate = _mapping(transaction_intent["candidateManifest"])
+    recovery = _mapping(transaction_intent["archiveRecovery"])
+    authorized_archive = _mapping(recovery["candidateArchiveRecord"])
+    wrong_archive = json.loads(json.dumps(authorized_archive))
+    wrong_archive["key"] = "archives/0198d17f-6f4a-7000-8000-000000000099.zip"
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "archive",
+        "correlationId": construction["correlationId"],
+        "tenantId": construction["tenantId"],
+    }
+    job = _fixture("authorization-job.json")
+    job["request"] = request
+    job["requestDigest"] = request_digest(request).to_dict()
+    job["phase"] = "claimed"
+    expected = _mapping(job["expectedSource"])
+    expected.update(
+        {
+            "expectsTenantAbsent": False,
+            "lifecycle": _mapping(source["spec"])["desiredState"],
+            "manifestDigest": manifest_digest(source).to_dict(),
+            "deploymentDigest": construction["deploymentRecordDigest"],
+            "archiveRecordDigest": None,
+            "platformStateDigest": platform_state_digest(namespace).to_dict(),
+        }
+    )
+    correlation = json.loads(json.dumps(job))
+    correlation["phase"] = "pending"
+    transaction_path = StateRecordPath.transaction_intent(transaction_intent["intentId"])
+    construction_path = StateRecordPath.archive_construction_intent(construction["intentId"])
+    _write(root, StateRecordPath.platform_namespace(), namespace)
+    _write(root, StateRecordPath.authorization_job(job["jobId"]), job)
+    _write(
+        root,
+        StateRecordPath.authorization_correlation(request["correlationId"]),
+        correlation,
+    )
+    _write(root, transaction_path, transaction_intent)
+    _write(root, construction_path, construction)
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        handler = _ClearingIntentHandler(
+            repository,
+            intent_paths=(transaction_path, construction_path),
+            delegate=_CompletingTransitionHandler(
+                repository,
+                root,
+                manifest=candidate,
+                archive=wrong_archive,
+            ),
+        )
+        with pytest.raises(ExecutionError, match="archive record exceeds construction authority"):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={"archive": handler},
+                tenant_runtime_validator=lambda *_arguments: True,
+            ).execute(job["jobId"])
+
+    assert handler.dispatched is True
+
+
+def test_executor_rejects_observed_runtime_outside_transaction_authority(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    job, intent, result = _write_committed_transition_replay(root, operation="rename")
+    observed_path = StateRecordPath.tenant_observed(_TENANT_ID)
+    observed = json.loads(root.joinpath(*observed_path.components).read_text(encoding="utf-8"))
+    observed["runtimeGenerationId"] = "0198d17f-6f4a-7000-8000-000000000007"
+    _write(root, observed_path, observed)
+    intent_path = StateRecordPath.transaction_intent(intent["intentId"])
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        _append_result_audit(repository, job, result)
+        handler = _ClearingIntentHandler(repository, intent_paths=(intent_path,))
+        with pytest.raises(ExecutionError, match="observed state exceeds runtime authority"):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={"rename": handler},
+                tenant_runtime_validator=lambda *_arguments: True,
+            ).execute(job["jobId"])
+
+    assert handler.dispatched is True
+
+
+@pytest.mark.parametrize(
+    ("operation", "route_set"),
+    [("rename", "both"), ("suspend", "absent")],
+)
+def test_executor_requires_the_authorized_selected_runtime_generation(
+    tmp_path: Path,
+    operation: str,
+    route_set: str,
+) -> None:
+    root = _state_root(tmp_path)
+    job, intent, result = _write_committed_transition_replay(root, operation=operation)
+    intent_path = StateRecordPath.transaction_intent(intent["intentId"])
+    calls: list[tuple[str, str, str]] = []
+
+    def reject_unselected(
+        tenant_id: str,
+        candidate_route_set: str,
+        generation_id: str,
+        _manifest: dict[str, object],
+        _observed_state: dict[str, object] | None,
+    ) -> bool:
+        calls.append((tenant_id, candidate_route_set, generation_id))
+        return False
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        _append_result_audit(repository, job, result)
+        handler = _ClearingIntentHandler(repository, intent_paths=(intent_path,))
+        with pytest.raises(ExecutionError, match="authorized routes"):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={operation: handler},
+                tenant_runtime_validator=reject_unselected,
+            ).execute(job["jobId"])
+
+    assert calls == [
+        (
+            _TENANT_ID,
+            route_set,
+            "0198d17f-6f4a-7000-8000-000000000006",
+        )
+    ]
 
 
 def test_executor_binds_restore_candidate_content_to_retirement_authority(
