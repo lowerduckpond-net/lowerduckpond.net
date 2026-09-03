@@ -357,6 +357,8 @@ def _require_same_job(
     second.pop("dispatchArchiveDeploymentIds", None)
     first.pop("dispatchArtifactReleaseTreeDigest", None)
     second.pop("dispatchArtifactReleaseTreeDigest", None)
+    first.pop("dispatchSourceReleaseTreeDigest", None)
+    second.pop("dispatchSourceReleaseTreeDigest", None)
     first.pop("dispatchDeploymentIds", None)
     second.pop("dispatchDeploymentIds", None)
     first.pop("dispatchTenantIds", None)
