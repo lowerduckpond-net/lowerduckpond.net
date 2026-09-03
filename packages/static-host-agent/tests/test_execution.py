@@ -20,6 +20,7 @@ from lowerduckpond_static_contracts import (
 from lowerduckpond_static_host_agent import (
     ArtifactClaim,
     ArtifactIntake,
+    AuditError,
     AuthorizationExecutor,
     AuthorizationIssuer,
     CapacityProjection,
@@ -177,6 +178,69 @@ class _CompletingFailureHandler:
             StateRecordPath.authorization_job(job_id),
             job.revision,
             failed,
+            blocking=blocking,
+        )
+        return ExecutionOutcome(result, True)
+
+
+class _CompletingDeleteHandler:
+    def __init__(
+        self,
+        repository: StateRepository,
+        root: Path,
+        *,
+        deletion_evidence: dict[str, object],
+    ) -> None:
+        self._repository = repository
+        self._root = root
+        self._deletion_evidence = deletion_evidence
+
+    def execute(
+        self,
+        job_id: str,
+        *,
+        claim: ArtifactClaim | None,
+        blocking: bool,
+    ) -> ExecutionOutcome:
+        assert claim is None
+        job = self._repository.read(
+            StateRecordPath.authorization_job(job_id),
+            blocking=blocking,
+        )
+        request = job.document["request"]
+        assert type(request) is dict
+        result: dict[str, object] = {
+            "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+            "kind": "OperationResult",
+            "provenance": {"kind": "authorization-job", "jobId": job_id},
+            "correlationId": request["correlationId"],
+            "operation": "delete",
+            "status": "succeeded",
+            "tenantId": request["tenantId"],
+        }
+        self._repository.create_immutable(
+            StateRecordPath.authorization_result(job_id),
+            result,
+            blocking=blocking,
+        )
+        _append_result_audit(
+            self._repository,
+            job.document,
+            result,
+            deletion_evidence=self._deletion_evidence,
+        )
+        desired_path = StateRecordPath.tenant_desired(request["tenantId"])
+        self._root.joinpath(*desired_path.components).unlink()
+        current = self._repository.read(
+            StateRecordPath.authorization_job(job_id),
+            blocking=blocking,
+        )
+        completed = current.document
+        completed["phase"] = "completed"
+        self._repository.compare_and_swap(
+            StateRecordPath.authorization_job(job_id),
+            current.revision,
+            completed,
             blocking=blocking,
         )
         return ExecutionOutcome(result, True)
@@ -386,6 +450,8 @@ def _append_result_audit(
     repository: StateRepository,
     job: dict[str, object],
     result: dict[str, object],
+    *,
+    deletion_evidence: dict[str, object] | None = None,
 ) -> None:
     state = repository.inspect_audit()
     entry: dict[str, object] = {
@@ -401,6 +467,8 @@ def _append_result_audit(
         "resultDigest": result_digest(result).to_dict(),
         "resultStatus": result["status"],
     }
+    if deletion_evidence is not None:
+        entry["deletionEvidence"] = deletion_evidence
     repository.append_audit(entry)
 
 
@@ -431,6 +499,26 @@ def _issue_create(repository: StateRepository) -> IssuedAuthorization:
         entropy=_Entropy(),
     ).issue(
         _create_request(),
+        operator_principal="operator@example.test",
+        now=_NOW,
+        artifact=None,
+    )
+
+
+def _issue_delete(repository: StateRepository) -> IssuedAuthorization:
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "delete",
+        "correlationId": "0198d17f-6f4a-7000-8000-000000000001",
+        "tenantId": _TENANT_ID,
+    }
+    return AuthorizationIssuer(
+        repository,
+        gate=_OpenGate(),
+        entropy=_Entropy(),
+    ).issue(
+        canonical_json_bytes(request),
         operator_principal="operator@example.test",
         now=_NOW,
         artifact=None,
@@ -926,6 +1014,151 @@ def test_executor_rejects_an_intent_free_success_without_matching_audit(
         pytest.raises(ExecutionError, match="durable audit authority"),
     ):
         AuthorizationExecutor(repository, intake).execute(issued.job_id)
+
+
+def test_executor_translates_invalid_audit_authority_to_an_execution_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+
+    with StateRepository(root, expected_owner=os.geteuid()) as repository:
+        issued = _issue_create(repository)
+        request = issued.document["request"]
+        assert type(request) is dict
+        result = _fixture("operation-result.json")
+        provenance = result["provenance"]
+        manifest = result["manifest"]
+        assert type(provenance) is dict
+        assert type(manifest) is dict
+        provenance["jobId"] = issued.job_id
+        result["correlationId"] = request["correlationId"]
+        _write(root, StateRecordPath.tenant_desired(result["tenantId"]), manifest)
+        repository.create_immutable(
+            StateRecordPath.authorization_result(issued.job_id),
+            result,
+        )
+
+    def reject_audit(*_args: object, **_kwargs: object) -> object:
+        raise AuditError("synthetic malformed audit chain")
+
+    monkeypatch.setattr(
+        "lowerduckpond_static_host_agent.repository._StateTransaction.inspect_audit_correlation",
+        reject_audit,
+    )
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+        pytest.raises(ExecutionError, match="audit authority is invalid"),
+    ):
+        AuthorizationExecutor(repository, intake).execute(issued.job_id)
+
+
+@pytest.mark.parametrize("lifecycle", ["undeployed", "archived"])
+def test_executor_binds_delete_audit_evidence_to_its_exact_source(
+    tmp_path: Path,
+    lifecycle: str,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    manifest = _fixture("site.json")
+    spec = manifest["spec"]
+    assert type(spec) is dict
+    spec["desiredState"] = lifecycle
+    archive: dict[str, object] | None = None
+    if lifecycle == "undeployed":
+        del spec["desiredDeployment"]
+        deletion_evidence: dict[str, object] = {
+            "mode": "never-deployed",
+            "releasedSlugs": ["wrong-duck"],
+            "archiveRecordDigest": None,
+            "bucket": None,
+            "key": None,
+            "versionId": None,
+            "emergencyReason": None,
+        }
+    else:
+        deployment = _fixture("deployment-record.json")
+        archive = _fixture("archive-record.json")
+        _write(
+            root,
+            StateRecordPath.tenant_deployment(_TENANT_ID, _DEPLOYMENT_ID),
+            deployment,
+        )
+        _write(
+            root,
+            StateRecordPath.tenant_archive(_TENANT_ID, _DEPLOYMENT_ID),
+            archive,
+        )
+        deletion_evidence = {
+            "mode": "archived",
+            "releasedSlugs": ["duck-repair"],
+            "archiveRecordDigest": archive_record_digest(archive).to_dict(),
+            "bucket": archive["bucket"],
+            "key": "archives/0198d17f-6f4a-7000-8000-000000000004.zip",
+            "versionId": archive["versionId"],
+            "emergencyReason": None,
+        }
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), manifest)
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued = _issue_delete(repository)
+        handler = _CompletingDeleteHandler(
+            repository,
+            root,
+            deletion_evidence=deletion_evidence,
+        )
+        with pytest.raises(ExecutionError, match="source authority"):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={"delete": handler},
+            ).execute(issued.job_id)
+        with pytest.raises(ExecutionError, match="source authority"):
+            AuthorizationExecutor(repository, intake).execute(issued.job_id)
+
+
+def test_executor_accepts_exact_durable_delete_evidence_and_replays_it(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    manifest = _fixture("site.json")
+    spec = manifest["spec"]
+    assert type(spec) is dict
+    spec["desiredState"] = "undeployed"
+    del spec["desiredDeployment"]
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), manifest)
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued = _issue_delete(repository)
+        expected = issued.document["expectedSource"]
+        assert type(expected) is dict
+        deletion_evidence = expected["deletionEvidence"]
+        assert type(deletion_evidence) is dict
+        handler = _CompletingDeleteHandler(
+            repository,
+            root,
+            deletion_evidence=deletion_evidence,
+        )
+        executor = AuthorizationExecutor(
+            repository,
+            intake,
+            handlers={"delete": handler},
+        )
+        outcome = executor.execute(issued.job_id)
+        replay = executor.execute(issued.job_id)
+
+    assert outcome.result["status"] == "succeeded"
+    assert replay.result == outcome.result
+    assert replay.created is False
 
 
 def test_executor_rejects_a_misbound_result_before_handler_dispatch(tmp_path: Path) -> None:
@@ -1786,6 +2019,18 @@ def test_executor_recognizes_archive_intent_paths_for_handler_replay(
             "archiveRecordDigest": intent.get("archiveRecordDigest"),
         }
     )
+    if operation == "delete":
+        archive = intent["archiveRecord"]
+        assert type(archive) is dict
+        expected["deletionEvidence"] = {
+            "mode": "archived",
+            "releasedSlugs": ["duck-repair"],
+            "archiveRecordDigest": intent["archiveRecordDigest"],
+            "bucket": archive["bucket"],
+            "key": archive["key"],
+            "versionId": archive["versionId"],
+            "emergencyReason": None,
+        }
     correlation = dict(job)
     correlation["phase"] = "pending"
     result: dict[str, object] = {
@@ -2049,6 +2294,87 @@ def test_executor_binds_restore_candidate_content_to_retirement_authority(
     ):
         handler = _CompletingCreateHandler(repository)
         with pytest.raises(ExecutionError, match="archive retirement authority"):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={"restore": handler},
+            ).execute(job["jobId"])
+
+    assert handler.phases == []
+
+
+def test_executor_binds_a_lone_restore_retirement_intent_to_its_result(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    job = _fixture("authorization-job.json")
+    transaction_intent, retirement_intent = _restore_intents()
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "restore",
+        "correlationId": retirement_intent["correlationId"],
+        "tenantId": retirement_intent["tenantId"],
+    }
+    job["request"] = request
+    job["requestDigest"] = request_digest(request).to_dict()
+    job["phase"] = "claimed"
+    expected = job["expectedSource"]
+    assert type(expected) is dict
+    expected.update(
+        {
+            "expectsTenantAbsent": False,
+            "lifecycle": "archived",
+            "manifestDigest": retirement_intent["sourceManifestDigest"],
+            "deploymentDigest": {
+                "format": "lowerduckpond-deployment-record-v1",
+                "algorithm": "sha256",
+                "value": "c" * 64,
+            },
+            "archiveRecordDigest": retirement_intent["archiveRecordDigest"],
+        }
+    )
+    correlation = json.loads(json.dumps(job))
+    correlation["phase"] = "pending"
+    candidate = transaction_intent["candidateManifest"]
+    assert type(candidate) is dict
+    candidate_spec = candidate["spec"]
+    metadata = candidate["metadata"]
+    assert type(candidate_spec) is dict
+    assert type(metadata) is dict
+    deployment = candidate_spec["desiredDeployment"]
+    assert type(deployment) is dict
+    deployment["archiveSha256"] = "e" * 64
+    result: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationResult",
+        "provenance": {"kind": "authorization-job", "jobId": job["jobId"]},
+        "correlationId": request["correlationId"],
+        "operation": "restore",
+        "status": "succeeded",
+        "tenantId": request["tenantId"],
+        "canonicalOrigin": metadata["canonicalOrigin"],
+        "manifest": candidate,
+    }
+    _write(root, StateRecordPath.authorization_job(job["jobId"]), job)
+    _write(
+        root,
+        StateRecordPath.authorization_correlation(request["correlationId"]),
+        correlation,
+    )
+    _write(
+        root,
+        StateRecordPath.archive_retirement_intent(retirement_intent["intentId"]),
+        retirement_intent,
+    )
+    _write(root, StateRecordPath.authorization_result(job["jobId"]), result)
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        handler = _CompletingCreateHandler(repository)
+        with pytest.raises(ExecutionError, match="retirement authority"):
             AuthorizationExecutor(
                 repository,
                 intake,
