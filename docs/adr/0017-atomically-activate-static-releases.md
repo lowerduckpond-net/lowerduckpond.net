@@ -243,7 +243,14 @@ ordered persistence protocol:
    A host-agent artifact upgrade may install its immutable candidate, but it
    must not select a new schema implementation while any lifecycle intent is
    active. The prior selected agent retains recovery authority; after it clears
-   the intent, convergence may atomically select the verified upgrade.
+   the intent, convergence may atomically select the verified upgrade. The
+   unversioned executor and reconciler wrappers acquire the root-owned
+   host-agent selection lock in shared mode before resolving `current` and hold
+   it through execution. The installer holds the same lock exclusively across
+   its active-intent scan and selector replacement. During adoption, Ansible
+   replaces the wrappers and waits for every pre-lock worker and reconciler to
+   exit before invoking that installer, so an old implementation cannot create
+   recovery evidence in the scan-to-selection interval.
 3. Create a temporary active-Caddy-generation reference, atomically rename it
    over the old reference, and `fsync` its containing directory. A reference is
    never selected before its release and complete runtime generation are

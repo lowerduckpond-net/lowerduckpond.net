@@ -123,6 +123,7 @@ code; no request supplies a path component.
 ```text
 /opt/lowerduckpond/static-host-agent/<version>/  # immutable installed code
 /opt/lowerduckpond/static-host-agent/current     # root-selected version ref
+/opt/lowerduckpond/static-host-agent/selection.lock # worker/upgrade exclusion
 /var/lib/lowerduckpond/static/
 ├── platform/
 │   ├── namespace.json

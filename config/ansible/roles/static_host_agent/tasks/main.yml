@@ -33,6 +33,45 @@
       - static_host_agent_controller_artifact.stat.checksum == static_host_agent_artifact_sha256
     fail_msg: The controller host-agent artifact does not match its pinned SHA-256.
 
+- name: Create the versioned host-agent installation root
+  ansible.builtin.file:
+    path: "{{ static_host_agent_install_root }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Inspect the fixed host-agent selection lock
+  ansible.builtin.stat:
+    path: "{{ static_host_agent_install_root }}/selection.lock"
+    follow: false
+  register: static_host_agent_selection_lock
+
+- name: Refuse an unsafe host-agent selection lock
+  ansible.builtin.assert:
+    that:
+      - >-
+        not static_host_agent_selection_lock.stat.exists or
+        (static_host_agent_selection_lock.stat.isreg and
+         not static_host_agent_selection_lock.stat.islnk and
+         static_host_agent_selection_lock.stat.uid == 0 and
+         static_host_agent_selection_lock.stat.gid == 0 and
+         static_host_agent_selection_lock.stat.mode == '0600' and
+         static_host_agent_selection_lock.stat.nlink == 1 and
+         static_host_agent_selection_lock.stat.size == 0)
+    quiet: true
+
+- name: Create the fixed host-agent selection lock
+  ansible.builtin.file:
+    path: "{{ static_host_agent_install_root }}/selection.lock"
+    state: touch
+    owner: root
+    group: root
+    mode: "0600"
+    access_time: preserve
+    modification_time: preserve
+  when: not static_host_agent_selection_lock.stat.exists
+
 - name: Install host-agent artifact commands
   ansible.builtin.copy:
     src: "{{ item }}"
@@ -47,13 +86,21 @@
     - execute-authorized-job
     - reconcile-authorized-jobs
 
-- name: Create the versioned host-agent installation root
-  ansible.builtin.file:
-    path: "{{ static_host_agent_install_root }}"
-    state: directory
-    owner: root
-    group: root
-    mode: "0755"
+- name: Wait for pre-lock static host-agent processes to finish
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - list-units
+      - --state=active
+      - --plain
+      - --no-legend
+      - lowerduckpond-static-reconcile.service
+      - lowerduckpond-static-worker@*.service
+  register: static_host_agent_active_legacy_processes
+  changed_when: false
+  until: static_host_agent_active_legacy_processes.stdout | trim | length == 0
+  retries: 61
+  delay: 5
 
 - name: Create the protected host-agent artifact cache
   ansible.builtin.file:
