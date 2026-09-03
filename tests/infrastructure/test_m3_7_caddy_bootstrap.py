@@ -171,6 +171,19 @@ def test_generation_migration_is_stopped_masked_and_defaults_on() -> None:
     assert host_agent_tasks.index(state_layout) < host_agent_tasks.index(artifact_selection)
 
 
+def test_host_agent_upgrade_waits_for_every_live_legacy_unit_state() -> None:
+    tasks = (_ROOT / "config/ansible/roles/static_host_agent/tasks/main.yml").read_text(
+        encoding="utf-8"
+    )
+
+    wait_start = tasks.index("Wait for pre-lock static host-agent processes to finish")
+    wait_end = tasks.index("Create the protected host-agent artifact cache", wait_start)
+    wait = tasks[wait_start:wait_end]
+    assert "--state=active,activating,deactivating,reloading,refreshing,maintenance" in wait
+    assert "lowerduckpond-static-reconcile.service" in wait
+    assert "lowerduckpond-static-worker@*.service" in wait
+
+
 def test_frozen_wrappers_enter_only_the_reviewed_host_agent_entrypoints() -> None:
     bootstrap = (_CADDY_ROLE / "files/bootstrap-caddy-generation").read_text(encoding="utf-8")
     launcher = (_CADDY_ROLE / "files/launch-caddy-generation").read_text(encoding="utf-8")

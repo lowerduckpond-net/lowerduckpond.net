@@ -10,7 +10,6 @@ from typing import Final, Protocol, cast
 
 from lowerduckpond_static_contracts import (
     ContractKind,
-    audit_entry_digest,
     canonical_json_bytes,
     deployment_record_digest,
     manifest_digest,
@@ -232,14 +231,21 @@ class AuthorizationExecutor:
         ) as transaction:
             current = transaction.read(StateRecordPath.authorization_job(job_id))
             _require_same_authority(initial.document, current.document)
-            if current.document["phase"] != "claimed":
+            phase = current.document["phase"]
+            if phase not in {"claimed", "completed", "failed"}:
                 return None
             _validate_request_integrity(current.document)
             _request, intents = _bound_lifecycle_intents(transaction, current.document)
             if not intents:
-                raise ExecutionError("claimed artifact job has no active lifecycle recovery intent")
+                if phase == "claimed":
+                    raise ExecutionError(
+                        "claimed artifact job has no active lifecycle recovery intent"
+                    )
+                return None
             _require_available_lifecycle_handler(True, handler)
             existing = _read_result_transaction(transaction, job_id)
+            if phase != "claimed" and existing is None:
+                raise ExecutionError("terminal lifecycle job has no durable result")
             if existing is not None:
                 _validate_result_binding(current.document, existing.document)
                 _validate_result_intent_binding(existing.document, _request, intents)
@@ -320,6 +326,14 @@ class AuthorizationExecutor:
                 )
                 if completed is not None:
                     return completed
+                recovered = self._recover_claimed_lifecycle_without_artifact(
+                    job_id,
+                    initial,
+                    handler=handler,
+                    blocking=blocking,
+                )
+                if recovered is not None:
+                    return recovered
                 raise ExecutionError("lifecycle replay artifact is unavailable") from error
             except IntakeError as error:
                 raise ExecutionError(
@@ -493,7 +507,7 @@ class AuthorizationExecutor:
             ):
                 raise ExecutionError("lifecycle handler returned before clearing its intent")
             _require_current_success_result_shape(result)
-            audit_is_terminal = _validate_result_audit(
+            audit_is_latest_for_tenant = _validate_result_audit(
                 transaction,
                 current.document,
                 result,
@@ -503,7 +517,7 @@ class AuthorizationExecutor:
                 transaction,
                 current.document,
                 result,
-                audit_is_terminal=audit_is_terminal,
+                audit_is_latest_for_tenant=audit_is_latest_for_tenant,
             )
             expected_phase = "completed" if result["status"] == "succeeded" else "failed"
             if current.document["phase"] != expected_phase:
@@ -953,11 +967,12 @@ def _validate_handler_result_state(
     job: dict[str, object],
     result: dict[str, object],
     *,
-    audit_is_terminal: bool,
+    audit_is_latest_for_tenant: bool,
 ) -> None:
-    if not audit_is_terminal:
+    if not audit_is_latest_for_tenant:
         # A later fully audited lifecycle operation may legitimately supersede
-        # this result before the executor reacquires serialization.
+        # this result for the same tenant before the executor reacquires
+        # serialization.
         return
     if result["status"] == "failed":
         if job["compatibilityVersion"] == "static-job-v1":
@@ -1019,7 +1034,7 @@ def _validate_result_audit(
         raise ExecutionError("lifecycle result disagrees with durable audit authority")
     if result["operation"] == "delete" and result["status"] == "succeeded":
         _validate_delete_audit_evidence(job, entry)
-    return snapshot.state.terminal_digest == audit_entry_digest(entry).to_dict()
+    return not snapshot.has_later_tenant_state_transition
 
 
 def _failure_audit_snapshot(

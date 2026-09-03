@@ -169,7 +169,7 @@ class _CompletingFailureHandler:
         )
         request = job.document["request"]
         assert type(request) is dict
-        result: dict[str, object] = {
+        candidate: dict[str, object] = {
             "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
             "kind": "OperationResult",
             "provenance": {"kind": "authorization-job", "jobId": job_id},
@@ -179,11 +179,20 @@ class _CompletingFailureHandler:
             "errorCode": "not_implemented",
             "tenantId": None if request["operation"] == "create" else request["tenantId"],
         }
-        self._repository.create_immutable(
-            StateRecordPath.authorization_result(job_id),
-            result,
-            blocking=blocking,
-        )
+        try:
+            result = self._repository.read(
+                StateRecordPath.authorization_result(job_id),
+                blocking=blocking,
+            ).document
+            created = False
+        except FileNotFoundError:
+            result = candidate
+            self._repository.create_immutable(
+                StateRecordPath.authorization_result(job_id),
+                result,
+                blocking=blocking,
+            )
+            created = True
         if self._state_root is not None:
             _write(
                 self._state_root,
@@ -192,23 +201,31 @@ class _CompletingFailureHandler:
             )
         if self._append_audit:
             _append_result_audit_if_absent(self._repository, job.document, result)
-        failed = job.document
-        failed["phase"] = "failed"
-        self._repository.compare_and_swap(
-            StateRecordPath.authorization_job(job_id),
-            job.revision,
-            failed,
-            blocking=blocking,
-        )
-        return ExecutionOutcome(result, True)
+        if job.document["phase"] != "failed":
+            failed = job.document
+            failed["phase"] = "failed"
+            self._repository.compare_and_swap(
+                StateRecordPath.authorization_job(job_id),
+                job.revision,
+                failed,
+                blocking=blocking,
+            )
+        return ExecutionOutcome(result, created)
 
 
 class _SupersedingCreateHandler:
     """Model a later audited lifecycle commit before executor validation."""
 
-    def __init__(self, repository: StateRepository, root: Path) -> None:
+    def __init__(
+        self,
+        repository: StateRepository,
+        root: Path,
+        *,
+        audit_tenant_id: str | None = None,
+    ) -> None:
         self._repository = repository
         self._root = root
+        self._audit_tenant_id = audit_tenant_id
 
     def execute(
         self,
@@ -237,6 +254,17 @@ class _SupersedingCreateHandler:
             StateRecordPath.tenant_desired(later["tenantId"]),
             later_manifest,
         )
+        audit_result = json.loads(json.dumps(later))
+        if self._audit_tenant_id is not None:
+            audit_manifest = audit_result["manifest"]
+            assert type(audit_manifest) is dict
+            audit_metadata = audit_manifest["metadata"]
+            assert type(audit_metadata) is dict
+            audit_origin = f"t-{self._audit_tenant_id.replace('-', '')}.lowerduckpond.com"
+            audit_result["tenantId"] = self._audit_tenant_id
+            audit_result["canonicalOrigin"] = audit_origin
+            audit_metadata["id"] = self._audit_tenant_id
+            audit_metadata["canonicalOrigin"] = audit_origin
         job = self._repository.read(StateRecordPath.authorization_job(job_id)).document
         _append_result_audit(
             self._repository,
@@ -244,7 +272,7 @@ class _SupersedingCreateHandler:
                 "acceptedAt": job["acceptedAt"],
                 "operatorPrincipal": job["operatorPrincipal"],
             },
-            later,
+            audit_result,
         )
         return outcome
 
@@ -1262,6 +1290,34 @@ def test_executor_accepts_a_handler_result_superseded_by_a_later_audited_commit(
 
     assert outcome.result["status"] == "succeeded"
     assert current != outcome.result["manifest"]
+
+
+def test_executor_rejects_a_handler_result_followed_only_by_another_tenants_audit(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued = _issue_create(repository)
+        with pytest.raises(
+            ExecutionError,
+            match="disagrees with authoritative tenant state",
+        ):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={
+                    "create": _SupersedingCreateHandler(
+                        repository,
+                        root,
+                        audit_tenant_id="0198d17f-6f4a-7000-8000-000000000099",
+                    ),
+                },
+            ).execute(issued.job_id)
 
 
 def test_executor_decodes_but_never_mutates_for_a_legacy_delete_job(
@@ -3391,8 +3447,10 @@ def test_executor_returns_artifact_failure_published_by_concurrent_retry(
     assert job.document["phase"] == "failed"
 
 
+@pytest.mark.parametrize("terminal_result", [False, True])
 def test_executor_recovers_a_claimed_lifecycle_job_without_its_artifact(
     tmp_path: Path,
+    terminal_result: bool,
 ) -> None:
     root = _state_root(tmp_path)
     manifest = _fixture("site.json")
@@ -3475,6 +3533,30 @@ def test_executor_recovers_a_claimed_lifecycle_job_without_its_artifact(
             StateRecordPath.transaction_intent(intent["intentId"]),
             intent,
         )
+        if terminal_result:
+            result: dict[str, object] = {
+                "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+                "kind": "OperationResult",
+                "provenance": {"kind": "authorization-job", "jobId": issued.job_id},
+                "correlationId": correlation_id,
+                "operation": "deploy",
+                "status": "failed",
+                "errorCode": "not_implemented",
+                "tenantId": _TENANT_ID,
+            }
+            repository.create_immutable(
+                StateRecordPath.authorization_result(issued.job_id),
+                result,
+            )
+            _append_result_audit(repository, issued.document, result)
+            current = repository.read(StateRecordPath.authorization_job(issued.job_id))
+            failed = current.document
+            failed["phase"] = "failed"
+            repository.compare_and_swap(
+                StateRecordPath.authorization_job(issued.job_id),
+                current.revision,
+                failed,
+            )
         intent_id = intent["intentId"]
         assert type(intent_id) is str
         handler = _CompletingIntentHandler(
@@ -3491,6 +3573,7 @@ def test_executor_recovers_a_claimed_lifecycle_job_without_its_artifact(
         terminal = repository.read(StateRecordPath.authorization_job(issued.job_id)).document
 
     assert outcome.result["errorCode"] == "not_implemented"
+    assert outcome.created is not terminal_result
     assert terminal["phase"] == "failed"
     assert handler.claims == [None]
 
