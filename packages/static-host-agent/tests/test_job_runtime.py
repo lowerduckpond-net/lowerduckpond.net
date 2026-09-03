@@ -471,9 +471,12 @@ def test_result_waiter_accepts_the_generated_tenant_from_a_successful_create(
         assert type(request) is dict
         result = _fixture("operation-result.json")
         provenance = result["provenance"]
+        manifest = result["manifest"]
         assert type(provenance) is dict
+        assert type(manifest) is dict
         provenance["jobId"] = issued.job_id
         result["correlationId"] = request["correlationId"]
+        _write(root, StateRecordPath.tenant_desired(result["tenantId"]), manifest)
         repository.create_immutable(
             StateRecordPath.authorization_result(issued.job_id),
             result,
@@ -482,6 +485,38 @@ def test_result_waiter_accepts_the_generated_tenant_from_a_successful_create(
 
     assert retrieved["status"] == "succeeded"
     assert retrieved["tenantId"] == _fixture("operation-result.json")["tenantId"]
+    assert handoff.enqueued == []
+
+
+def test_result_waiter_rejects_an_intent_free_success_that_disagrees_with_state(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    handoff = _CaptureHandoff()
+    with StateRepository(root, expected_owner=os.geteuid()) as repository:
+        issued = _issue(repository)
+        request = issued.document["request"]
+        assert type(request) is dict
+        result = _fixture("operation-result.json")
+        provenance = result["provenance"]
+        manifest = result["manifest"]
+        assert type(provenance) is dict
+        assert type(manifest) is dict
+        provenance["jobId"] = issued.job_id
+        result["correlationId"] = request["correlationId"]
+        desired = json.loads(json.dumps(manifest))
+        metadata = manifest["metadata"]
+        assert type(metadata) is dict
+        metadata["slug"] = "different-duck"
+        _write(root, StateRecordPath.tenant_desired(result["tenantId"]), desired)
+        repository.create_immutable(
+            StateRecordPath.authorization_result(issued.job_id),
+            result,
+        )
+
+        with pytest.raises(RuntimeBoundaryError, match="lifecycle authority"):
+            ResultWaiter(repository, handoff).retrieve(issued)
+
     assert handoff.enqueued == []
 
 

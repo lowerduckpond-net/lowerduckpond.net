@@ -256,6 +256,7 @@ class AuthorizationExecutor:
             )
             _require_available_lifecycle_handler(dispatch, handler)
             if not dispatch:
+                _validate_successful_result_state(transaction, durable.document)
                 result = _repair_terminal_phase_transaction(transaction, current, durable)
         if not dispatch:
             if result is None:  # pragma: no cover - direct replay assigns the result
@@ -674,7 +675,10 @@ def validate_result_lifecycle_authority(
     """Validate a terminal result against any durable lifecycle authority."""
 
     _validate_result_binding(job, result)
-    return _has_bound_lifecycle_intent(transaction, job, result=result)
+    has_lifecycle_intent = _has_bound_lifecycle_intent(transaction, job, result=result)
+    if not has_lifecycle_intent:
+        _validate_successful_result_state(transaction, result)
+    return has_lifecycle_intent
 
 
 def _bound_lifecycle_intents(
