@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 from io import BytesIO
@@ -424,7 +425,7 @@ class _CompletingRollbackHandler:
 
 
 class _CompletingTransitionHandler:
-    def __init__(
+    def __init__(  # noqa: PLR0913 - test handler toggles independent durable records
         self,
         repository: StateRepository,
         root: Path,
@@ -432,12 +433,14 @@ class _CompletingTransitionHandler:
         manifest: dict[str, object],
         deployment: dict[str, object] | None = None,
         archive: dict[str, object] | None = None,
+        write_export: bool = False,
     ) -> None:
         self._repository = repository
         self._root = root
         self._manifest = manifest
         self._deployment = deployment
         self._archive = archive
+        self._write_export = write_export
 
     def execute(
         self,
@@ -468,6 +471,20 @@ class _CompletingTransitionHandler:
             "canonicalOrigin": metadata["canonicalOrigin"],
             "manifest": self._manifest,
         }
+        if request["operation"] == "export":
+            payload = b"authorized exported bundle"
+            result["exportBundle"] = {
+                "size": len(payload),
+                "digest": {
+                    "format": "lowerduckpond-archive-v1",
+                    "algorithm": "sha256",
+                    "value": hashlib.sha256(payload).hexdigest(),
+                },
+            }
+            if self._write_export:
+                export = self._root / "exports" / f"{job_id}.zip"
+                export.write_bytes(payload)
+                export.chmod(0o600)
         _write(
             self._root,
             StateRecordPath.tenant_desired(request["tenantId"]),
@@ -585,10 +602,12 @@ class _CompletingDeleteHandler:
         root: Path,
         *,
         deletion_evidence: dict[str, object],
+        remove_namespace: bool = True,
     ) -> None:
         self._repository = repository
         self._root = root
         self._deletion_evidence = deletion_evidence
+        self._remove_namespace = remove_namespace
 
     def execute(
         self,
@@ -624,10 +643,14 @@ class _CompletingDeleteHandler:
             result,
             deletion_evidence=self._deletion_evidence,
         )
-        desired_path = StateRecordPath.tenant_desired(request["tenantId"])
-        self._root.joinpath(*desired_path.components).unlink()
-        observed_path = StateRecordPath.tenant_observed(request["tenantId"])
-        self._root.joinpath(*observed_path.components).unlink(missing_ok=True)
+        tenant_root = self._root / "tenants" / str(request["tenantId"])
+        if self._remove_namespace:
+            shutil.rmtree(tenant_root)
+        else:
+            desired_path = StateRecordPath.tenant_desired(request["tenantId"])
+            self._root.joinpath(*desired_path.components).unlink()
+            observed_path = StateRecordPath.tenant_observed(request["tenantId"])
+            self._root.joinpath(*observed_path.components).unlink(missing_ok=True)
         current = self._repository.read(
             StateRecordPath.authorization_job(job_id),
             blocking=blocking,
@@ -823,6 +846,7 @@ def _state_root(tmp_path: Path) -> Path:
         ("intents",),
         ("intake",),
         ("locks",),
+        ("exports",),
     ):
         _mkdir(root.joinpath(*components))
     LockManager.initialize(root / "locks", expected_owner=os.geteuid()).close()
@@ -2007,6 +2031,59 @@ def test_executor_requires_the_new_deployment_record_for_a_restore_commit(
                 executor.execute(issued.job_id)
 
 
+@pytest.mark.parametrize("write_export", [False, True])
+def test_executor_requires_the_exact_export_bundle_for_success(
+    tmp_path: Path,
+    write_export: bool,
+) -> None:
+    root = _state_root(tmp_path)
+    manifest = _fixture("site.json")
+    deployment = _fixture("deployment-record.json")
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), manifest)
+    _write(root, StateRecordPath.tenant_deployment(_TENANT_ID, _DEPLOYMENT_ID), deployment)
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "export",
+        "correlationId": "0198d17f-6f4a-7000-8000-000000000003",
+        "tenantId": _TENANT_ID,
+    }
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued = AuthorizationIssuer(
+            repository,
+            gate=_OpenGate(),
+            entropy=_Entropy(),
+        ).issue(
+            canonical_json_bytes(request),
+            operator_principal="operator@example.test",
+            now=_NOW,
+            artifact=None,
+        )
+        executor = AuthorizationExecutor(
+            repository,
+            intake,
+            handlers={
+                "export": _CompletingTransitionHandler(
+                    repository,
+                    root,
+                    manifest=manifest,
+                    write_export=write_export,
+                )
+            },
+        )
+        if write_export:
+            outcome = executor.execute(issued.job_id)
+            assert outcome.result["status"] == "succeeded"
+        else:
+            with pytest.raises(ExecutionError, match="no exact bundle"):
+                executor.execute(issued.job_id)
+
+
 def test_executor_does_not_expose_artifact_consumption_to_handlers(tmp_path: Path) -> None:
     root = _state_root(tmp_path)
     _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
@@ -2286,6 +2363,40 @@ def test_executor_accepts_exact_durable_delete_evidence_and_replays_it(
     assert outcome.result["status"] == "succeeded"
     assert replay.result == outcome.result
     assert replay.created is False
+
+
+def test_executor_rejects_delete_that_retains_the_tenant_namespace(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    manifest = _fixture("site.json")
+    spec = manifest["spec"]
+    assert type(spec) is dict
+    spec["desiredState"] = "undeployed"
+    del spec["desiredDeployment"]
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), manifest)
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued = _issue_delete(repository)
+        expected = issued.document["expectedSource"]
+        assert type(expected) is dict
+        deletion_evidence = expected["deletionEvidence"]
+        assert type(deletion_evidence) is dict
+        with pytest.raises(ExecutionError, match="retained its tenant namespace"):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={
+                    "delete": _CompletingDeleteHandler(
+                        repository,
+                        root,
+                        deletion_evidence=deletion_evidence,
+                        remove_namespace=False,
+                    )
+                },
+            ).execute(issued.job_id)
 
 
 def test_executor_rejects_a_misbound_result_before_handler_dispatch(tmp_path: Path) -> None:

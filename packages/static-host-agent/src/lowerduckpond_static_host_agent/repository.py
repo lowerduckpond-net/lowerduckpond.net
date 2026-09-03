@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import stat
 from bisect import bisect_right
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -17,6 +18,7 @@ from typing import Final, Self
 
 from lowerduckpond_static_contracts import (
     MAX_CANONICAL_BYTES,
+    MAX_EXPORT_BYTES,
     ContractKind,
     canonical_json_bytes,
     decode_contract,
@@ -78,6 +80,7 @@ _RECOVERY_CURSOR_COMPONENTS: Final = ("locks", "authorization-recovery.cursor")
 _RECOVERY_CURSOR_MAXIMUM_BYTES: Final = 36
 _DIRECTORY_OPEN_FLAGS: Final = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 _TENANT_CHILD_DIRECTORIES: Final = ("archives", "deployments")
+_EXPORT_CHUNK_BYTES: Final = 64 * 1024
 
 
 class StateRecordError(RuntimeError):
@@ -818,6 +821,55 @@ class _StateTransaction:
         finally:
             deployments.close()
 
+    def validate_export_bundle(
+        self,
+        job_id: object,
+        binding: dict[str, object],
+    ) -> None:
+        """Validate one immutable export against its successful result binding."""
+
+        self._require_active()
+        canonical_id = validate_uuid7(job_id)
+        exports = self._repository._durable.open_descendant(("exports",))
+        try:
+            directory_fd = exports.duplicate_descriptor()
+            try:
+                file_descriptor = os.open(
+                    f"{canonical_id}.zip",
+                    os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=directory_fd,
+                )
+            finally:
+                os.close(directory_fd)
+        finally:
+            exports.close()
+        try:
+            before = os.fstat(file_descriptor)
+            size = binding["size"]
+            digest_binding = binding["digest"]
+            if (
+                not stat.S_ISREG(before.st_mode)
+                or before.st_uid != self._repository._expected_owner
+                or stat.S_IMODE(before.st_mode) != self._repository._expected_record_mode
+                or before.st_nlink != 1
+                or type(size) is not int
+                or before.st_size != size
+                or before.st_size > MAX_EXPORT_BYTES
+                or type(digest_binding) is not dict
+            ):
+                raise StateRecordError("successful export bundle metadata is unsafe")
+            digest = hashlib.sha256()
+            while chunk := os.read(file_descriptor, _EXPORT_CHUNK_BYTES):
+                digest.update(chunk)
+            after = os.fstat(file_descriptor)
+            if (
+                _file_generation(before) != _file_generation(after)
+                or digest.hexdigest() != digest_binding["value"]
+            ):
+                raise StateRecordError("successful export bundle disagrees with its result")
+        finally:
+            os.close(file_descriptor)
+
     def create_immutable(
         self,
         path: StateRecordPath,
@@ -1452,6 +1504,20 @@ def _notify_tenant_namespace(
 ) -> None:
     if hook is not None:
         hook(boundary)
+
+
+def _file_generation(metadata: os.stat_result) -> tuple[int, ...]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_uid,
+        metadata.st_gid,
+        metadata.st_nlink,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
 
 
 def _notify_create_state(

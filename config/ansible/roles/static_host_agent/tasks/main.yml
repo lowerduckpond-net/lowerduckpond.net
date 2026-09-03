@@ -56,7 +56,7 @@
          not static_host_agent_selection_lock.stat.islnk and
          static_host_agent_selection_lock.stat.uid == 0 and
          static_host_agent_selection_lock.stat.gid == 0 and
-         static_host_agent_selection_lock.stat.mode in ['0600', '0644'] and
+         static_host_agent_selection_lock.stat.mode == '0600' and
          static_host_agent_selection_lock.stat.nlink == 1 and
          static_host_agent_selection_lock.stat.size == 0)
     quiet: true
@@ -67,18 +67,10 @@
     state: touch
     owner: root
     group: root
-    mode: "0644"
+    mode: "0600"
     access_time: preserve
     modification_time: preserve
   when: not static_host_agent_selection_lock.stat.exists
-
-- name: Make the immutable selection lock readable by operator sessions
-  ansible.builtin.file:
-    path: "{{ static_host_agent_install_root }}/selection.lock"
-    state: file
-    owner: root
-    group: root
-    mode: "0644"
 
 - name: Install host-agent artifact commands
   ansible.builtin.copy:

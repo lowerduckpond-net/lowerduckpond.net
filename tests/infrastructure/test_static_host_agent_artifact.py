@@ -64,8 +64,8 @@ def verifier_for_test(tmp_path: Path) -> Path:
 
 def create_selection_lock(install_root: Path) -> Path:
     selection_lock = install_root / SELECTION_LOCK_NAME
-    selection_lock.touch(mode=0o644)
-    selection_lock.chmod(0o644)
+    selection_lock.touch(mode=0o600)
+    selection_lock.chmod(0o600)
     return selection_lock
 
 
