@@ -2214,6 +2214,83 @@ def test_executor_does_not_publish_artifact_failure_after_a_concurrent_claim(
     assert job.document["phase"] == "claimed"
 
 
+def test_executor_returns_artifact_failure_published_by_concurrent_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), _fixture("site.json"))
+    _write(
+        root,
+        StateRecordPath.tenant_deployment(_TENANT_ID, _DEPLOYMENT_ID),
+        _fixture("deployment-record.json"),
+    )
+    artifact = VerifiedArtifact(7, "a" * 64)
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "deploy",
+        "correlationId": "0198d17f-6f4a-7000-8000-000000000004",
+        "tenantId": _TENANT_ID,
+        "artifact": {"size": artifact.size, "sha256": artifact.sha256},
+    }
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued = AuthorizationIssuer(
+            repository,
+            gate=_OpenGate(),
+            entropy=_Entropy(),
+        ).issue(
+            canonical_json_bytes(request),
+            operator_principal="operator@example.test",
+            now=_NOW,
+            artifact=artifact,
+        )
+        original = AuthorizationExecutor._recover_claimed_lifecycle_without_artifact
+
+        def fail_after_absence(
+            executor: AuthorizationExecutor,
+            job_id: str,
+            initial: StoredContract,
+            *,
+            handler: LifecycleJobHandler | None,
+            blocking: bool,
+        ) -> ExecutionOutcome | None:
+            recovered = original(
+                executor,
+                job_id,
+                initial,
+                handler=handler,
+                blocking=blocking,
+            )
+            assert recovered is None
+            published = AuthorizationExecutor(repository, intake)._fail_without_claim(
+                job_id,
+                initial,
+                error_code="invalid_artifact",
+                blocking=blocking,
+            )
+            assert published.created is True
+            return None
+
+        monkeypatch.setattr(
+            AuthorizationExecutor,
+            "_recover_claimed_lifecycle_without_artifact",
+            fail_after_absence,
+        )
+
+        outcome = AuthorizationExecutor(repository, intake).execute(issued.job_id)
+        job = repository.read(StateRecordPath.authorization_job(issued.job_id))
+
+    assert outcome.created is False
+    assert outcome.result["errorCode"] == "invalid_artifact"
+    assert job.document["phase"] == "failed"
+
+
 def test_executor_recovers_a_claimed_lifecycle_job_without_its_artifact(
     tmp_path: Path,
 ) -> None:
