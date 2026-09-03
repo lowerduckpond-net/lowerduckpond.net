@@ -4,10 +4,13 @@
 version = "0.74.0"
 backend = "github:aquasecurity/trivy"
 
+[tools."github:aquasecurity/trivy".options]
+asset_pattern = "trivy_*_Linux-64bit.tar.gz"
+
 [tools."github:aquasecurity/trivy"."platforms.linux-x64"]
-checksum = "sha256:048af0c9597a8e275f60bb9e0543748dbc76e22bdd52456b84ea0fa0cd2a078a"
-url = "https://github.com/aquasecurity/trivy/releases/download/v0.74.0/trivy_0.74.0_Linux-32bit.tar.gz"
-url_api = "https://api.github.com/repos/aquasecurity/trivy/releases/assets/514339425"
+checksum = "sha256:2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a"
+url = "https://github.com/aquasecurity/trivy/releases/download/v0.74.0/trivy_0.74.0_Linux-64bit.tar.gz"
+url_api = "https://api.github.com/repos/aquasecurity/trivy/releases/assets/514339431"
 
 [[tools."github:gitleaks/gitleaks"]]
 version = "8.30.1"
