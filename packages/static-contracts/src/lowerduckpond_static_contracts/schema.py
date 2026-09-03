@@ -233,7 +233,13 @@ def _validate_job(document: dict[str, object]) -> None:
         raise ContractError(ErrorCode.SCHEMA_INVALID, "deployed source binding is invalid")
     if lifecycle == "archived" and (deployment is None or archive is None):
         raise ContractError(ErrorCode.SCHEMA_INVALID, "archived source binding is invalid")
-    _validate_job_deletion_authority(request, expected, lifecycle, archive)
+    _validate_job_deletion_authority(
+        request,
+        expected,
+        lifecycle,
+        archive,
+        compatibility_version=document["compatibilityVersion"],
+    )
 
 
 def _validate_job_deletion_authority(
@@ -241,6 +247,8 @@ def _validate_job_deletion_authority(
     expected: dict[str, object],
     lifecycle: object,
     archive: object,
+    *,
+    compatibility_version: object,
 ) -> None:
     operation = request["operation"]
     if operation != "delete":
@@ -251,6 +259,8 @@ def _validate_job_deletion_authority(
             )
         return
     if "deletionEvidence" not in expected:
+        if compatibility_version == "static-job-v1":
+            return
         raise ContractError(
             ErrorCode.SCHEMA_INVALID,
             "delete job has no durable deletion authority",

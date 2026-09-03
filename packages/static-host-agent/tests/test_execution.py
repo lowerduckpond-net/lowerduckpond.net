@@ -121,6 +121,8 @@ class _CompletingCreateHandler:
                 if result["status"] == "succeeded":
                     _append_result_audit(self._repository, job.document, result)
                 created = True
+        if result["status"] == "failed":
+            _append_result_audit_if_absent(self._repository, job.document, result)
         if self._commit_job:
             current = self._repository.read(
                 StateRecordPath.authorization_job(job_id),
@@ -138,8 +140,16 @@ class _CompletingCreateHandler:
 
 
 class _CompletingFailureHandler:
-    def __init__(self, repository: StateRepository) -> None:
+    def __init__(
+        self,
+        repository: StateRepository,
+        *,
+        append_audit: bool = True,
+        state_root: Path | None = None,
+    ) -> None:
         self._repository = repository
+        self._append_audit = append_audit
+        self._state_root = state_root
         self.claims: list[ArtifactClaim | None] = []
 
     def execute(
@@ -164,13 +174,21 @@ class _CompletingFailureHandler:
             "operation": request["operation"],
             "status": "failed",
             "errorCode": "not_implemented",
-            "tenantId": request["tenantId"],
+            "tenantId": None if request["operation"] == "create" else request["tenantId"],
         }
         self._repository.create_immutable(
             StateRecordPath.authorization_result(job_id),
             result,
             blocking=blocking,
         )
+        if self._state_root is not None:
+            _write(
+                self._state_root,
+                StateRecordPath.tenant_desired(_TENANT_ID),
+                _fixture("site.json"),
+            )
+        if self._append_audit:
+            _append_result_audit_if_absent(self._repository, job.document, result)
         failed = job.document
         failed["phase"] = "failed"
         self._repository.compare_and_swap(
@@ -329,6 +347,8 @@ class _CompletingUnavailableClaim(AbstractContextManager[ArtifactClaim]):
             IntentRemovalToken(intent.revision, generation),
         )
         job = self._repository.read(StateRecordPath.authorization_job(self._job_id))
+        result = self._repository.read(StateRecordPath.authorization_result(self._job_id)).document
+        _append_result_audit_if_absent(self._repository, job.document, result)
         failed = job.document
         failed["phase"] = "failed"
         self._repository.compare_and_swap(
@@ -461,6 +481,16 @@ def _append_result_audit(
     if deletion_evidence is not None:
         entry["deletionEvidence"] = deletion_evidence
     repository.append_audit(entry)
+
+
+def _append_result_audit_if_absent(
+    repository: StateRepository,
+    job: dict[str, object],
+    result: dict[str, object],
+) -> None:
+    snapshot = repository.inspect_audit_correlation(result["correlationId"])
+    if snapshot.entry is None:
+        _append_result_audit(repository, job, result)
 
 
 def _write_deployment_record(
@@ -1044,6 +1074,97 @@ def test_executor_translates_invalid_audit_authority_to_an_execution_error(
         pytest.raises(ExecutionError, match="audit authority is invalid"),
     ):
         AuthorizationExecutor(repository, intake).execute(issued.job_id)
+
+
+def test_executor_rejects_a_handler_failure_without_durable_audit(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued = _issue_create(repository)
+        executor = AuthorizationExecutor(
+            repository,
+            intake,
+            handlers={
+                "create": _CompletingFailureHandler(repository, append_audit=False),
+            },
+        )
+        with pytest.raises(ExecutionError, match="no durable audit authority"):
+            executor.execute(issued.job_id)
+        with pytest.raises(ExecutionError, match="no durable audit authority"):
+            executor.execute(issued.job_id)
+
+
+def test_executor_rejects_a_handler_failure_that_retains_candidate_state(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued = _issue_create(repository)
+        with pytest.raises(ExecutionError, match="did not restore its authorized source"):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={
+                    "create": _CompletingFailureHandler(repository, state_root=root),
+                },
+            ).execute(issued.job_id)
+
+        retained = repository.read(StateRecordPath.tenant_desired(_TENANT_ID)).document
+
+    assert retained == _fixture("site.json")
+
+
+def test_executor_decodes_but_never_mutates_for_a_legacy_delete_job(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    manifest = _fixture("site.json")
+    spec = manifest["spec"]
+    assert type(spec) is dict
+    spec["desiredState"] = "undeployed"
+    del spec["desiredDeployment"]
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), manifest)
+
+    with StateRepository(root, expected_owner=os.geteuid()) as repository:
+        issued = _issue_delete(repository)
+        request = issued.document["request"]
+        assert type(request) is dict
+        correlation_id = request["correlationId"]
+        job = repository.read(StateRecordPath.authorization_job(issued.job_id)).document
+        correlation = repository.read(
+            StateRecordPath.authorization_correlation(correlation_id)
+        ).document
+
+    for document in (job, correlation):
+        document["compatibilityVersion"] = "static-job-v1"
+        expected = document["expectedSource"]
+        assert type(expected) is dict
+        del expected["deletionEvidence"]
+    _write(root, StateRecordPath.authorization_job(issued.job_id), job)
+    _write(root, StateRecordPath.authorization_correlation(correlation_id), correlation)
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        outcome = AuthorizationExecutor(repository, intake).execute(issued.job_id)
+        retained = repository.read(StateRecordPath.tenant_desired(_TENANT_ID)).document
+
+    assert outcome.result["status"] == "failed"
+    assert outcome.result["errorCode"] == "state_drift"
+    assert retained == manifest
 
 
 @pytest.mark.parametrize("lifecycle", ["undeployed", "archived"])

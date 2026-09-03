@@ -151,7 +151,7 @@ class AuthorizationIssuer:
         candidate: dict[str, object] = {
             "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
             "kind": "AuthorizationJob",
-            "compatibilityVersion": "static-job-v1",
+            "compatibilityVersion": "static-job-v2",
             "jobId": job_id,
             "operatorPrincipal": principal,
             "request": request,

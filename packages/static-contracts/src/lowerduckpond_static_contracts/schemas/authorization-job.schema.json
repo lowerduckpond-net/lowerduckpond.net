@@ -20,7 +20,10 @@
       ]
     },
     "compatibilityVersion": {
-      "const": "static-job-v1"
+      "enum": [
+        "static-job-v1",
+        "static-job-v2"
+      ]
     },
     "expectedSource": {
       "additionalProperties": false,

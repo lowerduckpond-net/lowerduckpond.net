@@ -324,6 +324,36 @@ def test_authorization_source_digests_are_pinned_to_record_domains(
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
 
+def test_legacy_delete_job_without_deletion_evidence_remains_decodable() -> None:
+    job = _load_object(FIXTURE_ROOT / "accepted/authorization-job.json")
+    request = job["request"]
+    expected = job["expectedSource"]
+    assert type(request) is dict
+    assert type(expected) is dict
+    request.pop("slug")
+    request.pop("quotas")
+    request["operation"] = "delete"
+    request["tenantId"] = "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100"
+    job["requestDigest"] = request_digest(request).to_dict()
+    expected.update(
+        {
+            "expectsTenantAbsent": False,
+            "lifecycle": "undeployed",
+            "manifestDigest": {
+                "format": "lowerduckpond-manifest-v1",
+                "algorithm": "sha256",
+                "value": "a" * 64,
+            },
+        }
+    )
+
+    assert validate_contract(job) is ContractKind.AUTHORIZATION_JOB
+    job["compatibilityVersion"] = "static-job-v2"
+    with pytest.raises(ContractError) as captured:
+        validate_contract(job)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
 @pytest.mark.parametrize("field", ["tenantId", "canonicalOrigin", "manifest"])
 def test_successful_create_result_requires_generated_identity_fields(field: str) -> None:
     result = _load_object(FIXTURE_ROOT / "accepted/operation-result.json")
