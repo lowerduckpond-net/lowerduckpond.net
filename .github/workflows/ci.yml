@@ -28,8 +28,11 @@ jobs:
         with:
           fetch-depth: 0
       - name: Install tools
-        uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        env:
+          MISE_GITHUB_TOKEN: ${{ github.token }}
         with:
+          github_token: ${{ github.token }}
           version: 2026.8.8
           install_args: just python uv github:gitleaks/gitleaks opentofu
       - name: Run hooks
@@ -43,8 +46,11 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install tools
-        uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        env:
+          MISE_GITHUB_TOKEN: ${{ github.token }}
         with:
+          github_token: ${{ github.token }}
           version: 2026.8.8
           install_args: just github:lycheeverse/lychee
       - name: Check links
@@ -58,8 +64,11 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install tools
-        uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        env:
+          MISE_GITHUB_TOKEN: ${{ github.token }}
         with:
+          github_token: ${{ github.token }}
           version: 2026.8.8
           install_args: just python uv
       - name: Check Python
@@ -73,8 +82,11 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install tools
-        uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        env:
+          MISE_GITHUB_TOKEN: ${{ github.token }}
         with:
+          github_token: ${{ github.token }}
           version: 2026.8.8
           install_args: just python uv
       - name: Check local M3 assumptions
@@ -88,8 +100,11 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install tools
-        uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        env:
+          MISE_GITHUB_TOKEN: ${{ github.token }}
         with:
+          github_token: ${{ github.token }}
           version: 2026.8.8
           install_args: just python uv
       - name: Check standalone contract and root-domain wheels
@@ -103,8 +118,11 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install tools
-        uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        env:
+          MISE_GITHUB_TOKEN: ${{ github.token }}
         with:
+          github_token: ${{ github.token }}
           version: 2026.8.8
           install_args: just python uv
       - name: Check versioned archive storage behavior
@@ -120,8 +138,11 @@ jobs:
         with:
           fetch-depth: 0
       - name: Install tools
-        uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        env:
+          MISE_GITHUB_TOKEN: ${{ github.token }}
         with:
+          github_token: ${{ github.token }}
           version: 2026.8.8
           install_args: just python uv
       - name: Check reviewed Cloudflare proxy ranges
@@ -135,8 +156,11 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install tools
-        uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        env:
+          MISE_GITHUB_TOKEN: ${{ github.token }}
         with:
+          github_token: ${{ github.token }}
           version: 2026.8.8
           install_args: just opentofu github:terraform-linters/tflint github:aquasecurity/trivy
       - name: Check OpenTofu
@@ -150,8 +174,11 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install tools
-        uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        env:
+          MISE_GITHUB_TOKEN: ${{ github.token }}
         with:
+          github_token: ${{ github.token }}
           version: 2026.8.8
           install_args: just python uv
       - name: Check Ansible
@@ -165,8 +192,11 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install tools
-        uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        env:
+          MISE_GITHUB_TOKEN: ${{ github.token }}
         with:
+          github_token: ${{ github.token }}
           version: 2026.8.8
           install_args: just github:rhysd/actionlint
       - name: Check GitHub Actions
@@ -182,8 +212,11 @@ jobs:
         with:
           fetch-depth: 0
       - name: Install tools
-        uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        env:
+          MISE_GITHUB_TOKEN: ${{ github.token }}
         with:
+          github_token: ${{ github.token }}
           version: 2026.8.8
           install_args: just github:gitleaks/gitleaks
       - name: Scan for secrets
