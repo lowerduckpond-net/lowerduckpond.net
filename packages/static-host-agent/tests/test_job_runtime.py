@@ -63,6 +63,10 @@ class _ExecutorHandoff:
         self.enqueued.append(job_id)
         self._executor.execute(job_id)
 
+    def await_completion(self, job_id: str, *, timeout_seconds: float) -> None:
+        assert timeout_seconds > 0
+        self.enqueue(job_id)
+
 
 class _CaptureHandoff:
     def __init__(self) -> None:
@@ -70,6 +74,10 @@ class _CaptureHandoff:
 
     def enqueue(self, job_id: str) -> None:
         self.enqueued.append(job_id)
+
+    def await_completion(self, job_id: str, *, timeout_seconds: float) -> None:
+        assert timeout_seconds > 0
+        self.enqueue(job_id)
 
 
 class _IssuedAdapter:
@@ -279,7 +287,7 @@ def test_result_waiter_hands_off_only_the_issued_uuid_and_returns_its_result(
     assert result["errorCode"] == "not_implemented"
 
 
-def test_result_waiter_hands_off_an_existing_result_with_an_active_intent(
+def test_result_waiter_rejects_worker_completion_with_an_active_intent(
     tmp_path: Path,
 ) -> None:
     root = _state_root(tmp_path)
@@ -316,13 +324,13 @@ def test_result_waiter_hands_off_an_existing_result_with_an_active_intent(
             result,
         )
 
-        retrieved = ResultWaiter(repository, handoff).retrieve(issued)
+        with pytest.raises(RuntimeBoundaryError, match="active lifecycle intent"):
+            ResultWaiter(repository, handoff).retrieve(issued)
 
-    assert retrieved == result
     assert handoff.enqueued == [issued.job_id]
 
 
-def test_result_waiter_rechecks_intents_after_a_polled_result_appears(
+def test_result_waiter_rechecks_intents_after_worker_completion(
     tmp_path: Path,
 ) -> None:
     root = _state_root(tmp_path)
@@ -368,15 +376,19 @@ def test_result_waiter_rechecks_intents_after_a_polled_result_appears(
                     result,
                 )
 
-        handoff = _ResultThenIntentHandoff()
-        retrieved = ResultWaiter(
-            repository,
-            handoff,
-            sleep=lambda _seconds: None,
-        ).retrieve(issued)
+            def await_completion(self, job_id: str, *, timeout_seconds: float) -> None:
+                assert timeout_seconds > 0
+                self.enqueue(job_id)
 
-    assert retrieved == result
-    assert handoff.enqueued == [issued.job_id, issued.job_id]
+        handoff = _ResultThenIntentHandoff()
+        with pytest.raises(RuntimeBoundaryError, match="active lifecycle intent"):
+            ResultWaiter(
+                repository,
+                handoff,
+                sleep=lambda _seconds: None,
+            ).retrieve(issued)
+
+    assert handoff.enqueued == [issued.job_id]
 
 
 def test_result_waiter_rejects_a_result_that_disagrees_with_its_active_intent(
@@ -444,7 +456,7 @@ def test_operator_session_returns_one_bound_versioned_response_frame(tmp_path: P
     assert decode_result(response[HEADER_SIZE:]) == result
 
 
-def test_result_waiter_bounds_a_lost_handoff(tmp_path: Path) -> None:
+def test_result_waiter_rejects_an_exhausted_completion_deadline(tmp_path: Path) -> None:
     root = _state_root(tmp_path)
     handoff = _CaptureHandoff()
     with StateRepository(root, expected_owner=os.geteuid()) as repository:
@@ -458,7 +470,7 @@ def test_result_waiter_bounds_a_lost_handoff(tmp_path: Path) -> None:
                 total_seconds=1.0,
             ).retrieve(issued)
 
-    assert handoff.enqueued == [issued.job_id]
+    assert handoff.enqueued == []
 
 
 def test_result_waiter_rejects_a_result_with_another_correlation(tmp_path: Path) -> None:
@@ -511,7 +523,7 @@ def test_result_waiter_accepts_the_generated_tenant_from_a_successful_create(
 
     assert retrieved["status"] == "succeeded"
     assert retrieved["tenantId"] == _fixture("operation-result.json")["tenantId"]
-    assert handoff.enqueued == []
+    assert handoff.enqueued == [issued.job_id]
 
 
 def test_result_waiter_returns_an_audited_success_after_later_state_change(
@@ -544,7 +556,7 @@ def test_result_waiter_returns_an_audited_success_after_later_state_change(
         retrieved = ResultWaiter(repository, handoff).retrieve(issued)
 
     assert retrieved == result
-    assert handoff.enqueued == []
+    assert handoff.enqueued == [issued.job_id]
 
 
 def test_result_waiter_rejects_an_intent_free_success_with_a_mismatched_audit(
@@ -979,7 +991,9 @@ def test_systemd_handoff_uses_one_fixed_template_instance(
         return subprocess.CompletedProcess(arguments, 0)
 
     monkeypatch.setattr("lowerduckpond_static_host_agent.job_runtime.subprocess.run", run)
-    SystemdJobHandoff(executable).enqueue(job_id)
+    handoff = SystemdJobHandoff(executable)
+    handoff.enqueue(job_id)
+    handoff.await_completion(job_id, timeout_seconds=17.0)
 
     assert calls == [
         [
@@ -987,5 +1001,11 @@ def test_systemd_handoff_uses_one_fixed_template_instance(
             "start",
             "--no-block",
             f"lowerduckpond-static-worker@{job_id}.service",
-        ]
+        ],
+        [
+            os.fspath(executable),
+            "start",
+            "--wait",
+            f"lowerduckpond-static-worker@{job_id}.service",
+        ],
     ]

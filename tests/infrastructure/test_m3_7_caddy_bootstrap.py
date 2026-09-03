@@ -158,6 +158,7 @@ def test_generation_migration_is_stopped_masked_and_defaults_on() -> None:
     assert tasks.index(reset_limits) < tasks.index("Enable and start immutable Caddy")
     assert "Remove the retired mutable Caddy configuration" in site
     assert "--check" in tasks
+    assert site.index("- role: static_operator") < site.index("- role: static_host_agent")
     assert site.index("- role: static_host_agent") < site.index("- role: caddy")
 
     host_agent_tasks = (_ROOT / "config/ansible/roles/static_host_agent/tasks/main.yml").read_text(

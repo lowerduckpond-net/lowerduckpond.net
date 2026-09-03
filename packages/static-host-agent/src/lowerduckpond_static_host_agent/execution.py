@@ -535,6 +535,16 @@ class AuthorizationExecutor:
         claim: ArtifactClaim | None,
         blocking: bool,
     ) -> ExecutionOutcome:
+        with self._repository.transaction(
+            mode=LockMode.EXCLUSIVE,
+            blocking=blocking,
+        ) as transaction:
+            current = transaction.read(StateRecordPath.authorization_job(job_id))
+            _require_same_authority(initial.document, current.document)
+            source_manifest = _capture_authorized_source_manifest(
+                transaction,
+                current.document,
+            )
         handler_claim = None if claim is None else LifecycleArtifact(claim.artifact)
         returned = handler.execute(job_id, claim=handler_claim, blocking=blocking)
         if type(returned) is not ExecutionOutcome:
@@ -569,6 +579,7 @@ class AuthorizationExecutor:
                 transaction,
                 current.document,
                 result,
+                source_manifest=source_manifest,
                 audit_is_latest_for_tenant=audit_is_latest_for_tenant,
             )
             expected_phase = "completed" if result["status"] == "succeeded" else "failed"
@@ -719,6 +730,77 @@ def _expected_source_error(
             if type(metadata) is dict and metadata.get("slug") == slug:
                 return "state_drift"
     return None
+
+
+def _capture_authorized_source_manifest(
+    transaction: ExecutionTransaction,
+    job: dict[str, object],
+) -> dict[str, object] | None:
+    request = job["request"]
+    expected = job["expectedSource"]
+    if type(request) is not dict or type(expected) is not dict:
+        raise ExecutionError("authorization source authority is malformed")
+    if request["operation"] in {"create", "delete"}:
+        return None
+    _request, intents = _bound_lifecycle_intents(transaction, job)
+    transaction_intent = next(
+        (intent for intent in intents if intent["kind"] == "TransactionIntent"),
+        None,
+    )
+    if transaction_intent is None:
+        source = transaction.read(StateRecordPath.tenant_desired(request["tenantId"])).document
+        if (
+            request["operation"] == "restore"
+            and manifest_digest(source).to_dict() != expected["manifestDigest"]
+        ):
+            source = _reconstruct_restore_source_manifest(
+                transaction,
+                job,
+                source,
+            )
+    else:
+        source_value = transaction_intent["sourceManifest"]
+        if type(source_value) is not dict:
+            raise ExecutionError("lifecycle source manifest is not authorization-bound")
+        source = source_value
+    if (
+        type(expected["manifestDigest"]) is not dict
+        or manifest_digest(source).to_dict() != expected["manifestDigest"]
+    ):
+        raise ExecutionError("lifecycle source manifest is not authorization-bound")
+    return deepcopy(source)
+
+
+def _reconstruct_restore_source_manifest(
+    transaction: ExecutionTransaction,
+    job: dict[str, object],
+    restored: dict[str, object],
+) -> dict[str, object]:
+    request = job["request"]
+    expected = job["expectedSource"]
+    if (
+        type(request) is not dict
+        or type(expected) is not dict
+        or type(expected["deploymentDigest"]) is not dict
+    ):
+        raise ExecutionError("restore source reconstruction authority is malformed")
+    try:
+        deployment = transaction.deployment_for_digest(
+            request["tenantId"],
+            expected["deploymentDigest"],
+        )
+    except (FileNotFoundError, StatePathError, StateRecordError) as error:
+        raise ExecutionError("restore source reconstruction is unavailable") from error
+    source = deepcopy(restored)
+    spec = source["spec"]
+    if type(spec) is not dict:
+        raise ExecutionError("restore source reconstruction manifest is malformed")
+    spec["desiredState"] = "archived"
+    spec["desiredDeployment"] = {
+        "id": deployment["id"],
+        "archiveSha256": deployment["archiveSha256"],
+    }
+    return source
 
 
 def _claim_pending(
@@ -1035,10 +1117,22 @@ def _validate_handler_result_state(
     job: dict[str, object],
     result: dict[str, object],
     *,
+    source_manifest: dict[str, object] | None,
     audit_is_latest_for_tenant: bool,
 ) -> None:
     if result["status"] == "succeeded" and result["operation"] == "export":
         _validate_export_bundle(transaction, job, result)
+    if result["status"] == "succeeded" and result["operation"] != "delete":
+        committed_manifest = result.get("manifest")
+        if type(committed_manifest) is not dict:
+            raise ExecutionError("successful lifecycle result has no exact manifest")
+        _validate_committed_manifest_request_binding(
+            transaction,
+            job,
+            result,
+            committed_manifest,
+            source_manifest=source_manifest,
+        )
     if not audit_is_latest_for_tenant:
         # A later fully audited lifecycle operation may legitimately supersede
         # this result for the same tenant before the executor reacquires
@@ -1082,6 +1176,54 @@ def _validate_export_bundle(
         transaction.validate_export_bundle(job["jobId"], binding)
     except (FileNotFoundError, OSError, StatePathError, StateRecordError) as error:
         raise ExecutionError("successful export result has no exact bundle") from error
+
+
+def _validate_committed_manifest_request_binding(  # noqa: PLR0912 - explicit lifecycle matrix
+    transaction: ExecutionTransaction,
+    job: dict[str, object],
+    result: dict[str, object],
+    manifest: dict[str, object],
+    *,
+    source_manifest: dict[str, object] | None,
+) -> None:
+    request = job["request"]
+    if type(request) is not dict:
+        raise ExecutionError("successful lifecycle request authority is malformed")
+    operation = result["operation"]
+    if operation == "create":
+        _validate_candidate_request_binding(transaction, request, manifest)
+        return
+    if source_manifest is None:
+        raise ExecutionError("successful lifecycle result lost its source manifest authority")
+    expected = deepcopy(source_manifest)
+    expected_spec = expected["spec"]
+    result_spec = manifest["spec"]
+    if type(expected_spec) is not dict or type(result_spec) is not dict:
+        raise ExecutionError("successful lifecycle manifest authority is malformed")
+    if operation == "rename":
+        metadata = expected["metadata"]
+        if type(metadata) is not dict:
+            raise ExecutionError("successful rename metadata authority is malformed")
+        metadata["slug"] = request["slug"]
+    elif operation in {"deploy", "import", "rollback", "restore"}:
+        reference = result_spec.get("desiredDeployment")
+        if type(reference) is not dict:
+            raise ExecutionError("successful deployment selection authority is malformed")
+        expected_spec["desiredDeployment"] = deepcopy(reference)
+        if operation in {"import", "restore"} or (
+            operation == "deploy" and expected_spec["desiredState"] != "suspended"
+        ):
+            expected_spec["desiredState"] = "active"
+    elif operation == "suspend":
+        expected_spec["desiredState"] = "suspended"
+    elif operation == "resume":
+        expected_spec["desiredState"] = "active"
+    elif operation == "archive":
+        expected_spec["desiredState"] = "archived"
+    elif operation not in {"export", "reconcile"}:
+        raise ExecutionError("successful lifecycle operation has no manifest authority rule")
+    if expected != manifest:
+        raise ExecutionError("successful lifecycle manifest exceeds its request authority")
 
 
 def _validate_deleted_tenant_state(

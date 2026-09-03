@@ -102,6 +102,21 @@
   retries: 61
   delay: 5
 
+- name: Wait for pre-lock static operator processes to finish
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/pgrep
+      - --full
+      - --
+      - >-
+        [s]tatic-operator-adapter|[s]tatic-request-decoder
+  register: static_host_agent_active_legacy_operator_processes
+  changed_when: false
+  failed_when: static_host_agent_active_legacy_operator_processes.rc not in [0, 1]
+  until: static_host_agent_active_legacy_operator_processes.rc == 1
+  retries: 61
+  delay: 5
+
 - name: Create the protected host-agent artifact cache
   ansible.builtin.file:
     path: /var/cache/lowerduckpond-static-host-agent

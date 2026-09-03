@@ -2193,6 +2193,61 @@ def test_executor_requires_export_bundle_after_a_later_tenant_commit(
             ).execute(issued.job_id)
 
 
+def test_executor_rejects_a_manifest_that_exceeds_rename_authority(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    source = _fixture("site.json")
+    candidate = json.loads(json.dumps(source))
+    metadata = _mapping(candidate["metadata"])
+    spec = _mapping(candidate["spec"])
+    quotas = _mapping(spec["quotas"])
+    metadata["slug"] = "authorized-rename"
+    quotas["entries"] = 4999
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), source)
+    _write(
+        root,
+        StateRecordPath.tenant_deployment(_TENANT_ID, _DEPLOYMENT_ID),
+        _fixture("deployment-record.json"),
+    )
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "rename",
+        "correlationId": "0198d17f-6f4a-7000-8000-000000000003",
+        "tenantId": _TENANT_ID,
+        "slug": "authorized-rename",
+    }
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued = AuthorizationIssuer(
+            repository,
+            gate=_OpenGate(),
+            entropy=_Entropy(),
+        ).issue(
+            canonical_json_bytes(request),
+            operator_principal="operator@example.test",
+            now=_NOW,
+            artifact=None,
+        )
+        with pytest.raises(ExecutionError, match="exceeds its request authority"):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={
+                    "rename": _CompletingTransitionHandler(
+                        repository,
+                        root,
+                        manifest=candidate,
+                    )
+                },
+            ).execute(issued.job_id)
+
+
 def test_executor_does_not_expose_artifact_consumption_to_handlers(tmp_path: Path) -> None:
     root = _state_root(tmp_path)
     _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
@@ -2757,7 +2812,7 @@ def test_executor_binds_a_handler_result_after_its_intent_is_cleared(
             ),
         )
 
-        with pytest.raises(ExecutionError, match="authoritative tenant state"):
+        with pytest.raises(ExecutionError, match="request target"):
             AuthorizationExecutor(
                 repository,
                 intake,
