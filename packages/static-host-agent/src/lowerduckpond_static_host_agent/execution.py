@@ -64,6 +64,7 @@ from lowerduckpond_static_host_agent.state_inventory import (
 
 _NOT_IMPLEMENTED: Final = "not_implemented"
 _AUTHORIZATION_EXECUTOR: Final = "authorization-executor"
+_MAX_RETAINED_DEPLOYMENTS: Final = 3
 
 
 class ExecutionError(RuntimeError):
@@ -2126,7 +2127,6 @@ def _validate_handler_result_state(
     if result["status"] == "failed":
         _validate_failed_handler_result_state(transaction, job, result, authority=authority)
         return
-    _validate_success_record_history(transaction, result, authority=authority)
     tenant_id = validate_uuid7(result["tenantId"])
     desired_path = StateRecordPath.tenant_desired(tenant_id)
     if result["operation"] == "delete":
@@ -2163,6 +2163,7 @@ def _validate_handler_result_state(
         manifest,
         authority=authority,
     )
+    _validate_success_record_history(transaction, result, authority=authority)
     _validate_success_tenant_inventory(
         transaction,
         result,
@@ -2287,10 +2288,16 @@ def _validate_success_record_history(
         "rename",
         "reconcile",
         "resume",
-        "rollback",
         "suspend",
     }
-    if not no_history_operation and operation not in {"deploy", "import"}:
+    history_operation = operation in {
+        "archive",
+        "deploy",
+        "import",
+        "restore",
+        "rollback",
+    }
+    if not no_history_operation and not history_operation:
         return
     tenant_id = result["tenantId"]
     source_archive_ids = authority.source_archive_deployment_ids
@@ -2301,22 +2308,64 @@ def _validate_success_record_history(
         return
     if tenant_id is None or source_archive_ids is None or source_deployment_ids is None:
         raise ExecutionError("successful lifecycle result lost retained-history authority")
+    expected_archive_ids = source_archive_ids
     expected_deployment_ids = source_deployment_ids
-    if operation in {"deploy", "import"}:
-        manifest = result.get("manifest")
-        spec = manifest.get("spec") if type(manifest) is dict else None
-        selected = spec.get("desiredDeployment") if type(spec) is dict else None
-        selected_id = selected.get("id") if type(selected) is dict else None
-        if type(selected_id) is not str:
-            raise ExecutionError("successful deployment result has no history identity")
-        expected_deployment_ids = tuple(sorted({*source_deployment_ids, selected_id}))
+    if operation in {"deploy", "import", "restore"}:
+        selected_id = _successful_selected_deployment_id(result)
+        expected_deployment_ids = _retained_deployment_history(
+            (*source_deployment_ids, selected_id),
+            selected_id=selected_id,
+        )
+    elif operation == "rollback":
+        selected_id = _successful_selected_deployment_id(result)
+        expected_deployment_ids = _retained_deployment_history(
+            source_deployment_ids,
+            selected_id=selected_id,
+        )
+    if operation == "archive":
+        selected_id = _successful_selected_deployment_id(result)
+        expected_archive_ids = tuple(sorted({*source_archive_ids, selected_id}))
+    elif operation == "restore":
+        source_archive = authority.archive_record
+        if type(source_archive) is not dict:
+            raise ExecutionError("successful restore lost its source archive authority")
+        restored_archive_id = validate_uuid7(source_archive["deploymentId"])
+        expected_archive_ids = tuple(
+            archive_id for archive_id in source_archive_ids if archive_id != restored_archive_id
+        )
     if (
-        transaction.tenant_archive_ids(tenant_id) != source_archive_ids
+        transaction.tenant_archive_ids(tenant_id) != expected_archive_ids
         or transaction.tenant_deployment_ids(tenant_id) != expected_deployment_ids
     ):
         raise ExecutionError(
             "successful lifecycle result changed retained history outside authority"
         )
+
+
+def _successful_selected_deployment_id(result: dict[str, object]) -> str:
+    manifest = result.get("manifest")
+    spec = manifest.get("spec") if type(manifest) is dict else None
+    selected = spec.get("desiredDeployment") if type(spec) is dict else None
+    selected_id = selected.get("id") if type(selected) is dict else None
+    if type(selected_id) is not str:
+        raise ExecutionError("successful lifecycle result has no history identity")
+    return validate_uuid7(selected_id)
+
+
+def _retained_deployment_history(
+    deployment_ids: tuple[str, ...],
+    *,
+    selected_id: str,
+) -> tuple[str, ...]:
+    """Return the selected deployment and its two chronological predecessors."""
+
+    ordered = tuple(sorted(set(deployment_ids)))
+    try:
+        selected_index = ordered.index(selected_id)
+    except ValueError as error:
+        raise ExecutionError("successful lifecycle selection is absent from history") from error
+    first_retained = max(0, selected_index - (_MAX_RETAINED_DEPLOYMENTS - 1))
+    return ordered[first_retained : selected_index + 1]
 
 
 def _validate_export_bundle(

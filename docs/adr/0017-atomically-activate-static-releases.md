@@ -350,11 +350,16 @@ sets of that tenant's retained deployment- and archive-record identities. A
 failed lifecycle handler is terminally valid only when both sets remain exact
 after rollback; a candidate record cannot silently consume retention or block
 a later archive or delete. Operations that are not allowed to create or retire
-history (`create`, `export`, `rename`, `reconcile`, `resume`, `rollback`, and
-`suspend`) must leave both sets exact even when their handler reports success.
-Deploy and import may add exactly their selected deployment record, but must
-preserve the complete prior deployment set and the archive set exactly; a
-second deployment or any archive record exceeds their authority. Every newly
+history (`create`, `export`, `rename`, `reconcile`, `resume`, and `suspend`)
+must leave both sets exact even when their handler reports success. Deploy and
+import may add exactly their selected deployment record; restore adds exactly
+its new selected deployment and retires exactly its source archive record.
+Those deployment-producing operations, and rollback selection, must leave
+exactly the selected deployment plus its two chronological predecessors, so a
+commit at the three-record boundary is authorized to evict the oldest record
+but cannot retain a fourth or remove a required predecessor. Archive adds only
+the selected deployment's exact archive record and leaves deployment history
+unchanged. Every newly
 dispatched job also binds the complete tenant-ID inventory. A failed create must
 restore that inventory exactly, projected only through later successful create
 or delete entries in the validated audit chain, so residue under an unrelated

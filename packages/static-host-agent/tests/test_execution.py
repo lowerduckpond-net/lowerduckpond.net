@@ -39,6 +39,7 @@ from lowerduckpond_static_host_agent import (
     LifecycleArtifact,
     LifecycleJobHandler,
     LockManager,
+    LockMode,
     LockName,
     StateRecordPath,
     StateRepository,
@@ -280,6 +281,7 @@ class _CompletingDeployHandler:
         write_observed: bool = True,
         extra_archive: dict[str, object] | None = None,
         extra_deployment: dict[str, object] | None = None,
+        remove_deployment_ids: tuple[str, ...] = (),
     ) -> None:
         self._repository = repository
         self._root = root
@@ -289,6 +291,7 @@ class _CompletingDeployHandler:
         self._write_observed = write_observed
         self._extra_archive = extra_archive
         self._extra_deployment = extra_deployment
+        self._remove_deployment_ids = remove_deployment_ids
         self.claims: list[LifecycleArtifact | None] = []
 
     def execute(
@@ -383,6 +386,13 @@ class _CompletingDeployHandler:
                 ),
                 self._extra_deployment,
             )
+        for deployment_id in self._remove_deployment_ids:
+            self._root.joinpath(
+                *StateRecordPath.tenant_deployment(
+                    request["tenantId"],
+                    deployment_id,
+                ).components
+            ).unlink()
         self._repository.create_immutable(
             StateRecordPath.authorization_result(job_id),
             result,
@@ -477,7 +487,7 @@ class _AddingUnrelatedTenantHandler:
 
 
 class _CompletingRollbackHandler:
-    def __init__(
+    def __init__(  # noqa: PLR0913 - test handler toggles history corruption boundaries
         self,
         repository: StateRepository,
         root: Path,
@@ -485,12 +495,14 @@ class _CompletingRollbackHandler:
         remove_deployment_record: bool,
         extra_archive: dict[str, object] | None = None,
         extra_deployment: dict[str, object] | None = None,
+        remove_deployment_ids: tuple[str, ...] = (),
     ) -> None:
         self._repository = repository
         self._root = root
         self._remove_deployment_record = remove_deployment_record
         self._extra_archive = extra_archive
         self._extra_deployment = extra_deployment
+        self._remove_deployment_ids = remove_deployment_ids
 
     def execute(
         self,
@@ -561,6 +573,13 @@ class _CompletingRollbackHandler:
                 ),
                 self._extra_deployment,
             )
+        for deployment_id in self._remove_deployment_ids:
+            self._root.joinpath(
+                *StateRecordPath.tenant_deployment(
+                    request["tenantId"],
+                    deployment_id,
+                ).components
+            ).unlink()
         self._repository.create_immutable(
             StateRecordPath.authorization_result(job_id),
             result,
@@ -594,6 +613,10 @@ class _CompletingTransitionHandler:
         write_archive: bool = True,
         write_export: bool = False,
         export_payload: bytes | None = None,
+        extra_archive: dict[str, object] | None = None,
+        extra_deployment: dict[str, object] | None = None,
+        remove_archive_ids: tuple[str, ...] = (),
+        remove_deployment_ids: tuple[str, ...] = (),
     ) -> None:
         self._repository = repository
         self._root = root
@@ -603,6 +626,10 @@ class _CompletingTransitionHandler:
         self._write_archive = write_archive
         self._write_export = write_export
         self._export_payload = export_payload
+        self._extra_archive = extra_archive
+        self._extra_deployment = extra_deployment
+        self._remove_archive_ids = remove_archive_ids
+        self._remove_deployment_ids = remove_deployment_ids
 
     def execute(
         self,
@@ -673,6 +700,38 @@ class _CompletingTransitionHandler:
                 ),
                 self._archive,
             )
+        if self._extra_archive is not None:
+            _write(
+                self._root,
+                StateRecordPath.tenant_archive(
+                    request["tenantId"],
+                    self._extra_archive["deploymentId"],
+                ),
+                self._extra_archive,
+            )
+        if self._extra_deployment is not None:
+            _write(
+                self._root,
+                StateRecordPath.tenant_deployment(
+                    request["tenantId"],
+                    self._extra_deployment["id"],
+                ),
+                self._extra_deployment,
+            )
+        for deployment_id in self._remove_archive_ids:
+            self._root.joinpath(
+                *StateRecordPath.tenant_archive(
+                    request["tenantId"],
+                    deployment_id,
+                ).components
+            ).unlink()
+        for deployment_id in self._remove_deployment_ids:
+            self._root.joinpath(
+                *StateRecordPath.tenant_deployment(
+                    request["tenantId"],
+                    deployment_id,
+                ).components
+            ).unlink()
         self._repository.create_immutable(
             StateRecordPath.authorization_result(job_id),
             result,
@@ -2716,9 +2775,7 @@ def test_executor_rejects_an_incomplete_successful_deployment_commit(
             payload=payload,
             operation=operation,
         )
-        expected_error = (
-            "changed retained history" if not deployment_record else "deployment record"
-        )
+        expected_error = "no deployment record" if not deployment_record else "deployment record"
         with pytest.raises(ExecutionError, match=expected_error):
             AuthorizationExecutor(
                 repository,
@@ -2771,6 +2828,56 @@ def test_executor_accepts_a_complete_successful_deployment_commit(tmp_path: Path
     assert handler.claims[0].artifact.verified == artifact
     assert list((root / "intake").iterdir()) == []
     assert runtime_calls == [(_TENANT_ID, "both", "0198d17f-6f4a-7000-8000-000000000006")]
+
+
+def test_executor_accepts_deployment_retention_pruning_at_the_history_bound(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    source = _fixture("site.json")
+    source_spec = _mapping(source["spec"])
+    source_reference = _mapping(source_spec["desiredDeployment"])
+    prior_ids = (
+        _DEPLOYMENT_ID,
+        "0192e2ca-49f2-7608-8cf3-f80ab2cab151",
+        "0193e2ca-49f2-7608-8cf3-f80ab2cab151",
+    )
+    source_reference["id"] = prior_ids[-1]
+    source_reference["archiveSha256"] = "3" * 64
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    for index, deployment_id in enumerate(prior_ids):
+        deployment = _fixture("deployment-record.json")
+        deployment.update(
+            {
+                "id": deployment_id,
+                "archiveSha256": f"{index + 1}" * 64,
+            }
+        )
+        _write(root, StateRecordPath.tenant_deployment(_TENANT_ID, deployment_id), deployment)
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), source)
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued, _artifact, _correlation_id = _issue_deploy(repository, intake)
+        outcome = AuthorizationExecutor(
+            repository,
+            intake,
+            handlers={
+                "deploy": _CompletingDeployHandler(
+                    repository,
+                    root,
+                    remove_deployment_ids=(prior_ids[0],),
+                )
+            },
+            tenant_runtime_validator=lambda *_arguments: True,
+        ).execute(issued.job_id)
+        with repository.transaction(mode=LockMode.EXCLUSIVE) as transaction:
+            retained = transaction.tenant_deployment_ids(_TENANT_ID)
+
+    assert outcome.result["status"] == "succeeded"
+    assert retained == (*prior_ids[1:], "0198d17f-6f4a-7000-8000-000000000009")
 
 
 @pytest.mark.parametrize("operation", ["deploy", "import"])
@@ -3097,13 +3204,20 @@ def test_executor_requires_source_release_validation_after_failed_deploy(
 
 
 @pytest.mark.parametrize(
-    ("include_archive", "retained_archive_matches"),
-    [(False, True), (True, False), (True, True)],
+    ("include_archive", "retained_archive_matches", "history_corruption"),
+    [
+        (False, True, None),
+        (True, False, None),
+        (True, True, None),
+        (True, True, "archive"),
+        (True, True, "deployment"),
+    ],
 )
 def test_executor_requires_the_archive_record_for_an_archived_commit(
     tmp_path: Path,
     include_archive: bool,
     retained_archive_matches: bool,
+    history_corruption: str | None,
 ) -> None:
     root = _state_root(tmp_path)
     source = _fixture("site.json")
@@ -3130,6 +3244,11 @@ def test_executor_requires_the_archive_record_for_an_archived_commit(
             "correlationId": request["correlationId"],
         }
     )
+    extra_id = "0198d17f-6f4a-7000-8000-000000000010"
+    extra_archive = _fixture("archive-record.json")
+    extra_archive["deploymentId"] = extra_id
+    extra_deployment = _fixture("deployment-record.json")
+    extra_deployment["id"] = extra_id
     validated_archives: list[dict[str, object]] = []
 
     def validate_retained_archive(candidate: dict[str, object]) -> bool:
@@ -3161,13 +3280,20 @@ def test_executor_requires_the_archive_record_for_an_archived_commit(
                     manifest=candidate,
                     archive=archive,
                     write_archive=include_archive,
+                    extra_archive=(extra_archive if history_corruption == "archive" else None),
+                    extra_deployment=(
+                        extra_deployment if history_corruption == "deployment" else None
+                    ),
                 )
             },
             tenant_runtime_validator=lambda *_arguments: True,
         )
-        if include_archive and retained_archive_matches:
+        if include_archive and retained_archive_matches and history_corruption is None:
             outcome = executor.execute(issued.job_id)
             assert outcome.result["status"] == "succeeded"
+        elif history_corruption is not None:
+            with pytest.raises(ExecutionError, match="changed retained history"):
+                executor.execute(issued.job_id)
         elif include_archive:
             with pytest.raises(ExecutionError, match="no exact retained archive object"):
                 executor.execute(issued.job_id)
@@ -3175,13 +3301,25 @@ def test_executor_requires_the_archive_record_for_an_archived_commit(
             with pytest.raises(ExecutionError, match="no archive record"):
                 executor.execute(issued.job_id)
 
-    assert validated_archives == ([archive] if include_archive else [])
+    assert validated_archives == (
+        [archive] if include_archive and history_corruption is None else []
+    )
 
 
-@pytest.mark.parametrize("include_deployment", [False, True])
+@pytest.mark.parametrize(
+    ("include_deployment", "retire_archive", "add_extra_deployment"),
+    [
+        (False, True, False),
+        (True, True, False),
+        (True, False, False),
+        (True, True, True),
+    ],
+)
 def test_executor_requires_the_new_deployment_record_for_a_restore_commit(
     tmp_path: Path,
     include_deployment: bool,
+    retire_archive: bool,
+    add_extra_deployment: bool,
 ) -> None:
     root = _state_root(tmp_path)
     source = _fixture("site.json")
@@ -3225,6 +3363,8 @@ def test_executor_requires_the_new_deployment_record_for_a_restore_commit(
             "correlationId": request["correlationId"],
         }
     )
+    extra_deployment = json.loads(json.dumps(deployment))
+    extra_deployment["id"] = "0198d17f-6f4a-7000-8000-000000000010"
 
     with (
         StateRepository(root, expected_owner=os.geteuid()) as repository,
@@ -3250,15 +3390,20 @@ def test_executor_requires_the_new_deployment_record_for_a_restore_commit(
                     root,
                     manifest=candidate,
                     deployment=restored if include_deployment else None,
+                    extra_deployment=(extra_deployment if add_extra_deployment else None),
+                    remove_archive_ids=((_DEPLOYMENT_ID,) if retire_archive else ()),
                 )
             },
             tenant_runtime_validator=lambda *_arguments: True,
         )
-        if include_deployment:
+        if include_deployment and retire_archive and not add_extra_deployment:
             outcome = executor.execute(issued.job_id)
             assert outcome.result["status"] == "succeeded"
-        else:
+        elif not include_deployment:
             with pytest.raises(ExecutionError, match="no deployment record"):
+                executor.execute(issued.job_id)
+        else:
+            with pytest.raises(ExecutionError, match="changed retained history"):
                 executor.execute(issued.job_id)
 
 
@@ -3637,7 +3782,7 @@ def test_executor_rejects_a_rollback_that_loses_its_selected_deployment(
     with (
         StateRepository(root, expected_owner=os.geteuid()) as repository,
         ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
-        pytest.raises(ExecutionError, match="changed retained history"),
+        pytest.raises(ExecutionError, match="no deployment record"),
     ):
         issued = AuthorizationIssuer(
             repository,
@@ -3731,6 +3876,72 @@ def test_executor_requires_a_rollback_to_preserve_retained_history(
         else:
             with pytest.raises(ExecutionError, match="changed retained history"):
                 executor.execute(issued.job_id)
+
+
+def test_executor_accepts_rollback_retention_pruning_after_the_selected_release(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    deployment_ids = (
+        _DEPLOYMENT_ID,
+        "0192e2ca-49f2-7608-8cf3-f80ab2cab151",
+        "0193e2ca-49f2-7608-8cf3-f80ab2cab151",
+    )
+    manifest = _fixture("site.json")
+    source_reference = _mapping(_mapping(manifest["spec"])["desiredDeployment"])
+    source_reference.update({"id": deployment_ids[-1], "archiveSha256": "3" * 64})
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    for index, deployment_id in enumerate(deployment_ids):
+        deployment = _fixture("deployment-record.json")
+        deployment.update(
+            {
+                "id": deployment_id,
+                "archiveSha256": f"{index + 1}" * 64,
+            }
+        )
+        _write(root, StateRecordPath.tenant_deployment(_TENANT_ID, deployment_id), deployment)
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), manifest)
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "rollback",
+        "correlationId": "0198d17f-6f4a-7000-8000-000000000003",
+        "tenantId": _TENANT_ID,
+        "deploymentId": deployment_ids[1],
+    }
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued = AuthorizationIssuer(
+            repository,
+            gate=_OpenGate(),
+            entropy=_Entropy(),
+        ).issue(
+            canonical_json_bytes(request),
+            operator_principal="operator@example.test",
+            now=_NOW,
+            artifact=None,
+        )
+        outcome = AuthorizationExecutor(
+            repository,
+            intake,
+            handlers={
+                "rollback": _CompletingRollbackHandler(
+                    repository,
+                    root,
+                    remove_deployment_record=False,
+                    remove_deployment_ids=(deployment_ids[-1],),
+                )
+            },
+            tenant_runtime_validator=lambda *_arguments: True,
+        ).execute(issued.job_id)
+        with repository.transaction(mode=LockMode.EXCLUSIVE) as transaction:
+            retained = transaction.tenant_deployment_ids(_TENANT_ID)
+
+    assert outcome.result["status"] == "succeeded"
+    assert retained == deployment_ids[:2]
 
 
 def test_executor_accepts_a_handler_result_superseded_by_a_later_audited_commit(
