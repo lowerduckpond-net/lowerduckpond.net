@@ -1174,6 +1174,28 @@ def test_transaction_can_read_a_coherent_multi_record_snapshot(tmp_path: Path) -
     assert observed.document["kind"] == "TenantObservedState"
 
 
+def test_transaction_returns_the_complete_sorted_deployment_identity_set(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    for deployment_id in (_OTHER_DEPLOYMENT_ID, _DEPLOYMENT_ID):
+        deployment = _fixture("deployment-record.json")
+        deployment["id"] = deployment_id
+        _write_record(
+            root,
+            StateRecordPath.tenant_deployment(_TENANT_ID, deployment_id),
+            deployment,
+        )
+
+    with (
+        _repository(root) as repository,
+        repository.transaction(mode=LockMode.EXCLUSIVE) as transaction,
+    ):
+        deployment_ids = transaction.tenant_deployment_ids(_TENANT_ID)
+
+    assert deployment_ids == tuple(sorted((_DEPLOYMENT_ID, _OTHER_DEPLOYMENT_ID)))
+
+
 def test_deployment_history_cleanup_acquires_the_exclusive_state_lock(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

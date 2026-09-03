@@ -829,12 +829,8 @@ class _StateTransaction:
         finally:
             deployments.close()
 
-    def deployment_for_digest(
-        self,
-        tenant_id: object,
-        expected_digest: dict[str, object],
-    ) -> dict[str, object]:
-        """Resolve one retained deployment from its authorization-bound digest."""
+    def tenant_deployment_ids(self, tenant_id: object) -> tuple[str, ...]:
+        """Return the complete bounded deployment-record identity set."""
 
         self._require_active()
         self._require_exclusive()
@@ -858,11 +854,28 @@ class _StateTransaction:
             deployments.close()
         if len(names) > _MAX_RETAINED_DEPLOYMENT_RECORDS:
             raise StateRecordError("tenant deployment history exceeds its retention bound")
-        matches: list[dict[str, object]] = []
+        identities: list[str] = []
         for name in names:
             if not name.endswith(".json"):
                 raise StateRecordError("tenant deployment history has an invalid record name")
-            path = StateRecordPath.tenant_deployment(canonical_id, name.removesuffix(".json"))
+            deployment_id = validate_uuid7(name.removesuffix(".json"))
+            self.read(StateRecordPath.tenant_deployment(canonical_id, deployment_id))
+            identities.append(deployment_id)
+        return tuple(identities)
+
+    def deployment_for_digest(
+        self,
+        tenant_id: object,
+        expected_digest: dict[str, object],
+    ) -> dict[str, object]:
+        """Resolve one retained deployment from its authorization-bound digest."""
+
+        self._require_active()
+        self._require_exclusive()
+        canonical_id = validate_uuid7(tenant_id)
+        matches: list[dict[str, object]] = []
+        for deployment_id in self.tenant_deployment_ids(canonical_id):
+            path = StateRecordPath.tenant_deployment(canonical_id, deployment_id)
             record = self.read(path).document
             if deployment_record_digest(record).to_dict() == expected_digest:
                 matches.append(record)

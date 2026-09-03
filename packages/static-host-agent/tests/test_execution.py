@@ -156,11 +156,13 @@ class _CompletingFailureHandler:
         *,
         append_audit: bool = True,
         claim_executor_publication: bool = False,
+        retained_deployment_id: str | None = None,
         state_root: Path | None = None,
     ) -> None:
         self._repository = repository
         self._append_audit = append_audit
         self._claim_executor_publication = claim_executor_publication
+        self._retained_deployment_id = retained_deployment_id
         self._state_root = state_root
         self.claims: list[LifecycleArtifact | None] = []
 
@@ -210,6 +212,17 @@ class _CompletingFailureHandler:
                 StateRecordPath.tenant_desired(_TENANT_ID),
                 _fixture("site.json"),
             )
+            if self._retained_deployment_id is not None:
+                deployment = _fixture("deployment-record.json")
+                deployment["id"] = self._retained_deployment_id
+                _write(
+                    self._state_root,
+                    StateRecordPath.tenant_deployment(
+                        _TENANT_ID,
+                        self._retained_deployment_id,
+                    ),
+                    deployment,
+                )
         if self._append_audit:
             _append_result_audit_if_absent(self._repository, job.document, result)
         if job.document["phase"] != "failed":
@@ -2349,6 +2362,113 @@ def test_executor_accepts_a_complete_successful_deployment_commit(tmp_path: Path
     assert handler.claims[0] is not None
     assert handler.claims[0].artifact.verified == artifact
     assert list((root / "intake").iterdir()) == []
+
+
+def test_executor_requires_selected_release_validation_after_successful_deploy(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    _write_deployment_record(root, _DEPLOYMENT_ID, "0" * 64)
+    source = _fixture("site.json")
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), source)
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def reject_unselected_release(
+        tenant_id: str,
+        manifest: dict[str, object],
+    ) -> bool:
+        calls.append((tenant_id, manifest))
+        return False
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued, _artifact, _correlation_id = _issue_deploy(repository, intake)
+        with pytest.raises(ExecutionError, match="authorized release"):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={"deploy": _CompletingDeployHandler(repository, root)},
+                tenant_release_validator=reject_unselected_release,
+            ).execute(issued.job_id)
+
+    assert len(calls) == 1
+    assert calls[0][0] == _TENANT_ID
+    candidate_spec = _mapping(calls[0][1]["spec"])
+    candidate_deployment = _mapping(candidate_spec["desiredDeployment"])
+    assert candidate_deployment["id"] == "0198d17f-6f4a-7000-8000-000000000009"
+
+
+def test_executor_rejects_a_failed_deploy_that_retains_deployment_history(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    candidate_deployment_id = "0198d17f-6f4a-7000-8000-000000000009"
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    _write_deployment_record(root, _DEPLOYMENT_ID, "0" * 64)
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), _fixture("site.json"))
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued, _artifact, correlation_id = _issue_deploy(repository, intake)
+        executor = AuthorizationExecutor(
+            repository,
+            intake,
+            handlers={
+                "deploy": _CompletingFailureHandler(
+                    repository,
+                    retained_deployment_id=candidate_deployment_id,
+                    state_root=root,
+                ),
+            },
+            tenant_runtime_validator=lambda *_arguments: True,
+        )
+
+        with pytest.raises(ExecutionError, match="unauthorized deployment history"):
+            executor.execute(issued.job_id)
+        with pytest.raises(ExecutionError, match="unauthorized deployment history"):
+            executor.execute(issued.job_id)
+        job = repository.read(StateRecordPath.authorization_job(issued.job_id)).document
+
+    assert job["dispatchDeploymentIds"] == [_DEPLOYMENT_ID]
+    assert [path.name for path in (root / "intake").iterdir()] == [f"{correlation_id}.artifact"]
+
+
+def test_executor_requires_source_release_validation_after_failed_deploy(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    _write_deployment_record(root, _DEPLOYMENT_ID, "0" * 64)
+    source = _fixture("site.json")
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), source)
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def reject_unrestored_release(
+        tenant_id: str,
+        manifest: dict[str, object],
+    ) -> bool:
+        calls.append((tenant_id, manifest))
+        return False
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued, _artifact, _correlation_id = _issue_deploy(repository, intake)
+        with pytest.raises(ExecutionError, match="authorized release"):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={"deploy": _CompletingFailureHandler(repository)},
+                tenant_release_validator=reject_unrestored_release,
+            ).execute(issued.job_id)
+
+    assert calls == [(_TENANT_ID, source)]
 
 
 @pytest.mark.parametrize("include_archive", [False, True])

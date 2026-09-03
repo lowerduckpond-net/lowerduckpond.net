@@ -377,6 +377,7 @@ def _retry_binding(document: dict[str, object]) -> bytes:
     for field in ("jobId", "acceptedAt", "phase"):
         del binding[field]
     binding.pop("executionValidated", None)
+    binding.pop("dispatchDeploymentIds", None)
     return canonical_json_bytes(binding)
 
 
@@ -395,6 +396,7 @@ def _durable_binding(document: dict[str, object]) -> bytes:
     binding = deepcopy(document)
     del binding["phase"]
     binding.pop("executionValidated", None)
+    binding.pop("dispatchDeploymentIds", None)
     return canonical_json_bytes(binding)
 
 

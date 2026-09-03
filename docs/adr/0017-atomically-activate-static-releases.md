@@ -318,6 +318,17 @@ changed binding, state drift, unknown job ID, or provisioner-supplied raw
 request fails without mutation. The sudo rule exposes only this job-ID execution
 entry point and cannot invoke the root-only issuer.
 
+Before dispatch, a current authorization job also records the complete bounded
+set of that tenant's retained deployment-record identities. A failed lifecycle
+handler is terminally valid only when the same set remains after rollback; a
+candidate record cannot silently consume retention or block a later delete. The
+production executor separately enumerates the bounded release directory while
+holding publication and tenant-state locks, rejects every release without a
+matching deployment record, and remeasures the selected release tree against
+its durable deployment-record digest. It performs that check for every relevant
+successful selection and restored failure before recording terminal execution
+validation, independently of whether a lifecycle intent still exists.
+
 Artifact transfer has an earlier root-owned byte gate. The restricted SSH
 adapter serializes intake before reading, permits one in-progress or admitted
 regular artifact, streams no more than the operation-specific 100-MiB deploy or

@@ -165,6 +165,7 @@ class AuthorizationIssuer:
             "artifact": request.get("artifact"),
             "expectedSource": expected_source,
             "sourceAuthority": source_authority,
+            "dispatchDeploymentIds": None,
             "executionValidated": False,
             "acceptedAt": accepted_at.isoformat().replace("+00:00", "Z"),
             "phase": "pending",
