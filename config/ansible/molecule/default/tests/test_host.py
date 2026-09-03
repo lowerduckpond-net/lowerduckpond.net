@@ -99,6 +99,7 @@ STATIC_HOST_AGENT_DIRECTORY_MODE = 0o555
 STATIC_HOST_AGENT_FILE_MODE = 0o444
 STATIC_STATE_DIRECTORY_MODE = 0o700
 STATIC_STATE_LOCK_MODE = 0o600
+STATIC_SELECTION_LOCK_MODE = 0o644
 STATIC_CONFIGURATION_MODE = 0o400
 STATIC_PUBLICATION_DISABLED_STATUS = 78
 STATIC_OPERATOR_DISABLED_STATUS = 78
@@ -927,9 +928,14 @@ def test_static_host_agent_selection_is_locked(host: Host) -> None:
     assert selection_lock.is_file
     assert selection_lock.user == "root"
     assert selection_lock.group == "root"
-    assert selection_lock.mode == STATIC_STATE_LOCK_MODE
+    assert selection_lock.mode == STATIC_SELECTION_LOCK_MODE
     assert selection_lock.size == 0
-    for command in (STATIC_JOB_EXECUTOR, STATIC_JOB_RECONCILER):
+    for command in (
+        STATIC_JOB_EXECUTOR,
+        STATIC_JOB_RECONCILER,
+        STATIC_OPERATOR_COMMAND,
+        STATIC_OPERATOR_REQUEST_DECODER,
+    ):
         wrapper = host.file(command)
         assert wrapper.contains(
             f'SELECTION_LOCK = pathlib.Path("{STATIC_HOST_AGENT_ROOT}/selection.lock")'

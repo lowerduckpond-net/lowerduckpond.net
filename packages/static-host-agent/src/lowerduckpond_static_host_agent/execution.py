@@ -33,6 +33,7 @@ from lowerduckpond_static_host_agent.capacity import (
     admit_release_capacity,
 )
 from lowerduckpond_static_host_agent.intake import (
+    AdmittedArtifact,
     ArtifactClaim,
     ArtifactIntake,
     IntakeArtifactUnavailableError,
@@ -116,6 +117,13 @@ class ExecutionOutcome:
     created: bool
 
 
+@dataclass(frozen=True, slots=True)
+class LifecycleArtifact:
+    """Read-only artifact identity exposed to one lifecycle handler."""
+
+    artifact: AdmittedArtifact
+
+
 class LifecycleJobHandler(Protocol):
     """Complete one validated root-owned lifecycle job and its durable result."""
 
@@ -123,7 +131,7 @@ class LifecycleJobHandler(Protocol):
         self,
         job_id: str,
         *,
-        claim: ArtifactClaim | None,
+        claim: LifecycleArtifact | None,
         blocking: bool,
     ) -> ExecutionOutcome: ...
 
@@ -496,7 +504,8 @@ class AuthorizationExecutor:
         claim: ArtifactClaim | None,
         blocking: bool,
     ) -> ExecutionOutcome:
-        returned = handler.execute(job_id, claim=claim, blocking=blocking)
+        handler_claim = None if claim is None else LifecycleArtifact(claim.artifact)
+        returned = handler.execute(job_id, claim=handler_claim, blocking=blocking)
         if type(returned) is not ExecutionOutcome:
             raise ExecutionError("lifecycle handler returned a malformed outcome")
         result = deepcopy(returned.result)
@@ -839,6 +848,18 @@ def _validate_archive_intent_relationships(intents: list[dict[str, object]]) -> 
         (intent for intent in intents if intent["kind"] == "ArchiveRetirementIntent"),
         None,
     )
+    if (
+        transaction_intent is not None
+        and transaction_intent["operation"] == "restore"
+        and retirement_intent is None
+    ):
+        raise ExecutionError("restore transaction has no retirement authority")
+    if (
+        retirement_intent is not None
+        and retirement_intent["transition"] == "restore"
+        and transaction_intent is None
+    ):
+        raise ExecutionError("restore retirement has no transaction authority")
     if transaction_intent is not None and retirement_intent is not None:
         _validate_retirement_transaction_relationship(
             transaction_intent,
@@ -984,8 +1005,6 @@ def _validate_handler_result_state(
         # serialization.
         return
     if result["status"] == "failed":
-        if job["compatibilityVersion"] == "static-job-v1":
-            return
         if _expected_source_error(transaction, job) is not None:
             raise ExecutionError("failed lifecycle handler did not restore its authorized source")
         return
@@ -1010,6 +1029,52 @@ def _validate_handler_result_state(
         raise ExecutionError(
             "successful lifecycle result disagrees with authoritative tenant state"
         )
+    _validate_selected_deployment_state(transaction, job, result, manifest)
+
+
+def _validate_selected_deployment_state(
+    transaction: ExecutionTransaction,
+    job: dict[str, object],
+    result: dict[str, object],
+    manifest: dict[str, object],
+) -> None:
+    operation = result["operation"]
+    if operation not in {"deploy", "rollback"}:
+        return
+    spec = manifest["spec"]
+    request = job["request"]
+    if type(spec) is not dict or type(request) is not dict:
+        raise ExecutionError("successful deployment authority is malformed")
+    reference = spec["desiredDeployment"]
+    if type(reference) is not dict:
+        raise ExecutionError("successful deployment selection is malformed")
+    tenant_id = validate_uuid7(result["tenantId"])
+    deployment_id = validate_uuid7(reference["id"])
+    try:
+        deployment = transaction.read(
+            StateRecordPath.tenant_deployment(tenant_id, deployment_id)
+        ).document
+    except FileNotFoundError as error:
+        raise ExecutionError("successful lifecycle result has no deployment record") from error
+    validate_contract(deployment, expected_kind=ContractKind.DEPLOYMENT_RECORD)
+    matches = (
+        deployment["tenantId"] == tenant_id
+        and deployment["id"] == deployment_id
+        and deployment["archiveSha256"] == reference["archiveSha256"]
+    )
+    if operation == "deploy":
+        artifact = request["artifact"]
+        if type(artifact) is not dict:
+            raise ExecutionError("successful deployment artifact authority is malformed")
+        matches = (
+            matches
+            and deployment["archiveSha256"] == artifact["sha256"]
+            and deployment["correlationId"] == result["correlationId"]
+        )
+    else:
+        matches = matches and deployment_id == request["deploymentId"]
+    if not matches:
+        raise ExecutionError("successful lifecycle result has an unbound deployment record")
 
 
 def _validate_result_audit(
