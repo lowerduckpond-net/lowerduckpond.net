@@ -391,10 +391,14 @@ class _CompletingRollbackHandler:
         root: Path,
         *,
         remove_deployment_record: bool,
+        extra_archive: dict[str, object] | None = None,
+        extra_deployment: dict[str, object] | None = None,
     ) -> None:
         self._repository = repository
         self._root = root
         self._remove_deployment_record = remove_deployment_record
+        self._extra_archive = extra_archive
+        self._extra_deployment = extra_deployment
 
     def execute(
         self,
@@ -447,6 +451,24 @@ class _CompletingRollbackHandler:
         _write_observed_for_manifest(self._root, manifest)
         if self._remove_deployment_record:
             self._root.joinpath(*deployment_path.components).unlink()
+        if self._extra_archive is not None:
+            _write(
+                self._root,
+                StateRecordPath.tenant_archive(
+                    request["tenantId"],
+                    self._extra_archive["deploymentId"],
+                ),
+                self._extra_archive,
+            )
+        if self._extra_deployment is not None:
+            _write(
+                self._root,
+                StateRecordPath.tenant_deployment(
+                    request["tenantId"],
+                    self._extra_deployment["id"],
+                ),
+                self._extra_deployment,
+            )
         self._repository.create_immutable(
             StateRecordPath.authorization_result(job_id),
             result,
@@ -2476,6 +2498,50 @@ def test_executor_derives_import_content_from_the_portable_envelope(tmp_path: Pa
     assert job["dispatchArtifactReleaseTreeDigest"] == release_digest
 
 
+@pytest.mark.parametrize("operation", ["deploy", "import"])
+def test_executor_terminally_rejects_malformed_artifact_content(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    _write_deployment_record(root, _DEPLOYMENT_ID, "0" * 64)
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), _fixture("site.json"))
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued, _artifact, _correlation_id = _issue_deploy(
+            repository,
+            intake,
+            payload=b"hash-valid but structurally invalid artifact",
+            operation=operation,
+        )
+        handler = _CompletingDeployHandler(repository, root)
+        outcome = AuthorizationExecutor(
+            repository,
+            intake,
+            handlers={operation: handler},
+        ).execute(issued.job_id)
+        replay = AuthorizationExecutor(
+            repository,
+            intake,
+            handlers={operation: handler},
+        ).execute(issued.job_id)
+        job = repository.read(StateRecordPath.authorization_job(issued.job_id)).document
+
+    assert outcome.created is True
+    assert outcome.result["status"] == "failed"
+    assert outcome.result["errorCode"] == "invalid_artifact"
+    assert replay.created is False
+    assert replay.result == outcome.result
+    assert job["phase"] == "failed"
+    assert job["executionValidated"] is True
+    assert handler.claims == []
+    assert list((root / "intake").iterdir()) == []
+
+
 def test_executor_rejects_a_deployment_digest_not_derived_from_its_artifact(
     tmp_path: Path,
 ) -> None:
@@ -3085,7 +3151,7 @@ def test_executor_rejects_a_rollback_that_loses_its_selected_deployment(
     with (
         StateRepository(root, expected_owner=os.geteuid()) as repository,
         ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
-        pytest.raises(ExecutionError, match="no deployment record"),
+        pytest.raises(ExecutionError, match="changed retained history"),
     ):
         issued = AuthorizationIssuer(
             repository,
@@ -3108,6 +3174,76 @@ def test_executor_rejects_a_rollback_that_loses_its_selected_deployment(
                 ),
             },
         ).execute(issued.job_id)
+
+
+@pytest.mark.parametrize("history_kind", [None, "archive", "deployment"])
+def test_executor_requires_a_rollback_to_preserve_retained_history(
+    tmp_path: Path,
+    history_kind: str | None,
+) -> None:
+    root = _state_root(tmp_path)
+    manifest = _fixture("site.json")
+    spec = _mapping(manifest["spec"])
+    current = _mapping(spec["desiredDeployment"])
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    _write_deployment_record(root, current["id"], current["archiveSha256"])
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), manifest)
+    rollback_id = "0198d17f-6f4a-7000-8000-000000000009"
+    rollback = _fixture("deployment-record.json")
+    rollback.update(
+        {
+            "id": rollback_id,
+            "archiveSha256": "e" * 64,
+            "correlationId": "0198d17f-6f4a-7000-8000-000000000002",
+        }
+    )
+    _write(root, StateRecordPath.tenant_deployment(_TENANT_ID, rollback_id), rollback)
+    extra_id = "0198d17f-6f4a-7000-8000-000000000010"
+    extra_archive = _fixture("archive-record.json")
+    extra_archive["deploymentId"] = extra_id
+    extra_deployment = _fixture("deployment-record.json")
+    extra_deployment["id"] = extra_id
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "rollback",
+        "correlationId": "0198d17f-6f4a-7000-8000-000000000003",
+        "tenantId": _TENANT_ID,
+        "deploymentId": rollback_id,
+    }
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued = AuthorizationIssuer(
+            repository,
+            gate=_OpenGate(),
+            entropy=_Entropy(),
+        ).issue(
+            canonical_json_bytes(request),
+            operator_principal="operator@example.test",
+            now=_NOW,
+            artifact=None,
+        )
+        executor = AuthorizationExecutor(
+            repository,
+            intake,
+            handlers={
+                "rollback": _CompletingRollbackHandler(
+                    repository,
+                    root,
+                    remove_deployment_record=False,
+                    extra_archive=(extra_archive if history_kind == "archive" else None),
+                    extra_deployment=(extra_deployment if history_kind == "deployment" else None),
+                )
+            },
+        )
+        if history_kind is None:
+            assert executor.execute(issued.job_id).result["status"] == "succeeded"
+        else:
+            with pytest.raises(ExecutionError, match="changed retained history"):
+                executor.execute(issued.job_id)
 
 
 def test_executor_accepts_a_handler_result_superseded_by_a_later_audited_commit(
