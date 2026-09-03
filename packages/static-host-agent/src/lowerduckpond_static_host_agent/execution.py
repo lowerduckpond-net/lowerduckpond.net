@@ -81,6 +81,8 @@ class ExecutionTransaction(Protocol):
 
     def tenant_has_deployment_history(self, tenant_id: object) -> bool: ...
 
+    def tenant_deployment_ids(self, tenant_id: object) -> tuple[str, ...]: ...
+
     def deployment_for_digest(
         self,
         tenant_id: object,
@@ -161,6 +163,7 @@ class _LifecycleDispatchAuthority:
     candidate_route_set: str | None
     archive_record: dict[str, object] | None
     archive_construction_present: bool
+    source_deployment_ids: tuple[str, ...] | None = None
     execution_validation_committed: bool = False
 
 
@@ -191,6 +194,7 @@ class AuthorizationExecutor:
             bool,
         ]
         | None = None,
+        tenant_release_validator: Callable[[str, dict[str, object]], bool] | None = None,
         capacity_limits: HostCapacityLimits = DEFAULT_HOST_CAPACITY_LIMITS,
     ) -> None:
         self._repository = repository
@@ -198,6 +202,7 @@ class AuthorizationExecutor:
         self._handlers = dict(handlers or {})
         self._deleted_tenant_route_validator = deleted_tenant_route_validator
         self._tenant_runtime_validator = tenant_runtime_validator
+        self._tenant_release_validator = tenant_release_validator
         self._capacity_limits = capacity_limits
 
     def execute(self, job_id: object, *, blocking: bool = False) -> ExecutionOutcome:
@@ -620,6 +625,7 @@ class AuthorizationExecutor:
         ) as transaction:
             current = transaction.read(StateRecordPath.authorization_job(job_id))
             _require_same_authority(initial.document, current.document)
+            current = _bind_dispatch_deployment_ids(transaction, current)
             authority = _capture_authorized_lifecycle_authority(
                 transaction,
                 current.document,
@@ -708,17 +714,26 @@ class AuthorizationExecutor:
             if self._result_was_superseded(job, result, blocking=blocking):
                 return
             raise ExecutionError("successful delete retained an active tenant route")
+        candidate_manifest = result.get("manifest")
+        release_validator = self._tenant_release_validator
+        if type(candidate_manifest) is not dict or (
+            release_validator is not None
+            and release_validator(tenant_id, candidate_manifest) is not True
+        ):
+            if self._result_was_superseded(job, result, blocking=blocking):
+                return
+            raise ExecutionError(
+                "successful lifecycle result did not select its authorized release"
+            )
         if authority.candidate_route_set is None:
             return
         generation_id = authority.candidate_runtime_generation_id
         runtime_validator = self._tenant_runtime_validator
-        candidate_manifest = result.get("manifest")
         if runtime_validator is None and authority.execution_validation_committed:
             return
         if (
             (generation_id is None and authority.candidate_route_set == "both")
             or runtime_validator is None
-            or type(candidate_manifest) is not dict
             or runtime_validator(
                 tenant_id,
                 authority.candidate_route_set,
@@ -742,9 +757,19 @@ class AuthorizationExecutor:
     ) -> None:
         source_manifest = authority.source_manifest
         source_route_set = authority.source_route_set
-        if source_manifest is None or source_route_set is None:
+        if source_manifest is None:
             return
         tenant_id = validate_uuid7(result["tenantId"])
+        release_validator = self._tenant_release_validator
+        if (
+            release_validator is not None
+            and release_validator(tenant_id, source_manifest) is not True
+        ):
+            if self._result_was_superseded(job, result, blocking=blocking):
+                return
+            raise ExecutionError("failed lifecycle result did not restore its authorized release")
+        if source_route_set is None:
+            return
         runtime_validator = self._tenant_runtime_validator
         if runtime_validator is None and authority.execution_validation_committed:
             return
@@ -896,6 +921,8 @@ def _require_same_authority(
     second.pop("phase", None)
     first.pop("executionValidated", None)
     second.pop("executionValidated", None)
+    first.pop("dispatchDeploymentIds", None)
+    second.pop("dispatchDeploymentIds", None)
     if first != second:
         raise ExecutionError("authorization job authority changed before execution")
 
@@ -978,6 +1005,7 @@ def _capture_authorized_lifecycle_authority(  # noqa: PLR0912,PLR0915 - authorit
             candidate_route_set=None,
             archive_record=None,
             archive_construction_present=False,
+            source_deployment_ids=_dispatch_deployment_ids(job),
         )
     _request, intents = _bound_lifecycle_intents(transaction, job)
     transaction_intent = next(
@@ -1010,6 +1038,7 @@ def _capture_authorized_lifecycle_authority(  # noqa: PLR0912,PLR0915 - authorit
             candidate_route_set=None,
             archive_record=None,
             archive_construction_present=False,
+            source_deployment_ids=_dispatch_deployment_ids(job),
         )
     if transaction_intent is None:
         source = transaction.read(StateRecordPath.tenant_desired(request["tenantId"])).document
@@ -1106,6 +1135,7 @@ def _capture_authorized_lifecycle_authority(  # noqa: PLR0912,PLR0915 - authorit
         candidate_route_set=candidate_route_set,
         archive_record=archive_record,
         archive_construction_present=construction_intent is not None,
+        source_deployment_ids=_dispatch_deployment_ids(job),
     )
 
 
@@ -1207,6 +1237,7 @@ def _capture_replay_authority(
             candidate_route_set=None,
             archive_record=archive_record,
             archive_construction_present=False,
+            source_deployment_ids=_dispatch_deployment_ids(job),
             execution_validation_committed=validation_was_committed,
         )
     operation = result["operation"]
@@ -1238,6 +1269,7 @@ def _capture_replay_authority(
         candidate_route_set=route_set,
         archive_record=archive_record,
         archive_construction_present=False,
+        source_deployment_ids=_dispatch_deployment_ids(job),
         execution_validation_committed=validation_was_committed,
     )
 
@@ -1364,6 +1396,53 @@ def _claim_pending(
         current.revision,
         claimed,
     )
+
+
+def _bind_dispatch_deployment_ids(
+    transaction: ExecutionTransaction,
+    current: StoredContract,
+) -> StoredContract:
+    """Persist the exact pre-dispatch deployment-history boundary once."""
+
+    job = current.document
+    if job["compatibilityVersion"] != "static-job-v2":
+        return current
+    existing = _dispatch_deployment_ids(job)
+    if existing is not None:
+        return current
+    request = job["request"]
+    if type(request) is not dict:
+        raise ExecutionError("authorization request authority is malformed")
+    deployment_ids = (
+        ()
+        if request["operation"] == "create"
+        else transaction.tenant_deployment_ids(request["tenantId"])
+    )
+    bound = job
+    bound["dispatchDeploymentIds"] = list(deployment_ids)
+    try:
+        return transaction.compare_and_swap(
+            StateRecordPath.authorization_job(bound["jobId"]),
+            current.revision,
+            bound,
+        )
+    except StateConflictError as error:
+        raise ExecutionError("deployment-history authority changed during dispatch") from error
+
+
+def _dispatch_deployment_ids(job: dict[str, object]) -> tuple[str, ...] | None:
+    raw = job.get("dispatchDeploymentIds")
+    if raw is None:
+        return None
+    if type(raw) is not list:
+        raise ExecutionError("dispatch deployment-history authority is malformed")
+    try:
+        deployment_ids = tuple(validate_uuid7(value) for value in raw)
+    except (TypeError, ValueError) as error:
+        raise ExecutionError("dispatch deployment-history authority is malformed") from error
+    if deployment_ids != tuple(sorted(set(deployment_ids))):
+        raise ExecutionError("dispatch deployment-history authority is not canonical")
+    return deployment_ids
 
 
 def _failure_result(job: dict[str, object], error_code: str) -> dict[str, object]:
@@ -1701,6 +1780,16 @@ def _validate_handler_result_state(
         # serialization.
         return
     if result["status"] == "failed":
+        tenant_id = result["tenantId"]
+        source_deployment_ids = authority.source_deployment_ids
+        if (
+            tenant_id is not None
+            and source_deployment_ids is not None
+            and transaction.tenant_deployment_ids(tenant_id) != source_deployment_ids
+        ):
+            raise ExecutionError(
+                "failed lifecycle handler retained unauthorized deployment history"
+            )
         if authority.execution_validation_committed:
             return
         if _expected_source_error(transaction, job) is not None:

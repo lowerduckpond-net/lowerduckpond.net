@@ -15,7 +15,7 @@ from typing import Final, Protocol
 
 from lowerduckpond_static_contracts import Digest
 
-from lowerduckpond_static_host_agent.locks import LockManager, LockName
+from lowerduckpond_static_host_agent.locks import LockMode, LockName
 
 RELEASE_TREE_FORMAT: Final = "lowerduckpond-release-tree-v1"
 MAX_RELEASE_ENTRIES: Final = 5_000
@@ -51,6 +51,16 @@ MeasurementHook = Callable[[ReleaseTreeBoundary, bytes | None], None]
 
 class _DigestWriter(Protocol):
     def update(self, value: bytes, /) -> None: ...
+
+
+class _PublicationLockProof(Protocol):
+    def require_held(
+        self,
+        name: LockName,
+        *,
+        mode: LockMode | None = None,
+        descriptor: int | None = None,
+    ) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -582,7 +592,7 @@ def _measure_release_tree(
 def measure_release_tree(
     root: Path,
     *,
-    lock_manager: LockManager,
+    lock_manager: _PublicationLockProof,
     expected_owner: int,
     limits: ReleaseTreeLimits = DEFAULT_RELEASE_TREE_LIMITS,
     measurement_hook: MeasurementHook | None = None,
@@ -601,7 +611,7 @@ def measure_release_tree(
 def measure_release_tree_snapshot(
     root: Path,
     *,
-    lock_manager: LockManager,
+    lock_manager: _PublicationLockProof,
     expected_owner: int,
     limits: ReleaseTreeLimits = DEFAULT_RELEASE_TREE_LIMITS,
     measurement_hook: MeasurementHook | None = None,

@@ -120,25 +120,43 @@ def test_selected_tenant_runtime_binds_the_active_verified_snapshot(
 ) -> None:
     tenant_id = "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100"
     generation_id = "0198d17f-6f4a-7000-8000-000000000001"
+    deployment_id = "0191e2ca-49f2-7608-8cf3-f80ab2cab151"
+    release_tree_digest = {
+        "format": "lowerduckpond-release-tree-v1",
+        "algorithm": "sha256",
+        "value": "c" * 64,
+    }
+    deployment = {
+        "id": deployment_id,
+        "releaseTreeDigest": release_tree_digest,
+    }
     active = SimpleNamespace(
         manifest={
             "metadata": {"id": tenant_id},
-            "spec": {"desiredState": "active"},
+            "spec": {
+                "desiredState": "active",
+                "desiredDeployment": {"id": deployment_id},
+            },
         },
         observed_state={
             "observedState": "active",
             "runtimeGenerationId": generation_id,
         },
+        deployment=deployment,
     )
     suspended = SimpleNamespace(
         manifest={
             "metadata": {"id": tenant_id},
-            "spec": {"desiredState": "suspended"},
+            "spec": {
+                "desiredState": "suspended",
+                "desiredDeployment": {"id": deployment_id},
+            },
         },
         observed_state={
             "observedState": "suspended",
             "runtimeGenerationId": None,
         },
+        deployment=deployment,
     )
 
     class Runtime:
@@ -161,16 +179,35 @@ def test_selected_tenant_runtime_binds_the_active_verified_snapshot(
             assert requested == generation_id
             return SimpleNamespace(platform_namespace={}, tenants=(self.tenant,))
 
+    class Transaction:
+        @staticmethod
+        def tenant_deployment_ids(requested: object) -> tuple[str, ...]:
+            assert requested == tenant_id
+            return (deployment_id,)
+
     class Repository:
         @staticmethod
         def publication_transaction(*, blocking: bool) -> nullcontext[object]:
             assert blocking is True
-            return nullcontext(object())
+            return nullcontext(Transaction())
 
     runtime = Runtime()
     repository = Repository()
     authoritative = [active]
     monkeypatch.setattr(entrypoints, "_open_caddy_control_runtime", lambda: runtime)
+    monkeypatch.setattr(
+        entrypoints,
+        "_tenant_release_ids",
+        lambda _tenant_id: (deployment_id,),
+    )
+    measured_digest = [release_tree_digest]
+    monkeypatch.setattr(
+        entrypoints,
+        "measure_release_tree",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            digest=SimpleNamespace(to_dict=lambda: measured_digest[0])
+        ),
+    )
     monkeypatch.setattr(
         entrypoints,
         "snapshot_tenant_routes",
@@ -188,6 +225,11 @@ def test_selected_tenant_runtime_binds_the_active_verified_snapshot(
         active.manifest,
         active.observed_state,
     )
+    assert entrypoints._selected_tenant_release_matches(
+        repository,  # type: ignore[arg-type]
+        tenant_id,
+        active.manifest,
+    )
     assert not entrypoints._selected_tenant_runtime_matches(
         repository,  # type: ignore[arg-type]
         tenant_id,
@@ -195,6 +237,31 @@ def test_selected_tenant_runtime_binds_the_active_verified_snapshot(
         "0198d17f-6f4a-7000-8000-000000000002",
         active.manifest,
         active.observed_state,
+    )
+    measured_digest[0] = {**release_tree_digest, "value": "d" * 64}
+    assert not entrypoints._selected_tenant_release_matches(
+        repository,  # type: ignore[arg-type]
+        tenant_id,
+        active.manifest,
+    )
+    measured_digest[0] = release_tree_digest
+    monkeypatch.setattr(
+        entrypoints,
+        "_tenant_release_ids",
+        lambda _tenant_id: (
+            deployment_id,
+            "0198d17f-6f4a-7000-8000-000000000009",
+        ),
+    )
+    assert not entrypoints._selected_tenant_release_matches(
+        repository,  # type: ignore[arg-type]
+        tenant_id,
+        active.manifest,
+    )
+    monkeypatch.setattr(
+        entrypoints,
+        "_tenant_release_ids",
+        lambda _tenant_id: (deployment_id,),
     )
     runtime.tenant = suspended
     authoritative[:] = [suspended]

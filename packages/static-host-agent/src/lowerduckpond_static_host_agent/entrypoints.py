@@ -14,7 +14,7 @@ import sys
 import time
 from functools import partial
 from pathlib import Path
-from typing import Final
+from typing import Final, Protocol
 
 from lowerduckpond_static_contracts import (
     ContractError,
@@ -35,6 +35,7 @@ from lowerduckpond_static_host_agent.caddy_generation import (
     CaddyBinarySource,
     CaddyGenerationStore,
 )
+from lowerduckpond_static_host_agent.caddy_routes import TENANT_RELEASE_ROOT
 from lowerduckpond_static_host_agent.caddy_runtime import (
     CADDY_PUBLICATION_LOCK_MODE,
     CADDY_RUNTIME_ROOT_MODE,
@@ -75,6 +76,10 @@ from lowerduckpond_static_host_agent.operator_adapter import (
     OperatorAdapterError,
 )
 from lowerduckpond_static_host_agent.operator_stream import DeadlineReader, StreamError
+from lowerduckpond_static_host_agent.release_tree import (
+    ReleaseTreeError,
+    measure_release_tree,
+)
 from lowerduckpond_static_host_agent.repository import StateRecordError, StateRepository
 from lowerduckpond_static_host_agent.request_decoder import (
     RequestDecodeError,
@@ -98,11 +103,17 @@ _PUBLICATION_LOCK: Final = _STATE_ROOT / "locks/publication.lock"
 _SYSTEMD_DESCRIPTOR_START: Final = 3
 _CADDY_ACCOUNT: Final = "caddy"
 _MAXIMUM_CA_PEM_BYTES: Final = 64 * 1024
+_MAXIMUM_TENANT_RELEASES: Final = 3
 _CADDY_BOOTSTRAP_MINIMUM_ARGUMENTS: Final = 5
 _CADDY_ORIGIN_PULL_MODES: Final = {
     "--origin-pull-staged": False,
     "--origin-pull-required": True,
 }
+
+
+class _ReleaseStateTransaction(Protocol):
+    def tenant_deployment_ids(self, tenant_id: object) -> tuple[str, ...]: ...
+
 
 _SAFE_ERRORS: Final = (
     ContractError,
@@ -192,6 +203,10 @@ def executor_main(arguments: list[str] | None = None) -> int:
                 ),
                 tenant_runtime_validator=partial(
                     _selected_tenant_runtime_matches,
+                    repository,
+                ),
+                tenant_release_validator=partial(
+                    _selected_tenant_release_matches,
                     repository,
                 ),
             ).execute(job_id, blocking=True)
@@ -601,10 +616,40 @@ def _selected_tenant_runtime_matches(  # noqa: PLR0911,PLR0913,PLR0917
                 return False
             snapshot = runtime.read_generation_route_snapshot(active_generation_id)
             expected = snapshot_tenant_routes(transaction)
+            if snapshot != expected:
+                return False
+            matching = []
+            for tenant in snapshot.tenants:
+                metadata = tenant.manifest.get("metadata")
+                if type(metadata) is dict and metadata.get("id") == tenant_id:
+                    matching.append(tenant)
+            if len(matching) != 1:
+                return False
+            tenant = matching[0]
+            if tenant.manifest != manifest or (
+                observed_state is not None and tenant.observed_state != observed_state
+            ):
+                return False
+            spec = tenant.manifest.get("spec")
+            observed = tenant.observed_state
+            if type(spec) is not dict:
+                return False
+            if route_set == "both":
+                return (
+                    spec.get("desiredState") == "active"
+                    and observed.get("observedState") == "active"
+                    and observed.get("runtimeGenerationId") == generation_id
+                )
+            return (
+                spec.get("desiredState") != "active"
+                and observed.get("observedState") == spec.get("desiredState")
+                and observed.get("runtimeGenerationId") is None
+            )
     except (
         CaddyRuntimeError,
         KeyError,
         OSError,
+        ReleaseTreeError,
         RouteSnapshotError,
         StateInventoryError,
         StateRecordError,
@@ -612,35 +657,97 @@ def _selected_tenant_runtime_matches(  # noqa: PLR0911,PLR0913,PLR0917
         ValueError,
     ):
         return False
-    if snapshot != expected:
-        return False
-    matching = []
-    for tenant in snapshot.tenants:
-        metadata = tenant.manifest.get("metadata")
-        if type(metadata) is dict and metadata.get("id") == tenant_id:
-            matching.append(tenant)
-    if len(matching) != 1:
-        return False
-    tenant = matching[0]
-    if tenant.manifest != manifest or (
-        observed_state is not None and tenant.observed_state != observed_state
+
+
+def _selected_tenant_release_matches(
+    repository: StateRepository,
+    tenant_id: str,
+    manifest: dict[str, object],
+) -> bool:
+    """Bind selected release bytes and the release inventory to durable state."""
+
+    try:
+        with repository.publication_transaction(blocking=True) as transaction:
+            expected = snapshot_tenant_routes(transaction)
+            matching = []
+            for tenant in expected.tenants:
+                metadata = tenant.manifest.get("metadata")
+                if type(metadata) is dict and metadata.get("id") == tenant_id:
+                    matching.append(tenant)
+            return (
+                len(matching) == 1
+                and matching[0].manifest == manifest
+                and _tenant_release_state_matches(repository, transaction, matching[0])
+            )
+    except (
+        KeyError,
+        OSError,
+        ReleaseTreeError,
+        RouteSnapshotError,
+        StateInventoryError,
+        StateRecordError,
+        TypeError,
+        ValueError,
     ):
         return False
-    spec = tenant.manifest.get("spec")
-    observed = tenant.observed_state
-    if type(spec) is not dict:
+
+
+def _tenant_release_state_matches(  # noqa: PLR0911 - explicit fail-closed matrix
+    repository: StateRepository,
+    transaction: _ReleaseStateTransaction,
+    tenant: object,
+) -> bool:
+    """Bind every local release to state and remeasure the selected release."""
+
+    manifest = getattr(tenant, "manifest", None)
+    deployment = getattr(tenant, "deployment", None)
+    if type(manifest) is not dict:
         return False
-    if route_set == "both":
-        return (
-            spec.get("desiredState") == "active"
-            and observed.get("observedState") == "active"
-            and observed.get("runtimeGenerationId") == generation_id
-        )
-    return (
-        spec.get("desiredState") != "active"
-        and observed.get("observedState") == spec.get("desiredState")
-        and observed.get("runtimeGenerationId") is None
+    metadata = manifest.get("metadata")
+    spec = manifest.get("spec")
+    if type(metadata) is not dict or type(spec) is not dict:
+        return False
+    tenant_id = validate_uuid7(metadata.get("id"))
+    deployment_ids = transaction.tenant_deployment_ids(tenant_id)
+    release_ids = _tenant_release_ids(tenant_id)
+    if not set(release_ids).issubset(deployment_ids):
+        return False
+    if spec.get("desiredState") not in {"active", "suspended"}:
+        return True
+    selected = spec.get("desiredDeployment")
+    if type(selected) is not dict or type(deployment) is not dict:
+        return False
+    deployment_id = validate_uuid7(selected.get("id"))
+    if deployment_id not in deployment_ids or deployment.get("id") != deployment_id:
+        return False
+    measurement = measure_release_tree(
+        Path(TENANT_RELEASE_ROOT) / tenant_id / "releases" / deployment_id,
+        lock_manager=repository,
+        expected_owner=_EXPECTED_OWNER,
     )
+    return measurement.digest.to_dict() == deployment.get("releaseTreeDigest")
+
+
+def _tenant_release_ids(tenant_id: str) -> tuple[str, ...]:
+    """Enumerate one bounded root-owned release namespace without following entries."""
+
+    release_root = Path(TENANT_RELEASE_ROOT) / tenant_id / "releases"
+    try:
+        with os.scandir(release_root) as entries:
+            found = tuple(sorted(entries, key=lambda entry: entry.name))
+    except FileNotFoundError:
+        return ()
+    if len(found) > _MAXIMUM_TENANT_RELEASES:
+        raise ReleaseTreeError("tenant release history exceeds its retention bound")
+    identities: list[str] = []
+    for entry in found:
+        if not entry.is_dir(follow_symlinks=False):
+            raise ReleaseTreeError("tenant release history contains a non-directory entry")
+        try:
+            identities.append(validate_uuid7(entry.name))
+        except (TypeError, ValueError) as error:
+            raise ReleaseTreeError("tenant release history has an invalid identity") from error
+    return tuple(identities)
 
 
 def _systemd_publication_lock_descriptor() -> int:
