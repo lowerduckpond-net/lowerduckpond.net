@@ -75,6 +75,8 @@ class JobHandoff(Protocol):
 class ExecutionTransaction(Protocol):
     def read(self, path: StateRecordPath) -> StoredContract: ...
 
+    def tenant_has_deployment_history(self, tenant_id: object) -> bool: ...
+
     def compare_and_swap(
         self,
         path: StateRecordPath,
@@ -89,8 +91,6 @@ class ExecutionTransaction(Protocol):
     ) -> StoredContract: ...
 
     def measure_inventory(self) -> StateInventory: ...
-
-    def tenant_has_deployment_history(self, tenant_id: object) -> bool: ...
 
     def tenant_has_identity_history(self, tenant_id: object) -> bool: ...
 
@@ -1021,11 +1021,13 @@ def _validate_handler_result_state(
     tenant_id = validate_uuid7(result["tenantId"])
     desired_path = StateRecordPath.tenant_desired(tenant_id)
     if result["operation"] == "delete":
-        try:
-            transaction.read(desired_path)
-        except FileNotFoundError:
-            return
-        raise ExecutionError("successful delete result retained authoritative tenant state")
+        for path in (desired_path, StateRecordPath.tenant_observed(tenant_id)):
+            try:
+                transaction.read(path)
+            except FileNotFoundError:
+                continue
+            raise ExecutionError("successful delete result retained authoritative tenant state")
+        return
     manifest = result.get("manifest")
     if type(manifest) is not dict:
         raise ExecutionError("successful lifecycle result has no exact manifest")
@@ -1039,7 +1041,40 @@ def _validate_handler_result_state(
         raise ExecutionError(
             "successful lifecycle result disagrees with authoritative tenant state"
         )
+    _validate_observed_state(transaction, result, manifest)
     _validate_selected_deployment_state(transaction, job, result, manifest)
+
+
+def _validate_observed_state(
+    transaction: ExecutionTransaction,
+    result: dict[str, object],
+    manifest: dict[str, object],
+) -> None:
+    tenant_id = validate_uuid7(result["tenantId"])
+    try:
+        observed = transaction.read(StateRecordPath.tenant_observed(tenant_id)).document
+    except FileNotFoundError as error:
+        raise ExecutionError("successful lifecycle result has no observed tenant state") from error
+    validate_contract(observed, expected_kind=ContractKind.TENANT_OBSERVED_STATE)
+    metadata = manifest["metadata"]
+    spec = manifest["spec"]
+    if type(metadata) is not dict or type(spec) is not dict:
+        raise ExecutionError("successful lifecycle tenant state is malformed")
+    lifecycle = spec["desiredState"]
+    deployment = spec.get("desiredDeployment")
+    active_deployment_id = None
+    if lifecycle in {"active", "suspended"}:
+        if type(deployment) is not dict:
+            raise ExecutionError("successful lifecycle deployment selection is malformed")
+        active_deployment_id = deployment["id"]
+    if (
+        observed["tenantId"] != tenant_id
+        or metadata["id"] != tenant_id
+        or observed["desiredManifestDigest"] != manifest_digest(manifest).to_dict()
+        or observed["observedState"] != lifecycle
+        or observed["activeDeploymentId"] != active_deployment_id
+    ):
+        raise ExecutionError("successful lifecycle observed state is not authoritative")
 
 
 def _validate_selected_deployment_state(
@@ -1049,13 +1084,13 @@ def _validate_selected_deployment_state(
     manifest: dict[str, object],
 ) -> None:
     operation = result["operation"]
-    if operation not in {"deploy", "rollback"}:
-        return
     spec = manifest["spec"]
     request = job["request"]
     if type(spec) is not dict or type(request) is not dict:
         raise ExecutionError("successful deployment authority is malformed")
-    reference = spec["desiredDeployment"]
+    reference = spec.get("desiredDeployment")
+    if spec["desiredState"] == "undeployed":
+        return
     if type(reference) is not dict:
         raise ExecutionError("successful deployment selection is malformed")
     tenant_id = validate_uuid7(result["tenantId"])
@@ -1072,7 +1107,7 @@ def _validate_selected_deployment_state(
         and deployment["id"] == deployment_id
         and deployment["archiveSha256"] == reference["archiveSha256"]
     )
-    if operation == "deploy":
+    if operation in {"deploy", "import"}:
         artifact = request["artifact"]
         if type(artifact) is not dict:
             raise ExecutionError("successful deployment artifact authority is malformed")
@@ -1081,10 +1116,30 @@ def _validate_selected_deployment_state(
             and deployment["archiveSha256"] == artifact["sha256"]
             and deployment["correlationId"] == result["correlationId"]
         )
+    elif operation == "restore":
+        matches = matches and deployment["correlationId"] == result["correlationId"]
     else:
-        matches = matches and deployment_id == request["deploymentId"]
+        matches = matches and (operation != "rollback" or deployment_id == request["deploymentId"])
     if not matches:
         raise ExecutionError("successful lifecycle result has an unbound deployment record")
+    if spec["desiredState"] != "archived":
+        return
+    try:
+        archive = transaction.read(
+            StateRecordPath.tenant_archive(tenant_id, deployment_id)
+        ).document
+    except FileNotFoundError as error:
+        raise ExecutionError("successful archive result has no archive record") from error
+    validate_contract(archive, expected_kind=ContractKind.ARCHIVE_RECORD)
+    archive_matches = (
+        archive["tenantId"] == tenant_id
+        and archive["deploymentId"] == deployment_id
+        and archive["manifestDigest"] == manifest_digest(manifest).to_dict()
+        and archive["releaseTreeDigest"] == deployment["releaseTreeDigest"]
+        and (operation != "archive" or archive["correlationId"] == result["correlationId"])
+    )
+    if not archive_matches:
+        raise ExecutionError("successful lifecycle result has an unbound archive record")
 
 
 def _validate_result_audit(
