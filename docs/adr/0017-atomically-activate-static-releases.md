@@ -300,17 +300,22 @@ path derivation it requires the one canonical lowercase UUIDv7 grammar with an
 ASCII `fullmatch`. It accepts only the versioned allowlisted schema, verifies
 the canonical request and artifact bindings, and compares the
 job's expected lifecycle, manifest, deployment, and archive-record digests with
-current authoritative state before it admits or stages work. It then durably
-claims the pending job. The executor records terminal validation only after the
-complete durable tenant state and selected runtime match a successful result,
-or the intent-authorized source state and runtime have both been restored for a
-failed transition. Create recovery retains the complete candidate generation,
-route-set, and observed-state authority through terminal validation. A terminal
-retry revalidates current durable state and runtime before returning its
-immutable result. Immutable job, result, and audit bindings preserve the
-authority needed after intent cleanup: each current job retains its exact
-source manifest and any source archive record, and a successful archive result
-retains its exact new archive record. An executor-produced failure carries an
+current authoritative state before it admits or stages work. When an installed
+deploy or import handler would receive the artifact, root also parses its exact
+operation-specific content while the job remains pending. A malformed but
+hash-bound artifact produces a terminal `invalid_artifact` result and releases
+the intake slot rather than becoming an indefinitely claimed job. The executor
+then durably claims the pending job. It records terminal validation only after
+the complete durable tenant state and selected runtime match a successful
+result, or the intent-authorized source state and runtime have both been
+restored for a failed transition. Create recovery retains the complete
+candidate generation, route-set, and observed-state authority through terminal
+validation. A terminal retry revalidates current durable state and runtime
+before returning its immutable result. Immutable job, result, and audit
+bindings preserve the authority needed after intent cleanup: each current job
+retains its exact source manifest and any source archive record, and a
+successful archive result retains its exact new archive record. An
+executor-produced failure carries an
 immutable publisher discriminator, so a result-first crash can complete only
 that trusted failure's missing audit and terminal phase. The failure result
 also binds the exact audit sequence and predecessor present before publication;
@@ -332,13 +337,13 @@ sets of that tenant's retained deployment- and archive-record identities. A
 failed lifecycle handler is terminally valid only when both sets remain exact
 after rollback; a candidate record cannot silently consume retention or block
 a later archive or delete. Operations that are not allowed to create or retire
-history (`create`, `export`, `rename`, `reconcile`, `resume`, and `suspend`)
-must leave both sets exact even when their handler reports success. For deploy
-and import, root independently derives the normalized release-tree digest and
-binds it to the job before invoking the handler: deploy is measured directly
-from its admitted flat ZIP, while import is measured from the validated
-`lowerduckpond-export-v1/content/` envelope under the portable-bundle limits.
-The committed deployment record must match both that digest and the
+history (`create`, `export`, `rename`, `reconcile`, `resume`, `rollback`, and
+`suspend`) must leave both sets exact even when their handler reports success.
+For deploy and import, root independently derives the normalized release-tree
+digest and binds it to the job before invoking the handler: deploy is measured
+directly from its admitted flat ZIP, while import is measured from the
+validated `lowerduckpond-export-v1/content/` envelope under the portable-bundle
+limits. The committed deployment record must match both that digest and the
 artifact-byte digest. A handler-authored pair of internally consistent but
 unrelated digests is not release authority. A successful delete is terminally
 valid only after

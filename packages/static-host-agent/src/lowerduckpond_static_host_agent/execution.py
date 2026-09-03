@@ -70,6 +70,10 @@ class ExecutionError(RuntimeError):
     """An opaque authorized job could not reach one safe terminal result."""
 
 
+class _InvalidArtifactContentError(ExecutionError):
+    """A hash-bound admitted artifact violates its operation-specific format."""
+
+
 class JobHandoff(Protocol):
     """Queue one validated opaque UUID without carrying operation authority."""
 
@@ -148,6 +152,14 @@ class LifecycleArtifact:
     """Read-only artifact identity exposed to one lifecycle handler."""
 
     artifact: AdmittedArtifact
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedDispatch:
+    """A held intake claim and its independently derived release authority."""
+
+    claim: ArtifactClaim | None
+    artifact_release_tree_digest: dict[str, object] | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -326,7 +338,7 @@ class AuthorizationExecutor:
             job_id,
             initial,
             handler,
-            claim=None,
+            prepared=_PreparedDispatch(None, None),
             blocking=blocking,
         )
 
@@ -376,7 +388,7 @@ class AuthorizationExecutor:
                 job_id,
                 initial,
                 handler,
-                claim=None,
+                prepared=_PreparedDispatch(None, None),
                 blocking=blocking,
             )
         with ExitStack() as claim_stack:
@@ -410,11 +422,15 @@ class AuthorizationExecutor:
                 raise ExecutionError(
                     "lifecycle replay artifact failed root-owned validation"
                 ) from error
+            artifact_release_tree_digest = self._derive_artifact_release_tree_digest(
+                initial.document,
+                claim,
+            )
             outcome = self._execute_handler(
                 job_id,
                 initial,
                 handler,
-                claim=claim,
+                prepared=_PreparedDispatch(claim, artifact_release_tree_digest),
                 blocking=blocking,
             )
             claim.consume()
@@ -532,7 +548,7 @@ class AuthorizationExecutor:
         except IntakeError as error:
             raise ExecutionError("terminal artifact cleanup failed closed") from error
 
-    def _execute_with_claim(
+    def _execute_with_claim(  # noqa: PLR0912 - transactional execution matrix
         self,
         job_id: str,
         initial: StoredContract,
@@ -543,6 +559,7 @@ class AuthorizationExecutor:
     ) -> ExecutionOutcome:
         path = StateRecordPath.authorization_job(job_id)
         replay: StoredContract | None = None
+        artifact_release_tree_digest: dict[str, object] | None = None
         with self._repository.transaction(
             mode=LockMode.EXCLUSIVE,
             blocking=blocking,
@@ -593,6 +610,23 @@ class AuthorizationExecutor:
                         )
                         return ExecutionOutcome(result, True)
                     raise ExecutionError("claimed lifecycle job handler is unavailable")
+                if handler is not None:
+                    try:
+                        artifact_release_tree_digest = self._derive_artifact_release_tree_digest(
+                            current.document,
+                            claim,
+                        )
+                    except _InvalidArtifactContentError:
+                        if has_lifecycle_intent:
+                            raise
+                        result = _failure_result(current.document, "invalid_artifact")
+                        _publish_result(
+                            transaction,
+                            current,
+                            result,
+                            limits=self._capacity_limits,
+                        )
+                        return ExecutionOutcome(result, True)
                 claimed = _claim_pending(transaction, current)
                 if handler is None:
                     # Unsupported lifecycle operations remain mutation-free until
@@ -614,7 +648,7 @@ class AuthorizationExecutor:
             job_id,
             initial,
             handler,
-            claim=claim,
+            prepared=_PreparedDispatch(claim, artifact_release_tree_digest),
             blocking=blocking,
         )
 
@@ -624,13 +658,9 @@ class AuthorizationExecutor:
         initial: StoredContract,
         handler: LifecycleJobHandler,
         *,
-        claim: ArtifactClaim | None,
+        prepared: _PreparedDispatch,
         blocking: bool,
     ) -> ExecutionOutcome:
-        artifact_release_tree_digest = self._derive_artifact_release_tree_digest(
-            initial.document,
-            claim,
-        )
         with self._repository.transaction(
             mode=LockMode.EXCLUSIVE,
             blocking=blocking,
@@ -640,13 +670,15 @@ class AuthorizationExecutor:
             current = _bind_dispatch_authority(
                 transaction,
                 current,
-                artifact_release_tree_digest=artifact_release_tree_digest,
+                artifact_release_tree_digest=prepared.artifact_release_tree_digest,
             )
             authority = _capture_authorized_lifecycle_authority(
                 transaction,
                 current.document,
             )
-        handler_claim = None if claim is None else LifecycleArtifact(claim.artifact)
+        handler_claim = (
+            None if prepared.claim is None else LifecycleArtifact(prepared.claim.artifact)
+        )
         returned = handler.execute(job_id, claim=handler_claim, blocking=blocking)
         if type(returned) is not ExecutionOutcome:
             raise ExecutionError("lifecycle handler returned a malformed outcome")
@@ -723,7 +755,7 @@ class AuthorizationExecutor:
             release_authority = digest.to_dict()
             return dict[str, object](release_authority)
         except IntakeError as error:
-            raise ExecutionError(
+            raise _InvalidArtifactContentError(
                 "authorized artifact release content failed independent validation"
             ) from error
 
@@ -2016,7 +2048,15 @@ def _validate_success_record_history(
     *,
     authority: _LifecycleDispatchAuthority,
 ) -> None:
-    if result["operation"] not in {"create", "export", "rename", "reconcile", "resume", "suspend"}:
+    if result["operation"] not in {
+        "create",
+        "export",
+        "rename",
+        "reconcile",
+        "resume",
+        "rollback",
+        "suspend",
+    }:
         return
     tenant_id = result["tenantId"]
     source_archive_ids = authority.source_archive_deployment_ids
