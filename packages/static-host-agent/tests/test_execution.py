@@ -150,18 +150,20 @@ class _CompletingCreateHandler:
 
 
 class _CompletingFailureHandler:
-    def __init__(
+    def __init__(  # noqa: PLR0913 - test handler toggles independent failure residue
         self,
         repository: StateRepository,
         *,
         append_audit: bool = True,
         claim_executor_publication: bool = False,
+        retained_archive_id: str | None = None,
         retained_deployment_id: str | None = None,
         state_root: Path | None = None,
     ) -> None:
         self._repository = repository
         self._append_audit = append_audit
         self._claim_executor_publication = claim_executor_publication
+        self._retained_archive_id = retained_archive_id
         self._retained_deployment_id = retained_deployment_id
         self._state_root = state_root
         self.claims: list[LifecycleArtifact | None] = []
@@ -222,6 +224,17 @@ class _CompletingFailureHandler:
                         self._retained_deployment_id,
                     ),
                     deployment,
+                )
+            if self._retained_archive_id is not None:
+                archive = _fixture("archive-record.json")
+                archive["deploymentId"] = self._retained_archive_id
+                _write(
+                    self._state_root,
+                    StateRecordPath.tenant_archive(
+                        _TENANT_ID,
+                        self._retained_archive_id,
+                    ),
+                    archive,
                 )
         if self._append_audit:
             _append_result_audit_if_absent(self._repository, job.document, result)
@@ -1052,6 +1065,14 @@ def _deleted_tenant_routes_absent(_tenant_id: str) -> bool:
 
 
 def _deleted_tenant_routes_present(_tenant_id: str) -> bool:
+    return False
+
+
+def _deleted_tenant_releases_absent(_tenant_id: str) -> bool:
+    return True
+
+
+def _deleted_tenant_releases_present(_tenant_id: str) -> bool:
     return False
 
 
@@ -2438,6 +2459,58 @@ def test_executor_rejects_a_failed_deploy_that_retains_deployment_history(
     assert [path.name for path in (root / "intake").iterdir()] == [f"{correlation_id}.artifact"]
 
 
+def test_executor_rejects_a_failed_archive_that_retains_archive_history(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    _write_deployment_record(root, _DEPLOYMENT_ID, "0" * 64)
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), _fixture("site.json"))
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "archive",
+        "correlationId": "0198d17f-6f4a-7000-8000-000000000003",
+        "tenantId": _TENANT_ID,
+    }
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued = AuthorizationIssuer(
+            repository,
+            gate=_OpenGate(),
+            entropy=_Entropy(),
+        ).issue(
+            canonical_json_bytes(request),
+            operator_principal="operator@example.test",
+            now=_NOW,
+            artifact=None,
+        )
+        executor = AuthorizationExecutor(
+            repository,
+            intake,
+            handlers={
+                "archive": _CompletingFailureHandler(
+                    repository,
+                    retained_archive_id=_DEPLOYMENT_ID,
+                    state_root=root,
+                ),
+            },
+            tenant_runtime_validator=lambda *_arguments: True,
+        )
+
+        with pytest.raises(ExecutionError, match="unauthorized archive history"):
+            executor.execute(issued.job_id)
+        with pytest.raises(ExecutionError, match="unauthorized archive history"):
+            executor.execute(issued.job_id)
+        job = repository.read(StateRecordPath.authorization_job(issued.job_id)).document
+
+    assert job["dispatchArchiveDeploymentIds"] == []
+    assert job["dispatchDeploymentIds"] == [_DEPLOYMENT_ID]
+
+
 def test_executor_requires_source_release_validation_after_failed_deploy(
     tmp_path: Path,
 ) -> None:
@@ -3127,6 +3200,7 @@ def test_executor_accepts_exact_durable_delete_evidence_and_replays_it(
             repository,
             intake,
             handlers={"delete": handler},
+            deleted_tenant_release_validator=_deleted_tenant_releases_absent,
             deleted_tenant_route_validator=_deleted_tenant_routes_absent,
         )
         outcome = executor.execute(issued.job_id)
@@ -3135,6 +3209,7 @@ def test_executor_accepts_exact_durable_delete_evidence_and_replays_it(
             AuthorizationExecutor(
                 repository,
                 intake,
+                deleted_tenant_release_validator=_deleted_tenant_releases_absent,
                 deleted_tenant_route_validator=_deleted_tenant_routes_present,
             ).execute(issued.job_id)
 
@@ -3208,7 +3283,40 @@ def test_executor_rejects_delete_that_retains_an_active_route(tmp_path: Path) ->
                         deletion_evidence=deletion_evidence,
                     )
                 },
+                deleted_tenant_release_validator=_deleted_tenant_releases_absent,
                 deleted_tenant_route_validator=_deleted_tenant_routes_present,
+            ).execute(issued.job_id)
+
+
+def test_executor_rejects_delete_that_retains_tenant_release_bytes(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    manifest = _fixture("site.json")
+    spec = _mapping(manifest["spec"])
+    spec["desiredState"] = "undeployed"
+    del spec["desiredDeployment"]
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), manifest)
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued = _issue_delete(repository)
+        expected = _mapping(issued.document["expectedSource"])
+        deletion_evidence = _mapping(expected["deletionEvidence"])
+        with pytest.raises(ExecutionError, match="retained tenant release bytes"):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={
+                    "delete": _CompletingDeleteHandler(
+                        repository,
+                        root,
+                        deletion_evidence=deletion_evidence,
+                    )
+                },
+                deleted_tenant_release_validator=_deleted_tenant_releases_present,
+                deleted_tenant_route_validator=_deleted_tenant_routes_absent,
             ).execute(issued.job_id)
 
 
