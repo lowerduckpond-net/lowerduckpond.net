@@ -233,6 +233,50 @@ def _validate_job(document: dict[str, object]) -> None:
         raise ContractError(ErrorCode.SCHEMA_INVALID, "deployed source binding is invalid")
     if lifecycle == "archived" and (deployment is None or archive is None):
         raise ContractError(ErrorCode.SCHEMA_INVALID, "archived source binding is invalid")
+    _validate_job_deletion_authority(request, expected, lifecycle, archive)
+
+
+def _validate_job_deletion_authority(
+    request: dict[str, object],
+    expected: dict[str, object],
+    lifecycle: object,
+    archive: object,
+) -> None:
+    operation = request["operation"]
+    if operation != "delete":
+        if "deletionEvidence" in expected:
+            raise ContractError(
+                ErrorCode.SCHEMA_INVALID,
+                "non-delete job carries deletion evidence",
+            )
+        return
+    if "deletionEvidence" not in expected:
+        raise ContractError(
+            ErrorCode.SCHEMA_INVALID,
+            "delete job has no durable deletion authority",
+        )
+    deletion = expected["deletionEvidence"]
+    if lifecycle in {"active", "suspended"}:
+        if deletion is not None:
+            raise ContractError(
+                ErrorCode.SCHEMA_INVALID,
+                "ineligible delete source carries deletion evidence",
+            )
+        return
+    if type(deletion) is not dict:
+        raise ContractError(ErrorCode.SCHEMA_INVALID, "delete source evidence is absent")
+    if lifecycle == "undeployed" and deletion["mode"] != "never-deployed":
+        raise ContractError(
+            ErrorCode.SCHEMA_INVALID,
+            "undeployed delete source evidence is invalid",
+        )
+    if lifecycle == "archived" and (
+        deletion["mode"] != "archived" or deletion["archiveRecordDigest"] != archive
+    ):
+        raise ContractError(
+            ErrorCode.SCHEMA_INVALID,
+            "archived delete source evidence is invalid",
+        )
 
 
 def _validate_result(document: dict[str, object]) -> None:

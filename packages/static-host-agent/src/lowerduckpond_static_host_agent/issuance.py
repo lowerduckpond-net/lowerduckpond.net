@@ -289,6 +289,7 @@ def build_expected_source(
     lifecycle = cast(str, spec["desiredState"])
     deployment_digest: dict[str, str] | None = None
     archive_digest: dict[str, str] | None = None
+    archive: dict[str, object] | None = None
     if lifecycle != "undeployed":
         reference = cast(dict[str, object], spec["desiredDeployment"])
         deployment_id = validate_uuid7(reference["id"])
@@ -299,7 +300,7 @@ def build_expected_source(
         if lifecycle == "archived":
             archive = reader.read(StateRecordPath.tenant_archive(tenant_id, deployment_id)).document
             archive_digest = archive_record_digest(archive).to_dict()
-    return {
+    expected: dict[str, object] = {
         "expectsTenantAbsent": False,
         "lifecycle": lifecycle,
         "manifestDigest": manifest_digest(desired).to_dict(),
@@ -307,3 +308,28 @@ def build_expected_source(
         "archiveRecordDigest": archive_digest,
         "platformStateDigest": platform_digest,
     }
+    if request["operation"] == "delete":
+        metadata = cast(dict[str, object], desired["metadata"])
+        deletion_evidence: dict[str, object] | None = None
+        if lifecycle == "undeployed":
+            deletion_evidence = {
+                "mode": "never-deployed",
+                "releasedSlugs": [metadata["slug"]],
+                "archiveRecordDigest": None,
+                "bucket": None,
+                "key": None,
+                "versionId": None,
+                "emergencyReason": None,
+            }
+        elif lifecycle == "archived" and archive is not None:
+            deletion_evidence = {
+                "mode": "archived",
+                "releasedSlugs": [metadata["slug"]],
+                "archiveRecordDigest": archive_digest,
+                "bucket": archive["bucket"],
+                "key": archive["key"],
+                "versionId": archive["versionId"],
+                "emergencyReason": None,
+            }
+        expected["deletionEvidence"] = deletion_evidence
+    return expected

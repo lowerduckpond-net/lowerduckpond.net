@@ -165,6 +165,10 @@ def test_generation_migration_is_stopped_masked_and_defaults_on() -> None:
     )
     assert "Create inert Caddy generation storage" in host_agent_tasks
     assert "static_host_agent_caddy_generation_root" in host_agent_tasks
+    state_layout = "Create the root-owned static state layout before artifact selection"
+    artifact_selection = "Install and atomically select the pinned host-agent artifact"
+    assert state_layout in host_agent_tasks
+    assert host_agent_tasks.index(state_layout) < host_agent_tasks.index(artifact_selection)
 
 
 def test_frozen_wrappers_enter_only_the_reviewed_host_agent_entrypoints() -> None:

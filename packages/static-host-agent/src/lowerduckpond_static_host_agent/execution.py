@@ -18,7 +18,7 @@ from lowerduckpond_static_contracts import (
     validate_uuid7,
 )
 
-from lowerduckpond_static_host_agent.audit import AuditCorrelationSnapshot
+from lowerduckpond_static_host_agent.audit import AuditCorrelationSnapshot, AuditError
 from lowerduckpond_static_host_agent.capacity import (
     DEFAULT_HOST_CAPACITY_LIMITS,
     CapacityReservation,
@@ -477,7 +477,11 @@ class AuthorizationExecutor:
                 raise ExecutionError("lifecycle handler returned before clearing its intent")
             _require_current_success_result_shape(result)
             _validate_successful_result_state(transaction, result)
-            _validate_successful_result_audit(transaction, current.document, result)
+            _validate_successful_result_audit(
+                transaction,
+                current.document,
+                result,
+            )
             expected_phase = "completed" if result["status"] == "succeeded" else "failed"
             if current.document["phase"] != expected_phase:
                 raise ExecutionError("lifecycle handler returned before terminal job commit")
@@ -841,6 +845,7 @@ def _validate_result_intent_binding(
     if result["status"] != "succeeded":
         return
     _validate_archive_result_intent_binding(result, request, intents)
+    _validate_restore_result_retirement_binding(result, request, intents)
     matching = [intent for intent in intents if intent["kind"] == "TransactionIntent"]
     if request["operation"] == "create" and len(matching) != 1:
         raise ExecutionError("successful create result has no exact lifecycle intent")
@@ -919,7 +924,10 @@ def _validate_successful_result_audit(
 ) -> None:
     if result["status"] != "succeeded":
         return
-    snapshot = transaction.inspect_audit_correlation(result["correlationId"])
+    try:
+        snapshot = transaction.inspect_audit_correlation(result["correlationId"])
+    except AuditError as error:
+        raise ExecutionError("successful lifecycle audit authority is invalid") from error
     entry = snapshot.entry
     if entry is None:
         raise ExecutionError("successful lifecycle result has no durable audit authority")
@@ -932,6 +940,20 @@ def _validate_successful_result_audit(
         or entry["resultStatus"] != "succeeded"
     ):
         raise ExecutionError("successful lifecycle result disagrees with durable audit authority")
+    if result["operation"] == "delete":
+        _validate_delete_audit_evidence(job, entry)
+
+
+def _validate_delete_audit_evidence(
+    job: dict[str, object],
+    entry: dict[str, object],
+) -> None:
+    evidence = entry.get("deletionEvidence")
+    expected = job["expectedSource"]
+    if type(expected) is not dict:  # pragma: no cover - validated reads prove this
+        raise ExecutionError("authorization expected source is not an object")
+    if type(evidence) is not dict or evidence != expected.get("deletionEvidence"):
+        raise ExecutionError("successful delete audit disagrees with source authority")
 
 
 def _require_current_success_result_shape(result: dict[str, object]) -> None:
@@ -999,6 +1021,38 @@ def _validate_archive_result_intent_binding(
         or manifest_digest(manifest).to_dict() != intent["candidateManifestDigest"]
     ):
         raise ExecutionError("successful archive result disagrees with its construction intent")
+
+
+def _validate_restore_result_retirement_binding(
+    result: dict[str, object],
+    request: dict[str, object],
+    intents: list[dict[str, object]],
+) -> None:
+    if request["operation"] != "restore":
+        return
+    matching = [intent for intent in intents if intent["kind"] == "ArchiveRetirementIntent"]
+    if not matching:
+        return
+    if len(matching) != 1:  # pragma: no cover - duplicate kinds fail during collection
+        raise ExecutionError("successful restore result has no exact retirement intent")
+    manifest = result.get("manifest")
+    if type(manifest) is not dict:
+        raise ExecutionError("successful restore result manifest is malformed")
+    intent = matching[0]
+    archive = intent["archiveRecord"]
+    spec = manifest["spec"]
+    if type(archive) is not dict or type(spec) is not dict:
+        raise ExecutionError("restore retirement authority is malformed")
+    deployment = spec["desiredDeployment"]
+    bundle_digest = archive["bundleDigest"]
+    if type(deployment) is not dict or type(bundle_digest) is not dict:
+        raise ExecutionError("restore deployment authority is malformed")
+    if (
+        result["tenantId"] != intent["tenantId"]
+        or deployment["id"] == archive["deploymentId"]
+        or deployment["archiveSha256"] != bundle_digest["value"]
+    ):
+        raise ExecutionError("successful restore result disagrees with retirement authority")
 
 
 def _intent_binds_job(

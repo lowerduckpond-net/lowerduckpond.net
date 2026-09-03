@@ -297,6 +297,19 @@ def test_authorization_source_digests_are_pinned_to_record_domains(
                 "algorithm": "sha256",
                 "value": "c" * 64,
             },
+            "deletionEvidence": {
+                "mode": "archived",
+                "releasedSlugs": ["duck-repair"],
+                "archiveRecordDigest": {
+                    "format": "lowerduckpond-archive-record-v1",
+                    "algorithm": "sha256",
+                    "value": "c" * 64,
+                },
+                "bucket": "lowerduckpond-net-production-tenant-archives-4f3e6b91",
+                "key": "archives/0198d17f-6f4a-7000-8000-000000000003.zip",
+                "versionId": "3LgY0Q5G-safe-fixture-version",
+                "emergencyReason": None,
+            },
         }
     )
 

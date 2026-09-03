@@ -45,6 +45,16 @@
             }
           ]
         },
+        "deletionEvidence": {
+          "oneOf": [
+            {
+              "$ref": "audit-entry.schema.json#/$defs/deletionEvidence"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "expectsTenantAbsent": {
           "type": "boolean"
         },

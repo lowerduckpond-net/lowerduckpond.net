@@ -120,6 +120,27 @@
     group: root
     mode: "0400"
 
+- name: Create the root-owned static state layout before artifact selection
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  loop:
+    - "{{ static_host_agent_state_root }}"
+    - "{{ static_host_agent_state_root }}/platform"
+    - "{{ static_host_agent_state_root }}/tenants"
+    - "{{ static_host_agent_state_root }}/authorization"
+    - "{{ static_host_agent_state_root }}/authorization/jobs"
+    - "{{ static_host_agent_state_root }}/authorization/results"
+    - "{{ static_host_agent_state_root }}/authorization/correlations"
+    - "{{ static_host_agent_state_root }}/intents"
+    - "{{ static_host_agent_state_root }}/intake"
+    - "{{ static_host_agent_state_root }}/exports"
+    - "{{ static_host_agent_state_root }}/audit"
+    - "{{ static_host_agent_state_root }}/locks"
+
 - name: Install and atomically select the pinned host-agent artifact
   ansible.builtin.command:
     argv:
@@ -260,27 +281,6 @@
     label: "{{ item.item }}"
   when: item.stat.exists
   changed_when: true
-
-- name: Create the root-owned static state layout
-  ansible.builtin.file:
-    path: "{{ item }}"
-    state: directory
-    owner: root
-    group: root
-    mode: "0700"
-  loop:
-    - "{{ static_host_agent_state_root }}"
-    - "{{ static_host_agent_state_root }}/platform"
-    - "{{ static_host_agent_state_root }}/tenants"
-    - "{{ static_host_agent_state_root }}/authorization"
-    - "{{ static_host_agent_state_root }}/authorization/jobs"
-    - "{{ static_host_agent_state_root }}/authorization/results"
-    - "{{ static_host_agent_state_root }}/authorization/correlations"
-    - "{{ static_host_agent_state_root }}/intents"
-    - "{{ static_host_agent_state_root }}/intake"
-    - "{{ static_host_agent_state_root }}/exports"
-    - "{{ static_host_agent_state_root }}/audit"
-    - "{{ static_host_agent_state_root }}/locks"
 
 - name: Inspect the fixed static state lock inodes
   ansible.builtin.stat:
