@@ -147,18 +147,22 @@ def discard_staging(path: pathlib.Path) -> None:
     shutil.rmtree(path)
 
 
-def select_current(install_root: pathlib.Path, destination: pathlib.Path) -> bool:
+def selected_destination(install_root: pathlib.Path) -> pathlib.Path | None:
     current = install_root / "current"
     if (current.exists() or current.is_symlink()) and not current.is_symlink():
         fail("host-agent current selector is not a symbolic link")
     try:
-        selected = current.resolve(strict=True)
+        return current.resolve(strict=True)
     except FileNotFoundError:
-        selected = None
+        return None
     except RuntimeError:
-        selected = None
-    if selected == destination:
+        return None
+
+
+def select_current(install_root: pathlib.Path, destination: pathlib.Path) -> bool:
+    if selected_destination(install_root) == destination:
         return False
+    current = install_root / "current"
     temporary = install_root / f".current-{secrets.token_hex(8)}"
     temporary.symlink_to(destination, target_is_directory=True)
     temporary.replace(current)
@@ -251,6 +255,8 @@ def select_destination(
     selection_lock = open_selection_lock(install_root)
     try:
         fcntl.flock(selection_lock, fcntl.LOCK_EX)
+        if selected_destination(install_root) == destination:
+            return False
         require_no_active_intents(state_root)
         return select_current(install_root, destination)
     finally:

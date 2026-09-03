@@ -172,6 +172,32 @@ def test_installer_refuses_to_select_an_upgrade_with_an_active_intent(
     assert (install_root / "current").resolve(strict=True) == install_root / digest
 
 
+def test_installer_accepts_an_already_selected_artifact_with_an_active_intent(
+    tmp_path: Path,
+) -> None:
+    artifact = tmp_path / "artifact.tar"
+    build = run(BUILDER, artifact)
+    assert build.returncode == 0, build.stderr
+    digest = build.stdout.strip()
+    install_root = tmp_path / "install"
+    install_root.mkdir()
+    create_selection_lock(install_root)
+    state_root = tmp_path / "state"
+    verifier = verifier_for_test(tmp_path)
+    installed = run(INSTALLER, artifact, digest, install_root, verifier, state_root)
+    assert installed.returncode == 0, installed.stderr
+    destination = install_root / digest
+
+    intents = state_root / "intents"
+    intents.mkdir(parents=True)
+    (intents / "active.json").write_text("{}", encoding="utf-8")
+    repeated = run(INSTALLER, artifact, digest, install_root, verifier, state_root)
+
+    assert repeated.returncode == 0, repeated.stderr
+    assert repeated.stdout == "unchanged\n"
+    assert (install_root / "current").resolve(strict=True) == destination
+
+
 def test_installer_removes_a_safe_abandoned_intent_temporary_before_selection(
     tmp_path: Path,
 ) -> None:
