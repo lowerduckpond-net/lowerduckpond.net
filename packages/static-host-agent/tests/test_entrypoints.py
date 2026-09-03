@@ -150,7 +150,7 @@ def test_selected_tenant_runtime_binds_the_active_verified_snapshot(
         def __exit__(self, *_exception: object) -> None:
             pass
 
-        def locked(self) -> nullcontext[None]:
+        def using_held_publication_lock(self, _repository: object) -> nullcontext[None]:
             return nullcontext()
 
         @staticmethod
@@ -159,12 +159,29 @@ def test_selected_tenant_runtime_binds_the_active_verified_snapshot(
 
         def read_generation_route_snapshot(self, requested: str) -> SimpleNamespace:
             assert requested == generation_id
-            return SimpleNamespace(tenants=(self.tenant,))
+            return SimpleNamespace(platform_namespace={}, tenants=(self.tenant,))
+
+    class Repository:
+        @staticmethod
+        def publication_transaction(*, blocking: bool) -> nullcontext[object]:
+            assert blocking is True
+            return nullcontext(object())
 
     runtime = Runtime()
+    repository = Repository()
+    authoritative = [active]
     monkeypatch.setattr(entrypoints, "_open_caddy_control_runtime", lambda: runtime)
+    monkeypatch.setattr(
+        entrypoints,
+        "snapshot_tenant_routes",
+        lambda _transaction: SimpleNamespace(
+            platform_namespace={},
+            tenants=tuple(authoritative),
+        ),
+    )
 
     assert entrypoints._selected_tenant_runtime_matches(
+        repository,  # type: ignore[arg-type]
         tenant_id,
         "both",
         generation_id,
@@ -172,6 +189,7 @@ def test_selected_tenant_runtime_binds_the_active_verified_snapshot(
         active.observed_state,
     )
     assert not entrypoints._selected_tenant_runtime_matches(
+        repository,  # type: ignore[arg-type]
         tenant_id,
         "both",
         "0198d17f-6f4a-7000-8000-000000000002",
@@ -179,7 +197,9 @@ def test_selected_tenant_runtime_binds_the_active_verified_snapshot(
         active.observed_state,
     )
     runtime.tenant = suspended
+    authoritative[:] = [suspended]
     assert entrypoints._selected_tenant_runtime_matches(
+        repository,  # type: ignore[arg-type]
         tenant_id,
         "absent",
         generation_id,
@@ -187,13 +207,17 @@ def test_selected_tenant_runtime_binds_the_active_verified_snapshot(
         suspended.observed_state,
     )
     assert not entrypoints._selected_tenant_runtime_matches(
+        repository,  # type: ignore[arg-type]
         tenant_id,
         "both",
         generation_id,
         suspended.manifest,
         suspended.observed_state,
     )
-    assert not entrypoints._selected_tenant_routes_absent(tenant_id)
+    assert not entrypoints._selected_tenant_routes_absent(
+        repository,  # type: ignore[arg-type]
+        tenant_id,
+    )
     runtime.tenant = SimpleNamespace(
         manifest={
             "metadata": {"id": "0191e2c4-8f7a-7c3b-8d1e-5f62047a2101"},
@@ -204,7 +228,16 @@ def test_selected_tenant_runtime_binds_the_active_verified_snapshot(
             "runtimeGenerationId": generation_id,
         },
     )
-    assert entrypoints._selected_tenant_routes_absent(tenant_id)
+    authoritative[:] = [runtime.tenant]
+    assert entrypoints._selected_tenant_routes_absent(
+        repository,  # type: ignore[arg-type]
+        tenant_id,
+    )
+    authoritative.append(active)
+    assert not entrypoints._selected_tenant_routes_absent(
+        repository,  # type: ignore[arg-type]
+        tenant_id,
+    )
 
 
 def test_caddy_pre_start_gate_uses_the_control_lock_path(

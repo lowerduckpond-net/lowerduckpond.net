@@ -167,7 +167,7 @@ class ResultWaiter:
         if remaining <= 0:
             raise RuntimeBoundaryError("authorized job completion timed out")
         self._handoff.await_completion(issued.job_id, timeout_seconds=remaining)
-        result = self._read(issued.job_id)
+        result = self._read_until(issued.job_id, deadline=deadline)
         if result is None:
             raise RuntimeBoundaryError("authorized job completed without a durable result")
         if existing is not None and result != existing:
@@ -176,6 +176,22 @@ class ResultWaiter:
         if self._validate_lifecycle_result(issued, result, deadline=deadline):
             raise RuntimeBoundaryError("authorized job completed with active lifecycle intent")
         return result
+
+    def _read_until(
+        self,
+        job_id: str,
+        *,
+        deadline: float,
+    ) -> dict[str, object] | None:
+        """Retry a result read through post-worker lock contention."""
+
+        while True:
+            result = self._read(job_id)
+            if result is not None:
+                return result
+            if self._clock() >= deadline:
+                return None
+            self._sleep(_RESULT_POLL_SECONDS)
 
     def _validate_lifecycle_result(
         self,

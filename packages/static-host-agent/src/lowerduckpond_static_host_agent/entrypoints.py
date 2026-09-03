@@ -12,6 +12,7 @@ import ssl
 import subprocess
 import sys
 import time
+from functools import partial
 from pathlib import Path
 from typing import Final
 
@@ -78,6 +79,10 @@ from lowerduckpond_static_host_agent.repository import StateRecordError, StateRe
 from lowerduckpond_static_host_agent.request_decoder import (
     RequestDecodeError,
     SubprocessRequestDecoder,
+)
+from lowerduckpond_static_host_agent.route_snapshot import (
+    RouteSnapshotError,
+    snapshot_tenant_routes,
 )
 from lowerduckpond_static_host_agent.state_inventory import StateInventoryError
 
@@ -181,8 +186,14 @@ def executor_main(arguments: list[str] | None = None) -> int:
             AuthorizationExecutor(
                 repository,
                 intake,
-                deleted_tenant_route_validator=_selected_tenant_routes_absent,
-                tenant_runtime_validator=_selected_tenant_runtime_matches,
+                deleted_tenant_route_validator=partial(
+                    _selected_tenant_routes_absent,
+                    repository,
+                ),
+                tenant_runtime_validator=partial(
+                    _selected_tenant_runtime_matches,
+                    repository,
+                ),
             ).execute(job_id, blocking=True)
     except (
         CapacityError,
@@ -532,26 +543,46 @@ def _open_caddy_control_runtime() -> CaddyRuntime:
     )
 
 
-def _selected_tenant_routes_absent(tenant_id: str) -> bool:
-    """Require the selected verified generation to omit one deleted tenant."""
+def _selected_tenant_routes_absent(
+    repository: StateRepository,
+    tenant_id: str,
+) -> bool:
+    """Require the selected generation to equal complete post-delete state."""
 
     try:
-        with _open_caddy_control_runtime() as runtime, runtime.locked():
+        with (
+            _open_caddy_control_runtime() as runtime,
+            repository.publication_transaction(blocking=True) as transaction,
+            runtime.using_held_publication_lock(repository),
+        ):
             generation_id = runtime.read_active()
             snapshot = runtime.read_generation_route_snapshot(generation_id)
-    except CaddyRuntimeError, KeyError, OSError, TypeError, ValueError:
+            expected = snapshot_tenant_routes(transaction)
+    except (
+        CaddyRuntimeError,
+        KeyError,
+        OSError,
+        RouteSnapshotError,
+        StateInventoryError,
+        StateRecordError,
+        TypeError,
+        ValueError,
+    ):
         return False
-    for tenant in snapshot.tenants:
+    if snapshot != expected:
+        return False
+    for tenant in expected.tenants:
         metadata = tenant.manifest.get("metadata")
         if type(metadata) is dict and metadata.get("id") == tenant_id:
             return False
     return True
 
 
-def _selected_tenant_runtime_matches(  # noqa: PLR0911 - fail-closed shape checks
+def _selected_tenant_runtime_matches(  # noqa: PLR0911,PLR0913,PLR0917
+    repository: StateRepository,
     tenant_id: str,
     route_set: str,
-    generation_id: str,
+    generation_id: str | None,
     manifest: dict[str, object],
     observed_state: dict[str, object] | None,
 ) -> bool:
@@ -560,11 +591,28 @@ def _selected_tenant_runtime_matches(  # noqa: PLR0911 - fail-closed shape check
     if route_set not in {"absent", "both"}:
         return False
     try:
-        with _open_caddy_control_runtime() as runtime, runtime.locked():
-            if runtime.read_active() != generation_id:
+        with (
+            _open_caddy_control_runtime() as runtime,
+            repository.publication_transaction(blocking=True) as transaction,
+            runtime.using_held_publication_lock(repository),
+        ):
+            active_generation_id = runtime.read_active()
+            if generation_id is not None and active_generation_id != generation_id:
                 return False
-            snapshot = runtime.read_generation_route_snapshot(generation_id)
-    except CaddyRuntimeError, KeyError, OSError, TypeError, ValueError:
+            snapshot = runtime.read_generation_route_snapshot(active_generation_id)
+            expected = snapshot_tenant_routes(transaction)
+    except (
+        CaddyRuntimeError,
+        KeyError,
+        OSError,
+        RouteSnapshotError,
+        StateInventoryError,
+        StateRecordError,
+        TypeError,
+        ValueError,
+    ):
+        return False
+    if snapshot != expected:
         return False
     matching = []
     for tenant in snapshot.tenants:

@@ -191,7 +191,8 @@ at least:
 - artifact absence or exact size and digest;
 - expected lifecycle, manifest, deployment, archive-record, and platform-state
   digests applicable to the operation; and
-- accepted timestamp, bounded phase, and compatibility version.
+- accepted timestamp, bounded phase, compatibility version, and an
+  executor-owned terminal-validation marker.
 
 The job's synced parent-directory rename is the acceptance point. A templated
 systemd job service runs as `ldp-provisioner` with only that UUID instance. Its
@@ -199,8 +200,12 @@ only privilege is the fixed sudo-selected `execute-authorized-job` executable;
 that isolated root-owned parser accepts exactly one canonical UUIDv7 argument.
 The root executor opens and verifies the job without following links, durably
 claims it, independently revalidates all bindings, and commits one immutable
-result. A lost handoff or SSH response is recovered by correlation and job
-reconciliation, never by reconstructing authority from an artifact.
+result. It marks that result validated only after checking the complete durable
+tenant state and selected runtime. An exact retry rechecks current durable
+state and runtime before returning the result; the marker preserves only the
+intent-bound facts that a completed transition necessarily consumed. A lost
+handoff or SSH response is recovered by correlation and job reconciliation,
+never by reconstructing authority from an artifact.
 
 ## 5. Delivery sequence
 
