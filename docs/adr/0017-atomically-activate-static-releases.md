@@ -313,10 +313,15 @@ source manifest and any source archive record, and a successful archive result
 retains its exact new archive record. An executor-produced failure carries an
 immutable publisher discriminator, so a result-first crash can complete only
 that trusted failure's missing audit and terminal phase; lifecycle-handler
-failures without their own audit remain rejected. A nonterminal retry reconciles its phase; a
-changed binding, state drift, unknown job ID, or provisioner-supplied raw
-request fails without mutation. The sudo rule exposes only this job-ID execution
-entry point and cannot invoke the root-only issuer.
+failures without their own audit remain rejected. If a newer successful tenant
+transition commits before that missing failure audit is repaired, the repaired
+entry's original acceptance timestamp preserves the supersession relationship;
+replay does not mistake its later chain position for current tenant authority.
+An older preexisting transition does not suppress source-state validation. A
+nonterminal retry reconciles its phase; a changed binding, state drift, unknown
+job ID, or provisioner-supplied raw request fails without mutation. The sudo
+rule exposes only this job-ID execution entry point and cannot invoke the
+root-only issuer.
 
 Before dispatch, a current authorization job also records the complete bounded
 set of that tenant's retained deployment-record identities. A failed lifecycle

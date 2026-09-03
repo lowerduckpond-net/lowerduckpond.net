@@ -6011,6 +6011,104 @@ def test_executor_repairs_a_result_first_terminal_failure_commit(
     assert audit["resultStatus"] == "failed"
 
 
+@pytest.mark.parametrize(
+    ("transition_timestamp", "superseded"),
+    [
+        ("2026-08-29T12:00:00Z", False),
+        ("2026-08-29T12:00:02Z", True),
+    ],
+)
+def test_executor_preserves_supersession_when_repairing_a_late_failure_audit(
+    tmp_path: Path,
+    transition_timestamp: str,
+    superseded: bool,
+) -> None:
+    root = _state_root(tmp_path)
+    job, intent, later_result = _write_committed_transition_replay(
+        root,
+        operation="rename",
+    )
+    source = _mapping(intent["sourceManifest"])
+    request = _mapping(job["request"])
+    job.update(
+        {
+            "compatibilityVersion": "static-job-v2",
+            "sourceAuthority": {"manifest": source, "archiveRecord": None},
+            "executionValidated": False,
+            "phase": "failed",
+        }
+    )
+    correlation = json.loads(json.dumps(job))
+    correlation["phase"] = "pending"
+    failure: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationResult",
+        "provenance": {"kind": "authorization-job", "jobId": job["jobId"]},
+        "correlationId": request["correlationId"],
+        "operation": "rename",
+        "status": "failed",
+        "errorCode": "state_drift",
+        "failurePublisher": "authorization-executor",
+        "tenantId": _TENANT_ID,
+    }
+    _write(root, StateRecordPath.authorization_job(job["jobId"]), job)
+    _write(
+        root,
+        StateRecordPath.authorization_correlation(request["correlationId"]),
+        correlation,
+    )
+    _write(root, StateRecordPath.authorization_result(job["jobId"]), failure)
+    root.joinpath(*StateRecordPath.transaction_intent(intent["intentId"]).components).unlink()
+
+    later_result = json.loads(json.dumps(later_result))
+    later_provenance = _mapping(later_result["provenance"])
+    later_provenance["jobId"] = "0198d17f-6f4a-7000-8000-000000000007"
+    later_result["correlationId"] = "0198d17f-6f4a-7000-8000-000000000008"
+    later_job = {
+        "acceptedAt": transition_timestamp,
+        "operatorPrincipal": job["operatorPrincipal"],
+    }
+    validator_calls: list[str] = []
+
+    def reject_stale_source(*_arguments: object) -> bool:
+        validator_calls.append("called")
+        return False
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        _append_result_audit(repository, later_job, later_result)
+        executor = AuthorizationExecutor(
+            repository,
+            intake,
+            tenant_runtime_validator=reject_stale_source,
+            tenant_release_validator=reject_stale_source,
+        )
+        if superseded:
+            outcome = executor.execute(job["jobId"])
+            assert outcome.result == failure
+            assert outcome.created is False
+        else:
+            with pytest.raises(
+                ExecutionError,
+                match="did not restore its authorized source",
+            ):
+                executor.execute(job["jobId"])
+        terminal = repository.read(StateRecordPath.authorization_job(job["jobId"])).document
+        snapshot = repository.inspect_audit_correlation(failure["correlationId"])
+
+    assert terminal["phase"] == "failed"
+    assert terminal["executionValidated"] is superseded
+    assert snapshot.entry is not None
+    assert snapshot.entry["sequence"] == 1
+    assert snapshot.previous_tenant_state_transition is not None
+    assert (
+        snapshot.previous_tenant_state_transition["correlationId"] == later_result["correlationId"]
+    )
+    assert validator_calls == []
+
+
 def test_executor_repairs_a_successful_create_with_its_generated_tenant(
     tmp_path: Path,
 ) -> None:
