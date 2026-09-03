@@ -248,15 +248,6 @@ def select_destination(
     destination: pathlib.Path,
     state_root: pathlib.Path,
 ) -> bool:
-    current = install_root / "current"
-    try:
-        selected = current.resolve(strict=True)
-    except FileNotFoundError:
-        selected = None
-    except RuntimeError:
-        selected = None
-    if selected == destination:
-        return False
     selection_lock = open_selection_lock(install_root)
     try:
         fcntl.flock(selection_lock, fcntl.LOCK_EX)

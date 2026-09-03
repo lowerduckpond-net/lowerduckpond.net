@@ -288,6 +288,57 @@ def test_installer_holds_selection_exclusion_across_intent_scan_and_switch(
     assert (install_root / "current").resolve(strict=True) == previous
 
 
+def test_installer_resolves_an_unchanged_selection_while_holding_exclusion(
+    tmp_path: Path,
+) -> None:
+    artifact = tmp_path / "artifact.tar"
+    build = run(BUILDER, artifact)
+    assert build.returncode == 0, build.stderr
+    digest = build.stdout.strip()
+    install_root = tmp_path / "install"
+    install_root.mkdir()
+    selection_lock = create_selection_lock(install_root)
+    destination = install_root / digest
+    state_root = tmp_path / "state"
+    verifier = verifier_for_test(tmp_path)
+    installed = run(INSTALLER, artifact, digest, install_root, verifier, state_root)
+    assert installed.returncode == 0, installed.stderr
+    assert (install_root / "current").resolve(strict=True) == destination
+
+    descriptor = os.open(selection_lock, os.O_RDONLY | os.O_CLOEXEC)
+    fcntl.flock(descriptor, fcntl.LOCK_SH)
+    process = subprocess.Popen(  # noqa: S603 - fixed reviewed test helper path.
+        [
+            os.fspath(INSTALLER),
+            os.fspath(artifact),
+            digest,
+            os.fspath(install_root),
+            os.fspath(verifier),
+            os.fspath(state_root),
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        with pytest.raises(subprocess.TimeoutExpired):
+            process.wait(timeout=0.1)
+        other = install_root / "other"
+        other.mkdir()
+        replacement = install_root / ".current-test"
+        replacement.symlink_to(other, target_is_directory=True)
+        replacement.replace(install_root / "current")
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+    stdout, stderr = process.communicate(timeout=10)
+    assert process.returncode == 0, stderr
+    assert stdout == "changed\n"
+    assert (install_root / "current").resolve(strict=True) == destination
+
+
 def test_preflight_extraction_preserves_reviewed_modes_under_restrictive_umask(
     tmp_path: Path,
 ) -> None:

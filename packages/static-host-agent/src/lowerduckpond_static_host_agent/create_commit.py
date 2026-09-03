@@ -359,6 +359,8 @@ def _require_same_job(
     second.pop("dispatchArtifactReleaseTreeDigest", None)
     first.pop("dispatchDeploymentIds", None)
     second.pop("dispatchDeploymentIds", None)
+    first.pop("dispatchTenantIds", None)
+    second.pop("dispatchTenantIds", None)
     if first != second or current.document["phase"] not in {"claimed", "completed"}:
         raise CreateCommitError("authorization job changed before create finalization")
     return current

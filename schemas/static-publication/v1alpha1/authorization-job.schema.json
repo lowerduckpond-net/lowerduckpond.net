@@ -155,6 +155,21 @@
         }
       ]
     },
+    "dispatchTenantIds": {
+      "oneOf": [
+        {
+          "items": {
+            "$ref": "common.schema.json#/$defs/uuidv7"
+          },
+          "maxItems": 25,
+          "type": "array",
+          "uniqueItems": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "executionValidated": {
       "type": "boolean"
     },

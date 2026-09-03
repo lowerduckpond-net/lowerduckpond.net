@@ -404,6 +404,41 @@ def inspect_portable_bundle(
             os.close(descriptor)
 
 
+def inspect_portable_bundle_descriptor(
+    descriptor: int,
+    *,
+    expected_owner: int,
+    expected_mode: int = _OUTPUT_MODE,
+) -> PortableBundleInspection:
+    """Validate one already safely opened canonical portable bundle."""
+
+    owned_descriptor: int | None = None
+    try:
+        owned_descriptor = os.dup(descriptor)
+        before = _validate_portable_snapshot(
+            os.fstat(owned_descriptor),
+            expected_owner=expected_owner,
+            expected_mode=expected_mode,
+        )
+        source = _zip._DescriptorSource(owned_descriptor, before.st_size)
+        admission = _inspect_portable_source(source, descriptor=owned_descriptor)
+        after = _validate_portable_snapshot(
+            os.fstat(owned_descriptor),
+            expected_owner=expected_owner,
+            expected_mode=expected_mode,
+        )
+        if _zip._metadata_generation(before) != _zip._metadata_generation(after):
+            raise PortableBundleError("portable bundle changed during descriptor inspection")
+        return admission.inspection
+    except _zip.ZipStructureError as error:
+        raise PortableBundleError("portable bundle violates its structural contract") from error
+    except OSError as error:
+        raise PortableBundleError("portable bundle cannot be opened safely") from error
+    finally:
+        if owned_descriptor is not None:
+            os.close(owned_descriptor)
+
+
 def import_portable_bundle(  # noqa: PLR0913,PLR0915 - explicit import trust workflow
     path: Path,
     *,

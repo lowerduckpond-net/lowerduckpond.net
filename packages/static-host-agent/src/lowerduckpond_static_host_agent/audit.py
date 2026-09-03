@@ -114,6 +114,7 @@ class AuditCorrelationSnapshot:
     entry: dict[str, object] | None
     previous_tenant_state_transition: dict[str, object] | None
     has_later_tenant_state_transition: bool
+    later_tenant_inventory_transitions: tuple[tuple[str, str], ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,6 +188,7 @@ def inspect_audit_correlation(  # noqa: PLR0913 - keep every audit boundary expl
         entry,
         previous_tenant_state_transition,
         has_later_tenant_state_transition,
+        later_tenant_inventory_transitions,
     ) = _validate_chain_records(
         segments,
         limits=limits,
@@ -197,6 +199,7 @@ def inspect_audit_correlation(  # noqa: PLR0913 - keep every audit boundary expl
         entry=entry,
         previous_tenant_state_transition=previous_tenant_state_transition,
         has_later_tenant_state_transition=has_later_tenant_state_transition,
+        later_tenant_inventory_transitions=later_tenant_inventory_transitions,
     )
 
 
@@ -381,6 +384,7 @@ def _validate_chain(
         _entry,
         _previous_tenant_state_transition,
         _has_later_tenant_state_transition,
+        _later_tenant_inventory_transitions,
     ) = _validate_chain_records(
         segments,
         limits=limits,
@@ -399,6 +403,7 @@ def _validate_chain_records(  # noqa: PLR0912 - one bounded chain-validation pas
     dict[str, object] | None,
     dict[str, object] | None,
     bool,
+    tuple[tuple[str, str], ...],
 ]:
     sequence = 0
     terminal: dict[str, str] | None = None
@@ -408,6 +413,7 @@ def _validate_chain_records(  # noqa: PLR0912 - one bounded chain-validation pas
     previous_tenant_state_transition: dict[str, object] | None = None
     latest_tenant_state_transitions: dict[str, dict[str, object]] = {}
     has_later_tenant_state_transition = False
+    later_tenant_inventory_transitions: list[tuple[str, str]] = []
     for segment in segments:
         if not segment.data or not segment.data.endswith(b"\n"):
             raise AuditError("audit segment is not nonempty canonical JSON lines")
@@ -450,6 +456,15 @@ def _validate_chain_records(  # noqa: PLR0912 - one bounded chain-validation pas
                 or _is_later_tenant_state_transition(preceding_match, document)
             )
             tenant_id = document["tenantId"]
+            operation = document["operation"]
+            if (
+                preceding_match is not None
+                and type(tenant_id) is str
+                and type(operation) is str
+                and document["resultStatus"] == "succeeded"
+                and operation in {"create", "delete"}
+            ):
+                later_tenant_inventory_transitions.append((operation, tenant_id))
             if (
                 type(tenant_id) is str
                 and document["resultStatus"] == "succeeded"
@@ -471,6 +486,7 @@ def _validate_chain_records(  # noqa: PLR0912 - one bounded chain-validation pas
         matching_entry,
         previous_tenant_state_transition,
         has_later_tenant_state_transition,
+        tuple(later_tenant_inventory_transitions),
     )
 
 

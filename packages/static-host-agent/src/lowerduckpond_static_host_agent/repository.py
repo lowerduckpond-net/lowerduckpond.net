@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import os
 import re
-import stat
 from bisect import bisect_right
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -59,6 +58,10 @@ from lowerduckpond_static_host_agent.locks import (
     LockName,
     LockRequest,
 )
+from lowerduckpond_static_host_agent.portable_bundle import (
+    PortableBundleError,
+    inspect_portable_bundle_descriptor,
+)
 from lowerduckpond_static_host_agent.state_inventory import (
     DEFAULT_INTENT_INVENTORY_LIMITS,
     DEFAULT_STATE_INVENTORY_LIMITS,
@@ -81,7 +84,6 @@ _RECOVERY_CURSOR_COMPONENTS: Final = ("locks", "authorization-recovery.cursor")
 _RECOVERY_CURSOR_MAXIMUM_BYTES: Final = 36
 _DIRECTORY_OPEN_FLAGS: Final = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 _TENANT_CHILD_DIRECTORIES: Final = ("archives", "deployments")
-_EXPORT_CHUNK_BYTES: Final = 64 * 1024
 _MAX_RETAINED_DEPLOYMENT_RECORDS: Final = 3
 
 
@@ -919,8 +921,11 @@ class _StateTransaction:
         self,
         job_id: object,
         binding: dict[str, object],
+        *,
+        source_manifest: dict[str, object],
+        source_release_tree_digest: dict[str, object],
     ) -> None:
-        """Validate one immutable export against its successful result binding."""
+        """Bind one immutable export to its result and authorized source."""
 
         self._require_active()
         canonical_id = validate_uuid7(job_id)
@@ -938,29 +943,30 @@ class _StateTransaction:
         finally:
             exports.close()
         try:
-            before = os.fstat(file_descriptor)
             size = binding["size"]
             digest_binding = binding["digest"]
-            if (
-                not stat.S_ISREG(before.st_mode)
-                or before.st_uid != self._repository._expected_owner
-                or stat.S_IMODE(before.st_mode) != self._repository._expected_record_mode
-                or before.st_nlink != 1
-                or type(size) is not int
-                or before.st_size != size
-                or before.st_size > MAX_EXPORT_BYTES
-                or type(digest_binding) is not dict
-            ):
+            if type(size) is not int or type(digest_binding) is not dict:
                 raise StateRecordError("successful export bundle metadata is unsafe")
-            digest = hashlib.sha256()
-            while chunk := os.read(file_descriptor, _EXPORT_CHUNK_BYTES):
-                digest.update(chunk)
-            after = os.fstat(file_descriptor)
+            try:
+                inspection = inspect_portable_bundle_descriptor(
+                    file_descriptor,
+                    expected_owner=self._repository._expected_owner,
+                    expected_mode=self._repository._expected_record_mode,
+                )
+            except PortableBundleError as error:
+                raise StateRecordError("successful export bundle is not canonical") from error
             if (
-                _file_generation(before) != _file_generation(after)
-                or digest.hexdigest() != digest_binding["value"]
+                inspection.bundle_size != size
+                or inspection.bundle_size > MAX_EXPORT_BYTES
+                or inspection.bundle_digest.to_dict() != digest_binding
+                or inspection.provenance_manifest != source_manifest
+                or inspection.provenance_manifest_digest.to_dict()
+                != manifest_digest(source_manifest).to_dict()
+                or inspection.release_tree_digest.to_dict() != source_release_tree_digest
             ):
-                raise StateRecordError("successful export bundle disagrees with its result")
+                raise StateRecordError(
+                    "successful export bundle disagrees with its result or source authority"
+                )
         finally:
             os.close(file_descriptor)
 
