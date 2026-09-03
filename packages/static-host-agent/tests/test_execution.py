@@ -4479,6 +4479,196 @@ def test_executor_requires_the_authorized_selected_runtime_generation(
     ]
 
 
+@pytest.mark.parametrize("operation", ["rename", "suspend"])
+def test_executor_requires_the_authorized_source_runtime_after_handler_failure(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    root = _state_root(tmp_path)
+    job, intent, result = _write_committed_transition_replay(root, operation=operation)
+    source = _mapping(intent["sourceManifest"])
+    recovery = _mapping(intent["lifecycleRecovery"])
+    source_observed = _mapping(recovery["sourceObservedState"])
+    job["compatibilityVersion"] = "static-job-v2"
+    job["executionValidated"] = False
+    job["sourceAuthority"] = {"manifest": source, "archiveRecord": None}
+    job["phase"] = "failed"
+    result.update(
+        {
+            "status": "failed",
+            "errorCode": "state_drift",
+        }
+    )
+    result.pop("canonicalOrigin")
+    result.pop("manifest")
+    _write(root, StateRecordPath.authorization_job(job["jobId"]), job)
+    correlation = json.loads(json.dumps(job))
+    correlation["phase"] = "pending"
+    _write(
+        root,
+        StateRecordPath.authorization_correlation(result["correlationId"]),
+        correlation,
+    )
+    _write(root, StateRecordPath.authorization_result(job["jobId"]), result)
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), source)
+    _write(root, StateRecordPath.tenant_observed(_TENANT_ID), source_observed)
+    intent_path = StateRecordPath.transaction_intent(intent["intentId"])
+    calls: list[tuple[str, str, str | None, dict[str, object], dict[str, object]]] = []
+
+    def reject_unrestored(
+        tenant_id: str,
+        route_set: str,
+        generation_id: str | None,
+        manifest: dict[str, object],
+        observed_state: dict[str, object] | None,
+    ) -> bool:
+        assert observed_state is not None
+        calls.append((tenant_id, route_set, generation_id, manifest, observed_state))
+        return False
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        _append_result_audit(repository, job, result)
+        handler = _ClearingIntentHandler(repository, intent_paths=(intent_path,))
+        with pytest.raises(ExecutionError, match="restore its authorized routes"):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={operation: handler},
+                tenant_runtime_validator=reject_unrestored,
+            ).execute(job["jobId"])
+
+    assert calls == [
+        (
+            _TENANT_ID,
+            "both",
+            "0198d17f-6f4a-7000-8000-000000000004",
+            source,
+            source_observed,
+        )
+    ]
+
+
+def test_executor_revalidates_source_runtime_after_failure_intent_cleanup(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    job, intent, result = _write_committed_transition_replay(root, operation="rename")
+    source = _mapping(intent["sourceManifest"])
+    recovery = _mapping(intent["lifecycleRecovery"])
+    source_observed = _mapping(recovery["sourceObservedState"])
+    job["compatibilityVersion"] = "static-job-v2"
+    job["executionValidated"] = False
+    job["sourceAuthority"] = {"manifest": source, "archiveRecord": None}
+    job["phase"] = "failed"
+    result.update({"status": "failed", "errorCode": "state_drift"})
+    result.pop("canonicalOrigin")
+    result.pop("manifest")
+    _write(root, StateRecordPath.authorization_job(job["jobId"]), job)
+    correlation = json.loads(json.dumps(job))
+    correlation["phase"] = "pending"
+    _write(
+        root,
+        StateRecordPath.authorization_correlation(result["correlationId"]),
+        correlation,
+    )
+    _write(root, StateRecordPath.authorization_result(job["jobId"]), result)
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), source)
+    _write(root, StateRecordPath.tenant_observed(_TENANT_ID), source_observed)
+    root.joinpath(*StateRecordPath.transaction_intent(intent["intentId"]).components).unlink()
+    calls: list[tuple[str, str, str | None]] = []
+
+    def reject_unrestored(
+        tenant_id: str,
+        route_set: str,
+        generation_id: str | None,
+        _manifest: dict[str, object],
+        _observed_state: dict[str, object] | None,
+    ) -> bool:
+        calls.append((tenant_id, route_set, generation_id))
+        return False
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        _append_result_audit(repository, job, result)
+        with pytest.raises(ExecutionError, match="restore its authorized routes"):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                tenant_runtime_validator=reject_unrestored,
+            ).execute(job["jobId"])
+
+    assert calls == [
+        (
+            _TENANT_ID,
+            "both",
+            source_observed["runtimeGenerationId"],
+        )
+    ]
+
+
+def test_executor_requires_the_create_intent_candidate_runtime(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    calls: list[tuple[str, str, str | None, dict[str, object] | None]] = []
+
+    def reject_unselected(
+        tenant_id: str,
+        route_set: str,
+        generation_id: str | None,
+        _manifest: dict[str, object],
+        observed_state: dict[str, object] | None,
+    ) -> bool:
+        calls.append((tenant_id, route_set, generation_id, observed_state))
+        return False
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued = _issue_create(repository)
+        current = repository.read(StateRecordPath.authorization_job(issued.job_id))
+        claimed = current.document
+        claimed["phase"] = "claimed"
+        repository.compare_and_swap(
+            StateRecordPath.authorization_job(issued.job_id),
+            current.revision,
+            claimed,
+        )
+        request = _mapping(issued.document["request"])
+        intent = _create_intent(request["correlationId"])
+        intent_path = StateRecordPath.transaction_intent(intent["intentId"])
+        repository.create_immutable(intent_path, intent)
+        handler = _CompletingIntentHandler(
+            repository,
+            intent_path=intent_path,
+            delegate=_CompletingCreateHandler(repository, state_root=root),
+        )
+        with pytest.raises(ExecutionError, match="select its authorized routes"):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={"create": handler},
+                tenant_runtime_validator=reject_unselected,
+            ).execute(issued.job_id)
+
+    recovery = _mapping(intent["lifecycleRecovery"])
+    assert calls == [
+        (
+            _TENANT_ID,
+            "absent",
+            "0198d17f-6f4a-7000-8000-000000000006",
+            recovery["candidateObservedState"],
+        )
+    ]
+
+
 @pytest.mark.parametrize("later_operation", ["rename", "reconcile"])
 def test_executor_rechecks_supersession_after_runtime_validation(
     tmp_path: Path,
@@ -4822,6 +5012,7 @@ def test_executor_dispatches_a_claimed_job_with_an_intent_without_source_recheck
             repository,
             intake,
             handlers={"create": handler},
+            tenant_runtime_validator=lambda *_arguments: True,
         ).execute(issued.job_id)
 
     assert outcome.result["status"] == "succeeded"
@@ -5139,6 +5330,7 @@ def test_executor_reacquires_the_bound_artifact_for_lifecycle_replay(
             repository,
             intake,
             handlers={"deploy": handler},
+            tenant_runtime_validator=lambda *_arguments: True,
         ).execute(issued.job_id)
 
     assert outcome.result == result
@@ -5202,6 +5394,11 @@ def test_executor_returns_a_completed_replay_after_losing_the_artifact_race(
         )
         source_observed = _fixture("tenant-observed-state.json")
         source_observed["desiredManifestDigest"] = source_digest
+        _write(
+            root,
+            StateRecordPath.tenant_observed(_TENANT_ID),
+            source_observed,
+        )
         candidate_observed = json.loads(json.dumps(source_observed))
         candidate_observed["desiredManifestDigest"] = candidate_digest
         candidate_observed["activeDeploymentId"] = candidate_deployment["id"]
@@ -5259,6 +5456,7 @@ def test_executor_returns_a_completed_replay_after_losing_the_artifact_race(
             repository,
             intake,  # type: ignore[arg-type]
             handlers={"deploy": handler},
+            tenant_runtime_validator=lambda *_arguments: True,
         ).execute(issued.job_id, blocking=True)
 
         terminal = repository.read(StateRecordPath.authorization_job(issued.job_id)).document
@@ -5650,6 +5848,7 @@ def test_executor_recovers_a_claimed_lifecycle_job_without_its_artifact(
             repository,
             intake,
             handlers={"deploy": handler},
+            tenant_runtime_validator=lambda *_arguments: True,
         ).execute(issued.job_id)
         terminal = repository.read(StateRecordPath.authorization_job(issued.job_id)).document
 

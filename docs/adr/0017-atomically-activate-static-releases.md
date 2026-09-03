@@ -302,7 +302,10 @@ the canonical request and artifact bindings, and compares the
 job's expected lifecycle, manifest, deployment, and archive-record digests with
 current authoritative state before it admits or stages work. It then durably
 claims the pending job. The executor records terminal validation only after the
-complete durable tenant state and selected runtime match the result. A terminal
+complete durable tenant state and selected runtime match a successful result,
+or the intent-authorized source state and runtime have both been restored for a
+failed transition. Create recovery retains the complete candidate generation,
+route-set, and observed-state authority through terminal validation. A terminal
 retry revalidates current durable state and runtime before returning its
 immutable result. Immutable job, result, and audit bindings preserve the
 authority needed after intent cleanup: each current job retains its exact
