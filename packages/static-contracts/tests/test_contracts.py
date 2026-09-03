@@ -514,6 +514,25 @@ def test_unimplemented_handler_returns_a_versioned_failed_result() -> None:
     assert validate_contract(result) is ContractKind.OPERATION_RESULT
 
 
+def test_executor_failure_publisher_is_reserved_for_failed_results() -> None:
+    result = _load_object(FIXTURE_ROOT / "accepted/operation-result.json")
+    result["failurePublisher"] = "authorization-executor"
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(result)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+    del result["canonicalOrigin"]
+    del result["manifest"]
+    result.update(
+        {
+            "status": "failed",
+            "errorCode": "not_implemented",
+        }
+    )
+    assert validate_contract(result) is ContractKind.OPERATION_RESULT
+
+
 def test_existing_tenant_intent_requires_a_source_manifest_digest() -> None:
     intent = _load_object(FIXTURE_ROOT / "accepted/transaction-intent.json")
     intent["sourceManifestDigest"] = None

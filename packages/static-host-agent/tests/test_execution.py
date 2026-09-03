@@ -155,10 +155,12 @@ class _CompletingFailureHandler:
         repository: StateRepository,
         *,
         append_audit: bool = True,
+        claim_executor_publication: bool = False,
         state_root: Path | None = None,
     ) -> None:
         self._repository = repository
         self._append_audit = append_audit
+        self._claim_executor_publication = claim_executor_publication
         self._state_root = state_root
         self.claims: list[LifecycleArtifact | None] = []
 
@@ -186,6 +188,8 @@ class _CompletingFailureHandler:
             "errorCode": "not_implemented",
             "tenantId": None if request["operation"] == "create" else request["tenantId"],
         }
+        if self._claim_executor_publication:
+            candidate["failurePublisher"] = "authorization-executor"
         try:
             result = self._repository.read(
                 StateRecordPath.authorization_result(job_id),
@@ -2184,6 +2188,32 @@ def test_executor_rejects_a_handler_failure_without_durable_audit(
         with pytest.raises(ExecutionError, match="no durable audit authority"):
             executor.execute(issued.job_id)
         with pytest.raises(ExecutionError, match="no durable audit authority"):
+            executor.execute(issued.job_id)
+
+
+def test_executor_rejects_a_handler_claiming_executor_failure_publication(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued = _issue_create(repository)
+        executor = AuthorizationExecutor(
+            repository,
+            intake,
+            handlers={
+                "create": _CompletingFailureHandler(
+                    repository,
+                    claim_executor_publication=True,
+                ),
+            },
+        )
+
+        with pytest.raises(ExecutionError, match="claimed executor failure publication"):
             executor.execute(issued.job_id)
 
 
@@ -5819,7 +5849,7 @@ def test_executor_recovers_a_claimed_lifecycle_job_without_its_artifact(
 
 
 @pytest.mark.parametrize("audit_present", [False, True])
-def test_executor_handles_a_result_first_terminal_failure_commit(
+def test_executor_repairs_a_result_first_terminal_failure_commit(
     tmp_path: Path,
     audit_present: bool,
 ) -> None:
@@ -5837,6 +5867,7 @@ def test_executor_handles_a_result_first_terminal_failure_commit(
             "operation": "create",
             "status": "failed",
             "errorCode": "not_implemented",
+            "failurePublisher": "authorization-executor",
             "tenantId": None,
         }
         repository.create_immutable(StateRecordPath.authorization_result(issued.job_id), result)
@@ -5848,17 +5879,6 @@ def test_executor_handles_a_result_first_terminal_failure_commit(
         ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
     ):
         executor = AuthorizationExecutor(repository, intake)
-        if not audit_present:
-            with pytest.raises(ExecutionError, match="no durable audit authority"):
-                executor.execute(issued.job_id)
-            pending = repository.read(StateRecordPath.authorization_job(issued.job_id)).document
-            assert pending["phase"] == "pending"
-            assert pending["executionValidated"] is False
-            assert (
-                repository.read(StateRecordPath.authorization_result(issued.job_id)).document
-                == result
-            )
-            return
         outcome = executor.execute(issued.job_id)
         terminal = repository.read(StateRecordPath.authorization_job(issued.job_id)).document
         audit = repository.inspect_audit_correlation(result["correlationId"]).entry

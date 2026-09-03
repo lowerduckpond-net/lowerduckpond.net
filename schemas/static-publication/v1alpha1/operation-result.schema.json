@@ -6,6 +6,34 @@
     {
       "if": {
         "required": [
+          "failurePublisher"
+        ]
+      },
+      "then": {
+        "properties": {
+          "provenance": {
+            "properties": {
+              "kind": {
+                "const": "authorization-job"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "status": {
+            "const": "failed"
+          }
+        },
+        "required": [
+          "provenance",
+          "status"
+        ]
+      }
+    },
+    {
+      "if": {
+        "required": [
           "archiveRecord"
         ]
       },
@@ -480,6 +508,9 @@
     },
     "exportBundle": {
       "$ref": "#/$defs/exportBundle"
+    },
+    "failurePublisher": {
+      "const": "authorization-executor"
     },
     "kind": {
       "const": "OperationResult"
