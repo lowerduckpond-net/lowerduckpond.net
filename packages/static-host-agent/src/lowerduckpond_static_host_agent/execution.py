@@ -13,10 +13,12 @@ from lowerduckpond_static_contracts import (
     canonical_json_bytes,
     manifest_digest,
     request_digest,
+    result_digest,
     validate_contract,
     validate_uuid7,
 )
 
+from lowerduckpond_static_host_agent.audit import AuditCorrelationSnapshot
 from lowerduckpond_static_host_agent.capacity import (
     DEFAULT_HOST_CAPACITY_LIMITS,
     CapacityReservation,
@@ -89,6 +91,11 @@ class ExecutionTransaction(Protocol):
     def measure_intent_records(self) -> IntentRecordInventory: ...
 
     def read_intent(self, intent_id: object) -> tuple[StateRecordPath, StoredContract]: ...
+
+    def inspect_audit_correlation(
+        self,
+        correlation_id: object,
+    ) -> AuditCorrelationSnapshot: ...
 
     def allocation_upper_bound(self, byte_count: int) -> int: ...
 
@@ -264,7 +271,11 @@ class AuthorizationExecutor:
             )
             _require_available_lifecycle_handler(dispatch, handler)
             if not dispatch:
-                _validate_successful_result_state(transaction, durable.document)
+                _validate_successful_result_audit(
+                    transaction,
+                    current.document,
+                    durable.document,
+                )
                 result = _repair_terminal_phase_transaction(transaction, current, durable)
         if not dispatch:
             if result is None:  # pragma: no cover - direct replay assigns the result
@@ -339,6 +350,11 @@ class AuthorizationExecutor:
                 result=durable.document,
             ):
                 return None
+            _validate_successful_result_audit(
+                transaction,
+                current.document,
+                durable.document,
+            )
             result = _repair_terminal_phase_transaction(transaction, current, durable)
             return ExecutionOutcome(result, False)
 
@@ -389,7 +405,11 @@ class AuthorizationExecutor:
                 )
                 _require_available_lifecycle_handler(has_lifecycle_intent, handler)
                 if not has_lifecycle_intent:
-                    _validate_successful_result_state(transaction, existing.document)
+                    _validate_successful_result_audit(
+                        transaction,
+                        current.document,
+                        existing.document,
+                    )
                     result = _repair_terminal_phase_transaction(transaction, current, existing)
                     return ExecutionOutcome(result, False)
             else:
@@ -463,7 +483,9 @@ class AuthorizationExecutor:
                 result=stored.document,
             ):
                 raise ExecutionError("lifecycle handler returned before clearing its intent")
+            _require_current_success_result_shape(result)
             _validate_successful_result_state(transaction, result)
+            _validate_successful_result_audit(transaction, current.document, result)
             expected_phase = "completed" if result["status"] == "succeeded" else "failed"
             if current.document["phase"] != expected_phase:
                 raise ExecutionError("lifecycle handler returned before terminal job commit")
@@ -687,7 +709,7 @@ def validate_result_lifecycle_authority(
     _validate_result_binding(job, result)
     has_lifecycle_intent = _has_bound_lifecycle_intent(transaction, job, result=result)
     if not has_lifecycle_intent:
-        _validate_successful_result_state(transaction, result)
+        _validate_successful_result_audit(transaction, job, result)
     return has_lifecycle_intent
 
 
@@ -736,6 +758,15 @@ def _validate_archive_intent_relationships(intents: list[dict[str, object]]) -> 
         (intent for intent in intents if intent["kind"] == "ArchiveConstructionIntent"),
         None,
     )
+    retirement_intent = next(
+        (intent for intent in intents if intent["kind"] == "ArchiveRetirementIntent"),
+        None,
+    )
+    if transaction_intent is not None and retirement_intent is not None:
+        _validate_retirement_transaction_relationship(
+            transaction_intent,
+            retirement_intent,
+        )
     if transaction_intent is None or construction_intent is None:
         return
     recovery = transaction_intent["archiveRecovery"]
@@ -756,6 +787,52 @@ def _validate_archive_intent_relationships(intents: list[dict[str, object]]) -> 
         or construction_intent["versionId"] != archive["versionId"]
     ):
         raise ExecutionError("archive lifecycle intents disagree on candidate authority")
+
+
+def _validate_retirement_transaction_relationship(
+    transaction_intent: dict[str, object],
+    retirement_intent: dict[str, object],
+) -> None:
+    if (
+        transaction_intent["operation"] != retirement_intent["transition"]
+        or transaction_intent["tenantId"] != retirement_intent["tenantId"]
+        or transaction_intent["sourceManifestDigest"] != retirement_intent["sourceManifestDigest"]
+    ):
+        raise ExecutionError("archive retirement and transaction authority disagree")
+    if transaction_intent["operation"] != "restore":
+        return
+
+    source = transaction_intent["sourceManifest"]
+    candidate = transaction_intent["candidateManifest"]
+    recovery = transaction_intent["lifecycleRecovery"]
+    archive = retirement_intent["archiveRecord"]
+    if not all(type(value) is dict for value in (source, candidate, recovery, archive)):
+        raise ExecutionError("restore lifecycle authority is malformed")
+    source = cast(dict[str, object], source)
+    candidate = cast(dict[str, object], candidate)
+    recovery = cast(dict[str, object], recovery)
+    archive = cast(dict[str, object], archive)
+    source_spec = source["spec"]
+    candidate_spec = candidate["spec"]
+    candidate_observed = recovery["candidateObservedState"]
+    bundle_digest = archive["bundleDigest"]
+    if not all(
+        type(value) is dict
+        for value in (source_spec, candidate_spec, candidate_observed, bundle_digest)
+    ):
+        raise ExecutionError("restore deployment authority is malformed")
+    source_deployment = cast(dict[str, object], source_spec)["desiredDeployment"]
+    candidate_deployment = cast(dict[str, object], candidate_spec)["desiredDeployment"]
+    if type(source_deployment) is not dict or type(candidate_deployment) is not dict:
+        raise ExecutionError("restore deployment selection is malformed")
+    if (
+        source_deployment["id"] != archive["deploymentId"]
+        or candidate_deployment["id"] == archive["deploymentId"]
+        or candidate_deployment["archiveSha256"] != cast(dict[str, object], bundle_digest)["value"]
+        or cast(dict[str, object], candidate_observed)["activeDeploymentId"]
+        != candidate_deployment["id"]
+    ):
+        raise ExecutionError("restore candidate disagrees with archive retirement authority")
 
 
 def _require_available_lifecycle_handler(
@@ -784,7 +861,9 @@ def _validate_result_intent_binding(
     intent = matching[0]
     manifest = result.get("manifest")
     if manifest is None:
-        return
+        if request["operation"] == "delete":
+            return
+        raise ExecutionError("successful lifecycle result has no exact manifest")
     if type(manifest) is not dict:
         raise ExecutionError("successful lifecycle result manifest is malformed")
     candidate_digest = manifest_digest(manifest).to_dict()
@@ -841,6 +920,37 @@ def _validate_successful_result_state(
         raise ExecutionError(
             "successful lifecycle result disagrees with authoritative tenant state"
         )
+
+
+def _validate_successful_result_audit(
+    transaction: ExecutionTransaction,
+    job: dict[str, object],
+    result: dict[str, object],
+) -> None:
+    if result["status"] != "succeeded":
+        return
+    snapshot = transaction.inspect_audit_correlation(result["correlationId"])
+    entry = snapshot.entry
+    if entry is None:
+        raise ExecutionError("successful lifecycle result has no durable audit authority")
+    if (
+        entry["operatorPrincipal"] != job["operatorPrincipal"]
+        or entry["operation"] != result["operation"]
+        or entry["tenantId"] != result["tenantId"]
+        or entry["correlationId"] != result["correlationId"]
+        or entry["resultDigest"] != result_digest(result).to_dict()
+        or entry["resultStatus"] != "succeeded"
+    ):
+        raise ExecutionError("successful lifecycle result disagrees with durable audit authority")
+
+
+def _require_current_success_result_shape(result: dict[str, object]) -> None:
+    if (
+        result["status"] == "succeeded"
+        and result["operation"] != "delete"
+        and type(result.get("manifest")) is not dict
+    ):
+        raise ExecutionError("new successful lifecycle result has no exact manifest")
 
 
 def _validate_candidate_request_binding(

@@ -4,6 +4,7 @@ import json
 import shlex
 from pathlib import Path
 
+from lowerduckpond_static_contracts import result_digest
 from testinfra.host import Host
 
 BACKUP_ENVIRONMENT_MODE = 0o600
@@ -165,9 +166,25 @@ def seed_static_authorization(host: Host, selected_root: str) -> str:
     result = json.loads(
         (STATIC_ACCEPTED_FIXTURES / "operation-result.json").read_text(encoding="utf-8")
     )
+    audit = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "AuditEntry",
+        "sequence": 0,
+        "previousEntryDigest": None,
+        "timestamp": job["acceptedAt"],
+        "operatorPrincipal": job["operatorPrincipal"],
+        "operation": result["operation"],
+        "tenantId": result["tenantId"],
+        "correlationId": result["correlationId"],
+        "resultDigest": result_digest(result).to_dict(),
+        "resultStatus": result["status"],
+    }
     job_id = job["jobId"]
     correlation_id = job["request"]["correlationId"]
-    documents = json.dumps({"job": job, "result": result}, separators=(",", ":"))
+    documents = json.dumps(
+        {"job": job, "result": result, "audit": audit},
+        separators=(",", ":"),
+    )
 
     seed = host.run(
         "/usr/bin/python3 -I -B -c %s",
@@ -184,6 +201,7 @@ def seed_static_authorization(host: Host, selected_root: str) -> str:
         f"StateRecordPath.authorization_job({job_id!r}), job); "
         "repository.create_immutable("
         f"StateRecordPath.authorization_result({job_id!r}), documents['result']); "
+        "repository.append_audit(documents['audit']); "
         "repository.close()",
     )
     assert seed.rc == 0, seed.stderr
