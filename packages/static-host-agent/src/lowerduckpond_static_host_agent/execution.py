@@ -717,7 +717,39 @@ def _bound_lifecycle_intents(
             raise ExecutionError("authorization job repeats one lifecycle intent kind")
         matching_kinds.add(kind)
         matching_intents.append(intent.document)
+    _validate_archive_intent_relationships(matching_intents)
     return request, matching_intents
+
+
+def _validate_archive_intent_relationships(intents: list[dict[str, object]]) -> None:
+    transaction_intent = next(
+        (intent for intent in intents if intent["kind"] == "TransactionIntent"),
+        None,
+    )
+    construction_intent = next(
+        (intent for intent in intents if intent["kind"] == "ArchiveConstructionIntent"),
+        None,
+    )
+    if transaction_intent is None or construction_intent is None:
+        return
+    recovery = transaction_intent["archiveRecovery"]
+    if type(recovery) is not dict:
+        raise ExecutionError("archive transaction has no construction recovery authority")
+    archive = recovery["candidateArchiveRecord"]
+    if type(archive) is not dict:  # pragma: no cover - contract validation proves this
+        raise ExecutionError("archive transaction candidate record is malformed")
+    if (
+        construction_intent["candidateManifestDigest"]
+        != transaction_intent["candidateManifestDigest"]
+        or construction_intent["candidateManifestDigest"] != archive["manifestDigest"]
+        or construction_intent["releaseTreeDigest"] != archive["releaseTreeDigest"]
+        or construction_intent["bundleDigest"] != archive["bundleDigest"]
+        or construction_intent["bundleSize"] != archive["bundleSize"]
+        or construction_intent["bucket"] != archive["bucket"]
+        or construction_intent["key"] != archive["key"]
+        or construction_intent["versionId"] != archive["versionId"]
+    ):
+        raise ExecutionError("archive lifecycle intents disagree on candidate authority")
 
 
 def _require_available_lifecycle_handler(

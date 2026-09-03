@@ -426,6 +426,65 @@ def _create_intent(correlation_id: object) -> dict[str, object]:
     return intent
 
 
+def _archive_transaction_intent(
+    construction: dict[str, object],
+) -> dict[str, object]:
+    intent = _fixture("transaction-intent.json")
+    source = _fixture("site.json")
+    candidate = json.loads(json.dumps(source))
+    source_spec = source["spec"]
+    candidate_spec = candidate["spec"]
+    assert type(source_spec) is dict
+    assert type(candidate_spec) is dict
+    source_deployment = source_spec["desiredDeployment"]
+    assert type(source_deployment) is dict
+    candidate_spec["desiredState"] = "archived"
+    source_digest = manifest_digest(source).to_dict()
+    candidate_digest = manifest_digest(candidate).to_dict()
+    construction["sourceManifestDigest"] = source_digest
+    construction["candidateManifestDigest"] = candidate_digest
+    observed = _fixture("tenant-observed-state.json")
+    observed["desiredManifestDigest"] = source_digest
+    archive = _fixture("archive-record.json")
+    archive.update(
+        {
+            "tenantId": construction["tenantId"],
+            "deploymentId": source_deployment["id"],
+            "releaseTreeDigest": construction["releaseTreeDigest"],
+            "manifestDigest": candidate_digest,
+            "bundleDigest": construction["bundleDigest"],
+            "bundleSize": construction["bundleSize"],
+            "bucket": construction["bucket"],
+            "key": construction["key"],
+            "versionId": construction["versionId"],
+            "correlationId": construction["correlationId"],
+        }
+    )
+    intent.update(
+        {
+            "operation": "archive",
+            "tenantId": construction["tenantId"],
+            "correlationId": construction["correlationId"],
+            "sourceManifest": source,
+            "sourceManifestDigest": source_digest,
+            "candidateManifest": candidate,
+            "candidateManifestDigest": candidate_digest,
+            "archiveRecovery": {
+                "sourceManifest": source,
+                "sourceObservedState": observed,
+                "sourceRuntimeGenerationId": observed["runtimeGenerationId"],
+                "sourceRouteSet": "both",
+                "candidateManifest": candidate,
+                "candidateArchiveRecord": archive,
+                "candidateRuntimeGenerationId": ("0198d17f-6f4a-7000-8000-000000000006"),
+                "candidateRouteSet": "absent",
+            },
+            "lifecycleRecovery": None,
+        }
+    )
+    return intent
+
+
 def test_executor_publishes_one_immutable_mutation_free_terminal_result(
     tmp_path: Path,
 ) -> None:
@@ -1531,6 +1590,73 @@ def test_executor_binds_a_successful_archive_result_to_its_construction_intent(
     ):
         handler = _CompletingCreateHandler(repository)
         with pytest.raises(RuntimeError, match="construction intent"):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={"archive": handler},
+            ).execute(job["jobId"])
+
+    assert handler.phases == []
+
+
+def test_executor_rejects_disagreeing_archive_intents_before_handler_dispatch(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    job = _fixture("authorization-job.json")
+    construction = _fixture("archive-construction-intent.json")
+    transaction_intent = _archive_transaction_intent(construction)
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "archive",
+        "correlationId": construction["correlationId"],
+        "tenantId": construction["tenantId"],
+    }
+    job["request"] = request
+    job["requestDigest"] = request_digest(request).to_dict()
+    job["phase"] = "claimed"
+    expected = job["expectedSource"]
+    assert type(expected) is dict
+    expected.update(
+        {
+            "expectsTenantAbsent": False,
+            "lifecycle": "active",
+            "manifestDigest": transaction_intent["sourceManifestDigest"],
+            "deploymentDigest": construction["deploymentRecordDigest"],
+            "archiveRecordDigest": None,
+        }
+    )
+    correlation = json.loads(json.dumps(job))
+    correlation["phase"] = "pending"
+    construction["bundleDigest"] = {
+        "format": "lowerduckpond-archive-v1",
+        "algorithm": "sha256",
+        "value": "f" * 64,
+    }
+    _write(root, StateRecordPath.authorization_job(job["jobId"]), job)
+    _write(
+        root,
+        StateRecordPath.authorization_correlation(request["correlationId"]),
+        correlation,
+    )
+    _write(
+        root,
+        StateRecordPath.transaction_intent(transaction_intent["intentId"]),
+        transaction_intent,
+    )
+    _write(
+        root,
+        StateRecordPath.archive_construction_intent(construction["intentId"]),
+        construction,
+    )
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        handler = _CompletingCreateHandler(repository)
+        with pytest.raises(ExecutionError, match="disagree on candidate authority"):
             AuthorizationExecutor(
                 repository,
                 intake,
