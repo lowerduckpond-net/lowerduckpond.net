@@ -24,6 +24,7 @@ from lowerduckpond_static_host_agent import (
     AuthorizationExecutor,
     AuthorizationIssuer,
     CapacityProjection,
+    CapacityReservation,
     ExecutionError,
     ExecutionOutcome,
     FilesystemCapacity,
@@ -42,6 +43,7 @@ _FIXTURE_ROOT = Path(__file__).parents[3] / "tests/static-publication/fixtures/a
 _NOW = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
 _TENANT_ID = "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100"
 _DEPLOYMENT_ID = "0191e2ca-49f2-7608-8cf3-f80ab2cab151"
+_RESULT_AND_AUDIT_INODES = 2
 
 
 class _OpenGate:
@@ -198,6 +200,52 @@ class _CompletingFailureHandler:
             blocking=blocking,
         )
         return ExecutionOutcome(result, True)
+
+
+class _SupersedingCreateHandler:
+    """Model a later audited lifecycle commit before executor validation."""
+
+    def __init__(self, repository: StateRepository, root: Path) -> None:
+        self._repository = repository
+        self._root = root
+
+    def execute(
+        self,
+        job_id: str,
+        *,
+        claim: ArtifactClaim | None,
+        blocking: bool,
+    ) -> ExecutionOutcome:
+        outcome = _CompletingCreateHandler(
+            self._repository,
+            state_root=self._root,
+        ).execute(job_id, claim=claim, blocking=blocking)
+        later = json.loads(json.dumps(outcome.result))
+        later_provenance = later["provenance"]
+        later_manifest = later["manifest"]
+        assert type(later_provenance) is dict
+        assert type(later_manifest) is dict
+        later_metadata = later_manifest["metadata"]
+        assert type(later_metadata) is dict
+        later_provenance["jobId"] = "0198d17f-6f4a-7000-8000-000000000007"
+        later["correlationId"] = "0198d17f-6f4a-7000-8000-000000000008"
+        later["operation"] = "rename"
+        later_metadata["slug"] = "later-authorized-operation"
+        _write(
+            self._root,
+            StateRecordPath.tenant_desired(later["tenantId"]),
+            later_manifest,
+        )
+        job = self._repository.read(StateRecordPath.authorization_job(job_id)).document
+        _append_result_audit(
+            self._repository,
+            {
+                "acceptedAt": job["acceptedAt"],
+                "operatorPrincipal": job["operatorPrincipal"],
+            },
+            later,
+        )
+        return outcome
 
 
 class _CompletingDeleteHandler:
@@ -637,6 +685,24 @@ def _archive_transaction_intent(
     return intent
 
 
+def _write_archive_source_authority(
+    root: Path,
+    construction: dict[str, object],
+) -> dict[str, object]:
+    source = _fixture("site.json")
+    deployment = _fixture("deployment-record.json")
+    construction["sourceManifestDigest"] = manifest_digest(source).to_dict()
+    construction["deploymentRecordDigest"] = deployment_record_digest(deployment).to_dict()
+    construction["releaseTreeDigest"] = deployment["releaseTreeDigest"]
+    _write(root, StateRecordPath.tenant_desired(construction["tenantId"]), source)
+    _write(
+        root,
+        StateRecordPath.tenant_deployment(construction["tenantId"], deployment["id"]),
+        deployment,
+    )
+    return source
+
+
 def _restore_intents() -> tuple[dict[str, object], dict[str, object]]:
     retirement = _fixture("archive-retirement-intent.json")
     retirement["transition"] = "restore"
@@ -737,6 +803,46 @@ def test_executor_publishes_one_immutable_mutation_free_terminal_result(
     assert second.result == first.result == stored
     assert job["phase"] == "failed"
     assert list((root / "tenants").iterdir()) == before_tenants
+
+
+def test_executor_reserves_result_and_worst_case_failure_audit_capacity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    reservations: list[CapacityReservation] = []
+
+    def capture_capacity(
+        _usage: object,
+        reservation: CapacityReservation,
+        _filesystem: object,
+        **_kwargs: object,
+    ) -> CapacityProjection:
+        reservations.append(reservation)
+        return CapacityProjection(
+            projected_allocated_bytes=0,
+            projected_unique_inodes=0,
+            remaining_available_bytes=1,
+            remaining_available_inodes=1,
+            required_available_bytes=0,
+            required_available_inodes=0,
+        )
+
+    monkeypatch.setattr(
+        "lowerduckpond_static_host_agent.execution.admit_release_capacity",
+        capture_capacity,
+    )
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued = _issue_create(repository)
+        AuthorizationExecutor(repository, intake).execute(issued.job_id)
+
+    assert len(reservations) == 1
+    assert reservations[0].allocated_bytes > 8 * 1024 * 1024
+    assert reservations[0].unique_inodes == _RESULT_AND_AUDIT_INODES
 
 
 def test_executor_preserves_a_claimed_job_when_its_handler_is_unavailable(
@@ -1123,6 +1229,30 @@ def test_executor_rejects_a_handler_failure_that_retains_candidate_state(
         retained = repository.read(StateRecordPath.tenant_desired(_TENANT_ID)).document
 
     assert retained == _fixture("site.json")
+
+
+def test_executor_accepts_a_handler_result_superseded_by_a_later_audited_commit(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued = _issue_create(repository)
+        outcome = AuthorizationExecutor(
+            repository,
+            intake,
+            handlers={"create": _SupersedingCreateHandler(repository, root)},
+        ).execute(issued.job_id)
+        current = repository.read(
+            StateRecordPath.tenant_desired(outcome.result["tenantId"])
+        ).document
+
+    assert outcome.result["status"] == "succeeded"
+    assert current != outcome.result["manifest"]
 
 
 def test_executor_decodes_but_never_mutates_for_a_legacy_delete_job(
@@ -2027,6 +2157,8 @@ def test_executor_recognizes_archive_intent_paths_for_handler_replay(
     root = _state_root(tmp_path)
     job = _fixture("authorization-job.json")
     intent = _fixture(intent_fixture)
+    if intent_fixture == "archive-construction-intent.json":
+        _write_archive_source_authority(root, intent)
     request: dict[str, object] = {
         "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
         "kind": "OperationRequest",
@@ -2119,6 +2251,7 @@ def test_executor_binds_a_successful_archive_result_to_its_construction_intent(
     root = _state_root(tmp_path)
     job = _fixture("authorization-job.json")
     intent = _fixture("archive-construction-intent.json")
+    _write_archive_source_authority(root, intent)
     request: dict[str, object] = {
         "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
         "kind": "OperationRequest",
@@ -2194,6 +2327,7 @@ def test_executor_rejects_disagreeing_archive_intents_before_handler_dispatch(
     root = _state_root(tmp_path)
     job = _fixture("authorization-job.json")
     construction = _fixture("archive-construction-intent.json")
+    _write_archive_source_authority(root, construction)
     transaction_intent = _archive_transaction_intent(construction)
     request: dict[str, object] = {
         "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
@@ -3149,6 +3283,7 @@ def test_executor_returns_artifact_failure_published_by_concurrent_retry(
                 job_id,
                 initial,
                 error_code="invalid_artifact",
+                handler=handler,
                 blocking=blocking,
             )
             assert published.created is True

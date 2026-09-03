@@ -10,7 +10,9 @@ from typing import Final, Protocol, cast
 
 from lowerduckpond_static_contracts import (
     ContractKind,
+    audit_entry_digest,
     canonical_json_bytes,
+    deployment_record_digest,
     manifest_digest,
     request_digest,
     result_digest,
@@ -18,7 +20,11 @@ from lowerduckpond_static_contracts import (
     validate_uuid7,
 )
 
-from lowerduckpond_static_host_agent.audit import AuditCorrelationSnapshot, AuditError
+from lowerduckpond_static_host_agent.audit import (
+    DEFAULT_AUDIT_LIMITS,
+    AuditCorrelationSnapshot,
+    AuditError,
+)
 from lowerduckpond_static_host_agent.capacity import (
     DEFAULT_HOST_CAPACITY_LIMITS,
     CapacityReservation,
@@ -187,6 +193,7 @@ class AuthorizationExecutor:
                     canonical_id,
                     initial,
                     error_code="invalid_artifact",
+                    handler=handler,
                     blocking=blocking,
                 )
             except IntakeError as error:
@@ -478,12 +485,17 @@ class AuthorizationExecutor:
             ):
                 raise ExecutionError("lifecycle handler returned before clearing its intent")
             _require_current_success_result_shape(result)
-            _validate_handler_result_state(transaction, current.document, result)
-            _validate_result_audit(
+            audit_is_terminal = _validate_result_audit(
                 transaction,
                 current.document,
                 result,
                 require_failure=True,
+            )
+            _validate_handler_result_state(
+                transaction,
+                current.document,
+                result,
+                audit_is_terminal=audit_is_terminal,
             )
             expected_phase = "completed" if result["status"] == "succeeded" else "failed"
             if current.document["phase"] != expected_phase:
@@ -505,8 +517,10 @@ class AuthorizationExecutor:
         initial: StoredContract,
         *,
         error_code: str,
+        handler: LifecycleJobHandler | None,
         blocking: bool,
     ) -> ExecutionOutcome:
+        existing: StoredContract | None = None
         with self._repository.transaction(
             mode=LockMode.EXCLUSIVE,
             blocking=blocking,
@@ -514,18 +528,19 @@ class AuthorizationExecutor:
             current = transaction.read(StateRecordPath.authorization_job(job_id))
             _require_same_authority(initial.document, current.document)
             existing = _read_result_transaction(transaction, job_id)
-            if existing is not None:
-                _validate_result_binding(current.document, existing.document)
-                _validate_result_audit(transaction, current.document, existing.document)
-                return ExecutionOutcome(
-                    _repair_terminal_phase_transaction(transaction, current, existing),
-                    False,
-                )
-            if current.document["phase"] != "pending":
-                raise ExecutionError("artifact failure publication lost pending job authority")
-            result = _failure_result(current.document, error_code)
-            _publish_result(transaction, current, result, limits=self._capacity_limits)
-            return ExecutionOutcome(result, True)
+            if existing is None:
+                if current.document["phase"] != "pending":
+                    raise ExecutionError("artifact failure publication lost pending job authority")
+                result = _failure_result(current.document, error_code)
+                _publish_result(transaction, current, result, limits=self._capacity_limits)
+                return ExecutionOutcome(result, True)
+        return self._replay_existing_result(
+            job_id,
+            initial,
+            existing,
+            handler=handler,
+            blocking=blocking,
+        )
 
     def _read_result(self, job_id: str, *, blocking: bool) -> StoredContract | None:
         try:
@@ -669,6 +684,14 @@ def _publish_result(
         raise ExecutionError("direct result publication is limited to failures")
     canonical = canonical_json_bytes(result)
     allocation = transaction.allocation_upper_bound(len(canonical))
+    audit_snapshot = _failure_audit_snapshot(transaction, result)
+    audit_allocation = 0
+    audit_inodes = 0
+    if audit_snapshot.entry is None:
+        audit_allocation = transaction.allocation_upper_bound(
+            DEFAULT_AUDIT_LIMITS.maximum_segment_bytes
+        ) + transaction.namespace_allocation_upper_bound(1)
+        audit_inodes = 1
     reservation = StateInventoryReservation(
         authorization_records=1,
         authorization_allocated_bytes=allocation,
@@ -677,13 +700,20 @@ def _publish_result(
     admit_release_capacity(
         ReleaseCapacityUsage(()),
         CapacityReservation(
-            allocated_bytes=(allocation + transaction.namespace_allocation_upper_bound(1)),
-            unique_inodes=1,
+            allocated_bytes=(
+                allocation + transaction.namespace_allocation_upper_bound(1) + audit_allocation
+            ),
+            unique_inodes=1 + audit_inodes,
         ),
         transaction.measure_filesystem_capacity(),
         limits=limits,
     )
-    _ensure_failure_audit(transaction, job.document, result)
+    _ensure_failure_audit(
+        transaction,
+        job.document,
+        result,
+        snapshot=audit_snapshot,
+    )
     transaction.create_immutable(
         StateRecordPath.authorization_result(job.document["jobId"]),
         result,
@@ -912,7 +942,13 @@ def _validate_handler_result_state(
     transaction: ExecutionTransaction,
     job: dict[str, object],
     result: dict[str, object],
+    *,
+    audit_is_terminal: bool,
 ) -> None:
+    if not audit_is_terminal:
+        # A later fully audited lifecycle operation may legitimately supersede
+        # this result before the executor reacquires serialization.
+        return
     if result["status"] == "failed":
         if job["compatibilityVersion"] == "static-job-v1":
             return
@@ -948,13 +984,13 @@ def _validate_result_audit(
     result: dict[str, object],
     *,
     require_failure: bool = False,
-) -> None:
+) -> bool:
     if (
         result["status"] == "failed"
         and not require_failure
         and job["compatibilityVersion"] == "static-job-v1"
     ):
-        return
+        return False
     try:
         snapshot = transaction.inspect_audit_correlation(result["correlationId"])
     except AuditError as error:
@@ -973,19 +1009,30 @@ def _validate_result_audit(
         raise ExecutionError("lifecycle result disagrees with durable audit authority")
     if result["operation"] == "delete" and result["status"] == "succeeded":
         _validate_delete_audit_evidence(job, entry)
+    return snapshot.state.terminal_digest == audit_entry_digest(entry).to_dict()
+
+
+def _failure_audit_snapshot(
+    transaction: ExecutionTransaction,
+    result: dict[str, object],
+) -> AuditCorrelationSnapshot:
+    try:
+        return transaction.inspect_audit_correlation(result["correlationId"])
+    except AuditError as error:
+        raise ExecutionError("failure audit authority is invalid") from error
 
 
 def _ensure_failure_audit(
     transaction: ExecutionTransaction,
     job: dict[str, object],
     result: dict[str, object],
+    *,
+    snapshot: AuditCorrelationSnapshot | None = None,
 ) -> None:
     """Idempotently bind an executor-produced terminal failure to the audit chain."""
 
-    try:
-        snapshot = transaction.inspect_audit_correlation(result["correlationId"])
-    except AuditError as error:
-        raise ExecutionError("failure audit authority is invalid") from error
+    if snapshot is None:
+        snapshot = _failure_audit_snapshot(transaction, result)
     if snapshot.entry is not None:
         _validate_result_audit(transaction, job, result, require_failure=True)
         return
@@ -1129,7 +1176,7 @@ def _intent_binds_job(
     if kind == "TransactionIntent":
         return _transaction_intent_binds_job(transaction, intent, job, request)
     if kind == "ArchiveConstructionIntent":
-        return _archive_construction_intent_binds_job(intent, job, request)
+        return _archive_construction_intent_binds_job(transaction, intent, job, request)
     if kind == "ArchiveRetirementIntent":
         return _archive_retirement_intent_binds_job(intent, job, request)
     raise ExecutionError("lifecycle intent kind is not recognized")
@@ -1161,6 +1208,7 @@ def _transaction_intent_binds_job(
 
 
 def _archive_construction_intent_binds_job(
+    transaction: ExecutionTransaction,
     intent: dict[str, object],
     job: dict[str, object],
     request: dict[str, object],
@@ -1183,6 +1231,27 @@ def _archive_construction_intent_binds_job(
         or intent["deploymentRecordDigest"] != expected["deploymentDigest"]
     ):
         raise ExecutionError("archive construction authority does not match its job")
+    try:
+        desired = transaction.read(StateRecordPath.tenant_desired(request["tenantId"])).document
+        spec = desired["spec"]
+        if type(spec) is not dict:
+            raise ExecutionError("archive source manifest spec is malformed")
+        deployment_reference = spec["desiredDeployment"]
+        if type(deployment_reference) is not dict:
+            raise ExecutionError("archive source deployment reference is malformed")
+        deployment = transaction.read(
+            StateRecordPath.tenant_deployment(
+                request["tenantId"],
+                deployment_reference["id"],
+            )
+        ).document
+    except FileNotFoundError as error:
+        raise ExecutionError("archive source deployment authority is unavailable") from error
+    if (
+        deployment_record_digest(deployment).to_dict() != intent["deploymentRecordDigest"]
+        or deployment["releaseTreeDigest"] != intent["releaseTreeDigest"]
+    ):
+        raise ExecutionError("archive construction release tree is not source-authorized")
     return True
 
 
