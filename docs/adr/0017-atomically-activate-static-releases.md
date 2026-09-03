@@ -315,8 +315,16 @@ captures the validated post-handler desired and observed state before releasing
 tenant-state serialization and requires the complete selected runtime to match
 it. This applies to active transitions and state-preserving export alike; the
 absence of a pre-handler intent never exempts a successful result from runtime
-validation. A terminal retry revalidates current durable state and runtime
-before returning its immutable result. Immutable job, result, and audit
+validation. The successful audit timestamp must equal the durable candidate
+observed state's reconciliation timestamp; it is not backdated to the earlier
+job-acceptance timestamp. A terminal retry revalidates current durable state
+and runtime before returning its immutable result. If another tenant commits a
+later audited transition and selects a newer complete global generation during
+that validation window, the earlier result may accept the newer selection only
+after the complete selected snapshot still matches all current authoritative
+tenant routes and contains the earlier tenant's exact validated manifest and
+observed state. A same-tenant transition remains supersession rather than this
+cross-tenant exception. Immutable job, result, and audit
 bindings preserve the authority needed after intent cleanup: each current job
 retains its exact source manifest and any source archive record, and a
 successful archive result retains its exact new archive record. An
@@ -350,7 +358,12 @@ second deployment or any archive record exceeds their authority. Every newly
 dispatched job also binds the complete tenant-ID inventory. A failed create must
 restore that inventory exactly, projected only through later successful create
 or delete entries in the validated audit chain, so residue under an unrelated
-slug is rejected while a legitimate later create remains recoverable. For
+slug is rejected while a legitimate later create remains recoverable. Every
+successful handler must likewise leave exactly that bound inventory plus its
+requested create or delete delta, projected through later successful create and
+delete entries in the validated audit chain. Thus a successful operation cannot
+hide an unrelated tenant addition or removal, while independently committed
+later work remains valid. For
 deploy and import, root independently derives the normalized release-tree
 digest and binds it to the job before invoking the handler: deploy is measured
 directly from its admitted flat ZIP, while import is measured from the

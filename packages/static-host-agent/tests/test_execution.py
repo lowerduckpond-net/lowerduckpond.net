@@ -75,6 +75,7 @@ class _CompletingCreateHandler:
         state_root: Path | None = None,
         result_slug: str | None = None,
         write_observed: bool = True,
+        audit_timestamp: str | None = None,
     ) -> None:
         self._repository = repository
         self._persist_result = persist_result
@@ -82,6 +83,7 @@ class _CompletingCreateHandler:
         self._state_root = state_root
         self._result_slug = result_slug
         self._write_observed = write_observed
+        self._audit_timestamp = audit_timestamp
         self.phases: list[object] = []
         self.claims: list[LifecycleArtifact | None] = []
 
@@ -134,7 +136,12 @@ class _CompletingCreateHandler:
                     blocking=blocking,
                 )
                 if result["status"] == "succeeded":
-                    _append_result_audit(self._repository, job.document, result)
+                    _append_result_audit(
+                        self._repository,
+                        job.document,
+                        result,
+                        timestamp=self._audit_timestamp,
+                    )
                 created = True
         if result["status"] == "failed":
             _append_result_audit_if_absent(self._repository, job.document, result)
@@ -410,6 +417,63 @@ class _ArtifactConsumingHandler:
         assert blocking is False
         claim.consume()  # type: ignore[attr-defined]
         raise AssertionError("read-only lifecycle artifact unexpectedly exposed consume")
+
+
+class _AddingUnrelatedTenantHandler:
+    def __init__(
+        self,
+        delegate: LifecycleJobHandler,
+        repository: StateRepository,
+        root: Path,
+        tenant_id: str,
+        *,
+        audited: bool = False,
+    ) -> None:
+        self._delegate = delegate
+        self._repository = repository
+        self._root = root
+        self._tenant_id = tenant_id
+        self._audited = audited
+
+    def execute(
+        self,
+        job_id: str,
+        *,
+        claim: LifecycleArtifact | None,
+        blocking: bool,
+    ) -> ExecutionOutcome:
+        outcome = self._delegate.execute(job_id, claim=claim, blocking=blocking)
+        later = _fixture("operation-result.json")
+        manifest = _mapping(later["manifest"])
+        metadata = _mapping(manifest["metadata"])
+        canonical_origin = f"t-{self._tenant_id.replace('-', '')}.lowerduckpond.com"
+        metadata.update(
+            {
+                "id": self._tenant_id,
+                "slug": "later-tenant",
+                "canonicalOrigin": canonical_origin,
+            }
+        )
+        _write(
+            self._root,
+            StateRecordPath.tenant_desired(self._tenant_id),
+            manifest,
+        )
+        _write_observed_for_manifest(self._root, manifest)
+        if self._audited:
+            job = self._repository.read(StateRecordPath.authorization_job(job_id)).document
+            provenance = _mapping(later["provenance"])
+            provenance["jobId"] = "0198d17f-6f4a-7000-8000-000000000011"
+            later.update(
+                {
+                    "correlationId": "0198d17f-6f4a-7000-8000-000000000012",
+                    "tenantId": self._tenant_id,
+                    "canonicalOrigin": canonical_origin,
+                    "manifest": manifest,
+                }
+            )
+            _append_result_audit(self._repository, job, later)
+        return outcome
 
 
 class _CompletingRollbackHandler:
@@ -1127,14 +1191,26 @@ def _append_result_audit(
     result: dict[str, object],
     *,
     deletion_evidence: dict[str, object] | None = None,
+    timestamp: str | None = None,
 ) -> None:
     state = repository.inspect_audit()
+    if timestamp is None:
+        timestamp = str(job["acceptedAt"])
+        if result["status"] == "succeeded" and result["operation"] != "delete":
+            tenant_id = result["tenantId"]
+            if type(tenant_id) is str:
+                try:
+                    observed = repository.read(StateRecordPath.tenant_observed(tenant_id)).document
+                except FileNotFoundError:
+                    pass
+                else:
+                    timestamp = str(observed["reconciledAt"])
     entry: dict[str, object] = {
         "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
         "kind": "AuditEntry",
         "sequence": state.entry_count,
         "previousEntryDigest": state.terminal_digest,
-        "timestamp": job["acceptedAt"],
+        "timestamp": timestamp,
         "operatorPrincipal": job["operatorPrincipal"],
         "operation": result["operation"],
         "tenantId": result["tenantId"],
@@ -2109,14 +2185,107 @@ def test_executor_dispatches_claimed_create_and_replays_its_handler(tmp_path: Pa
 
         stored = repository.read(StateRecordPath.authorization_result(issued.job_id)).document
         phase = repository.read(StateRecordPath.authorization_job(issued.job_id)).document["phase"]
+        audit = repository.inspect_audit_correlation(stored["correlationId"]).entry
+        observed = repository.read(StateRecordPath.tenant_observed(stored["tenantId"])).document
 
     assert first.created is True
     assert second.created is False
     assert first.result == second.result == stored
     assert first.result["status"] == "succeeded"
     assert phase == "completed"
+    assert audit is not None
+    assert audit["timestamp"] == observed["reconciledAt"]
+    assert audit["timestamp"] != issued.document["acceptedAt"]
     assert handler.phases == ["claimed"]
     assert handler.claims == [None]
+
+
+def test_executor_rejects_a_successful_create_with_an_unrelated_tenant(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    unrelated_tenant_id = "0198d17f-6f4a-7000-8000-000000000010"
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued = _issue_create(repository)
+        handler = _AddingUnrelatedTenantHandler(
+            _CompletingCreateHandler(repository, state_root=root),
+            repository,
+            root,
+            unrelated_tenant_id,
+        )
+        with pytest.raises(ExecutionError, match="tenant inventory outside authority"):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={"create": handler},
+                tenant_runtime_validator=lambda *_arguments: True,
+            ).execute(issued.job_id)
+
+        job = repository.read(StateRecordPath.authorization_job(issued.job_id)).document
+
+    assert job["dispatchTenantIds"] == []
+
+
+def test_executor_projects_a_later_audited_create_into_success_inventory(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    later_tenant_id = "0198d17f-6f4a-7000-8000-000000000010"
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued = _issue_create(repository)
+        handler = _AddingUnrelatedTenantHandler(
+            _CompletingCreateHandler(repository, state_root=root),
+            repository,
+            root,
+            later_tenant_id,
+            audited=True,
+        )
+        outcome = AuthorizationExecutor(
+            repository,
+            intake,
+            handlers={"create": handler},
+            tenant_runtime_validator=lambda *_arguments: True,
+        ).execute(issued.job_id)
+
+        tenant_ids = repository.measure_inventory().tenant_ids
+
+    assert outcome.result["status"] == "succeeded"
+    assert tenant_ids == tuple(sorted((_TENANT_ID, later_tenant_id)))
+
+
+def test_executor_rejects_a_successful_create_with_a_backdated_audit(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued = _issue_create(repository)
+        with pytest.raises(ExecutionError, match="durable transition time"):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={
+                    "create": _CompletingCreateHandler(
+                        repository,
+                        state_root=root,
+                        audit_timestamp=str(issued.document["acceptedAt"]),
+                    ),
+                },
+            ).execute(issued.job_id)
 
 
 def test_executor_rejects_success_without_observed_tenant_state(tmp_path: Path) -> None:
@@ -2218,7 +2387,7 @@ def test_executor_replays_an_audited_historical_success_after_later_state_change
     with (
         StateRepository(root, expected_owner=os.geteuid()) as repository,
         ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
-        pytest.raises(ExecutionError, match="authoritative tenant state"),
+        pytest.raises(ExecutionError, match="durable transition time"),
     ):
         AuthorizationExecutor(repository, intake).execute(issued.job_id)
 
@@ -5364,6 +5533,57 @@ def test_executor_requires_the_authorized_selected_runtime_generation(
     ]
 
 
+def test_executor_accepts_a_newer_complete_cross_tenant_runtime_generation(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    job, intent, result = _write_committed_transition_replay(root, operation="rename")
+    intent_path = StateRecordPath.transaction_intent(intent["intentId"])
+    other_tenant_id = "0198d17f-6f4a-7000-8000-000000000010"
+    calls: list[str | None] = []
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        _append_result_audit(repository, job, result)
+
+        def validate_runtime(
+            _tenant_id: str,
+            _route_set: str,
+            generation_id: str | None,
+            _manifest: dict[str, object],
+            _observed_state: dict[str, object] | None,
+        ) -> bool:
+            calls.append(generation_id)
+            if generation_id is not None:
+                later = json.loads(json.dumps(result))
+                provenance = _mapping(later["provenance"])
+                manifest = _mapping(later["manifest"])
+                metadata = _mapping(manifest["metadata"])
+                canonical_origin = f"t-{other_tenant_id.replace('-', '')}.lowerduckpond.com"
+                provenance["jobId"] = "0198d17f-6f4a-7000-8000-000000000011"
+                later["correlationId"] = "0198d17f-6f4a-7000-8000-000000000012"
+                later["tenantId"] = other_tenant_id
+                later["canonicalOrigin"] = canonical_origin
+                metadata["id"] = other_tenant_id
+                metadata["canonicalOrigin"] = canonical_origin
+                _append_result_audit(repository, job, later)
+                return False
+            return True
+
+        handler = _ClearingIntentHandler(repository, intent_paths=(intent_path,))
+        outcome = AuthorizationExecutor(
+            repository,
+            intake,
+            handlers={"rename": handler},
+            tenant_runtime_validator=validate_runtime,
+        ).execute(job["jobId"])
+
+    assert outcome.result == result
+    assert calls == ["0198d17f-6f4a-7000-8000-000000000006", None]
+
+
 @pytest.mark.parametrize("operation", ["rename", "suspend"])
 def test_executor_requires_the_authorized_source_runtime_after_handler_failure(
     tmp_path: Path,
@@ -6865,12 +7085,14 @@ def test_executor_preserves_supersession_when_repairing_a_late_failure_audit(
         "acceptedAt": "2026-08-29T11:59:59Z",
         "operatorPrincipal": job["operatorPrincipal"],
     }
+    observed_path = root.joinpath(*StateRecordPath.tenant_observed(_TENANT_ID).components)
+    transition_timestamp = json.loads(observed_path.read_text(encoding="utf-8"))["reconciledAt"]
     later_entry: dict[str, object] = {
         "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
         "kind": "AuditEntry",
         "sequence": 0,
         "previousEntryDigest": None,
-        "timestamp": later_job["acceptedAt"],
+        "timestamp": transition_timestamp,
         "operatorPrincipal": later_job["operatorPrincipal"],
         "operation": later_result["operation"],
         "tenantId": later_result["tenantId"],
