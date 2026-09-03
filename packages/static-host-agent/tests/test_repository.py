@@ -348,6 +348,31 @@ def test_emergency_result_binds_its_correlation_identity_to_the_result_path(
     assert created.document == reread.document == result
 
 
+def test_result_writer_rejects_manifestless_success_but_reader_accepts_legacy(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    result = _fixture("operation-result.json")
+    del result["manifest"]
+    result["operation"] = "deploy"
+    path = StateRecordPath.authorization_result(_JOB_ID)
+
+    with (
+        _repository(root) as repository,
+        pytest.raises(
+            StateRecordError,
+            match="new successful operation result",
+        ),
+    ):
+        repository.create_immutable(path, result)
+
+    _write_record(root, path, result)
+    with _repository(root) as repository:
+        reread = repository.read(path)
+
+    assert reread.document == result
+
+
 def test_publication_transaction_holds_publication_before_tenant_state(
     tmp_path: Path,
 ) -> None:

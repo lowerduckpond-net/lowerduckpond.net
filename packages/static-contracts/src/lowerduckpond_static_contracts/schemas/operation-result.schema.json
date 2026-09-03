@@ -49,29 +49,6 @@
       "if": {
         "properties": {
           "operation": {
-            "not": {
-              "const": "delete"
-            }
-          },
-          "status": {
-            "const": "succeeded"
-          }
-        },
-        "required": [
-          "operation",
-          "status"
-        ]
-      },
-      "then": {
-        "required": [
-          "manifest"
-        ]
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "operation": {
             "const": "suspend"
           },
           "status": {

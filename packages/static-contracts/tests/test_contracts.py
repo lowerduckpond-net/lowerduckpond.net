@@ -754,14 +754,12 @@ def test_manifestless_delete_result_origin_is_bound_to_its_tenant_identity() -> 
     assert validate_contract(result) is ContractKind.OPERATION_RESULT
 
 
-def test_successful_nondelete_result_requires_its_manifest() -> None:
+def test_manifestless_nondelete_result_remains_decodable_for_v1alpha1_upgrade() -> None:
     result = _load_object(FIXTURE_ROOT / "accepted/operation-result.json")
     del result["manifest"]
     result["operation"] = "deploy"
 
-    with pytest.raises(ContractError) as captured:
-        validate_contract(result)
-    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+    assert validate_contract(result) is ContractKind.OPERATION_RESULT
 
 
 def test_successful_delete_result_cannot_return_a_desired_manifest() -> None:

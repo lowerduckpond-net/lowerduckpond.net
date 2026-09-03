@@ -10,10 +10,12 @@ from pathlib import Path
 
 import pytest
 from lowerduckpond_static_contracts import (
+    archive_record_digest,
     canonical_json_bytes,
     deployment_record_digest,
     manifest_digest,
     request_digest,
+    result_digest,
 )
 from lowerduckpond_static_host_agent import (
     ArtifactClaim,
@@ -115,6 +117,8 @@ class _CompletingCreateHandler:
                     result,
                     blocking=blocking,
                 )
+                if result["status"] == "succeeded":
+                    _append_result_audit(self._repository, job.document, result)
                 created = True
         if self._commit_job:
             current = self._repository.read(
@@ -351,6 +355,7 @@ def _state_root(tmp_path: Path) -> Path:
         ("authorization", "correlations"),
         ("authorization", "jobs"),
         ("authorization", "results"),
+        ("audit",),
         ("intents",),
         ("intake",),
         ("locks",),
@@ -366,6 +371,28 @@ def _write(root: Path, path: StateRecordPath, document: dict[str, object]) -> No
     target.parent.chmod(0o700)
     target.write_bytes(canonical_json_bytes(document))
     target.chmod(0o600)
+
+
+def _append_result_audit(
+    repository: StateRepository,
+    job: dict[str, object],
+    result: dict[str, object],
+) -> None:
+    state = repository.inspect_audit()
+    entry: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "AuditEntry",
+        "sequence": state.entry_count,
+        "previousEntryDigest": state.terminal_digest,
+        "timestamp": job["acceptedAt"],
+        "operatorPrincipal": job["operatorPrincipal"],
+        "operation": result["operation"],
+        "tenantId": result["tenantId"],
+        "correlationId": result["correlationId"],
+        "resultDigest": result_digest(result).to_dict(),
+        "resultStatus": result["status"],
+    }
+    repository.append_audit(entry)
 
 
 def _write_deployment_record(
@@ -492,6 +519,82 @@ def _archive_transaction_intent(
     return intent
 
 
+def _restore_intents() -> tuple[dict[str, object], dict[str, object]]:
+    retirement = _fixture("archive-retirement-intent.json")
+    retirement["transition"] = "restore"
+    archive = retirement["archiveRecord"]
+    assert type(archive) is dict
+
+    source = _fixture("site.json")
+    source_spec = source["spec"]
+    assert type(source_spec) is dict
+    source_spec["desiredState"] = "archived"
+    source_deployment = source_spec["desiredDeployment"]
+    assert type(source_deployment) is dict
+    source_deployment["id"] = archive["deploymentId"]
+    source_digest = manifest_digest(source).to_dict()
+    archive["manifestDigest"] = source_digest
+    retirement["sourceManifestDigest"] = source_digest
+    retirement["archiveRecordDigest"] = archive_record_digest(archive).to_dict()
+
+    candidate = json.loads(json.dumps(source))
+    candidate_spec = candidate["spec"]
+    assert type(candidate_spec) is dict
+    candidate_spec["desiredState"] = "active"
+    candidate_deployment = candidate_spec["desiredDeployment"]
+    bundle_digest = retirement["bundleDigest"]
+    assert type(candidate_deployment) is dict
+    assert type(bundle_digest) is dict
+    candidate_deployment.update(
+        {
+            "id": "0198d17f-6f4a-7000-8000-000000000009",
+            "archiveSha256": bundle_digest["value"],
+        }
+    )
+    candidate_digest = manifest_digest(candidate).to_dict()
+
+    source_observed = _fixture("tenant-observed-state.json")
+    source_observed.update(
+        {
+            "desiredManifestDigest": source_digest,
+            "observedState": "archived",
+            "activeDeploymentId": None,
+            "runtimeGenerationId": None,
+        }
+    )
+    candidate_observed = json.loads(json.dumps(source_observed))
+    candidate_observed.update(
+        {
+            "desiredManifestDigest": candidate_digest,
+            "observedState": "active",
+            "activeDeploymentId": candidate_deployment["id"],
+            "runtimeGenerationId": "0198d17f-6f4a-7000-8000-000000000006",
+        }
+    )
+    transaction = _fixture("transaction-intent.json")
+    transaction.update(
+        {
+            "operation": "restore",
+            "tenantId": retirement["tenantId"],
+            "correlationId": retirement["correlationId"],
+            "sourceManifest": source,
+            "sourceManifestDigest": source_digest,
+            "candidateManifest": candidate,
+            "candidateManifestDigest": candidate_digest,
+            "archiveRecovery": None,
+            "lifecycleRecovery": {
+                "sourceObservedState": source_observed,
+                "sourceRuntimeGenerationId": "0198d17f-6f4a-7000-8000-000000000004",
+                "sourceRouteSet": "absent",
+                "candidateObservedState": candidate_observed,
+                "candidateRuntimeGenerationId": candidate_observed["runtimeGenerationId"],
+                "candidateRouteSet": "both",
+            },
+        }
+    )
+    return transaction, retirement
+
+
 def test_executor_publishes_one_immutable_mutation_free_terminal_result(
     tmp_path: Path,
 ) -> None:
@@ -604,6 +707,7 @@ def test_executor_preserves_result_bearing_recovery_without_its_handler(
             StateRecordPath.authorization_result(issued.job_id),
             result,
         )
+        _append_result_audit(repository, issued.document, result)
 
         with pytest.raises(RuntimeError, match=r"result-bearing.*handler is unavailable"):
             AuthorizationExecutor(repository, intake).execute(issued.job_id)
@@ -672,6 +776,7 @@ def test_executor_repairs_a_lagging_job_phase_without_handler_replay(tmp_path: P
             StateRecordPath.authorization_result(issued.job_id),
             result,
         )
+        _append_result_audit(repository, issued.document, result)
 
     with (
         StateRepository(root, expected_owner=os.geteuid()) as repository,
@@ -689,7 +794,7 @@ def test_executor_repairs_a_lagging_job_phase_without_handler_replay(tmp_path: P
     assert handler.phases == []
 
 
-def test_executor_rejects_an_intent_free_success_that_disagrees_with_state(
+def test_executor_replays_an_audited_historical_success_after_later_state_change(
     tmp_path: Path,
 ) -> None:
     root = _state_root(tmp_path)
@@ -706,10 +811,11 @@ def test_executor_rejects_an_intent_free_success_that_disagrees_with_state(
         assert type(manifest) is dict
         provenance["jobId"] = issued.job_id
         result["correlationId"] = request["correlationId"]
+        _append_result_audit(repository, issued.document, result)
         desired = json.loads(json.dumps(manifest))
-        metadata = manifest["metadata"]
+        metadata = desired["metadata"]
         assert type(metadata) is dict
-        metadata["slug"] = "different-duck"
+        metadata["slug"] = "later-duck"
         _write(root, StateRecordPath.tenant_desired(result["tenantId"]), desired)
         repository.create_immutable(
             StateRecordPath.authorization_result(issued.job_id),
@@ -719,7 +825,96 @@ def test_executor_rejects_an_intent_free_success_that_disagrees_with_state(
     with (
         StateRepository(root, expected_owner=os.geteuid()) as repository,
         ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
-        pytest.raises(ExecutionError, match="authoritative tenant state"),
+    ):
+        outcome = AuthorizationExecutor(repository, intake).execute(issued.job_id)
+
+    assert outcome.result == result
+    assert outcome.created is False
+
+
+def test_executor_replays_audited_legacy_manifestless_success(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+
+    with StateRepository(root, expected_owner=os.geteuid()) as repository:
+        job = _fixture("authorization-job.json")
+        request: dict[str, object] = {
+            "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+            "kind": "OperationRequest",
+            "operation": "rename",
+            "correlationId": "0198d17f-6f4a-7000-8000-000000000001",
+            "tenantId": _TENANT_ID,
+            "slug": "renamed-duck",
+        }
+        job["request"] = request
+        job["requestDigest"] = request_digest(request).to_dict()
+        expected = job["expectedSource"]
+        assert type(expected) is dict
+        expected.update(
+            {
+                "expectsTenantAbsent": False,
+                "lifecycle": "active",
+                "manifestDigest": manifest_digest(_fixture("site.json")).to_dict(),
+                "deploymentDigest": deployment_record_digest(
+                    _fixture("deployment-record.json")
+                ).to_dict(),
+                "archiveRecordDigest": None,
+            }
+        )
+        result = _fixture("operation-result.json")
+        result["operation"] = "rename"
+        del result["manifest"]
+        _write(root, StateRecordPath.authorization_job(job["jobId"]), job)
+        _write(
+            root,
+            StateRecordPath.authorization_correlation(request["correlationId"]),
+            job,
+        )
+        _append_result_audit(repository, job, result)
+        _write(root, StateRecordPath.authorization_result(job["jobId"]), result)
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        outcome = AuthorizationExecutor(repository, intake).execute(job["jobId"])
+
+    assert outcome.result == result
+    assert outcome.created is False
+
+
+def test_executor_rejects_an_intent_free_success_without_matching_audit(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+
+    with StateRepository(root, expected_owner=os.geteuid()) as repository:
+        issued = _issue_create(repository)
+        request = issued.document["request"]
+        assert type(request) is dict
+        result = _fixture("operation-result.json")
+        provenance = result["provenance"]
+        manifest = result["manifest"]
+        assert type(provenance) is dict
+        assert type(manifest) is dict
+        provenance["jobId"] = issued.job_id
+        result["correlationId"] = request["correlationId"]
+        _append_result_audit(repository, issued.document, result)
+        metadata = manifest["metadata"]
+        assert type(metadata) is dict
+        metadata["slug"] = "forged-after-audit"
+        repository.create_immutable(
+            StateRecordPath.authorization_result(issued.job_id),
+            result,
+        )
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+        pytest.raises(ExecutionError, match="durable audit authority"),
     ):
         AuthorizationExecutor(repository, intake).execute(issued.job_id)
 
@@ -1694,6 +1889,87 @@ def test_executor_rejects_disagreeing_archive_intents_before_handler_dispatch(
     assert handler.phases == []
 
 
+def test_executor_binds_restore_candidate_content_to_retirement_authority(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    job = _fixture("authorization-job.json")
+    transaction_intent, retirement_intent = _restore_intents()
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "restore",
+        "correlationId": retirement_intent["correlationId"],
+        "tenantId": retirement_intent["tenantId"],
+    }
+    job["request"] = request
+    job["requestDigest"] = request_digest(request).to_dict()
+    job["phase"] = "claimed"
+    expected = job["expectedSource"]
+    assert type(expected) is dict
+    expected.update(
+        {
+            "expectsTenantAbsent": False,
+            "lifecycle": "archived",
+            "manifestDigest": retirement_intent["sourceManifestDigest"],
+            "deploymentDigest": {
+                "format": "lowerduckpond-deployment-record-v1",
+                "algorithm": "sha256",
+                "value": "c" * 64,
+            },
+            "archiveRecordDigest": retirement_intent["archiveRecordDigest"],
+        }
+    )
+    correlation = json.loads(json.dumps(job))
+    correlation["phase"] = "pending"
+
+    candidate = transaction_intent["candidateManifest"]
+    recovery = transaction_intent["lifecycleRecovery"]
+    assert type(candidate) is dict
+    assert type(recovery) is dict
+    candidate_spec = candidate["spec"]
+    candidate_observed = recovery["candidateObservedState"]
+    assert type(candidate_spec) is dict
+    assert type(candidate_observed) is dict
+    candidate_deployment = candidate_spec["desiredDeployment"]
+    assert type(candidate_deployment) is dict
+    candidate_deployment["archiveSha256"] = "e" * 64
+    candidate_digest = manifest_digest(candidate).to_dict()
+    transaction_intent["candidateManifestDigest"] = candidate_digest
+    candidate_observed["desiredManifestDigest"] = candidate_digest
+
+    _write(root, StateRecordPath.authorization_job(job["jobId"]), job)
+    _write(
+        root,
+        StateRecordPath.authorization_correlation(request["correlationId"]),
+        correlation,
+    )
+    _write(
+        root,
+        StateRecordPath.transaction_intent(transaction_intent["intentId"]),
+        transaction_intent,
+    )
+    _write(
+        root,
+        StateRecordPath.archive_retirement_intent(retirement_intent["intentId"]),
+        retirement_intent,
+    )
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        handler = _CompletingCreateHandler(repository)
+        with pytest.raises(ExecutionError, match="archive retirement authority"):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={"restore": handler},
+            ).execute(job["jobId"])
+
+    assert handler.phases == []
+
+
 def test_executor_dispatches_a_claimed_job_with_an_intent_without_source_recheck(
     tmp_path: Path,
 ) -> None:
@@ -2569,6 +2845,7 @@ def test_executor_repairs_a_terminal_result_published_before_job_phase(
             "tenantId": None,
         }
         repository.create_immutable(StateRecordPath.authorization_result(issued.job_id), result)
+        _append_result_audit(repository, issued.document, result)
 
     with (
         StateRepository(root, expected_owner=os.geteuid()) as repository,
@@ -2599,6 +2876,7 @@ def test_executor_repairs_a_successful_create_with_its_generated_tenant(
         assert type(manifest) is dict
         _write(root, StateRecordPath.tenant_desired(result["tenantId"]), manifest)
         repository.create_immutable(StateRecordPath.authorization_result(issued.job_id), result)
+        _append_result_audit(repository, issued.document, result)
 
     with (
         StateRepository(root, expected_owner=os.geteuid()) as repository,

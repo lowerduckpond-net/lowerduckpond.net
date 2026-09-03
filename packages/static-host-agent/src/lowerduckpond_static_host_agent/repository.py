@@ -414,6 +414,23 @@ def _validate_result_binding(
         raise StateRecordError("emergency-result identity does not match its path")
 
 
+def _validate_new_result_shape(
+    name: _StateRecordName,
+    document: dict[str, object],
+) -> None:
+    if name not in {
+        _StateRecordName.AUTHORIZATION_RESULT,
+        _StateRecordName.EMERGENCY_RESULT,
+    }:
+        return
+    if (
+        document["status"] == "succeeded"
+        and document["operation"] != "delete"
+        and type(document.get("manifest")) is not dict
+    ):
+        raise StateRecordError("new successful operation result requires its exact manifest")
+
+
 @dataclass(frozen=True, slots=True)
 class StateRevision:
     """An internal CAS token over one exact canonical record generation."""
@@ -752,6 +769,7 @@ class StateRepository:
         candidate = deepcopy(document)
         validate_contract(candidate, expected_kind=path.contract_kind)
         path.validate_binding(candidate)
+        _validate_new_result_shape(path.name, candidate)
         return canonical_json_bytes(candidate)
 
     def _require_open(self) -> None:

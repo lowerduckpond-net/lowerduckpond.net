@@ -17,6 +17,7 @@ from lowerduckpond_static_contracts import (
     decode_header,
     decode_result,
     manifest_digest,
+    result_digest,
 )
 from lowerduckpond_static_host_agent import (
     ArtifactIntake,
@@ -153,6 +154,7 @@ def _state_root(tmp_path: Path) -> Path:
         ("authorization", "correlations"),
         ("authorization", "jobs"),
         ("authorization", "results"),
+        ("audit",),
         ("intents",),
         ("intake",),
         ("locks",),
@@ -171,6 +173,29 @@ def _write(root: Path, path: StateRecordPath, document: dict[str, object]) -> No
     target.parent.chmod(0o700)
     target.write_bytes(canonical_json_bytes(document))
     target.chmod(0o600)
+
+
+def _append_result_audit(
+    repository: StateRepository,
+    job: dict[str, object],
+    result: dict[str, object],
+) -> None:
+    state = repository.inspect_audit()
+    repository.append_audit(
+        {
+            "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+            "kind": "AuditEntry",
+            "sequence": state.entry_count,
+            "previousEntryDigest": state.terminal_digest,
+            "timestamp": job["acceptedAt"],
+            "operatorPrincipal": job["operatorPrincipal"],
+            "operation": result["operation"],
+            "tenantId": result["tenantId"],
+            "correlationId": result["correlationId"],
+            "resultDigest": result_digest(result).to_dict(),
+            "resultStatus": result["status"],
+        }
+    )
 
 
 def _issue(repository: StateRepository) -> IssuedAuthorization:
@@ -481,6 +506,7 @@ def test_result_waiter_accepts_the_generated_tenant_from_a_successful_create(
             StateRecordPath.authorization_result(issued.job_id),
             result,
         )
+        _append_result_audit(repository, issued.document, result)
         retrieved = ResultWaiter(repository, handoff).retrieve(issued)
 
     assert retrieved["status"] == "succeeded"
@@ -488,7 +514,7 @@ def test_result_waiter_accepts_the_generated_tenant_from_a_successful_create(
     assert handoff.enqueued == []
 
 
-def test_result_waiter_rejects_an_intent_free_success_that_disagrees_with_state(
+def test_result_waiter_returns_an_audited_success_after_later_state_change(
     tmp_path: Path,
 ) -> None:
     root = _state_root(tmp_path)
@@ -504,11 +530,43 @@ def test_result_waiter_rejects_an_intent_free_success_that_disagrees_with_state(
         assert type(manifest) is dict
         provenance["jobId"] = issued.job_id
         result["correlationId"] = request["correlationId"]
+        _append_result_audit(repository, issued.document, result)
         desired = json.loads(json.dumps(manifest))
+        metadata = desired["metadata"]
+        assert type(metadata) is dict
+        metadata["slug"] = "later-duck"
+        _write(root, StateRecordPath.tenant_desired(result["tenantId"]), desired)
+        repository.create_immutable(
+            StateRecordPath.authorization_result(issued.job_id),
+            result,
+        )
+
+        retrieved = ResultWaiter(repository, handoff).retrieve(issued)
+
+    assert retrieved == result
+    assert handoff.enqueued == []
+
+
+def test_result_waiter_rejects_an_intent_free_success_with_a_mismatched_audit(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    handoff = _CaptureHandoff()
+    with StateRepository(root, expected_owner=os.geteuid()) as repository:
+        issued = _issue(repository)
+        request = issued.document["request"]
+        assert type(request) is dict
+        result = _fixture("operation-result.json")
+        provenance = result["provenance"]
+        manifest = result["manifest"]
+        assert type(provenance) is dict
+        assert type(manifest) is dict
+        provenance["jobId"] = issued.job_id
+        result["correlationId"] = request["correlationId"]
+        _append_result_audit(repository, issued.document, result)
         metadata = manifest["metadata"]
         assert type(metadata) is dict
-        metadata["slug"] = "different-duck"
-        _write(root, StateRecordPath.tenant_desired(result["tenantId"]), desired)
+        metadata["slug"] = "forged-after-audit"
         repository.create_immutable(
             StateRecordPath.authorization_result(issued.job_id),
             result,
