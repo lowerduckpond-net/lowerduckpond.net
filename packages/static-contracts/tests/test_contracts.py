@@ -1254,7 +1254,7 @@ def _route_only_transaction_intent(
         metadata = candidate_manifest["metadata"]
         assert type(metadata) is dict
         metadata["slug"] = "renamed-duck"
-    if operation in {"deploy", "rollback"}:
+    if operation in {"deploy", "rollback", "restore"}:
         deployment = candidate_spec["desiredDeployment"]
         assert type(deployment) is dict
         deployment["id"] = "0198d17f-6f4a-7000-8000-000000000009"
@@ -1269,6 +1269,9 @@ def _route_only_transaction_intent(
         {
             "desiredManifestDigest": source_digest,
             "observedState": source_state,
+            "activeDeploymentId": (
+                source["activeDeploymentId"] if source_state in {"active", "suspended"} else None
+            ),
             "runtimeGenerationId": (
                 "0198d17f-6f4a-7000-8000-000000000004" if source_state == "active" else None
             ),
@@ -1279,6 +1282,11 @@ def _route_only_transaction_intent(
         {
             "desiredManifestDigest": candidate_digest,
             "observedState": candidate_state,
+            "activeDeploymentId": (
+                "0198d17f-6f4a-7000-8000-000000000009"
+                if operation in {"deploy", "rollback", "restore"}
+                else source["activeDeploymentId"]
+            ),
             "runtimeGenerationId": (
                 "0198d17f-6f4a-7000-8000-000000000006" if candidate_state == "active" else None
             ),
@@ -1355,6 +1363,7 @@ def test_route_only_intent_preserves_the_remembered_deployment(
         ("rename", "active", "active"),
         ("deploy", "active", "active"),
         ("rollback", "active", "active"),
+        ("restore", "archived", "active"),
     ],
 )
 def test_transaction_candidate_cannot_change_unrelated_fields(
@@ -1403,11 +1412,12 @@ def test_recovery_observed_state_must_match_its_candidate_manifest() -> None:
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
 
-@pytest.mark.parametrize("operation", ["deploy", "rollback"])
+@pytest.mark.parametrize("operation", ["deploy", "rollback", "restore"])
 def test_deployment_selection_intent_changes_the_remembered_deployment(
     operation: str,
 ) -> None:
-    intent = _route_only_transaction_intent(operation, "active", "active")
+    source_state = "archived" if operation == "restore" else "active"
+    intent = _route_only_transaction_intent(operation, source_state, "active")
     recovery = intent["lifecycleRecovery"]
     assert type(recovery) is dict
     candidate = recovery["candidateObservedState"]

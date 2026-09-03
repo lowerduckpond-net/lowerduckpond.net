@@ -332,9 +332,9 @@ def _validate_transaction_manifest_transform(
     expected_spec = cast(dict[str, object], expected["spec"])
     if operation == "rename":
         expected_metadata["slug"] = candidate_metadata["slug"]
-    elif operation in {"suspend", "resume", "restore"}:
+    elif operation in {"suspend", "resume"}:
         expected_spec["desiredState"] = candidate_spec["desiredState"]
-    elif operation in {"deploy", "rollback", "import"}:
+    elif operation in {"deploy", "rollback", "import", "restore"}:
         expected_spec["desiredState"] = candidate_spec["desiredState"]
         expected_spec["desiredDeployment"] = candidate_spec["desiredDeployment"]
     if candidate_manifest != expected:
@@ -489,7 +489,7 @@ def _validate_lifecycle_recovery(document: dict[str, object]) -> None:
     if expected != candidate_state:
         raise ContractError(ErrorCode.SCHEMA_INVALID, "recovery states violate lifecycle matrix")
     _validate_manifest_transition_binding(document, operation, source_state, candidate_state)
-    if operation in {"deploy", "rollback"} and (
+    if operation in {"deploy", "rollback", "restore"} and (
         source_observed is None
         or candidate_observed is None
         or source_observed["activeDeploymentId"] == candidate_observed["activeDeploymentId"]
