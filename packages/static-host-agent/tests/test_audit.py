@@ -82,16 +82,19 @@ def test_append_builds_one_exact_canonical_hash_chain(tmp_path: Path) -> None:
     assert snapshot.has_later_tenant_state_transition is True
     assert snapshot.later_tenant_state_transitions == (("archive", first["tenantId"]),)
     assert snapshot.later_tenant_inventory_transitions == ()
+    assert snapshot.later_tenant_state_entries == (second,)
     assert second_snapshot.previous_tenant_state_transition == first
     assert second_snapshot.has_later_tenant_state_transition is False
     assert second_snapshot.later_tenant_state_transitions == ()
     assert second_snapshot.later_tenant_inventory_transitions == ()
+    assert second_snapshot.later_tenant_state_entries == ()
     assert absent.state == state
     assert absent.entry is None
     assert absent.previous_tenant_state_transition is None
     assert absent.has_later_tenant_state_transition is False
     assert absent.later_tenant_state_transitions == ()
     assert absent.later_tenant_inventory_transitions == ()
+    assert absent.later_tenant_state_entries == ()
     assert (root / "audit/segment-00000000000000000000.jsonl").read_bytes() == (
         canonical_json_bytes(first) + canonical_json_bytes(second)
     )

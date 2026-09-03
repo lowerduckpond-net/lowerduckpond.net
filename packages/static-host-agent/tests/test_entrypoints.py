@@ -241,6 +241,9 @@ def test_selected_tenant_runtime_binds_the_active_verified_snapshot(  # noqa: PL
     assert entrypoints._all_tenant_release_state_matches(
         repository,  # type: ignore[arg-type]
     )
+    assert entrypoints._all_tenant_runtime_state_matches(
+        repository,  # type: ignore[arg-type]
+    )
     assert not entrypoints._selected_tenant_runtime_matches(
         repository,  # type: ignore[arg-type]
         tenant_id,
@@ -259,6 +262,11 @@ def test_selected_tenant_runtime_binds_the_active_verified_snapshot(  # noqa: PL
         active.observed_state,
     )
     runtime.active_generation_id = generation_id
+    runtime.tenant = suspended
+    assert not entrypoints._all_tenant_runtime_state_matches(
+        repository,  # type: ignore[arg-type]
+    )
+    runtime.tenant = active
     measured_digests[deployment_id] = {**release_tree_digest, "value": "d" * 64}
     assert not entrypoints._selected_tenant_release_matches(
         repository,  # type: ignore[arg-type]

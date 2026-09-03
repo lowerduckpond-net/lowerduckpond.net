@@ -47,6 +47,9 @@ from lowerduckpond_static_host_agent import (
     VerifiedArtifact,
     build_portable_bundle,
 )
+from lowerduckpond_static_host_agent.execution import (
+    _validate_committed_manifest_request_binding,
+)
 
 _FIXTURE_ROOT = Path(__file__).parents[3] / "tests/static-publication/fixtures/accepted"
 _NOW = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
@@ -765,6 +768,7 @@ class _SupersedingTransitionHandler:
         later_operation: str = "rename",
         remove_deployment_ids: tuple[str, ...] = (),
         replacement_deployments: tuple[dict[str, object], ...] = (),
+        extra_archive: dict[str, object] | None = None,
     ) -> None:
         self._repository = repository
         self._root = root
@@ -772,6 +776,7 @@ class _SupersedingTransitionHandler:
         self._later_operation = later_operation
         self._remove_deployment_ids = remove_deployment_ids
         self._replacement_deployments = replacement_deployments
+        self._extra_archive = extra_archive
 
     def execute(
         self,
@@ -804,6 +809,15 @@ class _SupersedingTransitionHandler:
                 ),
                 deployment,
             )
+        if self._extra_archive is not None:
+            _write(
+                self._root,
+                StateRecordPath.tenant_archive(
+                    later["tenantId"],
+                    self._extra_archive["deploymentId"],
+                ),
+                self._extra_archive,
+            )
         provenance["jobId"] = "0198d17f-6f4a-7000-8000-000000000007"
         later["correlationId"] = "0198d17f-6f4a-7000-8000-000000000008"
         later["operation"] = self._later_operation
@@ -811,20 +825,31 @@ class _SupersedingTransitionHandler:
         if self._later_operation == "rename":
             metadata["slug"] = "later-authorized-operation"
         if self._later_operation == "deploy":
-            selected = self._replacement_deployments[-1]
-            spec = _mapping(manifest["spec"])
-            spec["desiredDeployment"] = {
-                "id": selected["id"],
-                "archiveSha256": selected["archiveSha256"],
-            }
+            job = self._repository.read(StateRecordPath.authorization_job(job_id)).document
+            for offset, selected in enumerate(self._replacement_deployments):
+                transition = json.loads(json.dumps(later))
+                transition_provenance = _mapping(transition["provenance"])
+                transition_manifest = _mapping(transition["manifest"])
+                transition_spec = _mapping(transition_manifest["spec"])
+                transition_provenance["jobId"] = f"0198d17f-6f4a-7000-8000-{offset + 7:012d}"
+                transition["correlationId"] = f"0198d17f-6f4a-7000-8000-{offset + 10:012d}"
+                transition_spec["desiredDeployment"] = {
+                    "id": selected["id"],
+                    "archiveSha256": selected["archiveSha256"],
+                }
+                _persist_result(self._repository, transition)
+                _append_result_audit(self._repository, job, transition)
+            manifest = _mapping(transition["manifest"])
         _write(
             self._root,
             StateRecordPath.tenant_desired(later["tenantId"]),
             manifest,
         )
         _write_observed_for_manifest(self._root, manifest)
-        job = self._repository.read(StateRecordPath.authorization_job(job_id)).document
-        _append_result_audit(self._repository, job, later)
+        if self._later_operation != "deploy":
+            job = self._repository.read(StateRecordPath.authorization_job(job_id)).document
+            _persist_result(self._repository, later)
+            _append_result_audit(self._repository, job, later)
         return outcome
 
 
@@ -882,6 +907,7 @@ class _SupersedingCreateHandler:
             audit_metadata["id"] = self._audit_tenant_id
             audit_metadata["canonicalOrigin"] = audit_origin
         job = self._repository.read(StateRecordPath.authorization_job(job_id)).document
+        _persist_result(self._repository, audit_result)
         _append_result_audit(
             self._repository,
             {
@@ -920,6 +946,7 @@ class _FailedThenSuccessfulCreateHandler:
         _write(self._root, StateRecordPath.tenant_desired(_TENANT_ID), manifest)
         _write_observed_for_manifest(self._root, manifest)
         job = self._repository.read(StateRecordPath.authorization_job(job_id)).document
+        _persist_result(self._repository, result)
         _append_result_audit(self._repository, job, result)
         return outcome
 
@@ -1311,6 +1338,17 @@ def _append_result_audit(
     if deletion_evidence is not None:
         entry["deletionEvidence"] = deletion_evidence
     repository.append_audit(entry)
+
+
+def _persist_result(
+    repository: StateRepository,
+    result: dict[str, object],
+) -> None:
+    provenance = _mapping(result["provenance"])
+    repository.create_immutable(
+        StateRecordPath.authorization_result(provenance["jobId"]),
+        result,
+    )
 
 
 def _append_result_audit_if_absent(
@@ -3143,6 +3181,35 @@ def test_executor_rejects_cross_tenant_release_corruption_after_handler(
     assert job["executionValidated"] is False
 
 
+def test_executor_rejects_a_failed_create_that_selects_a_stale_runtime(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    validations: list[bool] = []
+
+    def reject_stale_runtime() -> bool:
+        validations.append(True)
+        return False
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued = _issue_create(repository)
+        with pytest.raises(ExecutionError, match="selected runtime outside authority"):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={"create": _CompletingFailureHandler(repository)},
+                tenant_runtime_inventory_validator=reject_stale_runtime,
+            ).execute(issued.job_id)
+        job = repository.read(StateRecordPath.authorization_job(issued.job_id)).document
+
+    assert validations == [True]
+    assert job["executionValidated"] is False
+
+
 def test_executor_rejects_a_failed_deploy_that_retains_deployment_history(
     tmp_path: Path,
 ) -> None:
@@ -3595,6 +3662,57 @@ def test_executor_preserves_export_authority_after_source_history_is_pruned(
     assert tuple(
         sorted(path.stem for path in (root / "tenants" / _TENANT_ID / "deployments").glob("*.json"))
     ) == tuple(deployment["id"] for deployment in replacement_deployments)
+
+
+def test_executor_rejects_history_laundered_by_a_later_reconcile(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    manifest = _fixture("site.json")
+    deployment = _fixture("deployment-record.json")
+    extra_archive = _fixture("archive-record.json")
+    extra_archive["deploymentId"] = "0198d17f-6f4a-7000-8000-000000000009"
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), manifest)
+    _write(root, StateRecordPath.tenant_deployment(_TENANT_ID, _DEPLOYMENT_ID), deployment)
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "rename",
+        "correlationId": "0198d17f-6f4a-7000-8000-000000000003",
+        "tenantId": _TENANT_ID,
+        "slug": "authorized-rename",
+    }
+    candidate = json.loads(json.dumps(manifest))
+    _mapping(candidate["metadata"])["slug"] = request["slug"]
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued = AuthorizationIssuer(
+            repository,
+            gate=_OpenGate(),
+            entropy=_Entropy(),
+        ).issue(
+            canonical_json_bytes(request),
+            operator_principal="operator@example.test",
+            now=_NOW,
+            artifact=None,
+        )
+        handler = _SupersedingTransitionHandler(
+            repository,
+            root,
+            _CompletingTransitionHandler(repository, root, manifest=candidate),
+            later_operation="reconcile",
+            extra_archive=extra_archive,
+        )
+        with pytest.raises(ExecutionError, match="history exceeds its audited transitions"):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={"rename": handler},
+            ).execute(issued.job_id)
 
 
 def test_executor_rejects_a_successful_export_that_adds_archive_history(
@@ -5499,6 +5617,28 @@ def test_executor_reconstructs_an_archived_source_for_construction_cleanup(
     assert handler.dispatched is True
     assert outcome.result == result
     assert outcome.created is False
+
+
+def test_success_validation_rejects_resume_from_archived_source() -> None:
+    source = _fixture("site.json")
+    candidate = json.loads(json.dumps(source))
+    _mapping(source["spec"])["desiredState"] = "archived"
+    _mapping(candidate["spec"])["desiredState"] = "active"
+    job: dict[str, object] = {
+        "request": {
+            "operation": "resume",
+        }
+    }
+    result: dict[str, object] = {"operation": "resume"}
+
+    with pytest.raises(ExecutionError, match="violates lifecycle matrix"):
+        _validate_committed_manifest_request_binding(
+            object(),  # type: ignore[arg-type]
+            job,
+            result,
+            candidate,
+            source_manifest=source,
+        )
 
 
 @pytest.mark.parametrize("archive_matches", [True, False])

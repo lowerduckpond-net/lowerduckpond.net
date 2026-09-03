@@ -116,6 +116,7 @@ class AuditCorrelationSnapshot:
     has_later_tenant_state_transition: bool
     later_tenant_state_transitions: tuple[tuple[str, str], ...]
     later_tenant_inventory_transitions: tuple[tuple[str, str], ...]
+    later_tenant_state_entries: tuple[dict[str, object], ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,6 +192,7 @@ def inspect_audit_correlation(  # noqa: PLR0913 - keep every audit boundary expl
         has_later_tenant_state_transition,
         later_tenant_state_transitions,
         later_tenant_inventory_transitions,
+        later_tenant_state_entries,
     ) = _validate_chain_records(
         segments,
         limits=limits,
@@ -203,6 +205,7 @@ def inspect_audit_correlation(  # noqa: PLR0913 - keep every audit boundary expl
         has_later_tenant_state_transition=has_later_tenant_state_transition,
         later_tenant_state_transitions=later_tenant_state_transitions,
         later_tenant_inventory_transitions=later_tenant_inventory_transitions,
+        later_tenant_state_entries=later_tenant_state_entries,
     )
 
 
@@ -389,6 +392,7 @@ def _validate_chain(
         _has_later_tenant_state_transition,
         _later_tenant_state_transitions,
         _later_tenant_inventory_transitions,
+        _later_tenant_state_entries,
     ) = _validate_chain_records(
         segments,
         limits=limits,
@@ -397,7 +401,7 @@ def _validate_chain(
     return state
 
 
-def _validate_chain_records(  # noqa: PLR0912 - one bounded chain-validation pass
+def _validate_chain_records(  # noqa: PLR0912,PLR0915 - one bounded chain-validation pass
     segments: list[_Segment],
     *,
     limits: AuditLimits,
@@ -409,6 +413,7 @@ def _validate_chain_records(  # noqa: PLR0912 - one bounded chain-validation pas
     bool,
     tuple[tuple[str, str], ...],
     tuple[tuple[str, str], ...],
+    tuple[dict[str, object], ...],
 ]:
     sequence = 0
     terminal: dict[str, str] | None = None
@@ -420,6 +425,7 @@ def _validate_chain_records(  # noqa: PLR0912 - one bounded chain-validation pas
     has_later_tenant_state_transition = False
     later_tenant_state_transitions: list[tuple[str, str]] = []
     later_tenant_inventory_transitions: list[tuple[str, str]] = []
+    later_tenant_state_entries: list[dict[str, object]] = []
     for segment in segments:
         if not segment.data or not segment.data.endswith(b"\n"):
             raise AuditError("audit segment is not nonempty canonical JSON lines")
@@ -471,6 +477,7 @@ def _validate_chain_records(  # noqa: PLR0912 - one bounded chain-validation pas
                 and operation in _TENANT_STATE_TRANSITIONS
             ):
                 later_tenant_state_transitions.append((operation, tenant_id))
+                later_tenant_state_entries.append(deepcopy(document))
                 if operation in {"create", "delete"}:
                     later_tenant_inventory_transitions.append((operation, tenant_id))
             if (
@@ -496,6 +503,7 @@ def _validate_chain_records(  # noqa: PLR0912 - one bounded chain-validation pas
         has_later_tenant_state_transition,
         tuple(later_tenant_state_transitions),
         tuple(later_tenant_inventory_transitions),
+        tuple(later_tenant_state_entries),
     )
 
 

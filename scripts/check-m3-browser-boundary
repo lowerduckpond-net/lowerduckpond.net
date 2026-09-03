@@ -10,6 +10,10 @@ readonly network="ldp-m3-browser-${suffix}"
 readonly caddy_container="ldp-m3-caddy-${suffix}"
 readonly browser_container="ldp-m3-playwright-${suffix}"
 readonly tunnel_connection="${repository_root}/scripts/m3-docker-exec-tcp-connection"
+readonly browser_start_attempts=600
+playwright_package=$(uv run python -c \
+    'import playwright; from pathlib import Path; print(Path(playwright.__file__).parent / "driver" / "package")')
+readonly playwright_package
 docker_endpoint=${DOCKER_HOST:-$(docker context inspect --format '{{.Endpoints.docker.Host}}')}
 readonly docker_endpoint
 publish_arguments=()
@@ -43,16 +47,26 @@ docker create \
 docker cp -- "$caddyfile" "$caddy_container:/etc/caddy/Caddyfile"
 docker start "$caddy_container" >/dev/null
 
-docker run --detach --rm \
+docker create --rm \
     --name "$browser_container" \
     --network "$network" \
     "${publish_arguments[@]}" \
     "$playwright_image" \
-    /bin/sh -c 'npx --yes playwright@1.62.0 run-server --port 3000 --host 0.0.0.0' >/dev/null
+    /bin/sh -c \
+    'node /tmp/lowerduckpond-playwright/cli.js run-server --port 3000 --host 0.0.0.0' \
+    >/dev/null
+docker cp -- "$playwright_package/." \
+    "$browser_container:/tmp/lowerduckpond-playwright"
+docker start "$browser_container" >/dev/null
 
-for _ in {1..100}; do
+for ((attempt = 1; attempt <= browser_start_attempts; attempt++)); do
     if ! docker inspect --format '{{.State.Running}}' "$caddy_container" | grep -qx true; then
         docker logs "$caddy_container" >&2
+        exit 1
+    fi
+    if ! docker inspect --format '{{.State.Running}}' "$browser_container" | grep -qx true; then
+        echo 'Playwright server exited before becoming ready' >&2
+        docker logs "$browser_container" >&2
         exit 1
     fi
     if docker logs "$browser_container" 2>&1 | grep -q 'Listening on ws://'; then
@@ -61,6 +75,7 @@ for _ in {1..100}; do
     sleep 0.1
 done
 if ! docker logs "$browser_container" 2>&1 | grep -q 'Listening on ws://'; then
+    echo 'Playwright server did not become ready within 60 seconds' >&2
     docker logs "$browser_container" >&2
     exit 1
 fi
