@@ -305,8 +305,9 @@ claims the pending job. The executor records terminal validation only after the
 complete durable tenant state and selected runtime match the result. A terminal
 retry revalidates current durable state and runtime before returning its
 immutable result. Immutable job, result, and audit bindings preserve the
-authority needed after intent cleanup, including the exact archive-record
-digest for a successful archive. A nonterminal retry reconciles its phase; a
+authority needed after intent cleanup: each current job retains its exact
+source manifest and any source archive record, and a successful archive result
+retains its exact new archive record. A nonterminal retry reconciles its phase; a
 changed binding, state drift, unknown job ID, or provisioner-supplied raw
 request fails without mutation. The sudo rule exposes only this job-ID execution
 entry point and cannot invoke the root-only issuer.

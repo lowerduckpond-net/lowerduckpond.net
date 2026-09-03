@@ -929,6 +929,10 @@ def _capture_authorized_lifecycle_authority(  # noqa: PLR0912 - explicit authori
         (intent for intent in intents if intent["kind"] == "ArchiveConstructionIntent"),
         None,
     )
+    retirement_intent = next(
+        (intent for intent in intents if intent["kind"] == "ArchiveRetirementIntent"),
+        None,
+    )
     candidate_observed: dict[str, object] | None = None
     candidate_generation: str | None = None
     candidate_route_set: str | None = None
@@ -976,11 +980,20 @@ def _capture_authorized_lifecycle_authority(  # noqa: PLR0912 - explicit authori
                 if type(raw_archive) is not dict:
                     raise ExecutionError("archive record authority is malformed")
                 archive_record = deepcopy(raw_archive)
+    if request["operation"] == "restore":
+        archive_record = _restore_source_archive_authority(
+            transaction,
+            request,
+            expected,
+            source,
+            retirement_intent,
+        )
     if (
         type(expected["manifestDigest"]) is not dict
         or manifest_digest(source).to_dict() != expected["manifestDigest"]
     ):
         raise ExecutionError("lifecycle source manifest is not authorization-bound")
+    _validate_durable_source_authority(job, request, source, archive_record)
     return _LifecycleDispatchAuthority(
         deepcopy(source),
         candidate_observed,
@@ -989,6 +1002,52 @@ def _capture_authorized_lifecycle_authority(  # noqa: PLR0912 - explicit authori
         archive_record,
         construction_intent is not None,
     )
+
+
+def _validate_durable_source_authority(
+    job: dict[str, object],
+    request: dict[str, object],
+    source: dict[str, object],
+    archive_record: dict[str, object] | None,
+) -> None:
+    if job["compatibilityVersion"] != "static-job-v2":
+        return
+    durable_source, durable_archive = _job_source_authority(job)
+    if source != durable_source or (
+        request["operation"] == "restore" and archive_record != durable_archive
+    ):
+        raise ExecutionError("lifecycle source exceeds durable job authority")
+
+
+def _restore_source_archive_authority(
+    transaction: ExecutionTransaction,
+    request: dict[str, object],
+    expected: dict[str, object],
+    source: dict[str, object],
+    retirement_intent: dict[str, object] | None,
+) -> dict[str, object]:
+    raw_archive = (
+        retirement_intent.get("archiveRecord") if type(retirement_intent) is dict else None
+    )
+    if raw_archive is None:
+        source_spec = source["spec"]
+        if type(source_spec) is not dict:
+            raise ExecutionError("restore source manifest authority is malformed")
+        source_deployment = source_spec.get("desiredDeployment")
+        if type(source_deployment) is not dict:
+            raise ExecutionError("restore source deployment authority is malformed")
+        raw_archive = transaction.read(
+            StateRecordPath.tenant_archive(
+                request["tenantId"],
+                source_deployment["id"],
+            )
+        ).document
+    if (
+        type(raw_archive) is not dict
+        or archive_record_digest(raw_archive).to_dict() != expected["archiveRecordDigest"]
+    ):
+        raise ExecutionError("restore source archive is not authorization-bound")
+    return deepcopy(raw_archive)
 
 
 def _capture_replay_authority(
@@ -1015,11 +1074,7 @@ def _capture_replay_authority(
     if type(request) is not dict:
         raise ExecutionError("terminal replay request authority is malformed")
     operation = result["operation"]
-    source: dict[str, object] | None = None
-    if operation not in {"create", "delete"}:
-        source = _previous_audited_source_manifest(transaction, job, result)
-    elif not validation_was_committed and operation == "delete":
-        _previous_audited_source_manifest(transaction, job, result)
+    source, archive_record = _job_source_authority(job)
 
     observed: dict[str, object] | None = None
     generation: str | None = None
@@ -1043,43 +1098,32 @@ def _capture_replay_authority(
         observed,
         generation,
         route_set,
-        None,
+        archive_record,
         False,
         validation_was_committed,
     )
 
 
-def _previous_audited_source_manifest(
-    transaction: ExecutionTransaction,
+def _job_source_authority(
     job: dict[str, object],
-    result: dict[str, object],
-) -> dict[str, object]:
-    """Resolve the exact preceding successful tenant manifest from the chain."""
+) -> tuple[dict[str, object] | None, dict[str, object] | None]:
+    """Read the immutable exact source bound into one current authorization job."""
 
-    snapshot = transaction.inspect_audit_correlation(result["correlationId"])
-    previous = snapshot.previous_tenant_state_transition
-    expected = job["expectedSource"]
-    if type(previous) is not dict or type(expected) is not dict:
-        raise ExecutionError("terminal replay has no preceding source authority")
-    correlation = transaction.read(
-        StateRecordPath.authorization_correlation(previous["correlationId"])
-    ).document
-    previous_result = transaction.read(
-        StateRecordPath.authorization_result(correlation["jobId"])
-    ).document
-    _validate_result_binding(correlation, previous_result)
-    manifest = previous_result.get("manifest")
-    if (
-        previous["tenantId"] != result["tenantId"]
-        or previous["resultStatus"] != "succeeded"
-        or previous_result["status"] != "succeeded"
-        or previous["operation"] != previous_result["operation"]
-        or previous["resultDigest"] != result_digest(previous_result).to_dict()
-        or type(manifest) is not dict
-        or manifest_digest(manifest).to_dict() != expected["manifestDigest"]
-    ):
-        raise ExecutionError("terminal replay preceding source authority disagrees")
-    return manifest
+    request = job["request"]
+    authority = job.get("sourceAuthority")
+    if type(request) is not dict:
+        raise ExecutionError("authorization request authority is malformed")
+    if request["operation"] == "create":
+        if authority is not None:
+            raise ExecutionError("create job carries tenant source authority")
+        return None, None
+    if type(authority) is not dict:
+        raise ExecutionError("tenant job lost its exact source authority")
+    manifest = authority.get("manifest")
+    archive = authority.get("archiveRecord")
+    if type(manifest) is not dict or (archive is not None and type(archive) is not dict):
+        raise ExecutionError("tenant job source authority is malformed")
+    return deepcopy(manifest), deepcopy(archive)
 
 
 def _archive_record_for_construction_authority(
@@ -1706,8 +1750,8 @@ def _validate_selected_deployment_state(  # noqa: PLR0912 - explicit operation m
             transaction,
             job,
             result,
-            tenant_id,
             deployment,
+            source_archive=authority.archive_record,
         )
     else:
         matches = matches and (operation != "rollback" or deployment_id == request["deploymentId"])
@@ -1731,11 +1775,7 @@ def _validate_selected_deployment_state(  # noqa: PLR0912 - explicit operation m
     )
     if not archive_matches:
         raise ExecutionError("successful lifecycle result has an unbound archive record")
-    if (
-        operation == "archive"
-        and result.get("archiveRecordDigest") is not None
-        and result.get("archiveRecordDigest") != archive_record_digest(archive).to_dict()
-    ):
+    if operation == "archive" and result.get("archiveRecord") != archive:
         raise ExecutionError("successful archive result lost its durable archive authority")
     if authority.archive_construction_present and authority.archive_record is None:
         raise ExecutionError("successful archive result lost its construction authority")
@@ -1747,22 +1787,33 @@ def _restore_deployment_matches(
     transaction: ExecutionTransaction,
     job: dict[str, object],
     result: dict[str, object],
-    tenant_id: str,
     deployment: dict[str, object],
+    *,
+    source_archive: dict[str, object] | None,
 ) -> bool:
     expected = job["expectedSource"]
     if type(expected) is not dict or type(expected["deploymentDigest"]) is not dict:
         raise ExecutionError("restore source deployment authority is malformed")
     try:
         archived_deployment = transaction.deployment_for_digest(
-            tenant_id,
+            validate_uuid7(result["tenantId"]),
             expected["deploymentDigest"],
         )
     except (FileNotFoundError, StatePathError, StateRecordError) as error:
         raise ExecutionError("restore source deployment authority is unavailable") from error
+    if (
+        type(source_archive) is not dict
+        or archive_record_digest(source_archive).to_dict() != expected["archiveRecordDigest"]
+    ):
+        raise ExecutionError("restore source archive authority is unavailable")
+    bundle_digest = source_archive["bundleDigest"]
+    if type(bundle_digest) is not dict:
+        raise ExecutionError("restore source archive bundle authority is malformed")
     return (
         deployment["correlationId"] == result["correlationId"]
         and deployment["releaseTreeDigest"] == archived_deployment["releaseTreeDigest"]
+        and deployment["releaseTreeDigest"] == source_archive["releaseTreeDigest"]
+        and deployment["archiveSha256"] == bundle_digest["value"]
     )
 
 
@@ -1918,15 +1969,12 @@ def _validate_archive_result_intent_binding(
     transaction_intents = [
         candidate for candidate in intents if candidate["kind"] == "TransactionIntent"
     ]
-    if len(transaction_intents) == 1 and result.get("archiveRecordDigest") is not None:
+    if len(transaction_intents) == 1 and result.get("archiveRecord") is not None:
         recovery = transaction_intents[0]["archiveRecovery"]
         if type(recovery) is not dict:
             raise ExecutionError("successful archive result has no recovery authority")
         candidate_archive = recovery["candidateArchiveRecord"]
-        if (
-            type(candidate_archive) is not dict
-            or result["archiveRecordDigest"] != archive_record_digest(candidate_archive).to_dict()
-        ):
+        if type(candidate_archive) is not dict or result["archiveRecord"] != candidate_archive:
             raise ExecutionError("successful archive result exceeds its recovery authority")
     if (
         result["tenantId"] != intent["tenantId"]
@@ -2162,7 +2210,7 @@ def _validate_result_binding(job: dict[str, object], result: dict[str, object]) 
         job["compatibilityVersion"] == "static-job-v2"
         and result["operation"] == "archive"
         and result["status"] == "succeeded"
-        and type(result.get("archiveRecordDigest")) is not dict
+        and type(result.get("archiveRecord")) is not dict
     ):
         raise ExecutionError("successful archive result has no durable archive authority")
 

@@ -474,7 +474,7 @@ class _CompletingTransitionHandler:
             "manifest": self._manifest,
         }
         if request["operation"] == "archive" and self._archive is not None:
-            result["archiveRecordDigest"] = archive_record_digest(self._archive).to_dict()
+            result["archiveRecord"] = self._archive
         if request["operation"] == "export":
             payload = b"authorized exported bundle"
             result["exportBundle"] = {
@@ -1273,7 +1273,7 @@ def _write_committed_archive_replay(
         "tenantId": construction["tenantId"],
         "canonicalOrigin": metadata["canonicalOrigin"],
         "manifest": candidate,
-        "archiveRecordDigest": archive_record_digest(archive).to_dict(),
+        "archiveRecord": archive,
     }
     _write(root, StateRecordPath.authorization_job(job["jobId"]), job)
     _write(
@@ -1288,6 +1288,147 @@ def _write_committed_archive_replay(
         construction,
     )
     return job, construction, result
+
+
+def _write_committed_restore_replay(
+    root: Path,
+) -> tuple[
+    dict[str, object],
+    dict[str, object],
+    dict[str, object],
+    dict[str, object],
+]:
+    namespace = _fixture("platform-namespace.json")
+    transaction_intent, retirement_intent = _restore_intents()
+    source = _mapping(transaction_intent["sourceManifest"])
+    candidate = _mapping(transaction_intent["candidateManifest"])
+    source_spec = _mapping(source["spec"])
+    candidate_spec = _mapping(candidate["spec"])
+    source_reference = _mapping(source_spec["desiredDeployment"])
+    candidate_reference = _mapping(candidate_spec["desiredDeployment"])
+    archive = _mapping(retirement_intent["archiveRecord"])
+    bundle_digest = _mapping(archive["bundleDigest"])
+
+    source_deployment = _fixture("deployment-record.json")
+    source_deployment["id"] = source_reference["id"]
+    restored_deployment = json.loads(json.dumps(source_deployment))
+    restored_deployment.update(
+        {
+            "id": candidate_reference["id"],
+            "archiveSha256": bundle_digest["value"],
+            "correlationId": retirement_intent["correlationId"],
+        }
+    )
+
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "restore",
+        "correlationId": retirement_intent["correlationId"],
+        "tenantId": retirement_intent["tenantId"],
+    }
+    job = _fixture("authorization-job.json")
+    job.update(
+        {
+            "compatibilityVersion": "static-job-v2",
+            "executionValidated": False,
+            "sourceAuthority": {"manifest": source, "archiveRecord": archive},
+            "request": request,
+            "requestDigest": request_digest(request).to_dict(),
+            "phase": "completed",
+        }
+    )
+    expected = _mapping(job["expectedSource"])
+    expected.update(
+        {
+            "expectsTenantAbsent": False,
+            "lifecycle": "archived",
+            "manifestDigest": retirement_intent["sourceManifestDigest"],
+            "deploymentDigest": deployment_record_digest(source_deployment).to_dict(),
+            "archiveRecordDigest": retirement_intent["archiveRecordDigest"],
+            "platformStateDigest": platform_state_digest(namespace).to_dict(),
+        }
+    )
+    result: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationResult",
+        "provenance": {"kind": "authorization-job", "jobId": job["jobId"]},
+        "correlationId": request["correlationId"],
+        "operation": "restore",
+        "status": "succeeded",
+        "tenantId": request["tenantId"],
+        "canonicalOrigin": _mapping(candidate["metadata"])["canonicalOrigin"],
+        "manifest": candidate,
+    }
+
+    previous = _fixture("authorization-job.json")
+    previous_request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "archive",
+        "correlationId": "0198d17f-6f4a-7000-8000-000000000008",
+        "tenantId": retirement_intent["tenantId"],
+    }
+    previous.update(
+        {
+            "jobId": "0198d17f-6f4a-7000-8000-000000000007",
+            "request": previous_request,
+            "requestDigest": request_digest(previous_request).to_dict(),
+            "phase": "completed",
+        }
+    )
+    previous_source = json.loads(json.dumps(source))
+    _mapping(previous_source["spec"])["desiredState"] = "active"
+    _mapping(previous["expectedSource"]).update(
+        {
+            "expectsTenantAbsent": False,
+            "lifecycle": "active",
+            "manifestDigest": manifest_digest(previous_source).to_dict(),
+            "deploymentDigest": deployment_record_digest(source_deployment).to_dict(),
+            "archiveRecordDigest": None,
+            "platformStateDigest": platform_state_digest(namespace).to_dict(),
+        }
+    )
+    previous_result: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationResult",
+        "provenance": {"kind": "authorization-job", "jobId": previous["jobId"]},
+        "correlationId": previous_request["correlationId"],
+        "operation": "archive",
+        "status": "succeeded",
+        "tenantId": previous_request["tenantId"],
+        "canonicalOrigin": result["canonicalOrigin"],
+    }
+
+    _write(root, StateRecordPath.platform_namespace(), namespace)
+    _write(root, StateRecordPath.tenant_desired(request["tenantId"]), candidate)
+    _write_observed_for_manifest(root, candidate)
+    _write(
+        root,
+        StateRecordPath.tenant_deployment(request["tenantId"], source_deployment["id"]),
+        source_deployment,
+    )
+    _write(
+        root,
+        StateRecordPath.tenant_deployment(request["tenantId"], restored_deployment["id"]),
+        restored_deployment,
+    )
+    for authority, authority_result in ((previous, previous_result), (job, result)):
+        authority_request = _mapping(authority["request"])
+        correlation = json.loads(json.dumps(authority))
+        correlation["phase"] = "pending"
+        _write(root, StateRecordPath.authorization_job(authority["jobId"]), authority)
+        _write(
+            root,
+            StateRecordPath.authorization_correlation(authority_request["correlationId"]),
+            correlation,
+        )
+        _write(
+            root,
+            StateRecordPath.authorization_result(authority["jobId"]),
+            authority_result,
+        )
+    return job, result, previous, previous_result
 
 
 def _write_committed_transition_replay(
@@ -2088,6 +2229,7 @@ def test_executor_rejects_a_legacy_handler_failure_that_retains_candidate_state(
 
     for document in (job, correlation):
         document["compatibilityVersion"] = "static-job-v1"
+        document.pop("sourceAuthority")
     _write(root, StateRecordPath.authorization_job(issued.job_id), job)
     _write(
         root,
@@ -2713,6 +2855,7 @@ def test_executor_decodes_but_never_mutates_for_a_legacy_delete_job(
 
     for document in (job, correlation):
         document["compatibilityVersion"] = "static-job-v1"
+        document.pop("sourceAuthority")
         expected = document["expectedSource"]
         assert type(expected) is dict
         del expected["deletionEvidence"]
@@ -2757,6 +2900,7 @@ def test_executor_binds_delete_audit_evidence_to_its_exact_source(
     else:
         deployment = _fixture("deployment-record.json")
         archive = _fixture("archive-record.json")
+        archive["manifestDigest"] = manifest_digest(manifest).to_dict()
         _write(
             root,
             StateRecordPath.tenant_deployment(_TENANT_ID, _DEPLOYMENT_ID),
@@ -4063,6 +4207,7 @@ def test_executor_revalidates_archive_after_handler_cleared_intents(
 
     job["compatibilityVersion"] = "static-job-v2"
     job["executionValidated"] = False
+    job["sourceAuthority"] = {"manifest": source, "archiveRecord": None}
     correlation = json.loads(json.dumps(job))
     correlation["phase"] = "pending"
     _write(root, StateRecordPath.authorization_job(job["jobId"]), job)
@@ -4101,6 +4246,48 @@ def test_executor_revalidates_archive_after_handler_cleared_intents(
         )
         if not archive_matches:
             with pytest.raises(ExecutionError, match="durable archive authority"):
+                executor.execute(job["jobId"])
+            return
+        outcome = executor.execute(job["jobId"])
+        stored = repository.read(StateRecordPath.authorization_job(job["jobId"])).document
+
+    assert outcome.result == result
+    assert outcome.created is False
+    assert stored["executionValidated"] is True
+
+
+@pytest.mark.parametrize("deployment_matches", [True, False])
+def test_executor_revalidates_restore_after_handler_cleared_intents(
+    tmp_path: Path,
+    deployment_matches: bool,
+) -> None:
+    root = _state_root(tmp_path)
+    job, result, previous, previous_result = _write_committed_restore_replay(root)
+    if not deployment_matches:
+        manifest = _mapping(result["manifest"])
+        deployment = _mapping(_mapping(manifest["spec"])["desiredDeployment"])
+        request = _mapping(job["request"])
+        deployment_path = StateRecordPath.tenant_deployment(
+            request["tenantId"],
+            deployment["id"],
+        )
+        durable = json.loads(root.joinpath(*deployment_path.components).read_text(encoding="utf-8"))
+        durable["archiveSha256"] = "e" * 64
+        _write(root, deployment_path, durable)
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        _append_result_audit(repository, previous, previous_result)
+        _append_result_audit(repository, job, result)
+        executor = AuthorizationExecutor(
+            repository,
+            intake,
+            tenant_runtime_validator=lambda *_arguments: True,
+        )
+        if not deployment_matches:
+            with pytest.raises(ExecutionError, match="unbound deployment record"):
                 executor.execute(job["jobId"])
             return
         outcome = executor.execute(job["jobId"])
