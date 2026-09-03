@@ -324,9 +324,15 @@ class StartupReconciler:
                     result_exists = self._result_exists(transaction, job_id)
                     artifact = _artifact_binding(job)
                     needs_lifecycle_replay = job_id in active_intent_jobs
+                    needs_terminal_validation = (
+                        job["compatibilityVersion"] == "static-job-v2"
+                        and job["executionValidated"] is False
+                    )
                     if (
-                        result_exists or job["phase"] in {"completed", "failed"}
-                    ) and not needs_lifecycle_replay:
+                        (result_exists or job["phase"] in {"completed", "failed"})
+                        and not needs_lifecycle_replay
+                        and not needs_terminal_validation
+                    ):
                         terminal.add(filename)
                     elif artifact is not None:
                         authorized[filename] = artifact
@@ -334,6 +340,7 @@ class StartupReconciler:
                         if (
                             job["phase"] not in {"completed", "failed"}
                             or job_id in active_intent_jobs
+                            or needs_terminal_validation
                         ):
                             queued.append(job_id)
                     elif job["phase"] in {"pending", "claimed"}:

@@ -783,6 +783,48 @@ def test_startup_reconciliation_requeues_a_result_phase_repair(tmp_path: Path) -
     assert handoff.enqueued == [pending.job_id]
 
 
+def test_startup_reconciliation_requeues_unvalidated_terminal_work(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    with StateRepository(root, expected_owner=os.geteuid()) as repository:
+        issued = _issue(repository)
+        request = issued.document["request"]
+        assert type(request) is dict
+        result: dict[str, object] = {
+            "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+            "kind": "OperationResult",
+            "provenance": {"kind": "authorization-job", "jobId": issued.job_id},
+            "correlationId": request["correlationId"],
+            "operation": "create",
+            "status": "failed",
+            "errorCode": "state_drift",
+            "tenantId": None,
+        }
+        repository.create_immutable(
+            StateRecordPath.authorization_result(issued.job_id),
+            result,
+        )
+        job = repository.read(StateRecordPath.authorization_job(issued.job_id))
+        terminal = job.document
+        terminal["phase"] = "failed"
+        repository.compare_and_swap(
+            StateRecordPath.authorization_job(issued.job_id),
+            job.revision,
+            terminal,
+        )
+
+    handoff = _CaptureHandoff()
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        outcome = StartupReconciler(repository, intake, handoff).reconcile()
+
+    assert outcome.enqueued_jobs == (issued.job_id,)
+    assert handoff.enqueued == [issued.job_id]
+
+
 def test_startup_reconciliation_requeues_a_terminal_job_with_active_intent(
     tmp_path: Path,
 ) -> None:
@@ -830,8 +872,10 @@ def test_startup_reconciliation_requeues_a_terminal_job_with_active_intent(
     assert handoff.enqueued == [issued.job_id]
 
 
-def test_startup_reconciliation_retains_artifact_for_active_intent_replay(
+@pytest.mark.parametrize("active_intent", [True, False])
+def test_startup_reconciliation_retains_artifact_for_unfinished_replay(
     tmp_path: Path,
+    active_intent: bool,
 ) -> None:
     root = _state_root(tmp_path)
     tenant_id = "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100"
@@ -922,10 +966,20 @@ def test_startup_reconciliation_retains_artifact_for_active_intent_replay(
                 },
             }
         )
-        repository.create_immutable(
-            StateRecordPath.transaction_intent(intent["intentId"]),
-            intent,
-        )
+        if active_intent:
+            repository.create_immutable(
+                StateRecordPath.transaction_intent(intent["intentId"]),
+                intent,
+            )
+        else:
+            current = repository.read(StateRecordPath.authorization_job(issued.job_id))
+            terminal = current.document
+            terminal["phase"] = "failed"
+            repository.compare_and_swap(
+                StateRecordPath.authorization_job(issued.job_id),
+                current.revision,
+                terminal,
+            )
         result: dict[str, object] = {
             "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
             "kind": "OperationResult",

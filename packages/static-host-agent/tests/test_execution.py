@@ -433,6 +433,7 @@ class _CompletingTransitionHandler:
         manifest: dict[str, object],
         deployment: dict[str, object] | None = None,
         archive: dict[str, object] | None = None,
+        write_archive: bool = True,
         write_export: bool = False,
     ) -> None:
         self._repository = repository
@@ -440,6 +441,7 @@ class _CompletingTransitionHandler:
         self._manifest = manifest
         self._deployment = deployment
         self._archive = archive
+        self._write_archive = write_archive
         self._write_export = write_export
 
     def execute(
@@ -471,6 +473,8 @@ class _CompletingTransitionHandler:
             "canonicalOrigin": metadata["canonicalOrigin"],
             "manifest": self._manifest,
         }
+        if request["operation"] == "archive" and self._archive is not None:
+            result["archiveRecordDigest"] = archive_record_digest(self._archive).to_dict()
         if request["operation"] == "export":
             payload = b"authorized exported bundle"
             result["exportBundle"] = {
@@ -500,7 +504,7 @@ class _CompletingTransitionHandler:
                 ),
                 self._deployment,
             )
-        if self._archive is not None:
+        if self._archive is not None and self._write_archive:
             _write(
                 self._root,
                 StateRecordPath.tenant_archive(
@@ -1269,6 +1273,7 @@ def _write_committed_archive_replay(
         "tenantId": construction["tenantId"],
         "canonicalOrigin": metadata["canonicalOrigin"],
         "manifest": candidate,
+        "archiveRecordDigest": archive_record_digest(archive).to_dict(),
     }
     _write(root, StateRecordPath.authorization_job(job["jobId"]), job)
     _write(
@@ -2227,7 +2232,8 @@ def test_executor_requires_the_archive_record_for_an_archived_commit(
                     repository,
                     root,
                     manifest=candidate,
-                    archive=archive if include_archive else None,
+                    archive=archive,
+                    write_archive=include_archive,
                 )
             },
         )
@@ -4023,6 +4029,86 @@ def test_executor_reconstructs_an_archived_source_for_construction_cleanup(
     assert handler.dispatched is True
     assert outcome.result == result
     assert outcome.created is False
+
+
+@pytest.mark.parametrize("archive_matches", [True, False])
+def test_executor_revalidates_archive_after_handler_cleared_intents(
+    tmp_path: Path,
+    archive_matches: bool,
+) -> None:
+    root = _state_root(tmp_path)
+    job, construction, result = _write_committed_archive_replay(root)
+    source = json.loads(json.dumps(result["manifest"]))
+    source_spec = _mapping(source["spec"])
+    source_spec["desiredState"] = "active"
+
+    previous = json.loads(json.dumps(job))
+    previous["jobId"] = "0198d17f-6f4a-7000-8000-000000000007"
+    previous_request = _mapping(previous["request"])
+    previous_request["operation"] = "resume"
+    previous_request["correlationId"] = "0198d17f-6f4a-7000-8000-000000000008"
+    previous["requestDigest"] = request_digest(previous_request).to_dict()
+    previous["phase"] = "pending"
+    previous_result: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationResult",
+        "provenance": {"kind": "authorization-job", "jobId": previous["jobId"]},
+        "correlationId": previous_request["correlationId"],
+        "operation": "resume",
+        "status": "succeeded",
+        "tenantId": construction["tenantId"],
+        "canonicalOrigin": result["canonicalOrigin"],
+        "manifest": source,
+    }
+
+    job["compatibilityVersion"] = "static-job-v2"
+    job["executionValidated"] = False
+    correlation = json.loads(json.dumps(job))
+    correlation["phase"] = "pending"
+    _write(root, StateRecordPath.authorization_job(job["jobId"]), job)
+    _write(
+        root,
+        StateRecordPath.authorization_correlation(result["correlationId"]),
+        correlation,
+    )
+    _write(
+        root,
+        StateRecordPath.authorization_correlation(previous_request["correlationId"]),
+        previous,
+    )
+    _write(root, StateRecordPath.authorization_result(previous["jobId"]), previous_result)
+    root.joinpath(
+        *StateRecordPath.archive_construction_intent(construction["intentId"]).components
+    ).unlink()
+    if not archive_matches:
+        candidate = _mapping(result["manifest"])
+        deployment = _mapping(_mapping(candidate["spec"])["desiredDeployment"])
+        archive_path = StateRecordPath.tenant_archive(construction["tenantId"], deployment["id"])
+        archive = json.loads(root.joinpath(*archive_path.components).read_text(encoding="utf-8"))
+        archive["bucket"] = "lowerduckpond-net-production-tenant-archives-wrong"
+        _write(root, archive_path, archive)
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        _append_result_audit(repository, previous, previous_result)
+        _append_result_audit(repository, job, result)
+        executor = AuthorizationExecutor(
+            repository,
+            intake,
+            tenant_runtime_validator=lambda *_arguments: True,
+        )
+        if not archive_matches:
+            with pytest.raises(ExecutionError, match="durable archive authority"):
+                executor.execute(job["jobId"])
+            return
+        outcome = executor.execute(job["jobId"])
+        stored = repository.read(StateRecordPath.authorization_job(job["jobId"])).document
+
+    assert outcome.result == result
+    assert outcome.created is False
+    assert stored["executionValidated"] is True
 
 
 def test_executor_rejects_an_archive_record_outside_construction_authority(
