@@ -162,7 +162,15 @@ class CreateLifecycleHandler:
                 raise
             return ExecutionOutcome(outcome.result, outcome.created)
         if replay.result is not None:
-            return ExecutionOutcome(deepcopy(replay.result), False)
+            result = deepcopy(replay.result)
+            return ExecutionOutcome(
+                result,
+                False,
+                replay_existing=(
+                    result.get("status") == "failed"
+                    and result.get("failurePublisher") == "authorization-executor"
+                ),
+            )
         try:
             prepared = prepare_create_transition(
                 self._repository,

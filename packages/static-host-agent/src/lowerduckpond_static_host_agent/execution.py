@@ -203,6 +203,7 @@ class ExecutionOutcome:
 
     result: dict[str, object]
     created: bool
+    replay_existing: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -784,6 +785,22 @@ class AuthorizationExecutor:
             raise ExecutionError("lifecycle handler returned a malformed outcome")
         result = deepcopy(returned.result)
         validate_contract(result, expected_kind=ContractKind.OPERATION_RESULT)
+        if returned.replay_existing:
+            if returned.created or not _is_executor_failure(result):
+                raise ExecutionError("lifecycle handler requested an invalid executor replay")
+            existing = self._repository.read(
+                StateRecordPath.authorization_result(job_id),
+                blocking=blocking,
+            )
+            if existing.document != result:
+                raise ExecutionError("executor failure changed during handler replay")
+            return self._replay_existing_result(
+                job_id,
+                initial,
+                existing,
+                handler=handler,
+                blocking=blocking,
+            )
         if _is_executor_failure(result):
             raise ExecutionError("lifecycle handler claimed executor failure publication")
         audit_is_latest_for_tenant = False

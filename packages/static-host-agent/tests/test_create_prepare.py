@@ -32,8 +32,10 @@ from lowerduckpond_static_host_agent import (
     CreatePreparationError,
     CreateRecoveryError,
     CreateStateBoundary,
+    ExecutionOutcome,
     FilesystemCapacity,
     HostCapacityLimits,
+    LifecycleArtifact,
     LockManager,
     LockMode,
     PinnedCaddyGeneration,
@@ -545,6 +547,51 @@ def test_create_handler_reports_concurrent_activation_as_replay(
 
         assert outcome.result["status"] == "succeeded"
         assert outcome.created is False
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
+def test_executor_replays_a_concurrent_executor_failure_from_create_handler(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root)
+    _write_correlation(root, job)
+    runtime = _Runtime()
+    try:
+        handler = _create_handler(repository, runtime)
+        original_execute = handler.execute
+        with ArtifactIntake(root, expected_owner=os.geteuid()) as intake:
+
+            def lose_publication_race(
+                job_id: str,
+                *,
+                claim: LifecycleArtifact | None,
+                blocking: bool,
+            ) -> ExecutionOutcome:
+                competing = AuthorizationExecutor(repository, intake).execute(
+                    job_id,
+                    blocking=blocking,
+                )
+                assert competing.created is True
+                return original_execute(
+                    job_id,
+                    claim=claim,
+                    blocking=blocking,
+                )
+
+            monkeypatch.setattr(handler, "execute", lose_publication_race)
+            outcome = AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={"create": handler},
+            ).execute(job["jobId"])
+
+        assert outcome.created is False
+        assert outcome.result["status"] == "failed"
+        assert outcome.result["errorCode"] == "not_implemented"
         assert repository.measure_intent_records().records == ()
     finally:
         repository.close()
