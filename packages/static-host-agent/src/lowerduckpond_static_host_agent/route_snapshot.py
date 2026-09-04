@@ -70,6 +70,8 @@ class RouteSnapshotTransaction(Protocol):
 
     def read(self, path: StateRecordPath) -> StoredContract: ...
 
+    def tenant_has_deployment_history(self, tenant_id: object) -> bool: ...
+
     def measure_inventory(self) -> StateInventory: ...
 
 
@@ -83,14 +85,8 @@ def snapshot_tenant_routes(
     namespace = transaction.read(StateRecordPath.platform_namespace()).document
     validate_contract(namespace, expected_kind=ContractKind.PLATFORM_NAMESPACE)
     inventory = transaction.measure_inventory()
-    candidate = None if overlay is None else _copy_tenant(overlay.tenant)
-    source = None if overlay is None or overlay.source is None else _copy_tenant(overlay.source)
+    candidate, source = _prepare_overlay(transaction, overlay, inventory)
     overlay_id = None if candidate is None else _tenant_id(candidate)
-    if overlay is not None:
-        exists = overlay_id in inventory.tenant_ids
-        if (overlay.mode is RouteOverlayMode.ADD) == exists:
-            disposition = "already exists" if exists else "is absent"
-            raise RouteSnapshotError(f"{overlay.mode.value} route overlay tenant {disposition}")
 
     tenants = []
     for tenant_id in inventory.tenant_ids:
@@ -117,6 +113,23 @@ def snapshot_tenant_routes(
     return TenantRouteSnapshot(namespace, tuple(tenants))
 
 
+def _prepare_overlay(
+    transaction: RouteSnapshotTransaction,
+    overlay: TenantRouteOverlay | None,
+    inventory: StateInventory,
+) -> tuple[TenantRouteInput | None, TenantRouteInput | None]:
+    if overlay is None:
+        return None, None
+    candidate = _copy_tenant(overlay.tenant)
+    source = None if overlay.source is None else _copy_tenant(overlay.source)
+    exists = _tenant_id(candidate) in inventory.tenant_ids
+    if (overlay.mode is RouteOverlayMode.ADD) == exists:
+        disposition = "already exists" if exists else "is absent"
+        raise RouteSnapshotError(f"{overlay.mode.value} route overlay tenant {disposition}")
+    _reject_undeployed_history(transaction, candidate)
+    return candidate, source
+
+
 def _read_tenant(
     transaction: RouteSnapshotTransaction,
     tenant_id: str,
@@ -139,7 +152,20 @@ def _read_tenant(
             StateRecordPath.tenant_deployment(tenant_id, deployment_id)
         ).document
         validate_contract(deployment, expected_kind=ContractKind.DEPLOYMENT_RECORD)
-    return _copy_tenant(TenantRouteInput(manifest, observed, deployment))
+    tenant = _copy_tenant(TenantRouteInput(manifest, observed, deployment))
+    _reject_undeployed_history(transaction, tenant)
+    return tenant
+
+
+def _reject_undeployed_history(
+    transaction: RouteSnapshotTransaction,
+    tenant: TenantRouteInput,
+) -> None:
+    spec = cast(dict[str, object], tenant.manifest["spec"])
+    if spec["desiredState"] == "undeployed" and transaction.tenant_has_deployment_history(
+        _tenant_id(tenant)
+    ):
+        raise RouteSnapshotError("undeployed tenant retains deployment history")
 
 
 def _tenant_id(tenant: TenantRouteInput) -> str:

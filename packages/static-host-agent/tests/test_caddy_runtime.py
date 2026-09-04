@@ -240,6 +240,10 @@ class _RouteTransaction:
         tenant_ids = () if self.archived is None else (_TENANT_ID,)
         return StateInventory(tenant_ids, 0, 0, 0, 0)
 
+    @staticmethod
+    def tenant_has_deployment_history(_tenant_id: object) -> bool:
+        return False
+
 
 def _candidate_inputs() -> tuple[_RouteTransaction, TenantRouteOverlay, _OpenGate]:
     return (
@@ -1485,7 +1489,10 @@ def test_selection_and_launch_independently_rederive_tenant_capable_routes(
         finally:
             selected.generation.close()
 
-    with runtime_fixture.open() as runtime, prepare_active_caddy_execution(runtime) as prepared:
+    with (
+        runtime_fixture.open() as runtime,
+        prepare_active_caddy_execution(runtime) as prepared,
+    ):
         descriptor = prepared.duplicate_configuration_descriptor()
         try:
             assert os.read(descriptor, os.fstat(descriptor).st_size) == canonical_json_bytes(

@@ -47,6 +47,7 @@ def _state_root(tmp_path: Path) -> Path:
         ("authorization", "results"),
         ("intents",),
         ("locks",),
+        ("audit",),
     ):
         _mkdir(root.joinpath(*components))
     LockManager.initialize(root / "locks", expected_owner=os.geteuid()).close()
@@ -114,6 +115,22 @@ def _archived_tenant(tenant_id: str, *, slug: str) -> TenantRouteInput:
     return TenantRouteInput(tenant.manifest, tenant.observed_state, deployment)
 
 
+def _suspended_tenant(source: TenantRouteInput, *, slug: str) -> TenantRouteInput:
+    candidate = deepcopy(source)
+    metadata = candidate.manifest["metadata"]
+    spec = candidate.manifest["spec"]
+    assert type(metadata) is dict
+    assert type(spec) is dict
+    metadata["slug"] = slug
+    spec["desiredState"] = "suspended"
+    candidate.observed_state["desiredManifestDigest"] = manifest_digest(
+        candidate.manifest
+    ).to_dict()
+    candidate.observed_state["observedState"] = "suspended"
+    candidate.observed_state["runtimeGenerationId"] = None
+    return candidate
+
+
 def _archive_record(tenant: TenantRouteInput) -> dict[str, object]:
     assert tenant.deployment is not None
     metadata = tenant.manifest["metadata"]
@@ -137,6 +154,8 @@ def test_snapshot_reads_every_tenant_and_selected_deployment(tmp_path: Path) -> 
     active = _active_tenant(root)
     second = _undeployed_tenant(_SECOND_TENANT_ID, slug="second-duck")
     _write(root, StateRecordPath.tenant_desired(_SECOND_TENANT_ID), second.manifest)
+    _mkdir(root / "tenants" / _SECOND_TENANT_ID / "deployments")
+    _mkdir(root / "tenants" / _SECOND_TENANT_ID / "archives")
     _write(root, StateRecordPath.tenant_observed(_SECOND_TENANT_ID), second.observed_state)
 
     with (
@@ -157,7 +176,11 @@ def test_snapshot_omits_archived_tenants_from_the_complete_runtime_input(
     active = _active_tenant(root)
     archived = _archived_tenant(_SECOND_TENANT_ID, slug="archived-duck")
     _write(root, StateRecordPath.tenant_desired(_SECOND_TENANT_ID), archived.manifest)
-    _write(root, StateRecordPath.tenant_observed(_SECOND_TENANT_ID), archived.observed_state)
+    _write(
+        root,
+        StateRecordPath.tenant_observed(_SECOND_TENANT_ID),
+        archived.observed_state,
+    )
     assert archived.deployment is not None
     _write(
         root,
@@ -216,7 +239,11 @@ def test_snapshot_rejects_corrupt_archived_authority_before_omitting_it(
         assert type(digest) is dict
         digest["value"] = "f" * 64
     _write(root, StateRecordPath.tenant_desired(_SECOND_TENANT_ID), archived.manifest)
-    _write(root, StateRecordPath.tenant_observed(_SECOND_TENANT_ID), archived.observed_state)
+    _write(
+        root,
+        StateRecordPath.tenant_observed(_SECOND_TENANT_ID),
+        archived.observed_state,
+    )
     assert archived.deployment is not None
     _write(
         root,
@@ -258,11 +285,13 @@ def test_add_overlay_extends_the_complete_snapshot_without_persisting(
     assert inventory.tenant_ids == (_TENANT_ID,)
 
 
-def test_replace_overlay_substitutes_exactly_one_existing_tenant(tmp_path: Path) -> None:
+def test_replace_overlay_substitutes_exactly_one_existing_tenant(
+    tmp_path: Path,
+) -> None:
     root = _state_root(tmp_path)
     _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
     source = _active_tenant(root)
-    candidate = _undeployed_tenant(_TENANT_ID, slug="duck-repair")
+    candidate = _suspended_tenant(source, slug="duck-repair")
 
     with (
         StateRepository(root, expected_owner=os.geteuid()) as repository,
@@ -316,7 +345,7 @@ def test_replace_overlay_rejects_source_state_that_changed_before_the_lock(
     root = _state_root(tmp_path)
     _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
     source = _active_tenant(root)
-    candidate = _undeployed_tenant(_TENANT_ID, slug="duck-repair")
+    candidate = _suspended_tenant(source, slug="duck-repair")
     changed = deepcopy(source.observed_state)
     changed["reconciledAt"] = "2026-09-02T12:31:00Z"
     _write(root, StateRecordPath.tenant_observed(_TENANT_ID), changed)
@@ -344,5 +373,34 @@ def test_snapshot_fails_closed_when_one_inventory_tenant_is_incomplete(
         StateRepository(root, expected_owner=os.geteuid()) as repository,
         repository.transaction(mode=LockMode.EXCLUSIVE) as transaction,
         pytest.raises(FileNotFoundError),
+    ):
+        snapshot_tenant_routes(transaction)
+
+
+def test_snapshot_rejects_unrelated_undeployed_tenant_with_deployment_history(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    _active_tenant(root)
+    undeployed = _undeployed_tenant(_SECOND_TENANT_ID, slug="reused-duck")
+    _write(root, StateRecordPath.tenant_desired(_SECOND_TENANT_ID), undeployed.manifest)
+    _write(
+        root,
+        StateRecordPath.tenant_observed(_SECOND_TENANT_ID),
+        undeployed.observed_state,
+    )
+    deployment = _fixture("deployment-record.json")
+    deployment["tenantId"] = _SECOND_TENANT_ID
+    _write(
+        root,
+        StateRecordPath.tenant_deployment(_SECOND_TENANT_ID, deployment["id"]),
+        deployment,
+    )
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        repository.transaction(mode=LockMode.EXCLUSIVE) as transaction,
+        pytest.raises(RouteSnapshotError, match="undeployed tenant retains deployment history"),
     ):
         snapshot_tenant_routes(transaction)
