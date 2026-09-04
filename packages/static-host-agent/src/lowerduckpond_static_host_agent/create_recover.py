@@ -219,21 +219,19 @@ def _require_bound_job(
     job_id = validate_uuid7(correlation["jobId"])
     job = transaction.read(StateRecordPath.authorization_job(job_id))
     immutable_correlation = deepcopy(correlation)
-    immutable_job = job.document
-    immutable_correlation.pop("phase", None)
-    immutable_job.pop("phase", None)
-    immutable_correlation.pop("dispatchArchiveDeploymentIds", None)
-    immutable_job.pop("dispatchArchiveDeploymentIds", None)
-    immutable_correlation.pop("dispatchArtifactReleaseTreeDigest", None)
-    immutable_job.pop("dispatchArtifactReleaseTreeDigest", None)
-    immutable_correlation.pop("dispatchSourceReleaseTreeDigest", None)
-    immutable_job.pop("dispatchSourceReleaseTreeDigest", None)
-    immutable_correlation.pop("dispatchDeploymentIds", None)
-    immutable_job.pop("dispatchDeploymentIds", None)
-    immutable_correlation.pop("dispatchTenantIds", None)
-    immutable_job.pop("dispatchTenantIds", None)
-    immutable_correlation.pop("dispatchTenantRecordHistories", None)
-    immutable_job.pop("dispatchTenantRecordHistories", None)
+    immutable_job = deepcopy(job.document)
+    for field in (
+        "phase",
+        "executionValidated",
+        "dispatchArchiveDeploymentIds",
+        "dispatchArtifactReleaseTreeDigest",
+        "dispatchSourceReleaseTreeDigest",
+        "dispatchDeploymentIds",
+        "dispatchTenantIds",
+        "dispatchTenantRecordHistories",
+    ):
+        immutable_correlation.pop(field, None)
+        immutable_job.pop(field, None)
     request = job.document["request"]
     if (
         immutable_correlation != immutable_job

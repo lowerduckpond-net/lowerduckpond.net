@@ -28,6 +28,7 @@ from lowerduckpond_static_host_agent import (
     FilesystemCapacity,
     HostCapacityLimits,
     LockManager,
+    LockMode,
     PinnedCaddyGeneration,
     PreparedCreateTransition,
     StateRecordPath,
@@ -502,6 +503,63 @@ def test_create_recovery_reconstructs_and_activates_durable_preparation(
         assert runtime.active == runtime.running == prepared.candidate_manifest.generation_id
         assert repository.measure_intent_records().records == ()
         assert repository.measure_inventory().tenant_ids == (prepared.plan.tenant_id,)
+    finally:
+        repository.close()
+
+
+def test_create_recovery_accepts_a_terminally_validated_v2_job(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root)
+    job.update(
+        {
+            "compatibilityVersion": "static-job-v2",
+            "executionValidated": False,
+            "sourceAuthority": None,
+        }
+    )
+    _write(root, StateRecordPath.authorization_job(job["jobId"]), job)
+    _write_correlation(root, job)
+    runtime = _Runtime()
+    try:
+        prepared = _prepare(repository, runtime, job)
+
+        def interrupt(boundary: CreateCommitBoundary) -> None:
+            if boundary is CreateCommitBoundary.JOB_SYNC:
+                raise RuntimeError("interrupted before intent removal")
+
+        with pytest.raises(RuntimeError, match="interrupted before intent removal"):
+            activate_create_transition(
+                repository,
+                cast(CaddyRuntime, runtime),
+                _Gate(),
+                prepared,
+                reloader=runtime.reload,
+                restorer=runtime.restore,
+                verifier=runtime.verify,
+                commit_failure_hook=interrupt,
+            )
+        with repository.transaction(mode=LockMode.EXCLUSIVE) as transaction:
+            path = StateRecordPath.authorization_job(job["jobId"])
+            terminal = transaction.read(path)
+            validated = deepcopy(terminal.document)
+            validated["executionValidated"] = True
+            transaction.commit_execution_validation(path, terminal.revision, validated)
+
+        assert (
+            recover_create_transition(
+                repository,
+                cast(CaddyRuntime, runtime),
+                _Gate(),
+                prepared.plan.intent_id,
+                reloader=runtime.reload,
+                restorer=runtime.restore,
+                verifier=runtime.verify,
+            )
+            == prepared.plan.result
+        )
+        assert repository.measure_intent_records().records == ()
     finally:
         repository.close()
 
