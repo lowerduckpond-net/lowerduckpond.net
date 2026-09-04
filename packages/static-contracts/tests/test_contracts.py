@@ -2166,6 +2166,38 @@ def test_archive_transaction_intent_rejects_drift_between_candidate_copies() -> 
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
 
+def test_legacy_archive_transaction_intent_binds_its_recovery_source() -> None:
+    intent = _archive_transaction_intent()
+    del intent["compatibilityVersion"]
+    del intent["sourceManifest"]
+    del intent["candidateManifest"]
+    recovery = intent["archiveRecovery"]
+    assert type(recovery) is dict
+    source = recovery["sourceManifest"]
+    candidate = recovery["candidateManifest"]
+    assert type(source) is dict
+    assert type(candidate) is dict
+    source_spec = source["spec"]
+    candidate_spec = candidate["spec"]
+    assert type(source_spec) is dict
+    assert type(candidate_spec) is dict
+    source_quotas = source_spec["quotas"]
+    candidate_quotas = candidate_spec["quotas"]
+    assert type(source_quotas) is dict
+    assert type(candidate_quotas) is dict
+    source_quotas["entries"] = 4999
+    candidate_quotas["entries"] = 4999
+    candidate_digest = manifest_digest(candidate).to_dict()
+    intent["candidateManifestDigest"] = candidate_digest
+    archive = recovery["candidateArchiveRecord"]
+    assert type(archive) is dict
+    archive["manifestDigest"] = candidate_digest
+
+    with pytest.raises(ContractError, match="archive source manifest binding") as captured:
+        validate_contract(intent)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
 def test_archive_candidate_record_binds_transaction_correlation() -> None:
     intent = _archive_transaction_intent()
     recovery = intent["archiveRecovery"]

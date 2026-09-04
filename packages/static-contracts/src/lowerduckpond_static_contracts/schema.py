@@ -534,6 +534,17 @@ def _validated_transaction_source(
     return source_manifest
 
 
+def _validate_archive_source_manifest_binding(
+    document: dict[str, object],
+    source_manifest: dict[str, object],
+) -> None:
+    if _manifest_digest(source_manifest) != document["sourceManifestDigest"]:
+        raise ContractError(
+            ErrorCode.SCHEMA_INVALID,
+            "archive source manifest binding is invalid",
+        )
+
+
 def _validate_transaction_manifest_transform(
     operation: str,
     source: dict[str, object] | None,
@@ -592,6 +603,7 @@ def _validate_transaction_intent(document: dict[str, object]) -> None:
     candidate_metadata = cast(dict[str, object], archive_candidate["metadata"])
     if source_metadata["id"] != tenant_id or candidate_metadata != source_metadata:
         raise ContractError(ErrorCode.SCHEMA_INVALID, "archive intent tenant identity drifted")
+    _validate_archive_source_manifest_binding(document, source)
     if current and source != source_manifest:
         raise ContractError(ErrorCode.SCHEMA_INVALID, "archive source manifest copies drifted")
     if current and candidate_manifest != archive_candidate:
