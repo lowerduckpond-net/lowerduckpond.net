@@ -8,3 +8,9 @@ collections:
     type: git
     # Immutable commit behind the community.docker 5.2.2 release tag.
     version: 44812d46a5072eec78175a41a1100ee77218c8a2
+  - name: https://github.com/ansible-collections/community.library_inventory_filtering.git
+    type: git
+    # Immutable commit behind the community.library_inventory_filtering_v1 1.1.5 release tag.
+    # Pin the transitive community.docker dependency so CI never consults the
+    # anonymous Galaxy API while Molecule prepares its environment.
+    version: 5f70dd8678885157cb186e8b64382a30cab3e12f
