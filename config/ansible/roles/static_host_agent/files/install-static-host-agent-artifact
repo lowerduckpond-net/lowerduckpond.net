@@ -1,6 +1,7 @@
 #!/usr/bin/python3 -I
 from __future__ import annotations
 
+import errno
 import fcntl
 import hashlib
 import os
@@ -311,7 +312,9 @@ def main() -> None:
             sync_tree(staged_artifact)
             try:
                 staged_artifact.rename(destination)
-            except FileExistsError:
+            except OSError as error:
+                if error.errno not in {errno.EEXIST, errno.ENOTEMPTY}:
+                    raise
                 verify(verifier, destination)
             else:
                 sync_directory(install_root)

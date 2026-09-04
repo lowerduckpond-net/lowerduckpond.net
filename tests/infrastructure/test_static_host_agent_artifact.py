@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import ast
+import errno
 import fcntl
 import json
 import os
+import runpy
 import shlex
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -116,6 +119,57 @@ def test_host_agent_artifact_is_locked_reproducible_and_installable(
     assert manifest["format"] == "lowerduckpond-static-host-agent-artifact-v1"
     assert manifest["python"] == "3.14"
     assert run(verifier, selected).returncode == 0
+
+
+def test_installer_verifies_a_concurrent_enotempty_publication_winner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    artifact = tmp_path / "artifact.tar"
+    build = run(BUILDER, artifact)
+    assert build.returncode == 0, build.stderr
+    digest = build.stdout.strip()
+    install_root = tmp_path / "install"
+    install_root.mkdir()
+    create_selection_lock(install_root)
+    state_root = tmp_path / "state"
+    verifier = verifier_for_test(tmp_path)
+    destination = install_root / digest
+    original_rename = Path.rename
+    collided = False
+
+    def publish_concurrent_winner(source: Path, target: Path) -> Path:
+        nonlocal collided
+        if not collided and target == destination and source.name.startswith(".install-"):
+            collided = True
+            shutil.copytree(source, target)
+            raise OSError(errno.ENOTEMPTY, os.strerror(errno.ENOTEMPTY), target)
+        return original_rename(source, target)
+
+    monkeypatch.setattr(Path, "rename", publish_concurrent_winner)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            os.fspath(INSTALLER),
+            os.fspath(artifact),
+            digest,
+            os.fspath(install_root),
+            os.fspath(verifier),
+            os.fspath(state_root),
+        ],
+    )
+    installer = runpy.run_path(os.fspath(INSTALLER), run_name="installer_under_test")
+
+    installer["main"]()
+
+    captured = capsys.readouterr()
+    assert collided is True
+    assert captured.out == "changed\n"
+    assert captured.err == ""
+    assert (install_root / "current").resolve(strict=True) == destination
+    assert not any(entry.name.startswith(".install-") for entry in install_root.iterdir())
 
 
 def test_installer_refuses_drift_in_an_existing_version(tmp_path: Path) -> None:
