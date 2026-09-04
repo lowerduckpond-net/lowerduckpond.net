@@ -482,6 +482,43 @@ def test_create_handler_reclassifies_after_concurrent_recovery_finishes(
         repository.close()
 
 
+def test_create_handler_reclassifies_after_concurrent_recovery_activation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root)
+    _write_correlation(root, job)
+    runtime = _Runtime()
+    try:
+        prepared = _prepare(repository, runtime, job)
+        original = recover_create_transition_outcome
+
+        def finish_elsewhere_then_report_activation_race(
+            *args: object,
+            **kwargs: object,
+        ) -> None:
+            cast(Callable[..., object], original)(*args, **kwargs)
+            raise CreateActivationError("concurrent activation removed the intent")
+
+        monkeypatch.setattr(
+            create_handler_module,
+            "recover_create_transition_outcome",
+            finish_elsewhere_then_report_activation_race,
+        )
+        outcome = _create_handler(repository, runtime).execute(
+            cast(str, job["jobId"]),
+            claim=None,
+            blocking=False,
+        )
+
+        assert outcome.result == prepared.plan.result
+        assert outcome.created is False
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
 def test_create_handler_reclassifies_after_concurrent_preparation_wins(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

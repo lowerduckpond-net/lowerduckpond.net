@@ -153,7 +153,7 @@ class CreateLifecycleHandler:
                     verifier=self._verifier,
                     blocking=blocking,
                 )
-            except CreateRecoveryError:
+            except CreateActivationError, CreateRecoveryError:
                 if retry_after_race:
                     return self._execute_classified(
                         job_id,

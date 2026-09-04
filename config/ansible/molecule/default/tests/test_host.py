@@ -508,7 +508,7 @@ def test_caddy_reload_always_validates_first(host: Host) -> None:
     unit = host.file("/etc/systemd/system/caddy.service")
     validate_index = unit.content_string.index("ExecReload=/usr/local/bin/caddy validate")
     reload_index = unit.content_string.index("ExecReload=/usr/local/bin/caddy reload")
-    mode_index = unit.content_string.index("ExecReload=+/usr/bin/chmod 0620 /run/caddy/admin.sock")
+    mode_index = unit.content_string.index("ExecReload=/usr/bin/chmod 0620 /run/caddy/admin.sock")
     assert validate_index < reload_index
     assert reload_index < mode_index
     assert "--address unix//run/caddy/admin.sock" in unit.content_string
