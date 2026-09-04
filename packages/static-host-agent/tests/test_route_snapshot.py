@@ -213,6 +213,25 @@ def test_snapshot_omits_archived_tenants_from_the_complete_runtime_input(
     assert replaced.tenants == (active,)
 
 
+def test_snapshot_rejects_archive_retained_by_a_live_tenant(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    active = _active_tenant(root)
+    assert active.deployment is not None
+    _write(
+        root,
+        StateRecordPath.tenant_archive(_TENANT_ID, active.deployment["id"]),
+        _archive_record(active),
+    )
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        repository.transaction(mode=LockMode.EXCLUSIVE) as transaction,
+        pytest.raises(RouteSnapshotError, match="live tenant retained an archive record"),
+    ):
+        snapshot_tenant_routes(transaction)
+
+
 def test_snapshot_rejects_duplicate_slug_before_omitting_archived_tenant(
     tmp_path: Path,
 ) -> None:

@@ -222,9 +222,26 @@ def _is_archived(
     if type(spec) is not dict:  # pragma: no cover - copied route input was validated
         raise RouteSnapshotError("tenant route manifest spec is malformed")
     if spec.get("desiredState") != "archived":
+        _reject_live_archive_binding(transaction, tenant)
         return False
     _validate_archived_bindings(transaction, tenant, spec)
     return True
+
+
+def _reject_live_archive_binding(
+    transaction: RouteSnapshotTransaction,
+    tenant: TenantRouteInput,
+) -> None:
+    deployment = tenant.deployment
+    if deployment is None:
+        return
+    tenant_id = _tenant_id(tenant)
+    deployment_id = validate_uuid7(deployment["id"])
+    try:
+        transaction.read(StateRecordPath.tenant_archive(tenant_id, deployment_id))
+    except FileNotFoundError:
+        return
+    raise RouteSnapshotError("live tenant retained an archive record")
 
 
 def _validate_archived_bindings(

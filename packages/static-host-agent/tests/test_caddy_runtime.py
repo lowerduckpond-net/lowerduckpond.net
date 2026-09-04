@@ -60,6 +60,7 @@ _TENANT_ID = "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100"
 _DEPLOYMENT_ID = "0191e2ca-49f2-7608-8cf3-f80ab2cab151"
 _TENANT_GENERATION = "0198d17f-6f4a-7000-8000-000000000008"
 _CADDY_VALIDATION_DATA_MODE = 0o770
+_CANDIDATE_STATE_READS = 2
 
 
 def _accept_candidate(_generation: object, _environment: object) -> None:
@@ -224,6 +225,8 @@ class _RouteTransaction:
                 kind = ContractKind.ARCHIVE_RECORD
             else:
                 raise AssertionError(f"unexpected state read: {path}")
+        elif path == StateRecordPath.tenant_archive(_TENANT_ID, _DEPLOYMENT_ID):
+            raise FileNotFoundError(path)
         else:
             raise AssertionError(f"unexpected state read: {path}")
         encoded = canonical_json_bytes(document)
@@ -504,7 +507,7 @@ def test_runtime_publishes_and_validates_one_unselected_derived_candidate(
         )
 
         assert manifest.generation_id == _TENANT_GENERATION
-        assert transaction.read_count == 1
+        assert transaction.read_count == _CANDIDATE_STATE_READS
         assert runtime.read_active() == GENERATION_A
         runtime.select_active(_TENANT_GENERATION)
         assert runtime.read_active() == _TENANT_GENERATION

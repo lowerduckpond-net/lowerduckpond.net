@@ -96,7 +96,7 @@ class _Runtime:
         if source_route_set is not None:
             source_state = "active" if source_route_set == "both" else "suspended"
             self.source_snapshot = TenantRouteSnapshot(
-                {},
+                _fixture("platform-namespace.json"),
                 (
                     TenantRouteInput(
                         {
@@ -454,6 +454,24 @@ def test_route_preparation_reconciles_drift_from_desired_authority(
         repository.close()
 
 
+def test_route_preparation_rejects_non_target_reconcile_snapshot_drift(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root, "reconcile", "active")
+    runtime = _Runtime(source_route_set="both")
+    assert runtime.source_snapshot is not None
+    runtime.source_snapshot = TenantRouteSnapshot({}, runtime.source_snapshot.tenants)
+    try:
+        with pytest.raises(
+            RouteAuthorityDriftError,
+            match="selected runtime generation disagrees",
+        ):
+            _prepare(repository, runtime, job)
+    finally:
+        repository.close()
+
+
 def test_route_preparation_rejects_archive_retained_by_live_source(
     tmp_path: Path,
 ) -> None:
@@ -473,7 +491,7 @@ def test_route_preparation_rejects_archive_retained_by_live_source(
             RouteAuthorityDriftError,
             match="live route source retained an archive record",
         ):
-            _prepare(repository, _Runtime(), job)
+            _prepare(repository, _Runtime(source_route_set="both"), job)
     finally:
         repository.close()
 

@@ -137,17 +137,23 @@ def prepare_route_transition(  # noqa: PLR0913 - authority sources stay explicit
             selected_snapshot,
             validate_uuid7(request["tenantId"]),
         )
-        if request["operation"] != "reconcile":
-            try:
-                expected_snapshot = snapshot_tenant_routes(transaction)
-            except (FileNotFoundError, RouteSnapshotError) as error:
-                raise RouteAuthorityDriftError(
-                    "authoritative tenant routes cannot produce a complete snapshot"
-                ) from error
-            if selected_snapshot != expected_snapshot:
-                raise RouteAuthorityDriftError(
-                    "selected runtime generation disagrees with authoritative tenant routes"
-                )
+        try:
+            expected_snapshot = snapshot_tenant_routes(transaction)
+        except (FileNotFoundError, RouteSnapshotError) as error:
+            raise RouteAuthorityDriftError(
+                "authoritative tenant routes cannot produce a complete snapshot"
+            ) from error
+        if selected_snapshot != expected_snapshot and (
+            request["operation"] != "reconcile"
+            or not _snapshots_match_except_tenant(
+                selected_snapshot,
+                expected_snapshot,
+                tenant_id=validate_uuid7(request["tenantId"]),
+            )
+        ):
+            raise RouteAuthorityDriftError(
+                "selected runtime generation disagrees with authoritative tenant routes"
+            )
         candidate_generation_id = generate_uuid7(clock=clock, entropy=entropy)
         plan = plan_route_transition(
             job.document,
@@ -219,6 +225,30 @@ def _selected_tenant_route_set(
     if type(spec) is not dict:
         raise RouteSnapshotError("selected route source manifest is malformed")
     return "both" if spec.get("desiredState") == "active" else "absent"
+
+
+def _snapshots_match_except_tenant(
+    selected: TenantRouteSnapshot,
+    expected: TenantRouteSnapshot,
+    *,
+    tenant_id: str,
+) -> bool:
+    """Admit reconcile drift only within its one authorized target tenant."""
+
+    if selected.platform_namespace != expected.platform_namespace:
+        return False
+
+    def without_target(snapshot: TenantRouteSnapshot) -> tuple[TenantRouteInput, ...]:
+        others: list[TenantRouteInput] = []
+        for tenant in snapshot.tenants:
+            metadata = tenant.manifest.get("metadata")
+            if type(metadata) is not dict:
+                raise RouteSnapshotError("selected route metadata is malformed")
+            if metadata.get("id") != tenant_id:
+                others.append(tenant)
+        return tuple(others)
+
+    return without_target(selected) == without_target(expected)
 
 
 def _require_current_route_authority(
