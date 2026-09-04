@@ -102,6 +102,14 @@ from lowerduckpond_static_host_agent.request_decoder import (
     RequestDecodeError,
     SubprocessRequestDecoder,
 )
+from lowerduckpond_static_host_agent.route_activate import RouteActivationError
+from lowerduckpond_static_host_agent.route_commit import RouteCommitError
+from lowerduckpond_static_host_agent.route_handler import (
+    RouteLifecycleError,
+    RouteLifecycleHandler,
+)
+from lowerduckpond_static_host_agent.route_prepare import RoutePreparationError
+from lowerduckpond_static_host_agent.route_recover import RouteRecoveryError
 from lowerduckpond_static_host_agent.route_snapshot import (
     RouteSnapshotError,
     RouteSnapshotTransaction,
@@ -151,6 +159,11 @@ _SAFE_ERRORS: Final = (
     CreateLifecycleError,
     CreatePreparationError,
     CreateRecoveryError,
+    RouteActivationError,
+    RouteCommitError,
+    RouteLifecycleError,
+    RoutePreparationError,
+    RouteRecoveryError,
     ProtocolError,
     CorrelationError,
     ExecutionError,
@@ -228,6 +241,8 @@ def executor_main(arguments: list[str] | None = None) -> int:
             ArtifactIntake(_STATE_ROOT, expected_owner=_EXPECTED_OWNER) as intake,
             _open_caddy_control_runtime() as runtime,
         ):
+            publication_gate = CommandPublicationGate(_PUBLICATION_GATE)
+            route_handler = RouteLifecycleHandler(repository, runtime, publication_gate)
             AuthorizationExecutor(
                 repository,
                 intake,
@@ -235,8 +250,12 @@ def executor_main(arguments: list[str] | None = None) -> int:
                     "create": CreateLifecycleHandler(
                         repository,
                         runtime,
-                        CommandPublicationGate(_PUBLICATION_GATE),
+                        publication_gate,
                     ),
+                    "suspend": route_handler,
+                    "resume": route_handler,
+                    "rename": route_handler,
+                    "reconcile": route_handler,
                 },
                 deleted_tenant_release_validator=partial(
                     _deleted_tenant_publication_absent,

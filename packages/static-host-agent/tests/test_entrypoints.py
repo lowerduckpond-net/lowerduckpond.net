@@ -30,13 +30,14 @@ from lowerduckpond_static_host_agent.create_handler import (
     CreateLifecycleHandler,
 )
 from lowerduckpond_static_host_agent.repository import StateRecordPath
+from lowerduckpond_static_host_agent.route_handler import RouteLifecycleHandler
 from lowerduckpond_static_host_agent.route_snapshot import TenantRouteSnapshot
 
 _DISABLED_STATUS = 78
 _USAGE_STATUS = 64
 
 
-def test_executor_entrypoint_registers_the_create_handler(
+def test_executor_entrypoint_registers_the_available_lifecycle_handlers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     job_id = "0198d17f-6f4a-7000-8000-000000000001"
@@ -94,11 +95,19 @@ def test_executor_entrypoint_registers_the_create_handler(
     assert type(arguments) is dict
     handlers = arguments["handlers"]
     assert type(handlers) is dict
-    assert set(handlers) == {"create"}
+    assert set(handlers) == {"create", "suspend", "resume", "rename", "reconcile"}
     handler = handlers["create"]
     assert isinstance(handler, CreateLifecycleHandler)
     assert handler._repository is repository
     assert handler._runtime is runtime
+    route_handlers = {
+        handlers[operation] for operation in ("suspend", "resume", "rename", "reconcile")
+    }
+    assert len(route_handlers) == 1
+    route_handler = route_handlers.pop()
+    assert isinstance(route_handler, RouteLifecycleHandler)
+    assert route_handler._repository is repository
+    assert route_handler._runtime is runtime
     assert captured["intake"] is intake
     assert captured["job_id"] == job_id
     assert captured["blocking"] is True

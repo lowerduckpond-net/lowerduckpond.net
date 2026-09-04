@@ -28,6 +28,7 @@ from lowerduckpond_static_host_agent.execution import (
     LifecycleJobRejectionError,
 )
 from lowerduckpond_static_host_agent.issuance import PublicationGate
+from lowerduckpond_static_host_agent.lifecycle_plan import LifecyclePlanError
 from lowerduckpond_static_host_agent.repository import (
     StateRecordPath,
     StateRepository,
@@ -37,8 +38,10 @@ from lowerduckpond_static_host_agent.route_activate import (
     GenerationReloader,
     GenerationRestorer,
     GenerationVerifier,
+    RouteActivationError,
     activate_route_transition_outcome,
 )
+from lowerduckpond_static_host_agent.route_commit import RouteCommitError
 from lowerduckpond_static_host_agent.route_prepare import (
     RouteAuthorityDriftError,
     RoutePreparationError,
@@ -154,7 +157,7 @@ class RouteLifecycleHandler:
                     verifier=self._verifier,
                     blocking=blocking,
                 )
-            except RouteRecoveryError:
+            except RouteActivationError, RouteCommitError, RouteRecoveryError:
                 if retry_after_race:
                     return self._execute_classified(
                         job_id,
@@ -164,7 +167,15 @@ class RouteLifecycleHandler:
                 raise
             return ExecutionOutcome(outcome.result, outcome.created)
         if replay.result is not None:
-            return ExecutionOutcome(deepcopy(replay.result), False)
+            result = deepcopy(replay.result)
+            return ExecutionOutcome(
+                result,
+                False,
+                replay_existing=(
+                    result.get("status") == "failed"
+                    and result.get("failurePublisher") == "authorization-executor"
+                ),
+            )
         try:
             prepared = prepare_route_transition(
                 self._repository,
@@ -179,6 +190,8 @@ class RouteLifecycleHandler:
             )
         except RouteAuthorityDriftError as error:
             raise LifecycleJobRejectionError("state_drift") from error
+        except LifecyclePlanError as error:
+            raise LifecycleJobRejectionError("invalid_request") from error
         except RoutePreparationError:
             if retry_after_race:
                 return self._execute_classified(
@@ -187,25 +200,41 @@ class RouteLifecycleHandler:
                     retry_after_race=False,
                 )
             raise
-        outcome = activate_route_transition_outcome(
-            self._repository,
-            self._runtime,
-            self._gate,
-            prepared,
-            reloader=self._reloader,
-            restorer=self._restorer,
-            verifier=self._verifier,
-            blocking=blocking,
-        )
+        try:
+            outcome = activate_route_transition_outcome(
+                self._repository,
+                self._runtime,
+                self._gate,
+                prepared,
+                reloader=self._reloader,
+                restorer=self._restorer,
+                verifier=self._verifier,
+                blocking=blocking,
+            )
+        except RouteActivationError, RouteCommitError:
+            if retry_after_race:
+                return self._execute_classified(
+                    job_id,
+                    blocking=blocking,
+                    retry_after_race=False,
+                )
+            raise
         return ExecutionOutcome(outcome.result, outcome.created)
 
-    def _classify(self, job_id: str, *, blocking: bool) -> _RouteReplay:
+    def _classify(  # noqa: PLR0912 - replay states remain explicit
+        self,
+        job_id: str,
+        *,
+        blocking: bool,
+    ) -> _RouteReplay:
         with self._repository.publication_transaction(blocking=blocking) as transaction:
             job = transaction.read(StateRecordPath.authorization_job(job_id))
             validate_contract(job.document, expected_kind=ContractKind.AUTHORIZATION_JOB)
             request = job.document["request"]
             if type(request) is not dict or request.get("operation") not in _ROUTE_OPERATIONS:
                 raise RouteLifecycleError("route handler received other authority")
+            if job.document.get("compatibilityVersion") != "static-job-v2":
+                raise LifecycleJobRejectionError("invalid_request")
             correlation_id = validate_uuid7(request["correlationId"])
             tenant_id = validate_uuid7(request["tenantId"])
             result = _read_result(transaction, job_id)

@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
+import lowerduckpond_static_host_agent.route_handler as route_handler_module
 import pytest
 from lowerduckpond_static_contracts import (
     archive_record_digest,
@@ -28,6 +29,7 @@ from lowerduckpond_static_host_agent import (
     FilesystemCapacity,
     HostCapacityLimits,
     LifecycleArtifact,
+    LifecycleJobRejectionError,
     LockManager,
     PinnedCaddyGeneration,
     PublicationGate,
@@ -46,7 +48,9 @@ from lowerduckpond_static_host_agent.lifecycle_plan import (
     plan_route_transition,
 )
 from lowerduckpond_static_host_agent.route_activate import (
+    RouteActivationError,
     activate_route_transition,
+    activate_route_transition_outcome,
 )
 from lowerduckpond_static_host_agent.route_commit import (
     RouteCommitBoundary,
@@ -59,6 +63,7 @@ from lowerduckpond_static_host_agent.route_prepare import PreparedRouteTransitio
 from lowerduckpond_static_host_agent.route_recover import (
     RouteRecoveryError,
     recover_route_transition,
+    recover_route_transition_outcome,
 )
 from lowerduckpond_static_host_agent.route_snapshot import (
     RouteOverlayMode,
@@ -575,6 +580,225 @@ def test_route_handler_recovers_its_prepared_intent(tmp_path: Path) -> None:
         assert outcome.result == plan.result
         assert outcome.created is True
         assert runtime.active == runtime.running == _CANDIDATE_GENERATION
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
+@pytest.mark.parametrize("race_error", [RouteActivationError, RouteCommitError])
+def test_route_handler_reclassifies_after_recovery_activation_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    race_error: type[RuntimeError],
+) -> None:
+    repository, job, plan = _prepared(tmp_path)
+    runtime = _recovery_runtime(repository, job, plan)
+    original = recover_route_transition_outcome
+    raced = False
+
+    def complete_then_race(*args: object, **kwargs: object) -> object:
+        nonlocal raced
+        outcome = cast(Callable[..., object], original)(*args, **kwargs)
+        if not raced:
+            raced = True
+            raise race_error("injected post-activation race")
+        return outcome
+
+    monkeypatch.setattr(
+        route_handler_module,
+        "recover_route_transition_outcome",
+        complete_then_race,
+    )
+    try:
+        outcome = _route_handler(repository, runtime).execute(
+            cast(str, job["jobId"]),
+            claim=None,
+            blocking=False,
+        )
+
+        assert raced is True
+        assert outcome.result == plan.result
+        assert outcome.created is False
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
+@pytest.mark.parametrize("race_error", [RouteActivationError, RouteCommitError])
+def test_route_handler_reclassifies_after_fresh_activation_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    race_error: type[RuntimeError],
+) -> None:
+    repository, job, _plan = _prepared(tmp_path, create_intent=False)
+    runtime = _Runtime()
+    with repository.publication_transaction() as transaction:
+        runtime.snapshots[_SOURCE_GENERATION] = snapshot_tenant_routes(transaction)
+    _write_correlation(repository, job)
+    original = activate_route_transition_outcome
+    raced = False
+
+    def complete_then_race(*args: object, **kwargs: object) -> object:
+        nonlocal raced
+        outcome = cast(Callable[..., object], original)(*args, **kwargs)
+        if not raced:
+            raced = True
+            raise race_error("injected post-activation race")
+        return outcome
+
+    monkeypatch.setattr(
+        route_handler_module,
+        "activate_route_transition_outcome",
+        complete_then_race,
+    )
+    try:
+        outcome = _route_handler(repository, runtime).execute(
+            cast(str, job["jobId"]),
+            claim=None,
+            blocking=False,
+        )
+
+        assert raced is True
+        assert outcome.result["status"] == "succeeded"
+        assert outcome.created is False
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
+def test_route_handler_marks_executor_failure_replay_as_existing(tmp_path: Path) -> None:
+    repository, job, _plan = _prepared(tmp_path, create_intent=False)
+    request = cast(dict[str, object], job["request"])
+    result: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationResult",
+        "provenance": {"kind": "authorization-job", "jobId": job["jobId"]},
+        "correlationId": request["correlationId"],
+        "operation": request["operation"],
+        "status": "failed",
+        "errorCode": "state_drift",
+        "failurePublisher": "authorization-executor",
+        "failureAuditPredecessorDigest": None,
+        "failureAuditSequence": 0,
+        "tenantId": request["tenantId"],
+    }
+    repository.create_immutable(
+        StateRecordPath.authorization_result(job["jobId"]),
+        result,
+    )
+    try:
+        outcome = _route_handler(repository, _Runtime()).execute(
+            cast(str, job["jobId"]),
+            claim=None,
+            blocking=False,
+        )
+
+        assert outcome.result == result
+        assert outcome.created is False
+        assert outcome.replay_existing is True
+    finally:
+        repository.close()
+
+
+def test_route_handler_rejects_invalid_transition_before_intent_creation(
+    tmp_path: Path,
+) -> None:
+    repository, job, _plan = _prepared(
+        tmp_path,
+        operation="rename",
+        slug="renamed-duck",
+        create_intent=False,
+    )
+    job_path = StateRecordPath.authorization_job(job["jobId"])
+    stored = repository.read(job_path)
+    invalid = stored.document
+    request = cast(dict[str, object], invalid["request"])
+    manifest = repository.read(StateRecordPath.tenant_desired(request["tenantId"])).document
+    metadata = cast(dict[str, object], manifest["metadata"])
+    request["slug"] = metadata["slug"]
+    invalid["requestDigest"] = request_digest(request).to_dict()
+    repository.close()
+    _write(tmp_path / "state", job_path, invalid)
+    repository = StateRepository(tmp_path / "state", expected_owner=os.geteuid())
+    runtime = _Runtime()
+    with repository.publication_transaction() as transaction:
+        runtime.snapshots[_SOURCE_GENERATION] = snapshot_tenant_routes(transaction)
+    try:
+        with pytest.raises(LifecycleJobRejectionError) as failure:
+            _route_handler(repository, runtime).execute(
+                cast(str, job["jobId"]),
+                claim=None,
+                blocking=False,
+            )
+
+        assert failure.value.error_code == "invalid_request"
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
+def test_route_handler_rejects_legacy_job_before_intent_creation(tmp_path: Path) -> None:
+    repository, job, _plan = _prepared(tmp_path, create_intent=False)
+    job_path = StateRecordPath.authorization_job(job["jobId"])
+    stored = repository.read(job_path)
+    legacy = stored.document
+    legacy["compatibilityVersion"] = "static-job-v1"
+    legacy.pop("sourceAuthority", None)
+    legacy.pop("executionValidated", None)
+    legacy.pop("dispatchSourceObservedState", None)
+    legacy.pop("dispatchSourceRuntimeGenerationId", None)
+    legacy.pop("dispatchSourceRouteSet", None)
+    repository.close()
+    _write(tmp_path / "state", job_path, legacy)
+    repository = StateRepository(tmp_path / "state", expected_owner=os.geteuid())
+    try:
+        with pytest.raises(LifecycleJobRejectionError) as failure:
+            _route_handler(repository, _Runtime()).execute(
+                cast(str, job["jobId"]),
+                claim=None,
+                blocking=False,
+            )
+
+        assert failure.value.error_code == "invalid_request"
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
+def test_route_handler_terminalizes_missing_observed_state_as_drift(tmp_path: Path) -> None:
+    repository, job, _plan = _prepared(tmp_path, create_intent=False)
+    request = cast(dict[str, object], job["request"])
+    observed_path = StateRecordPath.tenant_observed(request["tenantId"])
+    (tmp_path / "state").joinpath(*observed_path.components).unlink()
+    try:
+        with pytest.raises(LifecycleJobRejectionError) as failure:
+            _route_handler(repository, _Runtime()).execute(
+                cast(str, job["jobId"]),
+                claim=None,
+                blocking=False,
+            )
+
+        assert failure.value.error_code == "state_drift"
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
+def test_route_handler_does_not_terminalize_missing_runtime_state(tmp_path: Path) -> None:
+    repository, job, _plan = _prepared(tmp_path, create_intent=False)
+
+    class _MissingRuntime(_Runtime):
+        def open_active_verified(self) -> _Selected:
+            raise FileNotFoundError("injected missing Caddy runtime")
+
+    try:
+        with pytest.raises(FileNotFoundError, match="missing Caddy runtime"):
+            _route_handler(repository, _MissingRuntime()).execute(
+                cast(str, job["jobId"]),
+                claim=None,
+                blocking=False,
+            )
+
         assert repository.measure_intent_records().records == ()
     finally:
         repository.close()
