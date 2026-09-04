@@ -27,9 +27,12 @@ from lowerduckpond_static_host_agent import (
     CapacityRejectedError,
     FilesystemCapacity,
     HostCapacityLimits,
+    LifecycleArtifact,
     LockManager,
     PinnedCaddyGeneration,
     PublicationGate,
+    RouteLifecycleError,
+    RouteLifecycleHandler,
     StateConflictError,
     StateRecordPath,
     StateRepository,
@@ -59,6 +62,7 @@ from lowerduckpond_static_host_agent.route_recover import (
 )
 from lowerduckpond_static_host_agent.route_snapshot import (
     RouteOverlayMode,
+    RouteSnapshotTransaction,
     snapshot_tenant_routes,
 )
 
@@ -98,6 +102,15 @@ class _Generation:
     def __exit__(self, *_args: object) -> None:
         return
 
+    def close(self) -> None:
+        return
+
+
+@dataclass(frozen=True, slots=True)
+class _Selected:
+    generation_id: str
+    generation: _Generation
+
 
 class _Runtime:
     def __init__(self) -> None:
@@ -115,6 +128,45 @@ class _Runtime:
         assert type(generation_id) is str
         self.events.append(f"opened:{generation_id}")
         return _Generation(generation_id)
+
+    def open_active_verified(self) -> _Selected:
+        self.events.append("active")
+        return _Selected(self.active, _Generation(self.active))
+
+    def prune_unreferenced_generations(
+        self,
+        _protected: tuple[()],
+        *,
+        keep_newest_unprotected: int,
+    ) -> tuple[str, ...]:
+        assert keep_newest_unprotected == 1
+        self.events.append("pruned")
+        return ()
+
+    def publish_candidate(
+        self,
+        generation_id: str,
+        *,
+        transaction: object,
+        overlay: TenantRouteOverlay,
+        gate: _Gate,
+    ) -> CaddyGenerationManifest:
+        gate.require_enabled()
+        self.events.append("published")
+        self.snapshots[generation_id] = snapshot_tenant_routes(
+            cast(RouteSnapshotTransaction, transaction),
+            overlay=overlay,
+        )
+        return cast(CaddyGenerationManifest, _GenerationManifest(generation_id))
+
+    def discard_unselected_candidate(
+        self,
+        generation_id: str,
+        manifest: CaddyGenerationManifest,
+    ) -> None:
+        assert generation_id == manifest.generation_id
+        self.snapshots.pop(generation_id, None)
+        self.events.append("discarded")
 
     def remove_abandoned_reference_temporaries(self) -> None:
         self.events.append("cleaned-reference-temporaries")
@@ -295,6 +347,7 @@ def _prepared(  # noqa: PLR0913 - fixture authority controls stay explicit
     selected_source_generation: str = _SOURCE_GENERATION,
     source_route_set: str | None = None,
     drift_observed: bool = False,
+    create_intent: bool = True,
 ) -> tuple[StateRepository, dict[str, object], RouteTransitionPlan]:
     root = _state_root(tmp_path)
     namespace = _fixture("platform-namespace.json")
@@ -345,11 +398,28 @@ def _prepared(  # noqa: PLR0913 - fixture authority controls stay explicit
     job["dispatchSourceRouteSet"] = recovery["sourceRouteSet"]
     _write(root, StateRecordPath.authorization_job(job["jobId"]), job)
     repository = StateRepository(root, expected_owner=os.geteuid())
-    repository.create_immutable(
-        StateRecordPath.transaction_intent(plan.intent_id),
-        plan.intent,
-    )
+    if create_intent:
+        repository.create_immutable(
+            StateRecordPath.transaction_intent(plan.intent_id),
+            plan.intent,
+        )
     return repository, job, plan
+
+
+def _write_correlation(
+    repository: StateRepository,
+    job: dict[str, object],
+) -> None:
+    correlation = deepcopy(job)
+    correlation["phase"] = "pending"
+    correlation["dispatchSourceObservedState"] = None
+    correlation.pop("dispatchSourceRuntimeGenerationId", None)
+    correlation.pop("dispatchSourceRouteSet", None)
+    request = cast(dict[str, object], job["request"])
+    repository.create_immutable(
+        StateRecordPath.authorization_correlation(request["correlationId"]),
+        correlation,
+    )
 
 
 def _finalize(
@@ -391,16 +461,7 @@ def _recovery_runtime(
     job: dict[str, object],
     plan: RouteTransitionPlan,
 ) -> _Runtime:
-    correlation = deepcopy(job)
-    correlation["phase"] = "pending"
-    correlation["dispatchSourceObservedState"] = None
-    correlation.pop("dispatchSourceRuntimeGenerationId", None)
-    correlation.pop("dispatchSourceRouteSet", None)
-    request = cast(dict[str, object], job["request"])
-    repository.create_immutable(
-        StateRecordPath.authorization_correlation(request["correlationId"]),
-        correlation,
-    )
+    _write_correlation(repository, job)
     source = cast(dict[str, object], plan.intent["sourceManifest"])
     recovery = cast(dict[str, object], plan.intent["lifecycleRecovery"])
     source_observed = cast(dict[str, object], recovery["sourceObservedState"])
@@ -454,6 +515,83 @@ def _activate(
         verifier=runtime.verify,
         commit_failure_hook=failure_hook,
     )
+
+
+def _route_handler(
+    repository: StateRepository,
+    runtime: _Runtime,
+) -> RouteLifecycleHandler:
+    return RouteLifecycleHandler(
+        repository,
+        cast(CaddyRuntime, runtime),
+        cast(PublicationGate, _Gate()),
+        now=lambda: _NOW,
+        clock=lambda: 1_777_000_000_000,
+        entropy=_Entropy(),
+        reloader=runtime.reload,
+        restorer=runtime.restore,
+        verifier=runtime.verify,
+    )
+
+
+def test_route_handler_completes_and_replays_a_fresh_claimed_job(
+    tmp_path: Path,
+) -> None:
+    repository, job, _plan = _prepared(tmp_path, create_intent=False)
+    runtime = _Runtime()
+    with repository.publication_transaction() as transaction:
+        runtime.snapshots[_SOURCE_GENERATION] = snapshot_tenant_routes(transaction)
+    _write_correlation(repository, job)
+    try:
+        handler = _route_handler(repository, runtime)
+        job_id = cast(str, job["jobId"])
+
+        first = handler.execute(job_id, claim=None, blocking=False)
+        completed_events = tuple(runtime.events)
+        second = handler.execute(job_id, claim=None, blocking=False)
+
+        assert first.result == second.result
+        assert first.created is True
+        assert second.created is False
+        assert first.result["status"] == "succeeded"
+        assert runtime.active == runtime.running
+        assert runtime.active != _SOURCE_GENERATION
+        assert runtime.events == list(completed_events)
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
+def test_route_handler_recovers_its_prepared_intent(tmp_path: Path) -> None:
+    repository, job, plan = _prepared(tmp_path)
+    runtime = _recovery_runtime(repository, job, plan)
+    try:
+        outcome = _route_handler(repository, runtime).execute(
+            cast(str, job["jobId"]),
+            claim=None,
+            blocking=False,
+        )
+
+        assert outcome.result == plan.result
+        assert outcome.created is True
+        assert runtime.active == runtime.running == _CANDIDATE_GENERATION
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
+def test_route_handler_rejects_artifact_authority(tmp_path: Path) -> None:
+    repository, job, _plan = _prepared(tmp_path, create_intent=False)
+    runtime = _Runtime()
+    try:
+        with pytest.raises(RouteLifecycleError, match="unexpectedly claimed"):
+            _route_handler(repository, runtime).execute(
+                cast(str, job["jobId"]),
+                claim=cast(LifecycleArtifact, object()),
+                blocking=False,
+            )
+    finally:
+        repository.close()
 
 
 @pytest.mark.parametrize(

@@ -277,6 +277,10 @@ from lowerduckpond_static_host_agent.route_commit import (
     finalize_route_transition_outcome,
     validate_route_transition,
 )
+from lowerduckpond_static_host_agent.route_handler import (
+    RouteLifecycleError,
+    RouteLifecycleHandler,
+)
 from lowerduckpond_static_host_agent.route_prepare import (
     PreparedRouteTransition,
     RouteAuthorityDriftError,
@@ -490,6 +494,8 @@ __all__ = [
     "RouteCommitBoundary",
     "RouteCommitError",
     "RouteCommitOutcome",
+    "RouteLifecycleError",
+    "RouteLifecycleHandler",
     "RouteOverlayMode",
     "RoutePreparationError",
     "RouteRecoveryError",
