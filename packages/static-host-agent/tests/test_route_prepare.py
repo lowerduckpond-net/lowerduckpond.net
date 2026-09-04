@@ -32,13 +32,16 @@ from lowerduckpond_static_host_agent import (
     StateRecordPath,
     StateRepository,
     StoredContract,
+    TenantRouteInput,
     TenantRouteOverlay,
+    TenantRouteSnapshot,
     prepare_route_transition,
 )
 
 _FIXTURE_ROOT = Path(__file__).parents[3] / "tests/static-publication/fixtures/accepted"
 _SOURCE_GENERATION = "0198d17f-6f4a-7000-8000-000000000004"
 _LATEST_SOURCE_GENERATION = "0198d17f-6f4a-7000-8000-000000000005"
+_TENANT_ID = "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100"
 _NOW = datetime(2026, 9, 2, 13, 45, tzinfo=UTC)
 
 
@@ -77,11 +80,30 @@ class _Candidate:
 
 
 class _Runtime:
-    def __init__(self, active_generation_id: str = _SOURCE_GENERATION) -> None:
+    def __init__(
+        self,
+        active_generation_id: str = _SOURCE_GENERATION,
+        *,
+        source_route_set: str = "both",
+    ) -> None:
         self.events: list[str] = []
         self.overlay: TenantRouteOverlay | None = None
         self.candidate: _Candidate | None = None
         self.active_generation_id = active_generation_id
+        source_state = "active" if source_route_set == "both" else "suspended"
+        self.source_snapshot = TenantRouteSnapshot(
+            {},
+            (
+                TenantRouteInput(
+                    {
+                        "metadata": {"id": _TENANT_ID},
+                        "spec": {"desiredState": source_state},
+                    },
+                    {},
+                    None,
+                ),
+            ),
+        )
 
     @contextmanager
     def using_held_publication_lock(self, _repository: StateRepository) -> Iterator[None]:
@@ -91,6 +113,10 @@ class _Runtime:
     def open_active_verified(self) -> _Selected:
         self.events.append("active")
         return _Selected(self.active_generation_id, _Pinned())
+
+    def read_generation_route_snapshot(self, generation_id: str) -> TenantRouteSnapshot:
+        assert generation_id == self.active_generation_id
+        return self.source_snapshot
 
     def prune_unreferenced_generations(
         self,
@@ -255,7 +281,7 @@ def _route_job(  # noqa: PLR0913 - fixture authority tuple
             "deploymentDigest": (
                 deployment_record_digest(deployment).to_dict() if deployment else None
             ),
-            "archiveRecordDigest": archive_record_digest(archive).to_dict() if archive else None,
+            "archiveRecordDigest": (archive_record_digest(archive).to_dict() if archive else None),
             "platformStateDigest": platform_state_digest(namespace).to_dict(),
         },
         "acceptedAt": "2026-09-02T12:00:01Z",
@@ -284,9 +310,17 @@ def _prepared_repository(
     _write(root, StateRecordPath.tenant_desired(tenant_id), manifest)
     _write(root, StateRecordPath.tenant_observed(tenant_id), observed)
     if deployment is not None:
-        _write(root, StateRecordPath.tenant_deployment(tenant_id, deployment["id"]), deployment)
+        _write(
+            root,
+            StateRecordPath.tenant_deployment(tenant_id, deployment["id"]),
+            deployment,
+        )
     if archive is not None:
-        _write(root, StateRecordPath.tenant_archive(tenant_id, archive["deploymentId"]), archive)
+        _write(
+            root,
+            StateRecordPath.tenant_archive(tenant_id, archive["deploymentId"]),
+            archive,
+        )
     _write(root, StateRecordPath.authorization_job(job["jobId"]), job)
     return StateRepository(root, expected_owner=os.geteuid()), job
 
@@ -327,7 +361,7 @@ def test_route_preparation_publishes_then_binds_one_exact_intent(
 ) -> None:
     root = _state_root(tmp_path)
     repository, job = _prepared_repository(root, operation, state, slug=slug)
-    runtime = _Runtime()
+    runtime = _Runtime(source_route_set="both" if state == "active" else "absent")
     try:
         prepared = _prepare(repository, runtime, job)
 
@@ -370,7 +404,47 @@ def test_route_preparation_separates_target_and_complete_source_generations(
         repository.close()
 
 
-def test_route_preparation_checks_gate_before_generation_cleanup(tmp_path: Path) -> None:
+def test_route_preparation_reconciles_drift_from_desired_authority(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root, "reconcile", "active")
+    request = job["request"]
+    assert type(request) is dict
+    observed_path = StateRecordPath.tenant_observed(request["tenantId"])
+    drifted = repository.read(observed_path).document
+    drifted["desiredManifestDigest"] = {
+        "format": "lowerduckpond-manifest-v1",
+        "algorithm": "sha256",
+        "value": "f" * 64,
+    }
+    drifted["observedState"] = "suspended"
+    drifted["runtimeGenerationId"] = None
+    _write(root, observed_path, drifted)
+    runtime = _Runtime(source_route_set="absent")
+    try:
+        prepared = _prepare(repository, runtime, job)
+
+        recovery = prepared.plan.intent["lifecycleRecovery"]
+        assert type(recovery) is dict
+        assert recovery["sourceObservedState"] == drifted
+        assert recovery["sourceRouteSet"] == "absent"
+        assert (
+            prepared.plan.observed_state["desiredManifestDigest"]
+            == manifest_digest(prepared.plan.manifest).to_dict()
+        )
+        assert prepared.plan.observed_state["observedState"] == "active"
+        assert (
+            prepared.plan.observed_state["runtimeGenerationId"]
+            == recovery["candidateRuntimeGenerationId"]
+        )
+    finally:
+        repository.close()
+
+
+def test_route_preparation_checks_gate_before_generation_cleanup(
+    tmp_path: Path,
+) -> None:
     root = _state_root(tmp_path)
     repository, job = _prepared_repository(root, "suspend", "active")
     runtime = _Runtime()
@@ -384,7 +458,9 @@ def test_route_preparation_checks_gate_before_generation_cleanup(tmp_path: Path)
         repository.close()
 
 
-def test_route_preparation_rejects_authority_drift_before_publication(tmp_path: Path) -> None:
+def test_route_preparation_rejects_authority_drift_before_publication(
+    tmp_path: Path,
+) -> None:
     root = _state_root(tmp_path)
     repository, job = _prepared_repository(root, "suspend", "active")
     expected = job["expectedSource"]

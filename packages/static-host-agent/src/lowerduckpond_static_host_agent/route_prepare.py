@@ -26,7 +26,10 @@ from lowerduckpond_static_host_agent.capacity import (
     ReleaseCapacityUsage,
     admit_release_capacity,
 )
-from lowerduckpond_static_host_agent.issuance import PublicationGate, build_expected_source
+from lowerduckpond_static_host_agent.issuance import (
+    PublicationGate,
+    build_expected_source,
+)
 from lowerduckpond_static_host_agent.lifecycle_plan import (
     RouteTransitionPlan,
     plan_route_transition,
@@ -38,7 +41,9 @@ from lowerduckpond_static_host_agent.repository import (
 )
 from lowerduckpond_static_host_agent.route_snapshot import (
     RouteOverlayMode,
+    RouteSnapshotError,
     TenantRouteOverlay,
+    TenantRouteSnapshot,
 )
 from lowerduckpond_static_host_agent.state_inventory import (
     IntentRecordInventory,
@@ -121,6 +126,10 @@ def prepare_route_transition(  # noqa: PLR0913 - authority sources stay explicit
             source_generation_id = active.generation_id
         finally:
             active.generation.close()
+        source_route_set = _selected_tenant_route_set(
+            runtime.read_generation_route_snapshot(source_generation_id),
+            validate_uuid7(request["tenantId"]),
+        )
         candidate_generation_id = generate_uuid7(clock=clock, entropy=entropy)
         plan = plan_route_transition(
             job.document,
@@ -129,6 +138,7 @@ def prepare_route_transition(  # noqa: PLR0913 - authority sources stay explicit
             source.observed_state,
             source.deployment,
             source.archive_record,
+            source_route_set=source_route_set,
             source_runtime_generation_id=source_generation_id,
             candidate_runtime_generation_id=candidate_generation_id,
             audit_state=transaction.inspect_audit(),
@@ -172,6 +182,25 @@ class _RouteSource:
     observed_state: dict[str, object]
     deployment: dict[str, object] | None
     archive_record: dict[str, object] | None
+
+
+def _selected_tenant_route_set(
+    snapshot: TenantRouteSnapshot,
+    tenant_id: str,
+) -> str:
+    matching = []
+    for tenant in snapshot.tenants:
+        metadata = tenant.manifest.get("metadata")
+        if type(metadata) is dict and metadata.get("id") == tenant_id:
+            matching.append(tenant)
+    if len(matching) > 1:
+        raise RouteSnapshotError("selected generation repeats the route source tenant")
+    if not matching:
+        return "absent"
+    spec = matching[0].manifest.get("spec")
+    if type(spec) is not dict:
+        raise RouteSnapshotError("selected route source manifest is malformed")
+    return "both" if spec.get("desiredState") == "active" else "absent"
 
 
 def _require_current_route_authority(
