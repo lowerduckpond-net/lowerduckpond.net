@@ -471,6 +471,84 @@ def test_selected_tenant_runtime_binds_the_active_verified_snapshot(  # noqa: PL
     )
 
 
+def test_selected_tenant_runtime_accepts_validated_archived_route_omission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenant_id = "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100"
+    generation_id = "0198d17f-6f4a-7000-8000-000000000001"
+    manifest: dict[str, object] = {
+        "metadata": {"id": tenant_id},
+        "spec": {"desiredState": "archived"},
+    }
+    observed: dict[str, object] = {
+        "tenantId": tenant_id,
+        "observedState": "archived",
+        "runtimeGenerationId": None,
+    }
+
+    class Runtime:
+        def __enter__(self) -> Runtime:
+            return self
+
+        def __exit__(self, *_exception: object) -> None:
+            pass
+
+        @staticmethod
+        def using_held_publication_lock(_repository: object) -> nullcontext[None]:
+            return nullcontext()
+
+        @staticmethod
+        def read_active() -> str:
+            return generation_id
+
+        @staticmethod
+        def read_generation_route_snapshot(requested: str) -> SimpleNamespace:
+            assert requested == generation_id
+            return SimpleNamespace(platform_namespace={}, tenants=())
+
+    class Transaction:
+        @staticmethod
+        def read(path: StateRecordPath) -> SimpleNamespace:
+            if path == StateRecordPath.tenant_desired(tenant_id):
+                return SimpleNamespace(document=manifest)
+            if path == StateRecordPath.tenant_observed(tenant_id):
+                return SimpleNamespace(document=observed)
+            raise AssertionError(f"unexpected state read: {path}")
+
+    class Repository:
+        @staticmethod
+        def publication_transaction(*, blocking: bool) -> nullcontext[object]:
+            assert blocking is True
+            return nullcontext(Transaction())
+
+    monkeypatch.setattr(entrypoints, "_open_caddy_control_runtime", Runtime)
+    monkeypatch.setattr(
+        entrypoints,
+        "snapshot_tenant_routes",
+        lambda _transaction: SimpleNamespace(platform_namespace={}, tenants=()),
+    )
+
+    assert entrypoints._selected_tenant_runtime_matches(
+        Repository(),  # type: ignore[arg-type]
+        tenant_id,
+        "absent",
+        generation_id,
+        manifest,
+        observed,
+    )
+
+    changed = dict(observed)
+    changed["reconciledAt"] = "2026-09-02T13:00:00Z"
+    assert not entrypoints._selected_tenant_runtime_matches(
+        Repository(),  # type: ignore[arg-type]
+        tenant_id,
+        "absent",
+        generation_id,
+        manifest,
+        changed,
+    )
+
+
 def test_all_tenant_release_validation_remeasures_untouched_tenants(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

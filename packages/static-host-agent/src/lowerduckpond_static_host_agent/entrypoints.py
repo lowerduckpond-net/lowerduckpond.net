@@ -683,6 +683,26 @@ def _selected_tenant_runtime_matches(  # noqa: PLR0911,PLR0913,PLR0917
                 metadata = tenant.manifest.get("metadata")
                 if type(metadata) is dict and metadata.get("id") == tenant_id:
                     matching.append(tenant)
+            manifest_spec = manifest.get("spec")
+            if (
+                not matching
+                and route_set == "absent"
+                and type(manifest_spec) is dict
+                and manifest_spec.get("desiredState") == "archived"
+                and observed_state is not None
+            ):
+                durable_manifest = transaction.read(
+                    StateRecordPath.tenant_desired(tenant_id)
+                ).document
+                durable_observed = transaction.read(
+                    StateRecordPath.tenant_observed(tenant_id)
+                ).document
+                return (
+                    durable_manifest == manifest
+                    and durable_observed == observed_state
+                    and observed_state.get("observedState") == "archived"
+                    and observed_state.get("runtimeGenerationId") is None
+                )
             if len(matching) != 1:
                 return False
             tenant = matching[0]
