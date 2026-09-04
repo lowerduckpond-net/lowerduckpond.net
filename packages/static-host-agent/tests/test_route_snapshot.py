@@ -98,6 +98,22 @@ def _undeployed_tenant(tenant_id: str, *, slug: str) -> TenantRouteInput:
     return TenantRouteInput(manifest, observed, None)
 
 
+def _archived_tenant(tenant_id: str, *, slug: str) -> TenantRouteInput:
+    tenant = _undeployed_tenant(tenant_id, slug=slug)
+    deployment = _fixture("deployment-record.json")
+    deployment["tenantId"] = tenant_id
+    spec = tenant.manifest["spec"]
+    assert type(spec) is dict
+    spec["desiredState"] = "archived"
+    spec["desiredDeployment"] = {
+        "id": deployment["id"],
+        "archiveSha256": deployment["archiveSha256"],
+    }
+    tenant.observed_state["desiredManifestDigest"] = manifest_digest(tenant.manifest).to_dict()
+    tenant.observed_state["observedState"] = "archived"
+    return TenantRouteInput(tenant.manifest, tenant.observed_state, deployment)
+
+
 def test_snapshot_reads_every_tenant_and_selected_deployment(tmp_path: Path) -> None:
     root = _state_root(tmp_path)
     namespace = _fixture("platform-namespace.json")
@@ -115,6 +131,36 @@ def test_snapshot_reads_every_tenant_and_selected_deployment(tmp_path: Path) -> 
 
     assert snapshot.platform_namespace == namespace
     assert snapshot.tenants == (active, second)
+
+
+def test_snapshot_omits_archived_tenants_from_the_complete_runtime_input(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    active = _active_tenant(root)
+    archived = _archived_tenant(_SECOND_TENANT_ID, slug="archived-duck")
+    _write(root, StateRecordPath.tenant_desired(_SECOND_TENANT_ID), archived.manifest)
+    _write(root, StateRecordPath.tenant_observed(_SECOND_TENANT_ID), archived.observed_state)
+    assert archived.deployment is not None
+    _write(
+        root,
+        StateRecordPath.tenant_deployment(_SECOND_TENANT_ID, archived.deployment["id"]),
+        archived.deployment,
+    )
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        repository.transaction(mode=LockMode.EXCLUSIVE) as transaction,
+    ):
+        snapshot = snapshot_tenant_routes(transaction)
+        replaced = snapshot_tenant_routes(
+            transaction,
+            overlay=TenantRouteOverlay(RouteOverlayMode.REPLACE, archived, archived),
+        )
+
+    assert snapshot.tenants == (active,)
+    assert replaced.tenants == (active,)
 
 
 def test_add_overlay_extends_the_complete_snapshot_without_persisting(

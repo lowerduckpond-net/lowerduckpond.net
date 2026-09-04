@@ -54,7 +54,7 @@ class TenantRouteOverlay:
 
 @dataclass(frozen=True, slots=True)
 class TenantRouteSnapshot:
-    """The namespace and every tenant input for one complete Caddy generation."""
+    """The namespace and every runtime-relevant input for one Caddy generation."""
 
     platform_namespace: dict[str, object]
     tenants: tuple[TenantRouteInput, ...]
@@ -97,13 +97,17 @@ def snapshot_tenant_routes(
                 raise RouteSnapshotError(
                     "replace route overlay source changed before the locked snapshot"
                 )
-            tenants.append(candidate)
+            if not _is_archived(candidate):
+                tenants.append(candidate)
         else:
-            tenants.append(_read_tenant(transaction, tenant_id))
+            current = _read_tenant(transaction, tenant_id)
+            if not _is_archived(current):
+                tenants.append(current)
     if overlay is not None and overlay.mode is RouteOverlayMode.ADD:
         if candidate is None:  # pragma: no cover - the add mode proves otherwise
             raise RouteSnapshotError("route overlay candidate was lost")
-        tenants.append(candidate)
+        if not _is_archived(candidate):
+            tenants.append(candidate)
     tenants.sort(key=_tenant_id)
     return TenantRouteSnapshot(namespace, tuple(tenants))
 
@@ -135,6 +139,13 @@ def _read_tenant(
 
 def _tenant_id(tenant: TenantRouteInput) -> str:
     return _manifest_tenant_id(tenant.manifest)
+
+
+def _is_archived(tenant: TenantRouteInput) -> bool:
+    spec = tenant.manifest.get("spec")
+    if type(spec) is not dict:  # pragma: no cover - copied route input was validated
+        raise RouteSnapshotError("tenant route manifest spec is malformed")
+    return spec.get("desiredState") == "archived"
 
 
 def _manifest_tenant_id(manifest: dict[str, object]) -> str:

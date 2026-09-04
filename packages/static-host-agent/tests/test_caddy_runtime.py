@@ -159,6 +159,19 @@ def _tenant_input() -> TenantRouteInput:
     return TenantRouteInput(manifest, observed, deployment)
 
 
+def _archived_tenant_input() -> TenantRouteInput:
+    tenant = _tenant_input()
+    manifest = tenant.manifest
+    observed = tenant.observed_state
+    spec = cast(dict[str, object], manifest["spec"])
+    spec["desiredState"] = "archived"
+    observed["desiredManifestDigest"] = manifest_digest(manifest).to_dict()
+    observed["observedState"] = "archived"
+    observed["activeDeploymentId"] = None
+    observed["runtimeGenerationId"] = None
+    return TenantRouteInput(manifest, observed, tenant.deployment)
+
+
 class _OpenGate:
     def require_enabled(self) -> None:
         return
@@ -444,6 +457,27 @@ def test_runtime_publishes_and_validates_one_unselected_derived_candidate(
         assert runtime.read_active() == GENERATION_A
         runtime.select_active(_TENANT_GENERATION)
         assert runtime.read_active() == _TENANT_GENERATION
+
+
+def test_runtime_publishes_an_unrouted_archived_tenant_candidate(
+    runtime_fixture: RuntimeFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _allow_candidate_capacity(monkeypatch, runtime_fixture.root)
+    transaction = _RouteTransaction()
+    overlay = TenantRouteOverlay(RouteOverlayMode.ADD, _archived_tenant_input())
+    with runtime_fixture.open() as runtime, runtime.locked():
+        runtime.select_active(GENERATION_A)
+        manifest = runtime.publish_candidate(
+            _TENANT_GENERATION,
+            transaction=transaction,
+            overlay=overlay,
+            gate=_OpenGate(),
+        )
+
+        snapshot = runtime.read_generation_route_snapshot(manifest.generation_id)
+        assert snapshot.tenants == ()
+        assert runtime.read_active() == GENERATION_A
 
 
 def test_runtime_opens_one_explicit_verified_generation(
