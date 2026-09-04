@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from copy import deepcopy
 from pathlib import Path
+from typing import cast
 
 import pytest
 from conftest import FIXTURE_ROOT
@@ -15,10 +16,12 @@ from lowerduckpond_static_contracts import (
     ErrorCode,
     Operation,
     TransactionPhase,
+    archive_record_digest,
     audit_entry_digest,
     canonical_json_bytes,
     decode_contract,
     decode_request,
+    deployment_record_digest,
     manifest_digest,
     request_digest,
     validate_contract,
@@ -256,6 +259,91 @@ def test_authorization_job_request_digest_binds_the_embedded_request() -> None:
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
 
+def test_maximum_dispatch_authority_fits_the_authorization_job_bound() -> None:
+    job = _load_object(FIXTURE_ROOT / "accepted/authorization-job.json")
+    source = _load_object(FIXTURE_ROOT / "accepted/site.json")
+    archive = _load_object(FIXTURE_ROOT / "accepted/archive-record.json")
+    deployment = _load_object(FIXTURE_ROOT / "accepted/deployment-record.json")
+    source_spec = source["spec"]
+    assert type(source_spec) is dict
+    source_spec["desiredState"] = "archived"
+    tenant_ids = [f"0198d17f-6f4a-7000-8000-{offset:012x}" for offset in range(1, 26)]
+    archive_ids = [f"0198d17f-6f4a-7000-8001-{offset:012x}" for offset in range(1, 4)]
+    deployment_ids = [f"0198d17f-6f4a-7000-8002-{offset:012x}" for offset in range(1, 4)]
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "delete",
+        "correlationId": "0198d17f-6f4a-7000-8000-000000000001",
+        "tenantId": tenant_ids[0],
+    }
+    archive.update(
+        {
+            "tenantId": tenant_ids[0],
+            "deploymentId": deployment_ids[0],
+            "versionId": "v" * 1024,
+        }
+    )
+    deployment.update({"id": deployment_ids[0], "tenantId": tenant_ids[0]})
+    source_metadata = source["metadata"]
+    assert type(source_metadata) is dict
+    source_metadata.update(
+        {
+            "id": tenant_ids[0],
+            "slug": "s" * 63,
+            "canonicalOrigin": (f"t-{tenant_ids[0].replace('-', '')}.lowerduckpond.com"),
+        }
+    )
+    source_spec["desiredDeployment"] = {
+        "id": deployment_ids[0],
+        "archiveSha256": deployment["archiveSha256"],
+    }
+    archive["manifestDigest"] = manifest_digest(source).to_dict()
+    archive["correlationId"] = request["correlationId"]
+    job.update(
+        {
+            "compatibilityVersion": "static-job-v2",
+            "executionValidated": False,
+            "operatorPrincipal": "o" * 128,
+            "request": request,
+            "requestDigest": request_digest(request).to_dict(),
+            "phase": "pending",
+            "sourceAuthority": {"manifest": source, "archiveRecord": archive},
+            "dispatchArchiveDeploymentIds": archive_ids,
+            "dispatchArtifactReleaseTreeDigest": None,
+            "dispatchSourceReleaseTreeDigest": None,
+            "dispatchDeploymentIds": deployment_ids,
+            "dispatchTenantIds": tenant_ids,
+            "dispatchTenantRecordHistories": [
+                [tenant_id, archive_ids, deployment_ids] for tenant_id in tenant_ids
+            ],
+        }
+    )
+    expected = job["expectedSource"]
+    assert type(expected) is dict
+    expected.update(
+        {
+            "expectsTenantAbsent": False,
+            "lifecycle": "archived",
+            "manifestDigest": manifest_digest(source).to_dict(),
+            "deploymentDigest": deployment_record_digest(deployment).to_dict(),
+            "archiveRecordDigest": archive_record_digest(archive).to_dict(),
+            "deletionEvidence": {
+                "mode": "archived",
+                "releasedSlugs": [source_metadata["slug"]],
+                "archiveRecordDigest": archive_record_digest(archive).to_dict(),
+                "bucket": archive["bucket"],
+                "key": archive["key"],
+                "versionId": archive["versionId"],
+                "emergencyReason": None,
+            },
+        }
+    )
+
+    assert validate_contract(job) is ContractKind.AUTHORIZATION_JOB
+    assert len(canonical_json_bytes(job)) <= MAX_CANONICAL_BYTES
+
+
 @pytest.mark.parametrize(
     ("field", "expected_format"),
     [
@@ -297,6 +385,19 @@ def test_authorization_source_digests_are_pinned_to_record_domains(
                 "algorithm": "sha256",
                 "value": "c" * 64,
             },
+            "deletionEvidence": {
+                "mode": "archived",
+                "releasedSlugs": ["duck-repair"],
+                "archiveRecordDigest": {
+                    "format": "lowerduckpond-archive-record-v1",
+                    "algorithm": "sha256",
+                    "value": "c" * 64,
+                },
+                "bucket": "lowerduckpond-net-production-tenant-archives-4f3e6b91",
+                "key": "archives/0198d17f-6f4a-7000-8000-000000000003.zip",
+                "versionId": "3LgY0Q5G-safe-fixture-version",
+                "emergencyReason": None,
+            },
         }
     )
 
@@ -309,6 +410,311 @@ def test_authorization_source_digests_are_pinned_to_record_domains(
     with pytest.raises(ContractError) as captured:
         validate_contract(job)
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+def test_legacy_delete_job_without_deletion_evidence_remains_decodable() -> None:
+    job = _load_object(FIXTURE_ROOT / "accepted/authorization-job.json")
+    request = job["request"]
+    expected = job["expectedSource"]
+    assert type(request) is dict
+    assert type(expected) is dict
+    request.pop("slug")
+    request.pop("quotas")
+    request["operation"] = "delete"
+    request["tenantId"] = "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100"
+    job["requestDigest"] = request_digest(request).to_dict()
+    source = _load_object(FIXTURE_ROOT / "accepted/site.json")
+    source_spec = source["spec"]
+    assert type(source_spec) is dict
+    source_spec["desiredState"] = "undeployed"
+    source_spec.pop("desiredDeployment")
+    expected.update(
+        {
+            "expectsTenantAbsent": False,
+            "lifecycle": "undeployed",
+            "manifestDigest": manifest_digest(source).to_dict(),
+        }
+    )
+
+    assert validate_contract(job) is ContractKind.AUTHORIZATION_JOB
+    job["compatibilityVersion"] = "static-job-v2"
+    job["executionValidated"] = False
+    job["sourceAuthority"] = {"manifest": source, "archiveRecord": None}
+    with pytest.raises(ContractError) as captured:
+        validate_contract(job)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+def test_current_authorization_job_requires_executor_validation_state() -> None:
+    job = _load_object(FIXTURE_ROOT / "accepted/authorization-job.json")
+    job["compatibilityVersion"] = "static-job-v2"
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(job)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+    job["executionValidated"] = False
+    job["sourceAuthority"] = None
+    assert validate_contract(job) is ContractKind.AUTHORIZATION_JOB
+
+
+def test_current_authorization_job_binds_its_exact_source_manifest() -> None:
+    job = _load_object(FIXTURE_ROOT / "accepted/authorization-job.json")
+    request = job["request"]
+    expected = job["expectedSource"]
+    assert type(request) is dict
+    assert type(expected) is dict
+    request.pop("quotas")
+    request.update(
+        {
+            "operation": "rename",
+            "tenantId": "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100",
+        }
+    )
+    job.update(
+        {
+            "compatibilityVersion": "static-job-v2",
+            "executionValidated": False,
+            "requestDigest": request_digest(request).to_dict(),
+        }
+    )
+    source = _load_object(FIXTURE_ROOT / "accepted/site.json")
+    expected.update(
+        {
+            "expectsTenantAbsent": False,
+            "lifecycle": "active",
+            "manifestDigest": manifest_digest(source).to_dict(),
+            "deploymentDigest": {
+                "format": "lowerduckpond-deployment-record-v1",
+                "algorithm": "sha256",
+                "value": "a" * 64,
+            },
+        }
+    )
+    job["sourceAuthority"] = {"manifest": source, "archiveRecord": None}
+
+    assert validate_contract(job) is ContractKind.AUTHORIZATION_JOB
+    metadata = source["metadata"]
+    assert type(metadata) is dict
+    metadata["slug"] = "substituted-source"
+    with pytest.raises(ContractError) as captured:
+        validate_contract(job)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+def _current_delete_job(*, lifecycle: str) -> dict[str, object]:
+    job = _load_object(FIXTURE_ROOT / "accepted/authorization-job.json")
+    request = cast(dict[str, object], job["request"])
+    request.pop("slug")
+    request.pop("quotas")
+    request.update(
+        {
+            "operation": "delete",
+            "tenantId": "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100",
+        }
+    )
+    source = _load_object(FIXTURE_ROOT / "accepted/site.json")
+    source_spec = cast(dict[str, object], source["spec"])
+    source_spec["desiredState"] = lifecycle
+    archive: dict[str, object] | None = None
+    deployment_digest: dict[str, str] | None = None
+    archive_digest: dict[str, str] | None = None
+    if lifecycle == "undeployed":
+        source_spec.pop("desiredDeployment")
+    else:
+        deployment = _load_object(FIXTURE_ROOT / "accepted/deployment-record.json")
+        deployment_digest = deployment_record_digest(deployment).to_dict()
+        archive = _load_object(FIXTURE_ROOT / "accepted/archive-record.json")
+        archive["manifestDigest"] = manifest_digest(source).to_dict()
+        archive["correlationId"] = request["correlationId"]
+        archive_digest = archive_record_digest(archive).to_dict()
+    metadata = cast(dict[str, object], source["metadata"])
+    deletion_evidence: dict[str, object] = {
+        "mode": "never-deployed",
+        "releasedSlugs": [metadata["slug"]],
+        "archiveRecordDigest": None,
+        "bucket": None,
+        "key": None,
+        "versionId": None,
+        "emergencyReason": None,
+    }
+    if archive is not None:
+        deletion_evidence.update(
+            {
+                "mode": "archived",
+                "archiveRecordDigest": archive_digest,
+                "bucket": archive["bucket"],
+                "key": archive["key"],
+                "versionId": archive["versionId"],
+            }
+        )
+    expected = cast(dict[str, object], job["expectedSource"])
+    expected.update(
+        {
+            "expectsTenantAbsent": False,
+            "lifecycle": lifecycle,
+            "manifestDigest": manifest_digest(source).to_dict(),
+            "deploymentDigest": deployment_digest,
+            "archiveRecordDigest": archive_digest,
+            "deletionEvidence": deletion_evidence,
+        }
+    )
+    job.update(
+        {
+            "compatibilityVersion": "static-job-v2",
+            "executionValidated": False,
+            "requestDigest": request_digest(request).to_dict(),
+            "sourceAuthority": {"manifest": source, "archiveRecord": archive},
+        }
+    )
+    return job
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("releasedSlugs", ["substituted-slug"]),
+        (
+            "archiveRecordDigest",
+            {
+                "format": "lowerduckpond-archive-record-v1",
+                "algorithm": "sha256",
+                "value": "a" * 64,
+            },
+        ),
+        ("bucket", "substituted-bucket"),
+        ("key", "archives/0198d17f-6f4a-7000-8000-000000000099.zip"),
+        ("versionId", "substituted-version"),
+        ("emergencyReason", "not ordinary deletion"),
+    ],
+)
+def test_archived_delete_evidence_is_bound_to_exact_source_authority(
+    field: str,
+    value: object,
+) -> None:
+    job = _current_delete_job(lifecycle="archived")
+    assert validate_contract(job) is ContractKind.AUTHORIZATION_JOB
+    expected = cast(dict[str, object], job["expectedSource"])
+    evidence = cast(dict[str, object], expected["deletionEvidence"])
+    evidence[field] = value
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(job)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+def test_never_deployed_delete_slug_is_bound_to_source_manifest() -> None:
+    job = _current_delete_job(lifecycle="undeployed")
+    assert validate_contract(job) is ContractKind.AUTHORIZATION_JOB
+    expected = cast(dict[str, object], job["expectedSource"])
+    evidence = cast(dict[str, object], expected["deletionEvidence"])
+    evidence["releasedSlugs"] = ["substituted-slug"]
+
+    with pytest.raises(ContractError, match="durable authority") as captured:
+        validate_contract(job)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+def test_archive_record_is_reserved_for_successful_archive_results() -> None:
+    result = _load_object(FIXTURE_ROOT / "accepted/operation-result.json")
+    result["archiveRecord"] = _load_object(FIXTURE_ROOT / "accepted/archive-record.json")
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(result)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+    manifest = _load_object(FIXTURE_ROOT / "accepted/site.json")
+    spec = manifest["spec"]
+    assert type(spec) is dict
+    spec["desiredState"] = "archived"
+    archive = result["archiveRecord"]
+    assert type(archive) is dict
+    archive["manifestDigest"] = manifest_digest(manifest).to_dict()
+    result["operation"] = "archive"
+    result["manifest"] = manifest
+
+    assert validate_contract(result) is ContractKind.OPERATION_RESULT
+
+
+@pytest.mark.parametrize("missing", ["archiveRecord", "manifest"])
+def test_successful_archive_result_requires_complete_archive_authority(missing: str) -> None:
+    result = _load_object(FIXTURE_ROOT / "accepted/operation-result.json")
+    manifest = _load_object(FIXTURE_ROOT / "accepted/site.json")
+    spec = manifest["spec"]
+    assert type(spec) is dict
+    spec["desiredState"] = "archived"
+    archive = _load_object(FIXTURE_ROOT / "accepted/archive-record.json")
+    archive["manifestDigest"] = manifest_digest(manifest).to_dict()
+    result.update(
+        {
+            "operation": "archive",
+            "manifest": manifest,
+            "archiveRecord": archive,
+        }
+    )
+    del result[missing]
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(result)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("tenantId", "0198d17f-6f4a-7000-8000-000000000099"),
+        ("correlationId", "0198d17f-6f4a-7000-8000-000000000099"),
+        (
+            "manifestDigest",
+            {
+                "format": "lowerduckpond-manifest-v1",
+                "algorithm": "sha256",
+                "value": "a" * 64,
+            },
+        ),
+        ("deploymentId", "0198d17f-6f4a-7000-8000-000000000099"),
+    ],
+)
+def test_successful_archive_record_is_bound_to_its_result(
+    field: str,
+    value: object,
+) -> None:
+    result = _load_object(FIXTURE_ROOT / "accepted/operation-result.json")
+    manifest = _load_object(FIXTURE_ROOT / "accepted/site.json")
+    spec = manifest["spec"]
+    assert type(spec) is dict
+    spec["desiredState"] = "archived"
+    archive = _load_object(FIXTURE_ROOT / "accepted/archive-record.json")
+    archive["manifestDigest"] = manifest_digest(manifest).to_dict()
+    archive[field] = value
+    result.update(
+        {
+            "operation": "archive",
+            "manifest": manifest,
+            "archiveRecord": archive,
+        }
+    )
+
+    with pytest.raises(ContractError, match="archive record") as captured:
+        validate_contract(result)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+def test_legacy_failed_archive_result_without_archive_record_remains_decodable() -> None:
+    result = _load_object(FIXTURE_ROOT / "accepted/operation-result.json")
+    del result["canonicalOrigin"]
+    del result["manifest"]
+    result.update(
+        {
+            "operation": "archive",
+            "status": "failed",
+            "errorCode": "not_implemented",
+        }
+    )
+
+    assert validate_contract(result) is ContractKind.OPERATION_RESULT
+    result["archiveRecord"] = None
+    assert validate_contract(result) is ContractKind.OPERATION_RESULT
 
 
 @pytest.mark.parametrize("field", ["tenantId", "canonicalOrigin", "manifest"])
@@ -393,9 +799,110 @@ def test_unimplemented_handler_returns_a_versioned_failed_result() -> None:
     assert validate_contract(result) is ContractKind.OPERATION_RESULT
 
 
+def test_executor_failure_publisher_is_reserved_for_failed_results() -> None:
+    result = _load_object(FIXTURE_ROOT / "accepted/operation-result.json")
+    result["failurePublisher"] = "authorization-executor"
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(result)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+    del result["canonicalOrigin"]
+    del result["manifest"]
+    result.update(
+        {
+            "status": "failed",
+            "errorCode": "not_implemented",
+        }
+    )
+    with pytest.raises(ContractError) as captured:
+        validate_contract(result)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+@pytest.mark.parametrize(
+    "missing",
+    ["failureAuditPredecessorDigest", "failureAuditSequence", "failurePublisher"],
+)
+def test_executor_failure_audit_position_is_an_atomic_authority(missing: str) -> None:
+    result = _load_object(FIXTURE_ROOT / "accepted/operation-result.json")
+    del result["canonicalOrigin"]
+    del result["manifest"]
+    result.update(
+        {
+            "status": "failed",
+            "errorCode": "state_drift",
+            "failurePublisher": "authorization-executor",
+            "failureAuditPredecessorDigest": None,
+            "failureAuditSequence": 0,
+        }
+    )
+    assert validate_contract(result) is ContractKind.OPERATION_RESULT
+    del result[missing]
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(result)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+@pytest.mark.parametrize(
+    ("sequence", "predecessor"),
+    [
+        (
+            0,
+            {
+                "format": "lowerduckpond-audit-entry-v1",
+                "algorithm": "sha256",
+                "value": "a" * 64,
+            },
+        ),
+        (1, None),
+    ],
+)
+def test_executor_failure_audit_position_matches_chain_semantics(
+    sequence: int,
+    predecessor: dict[str, str] | None,
+) -> None:
+    result = _load_object(FIXTURE_ROOT / "accepted/operation-result.json")
+    del result["canonicalOrigin"]
+    del result["manifest"]
+    result.update(
+        {
+            "status": "failed",
+            "errorCode": "state_drift",
+            "failurePublisher": "authorization-executor",
+            "failureAuditPredecessorDigest": predecessor,
+            "failureAuditSequence": sequence,
+        }
+    )
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(result)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
 def test_existing_tenant_intent_requires_a_source_manifest_digest() -> None:
     intent = _load_object(FIXTURE_ROOT / "accepted/transaction-intent.json")
     intent["sourceManifestDigest"] = None
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(intent)
+
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+def test_pre_upgrade_transaction_intent_retains_digest_only_recovery() -> None:
+    intent = _load_object(FIXTURE_ROOT / "accepted/transaction-intent.json")
+    del intent["compatibilityVersion"]
+    del intent["sourceManifest"]
+    del intent["candidateManifest"]
+
+    assert validate_contract(intent) is ContractKind.TRANSACTION_INTENT
+
+
+def test_current_transaction_intent_requires_its_manifest_copies() -> None:
+    intent = _load_object(FIXTURE_ROOT / "accepted/transaction-intent.json")
+    del intent["candidateManifest"]
 
     with pytest.raises(ContractError) as captured:
         validate_contract(intent)
@@ -526,7 +1033,15 @@ def test_create_intent_requires_an_absent_source_manifest() -> None:
     intent = _load_object(FIXTURE_ROOT / "accepted/transaction-intent.json")
     source_digest = intent["sourceManifestDigest"]
     intent["operation"] = "create"
+    intent["sourceManifest"] = None
     intent["sourceManifestDigest"] = None
+    candidate_manifest = intent["candidateManifest"]
+    assert type(candidate_manifest) is dict
+    candidate_spec = candidate_manifest["spec"]
+    assert type(candidate_spec) is dict
+    candidate_spec["desiredState"] = "undeployed"
+    del candidate_spec["desiredDeployment"]
+    intent["candidateManifestDigest"] = manifest_digest(candidate_manifest).to_dict()
     candidate = _load_object(FIXTURE_ROOT / "accepted/tenant-observed-state.json")
     candidate.update(
         {
@@ -732,10 +1247,10 @@ def test_audit_predecessor_is_pinned_to_the_audit_entry_digest_domain() -> None:
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
 
-def test_manifestless_result_origin_is_bound_to_its_tenant_identity() -> None:
+def test_manifestless_delete_result_origin_is_bound_to_its_tenant_identity() -> None:
     result = _load_object(FIXTURE_ROOT / "accepted/operation-result.json")
     del result["manifest"]
-    result["operation"] = "deploy"
+    result["operation"] = "delete"
     result["canonicalOrigin"] = "t-0198d17f6f4a70008000000000000001.lowerduckpond.com"
 
     with pytest.raises(ContractError) as captured:
@@ -744,6 +1259,54 @@ def test_manifestless_result_origin_is_bound_to_its_tenant_identity() -> None:
 
     result["canonicalOrigin"] = "t-0191e2c48f7a7c3b8d1e5f62047a2100.lowerduckpond.com"
     assert validate_contract(result) is ContractKind.OPERATION_RESULT
+
+
+def test_manifestless_nondelete_result_remains_decodable_for_v1alpha1_upgrade() -> None:
+    result = _load_object(FIXTURE_ROOT / "accepted/operation-result.json")
+    del result["manifest"]
+    result["operation"] = "deploy"
+
+    assert validate_contract(result) is ContractKind.OPERATION_RESULT
+
+
+def test_failed_archive_result_declares_whether_an_upload_candidate_exists() -> None:
+    result = _load_object(FIXTURE_ROOT / "accepted/operation-result.json")
+    result.update(
+        {
+            "operation": "archive",
+            "status": "failed",
+            "errorCode": "archive_unavailable",
+        }
+    )
+    result.pop("canonicalOrigin")
+    result.pop("manifest")
+
+    result["archiveRecord"] = None
+    assert validate_contract(result) is ContractKind.OPERATION_RESULT
+
+    result["archiveRecord"] = _load_object(FIXTURE_ROOT / "accepted/archive-record.json")
+    assert validate_contract(result) is ContractKind.OPERATION_RESULT
+
+
+@pytest.mark.parametrize("field", ["tenantId", "correlationId"])
+def test_failed_archive_candidate_is_bound_to_its_result(field: str) -> None:
+    result = _load_object(FIXTURE_ROOT / "accepted/operation-result.json")
+    result.update(
+        {
+            "operation": "archive",
+            "status": "failed",
+            "errorCode": "archive_unavailable",
+            "archiveRecord": _load_object(FIXTURE_ROOT / "accepted/archive-record.json"),
+        }
+    )
+    result.pop("canonicalOrigin")
+    result.pop("manifest")
+    archive = cast(dict[str, object], result["archiveRecord"])
+    archive[field] = "0198d17f-6f4a-7000-8000-000000000099"
+
+    with pytest.raises(ContractError, match="archive record") as captured:
+        validate_contract(result)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
 
 def test_successful_delete_result_cannot_return_a_desired_manifest() -> None:
@@ -821,6 +1384,10 @@ def test_successful_deterministic_result_manifest_matches_its_target_state(
     spec["desiredState"] = expected_state
     result["operation"] = operation
     result["manifest"] = manifest
+    if operation == "archive":
+        archive = _load_object(FIXTURE_ROOT / "accepted/archive-record.json")
+        archive["manifestDigest"] = manifest_digest(manifest).to_dict()
+        result["archiveRecord"] = archive
 
     assert validate_contract(result) is ContractKind.OPERATION_RESULT
 
@@ -1130,11 +1697,76 @@ def test_non_delete_intents_require_a_candidate_manifest_digest(operation: Opera
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
 
+@pytest.mark.parametrize(
+    "operation",
+    [operation for operation in Operation if operation is not Operation.DELETE],
+)
+def test_non_delete_intents_require_an_exact_candidate_manifest(operation: Operation) -> None:
+    intent = _load_object(FIXTURE_ROOT / "accepted/transaction-intent.json")
+    intent["operation"] = operation.value
+    if operation is Operation.CREATE:
+        intent["sourceManifestDigest"] = None
+    del intent["candidateManifest"]
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(intent)
+
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+def test_transaction_candidate_manifest_binds_its_digest_and_tenant() -> None:
+    intent = _load_object(FIXTURE_ROOT / "accepted/transaction-intent.json")
+    candidate = intent["candidateManifest"]
+    assert type(candidate) is dict
+    metadata = candidate["metadata"]
+    assert type(metadata) is dict
+    metadata["slug"] = "digest-drift"
+
+    with pytest.raises(ContractError, match="candidate manifest binding") as captured:
+        validate_contract(intent)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+    metadata["id"] = "0198d17f-6f4a-7000-8000-000000000099"
+    metadata["canonicalOrigin"] = "t-0198d17f6f4a70008000000000000099.lowerduckpond.com"
+    intent["candidateManifestDigest"] = manifest_digest(candidate).to_dict()
+    with pytest.raises(ContractError, match="tenant identity") as captured:
+        validate_contract(intent)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+def test_transaction_source_manifest_binds_its_digest_and_tenant() -> None:
+    intent = _load_object(FIXTURE_ROOT / "accepted/transaction-intent.json")
+    source = intent["sourceManifest"]
+    assert type(source) is dict
+    metadata = source["metadata"]
+    assert type(metadata) is dict
+    metadata["slug"] = "source-digest-drift"
+
+    with pytest.raises(ContractError, match="source manifest binding") as captured:
+        validate_contract(intent)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+    metadata["id"] = "0198d17f-6f4a-7000-8000-000000000099"
+    metadata["canonicalOrigin"] = "t-0198d17f6f4a70008000000000000099.lowerduckpond.com"
+    intent["sourceManifestDigest"] = manifest_digest(source).to_dict()
+    with pytest.raises(ContractError, match="source tenant identity") as captured:
+        validate_contract(intent)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
 def test_delete_intent_requires_an_absent_candidate_manifest() -> None:
     intent = _load_object(FIXTURE_ROOT / "accepted/transaction-intent.json")
+    candidate_manifest = intent["candidateManifest"]
     candidate_digest = intent["candidateManifestDigest"]
     intent["operation"] = "delete"
+    intent["candidateManifest"] = None
     intent["candidateManifestDigest"] = None
+    source_manifest = intent["sourceManifest"]
+    assert type(source_manifest) is dict
+    source_spec = source_manifest["spec"]
+    assert type(source_spec) is dict
+    source_spec["desiredState"] = "archived"
+    intent["sourceManifestDigest"] = manifest_digest(source_manifest).to_dict()
     source = _load_object(FIXTURE_ROOT / "accepted/tenant-observed-state.json")
     source.update(
         {
@@ -1155,6 +1787,7 @@ def test_delete_intent_requires_an_absent_candidate_manifest() -> None:
 
     assert validate_contract(intent) is ContractKind.TRANSACTION_INTENT
 
+    intent["candidateManifest"] = candidate_manifest
     intent["candidateManifestDigest"] = candidate_digest
     with pytest.raises(ContractError) as captured:
         validate_contract(intent)
@@ -1168,16 +1801,36 @@ def _route_only_transaction_intent(
     candidate_state: str,
 ) -> dict[str, object]:
     intent = _load_object(FIXTURE_ROOT / "accepted/transaction-intent.json")
-    if operation != "reconcile":
-        candidate_digest = deepcopy(intent["candidateManifestDigest"])
-        assert type(candidate_digest) is dict
-        candidate_digest["value"] = "b" * 64
-        intent["candidateManifestDigest"] = candidate_digest
+    source_manifest = _load_object(FIXTURE_ROOT / "accepted/site.json")
+    source_spec = source_manifest["spec"]
+    assert type(source_spec) is dict
+    source_spec["desiredState"] = source_state
+    candidate_manifest = deepcopy(source_manifest)
+    candidate_spec = candidate_manifest["spec"]
+    assert type(candidate_spec) is dict
+    candidate_spec["desiredState"] = candidate_state
+    if operation == "rename":
+        metadata = candidate_manifest["metadata"]
+        assert type(metadata) is dict
+        metadata["slug"] = "renamed-duck"
+    if operation in {"deploy", "rollback", "restore"}:
+        deployment = candidate_spec["desiredDeployment"]
+        assert type(deployment) is dict
+        deployment["id"] = "0198d17f-6f4a-7000-8000-000000000009"
+    source_digest = manifest_digest(source_manifest).to_dict()
+    candidate_digest = manifest_digest(candidate_manifest).to_dict()
+    intent["sourceManifest"] = source_manifest
+    intent["sourceManifestDigest"] = source_digest
+    intent["candidateManifest"] = candidate_manifest
+    intent["candidateManifestDigest"] = candidate_digest
     source = _load_object(FIXTURE_ROOT / "accepted/tenant-observed-state.json")
     source.update(
         {
-            "desiredManifestDigest": intent["sourceManifestDigest"],
+            "desiredManifestDigest": source_digest,
             "observedState": source_state,
+            "activeDeploymentId": (
+                source["activeDeploymentId"] if source_state in {"active", "suspended"} else None
+            ),
             "runtimeGenerationId": (
                 "0198d17f-6f4a-7000-8000-000000000004" if source_state == "active" else None
             ),
@@ -1186,8 +1839,13 @@ def _route_only_transaction_intent(
     candidate = deepcopy(source)
     candidate.update(
         {
-            "desiredManifestDigest": intent["candidateManifestDigest"],
+            "desiredManifestDigest": candidate_digest,
             "observedState": candidate_state,
+            "activeDeploymentId": (
+                "0198d17f-6f4a-7000-8000-000000000009"
+                if operation in {"deploy", "rollback", "restore"}
+                else source["activeDeploymentId"]
+            ),
             "runtimeGenerationId": (
                 "0198d17f-6f4a-7000-8000-000000000006" if candidate_state == "active" else None
             ),
@@ -1256,11 +1914,69 @@ def test_route_only_intent_preserves_the_remembered_deployment(
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
 
-@pytest.mark.parametrize("operation", ["deploy", "rollback"])
+@pytest.mark.parametrize(
+    ("operation", "source_state", "candidate_state"),
+    [
+        ("suspend", "active", "suspended"),
+        ("resume", "suspended", "active"),
+        ("rename", "active", "active"),
+        ("deploy", "active", "active"),
+        ("rollback", "active", "active"),
+        ("restore", "archived", "active"),
+    ],
+)
+def test_transaction_candidate_cannot_change_unrelated_fields(
+    operation: str,
+    source_state: str,
+    candidate_state: str,
+) -> None:
+    intent = _route_only_transaction_intent(operation, source_state, candidate_state)
+    candidate_manifest = intent["candidateManifest"]
+    recovery = intent["lifecycleRecovery"]
+    assert type(candidate_manifest) is dict
+    assert type(recovery) is dict
+    candidate_spec = candidate_manifest["spec"]
+    candidate_observed = recovery["candidateObservedState"]
+    assert type(candidate_spec) is dict
+    assert type(candidate_observed) is dict
+    quotas = candidate_spec["quotas"]
+    assert type(quotas) is dict
+    quotas["entries"] = 4999
+    candidate_digest = manifest_digest(candidate_manifest).to_dict()
+    intent["candidateManifestDigest"] = candidate_digest
+    candidate_observed["desiredManifestDigest"] = candidate_digest
+
+    with pytest.raises(ContractError, match="outside its operation") as captured:
+        validate_contract(intent)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+def test_recovery_observed_state_must_match_its_candidate_manifest() -> None:
+    intent = _route_only_transaction_intent("suspend", "active", "suspended")
+    candidate_manifest = intent["candidateManifest"]
+    recovery = intent["lifecycleRecovery"]
+    assert type(candidate_manifest) is dict
+    assert type(recovery) is dict
+    candidate_spec = candidate_manifest["spec"]
+    candidate_observed = recovery["candidateObservedState"]
+    assert type(candidate_spec) is dict
+    assert type(candidate_observed) is dict
+    candidate_spec["desiredState"] = "active"
+    candidate_digest = manifest_digest(candidate_manifest).to_dict()
+    intent["candidateManifestDigest"] = candidate_digest
+    candidate_observed["desiredManifestDigest"] = candidate_digest
+
+    with pytest.raises(ContractError, match="disagrees with its manifest") as captured:
+        validate_contract(intent)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+@pytest.mark.parametrize("operation", ["deploy", "rollback", "restore"])
 def test_deployment_selection_intent_changes_the_remembered_deployment(
     operation: str,
 ) -> None:
-    intent = _route_only_transaction_intent(operation, "active", "active")
+    source_state = "archived" if operation == "restore" else "active"
+    intent = _route_only_transaction_intent(operation, source_state, "active")
     recovery = intent["lifecycleRecovery"]
     assert type(recovery) is dict
     candidate = recovery["candidateObservedState"]
@@ -1325,19 +2041,22 @@ def test_satisfied_route_transition_preserves_the_manifest_generation(
     state: str,
 ) -> None:
     intent = _route_only_transaction_intent(operation, state, state)
-    candidate_digest = deepcopy(intent["candidateManifestDigest"])
-    source_digest = deepcopy(intent["sourceManifestDigest"])
-    intent["candidateManifestDigest"] = source_digest
+
+    assert validate_contract(intent) is ContractKind.TRANSACTION_INTENT
+
+    drifted_manifest = deepcopy(intent["candidateManifest"])
+    assert type(drifted_manifest) is dict
+    metadata = drifted_manifest["metadata"]
+    assert type(metadata) is dict
+    metadata["slug"] = "drifted-duck"
+    drifted_digest = manifest_digest(drifted_manifest).to_dict()
+    intent["candidateManifest"] = drifted_manifest
+    intent["candidateManifestDigest"] = drifted_digest
     recovery = intent["lifecycleRecovery"]
     assert type(recovery) is dict
     candidate = recovery["candidateObservedState"]
     assert type(candidate) is dict
-    candidate["desiredManifestDigest"] = source_digest
-
-    assert validate_contract(intent) is ContractKind.TRANSACTION_INTENT
-
-    intent["candidateManifestDigest"] = candidate_digest
-    candidate["desiredManifestDigest"] = candidate_digest
+    candidate["desiredManifestDigest"] = drifted_digest
     with pytest.raises(ContractError) as captured:
         validate_contract(intent)
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
@@ -1362,9 +2081,15 @@ def test_rename_intent_requires_a_distinct_manifest_generation() -> None:
 
 def test_runtime_mutation_intent_requires_exact_recovery_generations() -> None:
     intent = _load_object(FIXTURE_ROOT / "accepted/transaction-intent.json")
-    candidate_digest = deepcopy(intent["candidateManifestDigest"])
-    assert type(candidate_digest) is dict
-    candidate_digest["value"] = "b" * 64
+    candidate_manifest = deepcopy(intent["candidateManifest"])
+    assert type(candidate_manifest) is dict
+    candidate_spec = candidate_manifest["spec"]
+    assert type(candidate_spec) is dict
+    candidate_deployment = candidate_spec["desiredDeployment"]
+    assert type(candidate_deployment) is dict
+    candidate_deployment["id"] = "0198d17f-6f4a-7000-8000-000000000009"
+    candidate_digest = manifest_digest(candidate_manifest).to_dict()
+    intent["candidateManifest"] = candidate_manifest
     intent["candidateManifestDigest"] = candidate_digest
     source = _load_object(FIXTURE_ROOT / "accepted/tenant-observed-state.json")
     source["desiredManifestDigest"] = intent["sourceManifestDigest"]
@@ -1408,7 +2133,9 @@ def _archive_transaction_intent() -> dict[str, object]:
     intent.update(
         {
             "operation": "archive",
+            "sourceManifest": source,
             "sourceManifestDigest": source_digest,
+            "candidateManifest": candidate,
             "candidateManifestDigest": candidate_digest,
             "archiveRecovery": {
                 "sourceManifest": source,
@@ -1434,6 +2161,56 @@ def test_archive_transaction_intent_binds_both_recovery_outcomes() -> None:
     assert type(recovery) is dict
     recovery["sourceRouteSet"] = "absent"
     with pytest.raises(ContractError) as captured:
+        validate_contract(intent)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+def test_archive_transaction_intent_rejects_drift_between_candidate_copies() -> None:
+    intent = _archive_transaction_intent()
+    recovery = intent["archiveRecovery"]
+    assert type(recovery) is dict
+    candidate = deepcopy(recovery["candidateManifest"])
+    assert type(candidate) is dict
+    recovery["candidateManifest"] = candidate
+    spec = candidate["spec"]
+    assert type(spec) is dict
+    quotas = spec["quotas"]
+    assert type(quotas) is dict
+    quotas["entries"] = 4999
+
+    with pytest.raises(ContractError, match="candidate manifest copies") as captured:
+        validate_contract(intent)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+def test_legacy_archive_transaction_intent_binds_its_recovery_source() -> None:
+    intent = _archive_transaction_intent()
+    del intent["compatibilityVersion"]
+    del intent["sourceManifest"]
+    del intent["candidateManifest"]
+    recovery = intent["archiveRecovery"]
+    assert type(recovery) is dict
+    source = recovery["sourceManifest"]
+    candidate = recovery["candidateManifest"]
+    assert type(source) is dict
+    assert type(candidate) is dict
+    source_spec = source["spec"]
+    candidate_spec = candidate["spec"]
+    assert type(source_spec) is dict
+    assert type(candidate_spec) is dict
+    source_quotas = source_spec["quotas"]
+    candidate_quotas = candidate_spec["quotas"]
+    assert type(source_quotas) is dict
+    assert type(candidate_quotas) is dict
+    source_quotas["entries"] = 4999
+    candidate_quotas["entries"] = 4999
+    candidate_digest = manifest_digest(candidate).to_dict()
+    intent["candidateManifestDigest"] = candidate_digest
+    archive = recovery["candidateArchiveRecord"]
+    assert type(archive) is dict
+    archive["manifestDigest"] = candidate_digest
+
+    with pytest.raises(ContractError, match="archive source manifest binding") as captured:
         validate_contract(intent)
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
@@ -1498,6 +2275,45 @@ def test_archive_construction_uploaded_phase_binds_a_remote_version() -> None:
 def test_archive_construction_key_is_bound_to_the_upload_attempt() -> None:
     intent = _load_object(FIXTURE_ROOT / "accepted/archive-construction-intent.json")
     intent["key"] = "archives/0198d17f-6f4a-7000-8000-000000000006.zip"
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(intent)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+def test_archive_retirement_binds_exact_object_coordinates_to_its_record() -> None:
+    intent = _load_object(FIXTURE_ROOT / "accepted/archive-retirement-intent.json")
+
+    assert validate_contract(intent) is ContractKind.ARCHIVE_RETIREMENT_INTENT
+
+    intent["key"] = "archives/0198d17f-6f4a-7000-8000-000000000006.zip"
+    with pytest.raises(ContractError, match="object authority") as captured:
+        validate_contract(intent)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+def test_archive_retirement_binds_the_complete_record_digest() -> None:
+    intent = _load_object(FIXTURE_ROOT / "accepted/archive-retirement-intent.json")
+    archive = intent["archiveRecord"]
+    assert type(archive) is dict
+    archive["key"] = "archives/0198d17f-6f4a-7000-8000-000000000006.zip"
+
+    with pytest.raises(ContractError, match="record digest") as captured:
+        validate_contract(intent)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+def test_pre_upgrade_archive_retirement_intent_remains_decodable() -> None:
+    intent = _load_object(FIXTURE_ROOT / "accepted/archive-retirement-intent.json")
+    del intent["compatibilityVersion"]
+    del intent["archiveRecord"]
+
+    assert validate_contract(intent) is ContractKind.ARCHIVE_RETIREMENT_INTENT
+
+
+def test_current_archive_retirement_intent_requires_its_record_authority() -> None:
+    intent = _load_object(FIXTURE_ROOT / "accepted/archive-retirement-intent.json")
+    del intent["archiveRecord"]
 
     with pytest.raises(ContractError) as captured:
         validate_contract(intent)

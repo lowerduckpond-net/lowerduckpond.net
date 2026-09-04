@@ -24,6 +24,7 @@ from lowerduckpond_static_host_agent.correlations import (
     CorrelationAdmission,
     CorrelationResolution,
 )
+from lowerduckpond_static_host_agent.locks import LockMode
 from lowerduckpond_static_host_agent.repository import (
     StateRecordPath,
     StateRepository,
@@ -36,6 +37,10 @@ _DISABLED_STATUS: Final = 78
 
 class IssuanceError(RuntimeError):
     """A request cannot become an expected-state-bound authorization job."""
+
+
+class SourceStateError(IssuanceError):
+    """Current tenant state cannot authorize the requested operation."""
 
 
 class PublicationDisabledError(IssuanceError):
@@ -52,6 +57,8 @@ class StateReader(Protocol):
     """Read validated state through either a repository or held transaction."""
 
     def read(self, path: StateRecordPath) -> StoredContract: ...
+
+    def tenant_has_deployment_history(self, tenant_id: object) -> bool: ...
 
 
 class ClosedPublicationGate:
@@ -147,16 +154,28 @@ class AuthorizationIssuer:
             clock=lambda: _unix_milliseconds(accepted_at),
             entropy=self._entropy,
         )
+        expected_source, source_authority = _build_source_bindings(
+            self._repository,
+            request,
+        )
         candidate: dict[str, object] = {
             "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
             "kind": "AuthorizationJob",
-            "compatibilityVersion": "static-job-v1",
+            "compatibilityVersion": "static-job-v2",
             "jobId": job_id,
             "operatorPrincipal": principal,
             "request": request,
             "requestDigest": request_digest(request).to_dict(),
             "artifact": request.get("artifact"),
-            "expectedSource": build_expected_source(self._repository, request),
+            "expectedSource": expected_source,
+            "sourceAuthority": source_authority,
+            "dispatchArchiveDeploymentIds": None,
+            "dispatchArtifactReleaseTreeDigest": None,
+            "dispatchSourceReleaseTreeDigest": None,
+            "dispatchDeploymentIds": None,
+            "dispatchTenantIds": None,
+            "dispatchTenantRecordHistories": None,
+            "executionValidated": False,
             "acceptedAt": accepted_at.isoformat().replace("+00:00", "Z"),
             "phase": "pending",
         }
@@ -200,13 +219,25 @@ class AuthorizationIssuer:
         if issued.created:
             raise IssuanceError("new authorization is not an exact retry")
         job_id = validate_uuid7(issued.job_id)
-        try:
-            self._repository.read(StateRecordPath.authorization_result(job_id))
-        except FileNotFoundError:
-            job = self._repository.read(StateRecordPath.authorization_job(job_id)).document
-            if job["phase"] in {"pending", "claimed"}:
-                return True
-            raise IssuanceError("terminal authorization job has no immutable result") from None
+        with self._repository.transaction(mode=LockMode.EXCLUSIVE) as transaction:
+            job = transaction.read(StateRecordPath.authorization_job(job_id)).document
+            try:
+                transaction.read(StateRecordPath.authorization_result(job_id))
+            except FileNotFoundError:
+                if job["phase"] in {"pending", "claimed"}:
+                    return True
+                raise IssuanceError("terminal authorization job has no immutable result") from None
+            request = job["request"]
+            if type(request) is not dict:  # pragma: no cover - validated reads prove this
+                raise IssuanceError("authorization request is malformed")
+            correlation_id = request["correlationId"]
+            for identity in transaction.measure_intent_records().records:
+                _path, intent = transaction.read_intent(identity.intent_id)
+                if (
+                    intent.document["kind"] == "TransactionIntent"
+                    and intent.document["correlationId"] == correlation_id
+                ):
+                    return True
         return False
 
 
@@ -258,17 +289,30 @@ def build_expected_source(
 ) -> dict[str, object]:
     """Derive the complete expected-source binding from one trusted reader."""
 
+    expected, _authority = _build_source_bindings(reader, request)
+    return expected
+
+
+def _build_source_bindings(
+    reader: StateReader,
+    request: dict[str, object],
+) -> tuple[dict[str, object], dict[str, object] | None]:
+    """Derive digest and exact replay authority from the same source snapshot."""
+
     namespace = reader.read(StateRecordPath.platform_namespace()).document
     platform_digest = platform_state_digest(namespace).to_dict()
     if request["operation"] == "create":
-        return {
-            "expectsTenantAbsent": True,
-            "lifecycle": None,
-            "manifestDigest": None,
-            "deploymentDigest": None,
-            "archiveRecordDigest": None,
-            "platformStateDigest": platform_digest,
-        }
+        return (
+            {
+                "expectsTenantAbsent": True,
+                "lifecycle": None,
+                "manifestDigest": None,
+                "deploymentDigest": None,
+                "archiveRecordDigest": None,
+                "platformStateDigest": platform_digest,
+            },
+            None,
+        )
 
     tenant_id = validate_uuid7(request["tenantId"])
     desired = reader.read(StateRecordPath.tenant_desired(tenant_id)).document
@@ -276,6 +320,7 @@ def build_expected_source(
     lifecycle = cast(str, spec["desiredState"])
     deployment_digest: dict[str, str] | None = None
     archive_digest: dict[str, str] | None = None
+    archive: dict[str, object] | None = None
     if lifecycle != "undeployed":
         reference = cast(dict[str, object], spec["desiredDeployment"])
         deployment_id = validate_uuid7(reference["id"])
@@ -286,7 +331,7 @@ def build_expected_source(
         if lifecycle == "archived":
             archive = reader.read(StateRecordPath.tenant_archive(tenant_id, deployment_id)).document
             archive_digest = archive_record_digest(archive).to_dict()
-    return {
+    expected: dict[str, object] = {
         "expectsTenantAbsent": False,
         "lifecycle": lifecycle,
         "manifestDigest": manifest_digest(desired).to_dict(),
@@ -294,3 +339,32 @@ def build_expected_source(
         "archiveRecordDigest": archive_digest,
         "platformStateDigest": platform_digest,
     }
+    if request["operation"] == "delete":
+        metadata = cast(dict[str, object], desired["metadata"])
+        deletion_evidence: dict[str, object] | None = None
+        if lifecycle == "undeployed":
+            if reader.tenant_has_deployment_history(tenant_id):
+                raise SourceStateError("undeployed tenant retains deployment history")
+            deletion_evidence = {
+                "mode": "never-deployed",
+                "releasedSlugs": [metadata["slug"]],
+                "archiveRecordDigest": None,
+                "bucket": None,
+                "key": None,
+                "versionId": None,
+                "emergencyReason": None,
+            }
+        elif lifecycle == "archived" and archive is not None:
+            deletion_evidence = {
+                "mode": "archived",
+                "releasedSlugs": [metadata["slug"]],
+                "archiveRecordDigest": archive_digest,
+                "bucket": archive["bucket"],
+                "key": archive["key"],
+                "versionId": archive["versionId"],
+                "emergencyReason": None,
+            }
+        else:
+            raise SourceStateError("tenant lifecycle is not eligible for ordinary deletion")
+        expected["deletionEvidence"] = deletion_evidence
+    return expected, {"manifest": desired, "archiveRecord": archive}

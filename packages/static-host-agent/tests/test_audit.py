@@ -61,12 +61,14 @@ def test_append_builds_one_exact_canonical_hash_chain(tmp_path: Path) -> None:
     first = _entry(0, None)
     first_digest = audit_entry_digest(first).to_dict()
     second = _entry(1, first_digest)
+    second["operation"] = "archive"
 
     with _repository(root) as repository:
         first_result = repository.append_audit(first)
         second_result = repository.append_audit(second)
         state = repository.inspect_audit()
         snapshot = repository.inspect_audit_correlation(first["correlationId"])
+        second_snapshot = repository.inspect_audit_correlation(second["correlationId"])
         absent = repository.inspect_audit_correlation("0198d17f-6f4a-7000-8000-ffffffffffff")
 
     assert first_result.entry_digest == first_digest
@@ -76,8 +78,14 @@ def test_append_builds_one_exact_canonical_hash_chain(tmp_path: Path) -> None:
     assert state.terminal_digest == audit_entry_digest(second).to_dict()
     assert snapshot.state == state
     assert snapshot.entry == first
+    assert snapshot.previous_tenant_state_transition is None
+    assert snapshot.has_later_tenant_state_transition is True
+    assert second_snapshot.previous_tenant_state_transition == first
+    assert second_snapshot.has_later_tenant_state_transition is False
     assert absent.state == state
     assert absent.entry is None
+    assert absent.previous_tenant_state_transition is None
+    assert absent.has_later_tenant_state_transition is False
     assert (root / "audit/segment-00000000000000000000.jsonl").read_bytes() == (
         canonical_json_bytes(first) + canonical_json_bytes(second)
     )
@@ -94,6 +102,23 @@ def test_correlation_lookup_rejects_duplicate_entries(tmp_path: Path) -> None:
         repository.append_audit(second)
         with pytest.raises(AuditError, match="correlation appears multiple times"):
             repository.inspect_audit_correlation(first["correlationId"])
+
+
+def test_correlation_lookup_does_not_treat_failure_as_state_supersession(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    first = _entry(0, None)
+    second = _entry(1, audit_entry_digest(first).to_dict())
+    second["operation"] = "rename"
+    second["resultStatus"] = "failed"
+
+    with _repository(root) as repository:
+        repository.append_audit(first)
+        repository.append_audit(second)
+        snapshot = repository.inspect_audit_correlation(first["correlationId"])
+
+    assert snapshot.has_later_tenant_state_transition is False
 
 
 @pytest.mark.parametrize("invalid_field", ["sequence", "predecessor"])

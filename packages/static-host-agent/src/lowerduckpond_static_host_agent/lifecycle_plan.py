@@ -108,6 +108,7 @@ def plan_create_transition(  # noqa: PLR0913 - each authority input is explicit
     intent: dict[str, object] = {
         "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
         "kind": "TransactionIntent",
+        "compatibilityVersion": "static-intent-v2",
         "intentId": intent_id,
         "tenantId": created.tenant_id,
         "correlationId": request["correlationId"],
@@ -121,7 +122,9 @@ def plan_create_transition(  # noqa: PLR0913 - each authority input is explicit
             "candidateRuntimeGenerationId": candidate_generation,
             "candidateRouteSet": "absent",
         },
+        "sourceManifest": None,
         "sourceManifestDigest": None,
+        "candidateManifest": created.manifest,
         "candidateManifestDigest": desired_digest,
         "phase": "prepared",
         "restartFence": None,

@@ -4,6 +4,132 @@
   "additionalProperties": false,
   "allOf": [
     {
+      "if": {
+        "anyOf": [
+          {
+            "required": [
+              "failureAuditPredecessorDigest"
+            ]
+          },
+          {
+            "required": [
+              "failureAuditSequence"
+            ]
+          },
+          {
+            "required": [
+              "failurePublisher"
+            ]
+          }
+        ]
+      },
+      "then": {
+        "required": [
+          "failureAuditPredecessorDigest",
+          "failureAuditSequence",
+          "failurePublisher"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "failureAuditSequence": {
+            "const": 0
+          }
+        },
+        "required": [
+          "failureAuditSequence"
+        ]
+      },
+      "then": {
+        "properties": {
+          "failureAuditPredecessorDigest": {
+            "type": "null"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "failureAuditPredecessorDigest": {
+            "$ref": "common.schema.json#/$defs/auditEntryDigest"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "failurePublisher"
+        ]
+      },
+      "then": {
+        "properties": {
+          "provenance": {
+            "properties": {
+              "kind": {
+                "const": "authorization-job"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "status": {
+            "const": "failed"
+          }
+        },
+        "required": [
+          "provenance",
+          "status"
+        ]
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "archiveRecord"
+        ]
+      },
+      "then": {
+        "properties": {
+          "operation": {
+            "const": "archive"
+          }
+        },
+        "required": [
+          "operation"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "archive"
+          },
+          "status": {
+            "const": "succeeded"
+          }
+        },
+        "required": [
+          "operation",
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "archiveRecord": {
+            "$ref": "archive-record.schema.json"
+          }
+        },
+        "required": [
+          "archiveRecord",
+          "manifest"
+        ]
+      }
+    },
+    {
       "else": {
         "properties": {
           "tenantId": {
@@ -431,6 +557,16 @@
     "apiVersion": {
       "$ref": "common.schema.json#/$defs/apiVersion"
     },
+    "archiveRecord": {
+      "oneOf": [
+        {
+          "$ref": "archive-record.schema.json"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "canonicalOrigin": {
       "$ref": "common.schema.json#/$defs/canonicalOrigin"
     },
@@ -456,6 +592,23 @@
     },
     "exportBundle": {
       "$ref": "#/$defs/exportBundle"
+    },
+    "failureAuditPredecessorDigest": {
+      "oneOf": [
+        {
+          "$ref": "common.schema.json#/$defs/auditEntryDigest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "failureAuditSequence": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "failurePublisher": {
+      "const": "authorization-executor"
     },
     "kind": {
       "const": "OperationResult"

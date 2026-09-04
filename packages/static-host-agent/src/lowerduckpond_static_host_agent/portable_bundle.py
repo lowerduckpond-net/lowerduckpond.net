@@ -35,6 +35,7 @@ from lowerduckpond_static_host_agent.capacity import (
 from lowerduckpond_static_host_agent.locks import LockManager, LockMode, LockName
 from lowerduckpond_static_host_agent.release_tree import (
     DEFAULT_RELEASE_TREE_LIMITS,
+    RELEASE_TREE_FORMAT,
     ReleaseTreeLimits,
     ReleaseTreeMeasurement,
     measure_release_tree_snapshot,
@@ -101,6 +102,7 @@ class PortableBundleInspection:
     bundle_digest: Digest
     provenance_manifest: dict[str, object]
     provenance_manifest_digest: Digest
+    release_tree_digest: Digest
     content_paths: tuple[str, ...]
     content_bytes: int
 
@@ -402,6 +404,41 @@ def inspect_portable_bundle(
             os.close(descriptor)
 
 
+def inspect_portable_bundle_descriptor(
+    descriptor: int,
+    *,
+    expected_owner: int,
+    expected_mode: int = _OUTPUT_MODE,
+) -> PortableBundleInspection:
+    """Validate one already safely opened canonical portable bundle."""
+
+    owned_descriptor: int | None = None
+    try:
+        owned_descriptor = os.dup(descriptor)
+        before = _validate_portable_snapshot(
+            os.fstat(owned_descriptor),
+            expected_owner=expected_owner,
+            expected_mode=expected_mode,
+        )
+        source = _zip._DescriptorSource(owned_descriptor, before.st_size)
+        admission = _inspect_portable_source(source, descriptor=owned_descriptor)
+        after = _validate_portable_snapshot(
+            os.fstat(owned_descriptor),
+            expected_owner=expected_owner,
+            expected_mode=expected_mode,
+        )
+        if _zip._metadata_generation(before) != _zip._metadata_generation(after):
+            raise PortableBundleError("portable bundle changed during descriptor inspection")
+        return admission.inspection
+    except _zip.ZipStructureError as error:
+        raise PortableBundleError("portable bundle violates its structural contract") from error
+    except OSError as error:
+        raise PortableBundleError("portable bundle cannot be opened safely") from error
+    finally:
+        if owned_descriptor is not None:
+            os.close(owned_descriptor)
+
+
 def import_portable_bundle(  # noqa: PLR0913,PLR0915 - explicit import trust workflow
     path: Path,
     *,
@@ -629,18 +666,23 @@ def _inspect_portable_source(
         (b"format.json", format_sha),
         (b"manifest.json", manifest_sha),
     ]
-    content_by_name = {member.normalized_path: member for member in content_structure.members}
-    content_prefix = _envelope_name("content/")
-    for record in records[4:]:
+    release_digest = hashlib.sha256()
+    release_digest.update(RELEASE_TREE_FORMAT.encode("ascii") + b"\0")
+    release_digest.update(len(content_structure.materialized_paths).to_bytes(4, "big"))
+    for record, member in zip(records[4:], content_structure.members, strict=True):
+        path_bytes = member.normalized_path.encode("utf-8")
+        release_digest.update(b"D" if record.is_directory else b"F")
+        release_digest.update(len(path_bytes).to_bytes(4, "big"))
+        release_digest.update(path_bytes)
         if not record.is_directory:
-            relative = record.name[len(content_prefix) :].decode("utf-8")
-            member = content_by_name[relative]
-            _data, sha256 = _read_portable_record(
+            data, sha256 = _read_portable_record(
                 source,
                 record,
                 maximum_bytes=member.expanded_bytes,
             )
-            expected_checksums.append((b"content/" + relative.encode(), sha256))
+            release_digest.update(member.expanded_bytes.to_bytes(8, "big"))
+            release_digest.update(data)
+            expected_checksums.append((b"content/" + path_bytes, sha256))
     _validate_checksum_manifest(checksum_bytes, expected_checksums)
     bundle_digest = Digest(
         PORTABLE_BUNDLE_FORMAT,
@@ -652,6 +694,11 @@ def _inspect_portable_source(
         bundle_digest=bundle_digest,
         provenance_manifest=provenance_manifest,
         provenance_manifest_digest=manifest_digest(provenance_manifest),
+        release_tree_digest=Digest(
+            RELEASE_TREE_FORMAT,
+            "sha256",
+            release_digest.hexdigest(),
+        ),
         content_paths=content_structure.materialized_paths,
         content_bytes=content_structure.expanded_regular_file_bytes,
     )

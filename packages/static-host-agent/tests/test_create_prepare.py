@@ -4,6 +4,7 @@ import json
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -12,6 +13,7 @@ from typing import cast
 import lowerduckpond_static_host_agent.repository as repository_module
 import pytest
 from lowerduckpond_static_contracts import (
+    audit_entry_digest,
     canonical_json_bytes,
     platform_state_digest,
 )
@@ -26,6 +28,7 @@ from lowerduckpond_static_host_agent import (
     FilesystemCapacity,
     HostCapacityLimits,
     LockManager,
+    LockMode,
     PinnedCaddyGeneration,
     PreparedCreateTransition,
     StateRecordPath,
@@ -41,6 +44,7 @@ from lowerduckpond_static_host_agent import (
 
 _FIXTURE_ROOT = Path(__file__).parents[3] / "tests/static-publication/fixtures/accepted"
 _SOURCE_GENERATION = "0198d17f-6f4a-7000-8000-000000000004"
+_GENERATED_TENANT_ID = "019dbd74-2a00-7000-8000-000000000002"
 _NOW = datetime(2026, 9, 2, 13, 45, tzinfo=UTC)
 
 
@@ -321,6 +325,46 @@ def test_create_preparation_publishes_then_binds_one_exact_intent(tmp_path: Path
         repository.close()
 
 
+def test_create_preparation_rejects_a_never_deployed_deleted_identity(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root)
+    runtime = _Runtime()
+    created = _fixture("audit-entry.json")
+    created["tenantId"] = _GENERATED_TENANT_ID
+    deleted = deepcopy(created)
+    deleted.update(
+        {
+            "sequence": 1,
+            "previousEntryDigest": audit_entry_digest(created).to_dict(),
+            "correlationId": "0198d17f-6f4a-7000-8000-000000000009",
+            "operation": "delete",
+            "deletionEvidence": {
+                "mode": "never-deployed",
+                "releasedSlugs": ["duck-repair"],
+                "archiveRecordDigest": None,
+                "bucket": None,
+                "key": None,
+                "versionId": None,
+                "emergencyReason": None,
+            },
+        }
+    )
+    try:
+        repository.append_audit(created)
+        repository.append_audit(deleted)
+
+        with pytest.raises(CreatePreparationError, match="identity is unavailable"):
+            _prepare(repository, runtime, job)
+
+        assert runtime.events == ["locked", "active"]
+        assert runtime.candidate is None
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
 def test_create_preparation_discards_candidate_when_intent_admission_fails(
     tmp_path: Path,
 ) -> None:
@@ -450,6 +494,99 @@ def test_create_recovery_reconstructs_and_activates_durable_preparation(
             cast(CaddyRuntime, runtime),
             _Gate(),
             intent_id,
+            reloader=runtime.reload,
+            restorer=runtime.restore,
+            verifier=runtime.verify,
+        )
+
+        assert result == prepared.plan.result
+        assert runtime.active == runtime.running == prepared.candidate_manifest.generation_id
+        assert repository.measure_intent_records().records == ()
+        assert repository.measure_inventory().tenant_ids == (prepared.plan.tenant_id,)
+    finally:
+        repository.close()
+
+
+def test_create_recovery_accepts_a_terminally_validated_v2_job(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root)
+    job.update(
+        {
+            "compatibilityVersion": "static-job-v2",
+            "executionValidated": False,
+            "sourceAuthority": None,
+        }
+    )
+    _write(root, StateRecordPath.authorization_job(job["jobId"]), job)
+    _write_correlation(root, job)
+    runtime = _Runtime()
+    try:
+        prepared = _prepare(repository, runtime, job)
+
+        def interrupt(boundary: CreateCommitBoundary) -> None:
+            if boundary is CreateCommitBoundary.JOB_SYNC:
+                raise RuntimeError("interrupted before intent removal")
+
+        with pytest.raises(RuntimeError, match="interrupted before intent removal"):
+            activate_create_transition(
+                repository,
+                cast(CaddyRuntime, runtime),
+                _Gate(),
+                prepared,
+                reloader=runtime.reload,
+                restorer=runtime.restore,
+                verifier=runtime.verify,
+                commit_failure_hook=interrupt,
+            )
+        with repository.transaction(mode=LockMode.EXCLUSIVE) as transaction:
+            path = StateRecordPath.authorization_job(job["jobId"])
+            terminal = transaction.read(path)
+            validated = deepcopy(terminal.document)
+            validated["executionValidated"] = True
+            transaction.commit_execution_validation(path, terminal.revision, validated)
+
+        assert (
+            recover_create_transition(
+                repository,
+                cast(CaddyRuntime, runtime),
+                _Gate(),
+                prepared.plan.intent_id,
+                reloader=runtime.reload,
+                restorer=runtime.restore,
+                verifier=runtime.verify,
+            )
+            == prepared.plan.result
+        )
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
+def test_create_recovery_accepts_a_pre_upgrade_digest_only_intent(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root)
+    _write_correlation(root, job)
+    runtime = _Runtime()
+    try:
+        prepared = _prepare(repository, runtime, job)
+        path = StateRecordPath.transaction_intent(prepared.plan.intent_id)
+        stored = repository.read(path)
+        legacy = deepcopy(stored.document)
+        del legacy["compatibilityVersion"]
+        del legacy["sourceManifest"]
+        del legacy["candidateManifest"]
+        repository.compare_and_swap(path, stored.revision, legacy)
+        runtime.events.clear()
+
+        result = recover_create_transition(
+            repository,
+            cast(CaddyRuntime, runtime),
+            _Gate(),
+            prepared.plan.intent_id,
             reloader=runtime.reload,
             restorer=runtime.restore,
             verifier=runtime.verify,

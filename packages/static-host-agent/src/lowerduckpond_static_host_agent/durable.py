@@ -18,6 +18,7 @@ _DIRECTORY_OPEN_FLAGS: Final = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os
 _FILE_CREATE_FLAGS: Final = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
 _FILE_READ_FLAGS: Final = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC
 _RENAME_NOREPLACE: Final = 1
+_STAT_BLOCK_BYTES: Final = 512
 _TEMP_NAME_PREFIX: Final = ".ldp-state-"
 _TEMP_NAME_PATTERN: Final = re.compile(r"\.ldp-state-[0-9a-f]{32}", flags=re.ASCII)
 
@@ -267,6 +268,33 @@ class DurableDirectory:
         if fragment_size <= 0:
             raise StatePathError("state filesystem has no valid allocation fragment")
         return ((byte_count + fragment_size - 1) // fragment_size) * fragment_size
+
+    def regular_allocation(
+        self,
+        components: tuple[str, ...],
+        *,
+        expected_owner: int,
+        expected_mode: int,
+    ) -> int:
+        """Measure one verified regular file's currently allocated blocks."""
+
+        parent_fd, filename = self._open_parent(components)
+        file_fd: int | None = None
+        try:
+            file_fd = os.open(filename, _FILE_READ_FLAGS, dir_fd=parent_fd)
+            opened = validate_regular_state_file(
+                file_fd,
+                expected_owner=expected_owner,
+                expected_mode=expected_mode,
+            )
+            current = os.stat(filename, dir_fd=parent_fd, follow_symlinks=False)
+            if (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
+                raise StatePathError("state inode changed while measuring allocation")
+            return opened.st_blocks * _STAT_BLOCK_BYTES
+        finally:
+            if file_fd is not None:
+                os.close(file_fd)
+            os.close(parent_fd)
 
     def namespace_allocation_upper_bound(self, entry_count: int) -> int:
         """Reserve ext4 directory growth for temporary creation and rename."""

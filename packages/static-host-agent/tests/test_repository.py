@@ -4,7 +4,9 @@ import hashlib
 import json
 import os
 import stat
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from copy import deepcopy
 from datetime import UTC, datetime
 from multiprocessing import get_context
@@ -23,8 +25,10 @@ from lowerduckpond_static_contracts import (
 )
 from lowerduckpond_static_host_agent import (
     AuditState,
+    CapacityRejectedError,
     CreateStateBoundary,
     CreateTransitionPlan,
+    HostCapacityLimits,
     LockManager,
     LockMode,
     LockName,
@@ -33,6 +37,7 @@ from lowerduckpond_static_host_agent import (
     StateAlreadyExistsError,
     StateConflictError,
     StateInventoryError,
+    StateInventoryReservation,
     StatePathError,
     StateRecordError,
     StateRecordPath,
@@ -89,6 +94,7 @@ def _state_root(tmp_path: Path) -> Path:
     _mkdir(root / "authorization" / "jobs")
     _mkdir(root / "authorization" / "results")
     _mkdir(root / "authorization" / "correlations")
+    _mkdir(root / "audit")
     _mkdir(root / "intents")
     _mkdir(root / "locks")
     manager = LockManager.initialize(root / "locks", expected_owner=os.geteuid())
@@ -110,6 +116,127 @@ def _write_record(root: Path, path: StateRecordPath, document: dict[str, object]
     target.write_bytes(canonical_json_bytes(document))
     target.chmod(_RECORD_MODE)
     return target
+
+
+def test_dispatch_binding_admits_allocated_growth_before_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _state_root(tmp_path)
+    path = StateRecordPath.authorization_job(_JOB_ID)
+    job = _fixture("authorization-job.json")
+    job.update(
+        {
+            "compatibilityVersion": "static-job-v2",
+            "executionValidated": False,
+            "sourceAuthority": None,
+        }
+    )
+    _write_record(root, path, job)
+    tenant_ids = [f"0198d17f-6f4a-7000-8000-{offset:012x}" for offset in range(1, 26)]
+    archive_ids = [f"0198d17f-6f4a-7000-8001-{offset:012x}" for offset in range(1, 4)]
+    deployment_ids = [f"0198d17f-6f4a-7000-8002-{offset:012x}" for offset in range(1, 4)]
+    bound = deepcopy(job)
+    bound.update(
+        {
+            "dispatchArchiveDeploymentIds": archive_ids,
+            "dispatchArtifactReleaseTreeDigest": None,
+            "dispatchSourceReleaseTreeDigest": None,
+            "dispatchDeploymentIds": deployment_ids,
+            "dispatchTenantIds": tenant_ids,
+            "dispatchTenantRecordHistories": [
+                [tenant_id, archive_ids, deployment_ids] for tenant_id in tenant_ids
+            ],
+        }
+    )
+    reservations: list[StateInventoryReservation] = []
+
+    with _repository(root) as repository:
+        with repository.transaction(mode=LockMode.EXCLUSIVE) as transaction:
+            current = transaction.read(path)
+
+            def reject_growth(
+                _transaction: object,
+                reservation: StateInventoryReservation,
+                **_arguments: object,
+            ) -> object:
+                reservations.append(reservation)
+                raise StateAdmissionRejectedError("test rejection")
+
+            monkeypatch.setattr(type(transaction), "admit_inventory", reject_growth)
+            with pytest.raises(StateAdmissionRejectedError, match="test rejection"):
+                transaction.bind_dispatch_authority(path, current.revision, bound)
+        retained = repository.read(path).document
+
+    assert reservations[0].authorization_allocated_bytes > 0
+    assert retained == job
+
+
+def test_execution_validation_admits_temporary_replacement_before_writing(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    path = StateRecordPath.authorization_job(_JOB_ID)
+    job = _fixture("authorization-job.json")
+    job.update(
+        {
+            "compatibilityVersion": "static-job-v2",
+            "executionValidated": False,
+            "phase": "failed",
+            "sourceAuthority": None,
+        }
+    )
+    _write_record(root, path, job)
+    validated = deepcopy(job)
+    validated["executionValidated"] = True
+
+    with _repository(root) as repository:
+        with repository.transaction(mode=LockMode.EXCLUSIVE) as transaction:
+            current = transaction.read(path)
+            with pytest.raises(CapacityRejectedError, match="host byte ceiling"):
+                transaction.commit_execution_validation(
+                    path,
+                    current.revision,
+                    validated,
+                    capacity_limits=HostCapacityLimits(maximum_allocated_bytes=0),
+                )
+        retained = repository.read(path).document
+
+    assert retained == job
+
+
+@pytest.mark.parametrize("current_phase", ["pending", "claimed"])
+def test_execution_validation_cannot_terminalize_a_nonterminal_job(
+    tmp_path: Path,
+    current_phase: str,
+) -> None:
+    root = _state_root(tmp_path)
+    path = StateRecordPath.authorization_job(_JOB_ID)
+    job = _fixture("authorization-job.json")
+    job.update(
+        {
+            "compatibilityVersion": "static-job-v2",
+            "executionValidated": False,
+            "phase": current_phase,
+            "sourceAuthority": None,
+        }
+    )
+    _write_record(root, path, job)
+    validated = deepcopy(job)
+    validated.update({"executionValidated": True, "phase": "completed"})
+
+    with _repository(root) as repository:
+        with repository.transaction(mode=LockMode.EXCLUSIVE) as transaction:
+            current = transaction.read(path)
+            with pytest.raises(StateRecordError, match="marker transition"):
+                transaction.commit_execution_validation(
+                    path,
+                    current.revision,
+                    validated,
+                )
+        retained = repository.read(path).document
+
+    assert retained == job
 
 
 def _create_plan() -> CreateTransitionPlan:
@@ -346,6 +473,121 @@ def test_emergency_result_binds_its_correlation_identity_to_the_result_path(
         reread = repository.read(path)
 
     assert created.document == reread.document == result
+
+
+def test_result_writer_rejects_manifestless_success_but_reader_accepts_legacy(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    result = _fixture("operation-result.json")
+    del result["manifest"]
+    result["operation"] = "deploy"
+    path = StateRecordPath.authorization_result(_JOB_ID)
+
+    with (
+        _repository(root) as repository,
+        pytest.raises(
+            StateRecordError,
+            match="new successful operation result",
+        ),
+    ):
+        repository.create_immutable(path, result)
+
+    _write_record(root, path, result)
+    with _repository(root) as repository:
+        reread = repository.read(path)
+
+    assert reread.document == result
+
+
+def test_result_writer_requires_archive_authority_but_reader_accepts_legacy_failure(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    result = _fixture("operation-result.json")
+    del result["canonicalOrigin"]
+    del result["manifest"]
+    result.update(
+        {
+            "operation": "archive",
+            "status": "failed",
+            "errorCode": "not_implemented",
+        }
+    )
+    path = StateRecordPath.authorization_result(_JOB_ID)
+
+    with (
+        _repository(root) as repository,
+        pytest.raises(StateRecordError, match="new archive operation result"),
+    ):
+        repository.create_immutable(path, result)
+
+    _write_record(root, path, result)
+    with _repository(root) as repository:
+        reread = repository.read(path)
+
+    assert reread.document == result
+
+
+def test_retirement_writer_requires_current_authority_but_reader_accepts_legacy(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    intent = _fixture("archive-retirement-intent.json")
+    del intent["compatibilityVersion"]
+    del intent["archiveRecord"]
+    path = StateRecordPath.archive_retirement_intent(_ARCHIVE_RETIREMENT_INTENT_ID)
+
+    with (
+        _repository(root) as repository,
+        pytest.raises(StateRecordError, match="new archive-retirement intent"),
+    ):
+        repository.create_immutable(path, intent)
+
+    _write_record(root, path, intent)
+    with _repository(root) as repository:
+        reread = repository.read(path)
+
+    assert reread.document == intent
+
+
+def test_legacy_retirement_intent_can_advance_during_recovery(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    intent = _fixture("archive-retirement-intent.json")
+    del intent["compatibilityVersion"]
+    del intent["archiveRecord"]
+    intent["phase"] = "prepared"
+    path = StateRecordPath.archive_retirement_intent(_ARCHIVE_RETIREMENT_INTENT_ID)
+    _write_record(root, path, intent)
+
+    with _repository(root) as repository:
+        current = repository.read(path)
+        advanced = current.document
+        advanced["phase"] = "state-committed"
+        committed = repository.compare_and_swap(path, current.revision, advanced)
+        advanced = committed.document
+        advanced["phase"] = "purged"
+        purged = repository.compare_and_swap(path, committed.revision, advanced)
+
+    assert purged.document["phase"] == "purged"
+    assert "compatibilityVersion" not in purged.document
+    assert "archiveRecord" not in purged.document
+
+
+def test_current_retirement_intent_cannot_downgrade_during_recovery(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    intent = _fixture("archive-retirement-intent.json")
+    path = StateRecordPath.archive_retirement_intent(_ARCHIVE_RETIREMENT_INTENT_ID)
+
+    with _repository(root) as repository:
+        current = repository.create_immutable(path, intent)
+        downgraded = current.document
+        del downgraded["compatibilityVersion"]
+        del downgraded["archiveRecord"]
+        downgraded["phase"] = "purged"
+        with pytest.raises(StateRecordError, match="current authority"):
+            repository.compare_and_swap(path, current.revision, downgraded)
+        assert repository.read(path).document == intent
 
 
 def test_publication_transaction_holds_publication_before_tenant_state(
@@ -789,7 +1031,7 @@ def test_create_tenant_state_rejects_a_candidate_outside_its_intent(tmp_path: Pa
     ]
 
 
-def test_create_tenant_state_requires_an_undeployed_manifest(tmp_path: Path) -> None:
+def test_create_intent_requires_an_undeployed_manifest(tmp_path: Path) -> None:
     root = _state_root(tmp_path)
     plan = _create_plan()
     active = _fixture("site.json")
@@ -798,22 +1040,21 @@ def test_create_tenant_state_requires_an_undeployed_manifest(tmp_path: Path) -> 
     observed = deepcopy(plan.observed_state)
     observed["desiredManifestDigest"] = active_digest
     intent = deepcopy(plan.intent)
+    intent["candidateManifest"] = active
     intent["candidateManifestDigest"] = active_digest
     recovery = intent["lifecycleRecovery"]
     assert type(recovery) is dict
     recovery["candidateObservedState"] = observed
 
-    with _repository(root) as repository, repository.publication_transaction() as transaction:
+    with (
+        _repository(root) as repository,
+        repository.publication_transaction() as transaction,
+        pytest.raises(ContractError, match="observed recovery state"),
+    ):
         transaction.create_immutable(
             StateRecordPath.transaction_intent(plan.intent_id),
             intent,
         )
-        with pytest.raises(StateRecordError, match="undeployed"):
-            transaction.ensure_create_tenant_state(
-                plan.tenant_id,
-                active,
-                observed,
-            )
 
     assert not (root / "tenants" / plan.tenant_id).exists()
 
@@ -1146,6 +1387,141 @@ def test_transaction_can_read_a_coherent_multi_record_snapshot(tmp_path: Path) -
 
     assert desired.document["kind"] == "Site"
     assert observed.document["kind"] == "TenantObservedState"
+
+
+def test_transaction_returns_the_complete_sorted_deployment_identity_set(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    for deployment_id in (_OTHER_DEPLOYMENT_ID, _DEPLOYMENT_ID):
+        deployment = _fixture("deployment-record.json")
+        deployment["id"] = deployment_id
+        _write_record(
+            root,
+            StateRecordPath.tenant_deployment(_TENANT_ID, deployment_id),
+            deployment,
+        )
+
+    with (
+        _repository(root) as repository,
+        repository.transaction(mode=LockMode.EXCLUSIVE) as transaction,
+    ):
+        deployment_ids = transaction.tenant_deployment_ids(_TENANT_ID)
+
+    assert deployment_ids == tuple(sorted((_DEPLOYMENT_ID, _OTHER_DEPLOYMENT_ID)))
+
+
+def test_transaction_returns_the_complete_sorted_archive_identity_set(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    for deployment_id in (_OTHER_DEPLOYMENT_ID, _DEPLOYMENT_ID):
+        archive = _fixture("archive-record.json")
+        archive["deploymentId"] = deployment_id
+        _write_record(
+            root,
+            StateRecordPath.tenant_archive(_TENANT_ID, deployment_id),
+            archive,
+        )
+
+    with (
+        _repository(root) as repository,
+        repository.transaction(mode=LockMode.EXCLUSIVE) as transaction,
+    ):
+        archive_ids = transaction.tenant_archive_ids(_TENANT_ID)
+
+    assert archive_ids == tuple(sorted((_DEPLOYMENT_ID, _OTHER_DEPLOYMENT_ID)))
+
+
+def test_deployment_history_cleanup_acquires_the_exclusive_state_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _state_root(tmp_path)
+    modes: list[LockMode] = []
+    original_transaction = StateRepository.transaction
+
+    @contextmanager
+    def recording_transaction(
+        repository: StateRepository,
+        *,
+        mode: LockMode,
+        blocking: bool = False,
+    ) -> Iterator[object]:
+        modes.append(mode)
+        with original_transaction(
+            repository,
+            mode=mode,
+            blocking=blocking,
+        ) as transaction:
+            yield transaction
+
+    monkeypatch.setattr(StateRepository, "transaction", recording_transaction)
+    with _repository(root) as repository:
+        assert repository.tenant_has_deployment_history(_TENANT_ID) is False
+
+    assert modes == [LockMode.EXCLUSIVE]
+
+
+def test_deployment_history_checks_archives_releases_and_audit(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    releases = tmp_path / "sites"
+    with StateRepository(
+        root,
+        expected_owner=os.geteuid(),
+        tenant_release_root=releases,
+    ) as repository:
+        assert repository.tenant_has_deployment_history(_TENANT_ID) is False
+        repository.create_immutable(
+            StateRecordPath.tenant_archive(_TENANT_ID, _DEPLOYMENT_ID),
+            _fixture("archive-record.json"),
+        )
+        assert repository.tenant_has_deployment_history(_TENANT_ID) is True
+
+    root.joinpath(*StateRecordPath.tenant_archive(_TENANT_ID, _DEPLOYMENT_ID).components).unlink()
+    release = releases / _TENANT_ID / "releases" / _DEPLOYMENT_ID
+    release.mkdir(parents=True)
+    with StateRepository(
+        root,
+        expected_owner=os.geteuid(),
+        tenant_release_root=releases,
+    ) as repository:
+        assert repository.tenant_has_deployment_history(_TENANT_ID) is True
+
+    release.rmdir()
+    audit = _fixture("audit-entry.json")
+    audit["operation"] = "deploy"
+    with StateRepository(
+        root,
+        expected_owner=os.geteuid(),
+        tenant_release_root=releases,
+    ) as repository:
+        repository.append_audit(audit)
+        assert repository.tenant_has_deployment_history(_TENANT_ID) is True
+
+
+def test_deployment_history_finds_audit_after_tenant_namespace_removal(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    audit = _fixture("audit-entry.json")
+    audit.update({"operation": "deploy", "tenantId": _OTHER_TENANT_ID})
+
+    with _repository(root) as repository:
+        repository.append_audit(audit)
+        assert repository.tenant_has_deployment_history(_OTHER_TENANT_ID) is True
+
+
+def test_identity_history_distinguishes_never_deployed_audit_history(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    audit = _fixture("audit-entry.json")
+
+    with _repository(root) as repository:
+        repository.append_audit(audit)
+        assert repository.tenant_has_identity_history(_TENANT_ID) is True
+        assert repository.tenant_has_deployment_history(_TENANT_ID) is False
 
 
 def test_shared_and_expired_transactions_cannot_mutate_state(tmp_path: Path) -> None:

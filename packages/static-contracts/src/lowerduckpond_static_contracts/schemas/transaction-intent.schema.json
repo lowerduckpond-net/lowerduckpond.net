@@ -179,8 +179,45 @@
   "additionalProperties": false,
   "allOf": [
     {
+      "if": {
+        "required": [
+          "compatibilityVersion"
+        ]
+      },
+      "then": {
+        "properties": {
+          "compatibilityVersion": {
+            "const": "static-intent-v2"
+          }
+        },
+        "required": [
+          "sourceManifest",
+          "candidateManifest"
+        ]
+      },
+      "else": {
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "sourceManifest"
+              ]
+            },
+            {
+              "required": [
+                "candidateManifest"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
       "else": {
         "properties": {
+          "sourceManifest": {
+            "$ref": "site.schema.json"
+          },
           "sourceManifestDigest": {
             "$ref": "common.schema.json#/$defs/manifestDigest"
           }
@@ -198,6 +235,9 @@
       },
       "then": {
         "properties": {
+          "sourceManifest": {
+            "type": "null"
+          },
           "sourceManifestDigest": {
             "type": "null"
           }
@@ -225,6 +265,32 @@
       "then": {
         "properties": {
           "candidateManifestDigest": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "else": {
+        "properties": {
+          "candidateManifest": {
+            "$ref": "site.schema.json"
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "delete"
+          }
+        },
+        "required": [
+          "operation"
+        ]
+      },
+      "then": {
+        "properties": {
+          "candidateManifest": {
             "type": "null"
           }
         }
@@ -300,6 +366,16 @@
         }
       ]
     },
+    "candidateManifest": {
+      "oneOf": [
+        {
+          "$ref": "site.schema.json"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "candidateManifestDigest": {
       "oneOf": [
         {
@@ -309,6 +385,9 @@
           "type": "null"
         }
       ]
+    },
+    "compatibilityVersion": {
+      "const": "static-intent-v2"
     },
     "correlationId": {
       "$ref": "common.schema.json#/$defs/correlationId"
@@ -361,6 +440,16 @@
       "oneOf": [
         {
           "$ref": "common.schema.json#/$defs/manifestDigest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "sourceManifest": {
+      "oneOf": [
+        {
+          "$ref": "site.schema.json"
         },
         {
           "type": "null"

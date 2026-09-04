@@ -813,6 +813,7 @@ def test_inspector_validates_exact_envelope_checksums_and_provenance(tmp_path: P
     assert inspection.bundle_digest == bundle.bundle_digest
     assert inspection.provenance_manifest == _manifest()
     assert inspection.provenance_manifest_digest == bundle.manifest_digest
+    assert inspection.release_tree_digest == bundle.release_tree.digest
     assert inspection.content_paths == (
         "assets",
         "assets/site.css",

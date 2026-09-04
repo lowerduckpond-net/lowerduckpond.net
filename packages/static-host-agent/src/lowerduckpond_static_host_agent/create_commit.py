@@ -309,6 +309,7 @@ def _freeze_and_validate(job: StoredContract, plan: CreateTransitionPlan) -> _Cr
         or documents.observed_state["runtimeGenerationId"] is not None
         or documents.intent["operation"] != "create"
         or documents.intent["phase"] != "prepared"
+        or documents.intent.get("sourceManifest") is not None
         or documents.intent["sourceManifestDigest"] is not None
         or documents.intent["candidateManifestDigest"] != desired_digest
         or recovery["sourceObservedState"] is not None
@@ -352,6 +353,18 @@ def _require_same_job(
     second = current.document
     first.pop("phase", None)
     second.pop("phase", None)
+    first.pop("dispatchArchiveDeploymentIds", None)
+    second.pop("dispatchArchiveDeploymentIds", None)
+    first.pop("dispatchArtifactReleaseTreeDigest", None)
+    second.pop("dispatchArtifactReleaseTreeDigest", None)
+    first.pop("dispatchSourceReleaseTreeDigest", None)
+    second.pop("dispatchSourceReleaseTreeDigest", None)
+    first.pop("dispatchDeploymentIds", None)
+    second.pop("dispatchDeploymentIds", None)
+    first.pop("dispatchTenantIds", None)
+    second.pop("dispatchTenantIds", None)
+    first.pop("dispatchTenantRecordHistories", None)
+    second.pop("dispatchTenantRecordHistories", None)
     if first != second or current.document["phase"] not in {"claimed", "completed"}:
         raise CreateCommitError("authorization job changed before create finalization")
     return current

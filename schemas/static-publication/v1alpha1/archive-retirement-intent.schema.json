@@ -45,6 +45,25 @@
   "allOf": [
     {
       "if": {
+        "required": [
+          "compatibilityVersion"
+        ]
+      },
+      "then": {
+        "required": [
+          "archiveRecord"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "archiveRecord"
+          ]
+        }
+      }
+    },
+    {
+      "if": {
         "properties": {
           "provenance": {
             "properties": {
@@ -77,6 +96,9 @@
     "archiveRecordDigest": {
       "$ref": "common.schema.json#/$defs/archiveRecordDigest"
     },
+    "archiveRecord": {
+      "$ref": "archive-record.schema.json"
+    },
     "bucket": {
       "$ref": "common.schema.json#/$defs/archiveBucket"
     },
@@ -87,6 +109,9 @@
       "maximum": 125829120,
       "minimum": 1,
       "type": "integer"
+    },
+    "compatibilityVersion": {
+      "const": "static-retirement-v2"
     },
     "correlationId": {
       "$ref": "common.schema.json#/$defs/correlationId"

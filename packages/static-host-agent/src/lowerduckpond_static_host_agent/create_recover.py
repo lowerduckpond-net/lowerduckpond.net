@@ -60,6 +60,8 @@ class CreateRecoveryTransaction(Protocol):
 
     def read(self, path: StateRecordPath) -> StoredContract: ...
 
+    def tenant_has_deployment_history(self, tenant_id: object) -> bool: ...
+
     def measure_intent_records(self) -> IntentRecordInventory: ...
 
     def measure_inventory(self) -> StateInventory: ...
@@ -217,9 +219,19 @@ def _require_bound_job(
     job_id = validate_uuid7(correlation["jobId"])
     job = transaction.read(StateRecordPath.authorization_job(job_id))
     immutable_correlation = deepcopy(correlation)
-    immutable_job = job.document
-    immutable_correlation.pop("phase", None)
-    immutable_job.pop("phase", None)
+    immutable_job = deepcopy(job.document)
+    for field in (
+        "phase",
+        "executionValidated",
+        "dispatchArchiveDeploymentIds",
+        "dispatchArtifactReleaseTreeDigest",
+        "dispatchSourceReleaseTreeDigest",
+        "dispatchDeploymentIds",
+        "dispatchTenantIds",
+        "dispatchTenantRecordHistories",
+    ):
+        immutable_correlation.pop(field, None)
+        immutable_job.pop(field, None)
     request = job.document["request"]
     if (
         immutable_correlation != immutable_job

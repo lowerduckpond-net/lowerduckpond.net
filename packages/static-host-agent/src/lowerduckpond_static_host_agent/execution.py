@@ -29,7 +29,11 @@ from lowerduckpond_static_host_agent.intake import (
     IntakeArtifactUnavailableError,
     IntakeError,
 )
-from lowerduckpond_static_host_agent.issuance import VerifiedArtifact, build_expected_source
+from lowerduckpond_static_host_agent.issuance import (
+    SourceStateError,
+    VerifiedArtifact,
+    build_expected_source,
+)
 from lowerduckpond_static_host_agent.locks import LockMode
 from lowerduckpond_static_host_agent.repository import (
     StateConflictError,
@@ -74,6 +78,10 @@ class ExecutionTransaction(Protocol):
     ) -> StoredContract: ...
 
     def measure_inventory(self) -> StateInventory: ...
+
+    def tenant_has_deployment_history(self, tenant_id: object) -> bool: ...
+
+    def tenant_has_identity_history(self, tenant_id: object) -> bool: ...
 
     def allocation_upper_bound(self, byte_count: int) -> int: ...
 
@@ -309,7 +317,7 @@ def _expected_source_error(
         raise ExecutionError("authorization job request is not an object")
     try:
         actual = build_expected_source(transaction, request)
-    except FileNotFoundError:
+    except FileNotFoundError, SourceStateError:
         return "state_drift"
     if actual != job["expectedSource"]:
         return "state_drift"
@@ -356,6 +364,8 @@ def _failure_result(job: dict[str, object], error_code: str) -> dict[str, object
         "errorCode": error_code,
         "tenantId": None if request["operation"] == "create" else request["tenantId"],
     }
+    if request["operation"] == "archive":
+        result["archiveRecord"] = None
     validate_contract(result, expected_kind=ContractKind.OPERATION_RESULT)
     return result
 

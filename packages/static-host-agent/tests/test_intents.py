@@ -6,6 +6,7 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
+from lowerduckpond_static_contracts import manifest_digest
 from lowerduckpond_static_host_agent import (
     DurabilityBoundary,
     IntentDiscovery,
@@ -66,7 +67,14 @@ def _matching_delete_transaction() -> dict[str, object]:
     document = _load("transaction-intent.json")
     observed = _load("tenant-observed-state.json")
     document["operation"] = "delete"
+    document["candidateManifest"] = None
     document["candidateManifestDigest"] = None
+    source_manifest = document["sourceManifest"]
+    assert type(source_manifest) is dict
+    source_spec = source_manifest["spec"]
+    assert type(source_spec) is dict
+    source_spec["desiredState"] = "archived"
+    document["sourceManifestDigest"] = manifest_digest(source_manifest).to_dict()
     observed["desiredManifestDigest"] = document["sourceManifestDigest"]
     observed["observedState"] = "archived"
     observed["activeDeploymentId"] = None

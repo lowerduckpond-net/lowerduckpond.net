@@ -65,6 +65,10 @@ class CreatePreparationTransaction(Protocol):
 
     def read(self, path: StateRecordPath) -> StoredContract: ...
 
+    def tenant_has_deployment_history(self, tenant_id: object) -> bool: ...
+
+    def tenant_has_identity_history(self, tenant_id: object) -> bool: ...
+
     def create_immutable(
         self,
         path: StateRecordPath,
@@ -125,7 +129,7 @@ def prepare_create_transition(  # noqa: PLR0913 - authority sources stay explici
             clock=clock,
             entropy=entropy,
         )
-        _require_slug_still_absent(transaction, request)
+        _require_create_target_still_available(transaction, request, plan.tenant_id)
         overlay = TenantRouteOverlay(
             RouteOverlayMode.ADD,
             TenantRouteInput(plan.manifest, plan.observed_state, None),
@@ -171,14 +175,17 @@ def _require_current_create_authority(
     return request
 
 
-def _require_slug_still_absent(
+def _require_create_target_still_available(
     transaction: CreatePreparationTransaction,
     request: dict[str, object],
+    tenant_id: str,
 ) -> None:
     slug = request["slug"]
     inventory = transaction.measure_inventory()
-    for tenant_id in inventory.tenant_ids:
-        desired = transaction.read(StateRecordPath.tenant_desired(tenant_id)).document
+    if tenant_id in inventory.tenant_ids or transaction.tenant_has_identity_history(tenant_id):
+        raise CreatePreparationError("generated create tenant identity is unavailable")
+    for existing_tenant_id in inventory.tenant_ids:
+        desired = transaction.read(StateRecordPath.tenant_desired(existing_tenant_id)).document
         metadata = desired["metadata"]
         if type(metadata) is dict and metadata.get("slug") == slug:
             raise CreatePreparationError("create slug became unavailable")
