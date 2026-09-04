@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import stat
 from bisect import bisect_right
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -33,6 +34,7 @@ from lowerduckpond_static_host_agent.audit import (
     AuditCorrelationSnapshot,
     AuditLimits,
     AuditState,
+    tenant_has_deployment_audit_history,
 )
 from lowerduckpond_static_host_agent.audit import (
     append_audit as append_audit_record,
@@ -85,6 +87,15 @@ _RECOVERY_CURSOR_MAXIMUM_BYTES: Final = 36
 _DIRECTORY_OPEN_FLAGS: Final = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 _TENANT_CHILD_DIRECTORIES: Final = ("archives", "deployments")
 _MAX_RETAINED_DEPLOYMENT_RECORDS: Final = 3
+_DEFAULT_TENANT_RELEASE_ROOT: Final = Path("/srv/lowerduckpond/sites")
+_DISPATCH_AUTHORITY_FIELDS: Final = (
+    "dispatchArchiveDeploymentIds",
+    "dispatchArtifactReleaseTreeDigest",
+    "dispatchSourceReleaseTreeDigest",
+    "dispatchDeploymentIds",
+    "dispatchTenantIds",
+    "dispatchTenantRecordHistories",
+)
 
 
 class StateRecordError(RuntimeError):
@@ -491,6 +502,7 @@ class StateRepository:
         expected_owner: int,
         expected_directory_mode: int = 0o700,
         expected_record_mode: int = 0o600,
+        tenant_release_root: Path = _DEFAULT_TENANT_RELEASE_ROOT,
     ) -> None:
         self._durable = DurableDirectory.open(
             root,
@@ -510,6 +522,7 @@ class StateRepository:
         self._expected_owner = expected_owner
         self._expected_directory_mode = expected_directory_mode
         self._expected_record_mode = expected_record_mode
+        self._tenant_release_root = tenant_release_root
         self._closed = False
 
     def __enter__(self) -> Self:
@@ -595,7 +608,7 @@ class StateRepository:
         *,
         blocking: bool = False,
     ) -> bool:
-        """Return whether one tenant has any durable deployment-store entry."""
+        """Return whether any root-owned source proves a prior deployment."""
 
         with self.transaction(mode=LockMode.EXCLUSIVE, blocking=blocking) as transaction:
             return transaction.tenant_has_deployment_history(tenant_id)
@@ -808,28 +821,36 @@ class _StateTransaction:
         return self._repository._read_locked(path)
 
     def tenant_has_deployment_history(self, tenant_id: object) -> bool:
-        """Inspect one deployment directory while tenant state is serialized."""
+        """Inspect every deployment-history source while state is serialized."""
 
         self._require_active()
         self._require_exclusive()
         canonical_id = validate_uuid7(tenant_id)
-        deployments = self._repository._durable.open_descendant(
-            ("tenants", canonical_id, "deployments")
+        if self.tenant_deployment_ids(canonical_id) or self.tenant_archive_ids(canonical_id):
+            return True
+        if self._tenant_has_release_history(canonical_id):
+            return True
+        return tenant_has_deployment_audit_history(
+            self._repository._durable,
+            canonical_id,
+            expected_owner=self._repository._expected_owner,
+            expected_directory_mode=self._repository._expected_directory_mode,
+            expected_record_mode=self._repository._expected_record_mode,
         )
+
+    def _tenant_has_release_history(self, tenant_id: str) -> bool:
+        release_root = self._repository._tenant_release_root / tenant_id / "releases"
         try:
-            deployments.remove_abandoned_publication_temporaries(
-                expected_owner=self._repository._expected_owner,
-                expected_mode=self._repository._expected_record_mode,
-                maximum_entries=_MAX_RETAINED_DEPLOYMENT_RECORDS + 1,
-            )
-            descriptor = deployments.duplicate_descriptor()
-            try:
-                with os.scandir(descriptor) as entries:
-                    return next(entries, None) is not None
-            finally:
-                os.close(descriptor)
-        finally:
-            deployments.close()
+            metadata = release_root.lstat()
+        except FileNotFoundError:
+            return False
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise StateRecordError("tenant release history is not a directory")
+        try:
+            with os.scandir(release_root) as entries:
+                return next(entries, None) is not None
+        except FileNotFoundError as error:
+            raise StateRecordError("tenant release history changed while inspected") from error
 
     def tenant_deployment_ids(self, tenant_id: object) -> tuple[str, ...]:
         """Return the complete bounded deployment-record identity set."""
@@ -933,6 +954,24 @@ class _StateTransaction:
         try:
             directory_fd = exports.duplicate_descriptor()
             try:
+                before = validate_state_directory(
+                    directory_fd,
+                    expected_owner=self._repository._expected_owner,
+                    expected_mode=self._repository._expected_directory_mode,
+                )
+                with os.scandir(directory_fd) as entries:
+                    names = tuple(sorted(entry.name for entry in entries))
+                after = validate_state_directory(
+                    directory_fd,
+                    expected_owner=self._repository._expected_owner,
+                    expected_mode=self._repository._expected_directory_mode,
+                )
+                if names != (f"{canonical_id}.zip",) or _file_generation(
+                    before
+                ) != _file_generation(after):
+                    raise StateRecordError(
+                        "successful export spool is not the exact authorized single slot"
+                    )
                 file_descriptor = os.open(
                     f"{canonical_id}.zip",
                     os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
@@ -1367,6 +1406,52 @@ class _StateTransaction:
         candidate = self._repository._encode(path, document)
         return self._compare_and_swap_bytes(path, expected_revision, candidate)
 
+    def bind_dispatch_authority(
+        self,
+        path: StateRecordPath,
+        expected_revision: StateRevision,
+        document: dict[str, object],
+    ) -> StoredContract:
+        """Commit executor-owned dispatch fields without widening ordinary CAS."""
+
+        self._require_exclusive()
+        if path.name is not _StateRecordName.AUTHORIZATION_JOB:
+            raise StateRecordError("dispatch authority belongs only to an authorization job")
+        candidate = self._repository._encode(path, document)
+        current = self._repository._read_locked(path)
+        if current.revision != expected_revision:
+            raise StateConflictError("authoritative state changed before commit")
+        _validate_dispatch_authority_replacement(current.document, document)
+        self._repository._durable.replace(
+            path.components,
+            candidate,
+            mode=self._repository._expected_record_mode,
+        )
+        return self._repository._read_locked(path)
+
+    def commit_execution_validation(
+        self,
+        path: StateRecordPath,
+        expected_revision: StateRevision,
+        document: dict[str, object],
+    ) -> StoredContract:
+        """Commit the executor-only terminal validation marker."""
+
+        self._require_exclusive()
+        if path.name is not _StateRecordName.AUTHORIZATION_JOB:
+            raise StateRecordError("execution validation belongs only to an authorization job")
+        candidate = self._repository._encode(path, document)
+        current = self._repository._read_locked(path)
+        if current.revision != expected_revision:
+            raise StateConflictError("authoritative state changed before commit")
+        _validate_execution_validation_replacement(current.document, document)
+        self._repository._durable.replace(
+            path.components,
+            candidate,
+            mode=self._repository._expected_record_mode,
+        )
+        return self._repository._read_locked(path)
+
     def measure_inventory(
         self,
         *,
@@ -1578,6 +1663,16 @@ class _StateTransaction:
         current = self._repository._read_locked(path)
         if current.revision != expected_revision:
             raise StateConflictError("authoritative state changed before commit")
+        if path.name is _StateRecordName.AUTHORIZATION_JOB:
+            candidate_document = decode_contract(
+                candidate,
+                expected_kind=ContractKind.AUTHORIZATION_JOB,
+                maximum_raw_bytes=MAX_CANONICAL_BYTES,
+            )
+            _validate_authorization_phase_replacement(
+                current.document,
+                candidate_document,
+            )
         self._repository._durable.replace(
             path.components,
             candidate,
@@ -1604,6 +1699,62 @@ def _notify_tenant_namespace(
 ) -> None:
     if hook is not None:
         hook(boundary)
+
+
+def _validate_authorization_phase_replacement(
+    current: dict[str, object],
+    candidate: dict[str, object],
+) -> None:
+    before = deepcopy(current)
+    after = deepcopy(candidate)
+    before.pop("phase")
+    after.pop("phase")
+    if before != after:
+        raise StateRecordError(
+            "ordinary authorization replacement changed executor-owned authority"
+        )
+
+
+def _validate_dispatch_authority_replacement(
+    current: dict[str, object],
+    candidate: dict[str, object],
+) -> None:
+    if (
+        current["phase"] not in {"claimed", "completed", "failed"}
+        or candidate["phase"] != current["phase"]
+    ):
+        raise StateRecordError("dispatch authority requires an unchanged dispatched job phase")
+    if current["executionValidated"] is not False or candidate["executionValidated"] is not False:
+        raise StateRecordError("dispatch authority cannot follow execution validation")
+    before = deepcopy(current)
+    after = deepcopy(candidate)
+    for field in _DISPATCH_AUTHORITY_FIELDS:
+        previous = before.pop(field, None)
+        replacement = after.pop(field, None)
+        if previous is not None and previous != replacement:
+            raise StateRecordError("bound dispatch authority cannot be replaced")
+    if before != after:
+        raise StateRecordError("dispatch binding changed non-dispatch authority")
+
+
+def _validate_execution_validation_replacement(
+    current: dict[str, object],
+    candidate: dict[str, object],
+) -> None:
+    if (
+        current["executionValidated"] is not False
+        or candidate["executionValidated"] is not True
+        or candidate["phase"] not in {"completed", "failed"}
+    ):
+        raise StateRecordError("execution validation marker transition is invalid")
+    before = deepcopy(current)
+    after = deepcopy(candidate)
+    before.pop("phase")
+    after.pop("phase")
+    before.pop("executionValidated")
+    after.pop("executionValidated")
+    if before != after:
+        raise StateRecordError("execution validation changed authorization authority")
 
 
 def _file_generation(metadata: os.stat_result) -> tuple[int, ...]:

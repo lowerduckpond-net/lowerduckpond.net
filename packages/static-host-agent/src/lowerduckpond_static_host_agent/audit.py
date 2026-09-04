@@ -48,6 +48,18 @@ _TENANT_STATE_TRANSITIONS: Final = frozenset(
         "reconcile",
     }
 )
+_DEPLOYMENT_EVIDENCE_OPERATIONS: Final = frozenset(
+    {
+        "deploy",
+        "rollback",
+        "suspend",
+        "resume",
+        "export",
+        "import",
+        "archive",
+        "restore",
+    }
+)
 
 
 class AuditError(RuntimeError):
@@ -162,6 +174,35 @@ def inspect_audit(
     return _validate_chain(segments, limits=limits)
 
 
+def tenant_has_deployment_audit_history(  # noqa: PLR0913 - storage contract is explicit
+    root: DurableDirectory,
+    tenant_id: object,
+    *,
+    expected_owner: int,
+    expected_directory_mode: int,
+    expected_record_mode: int,
+    limits: AuditLimits = DEFAULT_AUDIT_LIMITS,
+) -> bool:
+    """Prove whether the complete audit chain records a deployed tenant."""
+
+    canonical_tenant_id = validate_uuid7(tenant_id)
+    audit_directory = root.open_descendant(("audit",))
+    try:
+        segments = _read_segments(
+            audit_directory,
+            expected_owner=expected_owner,
+            expected_directory_mode=expected_directory_mode,
+            expected_record_mode=expected_record_mode,
+            limits=limits,
+        )
+    finally:
+        audit_directory.close()
+    return canonical_tenant_id in _deployment_history_tenant_ids(
+        segments,
+        limits=limits,
+    )
+
+
 def inspect_audit_correlation(  # noqa: PLR0913 - keep every audit boundary explicit
     root: DurableDirectory,
     correlation_id: object,
@@ -193,6 +234,7 @@ def inspect_audit_correlation(  # noqa: PLR0913 - keep every audit boundary expl
         later_tenant_state_transitions,
         later_tenant_inventory_transitions,
         later_tenant_state_entries,
+        _deployment_history_tenant_ids,
     ) = _validate_chain_records(
         segments,
         limits=limits,
@@ -393,12 +435,33 @@ def _validate_chain(
         _later_tenant_state_transitions,
         _later_tenant_inventory_transitions,
         _later_tenant_state_entries,
+        _deployment_history_tenant_ids,
     ) = _validate_chain_records(
         segments,
         limits=limits,
         correlation_id=None,
     )
     return state
+
+
+def _deployment_history_tenant_ids(
+    segments: list[_Segment],
+    *,
+    limits: AuditLimits,
+) -> frozenset[str]:
+    """Validate the chain and collect tenant IDs with deployment evidence."""
+
+    (
+        _state,
+        _entry,
+        _previous_tenant_state_transition,
+        _has_later_tenant_state_transition,
+        _later_tenant_state_transitions,
+        _later_tenant_inventory_transitions,
+        _later_tenant_state_entries,
+        tenant_ids,
+    ) = _validate_chain_records(segments, limits=limits, correlation_id=None)
+    return tenant_ids
 
 
 def _validate_chain_records(  # noqa: PLR0912,PLR0915 - one bounded chain-validation pass
@@ -414,6 +477,7 @@ def _validate_chain_records(  # noqa: PLR0912,PLR0915 - one bounded chain-valida
     tuple[tuple[str, str], ...],
     tuple[tuple[str, str], ...],
     tuple[dict[str, object], ...],
+    frozenset[str],
 ]:
     sequence = 0
     terminal: dict[str, str] | None = None
@@ -426,6 +490,7 @@ def _validate_chain_records(  # noqa: PLR0912,PLR0915 - one bounded chain-valida
     later_tenant_state_transitions: list[tuple[str, str]] = []
     later_tenant_inventory_transitions: list[tuple[str, str]] = []
     later_tenant_state_entries: list[dict[str, object]] = []
+    deployment_history_tenant_ids: set[str] = set()
     for segment in segments:
         if not segment.data or not segment.data.endswith(b"\n"):
             raise AuditError("audit segment is not nonempty canonical JSON lines")
@@ -469,6 +534,20 @@ def _validate_chain_records(  # noqa: PLR0912,PLR0915 - one bounded chain-valida
             )
             tenant_id = document["tenantId"]
             operation = document["operation"]
+            deletion_evidence = document.get("deletionEvidence")
+            if (
+                type(tenant_id) is str
+                and document["resultStatus"] == "succeeded"
+                and (
+                    operation in _DEPLOYMENT_EVIDENCE_OPERATIONS
+                    or (
+                        operation == "delete"
+                        and type(deletion_evidence) is dict
+                        and deletion_evidence.get("mode") != "never-deployed"
+                    )
+                )
+            ):
+                deployment_history_tenant_ids.add(tenant_id)
             if (
                 preceding_match is not None
                 and type(tenant_id) is str
@@ -504,6 +583,7 @@ def _validate_chain_records(  # noqa: PLR0912,PLR0915 - one bounded chain-valida
         tuple(later_tenant_state_transitions),
         tuple(later_tenant_inventory_transitions),
         tuple(later_tenant_state_entries),
+        frozenset(deployment_history_tenant_ids),
     )
 
 

@@ -91,6 +91,7 @@ def _state_root(tmp_path: Path) -> Path:
     _mkdir(root / "authorization" / "jobs")
     _mkdir(root / "authorization" / "results")
     _mkdir(root / "authorization" / "correlations")
+    _mkdir(root / "audit")
     _mkdir(root / "intents")
     _mkdir(root / "locks")
     manager = LockManager.initialize(root / "locks", expected_owner=os.geteuid())
@@ -1246,6 +1247,43 @@ def test_deployment_history_cleanup_acquires_the_exclusive_state_lock(
         assert repository.tenant_has_deployment_history(_TENANT_ID) is False
 
     assert modes == [LockMode.EXCLUSIVE]
+
+
+def test_deployment_history_checks_archives_releases_and_audit(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    releases = tmp_path / "sites"
+    with StateRepository(
+        root,
+        expected_owner=os.geteuid(),
+        tenant_release_root=releases,
+    ) as repository:
+        assert repository.tenant_has_deployment_history(_TENANT_ID) is False
+        repository.create_immutable(
+            StateRecordPath.tenant_archive(_TENANT_ID, _DEPLOYMENT_ID),
+            _fixture("archive-record.json"),
+        )
+        assert repository.tenant_has_deployment_history(_TENANT_ID) is True
+
+    root.joinpath(*StateRecordPath.tenant_archive(_TENANT_ID, _DEPLOYMENT_ID).components).unlink()
+    release = releases / _TENANT_ID / "releases" / _DEPLOYMENT_ID
+    release.mkdir(parents=True)
+    with StateRepository(
+        root,
+        expected_owner=os.geteuid(),
+        tenant_release_root=releases,
+    ) as repository:
+        assert repository.tenant_has_deployment_history(_TENANT_ID) is True
+
+    release.rmdir()
+    audit = _fixture("audit-entry.json")
+    audit["operation"] = "deploy"
+    with StateRepository(
+        root,
+        expected_owner=os.geteuid(),
+        tenant_release_root=releases,
+    ) as repository:
+        repository.append_audit(audit)
+        assert repository.tenant_has_deployment_history(_TENANT_ID) is True
 
 
 def test_shared_and_expired_transactions_cannot_mutate_state(tmp_path: Path) -> None:

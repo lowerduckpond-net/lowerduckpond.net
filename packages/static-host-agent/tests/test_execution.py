@@ -41,6 +41,7 @@ from lowerduckpond_static_host_agent import (
     LockManager,
     LockMode,
     LockName,
+    StateRecordError,
     StateRecordPath,
     StateRepository,
     StoredContract,
@@ -648,6 +649,7 @@ class _CompletingTransitionHandler:
         archive: dict[str, object] | None = None,
         write_archive: bool = True,
         write_export: bool = False,
+        write_extra_export: bool = False,
         export_payload: bytes | None = None,
         extra_archive: dict[str, object] | None = None,
         extra_deployment: dict[str, object] | None = None,
@@ -661,6 +663,7 @@ class _CompletingTransitionHandler:
         self._archive = archive
         self._write_archive = write_archive
         self._write_export = write_export
+        self._write_extra_export = write_extra_export
         self._export_payload = export_payload
         self._extra_archive = extra_archive
         self._extra_deployment = extra_deployment
@@ -712,6 +715,10 @@ class _CompletingTransitionHandler:
                 export = self._root / "exports" / f"{job_id}.zip"
                 export.write_bytes(payload)
                 export.chmod(0o600)
+            if self._write_extra_export:
+                extra_export = self._root / "exports" / "unauthorized.tmp"
+                extra_export.write_bytes(b"unauthorized")
+                extra_export.chmod(0o600)
         _write(
             self._root,
             StateRecordPath.tenant_desired(request["tenantId"]),
@@ -787,6 +794,41 @@ class _CompletingTransitionHandler:
             blocking=blocking,
         )
         return ExecutionOutcome(result, True)
+
+
+class _AuthorizationMutationHandler:
+    def __init__(
+        self,
+        repository: StateRepository,
+        *,
+        field: str,
+        value: object,
+    ) -> None:
+        self._repository = repository
+        self._field = field
+        self._value = value
+
+    def execute(
+        self,
+        job_id: str,
+        *,
+        claim: LifecycleArtifact | None,
+        blocking: bool,
+    ) -> ExecutionOutcome:
+        assert claim is None
+        current = self._repository.read(
+            StateRecordPath.authorization_job(job_id),
+            blocking=blocking,
+        )
+        mutated = current.document
+        mutated[self._field] = self._value
+        self._repository.compare_and_swap(
+            StateRecordPath.authorization_job(job_id),
+            current.revision,
+            mutated,
+            blocking=blocking,
+        )
+        raise AssertionError("executor-owned validation mutation was accepted")
 
 
 class _SupersedingTransitionHandler:
@@ -2190,6 +2232,45 @@ def test_executor_finishes_intent_free_claimed_fallback_without_a_handler(
     assert terminal["phase"] == "failed"
     assert replay.created is False
     assert replay.result == outcome.result
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("executionValidated", True),
+        ("dispatchTenantIds", ["0198d17f-6f4a-7000-8000-000000000009"]),
+    ],
+)
+def test_lifecycle_handler_cannot_change_executor_authority(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued = _issue_create(repository)
+        with pytest.raises(StateRecordError, match="executor-owned authority"):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={
+                    "create": _AuthorizationMutationHandler(
+                        repository,
+                        field=field,
+                        value=value,
+                    )
+                },
+            ).execute(issued.job_id)
+        stored = repository.read(StateRecordPath.authorization_job(issued.job_id)).document
+
+    assert stored["phase"] == "claimed"
+    assert stored["executionValidated"] is False
+    assert stored[field] != value
 
 
 def test_executor_finishes_intent_free_claimed_fallback_after_artifact_loss(
@@ -3687,6 +3768,56 @@ def test_executor_requires_the_exact_export_bundle_for_success(
         else:
             with pytest.raises(ExecutionError, match="no exact bundle"):
                 executor.execute(issued.job_id)
+
+
+def test_executor_rejects_an_extra_export_spool_entry(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    manifest = _fixture("site.json")
+    deployment = _fixture("deployment-record.json")
+    payload, release_digest = _portable_bundle_payload(tmp_path, manifest=manifest)
+    deployment["releaseTreeDigest"] = release_digest
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), manifest)
+    _write(root, StateRecordPath.tenant_deployment(_TENANT_ID, _DEPLOYMENT_ID), deployment)
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "export",
+        "correlationId": "0198d17f-6f4a-7000-8000-000000000003",
+        "tenantId": _TENANT_ID,
+    }
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued = AuthorizationIssuer(
+            repository,
+            gate=_OpenGate(),
+            entropy=_Entropy(),
+        ).issue(
+            canonical_json_bytes(request),
+            operator_principal="operator@example.test",
+            now=_NOW,
+            artifact=None,
+        )
+        executor = AuthorizationExecutor(
+            repository,
+            intake,
+            handlers={
+                "export": _CompletingTransitionHandler(
+                    repository,
+                    root,
+                    manifest=manifest,
+                    write_export=True,
+                    write_extra_export=True,
+                    export_payload=payload,
+                )
+            },
+            tenant_runtime_validator=lambda *_arguments: True,
+        )
+        with pytest.raises(ExecutionError, match="no exact bundle"):
+            executor.execute(issued.job_id)
 
 
 def test_executor_preserves_export_authority_after_source_history_is_pruned(
@@ -7595,6 +7726,13 @@ def test_executor_recovers_a_claimed_lifecycle_job_without_its_artifact(  # noqa
         job = repository.read(StateRecordPath.authorization_job(issued.job_id))
         claimed = job.document
         claimed["phase"] = "claimed"
+        with repository.transaction(mode=LockMode.EXCLUSIVE) as transaction:
+            claimed_job = transaction.compare_and_swap(
+                StateRecordPath.authorization_job(issued.job_id),
+                job.revision,
+                claimed,
+            )
+            claimed = claimed_job.document
         claimed["dispatchArchiveDeploymentIds"] = []
         claimed["dispatchArtifactReleaseTreeDigest"] = _fixture("deployment-record.json")[
             "releaseTreeDigest"
@@ -7608,11 +7746,12 @@ def test_executor_recovers_a_claimed_lifecycle_job_without_its_artifact(  # noqa
                 "deploymentIds": [_DEPLOYMENT_ID],
             }
         ]
-        repository.compare_and_swap(
-            StateRecordPath.authorization_job(issued.job_id),
-            job.revision,
-            claimed,
-        )
+        with repository.transaction(mode=LockMode.EXCLUSIVE) as transaction:
+            transaction.bind_dispatch_authority(
+                StateRecordPath.authorization_job(issued.job_id),
+                claimed_job.revision,
+                claimed,
+            )
         source_observed = _fixture("tenant-observed-state.json")
         source_observed["desiredManifestDigest"] = source_digest
         candidate_observed = json.loads(json.dumps(source_observed))

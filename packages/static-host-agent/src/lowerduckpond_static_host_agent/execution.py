@@ -116,6 +116,20 @@ class ExecutionTransaction(Protocol):
         document: dict[str, object],
     ) -> StoredContract: ...
 
+    def bind_dispatch_authority(
+        self,
+        path: StateRecordPath,
+        expected_revision: StateRevision,
+        document: dict[str, object],
+    ) -> StoredContract: ...
+
+    def commit_execution_validation(
+        self,
+        path: StateRecordPath,
+        expected_revision: StateRevision,
+        document: dict[str, object],
+    ) -> StoredContract: ...
+
     def create_immutable(
         self,
         path: StateRecordPath,
@@ -706,6 +720,7 @@ class AuthorizationExecutor:
                 current,
                 artifact_release_tree_digest=prepared.artifact_release_tree_digest,
             )
+            dispatch_job = current.document
             authority = _capture_authorized_lifecycle_authority(
                 transaction,
                 current.document,
@@ -726,7 +741,7 @@ class AuthorizationExecutor:
             blocking=blocking,
         ) as transaction:
             current = transaction.read(StateRecordPath.authorization_job(job_id))
-            _require_same_authority(initial.document, current.document)
+            _require_same_bound_authority(dispatch_job, current.document)
             stored = _read_result_transaction(transaction, job_id)
             if stored is None or stored.document != result:
                 raise ExecutionError("lifecycle handler result is not durably exact")
@@ -1067,7 +1082,7 @@ class AuthorizationExecutor:
             validated = current.document
             validated["executionValidated"] = True
             try:
-                transaction.compare_and_swap(
+                transaction.commit_execution_validation(
                     StateRecordPath.authorization_job(job_id),
                     current.revision,
                     validated,
@@ -1167,6 +1182,18 @@ def _require_same_authority(
     second.pop("dispatchTenantRecordHistories", None)
     if first != second:
         raise ExecutionError("authorization job authority changed before execution")
+
+
+def _require_same_bound_authority(
+    expected: dict[str, object],
+    current: dict[str, object],
+) -> None:
+    first = deepcopy(expected)
+    second = deepcopy(current)
+    first.pop("phase", None)
+    second.pop("phase", None)
+    if first != second:
+        raise ExecutionError("bound authorization authority changed during execution")
 
 
 def _validate_job_integrity(
@@ -1762,7 +1789,7 @@ def _bind_dispatch_authority(  # noqa: PLR0912,PLR0915 - dispatch authority matr
                 transaction, job, request
             )
             try:
-                return transaction.compare_and_swap(
+                return transaction.bind_dispatch_authority(
                     StateRecordPath.authorization_job(rebound["jobId"]),
                     current.revision,
                     rebound,
@@ -1819,7 +1846,7 @@ def _bind_dispatch_authority(  # noqa: PLR0912,PLR0915 - dispatch authority matr
     bound["dispatchTenantIds"] = list(inventory.tenant_ids)
     bound["dispatchTenantRecordHistories"] = tenant_histories
     try:
-        return transaction.compare_and_swap(
+        return transaction.bind_dispatch_authority(
             StateRecordPath.authorization_job(bound["jobId"]),
             current.revision,
             bound,
@@ -3558,7 +3585,12 @@ def _set_terminal_phase(
     if terminal["compatibilityVersion"] == "static-job-v2" and execution_validated:
         terminal["executionValidated"] = True
     try:
-        transaction.compare_and_swap(
+        transition = (
+            transaction.commit_execution_validation
+            if terminal["compatibilityVersion"] == "static-job-v2" and execution_validated
+            else transaction.compare_and_swap
+        )
+        transition(
             StateRecordPath.authorization_job(terminal["jobId"]),
             job.revision,
             terminal,

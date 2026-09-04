@@ -391,12 +391,47 @@ def test_all_tenant_release_validation_remeasures_untouched_tenants(
         "snapshot_tenant_routes",
         lambda _transaction: SimpleNamespace(tenants=(selected, untouched)),
     )
+    monkeypatch.setattr(entrypoints, "_tenant_release_namespace_ids", lambda: ())
+    monkeypatch.setattr(entrypoints, "_snapshot_tenant_id", lambda tenant: tenant.name)
     monkeypatch.setattr(entrypoints, "_tenant_release_state_matches", release_matches)
 
     assert not entrypoints._all_tenant_release_state_matches(
         Repository(),  # type: ignore[arg-type]
     )
     assert measured == ["selected", "untouched"]
+
+
+def test_all_tenant_release_validation_rejects_unknown_tenant_namespace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenant_id = "0198d17f-6f4a-7000-8000-000000000001"
+    unknown_id = "0198d17f-6f4a-7000-8000-000000000002"
+    sites = tmp_path / "sites"
+    (sites / unknown_id).mkdir(parents=True)
+    tenant = SimpleNamespace(manifest={"metadata": {"id": tenant_id}})
+
+    class Repository:
+        @staticmethod
+        def publication_transaction(*, blocking: bool) -> nullcontext[object]:
+            assert blocking is True
+            return nullcontext(object())
+
+    monkeypatch.setattr(entrypoints, "TENANT_RELEASE_ROOT", str(sites))
+    monkeypatch.setattr(
+        entrypoints,
+        "snapshot_tenant_routes",
+        lambda _transaction: SimpleNamespace(tenants=(tenant,)),
+    )
+    monkeypatch.setattr(
+        entrypoints,
+        "_tenant_release_state_matches",
+        lambda *_arguments: True,
+    )
+
+    assert not entrypoints._all_tenant_release_state_matches(
+        Repository(),  # type: ignore[arg-type]
+    )
 
 
 def test_deleted_tenant_publication_requires_the_complete_namespace_absent(
