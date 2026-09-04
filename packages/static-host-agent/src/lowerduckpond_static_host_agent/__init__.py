@@ -264,6 +264,10 @@ from lowerduckpond_static_host_agent.request_decoder import (
     SubprocessRequestDecoder,
     decoder_main,
 )
+from lowerduckpond_static_host_agent.route_activate import (
+    RouteActivationError,
+    activate_route_transition,
+)
 from lowerduckpond_static_host_agent.route_commit import (
     RouteCommitBoundary,
     RouteCommitError,
@@ -477,6 +481,7 @@ __all__ = [
     "RequestDecodeError",
     "RequestDecoder",
     "ResultWaiter",
+    "RouteActivationError",
     "RouteAuthorityDriftError",
     "RouteCommitBoundary",
     "RouteCommitError",
@@ -522,6 +527,7 @@ __all__ = [
     "ZipStructure",
     "ZipStructureError",
     "activate_create_transition",
+    "activate_route_transition",
     "admit_release_capacity",
     "admit_route_transition",
     "admit_state_inventory",
