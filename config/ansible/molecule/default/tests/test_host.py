@@ -227,6 +227,17 @@ def assert_static_worker_sudo_compatibility(host: Host) -> None:
     assert unit.contains("SystemCallFilter=~mknod mknodat")
 
 
+def assert_static_worker_caddy_runtime_access(host: Host) -> None:
+    """Require only the host paths used by root-owned Caddy transactions."""
+
+    unit = host.file("/etc/systemd/system/lowerduckpond-static-worker@.service")
+    assert unit.contains(f"BindPaths={STATIC_STATE_ROOT}")
+    assert unit.contains("BindPaths=/etc/caddy")
+    assert unit.contains("BindReadOnlyPaths=/run/caddy")
+    assert unit.contains("BindReadOnlyPaths=/run/systemd")
+    assert not unit.contains("InaccessiblePaths=/proc")
+
+
 def read_status_scope(host: Host, variable_name: str) -> str:
     result = host.run(
         "/bin/bash -c %s",
@@ -1217,7 +1228,6 @@ def test_static_worker_boundary_is_opaque_and_hardened(host: Host) -> None:
         "/etc/lowerduckpond/static-publication.json",
     ):
         assert unit.contains(f"BindReadOnlyPaths={bound_path}")
-    assert unit.contains(f"BindPaths={STATIC_STATE_ROOT}")
     for property_line in (
         "MemoryMax=256M",
         "MemorySwapMax=0",
@@ -1233,6 +1243,7 @@ def test_static_worker_boundary_is_opaque_and_hardened(host: Host) -> None:
     ):
         assert unit.contains(property_line)
     assert_static_worker_sudo_compatibility(host)
+    assert_static_worker_caddy_runtime_access(host)
     assert host.run("systemctl is-enabled lowerduckpond-static-worker@.service").stdout.strip() == (
         "static"
     )

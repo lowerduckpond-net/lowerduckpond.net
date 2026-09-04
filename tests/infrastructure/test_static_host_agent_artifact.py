@@ -474,6 +474,7 @@ def test_dark_worker_unit_consumes_the_reviewed_sandbox_contract() -> None:
     expected["SystemCallFilter=~pipe pipe2 mknod mknodat"] -= 1
     expected["SystemCallFilter=~mknod mknodat"] += 1
     expected["SystemCallFilter=~clone clone3 fork vfork"] -= 1
+    expected["InaccessiblePaths=/proc"] -= 1
     for property_line, count in expected.items():
         assert lines[property_line] == count
     assert lines["TemporaryFileSystem=/workspace:rw,size=64M,nr_inodes=4096,mode=0700"] == 1
@@ -481,3 +482,7 @@ def test_dark_worker_unit_consumes_the_reviewed_sandbox_contract() -> None:
     assert lines["BindReadOnlyPaths=/lib"] == 1
     assert lines["BindReadOnlyPaths=/lib64"] == 1
     assert lines["BindReadOnlyPaths=/etc/lowerduckpond/static-publication.json"] == 1
+    assert lines["BindReadOnlyPaths=/run/caddy"] == 1
+    assert lines["BindReadOnlyPaths=/run/systemd"] == 1
+    assert lines["BindPaths=/etc/caddy"] == 1
+    assert lines["InaccessiblePaths=/proc"] == 0
