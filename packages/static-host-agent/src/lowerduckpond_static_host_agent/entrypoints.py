@@ -94,7 +94,10 @@ from lowerduckpond_static_host_agent.route_snapshot import (
     RouteSnapshotError,
     snapshot_tenant_routes,
 )
-from lowerduckpond_static_host_agent.state_inventory import StateInventoryError
+from lowerduckpond_static_host_agent.state_inventory import (
+    DEFAULT_STATE_INVENTORY_LIMITS,
+    StateInventoryError,
+)
 
 _STATE_ROOT: Final = Path("/var/lib/lowerduckpond/static")
 _DECODER: Final = Path("/usr/local/libexec/lowerduckpond/static-request-decoder")
@@ -738,6 +741,9 @@ def _all_tenant_release_state_matches(repository: StateRepository) -> bool:
     try:
         with repository.publication_transaction(blocking=True) as transaction:
             expected = snapshot_tenant_routes(transaction)
+            authoritative_tenant_ids = {_snapshot_tenant_id(tenant) for tenant in expected.tenants}
+            if not set(_tenant_release_namespace_ids()).issubset(authoritative_tenant_ids):
+                return False
             return all(
                 _tenant_release_state_matches(repository, transaction, tenant)
                 for tenant in expected.tenants
@@ -824,6 +830,14 @@ def _tenant_release_state_matches(  # noqa: PLR0911 - explicit fail-closed matri
     return deployment_id in retained and deployment == retained[deployment_id]
 
 
+def _snapshot_tenant_id(tenant: object) -> str:
+    manifest = getattr(tenant, "manifest", None)
+    metadata = manifest.get("metadata") if type(manifest) is dict else None
+    if type(metadata) is not dict:
+        raise ReleaseTreeError("authoritative tenant snapshot has no identity")
+    return validate_uuid7(metadata.get("id"))
+
+
 def _tenant_release_ids(tenant_id: str) -> tuple[str, ...]:
     """Enumerate one bounded root-owned release namespace without following entries."""
 
@@ -843,6 +857,27 @@ def _tenant_release_ids(tenant_id: str) -> tuple[str, ...]:
             identities.append(validate_uuid7(entry.name))
         except (TypeError, ValueError) as error:
             raise ReleaseTreeError("tenant release history has an invalid identity") from error
+    return tuple(identities)
+
+
+def _tenant_release_namespace_ids() -> tuple[str, ...]:
+    """Enumerate the complete bounded publication-root tenant namespace."""
+
+    try:
+        with os.scandir(TENANT_RELEASE_ROOT) as entries:
+            found = tuple(sorted(entries, key=lambda entry: entry.name))
+    except FileNotFoundError:
+        return ()
+    if len(found) > DEFAULT_STATE_INVENTORY_LIMITS.maximum_tenants:
+        raise ReleaseTreeError("tenant release namespace exceeds its tenant bound")
+    identities: list[str] = []
+    for entry in found:
+        if not entry.is_dir(follow_symlinks=False):
+            raise ReleaseTreeError("tenant release namespace contains a non-directory entry")
+        try:
+            identities.append(validate_uuid7(entry.name))
+        except (TypeError, ValueError) as error:
+            raise ReleaseTreeError("tenant release namespace has an invalid identity") from error
     return tuple(identities)
 
 
