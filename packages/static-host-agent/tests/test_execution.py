@@ -6925,6 +6925,87 @@ def test_executor_replays_exact_reconcile_source_after_intent_cleanup(
     assert calls == [("absent", recovery["sourceRuntimeGenerationId"])]
 
 
+def test_executor_accepts_newer_cross_tenant_runtime_for_failed_replay(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    job, intent, result = _write_committed_transition_replay(root, operation="reconcile")
+    source = _mapping(intent["sourceManifest"])
+    recovery = _mapping(intent["lifecycleRecovery"])
+    source_observed = _mapping(recovery["sourceObservedState"])
+    job.update(
+        {
+            "compatibilityVersion": "static-job-v2",
+            "dispatchSourceRouteSet": recovery["sourceRouteSet"],
+            "dispatchSourceRuntimeGenerationId": recovery["sourceRuntimeGenerationId"],
+            "executionValidated": False,
+            "sourceAuthority": {"manifest": source, "archiveRecord": None},
+            "phase": "failed",
+        }
+    )
+    result.update({"status": "failed", "errorCode": "state_drift"})
+    result.pop("canonicalOrigin")
+    result.pop("manifest")
+    _write(root, StateRecordPath.authorization_job(job["jobId"]), job)
+    correlation = json.loads(json.dumps(job))
+    correlation["phase"] = "pending"
+    _write(
+        root,
+        StateRecordPath.authorization_correlation(result["correlationId"]),
+        correlation,
+    )
+    _write(root, StateRecordPath.authorization_result(job["jobId"]), result)
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), source)
+    _write(root, StateRecordPath.tenant_observed(_TENANT_ID), source_observed)
+    root.joinpath(*StateRecordPath.transaction_intent(intent["intentId"]).components).unlink()
+    other_tenant_id = "0198d17f-6f4a-7000-8000-000000000010"
+    calls: list[tuple[str | None, bool]] = []
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        _append_result_audit(repository, job, result)
+
+        def validate_runtime(
+            _tenant_id: str,
+            _route_set: str,
+            generation_id: str | None,
+            _manifest: dict[str, object],
+            _observed_state: dict[str, object] | None,
+            allow_reconcile_source_drift: bool,
+        ) -> bool:
+            calls.append((generation_id, allow_reconcile_source_drift))
+            if generation_id is not None:
+                later = _fixture("operation-result.json")
+                provenance = _mapping(later["provenance"])
+                manifest = _mapping(later["manifest"])
+                metadata = _mapping(manifest["metadata"])
+                canonical_origin = f"t-{other_tenant_id.replace('-', '')}.lowerduckpond.com"
+                provenance["jobId"] = "0198d17f-6f4a-7000-8000-000000000011"
+                later["correlationId"] = "0198d17f-6f4a-7000-8000-000000000012"
+                later["tenantId"] = other_tenant_id
+                later["canonicalOrigin"] = canonical_origin
+                metadata["id"] = other_tenant_id
+                metadata["canonicalOrigin"] = canonical_origin
+                _append_result_audit(repository, job, later)
+                return False
+            return True
+
+        outcome = AuthorizationExecutor(
+            repository,
+            intake,
+            tenant_runtime_validator=validate_runtime,
+        ).execute(job["jobId"])
+
+    assert outcome.result == result
+    assert outcome.created is False
+    assert calls == [
+        (recovery["sourceRuntimeGenerationId"], True),
+        (None, True),
+    ]
+
+
 def test_executor_revalidates_external_state_after_a_validated_failure(
     tmp_path: Path,
 ) -> None:

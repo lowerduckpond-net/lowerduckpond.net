@@ -993,6 +993,7 @@ class AuthorizationExecutor:
             bool,
         ],
         blocking: bool,
+        allow_reconcile_source_drift: bool = False,
     ) -> bool:
         """Accept a newer complete generation selected by another tenant."""
 
@@ -1023,7 +1024,7 @@ class AuthorizationExecutor:
                 None,
                 manifest,
                 observed_state,
-                False,
+                allow_reconcile_source_drift,
             )
             is True
         )
@@ -1097,7 +1098,7 @@ class AuthorizationExecutor:
         runtime_validator = self._tenant_runtime_validator
         if runtime_validator is None and authority.execution_validation_committed:
             return
-        if (
+        runtime_restored = (
             runtime_validator is not None
             and runtime_validator(
                 tenant_id,
@@ -1108,9 +1109,20 @@ class AuthorizationExecutor:
                 result["operation"] == "reconcile",
             )
             is True
-        ):
-            return
-        if self._result_was_superseded(job, result, blocking=blocking):
+        )
+        if not runtime_restored and runtime_validator is not None:
+            runtime_restored = self._current_runtime_matches_after_cross_tenant(
+                job,
+                result,
+                tenant_id=tenant_id,
+                route_set=source_route_set,
+                manifest=source_manifest,
+                observed_state=authority.source_observed_state,
+                runtime_validator=runtime_validator,
+                blocking=blocking,
+                allow_reconcile_source_drift=(result["operation"] == "reconcile"),
+            )
+        if runtime_restored or self._result_was_superseded(job, result, blocking=blocking):
             return
         raise ExecutionError("failed lifecycle result did not restore its authorized routes")
 
