@@ -25,8 +25,10 @@ from lowerduckpond_static_contracts import (
 )
 from lowerduckpond_static_host_agent import (
     AuditState,
+    CapacityRejectedError,
     CreateStateBoundary,
     CreateTransitionPlan,
+    HostCapacityLimits,
     LockManager,
     LockMode,
     LockName,
@@ -167,6 +169,39 @@ def test_dispatch_binding_admits_allocated_growth_before_replacement(
         retained = repository.read(path).document
 
     assert reservations[0].authorization_allocated_bytes > 0
+    assert retained == job
+
+
+def test_execution_validation_admits_temporary_replacement_before_writing(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    path = StateRecordPath.authorization_job(_JOB_ID)
+    job = _fixture("authorization-job.json")
+    job.update(
+        {
+            "compatibilityVersion": "static-job-v2",
+            "executionValidated": False,
+            "phase": "failed",
+            "sourceAuthority": None,
+        }
+    )
+    _write_record(root, path, job)
+    validated = deepcopy(job)
+    validated["executionValidated"] = True
+
+    with _repository(root) as repository:
+        with repository.transaction(mode=LockMode.EXCLUSIVE) as transaction:
+            current = transaction.read(path)
+            with pytest.raises(CapacityRejectedError, match="host byte ceiling"):
+                transaction.commit_execution_validation(
+                    path,
+                    current.revision,
+                    validated,
+                    capacity_limits=HostCapacityLimits(maximum_allocated_bytes=0),
+                )
+        retained = repository.read(path).document
+
     assert retained == job
 
 

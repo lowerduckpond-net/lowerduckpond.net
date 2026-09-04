@@ -1429,6 +1429,27 @@ class _StateTransaction:
         if current.revision != expected_revision:
             raise StateConflictError("authoritative state changed before commit")
         _validate_dispatch_authority_replacement(current.document, document)
+        self._admit_atomic_authorization_replacement(
+            path,
+            candidate,
+            capacity_limits=capacity_limits,
+        )
+        self._repository._durable.replace(
+            path.components,
+            candidate,
+            mode=self._repository._expected_record_mode,
+        )
+        return self._repository._read_locked(path)
+
+    def _admit_atomic_authorization_replacement(
+        self,
+        path: StateRecordPath,
+        candidate: bytes,
+        *,
+        capacity_limits: HostCapacityLimits,
+    ) -> None:
+        """Admit permanent growth and the complete temporary replacement."""
+
         candidate_allocation = self._repository._durable.allocation_upper_bound(len(candidate))
         current_allocation = self._repository._durable.regular_allocation(
             path.components,
@@ -1450,18 +1471,14 @@ class _StateTransaction:
             self.measure_filesystem_capacity(),
             limits=capacity_limits,
         )
-        self._repository._durable.replace(
-            path.components,
-            candidate,
-            mode=self._repository._expected_record_mode,
-        )
-        return self._repository._read_locked(path)
 
     def commit_execution_validation(
         self,
         path: StateRecordPath,
         expected_revision: StateRevision,
         document: dict[str, object],
+        *,
+        capacity_limits: HostCapacityLimits = DEFAULT_HOST_CAPACITY_LIMITS,
     ) -> StoredContract:
         """Commit the executor-only terminal validation marker."""
 
@@ -1473,6 +1490,11 @@ class _StateTransaction:
         if current.revision != expected_revision:
             raise StateConflictError("authoritative state changed before commit")
         _validate_execution_validation_replacement(current.document, document)
+        self._admit_atomic_authorization_replacement(
+            path,
+            candidate,
+            capacity_limits=capacity_limits,
+        )
         self._repository._durable.replace(
             path.components,
             candidate,

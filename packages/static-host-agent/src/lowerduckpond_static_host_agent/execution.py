@@ -131,6 +131,8 @@ class ExecutionTransaction(Protocol):
         path: StateRecordPath,
         expected_revision: StateRevision,
         document: dict[str, object],
+        *,
+        capacity_limits: HostCapacityLimits = DEFAULT_HOST_CAPACITY_LIMITS,
     ) -> StoredContract: ...
 
     def create_immutable(
@@ -1127,6 +1129,7 @@ class AuthorizationExecutor:
                     StateRecordPath.authorization_job(job_id),
                     current.revision,
                     validated,
+                    capacity_limits=self._capacity_limits,
                 )
             except StateConflictError as error:
                 raise ExecutionError(
@@ -2114,6 +2117,7 @@ def _publish_result(
         job,
         result,
         execution_validated=True,
+        capacity_limits=limits,
     )
 
 
@@ -3627,6 +3631,7 @@ def _set_terminal_phase(
     result: dict[str, object],
     *,
     execution_validated: bool = False,
+    capacity_limits: HostCapacityLimits = DEFAULT_HOST_CAPACITY_LIMITS,
 ) -> None:
     expected_phase = "completed" if result["status"] == "succeeded" else "failed"
     marker_is_current = (
@@ -3641,16 +3646,16 @@ def _set_terminal_phase(
     if terminal["compatibilityVersion"] == "static-job-v2" and execution_validated:
         terminal["executionValidated"] = True
     try:
-        transition = (
-            transaction.commit_execution_validation
-            if terminal["compatibilityVersion"] == "static-job-v2" and execution_validated
-            else transaction.compare_and_swap
-        )
-        transition(
-            StateRecordPath.authorization_job(terminal["jobId"]),
-            job.revision,
-            terminal,
-        )
+        path = StateRecordPath.authorization_job(terminal["jobId"])
+        if terminal["compatibilityVersion"] == "static-job-v2" and execution_validated:
+            transaction.commit_execution_validation(
+                path,
+                job.revision,
+                terminal,
+                capacity_limits=capacity_limits,
+            )
+        else:
+            transaction.compare_and_swap(path, job.revision, terminal)
     except StateConflictError as error:
         raise ExecutionError("authorization phase changed during terminal commit") from error
 
