@@ -419,9 +419,19 @@ def _validate_result(document: dict[str, object]) -> None:
             raise ContractError(ErrorCode.SCHEMA_INVALID, "result tenant identity does not match")
         if canonical_origin != metadata["canonicalOrigin"]:
             raise ContractError(ErrorCode.SCHEMA_INVALID, "result tenant origin does not match")
-    if document["operation"] != "archive" or document["status"] != "succeeded":
+    if document["operation"] != "archive":
         return
     archive = document.get("archiveRecord")
+    if type(archive) is dict and (
+        archive["tenantId"] != document["tenantId"]
+        or archive["correlationId"] != document["correlationId"]
+    ):
+        raise ContractError(
+            ErrorCode.SCHEMA_INVALID,
+            "archive record disagrees with its result",
+        )
+    if document["status"] != "succeeded":
+        return
     if manifest is None or type(archive) is not dict:
         raise ContractError(
             ErrorCode.SCHEMA_INVALID,
@@ -430,9 +440,7 @@ def _validate_result(document: dict[str, object]) -> None:
     spec = cast(dict[str, object], manifest["spec"])
     deployment = spec.get("desiredDeployment")
     if type(deployment) is not dict or (
-        archive["tenantId"] != document["tenantId"]
-        or archive["correlationId"] != document["correlationId"]
-        or archive["manifestDigest"] != _manifest_digest(manifest)
+        archive["manifestDigest"] != _manifest_digest(manifest)
         or archive["deploymentId"] != deployment["id"]
     ):
         raise ContractError(

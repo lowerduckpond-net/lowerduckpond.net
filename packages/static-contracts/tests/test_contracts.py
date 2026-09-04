@@ -1284,6 +1284,30 @@ def test_failed_archive_result_declares_whether_an_upload_candidate_exists() -> 
     result["archiveRecord"] = None
     assert validate_contract(result) is ContractKind.OPERATION_RESULT
 
+    result["archiveRecord"] = _load_object(FIXTURE_ROOT / "accepted/archive-record.json")
+    assert validate_contract(result) is ContractKind.OPERATION_RESULT
+
+
+@pytest.mark.parametrize("field", ["tenantId", "correlationId"])
+def test_failed_archive_candidate_is_bound_to_its_result(field: str) -> None:
+    result = _load_object(FIXTURE_ROOT / "accepted/operation-result.json")
+    result.update(
+        {
+            "operation": "archive",
+            "status": "failed",
+            "errorCode": "archive_unavailable",
+            "archiveRecord": _load_object(FIXTURE_ROOT / "accepted/archive-record.json"),
+        }
+    )
+    result.pop("canonicalOrigin")
+    result.pop("manifest")
+    archive = cast(dict[str, object], result["archiveRecord"])
+    archive[field] = "0198d17f-6f4a-7000-8000-000000000099"
+
+    with pytest.raises(ContractError, match="archive record") as captured:
+        validate_contract(result)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
 
 def test_successful_delete_result_cannot_return_a_desired_manifest() -> None:
     result = _load_object(FIXTURE_ROOT / "accepted/operation-result.json")
