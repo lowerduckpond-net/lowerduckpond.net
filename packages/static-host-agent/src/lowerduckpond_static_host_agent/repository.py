@@ -831,7 +831,9 @@ class _StateTransaction:
         self._require_active()
         self._require_exclusive()
         canonical_id = validate_uuid7(tenant_id)
-        if self.tenant_deployment_ids(canonical_id) or self.tenant_archive_ids(canonical_id):
+        if canonical_id in self.measure_inventory().tenant_ids and (
+            self.tenant_deployment_ids(canonical_id) or self.tenant_archive_ids(canonical_id)
+        ):
             return True
         if self._tenant_has_release_history(canonical_id):
             return True

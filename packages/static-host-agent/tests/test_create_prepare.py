@@ -42,6 +42,7 @@ from lowerduckpond_static_host_agent import (
 
 _FIXTURE_ROOT = Path(__file__).parents[3] / "tests/static-publication/fixtures/accepted"
 _SOURCE_GENERATION = "0198d17f-6f4a-7000-8000-000000000004"
+_GENERATED_TENANT_ID = "019dbd74-2a00-7000-8000-000000000002"
 _NOW = datetime(2026, 9, 2, 13, 45, tzinfo=UTC)
 
 
@@ -318,6 +319,32 @@ def test_create_preparation_publishes_then_binds_one_exact_intent(tmp_path: Path
             == prepared.plan.intent
         )
         assert repository.measure_inventory().tenant_ids == ()
+    finally:
+        repository.close()
+
+
+def test_create_preparation_rejects_a_generated_identity_with_retained_history(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root)
+    runtime = _Runtime()
+    audit = _fixture("audit-entry.json")
+    audit.update(
+        {
+            "operation": "deploy",
+            "tenantId": _GENERATED_TENANT_ID,
+        }
+    )
+    try:
+        repository.append_audit(audit)
+
+        with pytest.raises(CreatePreparationError, match="identity is unavailable"):
+            _prepare(repository, runtime, job)
+
+        assert runtime.events == ["locked", "active"]
+        assert runtime.candidate is None
+        assert repository.measure_intent_records().records == ()
     finally:
         repository.close()
 
