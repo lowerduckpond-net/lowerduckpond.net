@@ -551,6 +551,45 @@ def test_retirement_writer_requires_current_authority_but_reader_accepts_legacy(
     assert reread.document == intent
 
 
+def test_legacy_retirement_intent_can_advance_during_recovery(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    intent = _fixture("archive-retirement-intent.json")
+    del intent["compatibilityVersion"]
+    del intent["archiveRecord"]
+    intent["phase"] = "prepared"
+    path = StateRecordPath.archive_retirement_intent(_ARCHIVE_RETIREMENT_INTENT_ID)
+    _write_record(root, path, intent)
+
+    with _repository(root) as repository:
+        current = repository.read(path)
+        advanced = current.document
+        advanced["phase"] = "state-committed"
+        committed = repository.compare_and_swap(path, current.revision, advanced)
+        advanced = committed.document
+        advanced["phase"] = "purged"
+        purged = repository.compare_and_swap(path, committed.revision, advanced)
+
+    assert purged.document["phase"] == "purged"
+    assert "compatibilityVersion" not in purged.document
+    assert "archiveRecord" not in purged.document
+
+
+def test_current_retirement_intent_cannot_downgrade_during_recovery(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    intent = _fixture("archive-retirement-intent.json")
+    path = StateRecordPath.archive_retirement_intent(_ARCHIVE_RETIREMENT_INTENT_ID)
+
+    with _repository(root) as repository:
+        current = repository.create_immutable(path, intent)
+        downgraded = current.document
+        del downgraded["compatibilityVersion"]
+        del downgraded["archiveRecord"]
+        downgraded["phase"] = "purged"
+        with pytest.raises(StateRecordError, match="current authority"):
+            repository.compare_and_swap(path, current.revision, downgraded)
+        assert repository.read(path).document == intent
+
+
 def test_publication_transaction_holds_publication_before_tenant_state(
     tmp_path: Path,
 ) -> None:

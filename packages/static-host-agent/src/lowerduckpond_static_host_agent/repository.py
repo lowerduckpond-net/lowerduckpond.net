@@ -649,7 +649,7 @@ class StateRepository:
         *,
         blocking: bool = False,
     ) -> StoredContract:
-        candidate = self._encode(path, document)
+        candidate = self._encode_new(path, document)
         with self.transaction(mode=LockMode.EXCLUSIVE, blocking=blocking) as transaction:
             return transaction._create_immutable_bytes(path, candidate)
 
@@ -829,9 +829,16 @@ class StateRepository:
         candidate = deepcopy(document)
         validate_contract(candidate, expected_kind=path.contract_kind)
         path.validate_binding(candidate)
+        return canonical_json_bytes(candidate)
+
+    def _encode_new(self, path: StateRecordPath, document: dict[str, object]) -> bytes:
+        """Encode a newly created record under current writer requirements."""
+
+        candidate = deepcopy(document)
+        encoded = self._encode(path, candidate)
         _validate_new_result_shape(path.name, candidate)
         _validate_new_archive_retirement_shape(path.name, candidate)
-        return canonical_json_bytes(candidate)
+        return encoded
 
     def _require_open(self) -> None:
         if self._closed:
@@ -1063,7 +1070,7 @@ class _StateTransaction:
         document: dict[str, object],
     ) -> StoredContract:
         self._require_exclusive()
-        candidate = self._repository._encode(path, document)
+        candidate = self._repository._encode_new(path, document)
         return self._create_immutable_bytes(path, candidate)
 
     def ensure_create_tenant_namespace(
@@ -1422,7 +1429,7 @@ class _StateTransaction:
         path: StateRecordPath,
         document: dict[str, object],
     ) -> StoredContract:
-        candidate = self._repository._encode(path, document)
+        candidate = self._repository._encode_new(path, document)
         try:
             current = self._repository._read_locked(path)
         except FileNotFoundError:
@@ -1756,6 +1763,16 @@ class _StateTransaction:
         current = self._repository._read_locked(path)
         if current.revision != expected_revision:
             raise StateConflictError("authoritative state changed before commit")
+        if (
+            path.name is _StateRecordName.ARCHIVE_RETIREMENT_INTENT
+            and current.document.get("compatibilityVersion") == "static-retirement-v2"
+        ):
+            candidate_document = decode_contract(
+                candidate,
+                expected_kind=ContractKind.ARCHIVE_RETIREMENT_INTENT,
+                maximum_raw_bytes=MAX_CANONICAL_BYTES,
+            )
+            _validate_new_archive_retirement_shape(path.name, candidate_document)
         if path.name is _StateRecordName.AUTHORIZATION_JOB:
             candidate_document = decode_contract(
                 candidate,
