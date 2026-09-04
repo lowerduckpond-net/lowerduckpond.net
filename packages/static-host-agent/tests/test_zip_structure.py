@@ -29,7 +29,9 @@ from lowerduckpond_static_host_agent import (
     ZipLimits,
     ZipStructure,
     ZipStructureError,
+    deployment_zip_release_tree_digest,
     inspect_deployment_zip,
+    measure_release_tree,
 )
 from lowerduckpond_static_host_agent import (
     extract_deployment_zip as _extract_deployment_zip,
@@ -283,6 +285,33 @@ def test_accepts_bounded_stored_and_deflated_members(tmp_path: Path) -> None:
         ZipEntryType.REGULAR_FILE,
     ]
     assert [member.compression_method for member in structure.members] == [_STORED, _DEFLATE]
+
+
+def test_direct_release_digest_matches_the_extracted_release_tree(tmp_path: Path) -> None:
+    data = _archive(
+        _MemberSpec(name=b"index.html", content=b"home"),
+        _MemberSpec(
+            name=b"nested/content.txt",
+            content=b"compressed content" * 8,
+            method=_DEFLATE,
+        ),
+    )
+    parent, _extraction = _extract(tmp_path, data)
+    source = tmp_path / "deployment.zip"
+    direct = deployment_zip_release_tree_digest(source, expected_owner=_OWNER)
+    lock_root = tmp_path / ".publication-locks"
+    lock_root.mkdir(mode=0o700)
+    with (
+        LockManager.initialize(lock_root, expected_owner=_OWNER) as manager,
+        manager.acquire(LockName.PUBLICATION),
+    ):
+        extracted = measure_release_tree(
+            parent / "candidate",
+            lock_manager=manager,
+            expected_owner=_OWNER,
+        ).digest
+
+    assert direct == extracted
 
 
 def test_explicit_directory_can_merge_with_its_implicit_parent(tmp_path: Path) -> None:

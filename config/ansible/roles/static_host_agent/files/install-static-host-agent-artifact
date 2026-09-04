@@ -1,9 +1,12 @@
 #!/usr/bin/python3 -I
 from __future__ import annotations
 
+import errno
+import fcntl
 import hashlib
 import os
 import pathlib
+import re
 import secrets
 import shutil
 import stat
@@ -11,9 +14,14 @@ import subprocess
 import sys
 import tarfile
 
-ARGUMENT_COUNT = 5
+ARGUMENT_COUNT = 6
 DIGEST_LENGTH = 64
 COPY_BUFFER_SIZE = 1024 * 1024
+SELECTION_LOCK_NAME = "selection.lock"
+SELECTION_LOCK_MODE = 0o600
+INTENT_RECORD_MODE = 0o600
+INTENT_SCAN_LIMIT = 3
+INTENT_TEMPORARY_PATTERN = re.compile(r"\.ldp-state-[0-9a-f]{32}", flags=re.ASCII)
 
 
 def fail(message: str) -> None:
@@ -140,18 +148,22 @@ def discard_staging(path: pathlib.Path) -> None:
     shutil.rmtree(path)
 
 
-def select_current(install_root: pathlib.Path, destination: pathlib.Path) -> bool:
+def selected_destination(install_root: pathlib.Path) -> pathlib.Path | None:
     current = install_root / "current"
     if (current.exists() or current.is_symlink()) and not current.is_symlink():
         fail("host-agent current selector is not a symbolic link")
     try:
-        selected = current.resolve(strict=True)
+        return current.resolve(strict=True)
     except FileNotFoundError:
-        selected = None
+        return None
     except RuntimeError:
-        selected = None
-    if selected == destination:
+        return None
+
+
+def select_current(install_root: pathlib.Path, destination: pathlib.Path) -> bool:
+    if selected_destination(install_root) == destination:
         return False
+    current = install_root / "current"
     temporary = install_root / f".current-{secrets.token_hex(8)}"
     temporary.symlink_to(destination, target_is_directory=True)
     temporary.replace(current)
@@ -159,21 +171,125 @@ def select_current(install_root: pathlib.Path, destination: pathlib.Path) -> boo
     return True
 
 
-def main() -> None:
+def open_selection_lock(install_root: pathlib.Path) -> int:
+    try:
+        descriptor = os.open(
+            install_root / SELECTION_LOCK_NAME,
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        )
+    except OSError as error:
+        fail(f"host-agent selection lock is unavailable: {error.strerror}")
+    metadata = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or stat.S_IMODE(metadata.st_mode) != SELECTION_LOCK_MODE
+        or metadata.st_uid != os.geteuid()
+        or metadata.st_gid != os.getegid()
+        or metadata.st_nlink != 1
+        or metadata.st_size != 0
+    ):
+        os.close(descriptor)
+        fail("host-agent selection lock metadata is unsafe")
+    return descriptor
+
+
+def require_safe_intent_temporary(descriptor: int, name: str) -> None:
+    if INTENT_TEMPORARY_PATTERN.fullmatch(name) is None:
+        fail("reserved intent temporary name has an invalid shape")
+    metadata = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_uid != os.geteuid()
+        or stat.S_IMODE(metadata.st_mode) != INTENT_RECORD_MODE
+        or metadata.st_nlink != 1
+    ):
+        fail("reserved intent temporary has an unsafe inode shape")
+
+
+def require_no_active_intents(state_root: pathlib.Path) -> None:
+    """Refuse an in-place schema upgrade until the old agent has recovered."""
+
+    try:
+        state_metadata = state_root.lstat()
+    except FileNotFoundError:
+        return
+    if not stat.S_ISDIR(state_metadata.st_mode) or stat.S_ISLNK(state_metadata.st_mode):
+        fail("static state root is not a directory")
+    intent_root = state_root / "intents"
+    try:
+        intent_metadata = intent_root.lstat()
+    except FileNotFoundError:
+        fail("static state root has no intent store")
+    if not stat.S_ISDIR(intent_metadata.st_mode) or stat.S_ISLNK(intent_metadata.st_mode):
+        fail("static intent store is not a directory")
+    descriptor = os.open(
+        intent_root,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+    )
+    try:
+        temporary_names: list[str] = []
+        has_active_intent = False
+        with os.scandir(descriptor) as entries:
+            for entry_count, entry in enumerate(entries, start=1):
+                if entry_count > INTENT_SCAN_LIMIT:
+                    fail("static intent store exceeds its recovery ceiling")
+                if not entry.name.startswith(".ldp-state-"):
+                    has_active_intent = True
+                    continue
+                require_safe_intent_temporary(descriptor, entry.name)
+                temporary_names.append(entry.name)
+        for name in sorted(temporary_names):
+            os.unlink(name, dir_fd=descriptor)
+        if temporary_names:
+            os.fsync(descriptor)
+        if has_active_intent:
+            fail("active lifecycle intent blocks host-agent schema upgrade")
+    finally:
+        os.close(descriptor)
+
+
+def select_destination(
+    install_root: pathlib.Path,
+    destination: pathlib.Path,
+    state_root: pathlib.Path,
+) -> bool:
+    selection_lock = open_selection_lock(install_root)
+    try:
+        fcntl.flock(selection_lock, fcntl.LOCK_EX)
+        if selected_destination(install_root) == destination:
+            return False
+        require_no_active_intents(state_root)
+        return select_current(install_root, destination)
+    finally:
+        fcntl.flock(selection_lock, fcntl.LOCK_UN)
+        os.close(selection_lock)
+
+
+def parse_arguments() -> tuple[pathlib.Path, str, pathlib.Path, pathlib.Path, pathlib.Path]:
     if len(sys.argv) != ARGUMENT_COUNT:
-        fail("usage: install-static-host-agent-artifact ARCHIVE SHA256 INSTALL_ROOT VERIFIER")
+        fail(
+            "usage: install-static-host-agent-artifact "
+            "ARCHIVE SHA256 INSTALL_ROOT VERIFIER STATE_ROOT"
+        )
     archive_path = pathlib.Path(sys.argv[1])
     expected_digest = sys.argv[2]
     install_root = pathlib.Path(sys.argv[3])
     verifier = pathlib.Path(sys.argv[4])
+    state_root = pathlib.Path(sys.argv[5])
     if (
         len(expected_digest) != DIGEST_LENGTH
         or any(character not in "0123456789abcdef" for character in expected_digest)
         or not archive_path.is_absolute()
         or not install_root.is_absolute()
         or not verifier.is_absolute()
+        or not state_root.is_absolute()
     ):
         fail("host-agent installer arguments are invalid")
+    return archive_path, expected_digest, install_root, verifier, state_root
+
+
+def main() -> None:
+    archive_path, expected_digest, install_root, verifier, state_root = parse_arguments()
     if digest_file(archive_path) != expected_digest:
         fail("host-agent archive digest does not match its pinned identity")
 
@@ -196,7 +312,9 @@ def main() -> None:
             sync_tree(staged_artifact)
             try:
                 staged_artifact.rename(destination)
-            except FileExistsError:
+            except OSError as error:
+                if error.errno not in {errno.EEXIST, errno.ENOTEMPTY}:
+                    raise
                 verify(verifier, destination)
             else:
                 sync_directory(install_root)
@@ -205,7 +323,7 @@ def main() -> None:
             if staging.exists() or staging.is_symlink():
                 discard_staging(staging)
 
-    if select_current(install_root, destination):
+    if select_destination(install_root, destination, state_root):
         changed = True
     print("changed" if changed else "unchanged")
 

@@ -70,6 +70,18 @@ def test_append_builds_one_exact_canonical_hash_chain(tmp_path: Path) -> None:
         snapshot = repository.inspect_audit_correlation(first["correlationId"])
         second_snapshot = repository.inspect_audit_correlation(second["correlationId"])
         absent = repository.inspect_audit_correlation("0198d17f-6f4a-7000-8000-ffffffffffff")
+        transitions = repository.inspect_later_audit_transitions(
+            first["correlationId"],
+            maximum_transitions=1,
+        )
+        second_transitions = repository.inspect_later_audit_transitions(
+            second["correlationId"],
+            maximum_transitions=1,
+        )
+        absent_transitions = repository.inspect_later_audit_transitions(
+            "0198d17f-6f4a-7000-8000-ffffffffffff",
+            maximum_transitions=1,
+        )
 
     assert first_result.entry_digest == first_digest
     assert second_result.state == state
@@ -80,15 +92,60 @@ def test_append_builds_one_exact_canonical_hash_chain(tmp_path: Path) -> None:
     assert snapshot.entry == first
     assert snapshot.previous_tenant_state_transition is None
     assert snapshot.has_later_tenant_state_transition is True
+    assert len(transitions) == 1
+    assert transitions[0].sequence == 1
+    assert transitions[0].correlation_id == second["correlationId"]
+    assert transitions[0].tenant_id == first["tenantId"]
+    assert transitions[0].operation == "archive"
+    assert transitions[0].result_digest == second["resultDigest"]
     assert second_snapshot.previous_tenant_state_transition == first
     assert second_snapshot.has_later_tenant_state_transition is False
+    assert second_transitions == ()
     assert absent.state == state
     assert absent.entry is None
     assert absent.previous_tenant_state_transition is None
     assert absent.has_later_tenant_state_transition is False
+    assert absent_transitions == ()
     assert (root / "audit/segment-00000000000000000000.jsonl").read_bytes() == (
         canonical_json_bytes(first) + canonical_json_bytes(second)
     )
+
+
+def test_later_transition_projection_fails_closed_at_its_result_bound(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    first = _entry(0, None)
+    second = _entry(1, audit_entry_digest(first).to_dict())
+
+    with _repository(root) as repository:
+        repository.append_audit(first)
+        repository.append_audit(second)
+        with pytest.raises(AuditCapacityError, match="exceed their result bound"):
+            repository.inspect_later_audit_transitions(
+                first["correlationId"],
+                maximum_transitions=0,
+            )
+
+
+def test_later_transition_projection_rejects_duplicate_correlations(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    first = _entry(0, None)
+    second = _entry(1, audit_entry_digest(first).to_dict())
+    third = _entry(2, audit_entry_digest(second).to_dict())
+    third["correlationId"] = second["correlationId"]
+
+    with _repository(root) as repository:
+        repository.append_audit(first)
+        repository.append_audit(second)
+        repository.append_audit(third)
+        with pytest.raises(AuditError, match="correlation appears multiple times"):
+            repository.inspect_later_audit_transitions(
+                first["correlationId"],
+                maximum_transitions=2,
+            )
 
 
 def test_correlation_lookup_rejects_duplicate_entries(tmp_path: Path) -> None:

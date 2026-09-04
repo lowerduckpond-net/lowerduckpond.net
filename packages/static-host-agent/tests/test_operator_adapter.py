@@ -15,6 +15,7 @@ from lowerduckpond_static_contracts import (
     FrameKind,
     canonical_json_bytes,
     encode_header,
+    manifest_digest,
 )
 from lowerduckpond_static_host_agent import (
     ArtifactIntake,
@@ -102,6 +103,7 @@ def _state_root(tmp_path: Path) -> Path:
         ("authorization", "correlations"),
         ("authorization", "jobs"),
         ("authorization", "results"),
+        ("audit",),
         ("intents",),
         ("intake",),
         ("locks",),
@@ -164,6 +166,45 @@ def _adapter(
         intake,
         repository,
     )
+
+
+def _deploy_intent(correlation_id: str, artifact_sha256: str) -> dict[str, object]:
+    source = _fixture("site.json")
+    source_digest = manifest_digest(source).to_dict()
+    candidate = json.loads(json.dumps(source))
+    candidate_spec = candidate["spec"]
+    assert type(candidate_spec) is dict
+    candidate_deployment = candidate_spec["desiredDeployment"]
+    assert type(candidate_deployment) is dict
+    candidate_deployment["id"] = "0198d17f-6f4a-7000-8000-000000000005"
+    candidate_deployment["archiveSha256"] = artifact_sha256
+    candidate_digest = manifest_digest(candidate).to_dict()
+    source_observed = _fixture("tenant-observed-state.json")
+    source_observed["desiredManifestDigest"] = source_digest
+    candidate_observed = json.loads(json.dumps(source_observed))
+    candidate_observed["desiredManifestDigest"] = candidate_digest
+    candidate_observed["activeDeploymentId"] = candidate_deployment["id"]
+    candidate_observed["runtimeGenerationId"] = "0198d17f-6f4a-7000-8000-000000000006"
+    intent = _fixture("transaction-intent.json")
+    intent.update(
+        {
+            "correlationId": correlation_id,
+            "operation": "deploy",
+            "sourceManifest": source,
+            "sourceManifestDigest": source_digest,
+            "candidateManifest": candidate,
+            "candidateManifestDigest": candidate_digest,
+            "lifecycleRecovery": {
+                "sourceObservedState": source_observed,
+                "sourceRuntimeGenerationId": "0198d17f-6f4a-7000-8000-000000000004",
+                "sourceRouteSet": "both",
+                "candidateObservedState": candidate_observed,
+                "candidateRuntimeGenerationId": "0198d17f-6f4a-7000-8000-000000000006",
+                "candidateRouteSet": "both",
+            },
+        }
+    )
+    return intent
 
 
 def test_disabled_adapter_stops_before_artifact_or_state_allocation(tmp_path: Path) -> None:
@@ -291,6 +332,81 @@ def test_adapter_accepts_an_exact_artifact_retry_without_a_second_slot(
     assert [result.created for result in issued] == [True, False]
     assert issued[0].job_id == issued[1].job_id
     assert [entry.name for entry in (root / "intake").iterdir()] == [f"{correlation}.artifact"]
+
+
+def test_exact_artifact_retry_preserves_bytes_for_result_bearing_recovery(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), _fixture("site.json"))
+    _write(
+        root,
+        StateRecordPath.tenant_deployment(_TENANT_ID, _DEPLOYMENT_ID),
+        _fixture("deployment-record.json"),
+    )
+    artifact = b"recoverable payload"
+    correlation = "0198d17f-6f4a-7000-8000-000000000003"
+    artifact_sha256 = hashlib.sha256(artifact).hexdigest()
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "deploy",
+        "correlationId": correlation,
+        "tenantId": _TENANT_ID,
+        "artifact": {"size": len(artifact), "sha256": artifact_sha256},
+    }
+
+    first_fd, _ = _pipe(_frame(request, artifact))
+    adapter, intake, repository = _adapter(root, first_fd, gate=_OpenGate())
+    try:
+        issued = adapter.receive(operator_principal="operator@example.test")
+    finally:
+        intake.close()
+        repository.close()
+        os.close(first_fd)
+
+    with StateRepository(root, expected_owner=os.geteuid()) as repository:
+        job = repository.read(StateRecordPath.authorization_job(issued.job_id))
+        claimed = job.document
+        claimed["phase"] = "claimed"
+        repository.compare_and_swap(
+            StateRecordPath.authorization_job(issued.job_id),
+            job.revision,
+            claimed,
+        )
+        intent = _deploy_intent(correlation, artifact_sha256)
+        repository.create_immutable(
+            StateRecordPath.transaction_intent(intent["intentId"]),
+            intent,
+        )
+        result: dict[str, object] = {
+            "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+            "kind": "OperationResult",
+            "provenance": {"kind": "authorization-job", "jobId": issued.job_id},
+            "correlationId": correlation,
+            "operation": "deploy",
+            "status": "failed",
+            "errorCode": "state_drift",
+            "tenantId": _TENANT_ID,
+        }
+        repository.create_immutable(
+            StateRecordPath.authorization_result(issued.job_id),
+            result,
+        )
+
+    retry_fd, _ = _pipe(_frame(request, artifact))
+    adapter, intake, repository = _adapter(root, retry_fd, gate=_OpenGate())
+    try:
+        retry = adapter.receive(operator_principal="operator@example.test")
+    finally:
+        intake.close()
+        repository.close()
+        os.close(retry_fd)
+
+    assert retry.created is False
+    assert retry.job_id == issued.job_id
+    assert (root / "intake" / f"{correlation}.artifact").read_bytes() == artifact
 
 
 def test_exact_artifact_retry_repairs_a_job_committed_before_lease_commit(

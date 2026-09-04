@@ -33,6 +33,45 @@
       - static_host_agent_controller_artifact.stat.checksum == static_host_agent_artifact_sha256
     fail_msg: The controller host-agent artifact does not match its pinned SHA-256.
 
+- name: Create the versioned host-agent installation root
+  ansible.builtin.file:
+    path: "{{ static_host_agent_install_root }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Inspect the fixed host-agent selection lock
+  ansible.builtin.stat:
+    path: "{{ static_host_agent_install_root }}/selection.lock"
+    follow: false
+  register: static_host_agent_selection_lock
+
+- name: Refuse an unsafe host-agent selection lock
+  ansible.builtin.assert:
+    that:
+      - >-
+        not static_host_agent_selection_lock.stat.exists or
+        (static_host_agent_selection_lock.stat.isreg and
+         not static_host_agent_selection_lock.stat.islnk and
+         static_host_agent_selection_lock.stat.uid == 0 and
+         static_host_agent_selection_lock.stat.gid == 0 and
+         static_host_agent_selection_lock.stat.mode == '0600' and
+         static_host_agent_selection_lock.stat.nlink == 1 and
+         static_host_agent_selection_lock.stat.size == 0)
+    quiet: true
+
+- name: Create the fixed host-agent selection lock
+  ansible.builtin.file:
+    path: "{{ static_host_agent_install_root }}/selection.lock"
+    state: touch
+    owner: root
+    group: root
+    mode: "0600"
+    access_time: preserve
+    modification_time: preserve
+  when: not static_host_agent_selection_lock.stat.exists
+
 - name: Install host-agent artifact commands
   ansible.builtin.copy:
     src: "{{ item }}"
@@ -47,13 +86,36 @@
     - execute-authorized-job
     - reconcile-authorized-jobs
 
-- name: Create the versioned host-agent installation root
-  ansible.builtin.file:
-    path: "{{ static_host_agent_install_root }}"
-    state: directory
-    owner: root
-    group: root
-    mode: "0755"
+- name: Wait for pre-lock static host-agent processes to finish
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - list-units
+      - --state=active,activating,deactivating,reloading,refreshing,maintenance
+      - --plain
+      - --no-legend
+      - lowerduckpond-static-reconcile.service
+      - lowerduckpond-static-worker@*.service
+  register: static_host_agent_active_legacy_processes
+  changed_when: false
+  until: static_host_agent_active_legacy_processes.stdout | trim | length == 0
+  retries: 61
+  delay: 5
+
+- name: Wait for pre-lock static operator processes to finish
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/pgrep
+      - --full
+      - --
+      - >-
+        [s]tatic-operator-adapter|[s]tatic-request-decoder
+  register: static_host_agent_active_legacy_operator_processes
+  changed_when: false
+  failed_when: static_host_agent_active_legacy_operator_processes.rc not in [0, 1]
+  until: static_host_agent_active_legacy_operator_processes.rc == 1
+  retries: 61
+  delay: 5
 
 - name: Create the protected host-agent artifact cache
   ansible.builtin.file:
@@ -73,6 +135,27 @@
     group: root
     mode: "0400"
 
+- name: Create the root-owned static state layout before artifact selection
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  loop:
+    - "{{ static_host_agent_state_root }}"
+    - "{{ static_host_agent_state_root }}/platform"
+    - "{{ static_host_agent_state_root }}/tenants"
+    - "{{ static_host_agent_state_root }}/authorization"
+    - "{{ static_host_agent_state_root }}/authorization/jobs"
+    - "{{ static_host_agent_state_root }}/authorization/results"
+    - "{{ static_host_agent_state_root }}/authorization/correlations"
+    - "{{ static_host_agent_state_root }}/intents"
+    - "{{ static_host_agent_state_root }}/intake"
+    - "{{ static_host_agent_state_root }}/exports"
+    - "{{ static_host_agent_state_root }}/audit"
+    - "{{ static_host_agent_state_root }}/locks"
+
 - name: Install and atomically select the pinned host-agent artifact
   ansible.builtin.command:
     argv:
@@ -83,6 +166,7 @@
       - "{{ static_host_agent_artifact_sha256 }}"
       - "{{ static_host_agent_install_root }}"
       - /usr/local/libexec/lowerduckpond/verify-static-host-agent-artifact
+      - "{{ static_host_agent_state_root }}"
   register: static_host_agent_installation
   changed_when: static_host_agent_installation.stdout | trim == 'changed'
 
@@ -212,27 +296,6 @@
     label: "{{ item.item }}"
   when: item.stat.exists
   changed_when: true
-
-- name: Create the root-owned static state layout
-  ansible.builtin.file:
-    path: "{{ item }}"
-    state: directory
-    owner: root
-    group: root
-    mode: "0700"
-  loop:
-    - "{{ static_host_agent_state_root }}"
-    - "{{ static_host_agent_state_root }}/platform"
-    - "{{ static_host_agent_state_root }}/tenants"
-    - "{{ static_host_agent_state_root }}/authorization"
-    - "{{ static_host_agent_state_root }}/authorization/jobs"
-    - "{{ static_host_agent_state_root }}/authorization/results"
-    - "{{ static_host_agent_state_root }}/authorization/correlations"
-    - "{{ static_host_agent_state_root }}/intents"
-    - "{{ static_host_agent_state_root }}/intake"
-    - "{{ static_host_agent_state_root }}/exports"
-    - "{{ static_host_agent_state_root }}/audit"
-    - "{{ static_host_agent_state_root }}/locks"
 
 - name: Inspect the fixed static state lock inodes
   ansible.builtin.stat:

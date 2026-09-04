@@ -158,6 +158,7 @@ def test_generation_migration_is_stopped_masked_and_defaults_on() -> None:
     assert tasks.index(reset_limits) < tasks.index("Enable and start immutable Caddy")
     assert "Remove the retired mutable Caddy configuration" in site
     assert "--check" in tasks
+    assert site.index("- role: static_operator") < site.index("- role: static_host_agent")
     assert site.index("- role: static_host_agent") < site.index("- role: caddy")
 
     host_agent_tasks = (_ROOT / "config/ansible/roles/static_host_agent/tasks/main.yml").read_text(
@@ -165,6 +166,23 @@ def test_generation_migration_is_stopped_masked_and_defaults_on() -> None:
     )
     assert "Create inert Caddy generation storage" in host_agent_tasks
     assert "static_host_agent_caddy_generation_root" in host_agent_tasks
+    state_layout = "Create the root-owned static state layout before artifact selection"
+    artifact_selection = "Install and atomically select the pinned host-agent artifact"
+    assert state_layout in host_agent_tasks
+    assert host_agent_tasks.index(state_layout) < host_agent_tasks.index(artifact_selection)
+
+
+def test_host_agent_upgrade_waits_for_every_live_legacy_unit_state() -> None:
+    tasks = (_ROOT / "config/ansible/roles/static_host_agent/tasks/main.yml").read_text(
+        encoding="utf-8"
+    )
+
+    wait_start = tasks.index("Wait for pre-lock static host-agent processes to finish")
+    wait_end = tasks.index("Create the protected host-agent artifact cache", wait_start)
+    wait = tasks[wait_start:wait_end]
+    assert "--state=active,activating,deactivating,reloading,refreshing,maintenance" in wait
+    assert "lowerduckpond-static-reconcile.service" in wait
+    assert "lowerduckpond-static-worker@*.service" in wait
 
 
 def test_frozen_wrappers_enter_only_the_reviewed_host_agent_entrypoints() -> None:

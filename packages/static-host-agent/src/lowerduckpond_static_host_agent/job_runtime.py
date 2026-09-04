@@ -22,11 +22,20 @@ from lowerduckpond_static_contracts import (
 )
 
 from lowerduckpond_static_host_agent.correlations import CorrelationAdmission
-from lowerduckpond_static_host_agent.execution import ExecutionError, JobHandoff
+from lowerduckpond_static_host_agent.execution import (
+    ExecutionError,
+    JobHandoff,
+    validate_result_lifecycle_authority,
+)
 from lowerduckpond_static_host_agent.intake import ArtifactIntake
 from lowerduckpond_static_host_agent.issuance import IssuedAuthorization, VerifiedArtifact
-from lowerduckpond_static_host_agent.locks import StateBusyError
-from lowerduckpond_static_host_agent.repository import StateRecordPath, StateRepository
+from lowerduckpond_static_host_agent.locks import LockMode, StateBusyError
+from lowerduckpond_static_host_agent.repository import (
+    StateRecordPath,
+    StateRepository,
+    StoredContract,
+)
+from lowerduckpond_static_host_agent.state_inventory import IntentRecordInventory
 
 _SYSTEMCTL: Final = Path("/usr/bin/systemctl")
 _WORKER_UNIT: Final = "lowerduckpond-static-worker@{job_id}.service"
@@ -62,6 +71,25 @@ class _AuthorizationReceiver(Protocol):
     ) -> IssuedAuthorization: ...
 
 
+class _ResultHandoff(Protocol):
+    def await_completion(self, job_id: str, *, timeout_seconds: float) -> None: ...
+
+
+class _StartupTransaction(Protocol):
+    def read(self, path: StateRecordPath) -> StoredContract: ...
+
+    def measure_intent_records(self) -> IntentRecordInventory: ...
+
+    def read_intent(self, intent_id: object) -> tuple[StateRecordPath, StoredContract]: ...
+
+    def select_recovery_batch(
+        self,
+        job_ids: tuple[str, ...],
+        *,
+        limit: int,
+    ) -> tuple[str, ...]: ...
+
+
 def _sleep(seconds: float) -> None:
     time.sleep(seconds)
 
@@ -75,15 +103,23 @@ class SystemdJobHandoff:
         self._executable = executable
 
     def enqueue(self, job_id: str) -> None:
+        self._start(job_id, wait=False, timeout_seconds=_HANDOFF_SECONDS)
+
+    def await_completion(self, job_id: str, *, timeout_seconds: float) -> None:
+        """Start or join one worker and wait for executor validation to finish."""
+
+        if timeout_seconds <= 0:
+            raise RuntimeBoundaryError("authorized job completion timed out")
+        self._start(job_id, wait=True, timeout_seconds=timeout_seconds)
+
+    def _start(self, job_id: str, *, wait: bool, timeout_seconds: float) -> None:
         canonical_id = validate_uuid7(job_id)
+        arguments = [os.fspath(self._executable), "start"]
+        arguments.append("--wait" if wait else "--no-block")
+        arguments.append(_WORKER_UNIT.format(job_id=canonical_id))
         try:
             completed = subprocess.run(  # noqa: S603
-                [
-                    os.fspath(self._executable),
-                    "start",
-                    "--no-block",
-                    _WORKER_UNIT.format(job_id=canonical_id),
-                ],
+                arguments,
                 check=False,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
@@ -91,7 +127,7 @@ class SystemdJobHandoff:
                 close_fds=True,
                 cwd="/",
                 env={"LANG": "C.UTF-8"},
-                timeout=_HANDOFF_SECONDS,
+                timeout=timeout_seconds,
             )
         except (OSError, subprocess.TimeoutExpired) as error:
             raise RuntimeBoundaryError("authorized job handoff failed") from error
@@ -105,7 +141,7 @@ class ResultWaiter:
     def __init__(
         self,
         repository: StateRepository,
-        handoff: JobHandoff,
+        handoff: _ResultHandoff,
         *,
         clock: MonotonicClock = time.monotonic,
         sleep: Sleep = _sleep,
@@ -122,17 +158,71 @@ class ResultWaiter:
     def retrieve(self, issued: IssuedAuthorization) -> dict[str, object]:
         """Return an existing result or enqueue and await the exact accepted job."""
 
-        result = self._read(issued.job_id)
-        if result is None:
-            self._handoff.enqueue(issued.job_id)
         deadline = self._clock() + self._total_seconds
-        while result is None:
-            if self._clock() >= deadline:
-                raise RuntimeBoundaryError("authorized job result timed out")
-            self._sleep(_RESULT_POLL_SECONDS)
-            result = self._read(issued.job_id)
+        existing = self._read(issued.job_id)
+        if existing is not None:
+            _validate_result_for_job(issued.document, existing)
+            self._validate_lifecycle_result(issued, existing, deadline=deadline)
+        remaining = deadline - self._clock()
+        if remaining <= 0:
+            raise RuntimeBoundaryError("authorized job completion timed out")
+        self._handoff.await_completion(issued.job_id, timeout_seconds=remaining)
+        result = self._read_until(issued.job_id, deadline=deadline)
+        if result is None:
+            raise RuntimeBoundaryError("authorized job completed without a durable result")
+        if existing is not None and result != existing:
+            raise RuntimeBoundaryError("authorized job result changed during completion")
         _validate_result_for_job(issued.document, result)
+        if self._validate_lifecycle_result(issued, result, deadline=deadline):
+            raise RuntimeBoundaryError(
+                "authorized job completed with incomplete lifecycle authority"
+            )
         return result
+
+    def _read_until(
+        self,
+        job_id: str,
+        *,
+        deadline: float,
+    ) -> dict[str, object] | None:
+        """Retry a result read through post-worker lock contention."""
+
+        while True:
+            result = self._read(job_id)
+            if result is not None:
+                return result
+            if self._clock() >= deadline:
+                return None
+            self._sleep(_RESULT_POLL_SECONDS)
+
+    def _validate_lifecycle_result(
+        self,
+        issued: IssuedAuthorization,
+        result: dict[str, object],
+        *,
+        deadline: float,
+    ) -> bool:
+        while True:
+            try:
+                with self._repository.transaction(
+                    mode=LockMode.EXCLUSIVE,
+                    blocking=False,
+                ) as transaction:
+                    return validate_result_lifecycle_authority(
+                        transaction,
+                        issued.document,
+                        result,
+                    )
+            except StateBusyError:
+                if self._clock() >= deadline:
+                    raise RuntimeBoundaryError(
+                        "authorized job lifecycle validation timed out"
+                    ) from None
+                self._sleep(_RESULT_POLL_SECONDS)
+            except ExecutionError as error:
+                raise RuntimeBoundaryError(
+                    "authorized job result disagrees with lifecycle authority"
+                ) from error
 
     def _read(self, job_id: str) -> dict[str, object] | None:
         try:
@@ -219,33 +309,50 @@ class StartupReconciler:
 
         def load_authority() -> tuple[dict[str, VerifiedArtifact], set[str]]:
             nonlocal batch, repaired_pairs
-            repaired = CorrelationAdmission(self._repository).reconcile(blocking=True)
-            repaired_pairs = repaired.repaired_records
-            authorized: dict[str, VerifiedArtifact] = {}
-            terminal: set[str] = set()
-            for stored in repaired.jobs:
-                job = stored.document
-                job_id = validate_uuid7(job["jobId"])
-                correlation_id = _correlation_id(job)
-                filename = f"{correlation_id}.artifact"
-                result_exists = self._result_exists(job_id)
-                artifact = _artifact_binding(job)
-                if result_exists or job["phase"] in {"completed", "failed"}:
-                    terminal.add(filename)
-                elif artifact is not None:
-                    authorized[filename] = artifact
-                if result_exists:
-                    if job["phase"] not in {"completed", "failed"}:
-                        queued.append(job_id)
-                elif job["phase"] in {"pending", "claimed"}:
-                    queued.append(job_id)
-                else:
-                    raise ExecutionError("terminal authorization job has no immutable result")
-            batch = self._repository.select_recovery_batch(
-                tuple(queued),
-                limit=_RECOVERY_HANDOFF_LIMIT,
+            with self._repository.transaction(
+                mode=LockMode.EXCLUSIVE,
                 blocking=True,
-            )
+            ) as transaction:
+                repaired = CorrelationAdmission(self._repository).reconcile_transaction(transaction)
+                repaired_pairs = repaired.repaired_records
+                active_intent_jobs = self._active_intent_job_ids(transaction, repaired.jobs)
+                authorized: dict[str, VerifiedArtifact] = {}
+                terminal: set[str] = set()
+                for stored in repaired.jobs:
+                    job = stored.document
+                    job_id = validate_uuid7(job["jobId"])
+                    correlation_id = _correlation_id(job)
+                    filename = f"{correlation_id}.artifact"
+                    result_exists = self._result_exists(transaction, job_id)
+                    artifact = _artifact_binding(job)
+                    needs_lifecycle_replay = job_id in active_intent_jobs
+                    needs_terminal_validation = (
+                        job["compatibilityVersion"] == "static-job-v2"
+                        and job["executionValidated"] is False
+                    )
+                    if (
+                        (result_exists or job["phase"] in {"completed", "failed"})
+                        and not needs_lifecycle_replay
+                        and not needs_terminal_validation
+                    ):
+                        terminal.add(filename)
+                    elif artifact is not None:
+                        authorized[filename] = artifact
+                    if result_exists:
+                        if (
+                            job["phase"] not in {"completed", "failed"}
+                            or job_id in active_intent_jobs
+                            or needs_terminal_validation
+                        ):
+                            queued.append(job_id)
+                    elif job["phase"] in {"pending", "claimed"}:
+                        queued.append(job_id)
+                    else:
+                        raise ExecutionError("terminal authorization job has no immutable result")
+                batch = transaction.select_recovery_batch(
+                    tuple(queued),
+                    limit=_RECOVERY_HANDOFF_LIMIT,
+                )
             return authorized, terminal
 
         intake = self._intake.reconcile(
@@ -265,15 +372,42 @@ class StartupReconciler:
             deferred_jobs=len(queued) - len(batch),
         )
 
-    def _result_exists(self, job_id: str) -> bool:
+    @staticmethod
+    def _result_exists(transaction: _StartupTransaction, job_id: str) -> bool:
         try:
-            self._repository.read(
-                StateRecordPath.authorization_result(job_id),
-                blocking=True,
-            )
+            transaction.read(StateRecordPath.authorization_result(job_id))
         except FileNotFoundError:
             return False
         return True
+
+    @staticmethod
+    def _active_intent_job_ids(
+        transaction: _StartupTransaction,
+        jobs: tuple[StoredContract, ...],
+    ) -> set[str]:
+        jobs_by_correlation: dict[str, str] = {}
+        for stored in jobs:
+            correlation_id = _correlation_id(stored.document)
+            if correlation_id in jobs_by_correlation:
+                raise ExecutionError("authorization inventory repeats a correlation")
+            jobs_by_correlation[correlation_id] = validate_uuid7(stored.document["jobId"])
+        active: set[str] = set()
+        for identity in transaction.measure_intent_records().records:
+            _path, intent = transaction.read_intent(identity.intent_id)
+            provenance = intent.document.get("provenance")
+            if (
+                intent.document["kind"] == "ArchiveRetirementIntent"
+                and type(provenance) is dict
+                and provenance.get("kind") == "emergency-administrator"
+            ):
+                continue
+            correlation_id = validate_uuid7(intent.document["correlationId"])
+            try:
+                job_id = jobs_by_correlation[correlation_id]
+            except KeyError as error:
+                raise ExecutionError("active lifecycle intent has no authorization job") from error
+            active.add(job_id)
+        return active
 
 
 class OperatorSession:

@@ -14,6 +14,7 @@ from lowerduckpond_static_host_agent.audit import (
     AuditError,
     AuditLimits,
     AuditState,
+    AuditTransition,
 )
 from lowerduckpond_static_host_agent.caddy_admin import (
     CaddyAdminError,
@@ -151,6 +152,8 @@ from lowerduckpond_static_host_agent.execution import (
     ExecutionError,
     ExecutionOutcome,
     JobHandoff,
+    LifecycleArtifact,
+    LifecycleJobHandler,
 )
 from lowerduckpond_static_host_agent.intake import (
     AdmittedArtifact,
@@ -223,6 +226,7 @@ from lowerduckpond_static_host_agent.portable_bundle import (
     build_portable_bundle,
     import_portable_bundle,
     inspect_portable_bundle,
+    inspect_portable_bundle_descriptor,
 )
 from lowerduckpond_static_host_agent.release_tree import (
     InodeAllocation,
@@ -285,6 +289,7 @@ from lowerduckpond_static_host_agent.zip_structure import (
     ZipMember,
     ZipStructure,
     ZipStructureError,
+    deployment_zip_release_tree_digest,
     extract_deployment_zip,
     inspect_deployment_zip,
 )
@@ -342,6 +347,7 @@ __all__ = [
     "AuditError",
     "AuditLimits",
     "AuditState",
+    "AuditTransition",
     "AuthorizationExecutor",
     "AuthorizationIssuer",
     "AuthorizationRecordInventory",
@@ -408,6 +414,8 @@ __all__ = [
     "IssuanceError",
     "IssuedAuthorization",
     "JobHandoff",
+    "LifecycleArtifact",
+    "LifecycleJobHandler",
     "LifecyclePlanError",
     "LocalRequestDecoder",
     "LockManager",
@@ -489,6 +497,7 @@ __all__ = [
     "caddy_route_state_digest",
     "configured_origin_pull_policy",
     "decoder_main",
+    "deployment_zip_release_tree_digest",
     "derive_tenant_generation_payload",
     "digest_path",
     "ensure_platform_generation",
@@ -497,6 +506,7 @@ __all__ = [
     "import_portable_bundle",
     "inspect_deployment_zip",
     "inspect_portable_bundle",
+    "inspect_portable_bundle_descriptor",
     "load_caddy_configuration",
     "measure_filesystem_capacity",
     "measure_release_tree",

@@ -4,6 +4,7 @@ import json
 import shlex
 from pathlib import Path
 
+from lowerduckpond_static_contracts import result_digest
 from testinfra.host import Host
 
 BACKUP_ENVIRONMENT_MODE = 0o600
@@ -98,6 +99,7 @@ STATIC_HOST_AGENT_DIRECTORY_MODE = 0o555
 STATIC_HOST_AGENT_FILE_MODE = 0o444
 STATIC_STATE_DIRECTORY_MODE = 0o700
 STATIC_STATE_LOCK_MODE = 0o600
+STATIC_SELECTION_LOCK_MODE = 0o600
 STATIC_CONFIGURATION_MODE = 0o400
 STATIC_PUBLICATION_DISABLED_STATUS = 78
 STATIC_OPERATOR_DISABLED_STATUS = 78
@@ -165,9 +167,25 @@ def seed_static_authorization(host: Host, selected_root: str) -> str:
     result = json.loads(
         (STATIC_ACCEPTED_FIXTURES / "operation-result.json").read_text(encoding="utf-8")
     )
+    audit = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "AuditEntry",
+        "sequence": 0,
+        "previousEntryDigest": None,
+        "timestamp": job["acceptedAt"],
+        "operatorPrincipal": job["operatorPrincipal"],
+        "operation": result["operation"],
+        "tenantId": result["tenantId"],
+        "correlationId": result["correlationId"],
+        "resultDigest": result_digest(result).to_dict(),
+        "resultStatus": result["status"],
+    }
     job_id = job["jobId"]
     correlation_id = job["request"]["correlationId"]
-    documents = json.dumps({"job": job, "result": result}, separators=(",", ":"))
+    documents = json.dumps(
+        {"job": job, "result": result, "audit": audit},
+        separators=(",", ":"),
+    )
 
     seed = host.run(
         "/usr/bin/python3 -I -B -c %s",
@@ -184,6 +202,7 @@ def seed_static_authorization(host: Host, selected_root: str) -> str:
         f"StateRecordPath.authorization_job({job_id!r}), job); "
         "repository.create_immutable("
         f"StateRecordPath.authorization_result({job_id!r}), documents['result']); "
+        "repository.append_audit(documents['audit']); "
         "repository.close()",
     )
     assert seed.rc == 0, seed.stderr
@@ -902,6 +921,26 @@ def test_static_host_agent_is_hash_pinned_and_immutable(host: Host) -> None:
     )
     assert imports.rc == 0
     assert host.run(f"find {STATIC_HOST_AGENT_ROOT} -maxdepth 1 -name '.install-*'").stdout == ""
+
+
+def test_static_host_agent_selection_is_locked(host: Host) -> None:
+    selection_lock = host.file(f"{STATIC_HOST_AGENT_ROOT}/selection.lock")
+    assert selection_lock.is_file
+    assert selection_lock.user == "root"
+    assert selection_lock.group == "root"
+    assert selection_lock.mode == STATIC_SELECTION_LOCK_MODE
+    assert selection_lock.size == 0
+    for command in (
+        STATIC_JOB_EXECUTOR,
+        STATIC_JOB_RECONCILER,
+        STATIC_OPERATOR_COMMAND,
+        STATIC_OPERATOR_REQUEST_DECODER,
+    ):
+        wrapper = host.file(command)
+        assert wrapper.contains(
+            f'SELECTION_LOCK = pathlib.Path("{STATIC_HOST_AGENT_ROOT}/selection.lock")'
+        )
+        assert wrapper.contains("fcntl.LOCK_SH")
 
 
 def test_static_state_migration_is_empty_root_owned_and_private(host: Host) -> None:

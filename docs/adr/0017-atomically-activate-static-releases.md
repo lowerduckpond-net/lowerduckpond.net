@@ -235,9 +235,22 @@ ordered persistence protocol:
    file, `fsync` their directories from leaves upward, rename each temporary
    generation to its final immutable name, and `fsync` each parent directory.
    The Ansible Caddy transaction applies the same ordering to its candidate.
-2. Write the transaction intent, including previous and proposed generations,
-   to a temporary file; `fsync` it, rename it into place, and `fsync` the state
-   directory.
+2. Write the transaction intent, including the exact previous source manifest
+   and proposed candidate manifest plus their canonical digests, to a temporary
+   file; `fsync` it, rename it into place, and `fsync` the state directory. The
+   candidate must be the exact operation-specific transformation of that source;
+   recovery rejects any unrelated field change before dispatch.
+   A host-agent artifact upgrade may install its immutable candidate, but it
+   must not select a new schema implementation while any lifecycle intent is
+   active. The prior selected agent retains recovery authority; after it clears
+   the intent, convergence may atomically select the verified upgrade. The
+   unversioned executor and reconciler wrappers acquire the root-owned
+   host-agent selection lock in shared mode before resolving `current` and hold
+   it through execution. The installer holds the same lock exclusively across
+   its active-intent scan and selector replacement. During adoption, Ansible
+   replaces the wrappers and waits for every pre-lock worker and reconciler to
+   exit before invoking that installer, so an old implementation cannot create
+   recovery evidence in the scan-to-selection interval.
 3. Create a temporary active-Caddy-generation reference, atomically rename it
    over the old reference, and `fsync` its containing directory. A reference is
    never selected before its release and complete runtime generation are
@@ -287,12 +300,92 @@ path derivation it requires the one canonical lowercase UUIDv7 grammar with an
 ASCII `fullmatch`. It accepts only the versioned allowlisted schema, verifies
 the canonical request and artifact bindings, and compares the
 job's expected lifecycle, manifest, deployment, and archive-record digests with
-current authoritative state before it admits or stages work. It then durably
-claims the pending job. A terminal retry returns its immutable result; a
+current authoritative state before it admits or stages work. When an installed
+deploy or import handler would receive the artifact, root also parses its exact
+operation-specific content while the job remains pending. A malformed but
+hash-bound artifact produces a terminal `invalid_artifact` result and releases
+the intake slot rather than becoming an indefinitely claimed job. The executor
+then durably claims the pending job. It records terminal validation only after
+the complete durable tenant state and selected runtime match a successful
+result, or the intent-authorized source state and runtime have both been
+restored for a failed transition. Create recovery retains the complete
+candidate generation, route-set, and observed-state authority through terminal
+validation. When a first dispatch has not yet created a lifecycle intent, root
+captures the validated post-handler desired and observed state before releasing
+tenant-state serialization and requires the complete selected runtime to match
+it. This applies to active transitions and state-preserving export alike; the
+absence of a pre-handler intent never exempts a successful result from runtime
+validation. The successful audit timestamp must equal the durable candidate
+observed state's reconciliation timestamp; it is not backdated to the earlier
+job-acceptance timestamp. A terminal retry revalidates current durable state
+and runtime before returning its immutable result. If another tenant commits a
+later audited transition and selects a newer complete global generation during
+that validation window, the earlier result may accept the newer selection only
+after the complete selected snapshot still matches all current authoritative
+tenant routes and contains the earlier tenant's exact validated manifest and
+observed state. A same-tenant transition remains supersession rather than this
+cross-tenant exception. Immutable job, result, and audit
+bindings preserve the authority needed after intent cleanup: each current job
+retains its exact source manifest and any source archive record, and a
+successful archive result retains its exact new archive record. An
+executor-produced failure carries an
+immutable publisher discriminator, so a result-first crash can complete only
+that trusted failure's missing audit and terminal phase. The failure result
+also binds the exact audit sequence and predecessor present before publication;
+repair uses that chain position, never the independently assigned acceptance
+timestamp, to recognize a tenant transition that committed during the crash
+window. Lifecycle-handler failures without their own audit remain rejected. If
+a newer successful tenant transition commits before that missing failure audit
+is repaired, replay recognizes it from the preserved chain boundary rather
+than mistaking the repaired entry's later position for current tenant
+authority.
+An older preexisting transition does not suppress source-state validation. A
 nonterminal retry reconciles its phase; a changed binding, state drift, unknown
 job ID, or provisioner-supplied raw request fails without mutation. The sudo
 rule exposes only this job-ID execution entry point and cannot invoke the
 root-only issuer.
+
+Before dispatch, a current authorization job also records the complete bounded
+sets of that tenant's retained deployment- and archive-record identities. A
+failed lifecycle handler is terminally valid only when both sets remain exact
+after rollback; a candidate record cannot silently consume retention or block
+a later archive or delete. Operations that are not allowed to create or retire
+history (`create`, `export`, `rename`, `reconcile`, `resume`, and `suspend`)
+must leave both sets exact even when their handler reports success. Deploy and
+import may add exactly their selected deployment record; restore adds exactly
+its new selected deployment and retires exactly its source archive record.
+Those deployment-producing operations, and rollback selection, must leave
+exactly the selected deployment plus its two chronological predecessors, so a
+commit at the three-record boundary is authorized to evict the oldest record
+but cannot retain a fourth or remove a required predecessor. Archive adds only
+the selected deployment's exact archive record and leaves deployment history
+unchanged. Every newly
+dispatched job also binds the complete tenant-ID inventory. A failed create must
+restore that inventory exactly, projected only through later successful create
+or delete entries in the validated audit chain, so residue under an unrelated
+slug is rejected while a legitimate later create remains recoverable. Every
+successful handler must likewise leave exactly that bound inventory plus its
+requested create or delete delta, projected through later successful create and
+delete entries in the validated audit chain. Thus a successful operation cannot
+hide an unrelated tenant addition or removal, while independently committed
+later work remains valid. For
+deploy and import, root independently derives the normalized release-tree
+digest and binds it to the job before invoking the handler: deploy is measured
+directly from its admitted flat ZIP, while import is measured from the
+validated `lowerduckpond-export-v1/content/` envelope under the portable-bundle
+limits. The committed deployment record must match both that digest and the
+artifact-byte digest. A handler-authored pair of internally consistent but
+unrelated digests is not release authority. A successful delete is terminally
+valid only after
+the complete tenant publication directory is absent and the selected Caddy
+generation contains no tenant route. The production executor separately
+enumerates the bounded release directory while holding publication and
+tenant-state locks, requires it to match the complete retained
+deployment-record identity set, and remeasures every retained release tree
+against its durable deployment-record digest. It performs that check for every
+relevant successful selection and restored failure before recording terminal
+execution validation, independently of whether a lifecycle intent
+still exists.
 
 Artifact transfer has an earlier root-owned byte gate. The restricted SSH
 adapter serializes intake before reading, permits one in-progress or admitted

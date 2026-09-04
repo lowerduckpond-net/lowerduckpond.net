@@ -21,6 +21,7 @@ from lowerduckpond_static_host_agent.caddy_startup import (
     CaddyStartPhase,
     start_target,
 )
+from lowerduckpond_static_host_agent.repository import StateRecordPath
 
 _DISABLED_STATUS = 78
 _USAGE_STATUS = 64
@@ -113,6 +114,394 @@ def test_caddy_control_runtime_opens_the_validated_lock_path(
             },
         )
     ]
+
+
+def test_selected_tenant_runtime_binds_the_active_verified_snapshot(  # noqa: PLR0915
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenant_id = "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100"
+    generation_id = "0198d17f-6f4a-7000-8000-000000000001"
+    deployment_id = "0191e2ca-49f2-7608-8cf3-f80ab2cab151"
+    release_tree_digest = {
+        "format": "lowerduckpond-release-tree-v1",
+        "algorithm": "sha256",
+        "value": "c" * 64,
+    }
+    deployment = {
+        "id": deployment_id,
+        "releaseTreeDigest": release_tree_digest,
+    }
+    active = SimpleNamespace(
+        manifest={
+            "metadata": {"id": tenant_id},
+            "spec": {
+                "desiredState": "active",
+                "desiredDeployment": {"id": deployment_id},
+            },
+        },
+        observed_state={
+            "observedState": "active",
+            "runtimeGenerationId": generation_id,
+        },
+        deployment=deployment,
+    )
+    suspended = SimpleNamespace(
+        manifest={
+            "metadata": {"id": tenant_id},
+            "spec": {
+                "desiredState": "suspended",
+                "desiredDeployment": {"id": deployment_id},
+            },
+        },
+        observed_state={
+            "observedState": "suspended",
+            "runtimeGenerationId": None,
+        },
+        deployment=deployment,
+    )
+    retained_deployments = {deployment_id: deployment}
+
+    class Runtime:
+        tenant = active
+        active_generation_id = generation_id
+
+        def __enter__(self) -> Runtime:
+            return self
+
+        def __exit__(self, *_exception: object) -> None:
+            pass
+
+        def using_held_publication_lock(self, _repository: object) -> nullcontext[None]:
+            return nullcontext()
+
+        def read_active(self) -> str:
+            return self.active_generation_id
+
+        def read_generation_route_snapshot(self, requested: str) -> SimpleNamespace:
+            assert requested == self.active_generation_id
+            return SimpleNamespace(platform_namespace={}, tenants=(self.tenant,))
+
+    class Transaction:
+        @staticmethod
+        def read(path: StateRecordPath) -> SimpleNamespace:
+            assert path.tenant_id == tenant_id
+            assert path.deployment_id is not None
+            return SimpleNamespace(document=retained_deployments[path.deployment_id])
+
+        @staticmethod
+        def tenant_deployment_ids(requested: object) -> tuple[str, ...]:
+            assert requested == tenant_id
+            return tuple(sorted(retained_deployments))
+
+    class Repository:
+        @staticmethod
+        def publication_transaction(*, blocking: bool) -> nullcontext[object]:
+            assert blocking is True
+            return nullcontext(Transaction())
+
+    runtime = Runtime()
+    repository = Repository()
+    authoritative = [active]
+    monkeypatch.setattr(entrypoints, "_open_caddy_control_runtime", lambda: runtime)
+    monkeypatch.setattr(
+        entrypoints,
+        "_tenant_release_ids",
+        lambda _tenant_id: (deployment_id,),
+    )
+    measured_digests = {deployment_id: release_tree_digest}
+    monkeypatch.setattr(
+        entrypoints,
+        "measure_release_tree",
+        lambda root, **_kwargs: SimpleNamespace(
+            digest=SimpleNamespace(to_dict=lambda: measured_digests[root.name])
+        ),
+    )
+    monkeypatch.setattr(
+        entrypoints,
+        "snapshot_tenant_routes",
+        lambda _transaction: SimpleNamespace(
+            platform_namespace={},
+            tenants=tuple(authoritative),
+        ),
+    )
+
+    assert entrypoints._selected_tenant_runtime_matches(
+        repository,  # type: ignore[arg-type]
+        tenant_id,
+        "both",
+        generation_id,
+        active.manifest,
+        active.observed_state,
+    )
+    assert entrypoints._selected_tenant_release_matches(
+        repository,  # type: ignore[arg-type]
+        tenant_id,
+        active.manifest,
+    )
+    assert entrypoints._all_tenant_release_state_matches(
+        repository,  # type: ignore[arg-type]
+    )
+    assert entrypoints._all_tenant_runtime_state_matches(
+        repository,  # type: ignore[arg-type]
+    )
+    assert not entrypoints._selected_tenant_runtime_matches(
+        repository,  # type: ignore[arg-type]
+        tenant_id,
+        "both",
+        "0198d17f-6f4a-7000-8000-000000000002",
+        active.manifest,
+        active.observed_state,
+    )
+    runtime.active_generation_id = "0198d17f-6f4a-7000-8000-000000000002"
+    assert entrypoints._selected_tenant_runtime_matches(
+        repository,  # type: ignore[arg-type]
+        tenant_id,
+        "both",
+        None,
+        active.manifest,
+        active.observed_state,
+    )
+    runtime.active_generation_id = generation_id
+    runtime.tenant = suspended
+    assert not entrypoints._all_tenant_runtime_state_matches(
+        repository,  # type: ignore[arg-type]
+    )
+    runtime.tenant = active
+    measured_digests[deployment_id] = {**release_tree_digest, "value": "d" * 64}
+    assert not entrypoints._selected_tenant_release_matches(
+        repository,  # type: ignore[arg-type]
+        tenant_id,
+        active.manifest,
+    )
+    assert not entrypoints._all_tenant_release_state_matches(
+        repository,  # type: ignore[arg-type]
+    )
+    measured_digests[deployment_id] = release_tree_digest
+    monkeypatch.setattr(
+        entrypoints,
+        "_tenant_release_ids",
+        lambda _tenant_id: (
+            deployment_id,
+            "0198d17f-6f4a-7000-8000-000000000009",
+        ),
+    )
+    assert not entrypoints._selected_tenant_release_matches(
+        repository,  # type: ignore[arg-type]
+        tenant_id,
+        active.manifest,
+    )
+    monkeypatch.setattr(
+        entrypoints,
+        "_tenant_release_ids",
+        lambda _tenant_id: (deployment_id,),
+    )
+    predecessor_id = "0198d17f-6f4a-7000-8000-000000000009"
+    predecessor = {"id": predecessor_id, "releaseTreeDigest": release_tree_digest}
+    retained_deployments[predecessor_id] = predecessor
+    measured_digests[predecessor_id] = release_tree_digest
+    assert not entrypoints._selected_tenant_release_matches(
+        repository,  # type: ignore[arg-type]
+        tenant_id,
+        active.manifest,
+    )
+    monkeypatch.setattr(
+        entrypoints,
+        "_tenant_release_ids",
+        lambda _tenant_id: tuple(sorted(retained_deployments)),
+    )
+    assert entrypoints._selected_tenant_release_matches(
+        repository,  # type: ignore[arg-type]
+        tenant_id,
+        active.manifest,
+    )
+    measured_digests[predecessor_id] = {**release_tree_digest, "value": "e" * 64}
+    assert not entrypoints._selected_tenant_release_matches(
+        repository,  # type: ignore[arg-type]
+        tenant_id,
+        active.manifest,
+    )
+    measured_digests[predecessor_id] = release_tree_digest
+    runtime.tenant = suspended
+    authoritative[:] = [suspended]
+    assert entrypoints._selected_tenant_runtime_matches(
+        repository,  # type: ignore[arg-type]
+        tenant_id,
+        "absent",
+        generation_id,
+        suspended.manifest,
+        suspended.observed_state,
+    )
+    assert not entrypoints._selected_tenant_runtime_matches(
+        repository,  # type: ignore[arg-type]
+        tenant_id,
+        "both",
+        generation_id,
+        suspended.manifest,
+        suspended.observed_state,
+    )
+    assert not entrypoints._selected_tenant_routes_absent(
+        repository,  # type: ignore[arg-type]
+        tenant_id,
+    )
+    runtime.tenant = SimpleNamespace(
+        manifest={
+            "metadata": {"id": "0191e2c4-8f7a-7c3b-8d1e-5f62047a2101"},
+            "spec": {"desiredState": "active"},
+        },
+        observed_state={
+            "observedState": "active",
+            "runtimeGenerationId": generation_id,
+        },
+    )
+    authoritative[:] = [runtime.tenant]
+    assert entrypoints._selected_tenant_routes_absent(
+        repository,  # type: ignore[arg-type]
+        tenant_id,
+    )
+    authoritative.append(active)
+    assert not entrypoints._selected_tenant_routes_absent(
+        repository,  # type: ignore[arg-type]
+        tenant_id,
+    )
+
+
+def test_all_tenant_release_validation_remeasures_untouched_tenants(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected = SimpleNamespace(name="selected")
+    untouched = SimpleNamespace(name="untouched")
+    measured: list[str] = []
+
+    class Repository:
+        @staticmethod
+        def publication_transaction(*, blocking: bool) -> nullcontext[object]:
+            assert blocking is True
+            return nullcontext(object())
+
+    def release_matches(
+        _repository: object,
+        _transaction: object,
+        tenant: SimpleNamespace,
+    ) -> bool:
+        measured.append(tenant.name)
+        return tenant is not untouched
+
+    monkeypatch.setattr(
+        entrypoints,
+        "snapshot_tenant_routes",
+        lambda _transaction: SimpleNamespace(tenants=(selected, untouched)),
+    )
+    monkeypatch.setattr(entrypoints, "_tenant_release_namespace_ids", lambda: ())
+    monkeypatch.setattr(entrypoints, "_snapshot_tenant_id", lambda tenant: tenant.name)
+    monkeypatch.setattr(entrypoints, "_tenant_release_state_matches", release_matches)
+
+    assert not entrypoints._all_tenant_release_state_matches(
+        Repository(),  # type: ignore[arg-type]
+    )
+    assert measured == ["selected", "untouched"]
+
+
+def test_all_tenant_release_validation_rejects_unknown_tenant_namespace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenant_id = "0198d17f-6f4a-7000-8000-000000000001"
+    unknown_id = "0198d17f-6f4a-7000-8000-000000000002"
+    sites = tmp_path / "sites"
+    (sites / unknown_id).mkdir(parents=True)
+    tenant = SimpleNamespace(manifest={"metadata": {"id": tenant_id}})
+
+    class Repository:
+        @staticmethod
+        def publication_transaction(*, blocking: bool) -> nullcontext[object]:
+            assert blocking is True
+            return nullcontext(object())
+
+    monkeypatch.setattr(entrypoints, "TENANT_RELEASE_ROOT", str(sites))
+    monkeypatch.setattr(
+        entrypoints,
+        "snapshot_tenant_routes",
+        lambda _transaction: SimpleNamespace(tenants=(tenant,)),
+    )
+    monkeypatch.setattr(
+        entrypoints,
+        "_tenant_release_state_matches",
+        lambda *_arguments: True,
+    )
+
+    assert not entrypoints._all_tenant_release_state_matches(
+        Repository(),  # type: ignore[arg-type]
+    )
+
+
+def test_all_tenant_release_validation_rejects_extra_known_tenant_entries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenant_id = "0198d17f-6f4a-7000-8000-000000000001"
+    sites = tmp_path / "sites"
+    (sites / tenant_id / "releases").mkdir(parents=True)
+    (sites / tenant_id / "orphan").mkdir()
+    tenant = SimpleNamespace(manifest={"metadata": {"id": tenant_id}})
+
+    class Repository:
+        @staticmethod
+        def publication_transaction(*, blocking: bool) -> nullcontext[object]:
+            assert blocking is True
+            return nullcontext(object())
+
+    monkeypatch.setattr(entrypoints, "TENANT_RELEASE_ROOT", str(sites))
+    monkeypatch.setattr(
+        entrypoints,
+        "snapshot_tenant_routes",
+        lambda _transaction: SimpleNamespace(tenants=(tenant,)),
+    )
+    monkeypatch.setattr(
+        entrypoints,
+        "_tenant_release_state_matches",
+        lambda *_arguments: True,
+    )
+
+    assert not entrypoints._all_tenant_release_state_matches(
+        Repository(),  # type: ignore[arg-type]
+    )
+
+
+def test_deleted_tenant_publication_requires_the_complete_namespace_absent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenant_id = "0198d17f-6f4a-7000-8000-000000000001"
+    sites = tmp_path / "sites"
+    sites.mkdir()
+    transactions: list[bool] = []
+
+    class Repository:
+        @staticmethod
+        def publication_transaction(*, blocking: bool) -> nullcontext[None]:
+            transactions.append(blocking)
+            return nullcontext()
+
+    repository = Repository()
+    tenant_root = sites / tenant_id
+    monkeypatch.setattr(entrypoints, "TENANT_RELEASE_ROOT", str(sites))
+
+    assert entrypoints._deleted_tenant_publication_absent(
+        repository,  # type: ignore[arg-type]
+        tenant_id,
+    )
+    tenant_root.mkdir()
+    assert not entrypoints._deleted_tenant_publication_absent(
+        repository,  # type: ignore[arg-type]
+        tenant_id,
+    )
+    tenant_root.rmdir()
+    tenant_root.symlink_to(tmp_path / "missing-target", target_is_directory=True)
+    assert not entrypoints._deleted_tenant_publication_absent(
+        repository,  # type: ignore[arg-type]
+        tenant_id,
+    )
+    assert transactions == [True, True, True]
 
 
 def test_caddy_pre_start_gate_uses_the_control_lock_path(

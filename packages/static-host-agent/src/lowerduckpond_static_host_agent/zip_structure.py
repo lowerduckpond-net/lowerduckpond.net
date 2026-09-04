@@ -8,10 +8,13 @@ import stat
 import struct
 import unicodedata
 import zlib
+from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Final, Protocol
+
+from lowerduckpond_static_contracts import Digest
 
 from lowerduckpond_static_host_agent.capacity import (
     DEFAULT_HOST_CAPACITY_LIMITS,
@@ -23,6 +26,7 @@ from lowerduckpond_static_host_agent.capacity import (
     measure_filesystem_capacity_descriptor,
 )
 from lowerduckpond_static_host_agent.locks import LockManager, LockMode, LockName
+from lowerduckpond_static_host_agent.release_tree import RELEASE_TREE_FORMAT
 
 MEBIBYTE: Final = 1024 * 1024
 _MAXIMUM_ARCHIVE_BYTES: Final = 100 * MEBIBYTE
@@ -272,6 +276,64 @@ def inspect_deployment_zip(
             materialized_paths=structure.materialized_paths,
             expanded_regular_file_bytes=structure.expanded_regular_file_bytes,
         )
+    except OSError as error:
+        raise ZipStructureError("ZIP snapshot cannot be opened safely") from error
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def deployment_zip_release_tree_digest(
+    path: Path,
+    *,
+    expected_owner: int,
+    expected_mode: int = 0o600,
+    limits: ZipLimits = DEFAULT_ZIP_LIMITS,
+) -> Digest:
+    """Derive the normalized release-tree digest directly from one stable ZIP."""
+
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(path, _SNAPSHOT_OPEN_FLAGS)
+        before = _validate_snapshot(
+            os.fstat(descriptor),
+            expected_owner=expected_owner,
+            expected_mode=expected_mode,
+            limits=limits,
+        )
+        _validate_open_identity(path, before, "ZIP snapshot changed while it was opened")
+        source = _DescriptorSource(descriptor, before.st_size)
+        structure = _inspect(source, limits=limits)
+        regular = {
+            member.normalized_path: member
+            for member in structure.members
+            if member.entry_type is ZipEntryType.REGULAR_FILE
+        }
+        digest = hashlib.sha256()
+        digest.update(RELEASE_TREE_FORMAT.encode("ascii") + b"\0")
+        digest.update(len(structure.materialized_paths).to_bytes(4, "big"))
+        for path_name in structure.materialized_paths:
+            path_bytes = path_name.encode("utf-8")
+            member = regular.get(path_name)
+            digest.update(b"F" if member is not None else b"D")
+            digest.update(len(path_bytes).to_bytes(4, "big"))
+            digest.update(path_bytes)
+            if member is not None:
+                digest.update(member.expanded_bytes.to_bytes(8, "big"))
+                for content in _validated_member_chunks(source, member, limits=limits):
+                    digest.update(content)
+        after = _validate_snapshot(
+            os.fstat(descriptor),
+            expected_owner=expected_owner,
+            expected_mode=expected_mode,
+            limits=limits,
+        )
+        _validate_open_identity(path, after, "ZIP snapshot changed during release derivation")
+        if _metadata_generation(before) != _metadata_generation(after):
+            raise ZipStructureError("ZIP snapshot changed during release derivation")
+        return Digest(RELEASE_TREE_FORMAT, "sha256", digest.hexdigest())
+    except zlib.error as error:
+        raise ZipStructureError("ZIP Deflate stream is invalid") from error
     except OSError as error:
         raise ZipStructureError("ZIP snapshot cannot be opened safely") from error
     finally:
@@ -1069,6 +1131,28 @@ def _stream_member(
     file_fd: int,
     limits: ZipLimits,
 ) -> tuple[int, int]:
+    crc32 = 0
+    expanded = 0
+    for data in _validated_member_chunks(source, member, limits=limits):
+        crc32, expanded = _write_extracted(
+            file_fd,
+            data,
+            crc32=crc32,
+            expanded=expanded,
+            member=member,
+            limits=limits,
+        )
+    return crc32 & 0xFFFFFFFF, expanded
+
+
+def _validated_member_chunks(
+    source: _Source,
+    member: ZipMember,
+    *,
+    limits: ZipLimits,
+) -> Iterator[bytes]:
+    """Yield one member's exact bounded bytes after Deflate and CRC validation."""
+
     compressed_remaining = member.compressed_bytes
     input_offset = member.data_offset
     expanded = 0
@@ -1079,14 +1163,9 @@ def _stream_member(
         compressed_remaining -= len(chunk)
         input_offset += len(chunk)
         if decoder is None:
-            crc32, expanded = _write_extracted(
-                file_fd,
-                chunk,
-                crc32=crc32,
-                expanded=expanded,
-                member=member,
-                limits=limits,
-            )
+            expanded = _validate_expanded_chunk(expanded, chunk, member=member, limits=limits)
+            crc32 = zlib.crc32(chunk, crc32)
+            yield chunk
             continue
         pending = chunk
         while pending:
@@ -1095,19 +1174,35 @@ def _stream_member(
                 min(_EXTRACTION_CHUNK_BYTES, member.expanded_bytes - expanded + 1),
             )
             pending = decoder.unconsumed_tail
-            crc32, expanded = _write_extracted(
-                file_fd,
+            expanded = _validate_expanded_chunk(
+                expanded,
                 output,
-                crc32=crc32,
-                expanded=expanded,
                 member=member,
                 limits=limits,
             )
+            crc32 = zlib.crc32(output, crc32)
+            yield output
             if not output and pending:
                 raise ZipExtractionError("ZIP Deflate decoder made no bounded progress")
     if decoder is not None and (not decoder.eof or decoder.unused_data or decoder.unconsumed_tail):
         raise ZipExtractionError("ZIP Deflate stream does not end at its declared boundary")
-    return crc32 & 0xFFFFFFFF, expanded
+    if expanded != member.expanded_bytes:
+        raise ZipExtractionError("ZIP observed file size disagrees with structural metadata")
+    if crc32 & 0xFFFFFFFF != member.crc32:
+        raise ZipExtractionError("ZIP observed CRC-32 disagrees with structural metadata")
+
+
+def _validate_expanded_chunk(
+    expanded: int,
+    data: bytes,
+    *,
+    member: ZipMember,
+    limits: ZipLimits,
+) -> int:
+    projected = expanded + len(data)
+    if projected > member.expanded_bytes or projected > limits.maximum_file_bytes:
+        raise ZipExtractionError("ZIP observed file bytes cross their declared boundary")
+    return projected
 
 
 def _write_extracted(  # noqa: PLR0913 - preserve explicit streaming counters
