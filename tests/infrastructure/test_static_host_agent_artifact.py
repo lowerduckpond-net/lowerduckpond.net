@@ -465,7 +465,7 @@ def test_dark_worker_unit_consumes_the_reviewed_sandbox_contract() -> None:
     expected["NoNewPrivileges=true"] -= 1
     expected["NoNewPrivileges=false"] += 1
     expected["CapabilityBoundingSet="] -= 1
-    expected["CapabilityBoundingSet=CAP_SETGID CAP_SETUID"] += 1
+    expected["CapabilityBoundingSet=CAP_CHOWN CAP_SETGID CAP_SETUID"] += 1
     expected["RestrictAddressFamilies=~AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_PACKET"] -= 1
     expected["RestrictAddressFamilies=AF_UNIX"] += 1
     expected["SystemCallFilter=~@network-io"] -= 1

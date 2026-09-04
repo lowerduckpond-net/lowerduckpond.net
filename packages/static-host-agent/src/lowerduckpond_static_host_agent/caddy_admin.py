@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import grp
 import hashlib
 import os
+import pwd
 import re
 import secrets
 import socket
@@ -26,11 +28,15 @@ from lowerduckpond_static_host_agent.caddy_generation import (
 from lowerduckpond_static_host_agent.caddy_routes import CADDY_ADMIN_SOCKET
 
 _MAXIMUM_ADMIN_RESPONSE_BYTES: Final = MAX_CADDY_CONFIGURATION_BYTES + 64 * 1024
+_MAXIMUM_SYSTEMD_IDENTITY_BYTES: Final = 4096
 _ADMIN_TIMEOUT_SECONDS: Final = 5
+_CADDY_ACCOUNT: Final = "caddy"
+_CADDY_ADMIN_SOCKET_MODE: Final = 0o620
 
 MainPidSource = Callable[[], str]
 ExecutableDigestSource = Callable[[int], str]
 ConfigurationSource = Callable[[], bytes]
+ServiceIdentitySource = Callable[[], tuple[int, str]]
 GenerationVerifier = Callable[[PinnedCaddyGeneration], None]
 GenerationLoader = Callable[[PinnedCaddyGeneration], None]
 AdminRequester = Callable[[bytes], bytes]
@@ -46,18 +52,24 @@ def verify_running_caddy(
     main_pid_source: MainPidSource | None = None,
     executable_digest_source: ExecutableDigestSource | None = None,
     configuration_source: ConfigurationSource | None = None,
+    service_identity_source: ServiceIdentitySource | None = None,
 ) -> None:
-    """Match the running executable and loaded config to one pinned generation."""
+    """Match one startup-verified invocation and its loaded configuration."""
 
     if type(generation) is not PinnedCaddyGeneration:
         raise TypeError("running Caddy verification requires one pinned generation")
     expected = {item.name: item.sha256 for item in generation.manifest.files}
-    raw_pid = (main_pid_source or _systemd_main_pid)()
-    if not raw_pid.isascii() or not raw_pid.isdecimal() or int(raw_pid) <= 1:
-        raise CaddyAdminError("Caddy main PID is invalid")
-    process_digest = (executable_digest_source or _running_executable_digest)(int(raw_pid))
-    if not secrets.compare_digest(process_digest, expected[CADDY_BINARY_NAME]):
-        raise CaddyAdminError("running Caddy binary disagrees with its generation")
+    explicit_process_probe = main_pid_source is not None or executable_digest_source is not None
+    if explicit_process_probe:
+        raw_pid = (main_pid_source or _systemd_main_pid)()
+        if not raw_pid.isascii() or not raw_pid.isdecimal() or int(raw_pid) <= 1:
+            raise CaddyAdminError("Caddy main PID is invalid")
+        process_digest = (executable_digest_source or _running_executable_digest)(int(raw_pid))
+        if not secrets.compare_digest(process_digest, expected[CADDY_BINARY_NAME]):
+            raise CaddyAdminError("running Caddy binary disagrees with its generation")
+        identity_before = None
+    else:
+        identity_before = (service_identity_source or _running_caddy_service_identity)()
     response = (configuration_source or _read_caddy_admin_configuration)()
     configuration = decode_json_object(response, maximum_bytes=MAX_CADDY_CONFIGURATION_BYTES)
     configuration_digest = hashlib.sha256(
@@ -71,6 +83,20 @@ def verify_running_caddy(
         expected[CADDY_CONFIGURATION_NAME],
     ):
         raise CaddyAdminError("running Caddy configuration disagrees with its generation")
+    if identity_before is not None:
+        identity_after = (service_identity_source or _running_caddy_service_identity)()
+        if identity_after != identity_before:
+            raise CaddyAdminError("Caddy invocation changed during verification")
+
+
+def verify_starting_caddy(generation: PinnedCaddyGeneration) -> None:
+    """Match the starting process itself while ExecStartPost retains access."""
+
+    verify_running_caddy(
+        generation,
+        main_pid_source=_systemd_main_pid,
+        executable_digest_source=_running_executable_digest,
+    )
 
 
 def load_caddy_configuration(
@@ -108,6 +134,8 @@ def load_caddy_configuration(
         + configuration
     )
     _response_body((requester or _send_admin_request)(request), maximum_bytes=64 * 1024)
+    if requester is None:
+        _normalize_admin_socket()
 
 
 def reload_caddy_generation(
@@ -163,6 +191,55 @@ def _systemd_main_pid() -> str:
     ).stdout.strip()
 
 
+def _running_caddy_service_identity() -> tuple[int, str]:
+    properties = (
+        "LoadState",
+        "ActiveState",
+        "SubState",
+        "Result",
+        "MainPID",
+        "InvocationID",
+    )
+    completed = subprocess.run(  # noqa: S603 - every argument is fixed
+        [
+            "/usr/bin/systemctl",
+            "show",
+            "--no-pager",
+            *(f"--property={name}" for name in properties),
+            "caddy.service",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=_ADMIN_TIMEOUT_SECONDS,
+    )
+    if len(completed.stdout) > _MAXIMUM_SYSTEMD_IDENTITY_BYTES:
+        raise CaddyAdminError("Caddy service identity exceeds its bound")
+    pairs = [line.partition("=") for line in completed.stdout.splitlines()]
+    if any(not separator or not key for key, separator, _value in pairs):
+        raise CaddyAdminError("Caddy service identity is malformed")
+    state = {key: value for key, _separator, value in pairs}
+    if len(state) != len(pairs) or set(state) != set(properties):
+        raise CaddyAdminError("Caddy service identity has unexpected properties")
+    if (
+        state["LoadState"] != "loaded"
+        or state["ActiveState"] != "active"
+        or state["SubState"] != "running"
+        or state["Result"] != "success"
+    ):
+        raise CaddyAdminError("Caddy service is not startup-verified and active")
+    raw_pid = state["MainPID"]
+    invocation_id = state["InvocationID"]
+    if (
+        not raw_pid.isascii()
+        or not raw_pid.isdecimal()
+        or int(raw_pid) <= 1
+        or re.fullmatch(r"[0-9a-f]{32}", invocation_id) is None
+    ):
+        raise CaddyAdminError("Caddy service identity is invalid")
+    return int(raw_pid), invocation_id
+
+
 def _read_caddy_admin_configuration() -> bytes:
     request = b"GET /config/ HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n"
     return _response_body(
@@ -195,6 +272,41 @@ def _response_body(response: bytes, *, maximum_bytes: int) -> bytes:
     if len(body) > maximum_bytes:
         raise CaddyAdminError("Caddy admin response body exceeds its bound")
     return body
+
+
+def _normalize_admin_socket() -> None:
+    """Restore the exact worker-access mode after Caddy replaces its socket."""
+
+    try:
+        caddy_uid = pwd.getpwnam(_CADDY_ACCOUNT).pw_uid
+        caddy_gid = grp.getgrnam(_CADDY_ACCOUNT).gr_gid
+        before = os.lstat(CADDY_ADMIN_SOCKET)
+    except (KeyError, OSError) as error:
+        raise CaddyAdminError("Caddy admin socket identity is unavailable") from error
+    if (
+        not stat.S_ISSOCK(before.st_mode)
+        or before.st_uid != caddy_uid
+        or before.st_gid != caddy_gid
+        or before.st_nlink != 1
+    ):
+        raise CaddyAdminError("Caddy admin socket identity is unsafe")
+    try:
+        Path(CADDY_ADMIN_SOCKET).chmod(
+            _CADDY_ADMIN_SOCKET_MODE,
+            follow_symlinks=False,
+        )
+        after = os.lstat(CADDY_ADMIN_SOCKET)
+    except OSError as error:
+        raise CaddyAdminError("Caddy admin socket mode could not be restored") from error
+    if (
+        (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino)
+        or not stat.S_ISSOCK(after.st_mode)
+        or after.st_uid != caddy_uid
+        or after.st_gid != caddy_gid
+        or after.st_nlink != 1
+        or stat.S_IMODE(after.st_mode) != _CADDY_ADMIN_SOCKET_MODE
+    ):
+        raise CaddyAdminError("Caddy admin socket changed during mode restoration")
 
 
 def _running_executable_digest(pid: int) -> str:

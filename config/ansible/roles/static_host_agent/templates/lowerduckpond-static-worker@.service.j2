@@ -9,7 +9,7 @@ User={{ provisioner_user }}
 Group={{ provisioner_group }}
 Slice=lowerduckpond-static-workers.slice
 UMask=0077
-ExecStart=/usr/bin/sudo --non-interactive {{ static_host_agent_executor }} %i
+ExecStart=/usr/bin/sudo --non-interactive --user=root --group=caddy {{ static_host_agent_executor }} %i
 MemoryMax=256M
 MemorySwapMax=0
 TasksMax=32
@@ -60,7 +60,7 @@ InaccessiblePaths=/dev/tty
 InaccessiblePaths=/dev/ptmx
 InaccessiblePaths=/dev/pts
 NoNewPrivileges=false
-CapabilityBoundingSet=CAP_SETGID CAP_SETUID
+CapabilityBoundingSet=CAP_CHOWN CAP_SETGID CAP_SETUID
 AmbientCapabilities=
 RestrictAddressFamilies=AF_UNIX
 RestrictNamespaces=true

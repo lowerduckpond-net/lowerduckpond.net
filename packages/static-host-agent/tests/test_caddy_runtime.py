@@ -1251,7 +1251,7 @@ def test_root_candidate_validation_has_exact_descendant_resource_boundaries() ->
         "--nofile=64",
         "--stack=16777216",
         "--",
-        "/bin/bash",
+        "/usr/bin/bash",
         "-c",
         'exec -a caddy "/proc/self/fd/$1" "${@:2}"',
         "lowerduckpond-caddy-validation",

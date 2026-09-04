@@ -4,6 +4,7 @@ import json
 import shlex
 from pathlib import Path
 
+import pytest
 from lowerduckpond_static_contracts import result_digest
 from testinfra.host import Host
 
@@ -114,6 +115,8 @@ STATIC_OPERATOR_COMMAND_MODE = 0o755
 STATIC_OPERATOR_KEY_DIRECTORY_MODE = 0o755
 STATIC_OPERATOR_KEY_FILE_MODE = 0o640
 STATIC_OPERATOR_HOME_MODE = 0o555
+STATIC_CADDY_RUNTIME_MODE = 0o750
+STATIC_CADDY_ADMIN_SOCKET_MODE = 0o620
 SSHD_SETTING_FIELD_COUNT = 2
 STATIC_STATE_DIRECTORIES = (
     "platform",
@@ -236,6 +239,61 @@ def assert_static_worker_caddy_runtime_access(host: Host) -> None:
     assert unit.contains("BindReadOnlyPaths=/run/caddy")
     assert unit.contains("BindReadOnlyPaths=/run/systemd")
     assert not unit.contains("InaccessiblePaths=/proc")
+    assert unit.contains(
+        f"ExecStart=/usr/bin/sudo --non-interactive --user=root --group=caddy "
+        f"{STATIC_JOB_EXECUTOR} %i"
+    )
+
+    selected = host.run(f"readlink --canonicalize {STATIC_HOST_AGENT_ROOT}/current")
+    assert selected.rc == 0
+    probe = (
+        "import os,pwd,sys;"
+        f"sys.path.insert(0,{(selected.stdout.strip() + '/site-packages')!r});"
+        "import lowerduckpond_static_host_agent.caddy_admin as admin;"
+        "pid,invocation=admin._running_caddy_service_identity();"
+        "assert pid>1 and len(invocation)==32;"
+        "assert admin._read_caddy_admin_configuration();"
+        "assert os.access('/usr/bin/bash',os.X_OK);"
+        "fd=os.open('/workspace/chown-probe',os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600);"
+        "os.fchown(fd,0,pwd.getpwnam('caddy').pw_gid);"
+        "os.close(fd)"
+    )
+    command = shlex.join(
+        (
+            "systemd-run",
+            "--quiet",
+            "--wait",
+            "--pipe",
+            "--collect",
+            "--unit=lowerduckpond-static-worker-access-probe",
+            "--property=User=root",
+            "--property=Group=caddy",
+            "--property=TemporaryFileSystem=/:ro",
+            "--property=TemporaryFileSystem=/workspace:rw,size=64M,nr_inodes=4096,mode=0700",
+            "--property=BindReadOnlyPaths=/usr",
+            "--property=BindReadOnlyPaths=/lib",
+            "--property=BindReadOnlyPaths=/lib64",
+            "--property=BindReadOnlyPaths=/etc/group",
+            "--property=BindReadOnlyPaths=/etc/nsswitch.conf",
+            "--property=BindReadOnlyPaths=/etc/passwd",
+            f"--property=BindReadOnlyPaths={STATIC_HOST_AGENT_ROOT}",
+            "--property=BindReadOnlyPaths=/run/caddy",
+            "--property=BindReadOnlyPaths=/run/systemd",
+            "--property=ProtectProc=invisible",
+            "--property=ProcSubset=pid",
+            "--property=CapabilityBoundingSet=CAP_CHOWN CAP_SETUID",
+            "--property=NoNewPrivileges=no",
+            "--property=PrivateNetwork=yes",
+            "--property=RestrictAddressFamilies=AF_UNIX",
+            "/usr/bin/python3",
+            "-I",
+            "-B",
+            "-c",
+            probe,
+        )
+    )
+    result = host.run(command)
+    assert result.rc == 0, result.stderr
 
 
 def read_status_scope(host: Host, variable_name: str) -> str:
@@ -435,7 +493,9 @@ def test_caddy_reload_always_validates_first(host: Host) -> None:
     unit = host.file("/etc/systemd/system/caddy.service")
     validate_index = unit.content_string.index("ExecReload=/usr/local/bin/caddy validate")
     reload_index = unit.content_string.index("ExecReload=/usr/local/bin/caddy reload")
+    mode_index = unit.content_string.index("ExecReload=+/usr/bin/chmod 0620 /run/caddy/admin.sock")
     assert validate_index < reload_index
+    assert reload_index < mode_index
     assert "--address unix//run/caddy/admin.sock" in unit.content_string
     assert "Restart=on-failure" in unit.content_string
 
@@ -447,6 +507,12 @@ def test_caddy_admin_api_is_caddy_only(host: Host) -> None:
     socket = host.file("/run/caddy/admin.sock")
     assert socket.exists
     assert socket.user == "caddy"
+    assert socket.group == "caddy"
+    assert socket.mode == STATIC_CADDY_ADMIN_SOCKET_MODE
+    runtime = host.file("/run/caddy")
+    assert runtime.user == "caddy"
+    assert runtime.group == "caddy"
+    assert runtime.mode == STATIC_CADDY_RUNTIME_MODE
     assert not host.socket("tcp://127.0.0.1:2019").is_listening
 
     denied = host.run(
@@ -455,6 +521,14 @@ def test_caddy_admin_api_is_caddy_only(host: Host) -> None:
         "http://localhost/config/"
     )
     assert denied.rc != 0
+
+    root_worker = host.run(
+        "setpriv --reuid=0 --regid=caddy --clear-groups "
+        "--bounding-set=-all --inh-caps=-all --ambient-caps=-all -- "
+        "curl --fail --silent --unix-socket /run/caddy/admin.sock "
+        "http://localhost/config/"
+    )
+    assert root_worker.rc == 0
 
 
 def test_rootless_podman_non_login_account(host: Host) -> None:
@@ -1194,7 +1268,7 @@ def test_static_job_commands_are_root_owned_and_uuid_only(host: Host) -> None:
     assert sudoers.mode == QUALIFICATION_SUDOERS_MODE
     assert sudoers.content_string == (
         f"Defaults!{STATIC_JOB_EXECUTOR} !use_pty\n"
-        f"ldp-provisioner ALL=(root) NOPASSWD: {STATIC_JOB_EXECUTOR}\n"
+        f"ldp-provisioner ALL=(root:caddy) NOPASSWD: {STATIC_JOB_EXECUTOR}\n"
     )
     prefix = ("runuser", "--user", "ldp-provisioner", "--", "sudo", "-n")
     unknown = host.run(shlex.join((*prefix, STATIC_JOB_EXECUTOR, VALID_UUIDV7)))
@@ -1206,44 +1280,7 @@ def test_static_job_commands_are_root_owned_and_uuid_only(host: Host) -> None:
     assert host.run(shlex.join((*prefix, STATIC_JOB_RECONCILER))).rc != 0
 
 
-def test_static_worker_boundary_is_opaque_and_hardened(host: Host) -> None:
-    unit = host.file("/etc/systemd/system/lowerduckpond-static-worker@.service")
-    assert unit.contains("TemporaryFileSystem=/:ro")
-    assert unit.contains("User=ldp-provisioner")
-    assert unit.contains("Group=ldp-provisioner")
-    assert unit.contains(f"ExecStart=/usr/bin/sudo --non-interactive {STATIC_JOB_EXECUTOR} %i")
-    assert unit.contains("Slice=lowerduckpond-static-workers.slice")
-    assert unit.contains("OnSuccess=lowerduckpond-static-reconcile.service")
-    assert not unit.contains("OnFailure=")
-    assert not unit.contains("SystemCallFilter=~clone clone3 fork vfork")
-    assert unit.contains("TemporaryFileSystem=/workspace:rw,size=64M,nr_inodes=4096,mode=0700")
-    for bound_path in (
-        "/usr",
-        "/lib",
-        "/lib64",
-        "/etc/passwd",
-        "/etc/sudoers",
-        "/etc/sudoers.d",
-        STATIC_HOST_AGENT_ROOT,
-        "/etc/lowerduckpond/static-publication.json",
-    ):
-        assert unit.contains(f"BindReadOnlyPaths={bound_path}")
-    for property_line in (
-        "MemoryMax=256M",
-        "MemorySwapMax=0",
-        "TasksMax=32",
-        "PrivateNetwork=true",
-        "NoNewPrivileges=false",
-        "CapabilityBoundingSet=CAP_SETGID CAP_SETUID",
-        "CapabilityBoundingSet=",
-        "ProtectSystem=strict",
-        "ProtectHome=true",
-        "DevicePolicy=closed",
-        "IPAddressDeny=any",
-    ):
-        assert unit.contains(property_line)
-    assert_static_worker_sudo_compatibility(host)
-    assert_static_worker_caddy_runtime_access(host)
+def assert_static_worker_execution(host: Host) -> None:
     assert host.run("systemctl is-enabled lowerduckpond-static-worker@.service").stdout.strip() == (
         "static"
     )
@@ -1280,11 +1317,24 @@ def test_static_worker_boundary_is_opaque_and_hardened(host: Host) -> None:
     host.run_expect([0], "systemctl start lowerduckpond-static-reconcile.service")
     job_path = f"{STATIC_STATE_ROOT}/authorization/jobs/{job_id}.json"
     result_path = f"{STATIC_STATE_ROOT}/authorization/results/{job_id}.json"
-    host.run_expect(
-        [0],
+    completion = host.run(
         f"timeout 10s bash -c 'until grep --fixed-strings --quiet completed {job_path}; "
         "do sleep 0.05; done'",
     )
+    if completion.rc != 0:
+        worker = f"lowerduckpond-static-worker@{job_id}.service"
+        state = host.run(
+            f"systemctl show --no-pager --property=ActiveState --property=SubState "
+            f"--property=Result --property=ExecMainStatus {worker}"
+        )
+        journal = host.run(f"journalctl --unit={worker} --no-pager --output=cat")
+        pytest.fail(
+            "installed static create did not complete\n"
+            f"job={host.file(job_path).content_string}\n"
+            f"result={host.file(result_path).content_string}\n"
+            f"state={state.stdout}\n"
+            f"journal={journal.stdout}{journal.stderr}"
+        )
     assert '"phase":"completed"' in host.file(job_path).content_string
     assert '"status":"succeeded"' in host.file(result_path).content_string
     cursor = host.file(f"{STATIC_STATE_ROOT}/locks/authorization-recovery.cursor")
@@ -1292,6 +1342,51 @@ def test_static_worker_boundary_is_opaque_and_hardened(host: Host) -> None:
     assert cursor.group == "root"
     assert cursor.mode == STATIC_STATE_LOCK_MODE
     assert cursor.content_string == job_id
+
+
+def test_static_worker_boundary_is_opaque_and_hardened(host: Host) -> None:
+    unit = host.file("/etc/systemd/system/lowerduckpond-static-worker@.service")
+    assert unit.contains("TemporaryFileSystem=/:ro")
+    assert unit.contains("User=ldp-provisioner")
+    assert unit.contains("Group=ldp-provisioner")
+    assert unit.contains(
+        f"ExecStart=/usr/bin/sudo --non-interactive --user=root --group=caddy "
+        f"{STATIC_JOB_EXECUTOR} %i"
+    )
+    assert unit.contains("Slice=lowerduckpond-static-workers.slice")
+    assert unit.contains("OnSuccess=lowerduckpond-static-reconcile.service")
+    assert not unit.contains("OnFailure=")
+    assert not unit.contains("SystemCallFilter=~clone clone3 fork vfork")
+    assert unit.contains("TemporaryFileSystem=/workspace:rw,size=64M,nr_inodes=4096,mode=0700")
+    for bound_path in (
+        "/usr",
+        "/lib",
+        "/lib64",
+        "/etc/passwd",
+        "/etc/sudoers",
+        "/etc/sudoers.d",
+        STATIC_HOST_AGENT_ROOT,
+        "/etc/lowerduckpond/static-publication.json",
+    ):
+        assert unit.contains(f"BindReadOnlyPaths={bound_path}")
+    for property_line in (
+        "MemoryMax=256M",
+        "MemorySwapMax=0",
+        "TasksMax=32",
+        "PrivateNetwork=true",
+        "NoNewPrivileges=false",
+        "CapabilityBoundingSet=CAP_CHOWN CAP_SETGID CAP_SETUID",
+        "CapabilityBoundingSet=",
+        "ProtectSystem=strict",
+        "ProtectHome=true",
+        "DevicePolicy=closed",
+        "IPAddressDeny=any",
+        "ProtectProc=invisible",
+    ):
+        assert unit.contains(property_line)
+    assert_static_worker_sudo_compatibility(host)
+    assert_static_worker_caddy_runtime_access(host)
+    assert_static_worker_execution(host)
 
     timer = host.file("/etc/systemd/system/lowerduckpond-static-reconcile.timer")
     assert timer.contains("OnUnitInactiveSec=1min")

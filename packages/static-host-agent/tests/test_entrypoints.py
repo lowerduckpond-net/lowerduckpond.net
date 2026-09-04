@@ -11,6 +11,8 @@ from types import SimpleNamespace
 
 import pytest
 from lowerduckpond_static_host_agent import entrypoints
+from lowerduckpond_static_host_agent.caddy_admin import CaddyAdminError
+from lowerduckpond_static_host_agent.caddy_generation import CaddyGenerationError
 from lowerduckpond_static_host_agent.caddy_runtime import (
     CADDY_PUBLICATION_LOCK_MODE,
     CADDY_RUNTIME_ROOT_MODE,
@@ -100,7 +102,15 @@ def test_executor_entrypoint_registers_the_create_handler(
     assert captured["blocking"] is True
 
 
-@pytest.mark.parametrize("failure", [CreateLifecycleError, CaddyRuntimeError])
+@pytest.mark.parametrize(
+    "failure",
+    [
+        CreateLifecycleError,
+        CaddyAdminError,
+        CaddyGenerationError,
+        CaddyRuntimeError,
+    ],
+)
 def test_executor_entrypoint_sanitizes_registered_handler_failures(
     monkeypatch: pytest.MonkeyPatch,
     capfd: pytest.CaptureFixture[str],
@@ -736,7 +746,7 @@ def test_caddy_post_start_verifier_uses_the_control_lock_path(
     monkeypatch.setattr(entrypoints, "_open_caddy_control_runtime", Runtime)
     monkeypatch.setattr(entrypoints, "CaddyStartupStore", StartupType)
     monkeypatch.setattr(entrypoints, "_systemd_invocation_id", lambda: invocation_id)
-    monkeypatch.setattr(entrypoints, "verify_running_caddy", events.append)
+    monkeypatch.setattr(entrypoints, "verify_starting_caddy", events.append)
     monkeypatch.setattr(
         entrypoints,
         "_open_systemd_caddy_runtime",

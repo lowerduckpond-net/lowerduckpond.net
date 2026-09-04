@@ -22,6 +22,7 @@ from lowerduckpond_static_host_agent.caddy_admin import (
     reload_caddy_generation,
     restore_caddy_generation,
     verify_running_caddy,
+    verify_starting_caddy,
 )
 from lowerduckpond_static_host_agent.caddy_bootstrap import (
     PlatformGenerationState,
@@ -534,4 +535,5 @@ __all__ = [
     "start_target",
     "validate_create_transition",
     "verify_running_caddy",
+    "verify_starting_caddy",
 ]

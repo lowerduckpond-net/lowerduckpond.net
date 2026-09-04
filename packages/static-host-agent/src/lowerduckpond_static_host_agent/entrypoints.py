@@ -23,7 +23,10 @@ from lowerduckpond_static_contracts import (
 )
 from lowerduckpond_static_domain import generate_uuid7
 
-from lowerduckpond_static_host_agent.caddy_admin import verify_running_caddy
+from lowerduckpond_static_host_agent.caddy_admin import (
+    CaddyAdminError,
+    verify_starting_caddy,
+)
 from lowerduckpond_static_host_agent.caddy_bootstrap import (
     ensure_platform_generation,
     platform_generation_state,
@@ -33,6 +36,7 @@ from lowerduckpond_static_host_agent.caddy_generation import (
     CADDY_GENERATION_ROOT_MODE,
     MAX_CADDY_ENVIRONMENT_BYTES,
     CaddyBinarySource,
+    CaddyGenerationError,
     CaddyGenerationStore,
 )
 from lowerduckpond_static_host_agent.caddy_routes import TENANT_RELEASE_ROOT
@@ -136,6 +140,8 @@ class _ReleaseStateTransaction(Protocol):
 _SAFE_ERRORS: Final = (
     ContractError,
     CapacityError,
+    CaddyAdminError,
+    CaddyGenerationError,
     CaddyRuntimeError,
     CreateActivationError,
     CreateCommitError,
@@ -363,7 +369,7 @@ def caddy_start_verifier_main(arguments: list[str] | None = None) -> int:
                     active=start_target(selected.generation_id, generation.manifest.to_bytes()),
                     invocation_id=invocation_id,
                 )
-                verify_running_caddy(generation)
+                verify_starting_caddy(generation)
                 startup.commit_success(intent)
     except (
         ContractError,

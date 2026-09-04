@@ -82,7 +82,7 @@ _ENVIRONMENT_NAME_PATTERN: Final = re.compile(r"[A-Z_][A-Z0-9_]*", flags=re.ASCI
 _CADDY_VALIDATION_OUTPUT_BYTES: Final = 262_144
 _CADDY_VALIDATION_TIMEOUT_SECONDS: Final = 30
 _CADDY_VALIDATION_API_TOKEN: Final = "0" * 40
-_BASH: Final = "/bin/bash"
+_BASH: Final = "/usr/bin/bash"
 _PRLIMIT: Final = "/usr/bin/prlimit"
 _SETPRIV: Final = "/usr/bin/setpriv"
 _SYSTEMCTL: Final = "/usr/bin/systemctl"
