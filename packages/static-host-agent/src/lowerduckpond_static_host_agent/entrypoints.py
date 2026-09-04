@@ -23,7 +23,10 @@ from lowerduckpond_static_contracts import (
 )
 from lowerduckpond_static_domain import generate_uuid7
 
-from lowerduckpond_static_host_agent.caddy_admin import verify_running_caddy
+from lowerduckpond_static_host_agent.caddy_admin import (
+    CaddyAdminError,
+    verify_starting_caddy,
+)
 from lowerduckpond_static_host_agent.caddy_bootstrap import (
     ensure_platform_generation,
     platform_generation_state,
@@ -33,6 +36,7 @@ from lowerduckpond_static_host_agent.caddy_generation import (
     CADDY_GENERATION_ROOT_MODE,
     MAX_CADDY_ENVIRONMENT_BYTES,
     CaddyBinarySource,
+    CaddyGenerationError,
     CaddyGenerationStore,
 )
 from lowerduckpond_static_host_agent.caddy_routes import TENANT_RELEASE_ROOT
@@ -51,6 +55,14 @@ from lowerduckpond_static_host_agent.caddy_startup import (
 )
 from lowerduckpond_static_host_agent.capacity import CapacityError
 from lowerduckpond_static_host_agent.correlations import CorrelationError
+from lowerduckpond_static_host_agent.create_activate import CreateActivationError
+from lowerduckpond_static_host_agent.create_commit import CreateCommitError
+from lowerduckpond_static_host_agent.create_handler import (
+    CreateLifecycleError,
+    CreateLifecycleHandler,
+)
+from lowerduckpond_static_host_agent.create_prepare import CreatePreparationError
+from lowerduckpond_static_host_agent.create_recover import CreateRecoveryError
 from lowerduckpond_static_host_agent.execution import (
     AuthorizationExecutor,
     ExecutionError,
@@ -128,6 +140,14 @@ class _ReleaseStateTransaction(Protocol):
 _SAFE_ERRORS: Final = (
     ContractError,
     CapacityError,
+    CaddyAdminError,
+    CaddyGenerationError,
+    CaddyRuntimeError,
+    CreateActivationError,
+    CreateCommitError,
+    CreateLifecycleError,
+    CreatePreparationError,
+    CreateRecoveryError,
     ProtocolError,
     CorrelationError,
     ExecutionError,
@@ -203,10 +223,18 @@ def executor_main(arguments: list[str] | None = None) -> int:
         with (
             StateRepository(_STATE_ROOT, expected_owner=_EXPECTED_OWNER) as repository,
             ArtifactIntake(_STATE_ROOT, expected_owner=_EXPECTED_OWNER) as intake,
+            _open_caddy_control_runtime() as runtime,
         ):
             AuthorizationExecutor(
                 repository,
                 intake,
+                handlers={
+                    "create": CreateLifecycleHandler(
+                        repository,
+                        runtime,
+                        CommandPublicationGate(_PUBLICATION_GATE),
+                    ),
+                },
                 deleted_tenant_release_validator=partial(
                     _deleted_tenant_publication_absent,
                     repository,
@@ -232,15 +260,7 @@ def executor_main(arguments: list[str] | None = None) -> int:
                     repository,
                 ),
             ).execute(job_id, blocking=True)
-    except (
-        CapacityError,
-        ContractError,
-        ExecutionError,
-        IntakeError,
-        StateBusyError,
-        StateInventoryError,
-        StateRecordError,
-    ):
+    except _SAFE_ERRORS:
         return _fail("authorized_job_failed", 1)
     except (OSError, ValueError) as error:
         return _fail(f"authorized_job_failed:{type(error).__name__}", 1)
@@ -349,7 +369,7 @@ def caddy_start_verifier_main(arguments: list[str] | None = None) -> int:
                     active=start_target(selected.generation_id, generation.manifest.to_bytes()),
                     invocation_id=invocation_id,
                 )
-                verify_running_caddy(generation)
+                verify_starting_caddy(generation)
                 startup.commit_success(intent)
     except (
         ContractError,

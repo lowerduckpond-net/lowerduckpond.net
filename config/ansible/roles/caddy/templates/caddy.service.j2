@@ -12,10 +12,12 @@ EnvironmentFile=/etc/caddy/environment
 Environment=XDG_CONFIG_HOME=/etc/caddy
 Environment=XDG_DATA_HOME=/var/lib/caddy
 RuntimeDirectory={{ caddy_runtime_directory }}
-RuntimeDirectoryMode=0700
+RuntimeDirectoryMode=0750
 ExecStart=/usr/local/bin/caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+ExecStartPost=/usr/bin/chmod 0620 {{ caddy_admin_socket_path }}
 ExecReload=/usr/local/bin/caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 ExecReload=/usr/local/bin/caddy reload --address unix/{{ caddy_admin_socket_path }} --config /etc/caddy/Caddyfile --adapter caddyfile --force
+ExecReload=/usr/bin/chmod 0620 {{ caddy_admin_socket_path }}
 Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=5s

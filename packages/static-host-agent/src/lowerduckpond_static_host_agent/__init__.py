@@ -22,6 +22,7 @@ from lowerduckpond_static_host_agent.caddy_admin import (
     reload_caddy_generation,
     restore_caddy_generation,
     verify_running_caddy,
+    verify_starting_caddy,
 )
 from lowerduckpond_static_host_agent.caddy_bootstrap import (
     PlatformGenerationState,
@@ -132,7 +133,12 @@ from lowerduckpond_static_host_agent.create_commit import (
     finalize_create_transition,
     validate_create_transition,
 )
+from lowerduckpond_static_host_agent.create_handler import (
+    CreateLifecycleError,
+    CreateLifecycleHandler,
+)
 from lowerduckpond_static_host_agent.create_prepare import (
+    CreateAuthorityDriftError,
     CreatePreparationError,
     PreparedCreateTransition,
     prepare_create_transition,
@@ -154,6 +160,7 @@ from lowerduckpond_static_host_agent.execution import (
     JobHandoff,
     LifecycleArtifact,
     LifecycleJobHandler,
+    LifecycleJobRejectionError,
 )
 from lowerduckpond_static_host_agent.intake import (
     AdmittedArtifact,
@@ -384,8 +391,11 @@ __all__ = [
     "CorrelationReconciliation",
     "CorrelationResolution",
     "CreateActivationError",
+    "CreateAuthorityDriftError",
     "CreateCommitBoundary",
     "CreateCommitError",
+    "CreateLifecycleError",
+    "CreateLifecycleHandler",
     "CreatePreparationError",
     "CreateRecoveryError",
     "CreateStateBoundary",
@@ -416,6 +426,7 @@ __all__ = [
     "JobHandoff",
     "LifecycleArtifact",
     "LifecycleJobHandler",
+    "LifecycleJobRejectionError",
     "LifecyclePlanError",
     "LocalRequestDecoder",
     "LockManager",
@@ -524,4 +535,5 @@ __all__ = [
     "start_target",
     "validate_create_transition",
     "verify_running_caddy",
+    "verify_starting_caddy",
 ]

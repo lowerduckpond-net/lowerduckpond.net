@@ -11,9 +11,12 @@ from types import SimpleNamespace
 
 import pytest
 from lowerduckpond_static_host_agent import entrypoints
+from lowerduckpond_static_host_agent.caddy_admin import CaddyAdminError
+from lowerduckpond_static_host_agent.caddy_generation import CaddyGenerationError
 from lowerduckpond_static_host_agent.caddy_runtime import (
     CADDY_PUBLICATION_LOCK_MODE,
     CADDY_RUNTIME_ROOT_MODE,
+    CaddyRuntimeError,
 )
 from lowerduckpond_static_host_agent.caddy_startup import (
     CaddyStartIntent,
@@ -21,10 +24,113 @@ from lowerduckpond_static_host_agent.caddy_startup import (
     CaddyStartPhase,
     start_target,
 )
+from lowerduckpond_static_host_agent.create_handler import (
+    CreateLifecycleError,
+    CreateLifecycleHandler,
+)
 from lowerduckpond_static_host_agent.repository import StateRecordPath
 
 _DISABLED_STATUS = 78
 _USAGE_STATUS = 64
+
+
+def test_executor_entrypoint_registers_the_create_handler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job_id = "0198d17f-6f4a-7000-8000-000000000001"
+    repository = object()
+    intake = object()
+    runtime = object()
+    captured: dict[str, object] = {}
+
+    class _Context:
+        def __init__(self, value: object) -> None:
+            self._value = value
+
+        def __enter__(self) -> object:
+            return self._value
+
+        def __exit__(self, *_exception: object) -> None:
+            return None
+
+    class _Executor:
+        def __init__(
+            self,
+            selected_repository: object,
+            selected_intake: object,
+            **arguments: object,
+        ) -> None:
+            captured.update(
+                repository=selected_repository,
+                intake=selected_intake,
+                arguments=arguments,
+            )
+
+        def execute(self, selected_job_id: str, *, blocking: bool) -> None:
+            captured.update(job_id=selected_job_id, blocking=blocking)
+
+    monkeypatch.setattr(
+        entrypoints,
+        "StateRepository",
+        lambda *_args, **_kwargs: _Context(repository),
+    )
+    monkeypatch.setattr(
+        entrypoints,
+        "ArtifactIntake",
+        lambda *_args, **_kwargs: _Context(intake),
+    )
+    monkeypatch.setattr(
+        entrypoints,
+        "_open_caddy_control_runtime",
+        lambda: _Context(runtime),
+    )
+    monkeypatch.setattr(entrypoints, "AuthorizationExecutor", _Executor)
+
+    assert entrypoints.executor_main([job_id]) == 0
+
+    arguments = captured["arguments"]
+    assert type(arguments) is dict
+    handlers = arguments["handlers"]
+    assert type(handlers) is dict
+    assert set(handlers) == {"create"}
+    handler = handlers["create"]
+    assert isinstance(handler, CreateLifecycleHandler)
+    assert handler._repository is repository
+    assert handler._runtime is runtime
+    assert captured["intake"] is intake
+    assert captured["job_id"] == job_id
+    assert captured["blocking"] is True
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        CreateLifecycleError,
+        CaddyAdminError,
+        CaddyGenerationError,
+        CaddyRuntimeError,
+    ],
+)
+def test_executor_entrypoint_sanitizes_registered_handler_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+    failure: type[RuntimeError],
+) -> None:
+    class _FailingContext:
+        def __enter__(self) -> None:
+            raise failure("unsafe implementation detail")
+
+        def __exit__(self, *_exception: object) -> None:
+            return None
+
+    monkeypatch.setattr(
+        entrypoints,
+        "StateRepository",
+        lambda *_args, **_kwargs: _FailingContext(),
+    )
+
+    assert entrypoints.executor_main(["0198d17f-6f4a-7000-8000-000000000001"]) == 1
+    assert capfd.readouterr().err == "authorized_job_failed\n"
 
 
 def test_disabled_operator_checks_the_gate_before_opening_state(
@@ -640,7 +746,7 @@ def test_caddy_post_start_verifier_uses_the_control_lock_path(
     monkeypatch.setattr(entrypoints, "_open_caddy_control_runtime", Runtime)
     monkeypatch.setattr(entrypoints, "CaddyStartupStore", StartupType)
     monkeypatch.setattr(entrypoints, "_systemd_invocation_id", lambda: invocation_id)
-    monkeypatch.setattr(entrypoints, "verify_running_caddy", events.append)
+    monkeypatch.setattr(entrypoints, "verify_starting_caddy", events.append)
     monkeypatch.setattr(
         entrypoints,
         "_open_systemd_caddy_runtime",

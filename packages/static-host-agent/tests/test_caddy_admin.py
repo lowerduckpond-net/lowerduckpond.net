@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import grp
 import hashlib
 import os
+import pwd
+import socket
+import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
+import lowerduckpond_static_host_agent.caddy_admin as caddy_admin_module
 import pytest
 from lowerduckpond_static_contracts import canonical_json_bytes
 from lowerduckpond_static_host_agent import (
@@ -24,6 +30,7 @@ from lowerduckpond_static_host_agent import (
 _GENERATION_A = "0198d17f-6f4a-7000-8000-000000000001"
 _GENERATION_B = "0198d17f-6f4a-7000-8000-000000000002"
 _CADDY_PID = 123
+_CADDY_ADMIN_SOCKET_MODE = 0o620
 
 
 def _payload(tmp_path: Path, *, binary: bytes = b"caddy\n") -> CaddyGenerationPayload:
@@ -160,6 +167,55 @@ def test_load_sends_exact_pinned_configuration(tmp_path: Path) -> None:
     )
 
 
+def test_live_load_restores_worker_access_to_replaced_admin_socket(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    monkeypatch.setattr(
+        caddy_admin_module,
+        "_send_admin_request",
+        lambda _request: b"HTTP/1.0 200 OK\r\n\r\n",
+    )
+    monkeypatch.setattr(
+        caddy_admin_module,
+        "_normalize_admin_socket",
+        lambda: events.append("normalize"),
+    )
+
+    with _store(tmp_path) as store:
+        store.publish(_GENERATION_A, _payload(tmp_path))
+        with store.open_verified(_GENERATION_A) as generation:
+            load_caddy_configuration(generation)
+
+    assert events == ["normalize"]
+
+
+def test_admin_socket_normalization_uses_the_exact_caddy_owned_socket(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    socket_path = tmp_path / "admin.sock"
+    with socket.socket(socket.AF_UNIX) as listener:
+        listener.bind(str(socket_path))
+        socket_path.chmod(0o600)
+        monkeypatch.setattr(caddy_admin_module, "CADDY_ADMIN_SOCKET", str(socket_path))
+        monkeypatch.setattr(
+            pwd,
+            "getpwnam",
+            lambda _name: SimpleNamespace(pw_uid=os.geteuid()),
+        )
+        monkeypatch.setattr(
+            grp,
+            "getgrnam",
+            lambda _name: SimpleNamespace(gr_gid=os.getegid()),
+        )
+
+        caddy_admin_module._normalize_admin_socket()
+
+        assert socket_path.stat().st_mode & 0o777 == _CADDY_ADMIN_SOCKET_MODE
+
+
 def test_load_and_verifier_accept_a_valid_configuration_over_16_kib(
     tmp_path: Path,
 ) -> None:
@@ -230,3 +286,58 @@ def test_running_verifier_rejects_invalid_pid_or_mismatch(tmp_path: Path) -> Non
                     main_pid_source=lambda: str(_CADDY_PID),
                     executable_digest_source=lambda _pid: "0" * 64,
                 )
+
+
+def test_runtime_verifier_fences_configuration_to_one_verified_invocation(
+    tmp_path: Path,
+) -> None:
+    invocation = (_CADDY_PID, "a" * 32)
+    identities = iter((invocation, invocation))
+    with _store(tmp_path) as store:
+        store.publish(_GENERATION_A, _payload(tmp_path))
+        with store.open_verified(_GENERATION_A) as generation:
+            verify_running_caddy(
+                generation,
+                configuration_source=lambda: _configuration(generation),
+                service_identity_source=lambda: next(identities),
+            )
+
+
+def test_runtime_verifier_rejects_an_invocation_change(tmp_path: Path) -> None:
+    identities = iter(
+        (
+            (_CADDY_PID, "a" * 32),
+            (_CADDY_PID + 1, "b" * 32),
+        )
+    )
+    with _store(tmp_path) as store:
+        store.publish(_GENERATION_A, _payload(tmp_path))
+        with (
+            store.open_verified(_GENERATION_A) as generation,
+            pytest.raises(CaddyAdminError, match="invocation changed"),
+        ):
+            verify_running_caddy(
+                generation,
+                configuration_source=lambda: _configuration(generation),
+                service_identity_source=lambda: next(identities),
+            )
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        subprocess.CalledProcessError(1, ["systemctl"]),
+        subprocess.TimeoutExpired(["systemctl"], 5),
+    ],
+)
+def test_service_identity_translates_systemctl_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: subprocess.SubprocessError,
+) -> None:
+    def fail(*_arguments: object, **_options: object) -> subprocess.CompletedProcess[str]:
+        raise failure
+
+    monkeypatch.setattr(subprocess, "run", fail)
+
+    with pytest.raises(CaddyAdminError, match="identity is unavailable"):
+        caddy_admin_module._running_caddy_service_identity()

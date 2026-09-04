@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
@@ -10,23 +10,32 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
+import lowerduckpond_static_host_agent.create_handler as create_handler_module
 import lowerduckpond_static_host_agent.repository as repository_module
 import pytest
 from lowerduckpond_static_contracts import (
     audit_entry_digest,
     canonical_json_bytes,
     platform_state_digest,
+    request_digest,
 )
 from lowerduckpond_static_host_agent import (
+    ArtifactIntake,
+    AuthorizationExecutor,
     CaddyGenerationManifest,
     CaddyRuntime,
     CapacityRejectedError,
     CreateActivationError,
     CreateCommitBoundary,
+    CreateLifecycleError,
+    CreateLifecycleHandler,
     CreatePreparationError,
+    CreateRecoveryError,
     CreateStateBoundary,
+    ExecutionOutcome,
     FilesystemCapacity,
     HostCapacityLimits,
+    LifecycleArtifact,
     LockManager,
     LockMode,
     PinnedCaddyGeneration,
@@ -40,6 +49,13 @@ from lowerduckpond_static_host_agent import (
     activate_create_transition,
     prepare_create_transition,
     recover_create_transition,
+)
+from lowerduckpond_static_host_agent.create_activate import (
+    activate_create_transition_outcome,
+)
+from lowerduckpond_static_host_agent.create_commit import CreateCommitOutcome
+from lowerduckpond_static_host_agent.create_recover import (
+    recover_create_transition_outcome,
 )
 
 _FIXTURE_ROOT = Path(__file__).parents[3] / "tests/static-publication/fixtures/accepted"
@@ -237,6 +253,7 @@ def _state_root(tmp_path: Path) -> Path:
         ("authorization", "jobs"),
         ("authorization", "results"),
         ("intents",),
+        ("intake",),
         ("audit",),
         ("locks",),
     ):
@@ -294,6 +311,430 @@ def _prepare(
         entropy=_Entropy(),
         capacity_limits=selected_limits,
     )
+
+
+def _create_handler(
+    repository: StateRepository,
+    runtime: _Runtime,
+) -> CreateLifecycleHandler:
+    return CreateLifecycleHandler(
+        repository,
+        cast(CaddyRuntime, runtime),
+        _Gate(),
+        now=lambda: _NOW,
+        clock=lambda: 1_777_000_000_000,
+        entropy=_Entropy(),
+        reloader=runtime.reload,
+        restorer=runtime.restore,
+        verifier=runtime.verify,
+    )
+
+
+def test_create_handler_completes_and_replays_a_fresh_claimed_job(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root)
+    _write_correlation(root, job)
+    runtime = _Runtime()
+    try:
+        handler = _create_handler(repository, runtime)
+        job_id = cast(str, job["jobId"])
+
+        first = handler.execute(job_id, claim=None, blocking=False)
+        completed_events = tuple(runtime.events)
+        second = handler.execute(job_id, claim=None, blocking=False)
+
+        assert first.result == second.result
+        assert first.created is True
+        assert second.created is False
+        assert first.result["status"] == "succeeded"
+        assert (
+            repository.read(StateRecordPath.authorization_job(job["jobId"])).document["phase"]
+            == "completed"
+        )
+        assert runtime.events == list(completed_events)
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
+def test_create_handler_rejects_a_result_that_raced_executor_validation(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root)
+    _write_correlation(root, job)
+    runtime = _Runtime()
+    try:
+        result = _fixture("operation-result.json")
+        provenance = result["provenance"]
+        assert type(provenance) is dict
+        provenance["jobId"] = job["jobId"]
+        result["correlationId"] = "0198d17f-6f4a-7000-8000-000000000099"
+        repository.create_immutable(
+            StateRecordPath.authorization_result(job["jobId"]),
+            result,
+        )
+
+        with pytest.raises(CreateLifecycleError, match="does not match"):
+            _create_handler(repository, runtime).execute(
+                cast(str, job["jobId"]),
+                claim=None,
+                blocking=False,
+            )
+    finally:
+        repository.close()
+
+
+def test_create_handler_recovers_its_prepared_intent(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root)
+    _write_correlation(root, job)
+    runtime = _Runtime()
+    try:
+        prepared = _prepare(repository, runtime, job)
+        runtime.events.clear()
+        job_id = cast(str, job["jobId"])
+
+        outcome = _create_handler(repository, runtime).execute(
+            job_id,
+            claim=None,
+            blocking=False,
+        )
+
+        assert outcome.result == prepared.plan.result
+        assert outcome.created is True
+        assert runtime.active == runtime.running == prepared.candidate_manifest.generation_id
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
+def test_create_handler_reports_recovered_existing_result_as_replay(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root)
+    _write_correlation(root, job)
+    runtime = _Runtime()
+    try:
+        prepared = _prepare(repository, runtime, job)
+
+        def interrupt(boundary: CreateCommitBoundary) -> None:
+            if boundary is CreateCommitBoundary.RESULT_SYNC:
+                raise RuntimeError("interrupt after result")
+
+        with pytest.raises(RuntimeError, match="interrupt after result"):
+            activate_create_transition(
+                repository,
+                cast(CaddyRuntime, runtime),
+                _Gate(),
+                prepared,
+                reloader=runtime.reload,
+                restorer=runtime.restore,
+                verifier=runtime.verify,
+                commit_failure_hook=interrupt,
+            )
+
+        outcome = _create_handler(repository, runtime).execute(
+            cast(str, job["jobId"]),
+            claim=None,
+            blocking=False,
+        )
+
+        assert outcome.result == prepared.plan.result
+        assert outcome.created is False
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
+def test_create_handler_reclassifies_after_concurrent_recovery_finishes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root)
+    _write_correlation(root, job)
+    runtime = _Runtime()
+    try:
+        prepared = _prepare(repository, runtime, job)
+        original = recover_create_transition_outcome
+
+        def finish_elsewhere_then_report_race(*args: object, **kwargs: object) -> None:
+            cast(Callable[..., object], original)(*args, **kwargs)
+            raise CreateRecoveryError("concurrent recovery removed the intent")
+
+        monkeypatch.setattr(
+            create_handler_module,
+            "recover_create_transition_outcome",
+            finish_elsewhere_then_report_race,
+        )
+        outcome = _create_handler(repository, runtime).execute(
+            cast(str, job["jobId"]),
+            claim=None,
+            blocking=False,
+        )
+
+        assert outcome.result == prepared.plan.result
+        assert outcome.created is False
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
+def test_create_handler_reclassifies_after_concurrent_recovery_activation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root)
+    _write_correlation(root, job)
+    runtime = _Runtime()
+    try:
+        prepared = _prepare(repository, runtime, job)
+        original = recover_create_transition_outcome
+
+        def finish_elsewhere_then_report_activation_race(
+            *args: object,
+            **kwargs: object,
+        ) -> None:
+            cast(Callable[..., object], original)(*args, **kwargs)
+            raise CreateActivationError("concurrent activation removed the intent")
+
+        monkeypatch.setattr(
+            create_handler_module,
+            "recover_create_transition_outcome",
+            finish_elsewhere_then_report_activation_race,
+        )
+        outcome = _create_handler(repository, runtime).execute(
+            cast(str, job["jobId"]),
+            claim=None,
+            blocking=False,
+        )
+
+        assert outcome.result == prepared.plan.result
+        assert outcome.created is False
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
+def test_create_handler_reclassifies_after_concurrent_preparation_wins(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root)
+    _write_correlation(root, job)
+    runtime = _Runtime()
+    try:
+        original = prepare_create_transition
+
+        def prepare_elsewhere_then_report_race(*args: object, **kwargs: object) -> None:
+            cast(Callable[..., object], original)(*args, **kwargs)
+            raise CreatePreparationError("concurrent preparation created the intent")
+
+        monkeypatch.setattr(
+            create_handler_module,
+            "prepare_create_transition",
+            prepare_elsewhere_then_report_race,
+        )
+        outcome = _create_handler(repository, runtime).execute(
+            cast(str, job["jobId"]),
+            claim=None,
+            blocking=False,
+        )
+
+        assert outcome.result["status"] == "succeeded"
+        assert outcome.created is True
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
+def test_create_handler_reports_concurrent_activation_as_replay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root)
+    _write_correlation(root, job)
+    runtime = _Runtime()
+    try:
+        original = activate_create_transition_outcome
+
+        def finish_elsewhere_then_replay(
+            *args: object,
+            **kwargs: object,
+        ) -> CreateCommitOutcome:
+            first = cast(Callable[..., CreateCommitOutcome], original)(*args, **kwargs)
+            assert first.created is True
+            return cast(Callable[..., CreateCommitOutcome], original)(*args, **kwargs)
+
+        monkeypatch.setattr(
+            create_handler_module,
+            "activate_create_transition_outcome",
+            finish_elsewhere_then_replay,
+        )
+        outcome = _create_handler(repository, runtime).execute(
+            cast(str, job["jobId"]),
+            claim=None,
+            blocking=False,
+        )
+
+        assert outcome.result["status"] == "succeeded"
+        assert outcome.created is False
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
+def test_executor_replays_a_concurrent_executor_failure_from_create_handler(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root)
+    _write_correlation(root, job)
+    runtime = _Runtime()
+    try:
+        handler = _create_handler(repository, runtime)
+        original_execute = handler.execute
+        with ArtifactIntake(root, expected_owner=os.geteuid()) as intake:
+
+            def lose_publication_race(
+                job_id: str,
+                *,
+                claim: LifecycleArtifact | None,
+                blocking: bool,
+            ) -> ExecutionOutcome:
+                competing = AuthorizationExecutor(repository, intake).execute(
+                    job_id,
+                    blocking=blocking,
+                )
+                assert competing.created is True
+                return original_execute(
+                    job_id,
+                    claim=claim,
+                    blocking=blocking,
+                )
+
+            monkeypatch.setattr(handler, "execute", lose_publication_race)
+            outcome = AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={"create": handler},
+            ).execute(job["jobId"])
+
+        assert outcome.created is False
+        assert outcome.result["status"] == "failed"
+        assert outcome.result["errorCode"] == "not_implemented"
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
+def test_create_handler_reclassifies_after_concurrent_activation_and_later_intent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root)
+    _write_correlation(root, job)
+    runtime = _Runtime()
+    try:
+        original = activate_create_transition_outcome
+        unrelated = _fixture("transaction-intent.json")
+
+        def finish_elsewhere_then_report_lost_race(
+            *args: object,
+            **kwargs: object,
+        ) -> None:
+            cast(Callable[..., CreateCommitOutcome], original)(*args, **kwargs)
+            repository.create_immutable(
+                StateRecordPath.transaction_intent(unrelated["intentId"]),
+                unrelated,
+            )
+            raise CreateActivationError("concurrent activation removed the create intent")
+
+        monkeypatch.setattr(
+            create_handler_module,
+            "activate_create_transition_outcome",
+            finish_elsewhere_then_report_lost_race,
+        )
+        outcome = _create_handler(repository, runtime).execute(
+            cast(str, job["jobId"]),
+            claim=None,
+            blocking=False,
+        )
+
+        assert outcome.result["status"] == "succeeded"
+        assert outcome.created is False
+        assert tuple(
+            identity.intent_id for identity in repository.measure_intent_records().records
+        ) == (unrelated["intentId"],)
+    finally:
+        repository.close()
+
+
+def test_create_handler_terminalizes_postclaim_source_drift(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root)
+    _write_correlation(root, job)
+    runtime = _Runtime()
+    try:
+        namespace = repository.read(StateRecordPath.platform_namespace())
+        drifted = namespace.document
+        drifted["initializedAt"] = "2026-08-30T12:01:00Z"
+        repository.compare_and_swap(
+            StateRecordPath.platform_namespace(),
+            namespace.revision,
+            drifted,
+        )
+        with ArtifactIntake(root, expected_owner=os.geteuid()) as intake:
+            outcome = AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={"create": _create_handler(repository, runtime)},
+            ).execute(job["jobId"])
+
+        assert outcome.created is True
+        assert outcome.result["status"] == "failed"
+        assert outcome.result["errorCode"] == "state_drift"
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
+def test_create_handler_defers_behind_an_unrelated_active_intent(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root)
+    _write_correlation(root, job)
+    runtime = _Runtime()
+    try:
+        prepared = _prepare(repository, runtime, job)
+        other = _fixture("authorization-job.json")
+        other["jobId"] = "0198d17f-6f4a-7000-8000-000000000003"
+        other["phase"] = "claimed"
+        request = other["request"]
+        assert type(request) is dict
+        request["correlationId"] = "0198d17f-6f4a-7000-8000-000000000004"
+        request["slug"] = "other-duck"
+        other["requestDigest"] = request_digest(request).to_dict()
+        _write(root, StateRecordPath.authorization_job(other["jobId"]), other)
+        other_job_id = cast(str, other["jobId"])
+
+        with pytest.raises(CreateLifecycleError, match="another lifecycle intent is active"):
+            _create_handler(repository, runtime).execute(
+                other_job_id,
+                claim=None,
+                blocking=False,
+            )
+
+        assert runtime.active == runtime.running == _SOURCE_GENERATION
+        assert repository.measure_intent_records().records[0].intent_id == prepared.plan.intent_id
+    finally:
+        repository.close()
 
 
 def test_create_preparation_publishes_then_binds_one_exact_intent(tmp_path: Path) -> None:

@@ -59,6 +59,7 @@ _ORIGIN_PULL_CA_DER = b"review-only-origin-pull-ca"
 _TENANT_ID = "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100"
 _DEPLOYMENT_ID = "0191e2ca-49f2-7608-8cf3-f80ab2cab151"
 _TENANT_GENERATION = "0198d17f-6f4a-7000-8000-000000000008"
+_CADDY_VALIDATION_DATA_MODE = 0o770
 
 
 def _accept_candidate(_generation: object, _environment: object) -> None:
@@ -1216,6 +1217,7 @@ def test_root_candidate_validation_has_exact_descendant_resource_boundaries() ->
         "/usr/bin/systemd-run",
         "--quiet",
         "--scope",
+        "--slice=lowerduckpond-static-workers.slice",
         "--collect",
         "--expand-environment=no",
         "--unit=lowerduckpond-caddy-validation-0123456789abcdef",
@@ -1240,7 +1242,6 @@ def test_root_candidate_validation_has_exact_descendant_resource_boundaries() ->
         "--clear-groups",
         "--inh-caps=-all",
         "--ambient-caps=-all",
-        "--bounding-set=-all",
         "--no-new-privs",
         "--",
         "/usr/bin/prlimit",
@@ -1251,7 +1252,7 @@ def test_root_candidate_validation_has_exact_descendant_resource_boundaries() ->
         "--nofile=64",
         "--stack=16777216",
         "--",
-        "/bin/bash",
+        "/usr/bin/bash",
         "-c",
         'exec -a caddy "/proc/self/fd/$1" "${@:2}"',
         "lowerduckpond-caddy-validation",
@@ -1283,7 +1284,9 @@ def test_selection_rejects_configuration_the_pinned_binary_cannot_load(
             environment[name] for name in ("HOME", "TMPDIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME")
         }
         assert len(data_roots) == 1
-        assert Path(data_roots.pop()).is_dir()
+        data_root = Path(data_roots.pop())
+        assert data_root.is_dir()
+        assert data_root.stat().st_mode & 0o777 == _CADDY_VALIDATION_DATA_MODE
         assert options["validation_uid"] == runtime_fixture.owner
         assert options["validation_gid"] == runtime_fixture.group
         if arguments[0] == "list-modules":

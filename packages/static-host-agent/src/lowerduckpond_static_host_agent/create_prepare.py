@@ -50,6 +50,10 @@ class CreatePreparationError(RuntimeError):
     """A claimed create could not establish one exact durable intent."""
 
 
+class CreateAuthorityDriftError(CreatePreparationError):
+    """A claimed create no longer matches authoritative source state."""
+
+
 @dataclass(frozen=True, slots=True)
 class PreparedCreateTransition:
     """The exact job, plan, and published candidate bound by one intent."""
@@ -171,7 +175,7 @@ def _require_current_create_authority(
     if document["phase"] != "claimed" or request["operation"] != "create":
         raise CreatePreparationError("create preparation requires one claimed create job")
     if build_expected_source(transaction, request) != document["expectedSource"]:
-        raise CreatePreparationError("create authorization source state drifted")
+        raise CreateAuthorityDriftError("create authorization source state drifted")
     return request
 
 
@@ -188,7 +192,7 @@ def _require_create_target_still_available(
         desired = transaction.read(StateRecordPath.tenant_desired(existing_tenant_id)).document
         metadata = desired["metadata"]
         if type(metadata) is dict and metadata.get("slug") == slug:
-            raise CreatePreparationError("create slug became unavailable")
+            raise CreateAuthorityDriftError("create slug became unavailable")
 
 
 def _admit_and_create_intent(
