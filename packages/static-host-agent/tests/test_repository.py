@@ -495,6 +495,28 @@ def test_result_writer_requires_archive_authority_but_reader_accepts_legacy_fail
     assert reread.document == result
 
 
+def test_retirement_writer_requires_current_authority_but_reader_accepts_legacy(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    intent = _fixture("archive-retirement-intent.json")
+    del intent["compatibilityVersion"]
+    del intent["archiveRecord"]
+    path = StateRecordPath.archive_retirement_intent(_ARCHIVE_RETIREMENT_INTENT_ID)
+
+    with (
+        _repository(root) as repository,
+        pytest.raises(StateRecordError, match="new archive-retirement intent"),
+    ):
+        repository.create_immutable(path, intent)
+
+    _write_record(root, path, intent)
+    with _repository(root) as repository:
+        reread = repository.read(path)
+
+    assert reread.document == intent
+
+
 def test_publication_transaction_holds_publication_before_tenant_state(
     tmp_path: Path,
 ) -> None:

@@ -2279,6 +2279,23 @@ def test_archive_retirement_binds_the_complete_record_digest() -> None:
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
 
+def test_pre_upgrade_archive_retirement_intent_remains_decodable() -> None:
+    intent = _load_object(FIXTURE_ROOT / "accepted/archive-retirement-intent.json")
+    del intent["compatibilityVersion"]
+    del intent["archiveRecord"]
+
+    assert validate_contract(intent) is ContractKind.ARCHIVE_RETIREMENT_INTENT
+
+
+def test_current_archive_retirement_intent_requires_its_record_authority() -> None:
+    intent = _load_object(FIXTURE_ROOT / "accepted/archive-retirement-intent.json")
+    del intent["archiveRecord"]
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(intent)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
 @pytest.mark.parametrize(
     ("field", "wrong_format"),
     [

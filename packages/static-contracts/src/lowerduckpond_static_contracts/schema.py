@@ -456,6 +456,8 @@ def _validate_archive_construction_intent(document: dict[str, object]) -> None:
 
 
 def _validate_archive_retirement_intent(document: dict[str, object]) -> None:
+    if document.get("compatibilityVersion") != "static-retirement-v2":
+        return
     archive = cast(dict[str, object], document["archiveRecord"])
     archive_digest = digest_bytes(
         canonical_json_bytes(archive),

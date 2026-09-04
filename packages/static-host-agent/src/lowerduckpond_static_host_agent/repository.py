@@ -456,6 +456,16 @@ def _validate_new_result_shape(
         raise StateRecordError("new successful operation result requires its exact manifest")
 
 
+def _validate_new_archive_retirement_shape(
+    name: _StateRecordName,
+    document: dict[str, object],
+) -> None:
+    if name is _StateRecordName.ARCHIVE_RETIREMENT_INTENT and (
+        document.get("compatibilityVersion") != "static-retirement-v2"
+    ):
+        raise StateRecordError("new archive-retirement intent requires current authority")
+
+
 @dataclass(frozen=True, slots=True)
 class StateRevision:
     """An internal CAS token over one exact canonical record generation."""
@@ -808,6 +818,7 @@ class StateRepository:
         validate_contract(candidate, expected_kind=path.contract_kind)
         path.validate_binding(candidate)
         _validate_new_result_shape(path.name, candidate)
+        _validate_new_archive_retirement_shape(path.name, candidate)
         return canonical_json_bytes(candidate)
 
     def _require_open(self) -> None:
