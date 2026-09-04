@@ -339,6 +339,9 @@ def test_route_plan_materializes_the_complete_lifecycle_matrix_entry(
     assert recovery["candidateRouteSet"] == candidate_routes
     assert recovery["sourceRuntimeGenerationId"] == _SOURCE_GENERATION
     assert recovery["candidateRuntimeGenerationId"] == _CANDIDATE_GENERATION
+    assert plan.intent["compatibilityVersion"] == "static-intent-v2"
+    assert plan.intent["sourceManifest"] == _route_source(source_state)[0]
+    assert plan.intent["candidateManifest"] == plan.manifest
     assert plan.observed_state["runtimeGenerationId"] == (
         _CANDIDATE_GENERATION if target_state == "active" else None
     )

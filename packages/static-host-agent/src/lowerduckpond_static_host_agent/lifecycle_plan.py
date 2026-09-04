@@ -345,6 +345,7 @@ def plan_route_transition(  # noqa: PLR0912, PLR0913, PLR0915, PLR0917 - authori
     intent: dict[str, object] = {
         "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
         "kind": "TransactionIntent",
+        "compatibilityVersion": "static-intent-v2",
         "intentId": intent_id,
         "tenantId": tenant_id,
         "correlationId": request["correlationId"],
@@ -358,7 +359,9 @@ def plan_route_transition(  # noqa: PLR0912, PLR0913, PLR0915, PLR0917 - authori
             "candidateRuntimeGenerationId": candidate_generation,
             "candidateRouteSet": ("both" if target_state is LifecycleState.ACTIVE else "absent"),
         },
+        "sourceManifest": source,
         "sourceManifestDigest": source_digest,
+        "candidateManifest": candidate,
         "candidateManifestDigest": candidate_digest,
         "phase": "prepared",
         "restartFence": None,
