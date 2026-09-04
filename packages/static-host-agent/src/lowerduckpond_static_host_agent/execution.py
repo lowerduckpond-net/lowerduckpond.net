@@ -827,6 +827,10 @@ class AuthorizationExecutor:
                 result,
                 require_failure=True,
             )
+            authority = _capture_bound_source_runtime_authority(
+                current.document,
+                authority,
+            )
             _validate_handler_result_state(
                 transaction,
                 current.document,
@@ -1286,6 +1290,10 @@ def _require_same_authority(
     second.pop("dispatchArtifactReleaseTreeDigest", None)
     first.pop("dispatchSourceReleaseTreeDigest", None)
     second.pop("dispatchSourceReleaseTreeDigest", None)
+    first.pop("dispatchSourceRouteSet", None)
+    second.pop("dispatchSourceRouteSet", None)
+    first.pop("dispatchSourceRuntimeGenerationId", None)
+    second.pop("dispatchSourceRuntimeGenerationId", None)
     first.pop("dispatchDeploymentIds", None)
     second.pop("dispatchDeploymentIds", None)
     first.pop("dispatchTenantIds", None)
@@ -1304,6 +1312,14 @@ def _require_same_bound_authority(
     second = deepcopy(current)
     first.pop("phase", None)
     second.pop("phase", None)
+    for field in (
+        "dispatchSourceRouteSet",
+        "dispatchSourceRuntimeGenerationId",
+    ):
+        previous = first.pop(field, None)
+        replacement = second.pop(field, None)
+        if previous is not None and previous != replacement:
+            raise ExecutionError("bound source runtime authority changed during execution")
     if first != second:
         raise ExecutionError("bound authorization authority changed during execution")
 
@@ -1629,12 +1645,11 @@ def _capture_replay_authority(
             source_spec = source["spec"]
             if type(source_spec) is not dict:
                 raise ExecutionError("failed replay source manifest is malformed")
-            source_route_set = "both" if source_spec["desiredState"] == "active" else "absent"
-            raw_generation = (
-                None if source_observed is None else source_observed.get("runtimeGenerationId")
+            source_generation, source_route_set = _replay_source_runtime_authority(
+                job,
+                source_observed,
+                source_spec,
             )
-            if raw_generation is not None:
-                source_generation = validate_uuid7(raw_generation)
         return _LifecycleDispatchAuthority(
             source_manifest=source,
             source_observed_state=source_observed,
@@ -1689,6 +1704,42 @@ def _capture_replay_authority(
         source_tenant_ids=_dispatch_tenant_ids(job),
         source_tenant_record_histories=_dispatch_tenant_record_histories(job),
         execution_validation_committed=validation_was_committed,
+    )
+
+
+def _replay_source_runtime_authority(
+    job: dict[str, object],
+    source_observed: dict[str, object] | None,
+    source_spec: dict[str, object],
+) -> tuple[str | None, str]:
+    """Recover exact bound runtime authority, with legacy-job fallback."""
+
+    bound_generation = _dispatch_source_runtime_generation_id(job)
+    bound_route_set = _dispatch_source_route_set(job)
+    if (bound_generation is None) != (bound_route_set is None):
+        raise ExecutionError("dispatch source runtime authority is partially bound")
+    if bound_generation is not None and bound_route_set is not None:
+        return bound_generation, bound_route_set
+    route_set = "both" if source_spec["desiredState"] == "active" else "absent"
+    raw_generation = None if source_observed is None else source_observed.get("runtimeGenerationId")
+    generation = None if raw_generation is None else validate_uuid7(raw_generation)
+    return generation, route_set
+
+
+def _capture_bound_source_runtime_authority(
+    job: dict[str, object],
+    authority: _LifecycleDispatchAuthority,
+) -> _LifecycleDispatchAuthority:
+    generation = _dispatch_source_runtime_generation_id(job)
+    route_set = _dispatch_source_route_set(job)
+    if (generation is None) != (route_set is None):
+        raise ExecutionError("dispatch source runtime authority is partially bound")
+    if generation is None:
+        return authority
+    return replace(
+        authority,
+        source_runtime_generation_id=generation,
+        source_route_set=route_set,
     )
 
 
@@ -2025,6 +2076,20 @@ def _dispatch_source_release_tree_digest(
     if type(raw) is not dict:
         raise ExecutionError("dispatch source release authority is malformed")
     return deepcopy(raw)
+
+
+def _dispatch_source_route_set(job: dict[str, object]) -> str | None:
+    raw = job.get("dispatchSourceRouteSet")
+    if raw is None:
+        return None
+    if raw not in {"absent", "both"}:
+        raise ExecutionError("dispatch source route-set authority is malformed")
+    return raw
+
+
+def _dispatch_source_runtime_generation_id(job: dict[str, object]) -> str | None:
+    raw = job.get("dispatchSourceRuntimeGenerationId")
+    return None if raw is None else validate_uuid7(raw)
 
 
 def _dispatch_deployment_ids(job: dict[str, object]) -> tuple[str, ...] | None:

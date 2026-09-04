@@ -315,6 +315,8 @@ def test_maximum_dispatch_authority_fits_the_authorization_job_bound() -> None:
             "dispatchArchiveDeploymentIds": archive_ids,
             "dispatchArtifactReleaseTreeDigest": None,
             "dispatchSourceReleaseTreeDigest": None,
+            "dispatchSourceRouteSet": "both",
+            "dispatchSourceRuntimeGenerationId": deployment_ids[0],
             "dispatchDeploymentIds": deployment_ids,
             "dispatchTenantIds": tenant_ids,
             "dispatchTenantRecordHistories": [

@@ -6863,6 +6863,68 @@ def test_executor_revalidates_source_runtime_after_failure_intent_cleanup(
     ]
 
 
+def test_executor_replays_exact_reconcile_source_after_intent_cleanup(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    job, intent, result = _write_committed_transition_replay(root, operation="reconcile")
+    source = _mapping(intent["sourceManifest"])
+    recovery = _mapping(intent["lifecycleRecovery"])
+    source_observed = _mapping(recovery["sourceObservedState"])
+    recovery["sourceRouteSet"] = "absent"
+    job.update(
+        {
+            "compatibilityVersion": "static-job-v2",
+            "dispatchSourceRouteSet": "absent",
+            "dispatchSourceRuntimeGenerationId": recovery["sourceRuntimeGenerationId"],
+            "executionValidated": False,
+            "sourceAuthority": {"manifest": source, "archiveRecord": None},
+            "phase": "failed",
+        }
+    )
+    result.update({"status": "failed", "errorCode": "state_drift"})
+    result.pop("canonicalOrigin")
+    result.pop("manifest")
+    _write(root, StateRecordPath.authorization_job(job["jobId"]), job)
+    correlation = json.loads(json.dumps(job))
+    correlation["phase"] = "pending"
+    _write(
+        root,
+        StateRecordPath.authorization_correlation(result["correlationId"]),
+        correlation,
+    )
+    _write(root, StateRecordPath.authorization_result(job["jobId"]), result)
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), source)
+    _write(root, StateRecordPath.tenant_observed(_TENANT_ID), source_observed)
+    root.joinpath(*StateRecordPath.transaction_intent(intent["intentId"]).components).unlink()
+    calls: list[tuple[str, str | None]] = []
+
+    def reject_unrestored(
+        _tenant_id: str,
+        route_set: str,
+        generation_id: str | None,
+        _manifest: dict[str, object],
+        _observed_state: dict[str, object] | None,
+        _allow_reconcile_source_drift: bool,
+    ) -> bool:
+        calls.append((route_set, generation_id))
+        return False
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        _append_result_audit(repository, job, result)
+        with pytest.raises(ExecutionError, match="restore its authorized routes"):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                tenant_runtime_validator=reject_unrestored,
+            ).execute(job["jobId"])
+
+    assert calls == [("absent", recovery["sourceRuntimeGenerationId"])]
+
+
 def test_executor_revalidates_external_state_after_a_validated_failure(
     tmp_path: Path,
 ) -> None:

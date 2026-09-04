@@ -454,6 +454,59 @@ def test_route_preparation_reconciles_drift_from_desired_authority(
         repository.close()
 
 
+def test_route_preparation_reconciles_archived_observed_drift(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root, "reconcile", "archived")
+    request = job["request"]
+    assert type(request) is dict
+    observed_path = StateRecordPath.tenant_observed(request["tenantId"])
+    drifted = repository.read(observed_path).document
+    drifted["desiredManifestDigest"] = {
+        "format": "lowerduckpond-manifest-v1",
+        "algorithm": "sha256",
+        "value": "f" * 64,
+    }
+    _write(root, observed_path, drifted)
+    runtime = _Runtime(source_route_set="absent")
+    try:
+        prepared = _prepare(repository, runtime, job)
+
+        recovery = prepared.plan.intent["lifecycleRecovery"]
+        assert type(recovery) is dict
+        assert recovery["sourceObservedState"] == drifted
+        assert prepared.plan.observed_state["observedState"] == "archived"
+        assert prepared.plan.observed_state["runtimeGenerationId"] is None
+    finally:
+        repository.close()
+
+
+def test_route_preparation_binds_exact_source_runtime_for_terminal_replay(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root, "reconcile", "active")
+    job["compatibilityVersion"] = "static-job-v2"
+    job["executionValidated"] = False
+    manifest = repository.read(StateRecordPath.tenant_desired(_TENANT_ID)).document
+    job["sourceAuthority"] = {"manifest": manifest, "archiveRecord": None}
+    _write(root, StateRecordPath.authorization_job(job["jobId"]), job)
+    runtime = _Runtime(_LATEST_SOURCE_GENERATION, source_route_set="absent")
+    try:
+        prepared = _prepare(repository, runtime, job)
+
+        stored = prepared.job.document
+        assert stored["dispatchSourceRuntimeGenerationId"] == _LATEST_SOURCE_GENERATION
+        assert stored["dispatchSourceRouteSet"] == "absent"
+        recovery = prepared.plan.intent["lifecycleRecovery"]
+        assert type(recovery) is dict
+        assert recovery["sourceRuntimeGenerationId"] == _LATEST_SOURCE_GENERATION
+        assert recovery["sourceRouteSet"] == "absent"
+    finally:
+        repository.close()
+
+
 def test_route_preparation_rejects_non_target_reconcile_snapshot_drift(
     tmp_path: Path,
 ) -> None:

@@ -142,6 +142,8 @@ def test_dispatch_binding_admits_allocated_growth_before_replacement(
             "dispatchArchiveDeploymentIds": archive_ids,
             "dispatchArtifactReleaseTreeDigest": None,
             "dispatchSourceReleaseTreeDigest": None,
+            "dispatchSourceRouteSet": "both",
+            "dispatchSourceRuntimeGenerationId": deployment_ids[0],
             "dispatchDeploymentIds": deployment_ids,
             "dispatchTenantIds": tenant_ids,
             "dispatchTenantRecordHistories": [

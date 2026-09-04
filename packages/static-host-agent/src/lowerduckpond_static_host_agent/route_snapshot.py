@@ -82,10 +82,19 @@ def snapshot_tenant_routes(
     transaction: RouteSnapshotTransaction,
     *,
     overlay: TenantRouteOverlay | None = None,
+    observed_drift_tenant_id: object | None = None,
 ) -> TenantRouteSnapshot:
     """Read every runtime tenant or substitute one explicit lifecycle candidate."""
 
-    return _snapshot_tenants(transaction, overlay=overlay, include_archived=False)
+    drift_tenant_id = (
+        None if observed_drift_tenant_id is None else validate_uuid7(observed_drift_tenant_id)
+    )
+    return _snapshot_tenants(
+        transaction,
+        overlay=overlay,
+        include_archived=False,
+        observed_drift_tenant_id=drift_tenant_id,
+    )
 
 
 def snapshot_tenant_authority(
@@ -93,7 +102,12 @@ def snapshot_tenant_authority(
 ) -> TenantRouteSnapshot:
     """Read every validated tenant, including archived durable authority."""
 
-    return _snapshot_tenants(transaction, overlay=None, include_archived=True)
+    return _snapshot_tenants(
+        transaction,
+        overlay=None,
+        include_archived=True,
+        observed_drift_tenant_id=None,
+    )
 
 
 def _snapshot_tenants(
@@ -101,6 +115,7 @@ def _snapshot_tenants(
     *,
     overlay: TenantRouteOverlay | None,
     include_archived: bool,
+    observed_drift_tenant_id: str | None,
 ) -> TenantRouteSnapshot:
     """Capture one complete tenant view under the caller's exclusive lock."""
 
@@ -126,14 +141,41 @@ def _snapshot_tenants(
                 raise RouteSnapshotError(
                     "replace route overlay source changed before the locked snapshot"
                 )
-            tenants.append((candidate, _is_archived(transaction, candidate)))
+            tenants.append(
+                (
+                    candidate,
+                    _is_archived(
+                        transaction,
+                        candidate,
+                        allow_observed_drift=(tenant_id == observed_drift_tenant_id),
+                    ),
+                )
+            )
         else:
             current = _read_tenant(transaction, tenant_id, deployment_history)
-            tenants.append((current, _is_archived(transaction, current)))
+            tenants.append(
+                (
+                    current,
+                    _is_archived(
+                        transaction,
+                        current,
+                        allow_observed_drift=(tenant_id == observed_drift_tenant_id),
+                    ),
+                )
+            )
     if overlay is not None and overlay.mode is RouteOverlayMode.ADD:
         if candidate is None:  # pragma: no cover - the add mode proves otherwise
             raise RouteSnapshotError("route overlay candidate was lost")
-        tenants.append((candidate, _is_archived(transaction, candidate)))
+        tenants.append(
+            (
+                candidate,
+                _is_archived(
+                    transaction,
+                    candidate,
+                    allow_observed_drift=(_tenant_id(candidate) == observed_drift_tenant_id),
+                ),
+            )
+        )
     tenants.sort(key=lambda item: _tenant_id(item[0]))
     _require_unique_slugs(tuple(tenant for tenant, _archived in tenants))
     selected = (
@@ -217,6 +259,8 @@ def _require_unique_slugs(tenants: tuple[TenantRouteInput, ...]) -> None:
 def _is_archived(
     transaction: RouteSnapshotTransaction,
     tenant: TenantRouteInput,
+    *,
+    allow_observed_drift: bool,
 ) -> bool:
     spec = tenant.manifest.get("spec")
     if type(spec) is not dict:  # pragma: no cover - copied route input was validated
@@ -224,7 +268,12 @@ def _is_archived(
     if spec.get("desiredState") != "archived":
         _reject_live_archive_binding(transaction, tenant)
         return False
-    _validate_archived_bindings(transaction, tenant, spec)
+    _validate_archived_bindings(
+        transaction,
+        tenant,
+        spec,
+        allow_observed_drift=allow_observed_drift,
+    )
     return True
 
 
@@ -248,14 +297,19 @@ def _validate_archived_bindings(
     transaction: RouteSnapshotTransaction,
     tenant: TenantRouteInput,
     spec: dict[str, object],
+    *,
+    allow_observed_drift: bool,
 ) -> None:
     tenant_id = _tenant_id(tenant)
     observed = tenant.observed_state
     deployment = tenant.deployment
-    if (
-        observed["tenantId"] != tenant_id
-        or observed["desiredManifestDigest"] != manifest_digest(tenant.manifest).to_dict()
+    if observed["tenantId"] != tenant_id:
+        raise RouteSnapshotError("archived tenant observed-state identity drifted")
+    if not allow_observed_drift and (
+        observed["desiredManifestDigest"] != manifest_digest(tenant.manifest).to_dict()
         or observed["observedState"] != "archived"
+        or observed["activeDeploymentId"] is not None
+        or observed["runtimeGenerationId"] is not None
     ):
         raise RouteSnapshotError("archived tenant desired and observed state disagree")
     desired = spec.get("desiredDeployment")

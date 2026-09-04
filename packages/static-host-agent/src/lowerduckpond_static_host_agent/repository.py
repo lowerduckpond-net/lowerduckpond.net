@@ -103,6 +103,8 @@ _DISPATCH_AUTHORITY_FIELDS: Final = (
     "dispatchArchiveDeploymentIds",
     "dispatchArtifactReleaseTreeDigest",
     "dispatchSourceReleaseTreeDigest",
+    "dispatchSourceRouteSet",
+    "dispatchSourceRuntimeGenerationId",
     "dispatchDeploymentIds",
     "dispatchTenantIds",
     "dispatchTenantRecordHistories",

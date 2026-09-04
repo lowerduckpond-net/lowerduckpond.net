@@ -35,8 +35,10 @@ from lowerduckpond_static_host_agent.lifecycle_plan import (
     plan_route_transition,
 )
 from lowerduckpond_static_host_agent.repository import (
+    StateConflictError,
     StateRecordPath,
     StateRepository,
+    StateRevision,
     StoredContract,
 )
 from lowerduckpond_static_host_agent.route_snapshot import (
@@ -88,6 +90,15 @@ class RoutePreparationTransaction(Protocol):
         document: dict[str, object],
     ) -> StoredContract: ...
 
+    def bind_dispatch_authority(
+        self,
+        path: StateRecordPath,
+        expected_revision: StateRevision,
+        document: dict[str, object],
+        *,
+        capacity_limits: HostCapacityLimits,
+    ) -> StoredContract: ...
+
     def measure_inventory(self) -> StateInventory: ...
 
     def measure_intent_records(self) -> IntentRecordInventory: ...
@@ -137,8 +148,14 @@ def prepare_route_transition(  # noqa: PLR0913 - authority sources stay explicit
             selected_snapshot,
             validate_uuid7(request["tenantId"]),
         )
+        tenant_id = validate_uuid7(request["tenantId"])
         try:
-            expected_snapshot = snapshot_tenant_routes(transaction)
+            expected_snapshot = snapshot_tenant_routes(
+                transaction,
+                observed_drift_tenant_id=(
+                    tenant_id if request["operation"] == "reconcile" else None
+                ),
+            )
         except (FileNotFoundError, RouteSnapshotError) as error:
             raise RouteAuthorityDriftError(
                 "authoritative tenant routes cannot produce a complete snapshot"
@@ -148,12 +165,19 @@ def prepare_route_transition(  # noqa: PLR0913 - authority sources stay explicit
             or not _snapshots_match_except_tenant(
                 selected_snapshot,
                 expected_snapshot,
-                tenant_id=validate_uuid7(request["tenantId"]),
+                tenant_id=tenant_id,
             )
         ):
             raise RouteAuthorityDriftError(
                 "selected runtime generation disagrees with authoritative tenant routes"
             )
+        job = _bind_source_runtime_authority(
+            transaction,
+            job,
+            source_runtime_generation_id=source_generation_id,
+            source_route_set=source_route_set,
+            capacity_limits=capacity_limits,
+        )
         candidate_generation_id = generate_uuid7(clock=clock, entropy=entropy)
         plan = plan_route_transition(
             job.document,
@@ -198,6 +222,43 @@ def prepare_route_transition(  # noqa: PLR0913 - authority sources stay explicit
                 error,
             )
         return PreparedRouteTransition(job, plan, candidate_manifest, capacity_limits)
+
+
+def _bind_source_runtime_authority(
+    transaction: RoutePreparationTransaction,
+    job: StoredContract,
+    *,
+    source_runtime_generation_id: str,
+    source_route_set: str,
+    capacity_limits: HostCapacityLimits,
+) -> StoredContract:
+    """Persist the selected source needed after terminal intent cleanup."""
+
+    document = job.document
+    if document["compatibilityVersion"] != "static-job-v2":
+        return job
+    existing_generation = document.get("dispatchSourceRuntimeGenerationId")
+    existing_route_set = document.get("dispatchSourceRouteSet")
+    if existing_generation is not None or existing_route_set is not None:
+        if (
+            existing_generation != source_runtime_generation_id
+            or existing_route_set != source_route_set
+        ):
+            raise RouteAuthorityDriftError("route source runtime authority changed")
+        return job
+    if "dispatchSourceRuntimeGenerationId" in document or "dispatchSourceRouteSet" in document:
+        raise RouteAuthorityDriftError("route source runtime authority is partially bound")
+    document["dispatchSourceRuntimeGenerationId"] = source_runtime_generation_id
+    document["dispatchSourceRouteSet"] = source_route_set
+    try:
+        return transaction.bind_dispatch_authority(
+            StateRecordPath.authorization_job(document["jobId"]),
+            job.revision,
+            document,
+            capacity_limits=capacity_limits,
+        )
+    except StateConflictError as error:
+        raise RouteAuthorityDriftError("route source runtime authority changed") from error
 
 
 @dataclass(frozen=True, slots=True)
