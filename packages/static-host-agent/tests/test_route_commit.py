@@ -18,6 +18,7 @@ from lowerduckpond_static_contracts import (
     request_digest,
 )
 from lowerduckpond_static_host_agent import (
+    AuditCapacityError,
     AuditState,
     CapacityRejectedError,
     FilesystemCapacity,
@@ -26,6 +27,7 @@ from lowerduckpond_static_host_agent import (
     StateConflictError,
     StateRecordPath,
     StateRepository,
+    StoredContract,
 )
 from lowerduckpond_static_host_agent.lifecycle_plan import (
     RouteTransitionPlan,
@@ -241,6 +243,11 @@ def _prepared(  # noqa: PLR0913 - fixture authority controls stay explicit
         clock=lambda: 1_777_000_000_000,
         entropy=_Entropy(),
     )
+    recovery = cast(dict[str, object], plan.intent["lifecycleRecovery"])
+    job["dispatchSourceObservedState"] = deepcopy(recovery["sourceObservedState"])
+    job["dispatchSourceRuntimeGenerationId"] = recovery["sourceRuntimeGenerationId"]
+    job["dispatchSourceRouteSet"] = recovery["sourceRouteSet"]
+    _write(root, StateRecordPath.authorization_job(job["jobId"]), job)
     repository = StateRepository(root, expected_owner=os.geteuid())
     repository.create_immutable(
         StateRecordPath.transaction_intent(plan.intent_id),
@@ -426,6 +433,47 @@ def test_route_commit_admits_capacity_before_state_mutation(tmp_path: Path) -> N
         repository.close()
 
 
+def test_route_commit_admits_audit_before_state_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, job, plan = _prepared(tmp_path)
+    source_manifest = cast(dict[str, object], plan.intent["sourceManifest"])
+    source_observed = cast(
+        dict[str, object],
+        cast(dict[str, object], plan.intent["lifecycleRecovery"])["sourceObservedState"],
+    )
+
+    def reject_audit(_transaction: object, _document: object) -> None:
+        raise AuditCapacityError("injected audit capacity rejection")
+
+    monkeypatch.setattr(
+        "lowerduckpond_static_host_agent.repository._StateTransaction.admit_audit_append",
+        reject_audit,
+    )
+    try:
+        with pytest.raises(AuditCapacityError, match="injected audit capacity rejection"):
+            _finalize(repository, job["jobId"], plan)
+
+        assert (
+            repository.read(StateRecordPath.tenant_desired(plan.tenant_id)).document
+            == source_manifest
+        )
+        assert (
+            repository.read(StateRecordPath.tenant_observed(plan.tenant_id)).document
+            == source_observed
+        )
+        assert repository.measure_intent_records().records
+        assert (
+            repository.read(StateRecordPath.authorization_job(job["jobId"])).document["phase"]
+            == "claimed"
+        )
+        with pytest.raises(FileNotFoundError):
+            repository.read(StateRecordPath.authorization_result(job["jobId"]))
+    finally:
+        repository.close()
+
+
 def test_route_validation_rejects_candidate_outside_exact_transform(tmp_path: Path) -> None:
     repository, job, plan = _prepared(tmp_path)
     try:
@@ -436,5 +484,37 @@ def test_route_validation_rejects_candidate_outside_exact_transform(tmp_path: Pa
         stored_job = repository.read(StateRecordPath.authorization_job(job["jobId"]))
         with pytest.raises(RouteCommitError):
             validate_route_transition(stored_job, tampered)
+    finally:
+        repository.close()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("dispatchSourceObservedState", None),
+        ("dispatchSourceRuntimeGenerationId", _LATEST_SOURCE_GENERATION),
+        ("dispatchSourceRouteSet", "absent"),
+    ],
+)
+def test_route_validation_rejects_recovery_outside_persisted_dispatch_authority(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    repository, job, plan = _prepared(tmp_path)
+    stored_job = repository.read(StateRecordPath.authorization_job(job["jobId"]))
+    drifted_job = stored_job.document
+    if field == "dispatchSourceObservedState":
+        drifted_observed = deepcopy(cast(dict[str, object], drifted_job[field]))
+        drifted_observed["reconciledAt"] = "2026-09-02T12:00:02Z"
+        drifted_job[field] = drifted_observed
+    else:
+        drifted_job[field] = value
+    try:
+        with pytest.raises(RouteCommitError, match="terminal documents disagree"):
+            validate_route_transition(
+                StoredContract(drifted_job, stored_job.revision),
+                plan,
+            )
     finally:
         repository.close()

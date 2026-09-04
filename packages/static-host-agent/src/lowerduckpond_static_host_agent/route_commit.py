@@ -89,6 +89,8 @@ class RouteCommitTransaction(Protocol):
 
     def append_audit(self, document: dict[str, object]) -> AuditAppend: ...
 
+    def admit_audit_append(self, document: dict[str, object]) -> AuditState: ...
+
     def measure_inventory(self) -> StateInventory: ...
 
     def measure_intent_records(self) -> IntentRecordInventory: ...
@@ -344,6 +346,9 @@ def _validate_document_relationships(
         or expected_source.get("manifestDigest") != source_digest
         or recovery.get("sourceObservedState") != documents.source_observed_state
         or recovery.get("candidateObservedState") != documents.observed_state
+        or job.get("dispatchSourceObservedState") != recovery.get("sourceObservedState")
+        or job.get("dispatchSourceRuntimeGenerationId") != recovery.get("sourceRuntimeGenerationId")
+        or job.get("dispatchSourceRouteSet") != recovery.get("sourceRouteSet")
         or (
             operation is not Operation.RECONCILE
             and recovery.get("sourceRouteSet") != expected_source_routes
@@ -502,6 +507,8 @@ def _admit_transition(  # noqa: PLR0912 - each replay boundary is explicit
         if existing_result.document != documents.result:
             raise StateConflictError("existing route result disagrees")
     audit_missing = _audit_needs_append(transaction.inspect_audit(), documents.audit_entry)
+    if audit_missing:
+        transaction.admit_audit_append(documents.audit_entry)
     job_transition = job.document["phase"] == "claimed"
     writes: list[dict[str, object]] = []
     if write_desired:
