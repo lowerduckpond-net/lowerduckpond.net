@@ -1193,7 +1193,6 @@ def _validation_invocation(  # noqa: PLR0913
             f"--regid={validation_gid}",
             "--clear-groups",
         ]
-        capability_arguments.append("--bounding-set=-all")
     sandboxed_command = [
         _SETPRIV,
         *identity_arguments,

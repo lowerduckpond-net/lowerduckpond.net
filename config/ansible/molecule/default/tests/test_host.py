@@ -263,6 +263,12 @@ def assert_static_worker_caddy_runtime_access(host: Host) -> None:
         "open(environment['TMPDIR']+'/candidate-output','w').close();"
         "os.seteuid(0);"
         "shutil.rmtree(validation_root);"
+        "validator_fd=os.open('/usr/bin/true',os.O_RDONLY|os.O_CLOEXEC);"
+        "validation=runtime._run_validation_command(validator_fd,[],environment={},"
+        "inherited_descriptors=(),validation_uid=caddy.pw_uid,"
+        "validation_gid=caddy.pw_gid);"
+        "os.close(validator_fd);"
+        "assert validation.returncode==0;"
         "fd=os.open('/workspace/chown-probe',os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600);"
         "os.fchown(fd,0,pwd.getpwnam('caddy').pw_gid);"
         "os.close(fd)"
@@ -290,7 +296,7 @@ def assert_static_worker_caddy_runtime_access(host: Host) -> None:
             "--property=BindReadOnlyPaths=/run/systemd",
             "--property=ProtectProc=invisible",
             "--property=ProcSubset=pid",
-            "--property=CapabilityBoundingSet=CAP_CHOWN CAP_SETUID",
+            "--property=CapabilityBoundingSet=CAP_CHOWN CAP_SETGID CAP_SETUID",
             "--property=NoNewPrivileges=no",
             "--property=PrivateNetwork=yes",
             "--property=RestrictAddressFamilies=AF_UNIX",

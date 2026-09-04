@@ -1241,7 +1241,6 @@ def test_root_candidate_validation_has_exact_descendant_resource_boundaries() ->
         "--clear-groups",
         "--inh-caps=-all",
         "--ambient-caps=-all",
-        "--bounding-set=-all",
         "--no-new-privs",
         "--",
         "/usr/bin/prlimit",
