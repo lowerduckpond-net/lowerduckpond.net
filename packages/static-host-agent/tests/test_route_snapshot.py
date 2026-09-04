@@ -114,6 +114,22 @@ def _archived_tenant(tenant_id: str, *, slug: str) -> TenantRouteInput:
     return TenantRouteInput(tenant.manifest, tenant.observed_state, deployment)
 
 
+def _archive_record(tenant: TenantRouteInput) -> dict[str, object]:
+    assert tenant.deployment is not None
+    metadata = tenant.manifest["metadata"]
+    assert type(metadata) is dict
+    archive = _fixture("archive-record.json")
+    archive.update(
+        {
+            "tenantId": metadata["id"],
+            "deploymentId": tenant.deployment["id"],
+            "releaseTreeDigest": tenant.deployment["releaseTreeDigest"],
+            "manifestDigest": manifest_digest(tenant.manifest).to_dict(),
+        }
+    )
+    return archive
+
+
 def test_snapshot_reads_every_tenant_and_selected_deployment(tmp_path: Path) -> None:
     root = _state_root(tmp_path)
     namespace = _fixture("platform-namespace.json")
@@ -148,6 +164,12 @@ def test_snapshot_omits_archived_tenants_from_the_complete_runtime_input(
         StateRecordPath.tenant_deployment(_SECOND_TENANT_ID, archived.deployment["id"]),
         archived.deployment,
     )
+    archive = _archive_record(archived)
+    _write(
+        root,
+        StateRecordPath.tenant_archive(_SECOND_TENANT_ID, archived.deployment["id"]),
+        archive,
+    )
 
     with (
         StateRepository(root, expected_owner=os.geteuid()) as repository,
@@ -163,7 +185,10 @@ def test_snapshot_omits_archived_tenants_from_the_complete_runtime_input(
     assert replaced.tenants == (active,)
 
 
-@pytest.mark.parametrize("corruption", ["observed-digest", "deployment-binding"])
+@pytest.mark.parametrize(
+    "corruption",
+    ["observed-digest", "deployment-binding", "archive-missing", "archive-binding"],
+)
 def test_snapshot_rejects_corrupt_archived_authority_before_omitting_it(
     tmp_path: Path,
     corruption: str,
@@ -172,11 +197,12 @@ def test_snapshot_rejects_corrupt_archived_authority_before_omitting_it(
     _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
     _active_tenant(root)
     archived = _archived_tenant(_SECOND_TENANT_ID, slug="archived-duck")
+    archive = _archive_record(archived)
     if corruption == "observed-digest":
         digest = archived.observed_state["desiredManifestDigest"]
         assert type(digest) is dict
         digest["value"] = "f" * 64
-    else:
+    elif corruption == "deployment-binding":
         spec = archived.manifest["spec"]
         assert type(spec) is dict
         desired = spec["desiredDeployment"]
@@ -185,6 +211,10 @@ def test_snapshot_rejects_corrupt_archived_authority_before_omitting_it(
         archived.observed_state["desiredManifestDigest"] = manifest_digest(
             archived.manifest
         ).to_dict()
+    elif corruption == "archive-binding":
+        digest = archive["manifestDigest"]
+        assert type(digest) is dict
+        digest["value"] = "f" * 64
     _write(root, StateRecordPath.tenant_desired(_SECOND_TENANT_ID), archived.manifest)
     _write(root, StateRecordPath.tenant_observed(_SECOND_TENANT_ID), archived.observed_state)
     assert archived.deployment is not None
@@ -193,6 +223,12 @@ def test_snapshot_rejects_corrupt_archived_authority_before_omitting_it(
         StateRecordPath.tenant_deployment(_SECOND_TENANT_ID, archived.deployment["id"]),
         archived.deployment,
     )
+    if corruption != "archive-missing":
+        _write(
+            root,
+            StateRecordPath.tenant_archive(_SECOND_TENANT_ID, archived.deployment["id"]),
+            archive,
+        )
 
     with (
         StateRepository(root, expected_owner=os.geteuid()) as repository,

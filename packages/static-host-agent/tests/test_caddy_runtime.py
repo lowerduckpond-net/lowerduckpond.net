@@ -178,26 +178,67 @@ class _OpenGate:
 
 
 class _RouteTransaction:
-    def __init__(self) -> None:
+    def __init__(self, archived: TenantRouteInput | None = None) -> None:
         self.read_count = 0
+        self.archived = archived
 
     def read(self, path: StateRecordPath) -> StoredContract:
         self.read_count += 1
-        if path != StateRecordPath.platform_namespace():
+        document: dict[str, object]
+        kind: ContractKind
+        if path == StateRecordPath.platform_namespace():
+            document = _platform_namespace()
+            kind = ContractKind.PLATFORM_NAMESPACE
+        elif self.archived is not None:
+            deployment = self.archived.deployment
+            assert deployment is not None
+            if path == StateRecordPath.tenant_desired(_TENANT_ID):
+                document = self.archived.manifest
+                kind = ContractKind.SITE
+            elif path == StateRecordPath.tenant_observed(_TENANT_ID):
+                document = self.archived.observed_state
+                kind = ContractKind.TENANT_OBSERVED_STATE
+            elif path == StateRecordPath.tenant_deployment(_TENANT_ID, _DEPLOYMENT_ID):
+                document = deployment
+                kind = ContractKind.DEPLOYMENT_RECORD
+            elif path == StateRecordPath.tenant_archive(_TENANT_ID, _DEPLOYMENT_ID):
+                document = {
+                    "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+                    "kind": "ArchiveRecord",
+                    "tenantId": _TENANT_ID,
+                    "deploymentId": _DEPLOYMENT_ID,
+                    "releaseTreeDigest": deployment["releaseTreeDigest"],
+                    "manifestDigest": manifest_digest(self.archived.manifest).to_dict(),
+                    "bundleDigest": {
+                        "format": "lowerduckpond-archive-v1",
+                        "algorithm": "sha256",
+                        "value": "2" * 64,
+                    },
+                    "bundleSize": 4096,
+                    "bucket": "lowerduckpond-net-production-tenant-archives-4f3e6b91",
+                    "key": "archives/0198d17f-6f4a-7000-8000-000000000003.zip",
+                    "versionId": "3LgY0Q5G-safe-fixture-version",
+                    "createdAt": "2026-09-02T12:02:00Z",
+                    "correlationId": "0198d17f-6f4a-7000-8000-000000000001",
+                }
+                kind = ContractKind.ARCHIVE_RECORD
+            else:
+                raise AssertionError(f"unexpected state read: {path}")
+        else:
             raise AssertionError(f"unexpected state read: {path}")
-        namespace = _platform_namespace()
-        encoded = canonical_json_bytes(namespace)
+        encoded = canonical_json_bytes(document)
         return StoredContract(
-            namespace,
+            document,
             StateRevision(
-                ContractKind.PLATFORM_NAMESPACE,
+                kind,
                 len(encoded),
                 hashlib.sha256(encoded).hexdigest(),
             ),
         )
 
     def measure_inventory(self) -> StateInventory:
-        return StateInventory((), 0, 0, 0, 0)
+        tenant_ids = () if self.archived is None else (_TENANT_ID,)
+        return StateInventory(tenant_ids, 0, 0, 0, 0)
 
 
 def _candidate_inputs() -> tuple[_RouteTransaction, TenantRouteOverlay, _OpenGate]:
@@ -464,8 +505,9 @@ def test_runtime_publishes_an_unrouted_archived_tenant_candidate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _allow_candidate_capacity(monkeypatch, runtime_fixture.root)
-    transaction = _RouteTransaction()
-    overlay = TenantRouteOverlay(RouteOverlayMode.ADD, _archived_tenant_input())
+    archived = _archived_tenant_input()
+    transaction = _RouteTransaction(archived)
+    overlay = TenantRouteOverlay(RouteOverlayMode.REPLACE, archived, archived)
     with runtime_fixture.open() as runtime, runtime.locked():
         runtime.select_active(GENERATION_A)
         manifest = runtime.publish_candidate(

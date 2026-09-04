@@ -102,16 +102,16 @@ def snapshot_tenant_routes(
                 raise RouteSnapshotError(
                     "replace route overlay source changed before the locked snapshot"
                 )
-            if not _is_archived(candidate):
+            if not _is_archived(transaction, candidate):
                 tenants.append(candidate)
         else:
             current = _read_tenant(transaction, tenant_id)
-            if not _is_archived(current):
+            if not _is_archived(transaction, current):
                 tenants.append(current)
     if overlay is not None and overlay.mode is RouteOverlayMode.ADD:
         if candidate is None:  # pragma: no cover - the add mode proves otherwise
             raise RouteSnapshotError("route overlay candidate was lost")
-        if not _is_archived(candidate):
+        if not _is_archived(transaction, candidate):
             tenants.append(candidate)
     tenants.sort(key=_tenant_id)
     return TenantRouteSnapshot(namespace, tuple(tenants))
@@ -146,17 +146,21 @@ def _tenant_id(tenant: TenantRouteInput) -> str:
     return _manifest_tenant_id(tenant.manifest)
 
 
-def _is_archived(tenant: TenantRouteInput) -> bool:
+def _is_archived(
+    transaction: RouteSnapshotTransaction,
+    tenant: TenantRouteInput,
+) -> bool:
     spec = tenant.manifest.get("spec")
     if type(spec) is not dict:  # pragma: no cover - copied route input was validated
         raise RouteSnapshotError("tenant route manifest spec is malformed")
     if spec.get("desiredState") != "archived":
         return False
-    _validate_archived_bindings(tenant, spec)
+    _validate_archived_bindings(transaction, tenant, spec)
     return True
 
 
 def _validate_archived_bindings(
+    transaction: RouteSnapshotTransaction,
     tenant: TenantRouteInput,
     spec: dict[str, object],
 ) -> None:
@@ -178,6 +182,21 @@ def _validate_archived_bindings(
         or deployment["archiveSha256"] != desired["archiveSha256"]
     ):
         raise RouteSnapshotError("archived tenant deployment binding drifted")
+    deployment_id = validate_uuid7(deployment["id"])
+    try:
+        archive = transaction.read(
+            StateRecordPath.tenant_archive(tenant_id, deployment_id)
+        ).document
+    except FileNotFoundError as error:
+        raise RouteSnapshotError("archived tenant omitted its archive record") from error
+    validate_contract(archive, expected_kind=ContractKind.ARCHIVE_RECORD)
+    if (
+        archive["tenantId"] != tenant_id
+        or archive["deploymentId"] != deployment_id
+        or archive["releaseTreeDigest"] != deployment["releaseTreeDigest"]
+        or archive["manifestDigest"] != manifest_digest(tenant.manifest).to_dict()
+    ):
+        raise RouteSnapshotError("archived tenant archive binding drifted")
 
 
 def _manifest_tenant_id(manifest: dict[str, object]) -> str:
