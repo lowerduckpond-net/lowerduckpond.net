@@ -51,6 +51,14 @@ from lowerduckpond_static_host_agent.caddy_startup import (
 )
 from lowerduckpond_static_host_agent.capacity import CapacityError
 from lowerduckpond_static_host_agent.correlations import CorrelationError
+from lowerduckpond_static_host_agent.create_activate import CreateActivationError
+from lowerduckpond_static_host_agent.create_commit import CreateCommitError
+from lowerduckpond_static_host_agent.create_handler import (
+    CreateLifecycleError,
+    CreateLifecycleHandler,
+)
+from lowerduckpond_static_host_agent.create_prepare import CreatePreparationError
+from lowerduckpond_static_host_agent.create_recover import CreateRecoveryError
 from lowerduckpond_static_host_agent.execution import (
     AuthorizationExecutor,
     ExecutionError,
@@ -128,6 +136,12 @@ class _ReleaseStateTransaction(Protocol):
 _SAFE_ERRORS: Final = (
     ContractError,
     CapacityError,
+    CaddyRuntimeError,
+    CreateActivationError,
+    CreateCommitError,
+    CreateLifecycleError,
+    CreatePreparationError,
+    CreateRecoveryError,
     ProtocolError,
     CorrelationError,
     ExecutionError,
@@ -203,10 +217,18 @@ def executor_main(arguments: list[str] | None = None) -> int:
         with (
             StateRepository(_STATE_ROOT, expected_owner=_EXPECTED_OWNER) as repository,
             ArtifactIntake(_STATE_ROOT, expected_owner=_EXPECTED_OWNER) as intake,
+            _open_caddy_control_runtime() as runtime,
         ):
             AuthorizationExecutor(
                 repository,
                 intake,
+                handlers={
+                    "create": CreateLifecycleHandler(
+                        repository,
+                        runtime,
+                        CommandPublicationGate(_PUBLICATION_GATE),
+                    ),
+                },
                 deleted_tenant_release_validator=partial(
                     _deleted_tenant_publication_absent,
                     repository,
