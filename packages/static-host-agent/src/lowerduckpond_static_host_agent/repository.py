@@ -35,6 +35,7 @@ from lowerduckpond_static_host_agent.audit import (
     AuditLimits,
     AuditState,
     tenant_has_deployment_audit_history,
+    tenant_has_identity_audit_history,
 )
 from lowerduckpond_static_host_agent.audit import (
     append_audit as append_audit_record,
@@ -630,6 +631,17 @@ class StateRepository:
         with self.transaction(mode=LockMode.EXCLUSIVE, blocking=blocking) as transaction:
             return transaction.tenant_has_deployment_history(tenant_id)
 
+    def tenant_has_identity_history(
+        self,
+        tenant_id: object,
+        *,
+        blocking: bool = False,
+    ) -> bool:
+        """Return whether root-owned state has ever recorded one tenant identity."""
+
+        with self.transaction(mode=LockMode.EXCLUSIVE, blocking=blocking) as transaction:
+            return transaction.tenant_has_identity_history(tenant_id)
+
     def create_immutable(
         self,
         path: StateRecordPath,
@@ -851,6 +863,22 @@ class _StateTransaction:
         if self._tenant_has_release_history(canonical_id):
             return True
         return tenant_has_deployment_audit_history(
+            self._repository._durable,
+            canonical_id,
+            expected_owner=self._repository._expected_owner,
+            expected_directory_mode=self._repository._expected_directory_mode,
+            expected_record_mode=self._repository._expected_record_mode,
+        )
+
+    def tenant_has_identity_history(self, tenant_id: object) -> bool:
+        """Inspect current and audited identity history while state is serialized."""
+
+        self._require_active()
+        self._require_exclusive()
+        canonical_id = validate_uuid7(tenant_id)
+        if canonical_id in self.measure_inventory().tenant_ids:
+            return True
+        return tenant_has_identity_audit_history(
             self._repository._durable,
             canonical_id,
             expected_owner=self._repository._expected_owner,

@@ -67,6 +67,8 @@ class CreatePreparationTransaction(Protocol):
 
     def tenant_has_deployment_history(self, tenant_id: object) -> bool: ...
 
+    def tenant_has_identity_history(self, tenant_id: object) -> bool: ...
+
     def create_immutable(
         self,
         path: StateRecordPath,
@@ -180,7 +182,7 @@ def _require_create_target_still_available(
 ) -> None:
     slug = request["slug"]
     inventory = transaction.measure_inventory()
-    if tenant_id in inventory.tenant_ids or transaction.tenant_has_deployment_history(tenant_id):
+    if tenant_id in inventory.tenant_ids or transaction.tenant_has_identity_history(tenant_id):
         raise CreatePreparationError("generated create tenant identity is unavailable")
     for existing_tenant_id in inventory.tenant_ids:
         desired = transaction.read(StateRecordPath.tenant_desired(existing_tenant_id)).document

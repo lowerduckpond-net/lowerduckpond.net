@@ -13,6 +13,7 @@ from typing import cast
 import lowerduckpond_static_host_agent.repository as repository_module
 import pytest
 from lowerduckpond_static_contracts import (
+    audit_entry_digest,
     canonical_json_bytes,
     platform_state_digest,
 )
@@ -323,21 +324,35 @@ def test_create_preparation_publishes_then_binds_one_exact_intent(tmp_path: Path
         repository.close()
 
 
-def test_create_preparation_rejects_a_generated_identity_with_retained_history(
+def test_create_preparation_rejects_a_never_deployed_deleted_identity(
     tmp_path: Path,
 ) -> None:
     root = _state_root(tmp_path)
     repository, job = _prepared_repository(root)
     runtime = _Runtime()
-    audit = _fixture("audit-entry.json")
-    audit.update(
+    created = _fixture("audit-entry.json")
+    created["tenantId"] = _GENERATED_TENANT_ID
+    deleted = deepcopy(created)
+    deleted.update(
         {
-            "operation": "deploy",
-            "tenantId": _GENERATED_TENANT_ID,
+            "sequence": 1,
+            "previousEntryDigest": audit_entry_digest(created).to_dict(),
+            "correlationId": "0198d17f-6f4a-7000-8000-000000000009",
+            "operation": "delete",
+            "deletionEvidence": {
+                "mode": "never-deployed",
+                "releasedSlugs": ["duck-repair"],
+                "archiveRecordDigest": None,
+                "bucket": None,
+                "key": None,
+                "versionId": None,
+                "emergencyReason": None,
+            },
         }
     )
     try:
-        repository.append_audit(audit)
+        repository.append_audit(created)
+        repository.append_audit(deleted)
 
         with pytest.raises(CreatePreparationError, match="identity is unavailable"):
             _prepare(repository, runtime, job)

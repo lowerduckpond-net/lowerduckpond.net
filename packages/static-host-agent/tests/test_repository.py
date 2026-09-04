@@ -1439,6 +1439,18 @@ def test_deployment_history_finds_audit_after_tenant_namespace_removal(
         assert repository.tenant_has_deployment_history(_OTHER_TENANT_ID) is True
 
 
+def test_identity_history_distinguishes_never_deployed_audit_history(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    audit = _fixture("audit-entry.json")
+
+    with _repository(root) as repository:
+        repository.append_audit(audit)
+        assert repository.tenant_has_identity_history(_TENANT_ID) is True
+        assert repository.tenant_has_deployment_history(_TENANT_ID) is False
+
+
 def test_shared_and_expired_transactions_cannot_mutate_state(tmp_path: Path) -> None:
     root = _state_root(tmp_path)
     path = StateRecordPath.tenant_desired(_TENANT_ID)

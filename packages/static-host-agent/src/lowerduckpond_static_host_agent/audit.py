@@ -126,9 +126,6 @@ class AuditCorrelationSnapshot:
     entry: dict[str, object] | None
     previous_tenant_state_transition: dict[str, object] | None
     has_later_tenant_state_transition: bool
-    later_tenant_state_transitions: tuple[tuple[str, str], ...]
-    later_tenant_inventory_transitions: tuple[tuple[str, str], ...]
-    later_tenant_state_entries: tuple[dict[str, object], ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,10 +194,41 @@ def tenant_has_deployment_audit_history(  # noqa: PLR0913 - storage contract is 
         )
     finally:
         audit_directory.close()
-    return canonical_tenant_id in _deployment_history_tenant_ids(
+    return _tenant_audit_history(
         segments,
         limits=limits,
-    )
+        tenant_id=canonical_tenant_id,
+    )[1]
+
+
+def tenant_has_identity_audit_history(  # noqa: PLR0913 - storage contract is explicit
+    root: DurableDirectory,
+    tenant_id: object,
+    *,
+    expected_owner: int,
+    expected_directory_mode: int,
+    expected_record_mode: int,
+    limits: AuditLimits = DEFAULT_AUDIT_LIMITS,
+) -> bool:
+    """Prove whether the complete audit chain records a tenant identity."""
+
+    canonical_tenant_id = validate_uuid7(tenant_id)
+    audit_directory = root.open_descendant(("audit",))
+    try:
+        segments = _read_segments(
+            audit_directory,
+            expected_owner=expected_owner,
+            expected_directory_mode=expected_directory_mode,
+            expected_record_mode=expected_record_mode,
+            limits=limits,
+        )
+    finally:
+        audit_directory.close()
+    return _tenant_audit_history(
+        segments,
+        limits=limits,
+        tenant_id=canonical_tenant_id,
+    )[0]
 
 
 def inspect_audit_correlation(  # noqa: PLR0913 - keep every audit boundary explicit
@@ -231,23 +259,19 @@ def inspect_audit_correlation(  # noqa: PLR0913 - keep every audit boundary expl
         entry,
         previous_tenant_state_transition,
         has_later_tenant_state_transition,
-        later_tenant_state_transitions,
-        later_tenant_inventory_transitions,
-        later_tenant_state_entries,
-        _deployment_history_tenant_ids,
+        _has_tenant_history,
+        _has_deployment_history,
     ) = _validate_chain_records(
         segments,
         limits=limits,
         correlation_id=canonical_correlation_id,
+        history_tenant_id=None,
     )
     return AuditCorrelationSnapshot(
         state=state,
         entry=entry,
         previous_tenant_state_transition=previous_tenant_state_transition,
         has_later_tenant_state_transition=has_later_tenant_state_transition,
-        later_tenant_state_transitions=later_tenant_state_transitions,
-        later_tenant_inventory_transitions=later_tenant_inventory_transitions,
-        later_tenant_state_entries=later_tenant_state_entries,
     )
 
 
@@ -432,65 +456,63 @@ def _validate_chain(
         _entry,
         _previous_tenant_state_transition,
         _has_later_tenant_state_transition,
-        _later_tenant_state_transitions,
-        _later_tenant_inventory_transitions,
-        _later_tenant_state_entries,
-        _deployment_history_tenant_ids,
+        _has_tenant_history,
+        _has_deployment_history,
     ) = _validate_chain_records(
         segments,
         limits=limits,
         correlation_id=None,
+        history_tenant_id=None,
     )
     return state
 
 
-def _deployment_history_tenant_ids(
+def _tenant_audit_history(
     segments: list[_Segment],
     *,
     limits: AuditLimits,
-) -> frozenset[str]:
-    """Validate the chain and collect tenant IDs with deployment evidence."""
+    tenant_id: str,
+) -> tuple[bool, bool]:
+    """Validate the chain and inspect one tenant without retaining all identities."""
 
     (
         _state,
         _entry,
         _previous_tenant_state_transition,
         _has_later_tenant_state_transition,
-        _later_tenant_state_transitions,
-        _later_tenant_inventory_transitions,
-        _later_tenant_state_entries,
-        tenant_ids,
-    ) = _validate_chain_records(segments, limits=limits, correlation_id=None)
-    return tenant_ids
+        has_tenant_history,
+        has_deployment_history,
+    ) = _validate_chain_records(
+        segments,
+        limits=limits,
+        correlation_id=None,
+        history_tenant_id=tenant_id,
+    )
+    return has_tenant_history, has_deployment_history
 
 
-def _validate_chain_records(  # noqa: PLR0912,PLR0915 - one bounded chain-validation pass
+def _validate_chain_records(  # noqa: PLR0912 - one bounded chain-validation pass
     segments: list[_Segment],
     *,
     limits: AuditLimits,
     correlation_id: str | None,
+    history_tenant_id: str | None,
 ) -> tuple[
     AuditState,
     dict[str, object] | None,
     dict[str, object] | None,
     bool,
-    tuple[tuple[str, str], ...],
-    tuple[tuple[str, str], ...],
-    tuple[dict[str, object], ...],
-    frozenset[str],
+    bool,
+    bool,
 ]:
     sequence = 0
     terminal: dict[str, str] | None = None
     allocated = 0
     previous_segment_bytes: int | None = None
     matching_entry: dict[str, object] | None = None
-    previous_tenant_state_transition: dict[str, object] | None = None
-    latest_tenant_state_transitions: dict[str, dict[str, object]] = {}
     has_later_tenant_state_transition = False
-    later_tenant_state_transitions: list[tuple[str, str]] = []
-    later_tenant_inventory_transitions: list[tuple[str, str]] = []
-    later_tenant_state_entries: list[dict[str, object]] = []
-    deployment_history_tenant_ids: set[str] = set()
+    has_tenant_history = False
+    has_deployment_history = False
     for segment in segments:
         if not segment.data or not segment.data.endswith(b"\n"):
             raise AuditError("audit segment is not nonempty canonical JSON lines")
@@ -518,25 +540,25 @@ def _validate_chain_records(  # noqa: PLR0912,PLR0915 - one bounded chain-valida
                 raise AuditError("audit entry sequence is not contiguous")
             if document["previousEntryDigest"] != terminal:
                 raise AuditError("audit entry predecessor breaks the chain")
-            preceding_match = matching_entry
             if correlation_id is not None and document["correlationId"] == correlation_id:
                 if matching_entry is not None:
                     raise AuditError("audit correlation appears multiple times")
                 matching_entry = document
-                tenant_id = document["tenantId"]
-                if type(tenant_id) is str:
-                    previous_tenant_state_transition = latest_tenant_state_transitions.get(
-                        tenant_id
-                    )
             has_later_tenant_state_transition = (
                 has_later_tenant_state_transition
-                or _is_later_tenant_state_transition(preceding_match, document)
+                or _is_later_tenant_state_transition(matching_entry, document)
             )
             tenant_id = document["tenantId"]
             operation = document["operation"]
             deletion_evidence = document.get("deletionEvidence")
             if (
-                type(tenant_id) is str
+                tenant_id == history_tenant_id
+                and document["resultStatus"] == "succeeded"
+                and operation in _TENANT_STATE_TRANSITIONS
+            ):
+                has_tenant_history = True
+            if (
+                tenant_id == history_tenant_id
                 and document["resultStatus"] == "succeeded"
                 and (
                     operation in _DEPLOYMENT_EVIDENCE_OPERATIONS
@@ -547,29 +569,16 @@ def _validate_chain_records(  # noqa: PLR0912,PLR0915 - one bounded chain-valida
                     )
                 )
             ):
-                deployment_history_tenant_ids.add(tenant_id)
-            if (
-                preceding_match is not None
-                and type(tenant_id) is str
-                and type(operation) is str
-                and document["resultStatus"] == "succeeded"
-                and operation in _TENANT_STATE_TRANSITIONS
-            ):
-                later_tenant_state_transitions.append((operation, tenant_id))
-                later_tenant_state_entries.append(deepcopy(document))
-                if operation in {"create", "delete"}:
-                    later_tenant_inventory_transitions.append((operation, tenant_id))
-            if (
-                type(tenant_id) is str
-                and document["resultStatus"] == "succeeded"
-                and document["operation"] in _TENANT_STATE_TRANSITIONS
-            ):
-                latest_tenant_state_transitions[tenant_id] = document
+                has_deployment_history = True
             terminal = audit_entry_digest(document).to_dict()
             sequence += 1
         previous_segment_bytes = len(segment.data)
     if allocated > limits.maximum_administrator_bytes:
         raise AuditCapacityError("audit allocation exceeds its absolute ceiling")
+    previous_tenant_state_transition = _previous_tenant_state_transition(
+        segments,
+        matching_entry,
+    )
     return (
         AuditState(
             entry_count=sequence,
@@ -580,11 +589,38 @@ def _validate_chain_records(  # noqa: PLR0912,PLR0915 - one bounded chain-valida
         matching_entry,
         previous_tenant_state_transition,
         has_later_tenant_state_transition,
-        tuple(later_tenant_state_transitions),
-        tuple(later_tenant_inventory_transitions),
-        tuple(later_tenant_state_entries),
-        frozenset(deployment_history_tenant_ids),
+        has_tenant_history,
+        has_deployment_history,
     )
+
+
+def _previous_tenant_state_transition(
+    segments: list[_Segment],
+    matching_entry: dict[str, object] | None,
+) -> dict[str, object] | None:
+    """Find one predecessor without retaining a map of every tenant identity."""
+
+    if matching_entry is None or type(matching_entry["tenantId"]) is not str:
+        return None
+    tenant_id = matching_entry["tenantId"]
+    matching_sequence = matching_entry["sequence"]
+    previous: dict[str, object] | None = None
+    for segment in segments:
+        for line in segment.data.splitlines(keepends=True):
+            document = decode_contract(
+                line,
+                expected_kind=ContractKind.AUDIT_ENTRY,
+                maximum_raw_bytes=MAX_CANONICAL_BYTES,
+            )
+            if document["sequence"] == matching_sequence:
+                return previous
+            if (
+                document["tenantId"] == tenant_id
+                and document["resultStatus"] == "succeeded"
+                and document["operation"] in _TENANT_STATE_TRANSITIONS
+            ):
+                previous = document
+    return previous
 
 
 def _is_later_tenant_state_transition(
@@ -593,6 +629,7 @@ def _is_later_tenant_state_transition(
 ) -> bool:
     return (
         matching_entry is not None
+        and candidate["sequence"] != matching_entry["sequence"]
         and matching_entry["tenantId"] is not None
         and candidate["tenantId"] == matching_entry["tenantId"]
         and candidate["resultStatus"] == "succeeded"
