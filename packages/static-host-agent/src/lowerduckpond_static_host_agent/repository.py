@@ -446,6 +446,8 @@ def _validate_new_result_shape(
         _StateRecordName.EMERGENCY_RESULT,
     }:
         return
+    if document["operation"] == "archive" and "archiveRecord" not in document:
+        raise StateRecordError("new archive operation result requires archive authority")
     if (
         document["status"] == "succeeded"
         and document["operation"] != "delete"

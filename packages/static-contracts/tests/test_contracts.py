@@ -700,7 +700,7 @@ def test_successful_archive_record_is_bound_to_its_result(
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
 
-def test_failed_archive_result_requires_an_explicit_null_archive_record() -> None:
+def test_legacy_failed_archive_result_without_archive_record_remains_decodable() -> None:
     result = _load_object(FIXTURE_ROOT / "accepted/operation-result.json")
     del result["canonicalOrigin"]
     del result["manifest"]
@@ -712,10 +712,7 @@ def test_failed_archive_result_requires_an_explicit_null_archive_record() -> Non
         }
     )
 
-    with pytest.raises(ContractError) as captured:
-        validate_contract(result)
-    assert captured.value.code is ErrorCode.SCHEMA_INVALID
-
+    assert validate_contract(result) is ContractKind.OPERATION_RESULT
     result["archiveRecord"] = None
     assert validate_contract(result) is ContractKind.OPERATION_RESULT
 
@@ -1283,10 +1280,6 @@ def test_failed_archive_result_declares_whether_an_upload_candidate_exists() -> 
     )
     result.pop("canonicalOrigin")
     result.pop("manifest")
-
-    with pytest.raises(ContractError) as captured:
-        validate_contract(result)
-    assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
     result["archiveRecord"] = None
     assert validate_contract(result) is ContractKind.OPERATION_RESULT
