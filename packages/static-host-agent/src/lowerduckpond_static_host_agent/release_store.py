@@ -149,6 +149,7 @@ class DeploymentReleaseStore:
         canonical_tenant = validate_uuid7(tenant_id)
         canonical_deployment = validate_uuid7(deployment_id)
         staging_name = _staging_name(canonical_tenant, canonical_deployment)
+        owns_staging = False
         try:
             intake.extract_deployment_release(
                 artifact,
@@ -157,6 +158,7 @@ class DeploymentReleaseStore:
                 retained_usage=retained_usage,
                 limits=capacity_limits,
             )
+            owns_staging = True
             measurement = measure_release_tree(
                 self._staging_root / staging_name,
                 lock_manager=publication_lock,
@@ -171,12 +173,13 @@ class DeploymentReleaseStore:
                 measurement,
             )
         except BaseException as error:
-            try:
-                self._discard_name(staging_name)
-            except BaseException as cleanup_error:
-                raise ReleaseStoreError(
-                    "failed release staging could not be removed"
-                ) from cleanup_error
+            if owns_staging:
+                try:
+                    self._discard_name(staging_name)
+                except BaseException as cleanup_error:
+                    raise ReleaseStoreError(
+                        "failed release staging could not be removed"
+                    ) from cleanup_error
             if isinstance(error, ReleaseStoreError):
                 raise
             raise ReleaseStoreError("deployment release could not be staged safely") from error
@@ -213,6 +216,7 @@ class DeploymentReleaseStore:
                     raise ReleaseStoreError(
                         "published release identity contains other content"
                     ) from None
+                os.fsync(releases_fd)
                 self._discard_name(staged.staging_name)
                 return PublishedDeploymentRelease(existing, False)
             os.fsync(releases_fd)
@@ -278,13 +282,13 @@ class DeploymentReleaseStore:
             raise ReleaseStoreError("protected release staging is absent")
         removed = 0
         for name in names:
-            measurement = measure_release_tree(
-                self._staging_root / name,
-                lock_manager=publication_lock,
-                expected_owner=self._expected_owner,
-            )
             expected = protected.get(name)
             if expected is not None:
+                measurement = measure_release_tree(
+                    self._staging_root / name,
+                    lock_manager=publication_lock,
+                    expected_owner=self._expected_owner,
+                )
                 if measurement.digest.to_dict() != dict(expected):
                     raise ReleaseStoreError("protected release staging digest drifted")
                 continue
@@ -390,7 +394,11 @@ class DeploymentReleaseStore:
     def _discard_name(self, name: str) -> None:
         if _STAGING_NAME.fullmatch(name) is None:
             raise ReleaseStoreError("release staging name is not canonical")
-        _remove_tree(self._staging_fd, name, expected_owner=self._expected_owner)
+        _remove_staging_tree(
+            self._staging_fd,
+            name,
+            expected_owner=self._expected_owner,
+        )
 
     def _require_locked(self, publication_lock: PublicationLockProof) -> None:
         self._require_open()
@@ -675,3 +683,81 @@ def _remove_directory_contents(directory_fd: int, *, expected_owner: int) -> Non
             raise ReleaseStoreError("release cleanup encountered an unsafe inode")
         os.unlink(name, dir_fd=directory_fd)
     os.fsync(directory_fd)
+
+
+def _remove_staging_tree(parent_fd: int, name: str, *, expected_owner: int) -> None:
+    try:
+        root_fd = _open_staging_directory(
+            parent_fd,
+            name,
+            expected_owner=expected_owner,
+        )
+    except ReleaseStoreError as error:
+        try:
+            os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        raise error
+    try:
+        _remove_staging_contents(root_fd, expected_owner=expected_owner)
+        os.fsync(root_fd)
+    finally:
+        os.close(root_fd)
+    os.rmdir(name, dir_fd=parent_fd)
+    os.fsync(parent_fd)
+
+
+def _remove_staging_contents(directory_fd: int, *, expected_owner: int) -> None:
+    with os.scandir(directory_fd) as iterator:
+        names = tuple(sorted(entry.name for entry in iterator))
+    for name in names:
+        metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        if stat.S_ISDIR(metadata.st_mode):
+            child = _open_staging_directory(
+                directory_fd,
+                name,
+                expected_owner=expected_owner,
+            )
+            try:
+                _remove_staging_contents(child, expected_owner=expected_owner)
+                os.fsync(child)
+            finally:
+                os.close(child)
+            os.rmdir(name, dir_fd=directory_fd)
+            continue
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != expected_owner
+            or stat.S_IMODE(metadata.st_mode) not in {_RELEASE_FILE_MODE, 0o600}
+            or metadata.st_nlink != 1
+        ):
+            raise ReleaseStoreError("staging cleanup encountered an unsafe inode")
+        os.unlink(name, dir_fd=directory_fd)
+    os.fsync(directory_fd)
+
+
+def _open_staging_directory(
+    parent_fd: int,
+    name: str,
+    *,
+    expected_owner: int,
+) -> int:
+    try:
+        descriptor = os.open(name, _DIRECTORY_FLAGS, dir_fd=parent_fd)
+    except OSError as error:
+        raise ReleaseStoreError("staging directory cannot be opened safely") from error
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != expected_owner
+            or stat.S_IMODE(metadata.st_mode) not in {_RELEASE_DIRECTORY_MODE, 0o700}
+        ):
+            raise ReleaseStoreError("staging directory has an unsafe inode shape")
+        named = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if (named.st_dev, named.st_ino) != (metadata.st_dev, metadata.st_ino):
+            raise ReleaseStoreError("staging directory changed while it was opened")
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise

@@ -147,7 +147,10 @@ def test_release_store_extracts_verifies_and_durably_publishes(tmp_path: Path) -
     assert not any((state_root / "staging").iterdir())
 
 
-def test_release_publication_exactly_replays_an_existing_identity(tmp_path: Path) -> None:
+def test_release_publication_exactly_replays_an_existing_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     state_root = _state_root(tmp_path)
     release_root = _release_root(tmp_path)
     payload = _deployment_zip()
@@ -200,7 +203,17 @@ def test_release_publication_exactly_replays_an_existing_identity(tmp_path: Path
                 retained_usage=ReleaseCapacityUsage(()),
                 publication_lock=locks,
             )
+            synced: list[Path] = []
+            original_fsync = os.fsync
+
+            def track_fsync(descriptor: int) -> None:
+                synced.append(Path(f"/proc/self/fd/{descriptor}").resolve())
+                original_fsync(descriptor)
+
+            monkeypatch.setattr(os, "fsync", track_fsync)
             assert store.publish(replay, publication_lock=locks).created is False
+            releases = release_root / _TENANT_ID / "releases"
+            assert synced.index(releases) < synced.index(state_root / "staging")
 
     assert not any((state_root / "staging").iterdir())
 
@@ -266,6 +279,63 @@ def test_release_publication_refuses_an_existing_identity_with_other_content(
             )
             with pytest.raises(ReleaseStoreError, match="contains other content"):
                 store.publish(replay, publication_lock=locks)
+
+
+def test_release_staging_collision_preserves_the_existing_candidate(tmp_path: Path) -> None:
+    state_root = _state_root(tmp_path)
+    release_root = _release_root(tmp_path)
+    payload = _deployment_zip()
+    with (
+        ArtifactIntake(state_root, expected_owner=os.geteuid()) as intake,
+        DeploymentReleaseStore(
+            release_root,
+            state_root / "staging",
+            expected_owner=os.geteuid(),
+            expected_release_group=os.getegid(),
+        ) as store,
+        LockManager(
+            state_root / "locks",
+            expected_owner=os.geteuid(),
+            expected_directory_mode=0o700,
+        ) as locks,
+    ):
+        with intake.admit(
+            operation="deploy",
+            correlation_id=_CORRELATION_ID,
+            declared=_binding(payload),
+            read=BytesIO(payload).read,
+        ) as lease:
+            lease.commit()
+        with (
+            intake.claim(
+                correlation_id=_CORRELATION_ID,
+                declared=_binding(payload),
+            ) as claim,
+            locks.acquire(LockName.PUBLICATION, mode=LockMode.EXCLUSIVE),
+        ):
+            expected = intake.deployment_release_tree_digest(claim.artifact).to_dict()
+            staged = store.stage(
+                intake,
+                claim.artifact,
+                tenant_id=_TENANT_ID,
+                deployment_id=_DEPLOYMENT_ID,
+                expected_release_tree_digest=expected,
+                retained_usage=ReleaseCapacityUsage(()),
+                publication_lock=locks,
+            )
+            with pytest.raises(ReleaseStoreError, match="could not be staged safely"):
+                store.stage(
+                    intake,
+                    claim.artifact,
+                    tenant_id=_TENANT_ID,
+                    deployment_id=_DEPLOYMENT_ID,
+                    expected_release_tree_digest=expected,
+                    retained_usage=ReleaseCapacityUsage(()),
+                    publication_lock=locks,
+                )
+            preserved = state_root / "staging" / staged.staging_name
+            assert (preserved / "assets" / "site.txt").read_bytes() == b"immutable release\n"
+            store.discard_staged(staged, publication_lock=locks)
 
 
 def test_release_store_reconciles_only_unprotected_safe_staging(tmp_path: Path) -> None:
@@ -414,6 +484,35 @@ def test_release_store_rejects_an_unsafe_staging_inventory(tmp_path: Path) -> No
         pytest.raises(ReleaseStoreError, match="unrecognized entry"),
     ):
         store.reconcile_staging({}, publication_lock=locks)
+
+
+def test_release_store_removes_restrictive_partial_staging(tmp_path: Path) -> None:
+    state_root = _state_root(tmp_path)
+    release_root = _release_root(tmp_path)
+    staging_name = f"{_TENANT_ID}--{_DEPLOYMENT_ID}"
+    partial = state_root / "staging" / staging_name
+    _mkdir(partial, 0o700)
+    _mkdir(partial / "assets", 0o700)
+    partial_file = partial / "assets" / "site.txt"
+    partial_file.write_bytes(b"partial")
+    partial_file.chmod(0o600)
+    with (
+        DeploymentReleaseStore(
+            release_root,
+            state_root / "staging",
+            expected_owner=os.geteuid(),
+            expected_release_group=os.getegid(),
+        ) as store,
+        LockManager(
+            state_root / "locks",
+            expected_owner=os.geteuid(),
+            expected_directory_mode=0o700,
+        ) as locks,
+        locks.acquire(LockName.PUBLICATION, mode=LockMode.EXCLUSIVE),
+    ):
+        assert store.reconcile_staging({}, publication_lock=locks) == 1
+
+    assert not partial.exists()
 
 
 def test_release_store_rejects_unsafe_root_metadata(tmp_path: Path) -> None:
