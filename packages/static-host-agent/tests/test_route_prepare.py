@@ -507,6 +507,41 @@ def test_route_preparation_binds_exact_source_runtime_for_terminal_replay(
         repository.close()
 
 
+def test_route_preparation_rebinds_pre_intent_source_after_other_tenant_advance(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root, "suspend", "active")
+    job["compatibilityVersion"] = "static-job-v2"
+    job["executionValidated"] = False
+    manifest = repository.read(StateRecordPath.tenant_desired(_TENANT_ID)).document
+    job["sourceAuthority"] = {"manifest": manifest, "archiveRecord": None}
+    _write(root, StateRecordPath.authorization_job(job["jobId"]), job)
+    with repository.transaction(mode=LockMode.EXCLUSIVE) as transaction:
+        current = transaction.read(StateRecordPath.authorization_job(job["jobId"]))
+        bound = current.document
+        bound["dispatchSourceRuntimeGenerationId"] = _SOURCE_GENERATION
+        bound["dispatchSourceRouteSet"] = "both"
+        transaction.bind_dispatch_authority(
+            StateRecordPath.authorization_job(job["jobId"]),
+            current.revision,
+            bound,
+        )
+    runtime = _Runtime(_LATEST_SOURCE_GENERATION)
+    try:
+        prepared = _prepare(repository, runtime, job)
+
+        stored = prepared.job.document
+        assert stored["dispatchSourceRuntimeGenerationId"] == _LATEST_SOURCE_GENERATION
+        assert stored["dispatchSourceRouteSet"] == "both"
+        recovery = prepared.plan.intent["lifecycleRecovery"]
+        assert type(recovery) is dict
+        assert recovery["sourceRuntimeGenerationId"] == _LATEST_SOURCE_GENERATION
+        assert recovery["sourceRouteSet"] == "both"
+    finally:
+        repository.close()
+
+
 def test_route_preparation_rejects_non_target_reconcile_snapshot_drift(
     tmp_path: Path,
 ) -> None:

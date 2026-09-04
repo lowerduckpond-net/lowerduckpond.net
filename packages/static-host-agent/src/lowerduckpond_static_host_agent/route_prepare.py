@@ -36,6 +36,7 @@ from lowerduckpond_static_host_agent.lifecycle_plan import (
 )
 from lowerduckpond_static_host_agent.repository import (
     StateConflictError,
+    StateRecordError,
     StateRecordPath,
     StateRepository,
     StateRevision,
@@ -91,6 +92,15 @@ class RoutePreparationTransaction(Protocol):
     ) -> StoredContract: ...
 
     def bind_dispatch_authority(
+        self,
+        path: StateRecordPath,
+        expected_revision: StateRevision,
+        document: dict[str, object],
+        *,
+        capacity_limits: HostCapacityLimits,
+    ) -> StoredContract: ...
+
+    def rebind_route_source_authority(
         self,
         path: StateRecordPath,
         expected_revision: StateRevision,
@@ -240,12 +250,20 @@ def _bind_source_runtime_authority(
     existing_generation = document.get("dispatchSourceRuntimeGenerationId")
     existing_route_set = document.get("dispatchSourceRouteSet")
     if existing_generation is not None or existing_route_set is not None:
-        if (
-            existing_generation != source_runtime_generation_id
-            or existing_route_set != source_route_set
-        ):
+        if existing_route_set != source_route_set:
             raise RouteAuthorityDriftError("route source runtime authority changed")
-        return job
+        if existing_generation == source_runtime_generation_id:
+            return job
+        document["dispatchSourceRuntimeGenerationId"] = source_runtime_generation_id
+        try:
+            return transaction.rebind_route_source_authority(
+                StateRecordPath.authorization_job(document["jobId"]),
+                job.revision,
+                document,
+                capacity_limits=capacity_limits,
+            )
+        except (StateConflictError, StateRecordError) as error:
+            raise RouteAuthorityDriftError("route source runtime authority changed") from error
     if "dispatchSourceRuntimeGenerationId" in document or "dispatchSourceRouteSet" in document:
         raise RouteAuthorityDriftError("route source runtime authority is partially bound")
     document["dispatchSourceRuntimeGenerationId"] = source_runtime_generation_id

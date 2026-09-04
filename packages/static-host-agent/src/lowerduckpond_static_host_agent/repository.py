@@ -1553,6 +1553,38 @@ class _StateTransaction:
         )
         return self._repository._read_locked(path)
 
+    def rebind_route_source_authority(
+        self,
+        path: StateRecordPath,
+        expected_revision: StateRevision,
+        document: dict[str, object],
+        *,
+        capacity_limits: HostCapacityLimits = DEFAULT_HOST_CAPACITY_LIMITS,
+    ) -> StoredContract:
+        """Advance only pre-intent route source generation authority."""
+
+        self._require_exclusive()
+        if path.name is not _StateRecordName.AUTHORIZATION_JOB:
+            raise StateRecordError("route source authority belongs only to an authorization job")
+        if self.measure_intent_records().records:
+            raise StateRecordError("route source authority cannot advance after intent creation")
+        candidate = self._repository._encode(path, document)
+        current = self._repository._read_locked(path)
+        if current.revision != expected_revision:
+            raise StateConflictError("authoritative state changed before commit")
+        _validate_route_source_authority_replacement(current.document, document)
+        self._admit_atomic_authorization_replacement(
+            path,
+            candidate,
+            capacity_limits=capacity_limits,
+        )
+        self._repository._durable.replace(
+            path.components,
+            candidate,
+            mode=self._repository._expected_record_mode,
+        )
+        return self._repository._read_locked(path)
+
     def _admit_atomic_authorization_replacement(
         self,
         path: StateRecordPath,
@@ -1925,6 +1957,34 @@ def _validate_dispatch_authority_replacement(
             raise StateRecordError("bound dispatch authority cannot be replaced")
     if before != after:
         raise StateRecordError("dispatch binding changed non-dispatch authority")
+
+
+def _validate_route_source_authority_replacement(
+    current: dict[str, object],
+    candidate: dict[str, object],
+) -> None:
+    if (
+        current["phase"] != "claimed"
+        or candidate["phase"] != "claimed"
+        or current["executionValidated"] is not False
+        or candidate["executionValidated"] is not False
+    ):
+        raise StateRecordError("route source rebind requires an unvalidated claimed job")
+    before = deepcopy(current)
+    after = deepcopy(candidate)
+    before_generation = before.pop("dispatchSourceRuntimeGenerationId", None)
+    after_generation = after.pop("dispatchSourceRuntimeGenerationId", None)
+    before_route_set = before.pop("dispatchSourceRouteSet", None)
+    after_route_set = after.pop("dispatchSourceRouteSet", None)
+    if (
+        before != after
+        or before_route_set not in {"absent", "both"}
+        or after_route_set != before_route_set
+        or before_generation is None
+        or after_generation is None
+        or before_generation == after_generation
+    ):
+        raise StateRecordError("route source rebind changed authority outside its generation")
 
 
 def _validate_execution_validation_replacement(

@@ -28,6 +28,7 @@ from lowerduckpond_static_host_agent import (
     CapacityRejectedError,
     CreateStateBoundary,
     CreateTransitionPlan,
+    FilesystemCapacity,
     HostCapacityLimits,
     LockManager,
     LockMode,
@@ -172,6 +173,62 @@ def test_dispatch_binding_admits_allocated_growth_before_replacement(
 
     assert reservations[0].authorization_allocated_bytes > 0
     assert retained == job
+
+
+def test_route_source_rebind_is_forbidden_after_intent_creation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _state_root(tmp_path)
+    monkeypatch.setattr(
+        "lowerduckpond_static_host_agent.repository._StateTransaction.measure_filesystem_capacity",
+        lambda _transaction: FilesystemCapacity(
+            device=1,
+            fragment_size=4096,
+            total_blocks=100_000_000,
+            available_blocks=80_000_000,
+            total_inodes=1_000_000,
+            available_inodes=900_000,
+        ),
+    )
+    path = StateRecordPath.authorization_job(_JOB_ID)
+    job = _fixture("authorization-job.json")
+    job.update(
+        {
+            "compatibilityVersion": "static-job-v2",
+            "executionValidated": False,
+            "phase": "claimed",
+            "sourceAuthority": None,
+        }
+    )
+    _write_record(root, path, job)
+
+    with (
+        _repository(root) as repository,
+        repository.transaction(mode=LockMode.EXCLUSIVE) as transaction,
+    ):
+        current = transaction.read(path)
+        bound = current.document
+        bound["dispatchSourceRouteSet"] = "both"
+        bound["dispatchSourceRuntimeGenerationId"] = "0198d17f-6f4a-7000-8000-000000000004"
+        current = transaction.bind_dispatch_authority(
+            path,
+            current.revision,
+            bound,
+        )
+        intent = _fixture("transaction-intent.json")
+        transaction.create_immutable(
+            StateRecordPath.transaction_intent(intent["intentId"]),
+            intent,
+        )
+        rebound = current.document
+        rebound["dispatchSourceRuntimeGenerationId"] = "0198d17f-6f4a-7000-8000-000000000005"
+        with pytest.raises(StateRecordError, match="after intent creation"):
+            transaction.rebind_route_source_authority(
+                path,
+                current.revision,
+                rebound,
+            )
 
 
 def test_execution_validation_admits_temporary_replacement_before_writing(
