@@ -200,9 +200,11 @@ from lowerduckpond_static_host_agent.job_runtime import (
 )
 from lowerduckpond_static_host_agent.lifecycle_plan import (
     CreateTransitionPlan,
+    DeploymentTransitionPlan,
     LifecyclePlanError,
     RouteTransitionPlan,
     plan_create_transition,
+    plan_deployment_transition,
     plan_route_transition,
 )
 from lowerduckpond_static_host_agent.locks import (
@@ -432,6 +434,7 @@ __all__ = [
     "CreateTransitionPlan",
     "DeadlineReader",
     "DeadlineWriter",
+    "DeploymentTransitionPlan",
     "DiscoveredIntent",
     "DurabilityBoundary",
     "DurableDirectory",
@@ -568,6 +571,7 @@ __all__ = [
     "measure_release_tree",
     "measure_release_tree_snapshot",
     "plan_create_transition",
+    "plan_deployment_transition",
     "plan_route_transition",
     "platform_generation_matches",
     "platform_generation_state",
