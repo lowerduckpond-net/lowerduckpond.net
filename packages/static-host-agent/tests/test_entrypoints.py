@@ -642,7 +642,11 @@ def test_selected_tenant_runtime_accepts_only_bound_reconcile_source_drift(
             return nullcontext(Transaction())
 
     monkeypatch.setattr(entrypoints, "_open_caddy_control_runtime", Runtime)
-    monkeypatch.setattr(entrypoints, "snapshot_tenant_routes", lambda _transaction: expected)
+    monkeypatch.setattr(
+        entrypoints,
+        "snapshot_tenant_routes",
+        lambda _transaction, **_kwargs: expected,
+    )
 
     assert not entrypoints._selected_tenant_runtime_matches(
         Repository(),  # type: ignore[arg-type]

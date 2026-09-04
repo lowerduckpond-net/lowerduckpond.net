@@ -327,6 +327,53 @@ def test_snapshot_rejects_corrupt_archived_authority_before_omitting_it(
         snapshot_tenant_routes(transaction)
 
 
+def test_authority_snapshot_allows_only_targeted_archived_observed_drift(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    _active_tenant(root)
+    archived = _archived_tenant(_SECOND_TENANT_ID, slug="archived-duck")
+    digest = archived.observed_state["desiredManifestDigest"]
+    assert type(digest) is dict
+    digest["value"] = "f" * 64
+    _write(root, StateRecordPath.tenant_desired(_SECOND_TENANT_ID), archived.manifest)
+    _write(
+        root,
+        StateRecordPath.tenant_observed(_SECOND_TENANT_ID),
+        archived.observed_state,
+    )
+    assert archived.deployment is not None
+    _write(
+        root,
+        StateRecordPath.tenant_deployment(_SECOND_TENANT_ID, archived.deployment["id"]),
+        archived.deployment,
+    )
+    _write(
+        root,
+        StateRecordPath.tenant_archive(_SECOND_TENANT_ID, archived.deployment["id"]),
+        _archive_record(archived),
+    )
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        repository.transaction(mode=LockMode.EXCLUSIVE) as transaction,
+    ):
+        with pytest.raises(RouteSnapshotError, match="archived tenant"):
+            snapshot_tenant_authority(transaction)
+        authority = snapshot_tenant_authority(
+            transaction,
+            observed_drift_tenant_id=_SECOND_TENANT_ID,
+        )
+        with pytest.raises(RouteSnapshotError, match="archived tenant"):
+            snapshot_tenant_authority(
+                transaction,
+                observed_drift_tenant_id=_TENANT_ID,
+            )
+
+    assert authority.tenants[1].observed_state == archived.observed_state
+
+
 def test_add_overlay_extends_the_complete_snapshot_without_persisting(
     tmp_path: Path,
 ) -> None:

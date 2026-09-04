@@ -8,6 +8,7 @@ import stat
 import zipfile
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime
+from functools import partial
 from io import BytesIO
 from pathlib import Path
 
@@ -3288,6 +3289,7 @@ def test_executor_requires_selected_release_validation_after_successful_deploy(
     def reject_unselected_release(
         tenant_id: str,
         manifest: dict[str, object],
+        _allow_reconcile_source_drift: bool,
     ) -> bool:
         calls.append((tenant_id, manifest))
         return False
@@ -3321,7 +3323,7 @@ def test_executor_rejects_cross_tenant_release_corruption_after_handler(
     _write(root, StateRecordPath.tenant_desired(_TENANT_ID), _fixture("site.json"))
     validations: list[bool] = []
 
-    def reject_corrupted_inventory() -> bool:
+    def reject_corrupted_inventory(_observed_drift_tenant_id: str | None) -> bool:
         validations.append(True)
         return False
 
@@ -3431,7 +3433,7 @@ def test_executor_rejects_a_failed_create_that_selects_a_stale_runtime(
     _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
     validations: list[bool] = []
 
-    def reject_stale_runtime() -> bool:
+    def reject_stale_runtime(_observed_drift_tenant_id: str | None) -> bool:
         validations.append(True)
         return False
 
@@ -3649,6 +3651,7 @@ def test_executor_requires_source_release_validation_after_failed_deploy(
     def reject_unrestored_release(
         tenant_id: str,
         manifest: dict[str, object],
+        _allow_reconcile_source_drift: bool,
     ) -> bool:
         calls.append((tenant_id, manifest))
         return False
@@ -6898,6 +6901,8 @@ def test_executor_replays_exact_reconcile_source_after_intent_cleanup(
     _write(root, StateRecordPath.tenant_observed(_TENANT_ID), source_observed)
     root.joinpath(*StateRecordPath.transaction_intent(intent["intentId"]).components).unlink()
     calls: list[tuple[str, str | None]] = []
+    inventory_calls: list[tuple[str, str | None]] = []
+    release_calls: list[tuple[str, bool]] = []
 
     def reject_unrestored(
         _tenant_id: str,
@@ -6910,6 +6915,18 @@ def test_executor_replays_exact_reconcile_source_after_intent_cleanup(
         calls.append((route_set, generation_id))
         return False
 
+    def validate_inventory(kind: str, observed_drift_tenant_id: str | None) -> bool:
+        inventory_calls.append((kind, observed_drift_tenant_id))
+        return True
+
+    def validate_release(
+        tenant_id: str,
+        _manifest: dict[str, object],
+        allow_reconcile_source_drift: bool,
+    ) -> bool:
+        release_calls.append((tenant_id, allow_reconcile_source_drift))
+        return True
+
     with (
         StateRepository(root, expected_owner=os.geteuid()) as repository,
         ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
@@ -6920,9 +6937,17 @@ def test_executor_replays_exact_reconcile_source_after_intent_cleanup(
                 repository,
                 intake,
                 tenant_runtime_validator=reject_unrestored,
+                tenant_release_validator=validate_release,
+                tenant_release_inventory_validator=partial(validate_inventory, "release"),
+                tenant_runtime_inventory_validator=partial(validate_inventory, "runtime"),
             ).execute(job["jobId"])
 
     assert calls == [("absent", recovery["sourceRuntimeGenerationId"])]
+    assert inventory_calls == [
+        ("release", _TENANT_ID),
+        ("runtime", _TENANT_ID),
+    ]
+    assert release_calls == [(_TENANT_ID, True)]
 
 
 def test_executor_accepts_newer_cross_tenant_runtime_for_failed_replay(

@@ -679,7 +679,14 @@ def _selected_tenant_runtime_matches(  # noqa: PLR0911,PLR0913,PLR0917
             if generation_id is not None and active_generation_id != generation_id:
                 return False
             snapshot = runtime.read_generation_route_snapshot(active_generation_id)
-            expected = snapshot_tenant_routes(transaction)
+            expected = (
+                snapshot_tenant_routes(
+                    transaction,
+                    observed_drift_tenant_id=tenant_id,
+                )
+                if allow_reconcile_source_drift
+                else snapshot_tenant_routes(transaction)
+            )
             if snapshot != expected:
                 return (
                     allow_reconcile_source_drift
@@ -819,12 +826,20 @@ def _selected_tenant_release_matches(
     repository: StateRepository,
     tenant_id: str,
     manifest: dict[str, object],
+    allow_reconcile_source_drift: bool = False,
 ) -> bool:
     """Bind selected release bytes and the release inventory to durable state."""
 
     try:
         with repository.publication_transaction(blocking=True) as transaction:
-            expected = snapshot_tenant_authority(transaction)
+            expected = (
+                snapshot_tenant_authority(
+                    transaction,
+                    observed_drift_tenant_id=tenant_id,
+                )
+                if allow_reconcile_source_drift
+                else snapshot_tenant_authority(transaction)
+            )
             matching = []
             for tenant in expected.tenants:
                 metadata = tenant.manifest.get("metadata")
@@ -848,12 +863,22 @@ def _selected_tenant_release_matches(
         return False
 
 
-def _all_tenant_release_state_matches(repository: StateRepository) -> bool:
+def _all_tenant_release_state_matches(
+    repository: StateRepository,
+    observed_drift_tenant_id: str | None = None,
+) -> bool:
     """Remeasure every tenant release while holding the publication lock."""
 
     try:
         with repository.publication_transaction(blocking=True) as transaction:
-            expected = snapshot_tenant_authority(transaction)
+            expected = (
+                snapshot_tenant_authority(
+                    transaction,
+                    observed_drift_tenant_id=observed_drift_tenant_id,
+                )
+                if observed_drift_tenant_id is not None
+                else snapshot_tenant_authority(transaction)
+            )
             authoritative_tenant_ids = {_snapshot_tenant_id(tenant) for tenant in expected.tenants}
             if not set(_tenant_release_namespace_ids()).issubset(authoritative_tenant_ids):
                 return False
@@ -874,7 +899,10 @@ def _all_tenant_release_state_matches(repository: StateRepository) -> bool:
         return False
 
 
-def _all_tenant_runtime_state_matches(repository: StateRepository) -> bool:
+def _all_tenant_runtime_state_matches(
+    repository: StateRepository,
+    observed_drift_tenant_id: str | None = None,
+) -> bool:
     """Bind the selected runtime generation to all authoritative tenants."""
 
     try:
@@ -884,9 +912,15 @@ def _all_tenant_runtime_state_matches(repository: StateRepository) -> bool:
             runtime.using_held_publication_lock(repository),
         ):
             active_generation_id = runtime.read_active()
-            return runtime.read_generation_route_snapshot(
-                active_generation_id
-            ) == snapshot_tenant_routes(transaction)
+            snapshot = (
+                snapshot_tenant_routes(
+                    transaction,
+                    observed_drift_tenant_id=observed_drift_tenant_id,
+                )
+                if observed_drift_tenant_id is not None
+                else snapshot_tenant_routes(transaction)
+            )
+            return runtime.read_generation_route_snapshot(active_generation_id) == snapshot
     except (
         CaddyRuntimeError,
         KeyError,

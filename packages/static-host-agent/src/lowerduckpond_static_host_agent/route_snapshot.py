@@ -99,14 +99,19 @@ def snapshot_tenant_routes(
 
 def snapshot_tenant_authority(
     transaction: RouteSnapshotTransaction,
+    *,
+    observed_drift_tenant_id: object | None = None,
 ) -> TenantRouteSnapshot:
     """Read every validated tenant, including archived durable authority."""
 
+    drift_tenant_id = (
+        None if observed_drift_tenant_id is None else validate_uuid7(observed_drift_tenant_id)
+    )
     return _snapshot_tenants(
         transaction,
         overlay=None,
         include_archived=True,
-        observed_drift_tenant_id=None,
+        observed_drift_tenant_id=drift_tenant_id,
     )
 
 

@@ -290,9 +290,13 @@ class AuthorizationExecutor:
             bool,
         ]
         | None = None,
-        tenant_release_validator: Callable[[str, dict[str, object]], bool] | None = None,
-        tenant_release_inventory_validator: Callable[[], bool] | None = None,
-        tenant_runtime_inventory_validator: Callable[[], bool] | None = None,
+        tenant_release_validator: Callable[
+            [str, dict[str, object], bool],
+            bool,
+        ]
+        | None = None,
+        tenant_release_inventory_validator: Callable[[str | None], bool] | None = None,
+        tenant_runtime_inventory_validator: Callable[[str | None], bool] | None = None,
         capacity_limits: HostCapacityLimits = DEFAULT_HOST_CAPACITY_LIMITS,
     ) -> None:
         self._repository = repository
@@ -898,13 +902,24 @@ class AuthorizationExecutor:
         if authority is None:
             return
         self._validate_retired_archive_absence(result, authority=authority)
+        reconcile_drift_tenant_id = (
+            validate_uuid7(result["tenantId"])
+            if result["status"] == "failed" and result["operation"] == "reconcile"
+            else None
+        )
         release_inventory_validator = self._tenant_release_inventory_validator
-        if release_inventory_validator is not None and release_inventory_validator() is not True:
+        if (
+            release_inventory_validator is not None
+            and release_inventory_validator(reconcile_drift_tenant_id) is not True
+        ):
             raise ExecutionError(
                 "lifecycle handler changed tenant release inventory outside authority"
             )
         runtime_inventory_validator = self._tenant_runtime_inventory_validator
-        if runtime_inventory_validator is not None and runtime_inventory_validator() is not True:
+        if (
+            runtime_inventory_validator is not None
+            and runtime_inventory_validator(reconcile_drift_tenant_id) is not True
+        ):
             raise ExecutionError("lifecycle handler changed selected runtime outside authority")
         if not audit_is_latest_for_tenant:
             return
@@ -938,7 +953,7 @@ class AuthorizationExecutor:
         release_validator = self._tenant_release_validator
         if type(candidate_manifest) is not dict or (
             release_validator is not None
-            and release_validator(tenant_id, candidate_manifest) is not True
+            and release_validator(tenant_id, candidate_manifest, False) is not True
         ):
             if self._result_was_superseded(job, result, blocking=blocking):
                 return
@@ -1088,7 +1103,12 @@ class AuthorizationExecutor:
         release_validator = self._tenant_release_validator
         if (
             release_validator is not None
-            and release_validator(tenant_id, source_manifest) is not True
+            and release_validator(
+                tenant_id,
+                source_manifest,
+                result["operation"] == "reconcile",
+            )
+            is not True
         ):
             if self._result_was_superseded(job, result, blocking=blocking):
                 return
