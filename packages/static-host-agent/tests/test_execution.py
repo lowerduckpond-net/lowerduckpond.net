@@ -1506,6 +1506,9 @@ def test_executor_binds_a_successful_archive_result_to_its_construction_intent(
         "canonicalOrigin": metadata["canonicalOrigin"],
         "manifest": manifest,
     }
+    archive_record = _fixture("archive-record.json")
+    archive_record["manifestDigest"] = manifest_digest(manifest).to_dict()
+    result["archiveRecord"] = archive_record
     assert manifest_digest(manifest).to_dict() != intent["candidateManifestDigest"]
     _write(root, StateRecordPath.authorization_job(job["jobId"]), job)
     _write(
