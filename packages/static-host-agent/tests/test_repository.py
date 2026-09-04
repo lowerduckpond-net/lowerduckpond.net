@@ -35,6 +35,7 @@ from lowerduckpond_static_host_agent import (
     StateAlreadyExistsError,
     StateConflictError,
     StateInventoryError,
+    StateInventoryReservation,
     StatePathError,
     StateRecordError,
     StateRecordPath,
@@ -113,6 +114,60 @@ def _write_record(root: Path, path: StateRecordPath, document: dict[str, object]
     target.write_bytes(canonical_json_bytes(document))
     target.chmod(_RECORD_MODE)
     return target
+
+
+def test_dispatch_binding_admits_allocated_growth_before_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _state_root(tmp_path)
+    path = StateRecordPath.authorization_job(_JOB_ID)
+    job = _fixture("authorization-job.json")
+    job.update(
+        {
+            "compatibilityVersion": "static-job-v2",
+            "executionValidated": False,
+            "sourceAuthority": None,
+        }
+    )
+    _write_record(root, path, job)
+    tenant_ids = [f"0198d17f-6f4a-7000-8000-{offset:012x}" for offset in range(1, 26)]
+    archive_ids = [f"0198d17f-6f4a-7000-8001-{offset:012x}" for offset in range(1, 4)]
+    deployment_ids = [f"0198d17f-6f4a-7000-8002-{offset:012x}" for offset in range(1, 4)]
+    bound = deepcopy(job)
+    bound.update(
+        {
+            "dispatchArchiveDeploymentIds": archive_ids,
+            "dispatchArtifactReleaseTreeDigest": None,
+            "dispatchSourceReleaseTreeDigest": None,
+            "dispatchDeploymentIds": deployment_ids,
+            "dispatchTenantIds": tenant_ids,
+            "dispatchTenantRecordHistories": [
+                [tenant_id, archive_ids, deployment_ids] for tenant_id in tenant_ids
+            ],
+        }
+    )
+    reservations: list[StateInventoryReservation] = []
+
+    with _repository(root) as repository:
+        with repository.transaction(mode=LockMode.EXCLUSIVE) as transaction:
+            current = transaction.read(path)
+
+            def reject_growth(
+                _transaction: object,
+                reservation: StateInventoryReservation,
+                **_arguments: object,
+            ) -> object:
+                reservations.append(reservation)
+                raise StateAdmissionRejectedError("test rejection")
+
+            monkeypatch.setattr(type(transaction), "admit_inventory", reject_growth)
+            with pytest.raises(StateAdmissionRejectedError, match="test rejection"):
+                transaction.bind_dispatch_authority(path, current.revision, bound)
+        retained = repository.read(path).document
+
+    assert reservations[0].authorization_allocated_bytes > 0
+    assert retained == job
 
 
 def _create_plan() -> CreateTransitionPlan:

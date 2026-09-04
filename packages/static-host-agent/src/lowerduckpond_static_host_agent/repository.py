@@ -46,7 +46,12 @@ from lowerduckpond_static_host_agent.audit import (
     inspect_audit_correlation as inspect_audit_correlation_records,
 )
 from lowerduckpond_static_host_agent.capacity import (
+    DEFAULT_HOST_CAPACITY_LIMITS,
+    CapacityReservation,
     FilesystemCapacity,
+    HostCapacityLimits,
+    ReleaseCapacityUsage,
+    admit_release_capacity,
     measure_filesystem_capacity_descriptor,
 )
 from lowerduckpond_static_host_agent.durable import (
@@ -1411,6 +1416,8 @@ class _StateTransaction:
         path: StateRecordPath,
         expected_revision: StateRevision,
         document: dict[str, object],
+        *,
+        capacity_limits: HostCapacityLimits = DEFAULT_HOST_CAPACITY_LIMITS,
     ) -> StoredContract:
         """Commit executor-owned dispatch fields without widening ordinary CAS."""
 
@@ -1422,6 +1429,27 @@ class _StateTransaction:
         if current.revision != expected_revision:
             raise StateConflictError("authoritative state changed before commit")
         _validate_dispatch_authority_replacement(current.document, document)
+        candidate_allocation = self._repository._durable.allocation_upper_bound(len(candidate))
+        current_allocation = self._repository._durable.regular_allocation(
+            path.components,
+            expected_owner=self._repository._expected_owner,
+            expected_mode=self._repository._expected_record_mode,
+        )
+        self.admit_inventory(
+            StateInventoryReservation(
+                authorization_allocated_bytes=max(0, candidate_allocation - current_allocation)
+            )
+        )
+        namespace_allocation = self.namespace_allocation_upper_bound(1)
+        admit_release_capacity(
+            ReleaseCapacityUsage(()),
+            CapacityReservation(
+                allocated_bytes=candidate_allocation + namespace_allocation,
+                unique_inodes=1,
+            ),
+            self.measure_filesystem_capacity(),
+            limits=capacity_limits,
+        )
         self._repository._durable.replace(
             path.components,
             candidate,
@@ -1720,7 +1748,7 @@ def _validate_dispatch_authority_replacement(
     candidate: dict[str, object],
 ) -> None:
     if (
-        current["phase"] not in {"claimed", "completed", "failed"}
+        current["phase"] not in {"pending", "claimed", "completed", "failed"}
         or candidate["phase"] != current["phase"]
     ):
         raise StateRecordError("dispatch authority requires an unchanged dispatched job phase")

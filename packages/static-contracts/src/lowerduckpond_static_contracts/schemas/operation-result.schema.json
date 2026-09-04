@@ -64,6 +64,39 @@
         "properties": {
           "operation": {
             "const": "archive"
+          }
+        },
+        "required": [
+          "operation"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "archive"
+          },
+          "status": {
+            "const": "failed"
+          }
+        },
+        "required": [
+          "operation",
+          "status"
+        ]
+      },
+      "then": {
+        "required": [
+          "archiveRecord"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "archive"
           },
           "status": {
             "const": "succeeded"
@@ -73,6 +106,13 @@
           "operation",
           "status"
         ]
+      },
+      "then": {
+        "properties": {
+          "archiveRecord": {
+            "$ref": "archive-record.schema.json"
+          }
+        }
       }
     },
     {
@@ -504,7 +544,14 @@
       "$ref": "common.schema.json#/$defs/apiVersion"
     },
     "archiveRecord": {
-      "$ref": "archive-record.schema.json"
+      "oneOf": [
+        {
+          "$ref": "archive-record.schema.json"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "canonicalOrigin": {
       "$ref": "common.schema.json#/$defs/canonicalOrigin"

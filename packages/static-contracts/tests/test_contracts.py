@@ -15,10 +15,12 @@ from lowerduckpond_static_contracts import (
     ErrorCode,
     Operation,
     TransactionPhase,
+    archive_record_digest,
     audit_entry_digest,
     canonical_json_bytes,
     decode_contract,
     decode_request,
+    deployment_record_digest,
     manifest_digest,
     request_digest,
     validate_contract,
@@ -254,6 +256,91 @@ def test_authorization_job_request_digest_binds_the_embedded_request() -> None:
         validate_contract(job)
 
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+def test_maximum_dispatch_authority_fits_the_authorization_job_bound() -> None:
+    job = _load_object(FIXTURE_ROOT / "accepted/authorization-job.json")
+    source = _load_object(FIXTURE_ROOT / "accepted/site.json")
+    archive = _load_object(FIXTURE_ROOT / "accepted/archive-record.json")
+    deployment = _load_object(FIXTURE_ROOT / "accepted/deployment-record.json")
+    source_spec = source["spec"]
+    assert type(source_spec) is dict
+    source_spec["desiredState"] = "archived"
+    tenant_ids = [f"0198d17f-6f4a-7000-8000-{offset:012x}" for offset in range(1, 26)]
+    archive_ids = [f"0198d17f-6f4a-7000-8001-{offset:012x}" for offset in range(1, 4)]
+    deployment_ids = [f"0198d17f-6f4a-7000-8002-{offset:012x}" for offset in range(1, 4)]
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "delete",
+        "correlationId": "0198d17f-6f4a-7000-8000-000000000001",
+        "tenantId": tenant_ids[0],
+    }
+    archive.update(
+        {
+            "tenantId": tenant_ids[0],
+            "deploymentId": deployment_ids[0],
+            "versionId": "v" * 1024,
+        }
+    )
+    deployment.update({"id": deployment_ids[0], "tenantId": tenant_ids[0]})
+    source_metadata = source["metadata"]
+    assert type(source_metadata) is dict
+    source_metadata.update(
+        {
+            "id": tenant_ids[0],
+            "slug": "s" * 63,
+            "canonicalOrigin": (f"t-{tenant_ids[0].replace('-', '')}.lowerduckpond.com"),
+        }
+    )
+    source_spec["desiredDeployment"] = {
+        "id": deployment_ids[0],
+        "archiveSha256": deployment["archiveSha256"],
+    }
+    archive["manifestDigest"] = manifest_digest(source).to_dict()
+    archive["correlationId"] = request["correlationId"]
+    job.update(
+        {
+            "compatibilityVersion": "static-job-v2",
+            "executionValidated": False,
+            "operatorPrincipal": "o" * 128,
+            "request": request,
+            "requestDigest": request_digest(request).to_dict(),
+            "phase": "pending",
+            "sourceAuthority": {"manifest": source, "archiveRecord": archive},
+            "dispatchArchiveDeploymentIds": archive_ids,
+            "dispatchArtifactReleaseTreeDigest": None,
+            "dispatchSourceReleaseTreeDigest": None,
+            "dispatchDeploymentIds": deployment_ids,
+            "dispatchTenantIds": tenant_ids,
+            "dispatchTenantRecordHistories": [
+                [tenant_id, archive_ids, deployment_ids] for tenant_id in tenant_ids
+            ],
+        }
+    )
+    expected = job["expectedSource"]
+    assert type(expected) is dict
+    expected.update(
+        {
+            "expectsTenantAbsent": False,
+            "lifecycle": "archived",
+            "manifestDigest": manifest_digest(source).to_dict(),
+            "deploymentDigest": deployment_record_digest(deployment).to_dict(),
+            "archiveRecordDigest": archive_record_digest(archive).to_dict(),
+            "deletionEvidence": {
+                "mode": "archived",
+                "releasedSlugs": [f"slug-{offset:02d}-" + "s" * 55 for offset in range(16)],
+                "archiveRecordDigest": archive_record_digest(archive).to_dict(),
+                "bucket": archive["bucket"],
+                "key": archive["key"],
+                "versionId": archive["versionId"],
+                "emergencyReason": None,
+            },
+        }
+    )
+
+    assert validate_contract(job) is ContractKind.AUTHORIZATION_JOB
+    assert len(canonical_json_bytes(job)) <= MAX_CANONICAL_BYTES
 
 
 @pytest.mark.parametrize(
@@ -923,6 +1010,26 @@ def test_manifestless_nondelete_result_remains_decodable_for_v1alpha1_upgrade() 
     del result["manifest"]
     result["operation"] = "deploy"
 
+    assert validate_contract(result) is ContractKind.OPERATION_RESULT
+
+
+def test_failed_archive_result_declares_whether_an_upload_candidate_exists() -> None:
+    result = _load_object(FIXTURE_ROOT / "accepted/operation-result.json")
+    result.update(
+        {
+            "operation": "archive",
+            "status": "failed",
+            "errorCode": "archive_unavailable",
+        }
+    )
+    result.pop("canonicalOrigin")
+    result.pop("manifest")
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(result)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+    result["archiveRecord"] = None
     assert validate_contract(result) is ContractKind.OPERATION_RESULT
 
 

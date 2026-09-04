@@ -29,10 +29,12 @@ from lowerduckpond_static_host_agent import (
     AuthorizationExecutor,
     AuthorizationIssuer,
     CapacityProjection,
+    CapacityRejectedError,
     CapacityReservation,
     ExecutionError,
     ExecutionOutcome,
     FilesystemCapacity,
+    HostCapacityLimits,
     IntakeArtifactUnavailableError,
     IntentRemovalToken,
     IssuedAuthorization,
@@ -172,6 +174,7 @@ class _CompletingFailureHandler:
         repository: StateRepository,
         *,
         append_audit: bool = True,
+        archive_cleanup_record: dict[str, object] | None = None,
         claim_executor_publication: bool = False,
         retained_archive_id: str | None = None,
         retained_deployment_id: str | None = None,
@@ -180,6 +183,7 @@ class _CompletingFailureHandler:
     ) -> None:
         self._repository = repository
         self._append_audit = append_audit
+        self._archive_cleanup_record = archive_cleanup_record
         self._claim_executor_publication = claim_executor_publication
         self._retained_archive_id = retained_archive_id
         self._retained_deployment_id = retained_deployment_id
@@ -213,6 +217,8 @@ class _CompletingFailureHandler:
         }
         if self._claim_executor_publication:
             candidate["failurePublisher"] = "authorization-executor"
+        if request["operation"] == "archive":
+            candidate["archiveRecord"] = self._archive_cleanup_record
         try:
             result = self._repository.read(
                 StateRecordPath.authorization_result(job_id),
@@ -3344,18 +3350,36 @@ def test_executor_rejects_cross_tenant_history_corruption_after_handler(
         job = repository.read(StateRecordPath.authorization_job(issued.job_id)).document
 
     assert job["dispatchTenantRecordHistories"] == [
-        {
-            "tenantId": _TENANT_ID,
-            "archiveDeploymentIds": [],
-            "deploymentIds": [_DEPLOYMENT_ID],
-        },
-        {
-            "tenantId": unrelated_tenant_id,
-            "archiveDeploymentIds": [],
-            "deploymentIds": [],
-        },
+        [_TENANT_ID, [], [_DEPLOYMENT_ID]],
+        [unrelated_tenant_id, [], []],
     ]
     assert job["executionValidated"] is False
+
+
+def test_executor_rejects_dispatch_capacity_before_claiming_the_job(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued = _issue_create(repository)
+        handler = _CompletingFailureHandler(repository)
+        with pytest.raises(CapacityRejectedError, match="host byte ceiling"):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={"create": handler},
+                capacity_limits=HostCapacityLimits(maximum_allocated_bytes=0),
+            ).execute(issued.job_id)
+        job = repository.read(StateRecordPath.authorization_job(issued.job_id)).document
+
+    assert job["phase"] == "pending"
+    assert job.get("dispatchTenantRecordHistories") is None
+    assert handler.claims == []
 
 
 def test_executor_rejects_a_failed_create_that_selects_a_stale_runtime(
@@ -3424,6 +3448,38 @@ def test_executor_rejects_a_failed_deploy_that_retains_deployment_history(
     assert [path.name for path in (root / "intake").iterdir()] == [f"{correlation_id}.artifact"]
 
 
+def test_executor_rejects_a_failed_noncreate_that_adds_an_unrelated_tenant(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    unrelated_tenant_id = "0198d17f-6f4a-7000-8000-000000000010"
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    _write_deployment_record(root, _DEPLOYMENT_ID, "0" * 64)
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), _fixture("site.json"))
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued, _artifact, _correlation_id = _issue_deploy(repository, intake)
+        handler = _AddingUnrelatedTenantHandler(
+            _CompletingFailureHandler(repository),
+            repository,
+            root,
+            unrelated_tenant_id,
+        )
+        with pytest.raises(ExecutionError, match="changed the authorized tenant inventory"):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={"deploy": handler},
+                tenant_runtime_validator=lambda *_arguments: True,
+            ).execute(issued.job_id)
+        job = repository.read(StateRecordPath.authorization_job(issued.job_id)).document
+
+    assert job["executionValidated"] is False
+
+
 def test_executor_rejects_a_failed_archive_that_retains_archive_history(
     tmp_path: Path,
 ) -> None:
@@ -3474,6 +3530,68 @@ def test_executor_rejects_a_failed_archive_that_retains_archive_history(
 
     assert job["dispatchArchiveDeploymentIds"] == []
     assert job["dispatchDeploymentIds"] == [_DEPLOYMENT_ID]
+
+
+def test_executor_rejects_a_failed_archive_with_a_retained_upload_candidate(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    _write_deployment_record(root, _DEPLOYMENT_ID, "0" * 64)
+    source = _fixture("site.json")
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), source)
+    correlation_id = "0198d17f-6f4a-7000-8000-000000000003"
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "archive",
+        "correlationId": correlation_id,
+        "tenantId": _TENANT_ID,
+    }
+    candidate = _fixture("archive-record.json")
+    candidate.update(
+        {
+            "correlationId": correlation_id,
+            "manifestDigest": manifest_digest(source).to_dict(),
+        }
+    )
+    checked: list[dict[str, object]] = []
+
+    def reject_retained(candidate_record: dict[str, object]) -> bool:
+        checked.append(candidate_record)
+        return False
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued = AuthorizationIssuer(
+            repository,
+            gate=_OpenGate(),
+            entropy=_Entropy(),
+        ).issue(
+            canonical_json_bytes(request),
+            operator_principal="operator@example.test",
+            now=_NOW,
+            artifact=None,
+        )
+        with pytest.raises(ExecutionError, match="retained its candidate archive object"):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={
+                    "archive": _CompletingFailureHandler(
+                        repository,
+                        archive_cleanup_record=candidate,
+                    )
+                },
+                retired_archive_validator=reject_retained,
+                tenant_runtime_validator=lambda *_arguments: True,
+            ).execute(issued.job_id)
+        job = repository.read(StateRecordPath.authorization_job(issued.job_id)).document
+
+    assert checked == [candidate]
+    assert job["executionValidated"] is False
 
 
 def test_executor_requires_source_release_validation_after_failed_deploy(
@@ -5554,7 +5672,7 @@ def test_executor_rejects_a_misbound_intent_before_claimed_handler_dispatch(
         ("archive-retirement-intent.json", "delete", "archived"),
     ],
 )
-def test_executor_recognizes_archive_intent_paths_for_handler_replay(
+def test_executor_recognizes_archive_intent_paths_for_handler_replay(  # noqa: PLR0915
     tmp_path: Path,
     intent_fixture: str,
     operation: str,
@@ -5638,6 +5756,8 @@ def test_executor_recognizes_archive_intent_paths_for_handler_replay(
         "errorCode": "state_drift",
         "tenantId": request["tenantId"],
     }
+    if operation == "archive":
+        result["archiveRecord"] = None
     _write(root, StateRecordPath.authorization_job(job["jobId"]), job)
     _write(
         root,

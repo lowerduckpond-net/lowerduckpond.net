@@ -878,6 +878,17 @@ def _tenant_release_namespace_ids() -> tuple[str, ...]:
             identities.append(validate_uuid7(entry.name))
         except (TypeError, ValueError) as error:
             raise ReleaseTreeError("tenant release namespace has an invalid identity") from error
+        try:
+            with os.scandir(entry.path) as children:
+                tenant_entries = tuple(children)
+        except OSError as error:
+            raise ReleaseTreeError("tenant release namespace could not be inspected") from error
+        if (
+            len(tenant_entries) != 1
+            or tenant_entries[0].name != "releases"
+            or not tenant_entries[0].is_dir(follow_symlinks=False)
+        ):
+            raise ReleaseTreeError("tenant release namespace has an unexpected shape")
     return tuple(identities)
 
 

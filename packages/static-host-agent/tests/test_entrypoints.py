@@ -434,6 +434,39 @@ def test_all_tenant_release_validation_rejects_unknown_tenant_namespace(
     )
 
 
+def test_all_tenant_release_validation_rejects_extra_known_tenant_entries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenant_id = "0198d17f-6f4a-7000-8000-000000000001"
+    sites = tmp_path / "sites"
+    (sites / tenant_id / "releases").mkdir(parents=True)
+    (sites / tenant_id / "orphan").mkdir()
+    tenant = SimpleNamespace(manifest={"metadata": {"id": tenant_id}})
+
+    class Repository:
+        @staticmethod
+        def publication_transaction(*, blocking: bool) -> nullcontext[object]:
+            assert blocking is True
+            return nullcontext(object())
+
+    monkeypatch.setattr(entrypoints, "TENANT_RELEASE_ROOT", str(sites))
+    monkeypatch.setattr(
+        entrypoints,
+        "snapshot_tenant_routes",
+        lambda _transaction: SimpleNamespace(tenants=(tenant,)),
+    )
+    monkeypatch.setattr(
+        entrypoints,
+        "_tenant_release_state_matches",
+        lambda *_arguments: True,
+    )
+
+    assert not entrypoints._all_tenant_release_state_matches(
+        Repository(),  # type: ignore[arg-type]
+    )
+
+
 def test_deleted_tenant_publication_requires_the_complete_namespace_absent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

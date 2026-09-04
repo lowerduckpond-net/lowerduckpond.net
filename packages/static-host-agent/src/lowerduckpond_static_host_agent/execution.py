@@ -69,6 +69,7 @@ from lowerduckpond_static_host_agent.state_inventory import (
 _NOT_IMPLEMENTED: Final = "not_implemented"
 _AUTHORIZATION_EXECUTOR: Final = "authorization-executor"
 _MAX_RETAINED_DEPLOYMENTS: Final = 3
+_TENANT_HISTORY_TUPLE_FIELDS: Final = 3
 
 
 class ExecutionError(RuntimeError):
@@ -121,6 +122,8 @@ class ExecutionTransaction(Protocol):
         path: StateRecordPath,
         expected_revision: StateRevision,
         document: dict[str, object],
+        *,
+        capacity_limits: HostCapacityLimits = DEFAULT_HOST_CAPACITY_LIMITS,
     ) -> StoredContract: ...
 
     def commit_execution_validation(
@@ -675,6 +678,12 @@ class AuthorizationExecutor:
                             limits=self._capacity_limits,
                         )
                         return ExecutionOutcome(result, True)
+                    current = _bind_dispatch_authority(
+                        transaction,
+                        current,
+                        artifact_release_tree_digest=artifact_release_tree_digest,
+                        capacity_limits=self._capacity_limits,
+                    )
                 claimed = _claim_pending(transaction, current)
                 if handler is None:
                     # Unsupported lifecycle operations remain mutation-free until
@@ -719,6 +728,7 @@ class AuthorizationExecutor:
                 transaction,
                 current,
                 artifact_release_tree_digest=prepared.artifact_release_tree_digest,
+                capacity_limits=self._capacity_limits,
             )
             dispatch_job = current.document
             authority = _capture_authorized_lifecycle_authority(
@@ -1000,6 +1010,7 @@ class AuthorizationExecutor:
         source_manifest = authority.source_manifest
         source_route_set = authority.source_route_set
         archive = authority.archive_record
+        self._validate_failed_archive_absence(result, authority=authority)
         if result["operation"] in {"delete", "restore"} and archive is not None:
             validator = self._retained_archive_validator
             if validator is None or validator(archive) is not True:
@@ -1035,6 +1046,36 @@ class AuthorizationExecutor:
         if self._result_was_superseded(job, result, blocking=blocking):
             return
         raise ExecutionError("failed lifecycle result did not restore its authorized routes")
+
+    def _validate_failed_archive_absence(
+        self,
+        result: dict[str, object],
+        *,
+        authority: _LifecycleDispatchAuthority,
+    ) -> None:
+        if result["operation"] != "archive":
+            return
+        candidate = result.get("archiveRecord")
+        if candidate is None:
+            return
+        source_manifest = authority.source_manifest
+        if type(candidate) is not dict or type(source_manifest) is not dict:
+            raise ExecutionError("failed archive candidate authority is malformed")
+        source_spec = source_manifest.get("spec")
+        source_deployment = (
+            source_spec.get("desiredDeployment") if type(source_spec) is dict else None
+        )
+        if (
+            type(source_deployment) is not dict
+            or candidate.get("tenantId") != result["tenantId"]
+            or candidate.get("correlationId") != result["correlationId"]
+            or candidate.get("deploymentId") != source_deployment.get("id")
+            or candidate.get("manifestDigest") != manifest_digest(source_manifest).to_dict()
+        ):
+            raise ExecutionError("failed archive candidate authority is malformed")
+        validator = self._retired_archive_validator
+        if validator is None or validator(candidate) is not True:
+            raise ExecutionError("failed archive retained its candidate archive object")
 
     def _result_was_superseded(
         self,
@@ -1745,6 +1786,7 @@ def _bind_dispatch_authority(  # noqa: PLR0912,PLR0915 - dispatch authority matr
     current: StoredContract,
     *,
     artifact_release_tree_digest: dict[str, object] | None,
+    capacity_limits: HostCapacityLimits,
 ) -> StoredContract:
     """Persist exact pre-dispatch history and admitted release content once."""
 
@@ -1793,6 +1835,7 @@ def _bind_dispatch_authority(  # noqa: PLR0912,PLR0915 - dispatch authority matr
                     StateRecordPath.authorization_job(rebound["jobId"]),
                     current.revision,
                     rebound,
+                    capacity_limits=capacity_limits,
                 )
             except StateConflictError as error:
                 raise ExecutionError("export source authority changed during dispatch") from error
@@ -1830,12 +1873,15 @@ def _bind_dispatch_authority(  # noqa: PLR0912,PLR0915 - dispatch authority matr
         archive_ids = transaction.tenant_archive_ids(request["tenantId"])
         deployment_ids = transaction.tenant_deployment_ids(request["tenantId"])
     inventory = transaction.measure_inventory()
+    # The compact tuple form keeps the full 25-tenant dispatch authority within
+    # the immutable authorization-job bound. Reads retain object-form support
+    # for jobs durably issued before this encoding was introduced.
     tenant_histories = [
-        {
-            "tenantId": tenant_id,
-            "archiveDeploymentIds": list(transaction.tenant_archive_ids(tenant_id)),
-            "deploymentIds": list(transaction.tenant_deployment_ids(tenant_id)),
-        }
+        [
+            tenant_id,
+            list(transaction.tenant_archive_ids(tenant_id)),
+            list(transaction.tenant_deployment_ids(tenant_id)),
+        ]
         for tenant_id in inventory.tenant_ids
     ]
     bound = job
@@ -1850,6 +1896,7 @@ def _bind_dispatch_authority(  # noqa: PLR0912,PLR0915 - dispatch authority matr
             StateRecordPath.authorization_job(bound["jobId"]),
             current.revision,
             bound,
+            capacity_limits=capacity_limits,
         )
     except StateConflictError as error:
         raise ExecutionError("record-history authority changed during dispatch") from error
@@ -1936,15 +1983,21 @@ def _dispatch_tenant_record_histories(
     histories: list[_TenantRecordHistory] = []
     try:
         for entry in raw:
-            if type(entry) is not dict or set(entry) != {
+            if type(entry) is dict and set(entry) == {
                 "tenantId",
                 "archiveDeploymentIds",
                 "deploymentIds",
             }:
+                raw_tenant_id = entry["tenantId"]
+                raw_archive_ids = entry["archiveDeploymentIds"]
+                raw_deployment_ids = entry["deploymentIds"]
+            elif type(entry) is list and len(entry) == _TENANT_HISTORY_TUPLE_FIELDS:
+                raw_tenant_id, raw_archive_ids, raw_deployment_ids = entry
+            else:
                 raise TypeError
-            tenant_id = validate_uuid7(entry["tenantId"])
-            archive_ids = _validated_dispatch_record_id_list(entry["archiveDeploymentIds"])
-            deployment_ids = _validated_dispatch_record_id_list(entry["deploymentIds"])
+            tenant_id = validate_uuid7(raw_tenant_id)
+            archive_ids = _validated_dispatch_record_id_list(raw_archive_ids)
+            deployment_ids = _validated_dispatch_record_id_list(raw_deployment_ids)
             histories.append(_TenantRecordHistory(tenant_id, archive_ids, deployment_ids))
     except (TypeError, ValueError) as error:
         raise ExecutionError("dispatch tenant retained-history authority is malformed") from error
@@ -1999,6 +2052,9 @@ def _failure_result(job: dict[str, object], error_code: str) -> dict[str, object
         "failurePublisher": _AUTHORIZATION_EXECUTOR,
         "tenantId": None if request["operation"] == "create" else request["tenantId"],
     }
+    if request["operation"] == "archive":
+        # Executor failures happen before an archive upload can be attempted.
+        result["archiveRecord"] = None
     validate_contract(result, expected_kind=ContractKind.OPERATION_RESULT)
     return result
 
@@ -2330,7 +2386,7 @@ def _validate_handler_result_state(
                 authority=authority,
             )
         else:
-            _validate_failed_create_tenant_inventory(
+            _validate_failed_tenant_inventory(
                 transaction,
                 job,
                 result,
@@ -2396,13 +2452,13 @@ def _validate_failed_handler_result_state(
     *,
     authority: _LifecycleDispatchAuthority,
 ) -> None:
+    _validate_failed_tenant_inventory(
+        transaction,
+        job,
+        result,
+        authority=authority,
+    )
     if result["operation"] == "create":
-        _validate_failed_create_tenant_inventory(
-            transaction,
-            job,
-            result,
-            authority=authority,
-        )
         return
     tenant_id = result["tenantId"]
     source_archive_ids = authority.source_archive_deployment_ids
@@ -2425,7 +2481,7 @@ def _validate_failed_handler_result_state(
         raise ExecutionError("failed lifecycle handler did not restore its authorized source")
 
 
-def _validate_failed_create_tenant_inventory(
+def _validate_failed_tenant_inventory(
     transaction: ExecutionTransaction,
     job: dict[str, object],
     result: dict[str, object],
@@ -2441,13 +2497,13 @@ def _validate_failed_create_tenant_inventory(
             return
         # Terminal jobs committed before the inventory-binding boundary remain
         # replayable. Every newly dispatched v2 handler binds this field first.
-        if _expected_source_error(transaction, job) is not None:
+        if result["operation"] == "create" and _expected_source_error(transaction, job) is not None:
             raise ExecutionError("failed lifecycle handler did not restore its authorized source")
         return
     try:
         snapshot = transaction.inspect_audit_correlation(result["correlationId"])
     except AuditError as error:
-        raise ExecutionError("failed create audit authority is invalid") from error
+        raise ExecutionError("failed lifecycle audit authority is invalid") from error
     expected = set(source_tenant_ids)
     for operation, tenant_id in snapshot.later_tenant_inventory_transitions:
         if operation == "create":
@@ -2455,7 +2511,7 @@ def _validate_failed_create_tenant_inventory(
         else:
             expected.discard(tenant_id)
     if transaction.measure_inventory().tenant_ids != tuple(sorted(expected)):
-        raise ExecutionError("failed create changed the authorized tenant inventory")
+        raise ExecutionError("failed lifecycle handler changed the authorized tenant inventory")
 
 
 def _validate_success_tenant_inventory(
