@@ -286,13 +286,17 @@ class AuthorizationExecutor:
         retained_archive_validator: Callable[[dict[str, object]], bool] | None = None,
         retired_archive_validator: Callable[[dict[str, object]], bool] | None = None,
         tenant_runtime_validator: Callable[
-            [str, str, str | None, dict[str, object], dict[str, object] | None],
+            [str, str, str | None, dict[str, object], dict[str, object] | None, bool],
             bool,
         ]
         | None = None,
-        tenant_release_validator: Callable[[str, dict[str, object]], bool] | None = None,
-        tenant_release_inventory_validator: Callable[[], bool] | None = None,
-        tenant_runtime_inventory_validator: Callable[[], bool] | None = None,
+        tenant_release_validator: Callable[
+            [str, dict[str, object], bool],
+            bool,
+        ]
+        | None = None,
+        tenant_release_inventory_validator: Callable[[str | None], bool] | None = None,
+        tenant_runtime_inventory_validator: Callable[[str | None], bool] | None = None,
         capacity_limits: HostCapacityLimits = DEFAULT_HOST_CAPACITY_LIMITS,
     ) -> None:
         self._repository = repository
@@ -827,6 +831,10 @@ class AuthorizationExecutor:
                 result,
                 require_failure=True,
             )
+            authority = _capture_bound_source_runtime_authority(
+                current.document,
+                authority,
+            )
             _validate_handler_result_state(
                 transaction,
                 current.document,
@@ -894,13 +902,24 @@ class AuthorizationExecutor:
         if authority is None:
             return
         self._validate_retired_archive_absence(result, authority=authority)
+        reconcile_drift_tenant_id = (
+            validate_uuid7(result["tenantId"])
+            if result["status"] == "failed" and result["operation"] == "reconcile"
+            else None
+        )
         release_inventory_validator = self._tenant_release_inventory_validator
-        if release_inventory_validator is not None and release_inventory_validator() is not True:
+        if (
+            release_inventory_validator is not None
+            and release_inventory_validator(reconcile_drift_tenant_id) is not True
+        ):
             raise ExecutionError(
                 "lifecycle handler changed tenant release inventory outside authority"
             )
         runtime_inventory_validator = self._tenant_runtime_inventory_validator
-        if runtime_inventory_validator is not None and runtime_inventory_validator() is not True:
+        if (
+            runtime_inventory_validator is not None
+            and runtime_inventory_validator(reconcile_drift_tenant_id) is not True
+        ):
             raise ExecutionError("lifecycle handler changed selected runtime outside authority")
         if not audit_is_latest_for_tenant:
             return
@@ -934,7 +953,7 @@ class AuthorizationExecutor:
         release_validator = self._tenant_release_validator
         if type(candidate_manifest) is not dict or (
             release_validator is not None
-            and release_validator(tenant_id, candidate_manifest) is not True
+            and release_validator(tenant_id, candidate_manifest, False) is not True
         ):
             if self._result_was_superseded(job, result, blocking=blocking):
                 return
@@ -956,6 +975,7 @@ class AuthorizationExecutor:
                 generation_id,
                 candidate_manifest,
                 authority.candidate_observed_state,
+                False,
             )
             is not True
         ):
@@ -984,10 +1004,11 @@ class AuthorizationExecutor:
         manifest: dict[str, object],
         observed_state: dict[str, object] | None,
         runtime_validator: Callable[
-            [str, str, str | None, dict[str, object], dict[str, object] | None],
+            [str, str, str | None, dict[str, object], dict[str, object] | None, bool],
             bool,
         ],
         blocking: bool,
+        allow_reconcile_source_drift: bool = False,
     ) -> bool:
         """Accept a newer complete generation selected by another tenant."""
 
@@ -1018,6 +1039,7 @@ class AuthorizationExecutor:
                 None,
                 manifest,
                 observed_state,
+                allow_reconcile_source_drift,
             )
             is True
         )
@@ -1081,7 +1103,12 @@ class AuthorizationExecutor:
         release_validator = self._tenant_release_validator
         if (
             release_validator is not None
-            and release_validator(tenant_id, source_manifest) is not True
+            and release_validator(
+                tenant_id,
+                source_manifest,
+                result["operation"] == "reconcile",
+            )
+            is not True
         ):
             if self._result_was_superseded(job, result, blocking=blocking):
                 return
@@ -1091,7 +1118,7 @@ class AuthorizationExecutor:
         runtime_validator = self._tenant_runtime_validator
         if runtime_validator is None and authority.execution_validation_committed:
             return
-        if (
+        runtime_restored = (
             runtime_validator is not None
             and runtime_validator(
                 tenant_id,
@@ -1099,11 +1126,23 @@ class AuthorizationExecutor:
                 authority.source_runtime_generation_id,
                 source_manifest,
                 authority.source_observed_state,
+                result["operation"] == "reconcile",
             )
             is True
-        ):
-            return
-        if self._result_was_superseded(job, result, blocking=blocking):
+        )
+        if not runtime_restored and runtime_validator is not None:
+            runtime_restored = self._current_runtime_matches_after_cross_tenant(
+                job,
+                result,
+                tenant_id=tenant_id,
+                route_set=source_route_set,
+                manifest=source_manifest,
+                observed_state=authority.source_observed_state,
+                runtime_validator=runtime_validator,
+                blocking=blocking,
+                allow_reconcile_source_drift=(result["operation"] == "reconcile"),
+            )
+        if runtime_restored or self._result_was_superseded(job, result, blocking=blocking):
             return
         raise ExecutionError("failed lifecycle result did not restore its authorized routes")
 
@@ -1281,8 +1320,14 @@ def _require_same_authority(
     second.pop("dispatchArchiveDeploymentIds", None)
     first.pop("dispatchArtifactReleaseTreeDigest", None)
     second.pop("dispatchArtifactReleaseTreeDigest", None)
+    first.pop("dispatchSourceObservedState", None)
+    second.pop("dispatchSourceObservedState", None)
     first.pop("dispatchSourceReleaseTreeDigest", None)
     second.pop("dispatchSourceReleaseTreeDigest", None)
+    first.pop("dispatchSourceRouteSet", None)
+    second.pop("dispatchSourceRouteSet", None)
+    first.pop("dispatchSourceRuntimeGenerationId", None)
+    second.pop("dispatchSourceRuntimeGenerationId", None)
     first.pop("dispatchDeploymentIds", None)
     second.pop("dispatchDeploymentIds", None)
     first.pop("dispatchTenantIds", None)
@@ -1301,6 +1346,15 @@ def _require_same_bound_authority(
     second = deepcopy(current)
     first.pop("phase", None)
     second.pop("phase", None)
+    for field in (
+        "dispatchSourceObservedState",
+        "dispatchSourceRouteSet",
+        "dispatchSourceRuntimeGenerationId",
+    ):
+        previous = first.pop(field, None)
+        replacement = second.pop(field, None)
+        if previous is not None and previous != replacement:
+            raise ExecutionError("bound source runtime authority changed during execution")
     if first != second:
         raise ExecutionError("bound authorization authority changed during execution")
 
@@ -1605,10 +1659,14 @@ def _capture_replay_authority(
         raise ExecutionError("terminal replay request authority is malformed")
     source, archive_record = _job_source_authority(job)
     if result["status"] != "succeeded":
-        source_observed: dict[str, object] | None = None
+        source_observed = _dispatch_source_observed_state(job)
         source_generation: str | None = None
         source_route_set: str | None = None
-        if audit_is_latest_for_tenant and request["operation"] != "create":
+        if (
+            source_observed is None
+            and audit_is_latest_for_tenant
+            and request["operation"] != "create"
+        ):
             if source is None:  # pragma: no cover - current contract validation proves this
                 raise ExecutionError("failed replay lost its exact source manifest")
             tenant_id = validate_uuid7(result["tenantId"])
@@ -1626,12 +1684,11 @@ def _capture_replay_authority(
             source_spec = source["spec"]
             if type(source_spec) is not dict:
                 raise ExecutionError("failed replay source manifest is malformed")
-            source_route_set = "both" if source_spec["desiredState"] == "active" else "absent"
-            raw_generation = (
-                None if source_observed is None else source_observed.get("runtimeGenerationId")
+            source_generation, source_route_set = _replay_source_runtime_authority(
+                job,
+                source_observed,
+                source_spec,
             )
-            if raw_generation is not None:
-                source_generation = validate_uuid7(raw_generation)
         return _LifecycleDispatchAuthority(
             source_manifest=source,
             source_observed_state=source_observed,
@@ -1686,6 +1743,44 @@ def _capture_replay_authority(
         source_tenant_ids=_dispatch_tenant_ids(job),
         source_tenant_record_histories=_dispatch_tenant_record_histories(job),
         execution_validation_committed=validation_was_committed,
+    )
+
+
+def _replay_source_runtime_authority(
+    job: dict[str, object],
+    source_observed: dict[str, object] | None,
+    source_spec: dict[str, object],
+) -> tuple[str | None, str]:
+    """Recover exact bound runtime authority, with legacy-job fallback."""
+
+    bound_generation = _dispatch_source_runtime_generation_id(job)
+    bound_route_set = _dispatch_source_route_set(job)
+    if (bound_generation is None) != (bound_route_set is None):
+        raise ExecutionError("dispatch source runtime authority is partially bound")
+    if bound_generation is not None and bound_route_set is not None:
+        return bound_generation, bound_route_set
+    route_set = "both" if source_spec["desiredState"] == "active" else "absent"
+    raw_generation = None if source_observed is None else source_observed.get("runtimeGenerationId")
+    generation = None if raw_generation is None else validate_uuid7(raw_generation)
+    return generation, route_set
+
+
+def _capture_bound_source_runtime_authority(
+    job: dict[str, object],
+    authority: _LifecycleDispatchAuthority,
+) -> _LifecycleDispatchAuthority:
+    generation = _dispatch_source_runtime_generation_id(job)
+    route_set = _dispatch_source_route_set(job)
+    observed = _dispatch_source_observed_state(job)
+    if (generation is None) != (route_set is None):
+        raise ExecutionError("dispatch source runtime authority is partially bound")
+    if generation is None:
+        return authority
+    return replace(
+        authority,
+        source_observed_state=(authority.source_observed_state if observed is None else observed),
+        source_runtime_generation_id=generation,
+        source_route_set=route_set,
     )
 
 
@@ -2022,6 +2117,32 @@ def _dispatch_source_release_tree_digest(
     if type(raw) is not dict:
         raise ExecutionError("dispatch source release authority is malformed")
     return deepcopy(raw)
+
+
+def _dispatch_source_observed_state(
+    job: dict[str, object],
+) -> dict[str, object] | None:
+    raw = job.get("dispatchSourceObservedState")
+    if raw is None:
+        return None
+    if type(raw) is not dict:
+        raise ExecutionError("dispatch source observed-state authority is malformed")
+    validate_contract(raw, expected_kind=ContractKind.TENANT_OBSERVED_STATE)
+    return deepcopy(raw)
+
+
+def _dispatch_source_route_set(job: dict[str, object]) -> str | None:
+    raw = job.get("dispatchSourceRouteSet")
+    if raw is None:
+        return None
+    if raw not in {"absent", "both"}:
+        raise ExecutionError("dispatch source route-set authority is malformed")
+    return raw
+
+
+def _dispatch_source_runtime_generation_id(job: dict[str, object]) -> str | None:
+    raw = job.get("dispatchSourceRuntimeGenerationId")
+    return None if raw is None else validate_uuid7(raw)
 
 
 def _dispatch_deployment_ids(job: dict[str, object]) -> tuple[str, ...] | None:

@@ -150,6 +150,40 @@
         }
       ]
     },
+    "dispatchSourceObservedState": {
+      "oneOf": [
+        {
+          "$ref": "tenant-observed-state.schema.json"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "dispatchSourceRouteSet": {
+      "oneOf": [
+        {
+          "enum": [
+            "absent",
+            "both"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "dispatchSourceRuntimeGenerationId": {
+      "oneOf": [
+        {
+          "$ref": "common.schema.json#/$defs/uuidv7"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "dispatchDeploymentIds": {
       "oneOf": [
         {

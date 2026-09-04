@@ -166,7 +166,10 @@ def test_request_cannot_carry_a_standalone_desired_manifest() -> None:
 @pytest.mark.parametrize(
     ("operation", "fields"),
     [
-        ("create", {"slug": "duck-repair", "quotas": {"storageMiB": 100, "entries": 5000}}),
+        (
+            "create",
+            {"slug": "duck-repair", "quotas": {"storageMiB": 100, "entries": 5000}},
+        ),
         (
             "deploy",
             {
@@ -312,6 +315,8 @@ def test_maximum_dispatch_authority_fits_the_authorization_job_bound() -> None:
             "dispatchArchiveDeploymentIds": archive_ids,
             "dispatchArtifactReleaseTreeDigest": None,
             "dispatchSourceReleaseTreeDigest": None,
+            "dispatchSourceRouteSet": "both",
+            "dispatchSourceRuntimeGenerationId": deployment_ids[0],
             "dispatchDeploymentIds": deployment_ids,
             "dispatchTenantIds": tenant_ids,
             "dispatchTenantRecordHistories": [
@@ -637,7 +642,9 @@ def test_archive_record_is_reserved_for_successful_archive_results() -> None:
 
 
 @pytest.mark.parametrize("missing", ["archiveRecord", "manifest"])
-def test_successful_archive_result_requires_complete_archive_authority(missing: str) -> None:
+def test_successful_archive_result_requires_complete_archive_authority(
+    missing: str,
+) -> None:
     result = _load_object(FIXTURE_ROOT / "accepted/operation-result.json")
     manifest = _load_object(FIXTURE_ROOT / "accepted/site.json")
     spec = manifest["spec"]
@@ -718,7 +725,9 @@ def test_legacy_failed_archive_result_without_archive_record_remains_decodable()
 
 
 @pytest.mark.parametrize("field", ["tenantId", "canonicalOrigin", "manifest"])
-def test_successful_create_result_requires_generated_identity_fields(field: str) -> None:
+def test_successful_create_result_requires_generated_identity_fields(
+    field: str,
+) -> None:
     result = _load_object(FIXTURE_ROOT / "accepted/operation-result.json")
     del result[field]
 
@@ -739,7 +748,9 @@ def test_successful_create_result_rejects_a_null_tenant_identity() -> None:
 
 
 @pytest.mark.parametrize("desired_state", ["active", "suspended", "archived"])
-def test_successful_create_result_requires_an_undeployed_manifest(desired_state: str) -> None:
+def test_successful_create_result_requires_an_undeployed_manifest(
+    desired_state: str,
+) -> None:
     result = _load_object(FIXTURE_ROOT / "accepted/operation-result.json")
     manifest = result["manifest"]
     assert type(manifest) is dict
@@ -1140,7 +1151,11 @@ def test_archive_key_stays_inside_the_exact_managed_prefix(key: str) -> None:
 
 @pytest.mark.parametrize(
     "fixture",
-    ["archive-record.json", "archive-construction-intent.json", "archive-retirement-intent.json"],
+    [
+        "archive-record.json",
+        "archive-construction-intent.json",
+        "archive-retirement-intent.json",
+    ],
 )
 def test_archive_evidence_keeps_the_portable_bundle_digest_domain(fixture: str) -> None:
     document = _load_object(FIXTURE_ROOT / "accepted" / fixture)
@@ -1684,7 +1699,9 @@ def test_deletion_evidence_rejects_reserved_released_slugs(slug: str) -> None:
     "operation",
     [operation for operation in Operation if operation is not Operation.DELETE],
 )
-def test_non_delete_intents_require_a_candidate_manifest_digest(operation: Operation) -> None:
+def test_non_delete_intents_require_a_candidate_manifest_digest(
+    operation: Operation,
+) -> None:
     intent = _load_object(FIXTURE_ROOT / "accepted/transaction-intent.json")
     intent["operation"] = operation.value
     if operation is Operation.CREATE:
@@ -1701,7 +1718,9 @@ def test_non_delete_intents_require_a_candidate_manifest_digest(operation: Opera
     "operation",
     [operation for operation in Operation if operation is not Operation.DELETE],
 )
-def test_non_delete_intents_require_an_exact_candidate_manifest(operation: Operation) -> None:
+def test_non_delete_intents_require_an_exact_candidate_manifest(
+    operation: Operation,
+) -> None:
     intent = _load_object(FIXTURE_ROOT / "accepted/transaction-intent.json")
     intent["operation"] = operation.value
     if operation is Operation.CREATE:
@@ -1860,7 +1879,7 @@ def _route_only_transaction_intent(
                 "sourceRouteSet": "both" if source_state == "active" else "absent",
                 "candidateObservedState": candidate,
                 "candidateRuntimeGenerationId": "0198d17f-6f4a-7000-8000-000000000006",
-                "candidateRouteSet": "both" if candidate_state == "active" else "absent",
+                "candidateRouteSet": ("both" if candidate_state == "active" else "absent"),
             },
         }
     )
@@ -1884,6 +1903,51 @@ def test_reconcile_intent_pins_one_unchanged_manifest_generation() -> None:
     with pytest.raises(ContractError) as captured:
         validate_contract(intent)
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+def test_reconcile_intent_retains_drifted_source_as_recovery_evidence() -> None:
+    intent = _route_only_transaction_intent("reconcile", "active", "active")
+    recovery = intent["lifecycleRecovery"]
+    assert type(recovery) is dict
+    source = recovery["sourceObservedState"]
+    assert type(source) is dict
+    source["desiredManifestDigest"] = {
+        "format": "lowerduckpond-manifest-v1",
+        "algorithm": "sha256",
+        "value": "f" * 64,
+    }
+    source["observedState"] = "suspended"
+    source["runtimeGenerationId"] = None
+    recovery["sourceRouteSet"] = "absent"
+
+    assert validate_contract(intent) is ContractKind.TRANSACTION_INTENT
+
+
+def test_nonreconcile_intent_rejects_drifted_source_recovery_evidence() -> None:
+    intent = _route_only_transaction_intent("rename", "active", "active")
+    recovery = intent["lifecycleRecovery"]
+    assert type(recovery) is dict
+    source = recovery["sourceObservedState"]
+    assert type(source) is dict
+    source["observedState"] = "suspended"
+    source["runtimeGenerationId"] = None
+    recovery["sourceRouteSet"] = "absent"
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(intent)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+def test_source_observed_generation_may_precede_the_complete_rollback_generation() -> None:
+    intent = _route_only_transaction_intent("rename", "active", "active")
+    recovery = intent["lifecycleRecovery"]
+    assert type(recovery) is dict
+    source = recovery["sourceObservedState"]
+    assert type(source) is dict
+    source["runtimeGenerationId"] = "0198d17f-6f4a-7000-8000-000000000003"
+
+    assert recovery["sourceRuntimeGenerationId"] == ("0198d17f-6f4a-7000-8000-000000000004")
+    assert validate_contract(intent) is ContractKind.TRANSACTION_INTENT
 
 
 @pytest.mark.parametrize(
@@ -2346,7 +2410,9 @@ def test_launch_evidence_digests_are_pinned_to_their_domains(
     "format_identifier",
     ["lowerduckpond--v1", "lowerduckpond-state--v1", "lowerduckpond--state-v1"],
 )
-def test_schema_and_digest_value_reject_empty_format_segments(format_identifier: str) -> None:
+def test_schema_and_digest_value_reject_empty_format_segments(
+    format_identifier: str,
+) -> None:
     job = _load_object(FIXTURE_ROOT / "accepted/authorization-job.json")
     expected = job["expectedSource"]
     assert type(expected) is dict
@@ -2364,7 +2430,9 @@ def test_schema_and_digest_value_reject_empty_format_segments(format_identifier:
 
 
 @pytest.mark.parametrize("value", [None, 64, b"a" * 64, ["a" * 64]])
-def test_digest_rejects_non_string_values_through_the_contract_boundary(value: object) -> None:
+def test_digest_rejects_non_string_values_through_the_contract_boundary(
+    value: object,
+) -> None:
     with pytest.raises(ContractError) as captured:
         Digest("lowerduckpond-result-v1", "sha256", value)  # type: ignore[arg-type]
 

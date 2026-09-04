@@ -8,6 +8,7 @@ import stat
 import zipfile
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime
+from functools import partial
 from io import BytesIO
 from pathlib import Path
 
@@ -52,6 +53,8 @@ from lowerduckpond_static_host_agent import (
     build_portable_bundle,
 )
 from lowerduckpond_static_host_agent.execution import (
+    _capture_bound_source_runtime_authority,
+    _LifecycleDispatchAuthority,
     _validate_committed_manifest_request_binding,
 )
 
@@ -1921,7 +1924,7 @@ def _write_committed_restore_replay(
     return job, result, previous, previous_result
 
 
-def _write_committed_transition_replay(
+def _write_committed_transition_replay(  # noqa: PLR0915
     root: Path,
     *,
     operation: str,
@@ -1939,12 +1942,23 @@ def _write_committed_transition_replay(
         candidate_spec["desiredState"] = "suspended"
         candidate_route_set = "absent"
         candidate_runtime = None
+    elif operation == "reconcile":
+        candidate_route_set = "both"
+        candidate_runtime = "0198d17f-6f4a-7000-8000-000000000006"
     else:  # pragma: no cover - tests call only the explicit lifecycle matrix
         raise AssertionError("unsupported transition fixture")
     source_digest = manifest_digest(source).to_dict()
     candidate_digest = manifest_digest(candidate).to_dict()
     source_observed = _fixture("tenant-observed-state.json")
     source_observed["desiredManifestDigest"] = source_digest
+    if operation == "reconcile":
+        source_observed["desiredManifestDigest"] = {
+            "format": "lowerduckpond-manifest-v1",
+            "algorithm": "sha256",
+            "value": "f" * 64,
+        }
+        source_observed["observedState"] = "suspended"
+        source_observed["runtimeGenerationId"] = None
     candidate_observed = json.loads(json.dumps(source_observed))
     candidate_observed.update(
         {
@@ -1994,7 +2008,11 @@ def _write_committed_transition_replay(
             "archiveRecovery": None,
             "lifecycleRecovery": {
                 "sourceObservedState": source_observed,
-                "sourceRuntimeGenerationId": source_observed["runtimeGenerationId"],
+                "sourceRuntimeGenerationId": (
+                    "0198d17f-6f4a-7000-8000-000000000004"
+                    if operation == "reconcile"
+                    else source_observed["runtimeGenerationId"]
+                ),
                 "sourceRouteSet": "both",
                 "candidateObservedState": candidate_observed,
                 "candidateRuntimeGenerationId": ("0198d17f-6f4a-7000-8000-000000000006"),
@@ -3021,6 +3039,7 @@ def test_executor_accepts_a_complete_successful_deployment_commit(tmp_path: Path
         generation_id: str | None,
         _manifest: dict[str, object],
         _observed_state: dict[str, object] | None,
+        _allow_reconcile_source_drift: bool,
     ) -> bool:
         runtime_calls.append((tenant_id, route_set, generation_id))
         return True
@@ -3272,6 +3291,7 @@ def test_executor_requires_selected_release_validation_after_successful_deploy(
     def reject_unselected_release(
         tenant_id: str,
         manifest: dict[str, object],
+        _allow_reconcile_source_drift: bool,
     ) -> bool:
         calls.append((tenant_id, manifest))
         return False
@@ -3305,7 +3325,7 @@ def test_executor_rejects_cross_tenant_release_corruption_after_handler(
     _write(root, StateRecordPath.tenant_desired(_TENANT_ID), _fixture("site.json"))
     validations: list[bool] = []
 
-    def reject_corrupted_inventory() -> bool:
+    def reject_corrupted_inventory(_observed_drift_tenant_id: str | None) -> bool:
         validations.append(True)
         return False
 
@@ -3415,7 +3435,7 @@ def test_executor_rejects_a_failed_create_that_selects_a_stale_runtime(
     _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
     validations: list[bool] = []
 
-    def reject_stale_runtime() -> bool:
+    def reject_stale_runtime(_observed_drift_tenant_id: str | None) -> bool:
         validations.append(True)
         return False
 
@@ -3633,6 +3653,7 @@ def test_executor_requires_source_release_validation_after_failed_deploy(
     def reject_unrestored_release(
         tenant_id: str,
         manifest: dict[str, object],
+        _allow_reconcile_source_drift: bool,
     ) -> bool:
         calls.append((tenant_id, manifest))
         return False
@@ -4208,6 +4229,7 @@ def test_executor_requires_complete_runtime_after_export(tmp_path: Path) -> None
         generation_id: str | None,
         _manifest: dict[str, object],
         _observed_state: dict[str, object] | None,
+        _allow_reconcile_source_drift: bool,
     ) -> bool:
         runtime_calls.append((tenant_id, route_set, generation_id))
         return False
@@ -6620,6 +6642,7 @@ def test_executor_requires_the_authorized_selected_runtime_generation(
         generation_id: str | None,
         _manifest: dict[str, object],
         _observed_state: dict[str, object] | None,
+        _allow_reconcile_source_drift: bool,
     ) -> bool:
         calls.append((tenant_id, candidate_route_set, generation_id))
         return False
@@ -6647,6 +6670,35 @@ def test_executor_requires_the_authorized_selected_runtime_generation(
     ]
 
 
+def test_fresh_handler_recaptures_bound_reconcile_source_observed_state() -> None:
+    observed = _fixture("tenant-observed-state.json")
+    generation_id = "0198d17f-6f4a-7000-8000-000000000006"
+    authority = _LifecycleDispatchAuthority(
+        source_manifest=_fixture("site.json"),
+        source_observed_state=None,
+        source_runtime_generation_id=None,
+        source_route_set=None,
+        candidate_observed_state=None,
+        candidate_runtime_generation_id=None,
+        candidate_route_set=None,
+        archive_record=None,
+        archive_construction_present=False,
+    )
+
+    captured = _capture_bound_source_runtime_authority(
+        {
+            "dispatchSourceObservedState": observed,
+            "dispatchSourceRuntimeGenerationId": generation_id,
+            "dispatchSourceRouteSet": "absent",
+        },
+        authority,
+    )
+
+    assert captured.source_observed_state == observed
+    assert captured.source_runtime_generation_id == generation_id
+    assert captured.source_route_set == "absent"
+
+
 def test_executor_accepts_a_newer_complete_cross_tenant_runtime_generation(
     tmp_path: Path,
 ) -> None:
@@ -6668,6 +6720,7 @@ def test_executor_accepts_a_newer_complete_cross_tenant_runtime_generation(
             generation_id: str | None,
             _manifest: dict[str, object],
             _observed_state: dict[str, object] | None,
+            _allow_reconcile_source_drift: bool,
         ) -> bool:
             calls.append(generation_id)
             if generation_id is not None:
@@ -6698,7 +6751,7 @@ def test_executor_accepts_a_newer_complete_cross_tenant_runtime_generation(
     assert calls == ["0198d17f-6f4a-7000-8000-000000000006", None]
 
 
-@pytest.mark.parametrize("operation", ["rename", "suspend"])
+@pytest.mark.parametrize("operation", ["rename", "suspend", "reconcile"])
 def test_executor_requires_the_authorized_source_runtime_after_handler_failure(
     tmp_path: Path,
     operation: str,
@@ -6732,17 +6785,27 @@ def test_executor_requires_the_authorized_source_runtime_after_handler_failure(
     _write(root, StateRecordPath.tenant_desired(_TENANT_ID), source)
     _write(root, StateRecordPath.tenant_observed(_TENANT_ID), source_observed)
     intent_path = StateRecordPath.transaction_intent(intent["intentId"])
-    calls: list[tuple[str, str, str | None, dict[str, object], dict[str, object]]] = []
+    calls: list[tuple[str, str, str | None, dict[str, object], dict[str, object], bool]] = []
 
-    def reject_unrestored(
+    def reject_unrestored(  # noqa: PLR0913,PLR0917
         tenant_id: str,
         route_set: str,
         generation_id: str | None,
         manifest: dict[str, object],
         observed_state: dict[str, object] | None,
+        allow_reconcile_source_drift: bool,
     ) -> bool:
         assert observed_state is not None
-        calls.append((tenant_id, route_set, generation_id, manifest, observed_state))
+        calls.append(
+            (
+                tenant_id,
+                route_set,
+                generation_id,
+                manifest,
+                observed_state,
+                allow_reconcile_source_drift,
+            )
+        )
         return False
 
     with (
@@ -6766,6 +6829,7 @@ def test_executor_requires_the_authorized_source_runtime_after_handler_failure(
             "0198d17f-6f4a-7000-8000-000000000004",
             source,
             source_observed,
+            operation == "reconcile",
         )
     ]
 
@@ -6807,6 +6871,7 @@ def test_executor_revalidates_source_runtime_after_failure_intent_cleanup(
         generation_id: str | None,
         _manifest: dict[str, object],
         _observed_state: dict[str, object] | None,
+        _allow_reconcile_source_drift: bool,
     ) -> bool:
         calls.append((tenant_id, route_set, generation_id))
         return False
@@ -6829,6 +6894,171 @@ def test_executor_revalidates_source_runtime_after_failure_intent_cleanup(
             "both",
             source_observed["runtimeGenerationId"],
         )
+    ]
+
+
+def test_executor_replays_exact_reconcile_source_after_intent_cleanup(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    job, intent, result = _write_committed_transition_replay(root, operation="reconcile")
+    source = _mapping(intent["sourceManifest"])
+    recovery = _mapping(intent["lifecycleRecovery"])
+    source_observed = _mapping(recovery["sourceObservedState"])
+    recovery["sourceRouteSet"] = "absent"
+    job.update(
+        {
+            "compatibilityVersion": "static-job-v2",
+            "dispatchSourceRouteSet": "absent",
+            "dispatchSourceRuntimeGenerationId": recovery["sourceRuntimeGenerationId"],
+            "executionValidated": False,
+            "sourceAuthority": {"manifest": source, "archiveRecord": None},
+            "phase": "failed",
+        }
+    )
+    result.update({"status": "failed", "errorCode": "state_drift"})
+    result.pop("canonicalOrigin")
+    result.pop("manifest")
+    _write(root, StateRecordPath.authorization_job(job["jobId"]), job)
+    correlation = json.loads(json.dumps(job))
+    correlation["phase"] = "pending"
+    _write(
+        root,
+        StateRecordPath.authorization_correlation(result["correlationId"]),
+        correlation,
+    )
+    _write(root, StateRecordPath.authorization_result(job["jobId"]), result)
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), source)
+    _write(root, StateRecordPath.tenant_observed(_TENANT_ID), source_observed)
+    root.joinpath(*StateRecordPath.transaction_intent(intent["intentId"]).components).unlink()
+    calls: list[tuple[str, str | None]] = []
+    inventory_calls: list[tuple[str, str | None]] = []
+    release_calls: list[tuple[str, bool]] = []
+
+    def reject_unrestored(
+        _tenant_id: str,
+        route_set: str,
+        generation_id: str | None,
+        _manifest: dict[str, object],
+        _observed_state: dict[str, object] | None,
+        _allow_reconcile_source_drift: bool,
+    ) -> bool:
+        calls.append((route_set, generation_id))
+        return False
+
+    def validate_inventory(kind: str, observed_drift_tenant_id: str | None) -> bool:
+        inventory_calls.append((kind, observed_drift_tenant_id))
+        return True
+
+    def validate_release(
+        tenant_id: str,
+        _manifest: dict[str, object],
+        allow_reconcile_source_drift: bool,
+    ) -> bool:
+        release_calls.append((tenant_id, allow_reconcile_source_drift))
+        return True
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        _append_result_audit(repository, job, result)
+        with pytest.raises(ExecutionError, match="restore its authorized routes"):
+            AuthorizationExecutor(
+                repository,
+                intake,
+                tenant_runtime_validator=reject_unrestored,
+                tenant_release_validator=validate_release,
+                tenant_release_inventory_validator=partial(validate_inventory, "release"),
+                tenant_runtime_inventory_validator=partial(validate_inventory, "runtime"),
+            ).execute(job["jobId"])
+
+    assert calls == [("absent", recovery["sourceRuntimeGenerationId"])]
+    assert inventory_calls == [
+        ("release", _TENANT_ID),
+        ("runtime", _TENANT_ID),
+    ]
+    assert release_calls == [(_TENANT_ID, True)]
+
+
+def test_executor_accepts_newer_cross_tenant_runtime_for_failed_replay(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    job, intent, result = _write_committed_transition_replay(root, operation="reconcile")
+    source = _mapping(intent["sourceManifest"])
+    recovery = _mapping(intent["lifecycleRecovery"])
+    source_observed = _mapping(recovery["sourceObservedState"])
+    job.update(
+        {
+            "compatibilityVersion": "static-job-v2",
+            "dispatchSourceRouteSet": recovery["sourceRouteSet"],
+            "dispatchSourceRuntimeGenerationId": recovery["sourceRuntimeGenerationId"],
+            "executionValidated": False,
+            "sourceAuthority": {"manifest": source, "archiveRecord": None},
+            "phase": "failed",
+        }
+    )
+    result.update({"status": "failed", "errorCode": "state_drift"})
+    result.pop("canonicalOrigin")
+    result.pop("manifest")
+    _write(root, StateRecordPath.authorization_job(job["jobId"]), job)
+    correlation = json.loads(json.dumps(job))
+    correlation["phase"] = "pending"
+    _write(
+        root,
+        StateRecordPath.authorization_correlation(result["correlationId"]),
+        correlation,
+    )
+    _write(root, StateRecordPath.authorization_result(job["jobId"]), result)
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), source)
+    _write(root, StateRecordPath.tenant_observed(_TENANT_ID), source_observed)
+    root.joinpath(*StateRecordPath.transaction_intent(intent["intentId"]).components).unlink()
+    other_tenant_id = "0198d17f-6f4a-7000-8000-000000000010"
+    calls: list[tuple[str | None, bool]] = []
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        _append_result_audit(repository, job, result)
+
+        def validate_runtime(
+            _tenant_id: str,
+            _route_set: str,
+            generation_id: str | None,
+            _manifest: dict[str, object],
+            _observed_state: dict[str, object] | None,
+            allow_reconcile_source_drift: bool,
+        ) -> bool:
+            calls.append((generation_id, allow_reconcile_source_drift))
+            if generation_id is not None:
+                later = _fixture("operation-result.json")
+                provenance = _mapping(later["provenance"])
+                manifest = _mapping(later["manifest"])
+                metadata = _mapping(manifest["metadata"])
+                canonical_origin = f"t-{other_tenant_id.replace('-', '')}.lowerduckpond.com"
+                provenance["jobId"] = "0198d17f-6f4a-7000-8000-000000000011"
+                later["correlationId"] = "0198d17f-6f4a-7000-8000-000000000012"
+                later["tenantId"] = other_tenant_id
+                later["canonicalOrigin"] = canonical_origin
+                metadata["id"] = other_tenant_id
+                metadata["canonicalOrigin"] = canonical_origin
+                _append_result_audit(repository, job, later)
+                return False
+            return True
+
+        outcome = AuthorizationExecutor(
+            repository,
+            intake,
+            tenant_runtime_validator=validate_runtime,
+        ).execute(job["jobId"])
+
+    assert outcome.result == result
+    assert outcome.created is False
+    assert calls == [
+        (recovery["sourceRuntimeGenerationId"], True),
+        (None, True),
     ]
 
 
@@ -6882,6 +7112,7 @@ def test_executor_requires_the_create_intent_candidate_runtime(
         generation_id: str | None,
         _manifest: dict[str, object],
         observed_state: dict[str, object] | None,
+        _allow_reconcile_source_drift: bool,
     ) -> bool:
         calls.append((tenant_id, route_set, generation_id, observed_state))
         return False

@@ -60,6 +60,7 @@ _TENANT_ID = "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100"
 _DEPLOYMENT_ID = "0191e2ca-49f2-7608-8cf3-f80ab2cab151"
 _TENANT_GENERATION = "0198d17f-6f4a-7000-8000-000000000008"
 _CADDY_VALIDATION_DATA_MODE = 0o770
+_CANDIDATE_STATE_READS = 2
 
 
 def _accept_candidate(_generation: object, _environment: object) -> None:
@@ -159,32 +160,98 @@ def _tenant_input() -> TenantRouteInput:
     return TenantRouteInput(manifest, observed, deployment)
 
 
+def _archived_tenant_input() -> TenantRouteInput:
+    tenant = _tenant_input()
+    manifest = tenant.manifest
+    observed = tenant.observed_state
+    spec = cast(dict[str, object], manifest["spec"])
+    spec["desiredState"] = "archived"
+    observed["desiredManifestDigest"] = manifest_digest(manifest).to_dict()
+    observed["observedState"] = "archived"
+    observed["activeDeploymentId"] = None
+    observed["runtimeGenerationId"] = None
+    return TenantRouteInput(manifest, observed, tenant.deployment)
+
+
 class _OpenGate:
     def require_enabled(self) -> None:
         return
 
 
 class _RouteTransaction:
-    def __init__(self) -> None:
+    def __init__(self, archived: TenantRouteInput | None = None) -> None:
         self.read_count = 0
+        self.archived = archived
 
     def read(self, path: StateRecordPath) -> StoredContract:
         self.read_count += 1
-        if path != StateRecordPath.platform_namespace():
+        document: dict[str, object]
+        kind: ContractKind
+        if path == StateRecordPath.platform_namespace():
+            document = _platform_namespace()
+            kind = ContractKind.PLATFORM_NAMESPACE
+        elif self.archived is not None:
+            deployment = self.archived.deployment
+            assert deployment is not None
+            if path == StateRecordPath.tenant_desired(_TENANT_ID):
+                document = self.archived.manifest
+                kind = ContractKind.SITE
+            elif path == StateRecordPath.tenant_observed(_TENANT_ID):
+                document = self.archived.observed_state
+                kind = ContractKind.TENANT_OBSERVED_STATE
+            elif path == StateRecordPath.tenant_deployment(_TENANT_ID, _DEPLOYMENT_ID):
+                document = deployment
+                kind = ContractKind.DEPLOYMENT_RECORD
+            elif path == StateRecordPath.tenant_archive(_TENANT_ID, _DEPLOYMENT_ID):
+                document = {
+                    "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+                    "kind": "ArchiveRecord",
+                    "tenantId": _TENANT_ID,
+                    "deploymentId": _DEPLOYMENT_ID,
+                    "releaseTreeDigest": deployment["releaseTreeDigest"],
+                    "manifestDigest": manifest_digest(self.archived.manifest).to_dict(),
+                    "bundleDigest": {
+                        "format": "lowerduckpond-archive-v1",
+                        "algorithm": "sha256",
+                        "value": "2" * 64,
+                    },
+                    "bundleSize": 4096,
+                    "bucket": "lowerduckpond-net-production-tenant-archives-4f3e6b91",
+                    "key": "archives/0198d17f-6f4a-7000-8000-000000000003.zip",
+                    "versionId": "3LgY0Q5G-safe-fixture-version",
+                    "createdAt": "2026-09-02T12:02:00Z",
+                    "correlationId": "0198d17f-6f4a-7000-8000-000000000001",
+                }
+                kind = ContractKind.ARCHIVE_RECORD
+            else:
+                raise AssertionError(f"unexpected state read: {path}")
+        elif path == StateRecordPath.tenant_archive(_TENANT_ID, _DEPLOYMENT_ID):
+            raise FileNotFoundError(path)
+        else:
             raise AssertionError(f"unexpected state read: {path}")
-        namespace = _platform_namespace()
-        encoded = canonical_json_bytes(namespace)
+        encoded = canonical_json_bytes(document)
         return StoredContract(
-            namespace,
+            document,
             StateRevision(
-                ContractKind.PLATFORM_NAMESPACE,
+                kind,
                 len(encoded),
                 hashlib.sha256(encoded).hexdigest(),
             ),
         )
 
     def measure_inventory(self) -> StateInventory:
-        return StateInventory((), 0, 0, 0, 0)
+        tenant_ids = () if self.archived is None else (_TENANT_ID,)
+        return StateInventory(tenant_ids, 0, 0, 0, 0)
+
+    @staticmethod
+    def tenant_has_deployment_history(_tenant_id: object) -> bool:
+        return False
+
+    @staticmethod
+    def deployment_history_tenant_ids(
+        _tenant_ids: tuple[str, ...],
+    ) -> frozenset[str]:
+        return frozenset()
 
 
 def _candidate_inputs() -> tuple[_RouteTransaction, TenantRouteOverlay, _OpenGate]:
@@ -440,10 +507,32 @@ def test_runtime_publishes_and_validates_one_unselected_derived_candidate(
         )
 
         assert manifest.generation_id == _TENANT_GENERATION
-        assert transaction.read_count == 1
+        assert transaction.read_count == _CANDIDATE_STATE_READS
         assert runtime.read_active() == GENERATION_A
         runtime.select_active(_TENANT_GENERATION)
         assert runtime.read_active() == _TENANT_GENERATION
+
+
+def test_runtime_publishes_an_unrouted_archived_tenant_candidate(
+    runtime_fixture: RuntimeFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _allow_candidate_capacity(monkeypatch, runtime_fixture.root)
+    archived = _archived_tenant_input()
+    transaction = _RouteTransaction(archived)
+    overlay = TenantRouteOverlay(RouteOverlayMode.REPLACE, archived, archived)
+    with runtime_fixture.open() as runtime, runtime.locked():
+        runtime.select_active(GENERATION_A)
+        manifest = runtime.publish_candidate(
+            _TENANT_GENERATION,
+            transaction=transaction,
+            overlay=overlay,
+            gate=_OpenGate(),
+        )
+
+        snapshot = runtime.read_generation_route_snapshot(manifest.generation_id)
+        assert snapshot.tenants == ()
+        assert runtime.read_active() == GENERATION_A
 
 
 def test_runtime_opens_one_explicit_verified_generation(
@@ -1409,7 +1498,10 @@ def test_selection_and_launch_independently_rederive_tenant_capable_routes(
         finally:
             selected.generation.close()
 
-    with runtime_fixture.open() as runtime, prepare_active_caddy_execution(runtime) as prepared:
+    with (
+        runtime_fixture.open() as runtime,
+        prepare_active_caddy_execution(runtime) as prepared,
+    ):
         descriptor = prepared.duplicate_configuration_descriptor()
         try:
             assert os.read(descriptor, os.fstat(descriptor).st_size) == canonical_json_bytes(

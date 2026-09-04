@@ -181,6 +181,7 @@ def _route_plan(
     *,
     slug: str | None = None,
     candidate_generation: str = _CANDIDATE_GENERATION,
+    source_route_set: str | None = None,
 ) -> RouteTransitionPlan:
     namespace = _fixture("platform-namespace.json")
     manifest, observed, deployment, archive = _route_source(state)
@@ -191,6 +192,11 @@ def _route_plan(
         observed,
         deployment,
         archive,
+        source_route_set=(
+            ("both" if state == "active" else "absent")
+            if source_route_set is None
+            else source_route_set
+        ),
         source_runtime_generation_id=_SOURCE_GENERATION,
         candidate_runtime_generation_id=candidate_generation,
         audit_state=AuditState(
@@ -374,6 +380,7 @@ def test_route_plan_does_not_mutate_authority_or_source_inputs() -> None:
         observed,
         deployment,
         archive,
+        source_route_set="both",
         source_runtime_generation_id=_SOURCE_GENERATION,
         candidate_runtime_generation_id=_CANDIDATE_GENERATION,
         audit_state=AuditState(0, 0, 0, None),
@@ -410,6 +417,7 @@ def test_route_plan_rejects_authority_source_drift() -> None:
             observed,
             deployment,
             archive,
+            source_route_set="both",
             source_runtime_generation_id=_SOURCE_GENERATION,
             candidate_runtime_generation_id=_CANDIDATE_GENERATION,
             audit_state=AuditState(0, 0, 0, None),
@@ -419,12 +427,81 @@ def test_route_plan_rejects_authority_source_drift() -> None:
         )
 
 
-def test_route_plan_rejects_observed_state_drift() -> None:
+def test_route_plan_retains_an_older_target_generation_than_the_selected_source() -> None:
     namespace = _fixture("platform-namespace.json")
     manifest, observed, deployment, archive = _route_source("active")
-    observed["runtimeGenerationId"] = _CANDIDATE_GENERATION
+    target_generation = "0198d17f-6f4a-7000-8000-000000000003"
+    observed["runtimeGenerationId"] = target_generation
 
-    with pytest.raises(LifecyclePlanError, match="observed-state"):
+    plan = plan_route_transition(
+        _route_job("suspend", namespace, manifest, deployment, archive),
+        namespace,
+        manifest,
+        observed,
+        deployment,
+        archive,
+        source_route_set="both",
+        source_runtime_generation_id=_SOURCE_GENERATION,
+        candidate_runtime_generation_id=_CANDIDATE_GENERATION,
+        audit_state=AuditState(0, 0, 0, None),
+        now=_NOW,
+        clock=lambda: 1_777_000_000_000,
+        entropy=_Entropy(),
+    )
+
+    recovery = plan.intent["lifecycleRecovery"]
+    assert type(recovery) is dict
+    source_observed = recovery["sourceObservedState"]
+    assert type(source_observed) is dict
+    assert recovery["sourceRuntimeGenerationId"] == _SOURCE_GENERATION
+    assert source_observed["runtimeGenerationId"] == target_generation
+
+
+def test_reconcile_plan_retains_drift_as_recovery_and_repairs_from_desired_state() -> None:
+    namespace = _fixture("platform-namespace.json")
+    manifest, observed, deployment, archive = _route_source("active")
+    assert deployment is not None
+    observed["desiredManifestDigest"] = {
+        "format": "lowerduckpond-manifest-v1",
+        "algorithm": "sha256",
+        "value": "f" * 64,
+    }
+    observed["observedState"] = "suspended"
+    observed["runtimeGenerationId"] = None
+
+    plan = plan_route_transition(
+        _route_job("reconcile", namespace, manifest, deployment, archive),
+        namespace,
+        manifest,
+        observed,
+        deployment,
+        archive,
+        source_route_set="absent",
+        source_runtime_generation_id=_SOURCE_GENERATION,
+        candidate_runtime_generation_id=_CANDIDATE_GENERATION,
+        audit_state=AuditState(0, 0, 0, None),
+        now=_NOW,
+        clock=lambda: 1_777_000_000_000,
+        entropy=_Entropy(),
+    )
+
+    recovery = plan.intent["lifecycleRecovery"]
+    assert type(recovery) is dict
+    assert recovery["sourceObservedState"] == observed
+    assert recovery["sourceRouteSet"] == "absent"
+    assert plan.observed_state["desiredManifestDigest"] == manifest_digest(manifest).to_dict()
+    assert plan.observed_state["observedState"] == "active"
+    assert plan.observed_state["activeDeploymentId"] == deployment["id"]
+    assert plan.observed_state["runtimeGenerationId"] == _CANDIDATE_GENERATION
+
+
+def test_nonreconcile_route_plan_rejects_drifted_observed_state() -> None:
+    namespace = _fixture("platform-namespace.json")
+    manifest, observed, deployment, archive = _route_source("active")
+    observed["observedState"] = "suspended"
+    observed["runtimeGenerationId"] = None
+
+    with pytest.raises(LifecyclePlanError, match="observed-state binding drifted"):
         plan_route_transition(
             _route_job("suspend", namespace, manifest, deployment, archive),
             namespace,
@@ -432,6 +509,7 @@ def test_route_plan_rejects_observed_state_drift() -> None:
             observed,
             deployment,
             archive,
+            source_route_set="absent",
             source_runtime_generation_id=_SOURCE_GENERATION,
             candidate_runtime_generation_id=_CANDIDATE_GENERATION,
             audit_state=AuditState(0, 0, 0, None),
@@ -454,6 +532,7 @@ def test_route_plan_rejects_an_archived_source_without_its_archive_record() -> N
             observed,
             deployment,
             None,
+            source_route_set="absent",
             source_runtime_generation_id=_SOURCE_GENERATION,
             candidate_runtime_generation_id=_CANDIDATE_GENERATION,
             audit_state=AuditState(0, 0, 0, None),

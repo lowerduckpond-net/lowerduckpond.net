@@ -35,6 +35,7 @@ from lowerduckpond_static_host_agent.audit import (
     AuditLimits,
     AuditState,
     AuditTransition,
+    deployment_audit_history_tenant_ids,
     tenant_has_deployment_audit_history,
     tenant_has_identity_audit_history,
 )
@@ -101,7 +102,10 @@ _DEFAULT_TENANT_RELEASE_ROOT: Final = Path("/srv/lowerduckpond/sites")
 _DISPATCH_AUTHORITY_FIELDS: Final = (
     "dispatchArchiveDeploymentIds",
     "dispatchArtifactReleaseTreeDigest",
+    "dispatchSourceObservedState",
     "dispatchSourceReleaseTreeDigest",
+    "dispatchSourceRouteSet",
+    "dispatchSourceRuntimeGenerationId",
     "dispatchDeploymentIds",
     "dispatchTenantIds",
     "dispatchTenantRecordHistories",
@@ -898,6 +902,44 @@ class _StateTransaction:
             expected_record_mode=self._repository._expected_record_mode,
         )
 
+    def deployment_history_tenant_ids(
+        self,
+        tenant_ids: tuple[str, ...],
+    ) -> frozenset[str]:
+        """Project every deployment-history source in one bounded audit pass."""
+
+        self._require_active()
+        self._require_exclusive()
+        canonical_ids = tuple(validate_uuid7(tenant_id) for tenant_id in tenant_ids)
+        if canonical_ids != tuple(sorted(set(canonical_ids))):
+            raise ValueError("deployment-history tenant IDs must be sorted and unique")
+        if not canonical_ids:
+            return frozenset()
+        current_ids = frozenset(self.measure_inventory().tenant_ids)
+        matches: set[str] = set()
+        for canonical_id in canonical_ids:
+            if canonical_id in current_ids and (
+                self.tenant_deployment_ids(canonical_id) or self.tenant_archive_ids(canonical_id)
+            ):
+                matches.add(canonical_id)
+                continue
+            if self._tenant_has_release_history(canonical_id):
+                matches.add(canonical_id)
+        audit_candidates = tuple(
+            tenant_id for tenant_id in canonical_ids if tenant_id not in matches
+        )
+        if audit_candidates:
+            matches.update(
+                deployment_audit_history_tenant_ids(
+                    self._repository._durable,
+                    audit_candidates,
+                    expected_owner=self._repository._expected_owner,
+                    expected_directory_mode=self._repository._expected_directory_mode,
+                    expected_record_mode=self._repository._expected_record_mode,
+                )
+            )
+        return frozenset(matches)
+
     def tenant_has_identity_history(self, tenant_id: object) -> bool:
         """Inspect current and audited identity history while state is serialized."""
 
@@ -1512,6 +1554,43 @@ class _StateTransaction:
         )
         return self._repository._read_locked(path)
 
+    def rebind_route_source_authority(
+        self,
+        path: StateRecordPath,
+        expected_revision: StateRevision,
+        document: dict[str, object],
+        *,
+        allow_reconcile_source_advance: bool = False,
+        capacity_limits: HostCapacityLimits = DEFAULT_HOST_CAPACITY_LIMITS,
+    ) -> StoredContract:
+        """Advance only pre-intent route source generation authority."""
+
+        self._require_exclusive()
+        if path.name is not _StateRecordName.AUTHORIZATION_JOB:
+            raise StateRecordError("route source authority belongs only to an authorization job")
+        if self.measure_intent_records().records:
+            raise StateRecordError("route source authority cannot advance after intent creation")
+        candidate = self._repository._encode(path, document)
+        current = self._repository._read_locked(path)
+        if current.revision != expected_revision:
+            raise StateConflictError("authoritative state changed before commit")
+        _validate_route_source_authority_replacement(
+            current.document,
+            document,
+            allow_reconcile_source_advance=allow_reconcile_source_advance,
+        )
+        self._admit_atomic_authorization_replacement(
+            path,
+            candidate,
+            capacity_limits=capacity_limits,
+        )
+        self._repository._durable.replace(
+            path.components,
+            candidate,
+            mode=self._repository._expected_record_mode,
+        )
+        return self._repository._read_locked(path)
+
     def _admit_atomic_authorization_replacement(
         self,
         path: StateRecordPath,
@@ -1884,6 +1963,52 @@ def _validate_dispatch_authority_replacement(
             raise StateRecordError("bound dispatch authority cannot be replaced")
     if before != after:
         raise StateRecordError("dispatch binding changed non-dispatch authority")
+
+
+def _validate_route_source_authority_replacement(
+    current: dict[str, object],
+    candidate: dict[str, object],
+    *,
+    allow_reconcile_source_advance: bool,
+) -> None:
+    if (
+        current["phase"] != "claimed"
+        or candidate["phase"] != "claimed"
+        or current["executionValidated"] is not False
+        or candidate["executionValidated"] is not False
+    ):
+        raise StateRecordError("route source rebind requires an unvalidated claimed job")
+    before = deepcopy(current)
+    after = deepcopy(candidate)
+    before_generation = before.pop("dispatchSourceRuntimeGenerationId", None)
+    after_generation = after.pop("dispatchSourceRuntimeGenerationId", None)
+    before_route_set = before.pop("dispatchSourceRouteSet", None)
+    after_route_set = after.pop("dispatchSourceRouteSet", None)
+    before_observed = before.pop("dispatchSourceObservedState", None)
+    after_observed = after.pop("dispatchSourceObservedState", None)
+    target_unchanged = after_route_set == before_route_set and (
+        before_observed is None or after_observed == before_observed
+    )
+    request = candidate.get("request")
+    if (
+        before != after
+        or before_route_set not in {"absent", "both"}
+        or after_route_set not in {"absent", "both"}
+        or (before_observed is not None and type(before_observed) is not dict)
+        or type(after_observed) is not dict
+        or before_generation is None
+        or after_generation is None
+        or before_generation == after_generation
+        or (
+            not target_unchanged
+            and (
+                not allow_reconcile_source_advance
+                or type(request) is not dict
+                or request.get("operation") != "reconcile"
+            )
+        )
+    ):
+        raise StateRecordError("route source rebind changed authority outside its proof")
 
 
 def _validate_execution_validation_replacement(

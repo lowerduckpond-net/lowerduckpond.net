@@ -649,7 +649,6 @@ def _validate_transaction_intent(document: dict[str, object]) -> None:
         observed["runtimeGenerationId"] != recovery["sourceRuntimeGenerationId"]
     ):
         raise ContractError(ErrorCode.SCHEMA_INVALID, "archive source runtime binding is invalid")
-
     if (
         archive["tenantId"] != tenant_id
         or archive["deploymentId"] != source_deployment["id"]
@@ -700,25 +699,12 @@ def _validate_lifecycle_recovery(
     if (operation == "delete") != (candidate is None):
         raise ContractError(ErrorCode.SCHEMA_INVALID, "candidate recovery state is invalid")
 
-    source_state = LifecycleState.ABSENT
-    source_observed: dict[str, object] | None = None
-    if source is not None:
-        source_observed = cast(dict[str, object], source)
-        source_state = LifecycleState(cast(str, source_observed["observedState"]))
-        _validate_observed_recovery_binding(
-            document,
-            source_observed,
-            digest_field="sourceManifestDigest",
-            route_set=recovery["sourceRouteSet"],
-            runtime_generation=recovery["sourceRuntimeGenerationId"],
-        )
-        if current:
-            _validate_observed_manifest_binding(
-                cast(dict[str, object], document["sourceManifest"]),
-                source_observed,
-            )
-    elif recovery["sourceRouteSet"] != "absent":
-        raise ContractError(ErrorCode.SCHEMA_INVALID, "absent source retained tenant routes")
+    source_state, source_observed = _validate_lifecycle_source_recovery(
+        document,
+        recovery,
+        operation=operation,
+        current=current,
+    )
 
     candidate_state = LifecycleState.ABSENT
     candidate_observed: dict[str, object] | None = None
@@ -755,7 +741,7 @@ def _validate_lifecycle_recovery(
             ErrorCode.SCHEMA_INVALID,
             "deployment-selecting transition did not select a distinct generation",
         )
-    if operation in {"suspend", "resume", "rename", "reconcile"} and (
+    if operation in {"suspend", "resume", "rename"} and (
         source_observed is None
         or candidate_observed is None
         or source_observed["activeDeploymentId"] != candidate_observed["activeDeploymentId"]
@@ -766,6 +752,43 @@ def _validate_lifecycle_recovery(
         )
     if recovery["candidateRuntimeGenerationId"] == recovery["sourceRuntimeGenerationId"]:
         raise ContractError(ErrorCode.SCHEMA_INVALID, "runtime generations are not distinct")
+
+
+def _validate_lifecycle_source_recovery(
+    document: dict[str, object],
+    recovery: dict[str, object],
+    *,
+    operation: str,
+    current: bool,
+) -> tuple[LifecycleState, dict[str, object] | None]:
+    source = recovery["sourceObservedState"]
+    if source is None:
+        if recovery["sourceRouteSet"] != "absent":
+            raise ContractError(ErrorCode.SCHEMA_INVALID, "absent source retained tenant routes")
+        return LifecycleState.ABSENT, None
+    observed = cast(dict[str, object], source)
+    if operation == "reconcile" and current:
+        source_manifest = cast(dict[str, object], document["sourceManifest"])
+        source_spec = cast(dict[str, object], source_manifest["spec"])
+        if observed["tenantId"] != document["tenantId"]:
+            raise ContractError(
+                ErrorCode.SCHEMA_INVALID,
+                "reconcile source recovery tenant is invalid",
+            )
+        return LifecycleState(cast(str, source_spec["desiredState"])), observed
+    state = LifecycleState(cast(str, observed["observedState"]))
+    _validate_observed_recovery_binding(
+        document,
+        observed,
+        digest_field="sourceManifestDigest",
+        route_set=recovery["sourceRouteSet"],
+    )
+    if current:
+        _validate_observed_manifest_binding(
+            cast(dict[str, object], document["sourceManifest"]),
+            observed,
+        )
+    return state, observed
 
 
 def _validate_observed_manifest_binding(
@@ -901,7 +924,7 @@ def _validate_observed_recovery_binding(
     *,
     digest_field: str,
     route_set: object,
-    runtime_generation: object,
+    runtime_generation: object | None = None,
 ) -> None:
     if (
         observed["tenantId"] != document["tenantId"]
@@ -912,7 +935,11 @@ def _validate_observed_recovery_binding(
     expected_routes = "both" if state == "active" else "absent"
     if route_set != expected_routes:
         raise ContractError(ErrorCode.SCHEMA_INVALID, "observed route binding is invalid")
-    if state == "active" and observed["runtimeGenerationId"] != runtime_generation:
+    if (
+        runtime_generation is not None
+        and state == "active"
+        and observed["runtimeGenerationId"] != runtime_generation
+    ):
         raise ContractError(ErrorCode.SCHEMA_INVALID, "observed runtime binding is invalid")
 
 

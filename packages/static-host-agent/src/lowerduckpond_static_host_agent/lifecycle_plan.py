@@ -197,6 +197,7 @@ def plan_route_transition(  # noqa: PLR0912, PLR0913, PLR0915, PLR0917 - authori
     source_deployment: dict[str, object] | None,
     source_archive_record: dict[str, object] | None,
     *,
+    source_route_set: object,
     source_runtime_generation_id: object,
     candidate_runtime_generation_id: object,
     audit_state: AuditState,
@@ -303,14 +304,22 @@ def plan_route_transition(  # noqa: PLR0912, PLR0913, PLR0915, PLR0917 - authori
     candidate_generation = validate_uuid7(candidate_runtime_generation_id)
     if source_generation == candidate_generation:
         raise LifecyclePlanError("route transition must select a distinct runtime generation")
-    _validate_route_source_observed(
-        observed,
-        tenant_id=tenant_id,
-        source_digest=source_digest,
-        source_state=source_state,
-        active_deployment_id=active_deployment_id,
-        source_generation=source_generation,
-    )
+    if source_route_set not in {"absent", "both"}:
+        raise LifecyclePlanError("route source has an invalid selected route set")
+    expected_source_routes = "both" if source_state is LifecycleState.ACTIVE else "absent"
+    if operation is Operation.RECONCILE:
+        if observed["tenantId"] != tenant_id:
+            raise LifecyclePlanError("route source observed-state tenant drifted")
+    else:
+        _validate_route_source_observed(
+            observed,
+            tenant_id=tenant_id,
+            source_digest=source_digest,
+            source_state=source_state,
+            active_deployment_id=active_deployment_id,
+        )
+        if source_route_set != expected_source_routes:
+            raise LifecyclePlanError("route source selected routes disagree with authority")
 
     candidate = deepcopy(source)
     candidate_metadata = cast(dict[str, object], candidate["metadata"])
@@ -354,7 +363,7 @@ def plan_route_transition(  # noqa: PLR0912, PLR0913, PLR0915, PLR0917 - authori
         "lifecycleRecovery": {
             "sourceObservedState": observed,
             "sourceRuntimeGenerationId": source_generation,
-            "sourceRouteSet": ("both" if source_state is LifecycleState.ACTIVE else "absent"),
+            "sourceRouteSet": source_route_set,
             "candidateObservedState": candidate_observed,
             "candidateRuntimeGenerationId": candidate_generation,
             "candidateRouteSet": ("both" if target_state is LifecycleState.ACTIVE else "absent"),
@@ -401,22 +410,19 @@ def plan_route_transition(  # noqa: PLR0912, PLR0913, PLR0915, PLR0917 - authori
     )
 
 
-def _validate_route_source_observed(  # noqa: PLR0913 - exact source tuple
+def _validate_route_source_observed(
     observed: dict[str, object],
     *,
     tenant_id: str,
     source_digest: dict[str, str],
     source_state: LifecycleState,
     active_deployment_id: str | None,
-    source_generation: str,
 ) -> None:
-    expected_runtime = source_generation if source_state is LifecycleState.ACTIVE else None
     if (
         observed["tenantId"] != tenant_id
         or observed["desiredManifestDigest"] != source_digest
         or observed["observedState"] != source_state.value
         or observed["activeDeploymentId"] != active_deployment_id
-        or observed["runtimeGenerationId"] != expected_runtime
     ):
         raise LifecyclePlanError("route source observed-state binding drifted")
 

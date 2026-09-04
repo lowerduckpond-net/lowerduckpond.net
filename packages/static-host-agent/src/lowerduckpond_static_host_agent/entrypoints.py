@@ -39,7 +39,7 @@ from lowerduckpond_static_host_agent.caddy_generation import (
     CaddyGenerationError,
     CaddyGenerationStore,
 )
-from lowerduckpond_static_host_agent.caddy_routes import TENANT_RELEASE_ROOT
+from lowerduckpond_static_host_agent.caddy_routes import TENANT_RELEASE_ROOT, TenantRouteInput
 from lowerduckpond_static_host_agent.caddy_runtime import (
     CADDY_PUBLICATION_LOCK_MODE,
     CADDY_RUNTIME_ROOT_MODE,
@@ -104,6 +104,9 @@ from lowerduckpond_static_host_agent.request_decoder import (
 )
 from lowerduckpond_static_host_agent.route_snapshot import (
     RouteSnapshotError,
+    RouteSnapshotTransaction,
+    TenantRouteSnapshot,
+    snapshot_tenant_authority,
     snapshot_tenant_routes,
 )
 from lowerduckpond_static_host_agent.state_inventory import (
@@ -660,6 +663,7 @@ def _selected_tenant_runtime_matches(  # noqa: PLR0911,PLR0913,PLR0917
     generation_id: str | None,
     manifest: dict[str, object],
     observed_state: dict[str, object] | None,
+    allow_reconcile_source_drift: bool = False,
 ) -> bool:
     """Bind one lifecycle candidate to the selected verified route snapshot."""
 
@@ -675,14 +679,54 @@ def _selected_tenant_runtime_matches(  # noqa: PLR0911,PLR0913,PLR0917
             if generation_id is not None and active_generation_id != generation_id:
                 return False
             snapshot = runtime.read_generation_route_snapshot(active_generation_id)
-            expected = snapshot_tenant_routes(transaction)
+            expected = (
+                snapshot_tenant_routes(
+                    transaction,
+                    observed_drift_tenant_id=tenant_id,
+                )
+                if allow_reconcile_source_drift
+                else snapshot_tenant_routes(transaction)
+            )
             if snapshot != expected:
-                return False
+                return (
+                    allow_reconcile_source_drift
+                    and generation_id is not None
+                    and observed_state is not None
+                    and _reconcile_source_runtime_matches(
+                        transaction,
+                        snapshot,
+                        expected,
+                        tenant_id=tenant_id,
+                        route_set=route_set,
+                        manifest=manifest,
+                        observed_state=observed_state,
+                    )
+                )
             matching = []
             for tenant in snapshot.tenants:
                 metadata = tenant.manifest.get("metadata")
                 if type(metadata) is dict and metadata.get("id") == tenant_id:
                     matching.append(tenant)
+            manifest_spec = manifest.get("spec")
+            if (
+                not matching
+                and route_set == "absent"
+                and type(manifest_spec) is dict
+                and manifest_spec.get("desiredState") == "archived"
+                and observed_state is not None
+            ):
+                durable_manifest = transaction.read(
+                    StateRecordPath.tenant_desired(tenant_id)
+                ).document
+                durable_observed = transaction.read(
+                    StateRecordPath.tenant_observed(tenant_id)
+                ).document
+                return (
+                    durable_manifest == manifest
+                    and durable_observed == observed_state
+                    and observed_state.get("observedState") == "archived"
+                    and observed_state.get("runtimeGenerationId") is None
+                )
             if len(matching) != 1:
                 return False
             tenant = matching[0]
@@ -698,10 +742,7 @@ def _selected_tenant_runtime_matches(  # noqa: PLR0911,PLR0913,PLR0917
                 return (
                     spec.get("desiredState") == "active"
                     and observed.get("observedState") == "active"
-                    and (
-                        generation_id is None
-                        or observed.get("runtimeGenerationId") == generation_id
-                    )
+                    and observed.get("runtimeGenerationId") is not None
                 )
             return (
                 spec.get("desiredState") != "active"
@@ -722,16 +763,83 @@ def _selected_tenant_runtime_matches(  # noqa: PLR0911,PLR0913,PLR0917
         return False
 
 
+def _reconcile_source_runtime_matches(  # noqa: PLR0911,PLR0913
+    transaction: RouteSnapshotTransaction,
+    selected: TenantRouteSnapshot,
+    expected: TenantRouteSnapshot,
+    *,
+    tenant_id: str,
+    route_set: str,
+    manifest: dict[str, object],
+    observed_state: dict[str, object],
+) -> bool:
+    """Validate a reconcile rollback against its bound immutable generation."""
+
+    if selected.platform_namespace != expected.platform_namespace:
+        return False
+    durable_manifest = transaction.read(StateRecordPath.tenant_desired(tenant_id)).document
+    durable_observed = transaction.read(StateRecordPath.tenant_observed(tenant_id)).document
+    if durable_manifest != manifest or durable_observed != observed_state:
+        return False
+    selected_target, selected_others = _partition_runtime_snapshot(selected, tenant_id)
+    _expected_target, expected_others = _partition_runtime_snapshot(expected, tenant_id)
+    if selected_others != expected_others or len(selected_target) > 1:
+        return False
+    if not selected_target:
+        return route_set == "absent"
+    tenant = selected_target[0]
+    spec = tenant.manifest.get("spec")
+    observed = tenant.observed_state
+    if type(spec) is not dict:
+        return False
+    if route_set == "both":
+        return (
+            spec.get("desiredState") == "active"
+            and observed.get("observedState") == "active"
+            and observed.get("runtimeGenerationId") is not None
+        )
+    return (
+        route_set == "absent"
+        and spec.get("desiredState") != "active"
+        and observed.get("observedState") == spec.get("desiredState")
+        and observed.get("runtimeGenerationId") is None
+    )
+
+
+def _partition_runtime_snapshot(
+    snapshot: TenantRouteSnapshot,
+    tenant_id: str,
+) -> tuple[tuple[TenantRouteInput, ...], tuple[TenantRouteInput, ...]]:
+    """Separate one tenant from an otherwise exact complete route snapshot."""
+
+    target: list[TenantRouteInput] = []
+    others: list[TenantRouteInput] = []
+    for tenant in snapshot.tenants:
+        metadata = tenant.manifest.get("metadata")
+        if type(metadata) is not dict:
+            raise RouteSnapshotError("runtime route metadata is malformed")
+        (target if metadata.get("id") == tenant_id else others).append(tenant)
+    return tuple(target), tuple(others)
+
+
 def _selected_tenant_release_matches(
     repository: StateRepository,
     tenant_id: str,
     manifest: dict[str, object],
+    allow_reconcile_source_drift: bool = False,
 ) -> bool:
     """Bind selected release bytes and the release inventory to durable state."""
 
     try:
         with repository.publication_transaction(blocking=True) as transaction:
-            expected = snapshot_tenant_routes(transaction)
+            expected = (
+                snapshot_tenant_authority(
+                    transaction,
+                    observed_drift_tenant_id=tenant_id,
+                )
+                if allow_reconcile_source_drift
+                else snapshot_tenant_authority(transaction)
+            )
             matching = []
             for tenant in expected.tenants:
                 metadata = tenant.manifest.get("metadata")
@@ -755,12 +863,22 @@ def _selected_tenant_release_matches(
         return False
 
 
-def _all_tenant_release_state_matches(repository: StateRepository) -> bool:
+def _all_tenant_release_state_matches(
+    repository: StateRepository,
+    observed_drift_tenant_id: str | None = None,
+) -> bool:
     """Remeasure every tenant release while holding the publication lock."""
 
     try:
         with repository.publication_transaction(blocking=True) as transaction:
-            expected = snapshot_tenant_routes(transaction)
+            expected = (
+                snapshot_tenant_authority(
+                    transaction,
+                    observed_drift_tenant_id=observed_drift_tenant_id,
+                )
+                if observed_drift_tenant_id is not None
+                else snapshot_tenant_authority(transaction)
+            )
             authoritative_tenant_ids = {_snapshot_tenant_id(tenant) for tenant in expected.tenants}
             if not set(_tenant_release_namespace_ids()).issubset(authoritative_tenant_ids):
                 return False
@@ -781,7 +899,10 @@ def _all_tenant_release_state_matches(repository: StateRepository) -> bool:
         return False
 
 
-def _all_tenant_runtime_state_matches(repository: StateRepository) -> bool:
+def _all_tenant_runtime_state_matches(
+    repository: StateRepository,
+    observed_drift_tenant_id: str | None = None,
+) -> bool:
     """Bind the selected runtime generation to all authoritative tenants."""
 
     try:
@@ -791,9 +912,32 @@ def _all_tenant_runtime_state_matches(repository: StateRepository) -> bool:
             runtime.using_held_publication_lock(repository),
         ):
             active_generation_id = runtime.read_active()
-            return runtime.read_generation_route_snapshot(
-                active_generation_id
-            ) == snapshot_tenant_routes(transaction)
+            snapshot = (
+                snapshot_tenant_routes(
+                    transaction,
+                    observed_drift_tenant_id=observed_drift_tenant_id,
+                )
+                if observed_drift_tenant_id is not None
+                else snapshot_tenant_routes(transaction)
+            )
+            selected = runtime.read_generation_route_snapshot(active_generation_id)
+            if observed_drift_tenant_id is None:
+                return selected == snapshot
+            if selected.platform_namespace != snapshot.platform_namespace:
+                return False
+            selected_target, selected_others = _partition_runtime_snapshot(
+                selected,
+                observed_drift_tenant_id,
+            )
+            expected_target, expected_others = _partition_runtime_snapshot(
+                snapshot,
+                observed_drift_tenant_id,
+            )
+            return (
+                selected_others == expected_others
+                and len(selected_target) <= 1
+                and len(expected_target) <= 1
+            )
     except (
         CaddyRuntimeError,
         KeyError,
