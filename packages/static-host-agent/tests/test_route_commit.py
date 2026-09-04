@@ -34,6 +34,9 @@ from lowerduckpond_static_host_agent import (
     StateRecordPath,
     StateRepository,
     StoredContract,
+    TenantRouteInput,
+    TenantRouteOverlay,
+    TenantRouteSnapshot,
 )
 from lowerduckpond_static_host_agent.lifecycle_plan import (
     RouteTransitionPlan,
@@ -50,6 +53,14 @@ from lowerduckpond_static_host_agent.route_commit import (
     validate_route_transition,
 )
 from lowerduckpond_static_host_agent.route_prepare import PreparedRouteTransition
+from lowerduckpond_static_host_agent.route_recover import (
+    RouteRecoveryError,
+    recover_route_transition,
+)
+from lowerduckpond_static_host_agent.route_snapshot import (
+    RouteOverlayMode,
+    snapshot_tenant_routes,
+)
 
 _FIXTURE_ROOT = Path(__file__).parents[3] / "tests/static-publication/fixtures/accepted"
 _SOURCE_GENERATION = "0198d17f-6f4a-7000-8000-000000000004"
@@ -93,6 +104,7 @@ class _Runtime:
         self.active = _SOURCE_GENERATION
         self.running = _SOURCE_GENERATION
         self.events: list[str] = []
+        self.snapshots: dict[str, TenantRouteSnapshot] = {}
 
     @contextmanager
     def using_held_publication_lock(self, _repository: StateRepository) -> Iterator[None]:
@@ -106,6 +118,10 @@ class _Runtime:
 
     def remove_abandoned_reference_temporaries(self) -> None:
         self.events.append("cleaned-reference-temporaries")
+
+    def read_generation_route_snapshot(self, generation_id: str) -> TenantRouteSnapshot:
+        self.events.append(f"snapshot:{generation_id}")
+        return deepcopy(self.snapshots[generation_id])
 
     def read_active(self) -> str:
         self.events.append("read-active")
@@ -289,8 +305,9 @@ def _prepared(  # noqa: PLR0913 - fixture authority controls stay explicit
             "algorithm": "sha256",
             "value": "f" * 64,
         }
-        observed["observedState"] = "suspended"
-        observed["runtimeGenerationId"] = None
+        if state != "archived":
+            observed["observedState"] = "suspended"
+            observed["runtimeGenerationId"] = None
     job = _job(operation, namespace, manifest, deployment, archive, slug=slug)
     tenant_id = cast(str, cast(dict[str, object], manifest["metadata"])["id"])
     tenant_root = root / "tenants" / tenant_id
@@ -367,6 +384,57 @@ def _prepared_activation(
         cast(CaddyGenerationManifest, _GenerationManifest(_CANDIDATE_GENERATION)),
         HostCapacityLimits() if capacity_limits is None else capacity_limits,
     )
+
+
+def _recovery_runtime(
+    repository: StateRepository,
+    job: dict[str, object],
+    plan: RouteTransitionPlan,
+) -> _Runtime:
+    correlation = deepcopy(job)
+    correlation["phase"] = "pending"
+    correlation["dispatchSourceObservedState"] = None
+    correlation.pop("dispatchSourceRuntimeGenerationId", None)
+    correlation.pop("dispatchSourceRouteSet", None)
+    request = cast(dict[str, object], job["request"])
+    repository.create_immutable(
+        StateRecordPath.authorization_correlation(request["correlationId"]),
+        correlation,
+    )
+    source = cast(dict[str, object], plan.intent["sourceManifest"])
+    recovery = cast(dict[str, object], plan.intent["lifecycleRecovery"])
+    source_observed = cast(dict[str, object], recovery["sourceObservedState"])
+    source_spec = cast(dict[str, object], source["spec"])
+    selected = source_spec.get("desiredDeployment")
+    deployment = None
+    if type(selected) is dict:
+        deployment = repository.read(
+            StateRecordPath.tenant_deployment(plan.tenant_id, selected["id"])
+        ).document
+    source_tenant = TenantRouteInput(source, source_observed, deployment)
+    candidate_tenant = TenantRouteInput(plan.manifest, plan.observed_state, deployment)
+    operation = cast(dict[str, object], job["request"])["operation"]
+    observed_drift_tenant_id = plan.tenant_id if operation == "reconcile" else None
+    with repository.publication_transaction() as transaction:
+        source_snapshot = snapshot_tenant_routes(
+            transaction,
+            observed_drift_tenant_id=observed_drift_tenant_id,
+        )
+        candidate_snapshot = snapshot_tenant_routes(
+            transaction,
+            overlay=TenantRouteOverlay(
+                RouteOverlayMode.REPLACE,
+                candidate_tenant,
+                source_tenant,
+            ),
+            observed_drift_tenant_id=observed_drift_tenant_id,
+        )
+    runtime = _Runtime()
+    runtime.snapshots = {
+        _SOURCE_GENERATION: source_snapshot,
+        _CANDIDATE_GENERATION: candidate_snapshot,
+    }
+    return runtime
 
 
 def _activate(
@@ -774,5 +842,257 @@ def test_route_activation_restores_source_when_audit_capacity_is_exhausted(
             "restored",
         ]
         assert repository.measure_intent_records().records
+    finally:
+        repository.close()
+
+
+def test_route_recovery_reconstructs_and_activates_durable_preparation(
+    tmp_path: Path,
+) -> None:
+    repository, job, plan = _prepared(tmp_path)
+    runtime = _recovery_runtime(repository, job, plan)
+    try:
+        result = recover_route_transition(
+            repository,
+            cast(CaddyRuntime, runtime),
+            cast(PublicationGate, _Gate()),
+            plan.intent_id,
+            reloader=runtime.reload,
+            restorer=runtime.restore,
+            verifier=runtime.verify,
+        )
+
+        assert result == plan.result
+        assert runtime.active == runtime.running == _CANDIDATE_GENERATION
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
+def test_route_recovery_reconstructs_an_omitted_archived_tenant(
+    tmp_path: Path,
+) -> None:
+    repository, job, plan = _prepared(
+        tmp_path,
+        operation="reconcile",
+        state="archived",
+    )
+    runtime = _recovery_runtime(repository, job, plan)
+    try:
+        result = recover_route_transition(
+            repository,
+            cast(CaddyRuntime, runtime),
+            cast(PublicationGate, _Gate()),
+            plan.intent_id,
+            reloader=runtime.reload,
+            restorer=runtime.restore,
+            verifier=runtime.verify,
+        )
+
+        assert result == plan.result
+        assert runtime.snapshots[_SOURCE_GENERATION].tenants == ()
+        assert runtime.snapshots[_CANDIDATE_GENERATION].tenants == ()
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
+def test_route_recovery_repairs_drifted_reconcile_authority(tmp_path: Path) -> None:
+    repository, job, plan = _prepared(
+        tmp_path,
+        operation="reconcile",
+        state="active",
+        source_route_set="absent",
+        drift_observed=True,
+    )
+    runtime = _recovery_runtime(repository, job, plan)
+    try:
+        result = recover_route_transition(
+            repository,
+            cast(CaddyRuntime, runtime),
+            cast(PublicationGate, _Gate()),
+            plan.intent_id,
+            reloader=runtime.reload,
+            restorer=runtime.restore,
+            verifier=runtime.verify,
+        )
+
+        assert result == plan.result
+        assert runtime.active == runtime.running == _CANDIDATE_GENERATION
+        assert (
+            repository.read(StateRecordPath.tenant_observed(plan.tenant_id)).document
+            == plan.observed_state
+        )
+    finally:
+        repository.close()
+
+
+def test_route_recovery_repairs_archived_reconcile_observed_state_drift(
+    tmp_path: Path,
+) -> None:
+    repository, job, plan = _prepared(
+        tmp_path,
+        operation="reconcile",
+        state="archived",
+        drift_observed=True,
+    )
+    runtime = _recovery_runtime(repository, job, plan)
+    try:
+        result = recover_route_transition(
+            repository,
+            cast(CaddyRuntime, runtime),
+            cast(PublicationGate, _Gate()),
+            plan.intent_id,
+            reloader=runtime.reload,
+            restorer=runtime.restore,
+            verifier=runtime.verify,
+        )
+
+        assert result == plan.result
+        assert runtime.snapshots[_SOURCE_GENERATION].tenants == ()
+        assert runtime.snapshots[_CANDIDATE_GENERATION].tenants == ()
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("dispatchSourceObservedState", None),
+        ("dispatchSourceRuntimeGenerationId", _LATEST_SOURCE_GENERATION),
+        ("dispatchSourceRouteSet", "absent"),
+    ],
+)
+def test_route_recovery_rejects_job_source_authority_drift(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    repository, job, plan = _prepared(tmp_path)
+    runtime = _recovery_runtime(repository, job, plan)
+    job_path = StateRecordPath.authorization_job(job["jobId"])
+    current = repository.read(job_path)
+    drifted = current.document
+    drifted[field] = value
+    repository.close()
+    _write(tmp_path / "state", job_path, drifted)
+    repository = StateRepository(tmp_path / "state", expected_owner=os.geteuid())
+    try:
+        with pytest.raises(RouteRecoveryError, match="durable job binding"):
+            recover_route_transition(
+                repository,
+                cast(CaddyRuntime, runtime),
+                cast(PublicationGate, _Gate()),
+                plan.intent_id,
+                reloader=runtime.reload,
+                restorer=runtime.restore,
+                verifier=runtime.verify,
+            )
+    finally:
+        repository.close()
+
+
+def test_route_recovery_rejects_a_candidate_snapshot_outside_authority(
+    tmp_path: Path,
+) -> None:
+    repository, job, plan = _prepared(tmp_path)
+    runtime = _recovery_runtime(repository, job, plan)
+    snapshot = runtime.snapshots[_CANDIDATE_GENERATION]
+    tampered = deepcopy(snapshot.tenants[0].manifest)
+    metadata = cast(dict[str, object], tampered["metadata"])
+    metadata["slug"] = "foreign-slug"
+    runtime.snapshots[_CANDIDATE_GENERATION] = TenantRouteSnapshot(
+        snapshot.platform_namespace,
+        (
+            TenantRouteInput(
+                tampered,
+                snapshot.tenants[0].observed_state,
+                snapshot.tenants[0].deployment,
+            ),
+        ),
+    )
+    try:
+        with pytest.raises(RouteRecoveryError, match="generation snapshots"):
+            recover_route_transition(
+                repository,
+                cast(CaddyRuntime, runtime),
+                cast(PublicationGate, _Gate()),
+                plan.intent_id,
+                reloader=runtime.reload,
+                restorer=runtime.restore,
+                verifier=runtime.verify,
+            )
+
+        assert runtime.active == runtime.running == _SOURCE_GENERATION
+        assert repository.measure_intent_records().records
+    finally:
+        repository.close()
+
+
+def test_route_recovery_rejects_platform_authority_drift(tmp_path: Path) -> None:
+    repository, job, plan = _prepared(tmp_path)
+    runtime = _recovery_runtime(repository, job, plan)
+    namespace_path = StateRecordPath.platform_namespace()
+    namespace = repository.read(namespace_path)
+    drifted = namespace.document
+    drifted["initializedAt"] = "2026-09-03T12:00:00Z"
+    repository.compare_and_swap(namespace_path, namespace.revision, drifted)
+    try:
+        with pytest.raises(RouteRecoveryError, match="source authority drifted"):
+            recover_route_transition(
+                repository,
+                cast(CaddyRuntime, runtime),
+                cast(PublicationGate, _Gate()),
+                plan.intent_id,
+                reloader=runtime.reload,
+                restorer=runtime.restore,
+                verifier=runtime.verify,
+            )
+
+        assert runtime.active == runtime.running == _SOURCE_GENERATION
+        assert repository.measure_intent_records().records
+    finally:
+        repository.close()
+
+
+def test_route_recovery_completes_a_partial_desired_state_commit(tmp_path: Path) -> None:
+    repository, job, plan = _prepared(tmp_path)
+    runtime = _recovery_runtime(repository, job, plan)
+    prepared = _prepared_activation(repository, job["jobId"], plan)
+
+    def interrupt(boundary: RouteCommitBoundary) -> None:
+        if boundary is RouteCommitBoundary.DESIRED_STATE_SYNC:
+            raise RuntimeError("interrupted after desired state")
+
+    try:
+        with pytest.raises(RuntimeError, match="interrupted after desired state"):
+            _activate(repository, runtime, prepared, failure_hook=interrupt)
+
+        assert (
+            repository.read(StateRecordPath.tenant_desired(plan.tenant_id)).document
+            == plan.manifest
+        )
+        source_observed = cast(
+            dict[str, object],
+            cast(dict[str, object], plan.intent["lifecycleRecovery"])["sourceObservedState"],
+        )
+        assert (
+            repository.read(StateRecordPath.tenant_observed(plan.tenant_id)).document
+            == source_observed
+        )
+        assert (
+            recover_route_transition(
+                repository,
+                cast(CaddyRuntime, runtime),
+                cast(PublicationGate, _Gate()),
+                plan.intent_id,
+                reloader=runtime.reload,
+                restorer=runtime.restore,
+                verifier=runtime.verify,
+            )
+            == plan.result
+        )
+        assert repository.measure_intent_records().records == ()
     finally:
         repository.close()

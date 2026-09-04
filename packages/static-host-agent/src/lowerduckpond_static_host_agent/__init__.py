@@ -283,6 +283,10 @@ from lowerduckpond_static_host_agent.route_prepare import (
     RoutePreparationError,
     prepare_route_transition,
 )
+from lowerduckpond_static_host_agent.route_recover import (
+    RouteRecoveryError,
+    recover_route_transition,
+)
 from lowerduckpond_static_host_agent.route_snapshot import (
     RouteOverlayMode,
     RouteSnapshotError,
@@ -488,6 +492,7 @@ __all__ = [
     "RouteCommitOutcome",
     "RouteOverlayMode",
     "RoutePreparationError",
+    "RouteRecoveryError",
     "RouteSnapshotError",
     "RouteTransitionPlan",
     "RuntimeBoundaryError",
@@ -564,6 +569,7 @@ __all__ = [
     "prepare_create_transition",
     "prepare_route_transition",
     "recover_create_transition",
+    "recover_route_transition",
     "reload_caddy_generation",
     "require_exact_file",
     "restore_caddy_generation",
