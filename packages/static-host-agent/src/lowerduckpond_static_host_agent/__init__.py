@@ -264,6 +264,15 @@ from lowerduckpond_static_host_agent.request_decoder import (
     SubprocessRequestDecoder,
     decoder_main,
 )
+from lowerduckpond_static_host_agent.route_commit import (
+    RouteCommitBoundary,
+    RouteCommitError,
+    RouteCommitOutcome,
+    admit_route_transition,
+    finalize_route_transition,
+    finalize_route_transition_outcome,
+    validate_route_transition,
+)
 from lowerduckpond_static_host_agent.route_prepare import (
     PreparedRouteTransition,
     RouteAuthorityDriftError,
@@ -469,6 +478,9 @@ __all__ = [
     "RequestDecoder",
     "ResultWaiter",
     "RouteAuthorityDriftError",
+    "RouteCommitBoundary",
+    "RouteCommitError",
+    "RouteCommitOutcome",
     "RouteOverlayMode",
     "RoutePreparationError",
     "RouteSnapshotError",
@@ -511,6 +523,7 @@ __all__ = [
     "ZipStructureError",
     "activate_create_transition",
     "admit_release_capacity",
+    "admit_route_transition",
     "admit_state_inventory",
     "aggregate_release_usage",
     "archive_sandbox_policy",
@@ -527,6 +540,8 @@ __all__ = [
     "ensure_platform_generation",
     "extract_deployment_zip",
     "finalize_create_transition",
+    "finalize_route_transition",
+    "finalize_route_transition_outcome",
     "import_portable_bundle",
     "inspect_deployment_zip",
     "inspect_portable_bundle",
@@ -550,6 +565,7 @@ __all__ = [
     "snapshot_tenant_routes",
     "start_target",
     "validate_create_transition",
+    "validate_route_transition",
     "verify_running_caddy",
     "verify_starting_caddy",
 ]

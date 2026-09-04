@@ -40,6 +40,9 @@ from lowerduckpond_static_host_agent.audit import (
     tenant_has_identity_audit_history,
 )
 from lowerduckpond_static_host_agent.audit import (
+    admit_audit_append as admit_audit_append_record,
+)
+from lowerduckpond_static_host_agent.audit import (
     append_audit as append_audit_record,
 )
 from lowerduckpond_static_host_agent.audit import (
@@ -1834,6 +1837,26 @@ class _StateTransaction:
             administrator=administrator,
             limits=limits,
             failure_hook=failure_hook,
+        )
+
+    def admit_audit_append(
+        self,
+        document: dict[str, object],
+        *,
+        administrator: bool = False,
+        limits: AuditLimits = DEFAULT_AUDIT_LIMITS,
+    ) -> AuditState:
+        """Prove one exact audit append fits while tenant-state is locked."""
+
+        self._require_exclusive()
+        return admit_audit_append_record(
+            self._repository._durable,
+            document,
+            expected_owner=self._repository._expected_owner,
+            expected_directory_mode=self._repository._expected_directory_mode,
+            expected_record_mode=self._repository._expected_record_mode,
+            administrator=administrator,
+            limits=limits,
         )
 
     def admit_inventory(

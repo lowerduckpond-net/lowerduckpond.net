@@ -158,7 +158,49 @@ class _Segment:
     allocated_bytes: int
 
 
+@dataclass(frozen=True, slots=True)
+class _AuditAppendPlan:
+    state: AuditState
+    target_name: str
+    payload: bytes
+    replace: bool
+
+
 DEFAULT_AUDIT_LIMITS: Final = AuditLimits()
+
+
+def admit_audit_append(  # noqa: PLR0913 - keep every security boundary explicit
+    root: DurableDirectory,
+    document: dict[str, object],
+    *,
+    expected_owner: int,
+    expected_directory_mode: int,
+    expected_record_mode: int,
+    administrator: bool,
+    limits: AuditLimits = DEFAULT_AUDIT_LIMITS,
+) -> AuditState:
+    """Prove one exact append fits the verified chain without mutating it."""
+
+    candidate, canonical = _canonical_audit_entry(document)
+    audit_directory = root.open_descendant(("audit",))
+    try:
+        segments = _read_segments(
+            audit_directory,
+            expected_owner=expected_owner,
+            expected_directory_mode=expected_directory_mode,
+            expected_record_mode=expected_record_mode,
+            limits=limits,
+        )
+        return _plan_audit_append(
+            audit_directory,
+            segments,
+            candidate,
+            canonical,
+            administrator=administrator,
+            limits=limits,
+        ).state
+    finally:
+        audit_directory.close()
 
 
 def inspect_audit(
@@ -391,11 +433,7 @@ def append_audit(  # noqa: PLR0913 - keep every security boundary explicit
 ) -> AuditAppend:
     """Atomically append one correctly chained entry through a segment generation."""
 
-    if type(document) is not dict:
-        raise TypeError("audit entry must be a contract object")
-    candidate = deepcopy(document)
-    validate_contract(candidate, expected_kind=ContractKind.AUDIT_ENTRY)
-    canonical = canonical_json_bytes(candidate)
+    candidate, canonical = _canonical_audit_entry(document)
 
     audit_directory = root.open_descendant(("audit",))
     try:
@@ -406,40 +444,25 @@ def append_audit(  # noqa: PLR0913 - keep every security boundary explicit
             expected_record_mode=expected_record_mode,
             limits=limits,
         )
-        state = _validate_chain(segments, limits=limits)
-        if candidate["sequence"] != state.entry_count:
-            raise AuditError("audit sequence does not extend the verified chain")
-        if candidate["previousEntryDigest"] != state.terminal_digest:
-            raise AuditError("audit predecessor does not match the verified chain")
-
-        if segments and len(segments[-1].data) + len(canonical) <= limits.maximum_segment_bytes:
-            target = segments[-1]
-            replacement = target.data + canonical
-            projected = (
-                state.allocated_bytes
-                + audit_directory.allocation_upper_bound(len(replacement))
-                + audit_directory.namespace_allocation_upper_bound(1)
-            )
-            _admit_capacity(projected, administrator=administrator, limits=limits)
+        plan = _plan_audit_append(
+            audit_directory,
+            segments,
+            candidate,
+            canonical,
+            administrator=administrator,
+            limits=limits,
+        )
+        if plan.replace:
             audit_directory.replace(
-                (target.name,),
-                replacement,
+                (plan.target_name,),
+                plan.payload,
                 mode=expected_record_mode,
                 failure_hook=failure_hook,
             )
         else:
-            next_number = len(segments)
-            if next_number >= limits.maximum_segments:
-                raise AuditCapacityError("audit segment count is exhausted")
-            projected = (
-                state.allocated_bytes
-                + audit_directory.allocation_upper_bound(len(canonical))
-                + audit_directory.namespace_allocation_upper_bound(1)
-            )
-            _admit_capacity(projected, administrator=administrator, limits=limits)
             audit_directory.create_immutable(
-                (_segment_name(next_number),),
-                canonical,
+                (plan.target_name,),
+                plan.payload,
                 mode=expected_record_mode,
                 failure_hook=failure_hook,
             )
@@ -464,6 +487,51 @@ def append_audit(  # noqa: PLR0913 - keep every security boundary explicit
     if resulting_state.terminal_digest != digest:  # pragma: no cover - defensive
         raise AuditError("audit append did not produce the expected terminal digest")
     return AuditAppend(entry_digest=digest, state=resulting_state)
+
+
+def _canonical_audit_entry(
+    document: dict[str, object],
+) -> tuple[dict[str, object], bytes]:
+    if type(document) is not dict:
+        raise TypeError("audit entry must be a contract object")
+    candidate = deepcopy(document)
+    validate_contract(candidate, expected_kind=ContractKind.AUDIT_ENTRY)
+    return candidate, canonical_json_bytes(candidate)
+
+
+def _plan_audit_append(  # noqa: PLR0913 - projection inputs stay explicit
+    audit_directory: DurableDirectory,
+    segments: list[_Segment],
+    candidate: dict[str, object],
+    canonical: bytes,
+    *,
+    administrator: bool,
+    limits: AuditLimits,
+) -> _AuditAppendPlan:
+    state = _validate_chain(segments, limits=limits)
+    if candidate["sequence"] != state.entry_count:
+        raise AuditError("audit sequence does not extend the verified chain")
+    if candidate["previousEntryDigest"] != state.terminal_digest:
+        raise AuditError("audit predecessor does not match the verified chain")
+    if segments and len(segments[-1].data) + len(canonical) <= limits.maximum_segment_bytes:
+        target = segments[-1]
+        payload = target.data + canonical
+        target_name = target.name
+        replace = True
+    else:
+        next_number = len(segments)
+        if next_number >= limits.maximum_segments:
+            raise AuditCapacityError("audit segment count is exhausted")
+        payload = canonical
+        target_name = _segment_name(next_number)
+        replace = False
+    projected = (
+        state.allocated_bytes
+        + audit_directory.allocation_upper_bound(len(payload))
+        + audit_directory.namespace_allocation_upper_bound(1)
+    )
+    _admit_capacity(projected, administrator=administrator, limits=limits)
+    return _AuditAppendPlan(state, target_name, payload, replace)
 
 
 def _read_segments(
