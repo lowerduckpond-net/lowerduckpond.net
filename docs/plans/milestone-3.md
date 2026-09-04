@@ -801,11 +801,14 @@ parser accepts only one canonical UUIDv7 argument. Neither the provisioner nor
 operator can list state. The worker unit starts as `ldp-provisioner`; its one
 explicit no-new-privileges exception exists only so the fixed sudo transition
 can enter that root-owned executor. Its capability bounding set retains only
-`CAP_SETUID` and `CAP_SETGID`, neither capability is ambient, and the remaining
-namespace, resource, device, network, and syscall restrictions stay active.
-Process creation remains available because `sudo` must spawn the fixed
-executor, with every descendant bounded by the shared slice and per-unit task
-ceiling. Future untrusted archive helpers retain their separate
+`CAP_CHOWN`, `CAP_SETUID`, and `CAP_SETGID`, none is ambient. `CAP_CHOWN` is
+required only to assign the executor's newly created immutable Caddy generation
+and validation artifacts to the `caddy` identity inside the worker's narrow
+writable mounts; the remaining namespace, resource, device, network, and syscall
+restrictions stay active. Process creation remains available because `sudo`
+must spawn the fixed executor. Transient Caddy validator scopes explicitly join
+the worker slice, keeping every descendant beneath the aggregate slice
+and per-unit task ceilings. Future untrusted archive helpers retain their separate
 no-new-privileges and no-child-process boundary. All lifecycle handlers remain
 disabled or return a versioned not-implemented result without state mutation
 until their phases land.

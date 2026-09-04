@@ -1217,6 +1217,7 @@ def test_root_candidate_validation_has_exact_descendant_resource_boundaries() ->
         "/usr/bin/systemd-run",
         "--quiet",
         "--scope",
+        "--slice=lowerduckpond-static-workers.slice",
         "--collect",
         "--expand-environment=no",
         "--unit=lowerduckpond-caddy-validation-0123456789abcdef",

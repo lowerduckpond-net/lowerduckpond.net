@@ -316,13 +316,17 @@ wraps rather than pinning recovery to it.
 Each worker begins as `ldp-provisioner` and crosses exactly the installed
 UUID-only sudo rule into the root-owned executor. Its no-new-privileges
 exception exists only for that transition; its capability bounding set retains
-only `CAP_SETUID` and `CAP_SETGID`, neither is ambient, and the remaining unit
-sandbox stays in force. Command-specific sudo policy disables Ubuntu's default
-pseudo-terminal allocation only for the fixed executor, so the worker keeps its
-PTY devices masked. The worker permits process creation, pipes, resource-limit
+only `CAP_CHOWN`, `CAP_SETUID`, and `CAP_SETGID`; none is ambient. `CAP_CHOWN`
+lets the root-owned executor assign only its newly created immutable Caddy
+generation and validation artifacts to the `caddy` identity within the unit's
+narrow writable mounts. The remaining unit sandbox stays in force.
+Command-specific sudo policy disables Ubuntu's default pseudo-terminal
+allocation only for the fixed executor, so the worker keeps its PTY devices
+masked. The worker permits process creation, pipes, resource-limit
 inspection/setup, and local sockets because `sudo` and PAM require them to spawn
 the fixed executor. Its private network namespace permits only `AF_UNIX`, its
-capability set cannot raise hard resource limits, and its shared slice and
+capability set cannot raise hard resource limits, and each transient Caddy
+validator scope explicitly joins the worker slice so the shared slice and
 per-unit cgroup/rlimit ceilings bound all descendants. The root reconciler also
 retains only `AF_UNIX` socket access for its non-blocking systemd handoff inside
 a private network namespace. Untrusted

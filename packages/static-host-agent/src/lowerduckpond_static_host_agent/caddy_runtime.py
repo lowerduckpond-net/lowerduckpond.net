@@ -1218,6 +1218,7 @@ def _validation_invocation(  # noqa: PLR0913
         _SYSTEMD_RUN,
         "--quiet",
         "--scope",
+        "--slice=lowerduckpond-static-workers.slice",
         "--collect",
         "--expand-environment=no",
         f"--unit={scope_stem}",
