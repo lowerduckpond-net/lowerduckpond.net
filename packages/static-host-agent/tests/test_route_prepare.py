@@ -26,6 +26,7 @@ from lowerduckpond_static_host_agent import (
     FilesystemCapacity,
     HostCapacityLimits,
     LockManager,
+    LockMode,
     PreparedRouteTransition,
     RouteAuthorityDriftError,
     RoutePreparationError,
@@ -36,6 +37,7 @@ from lowerduckpond_static_host_agent import (
     TenantRouteOverlay,
     TenantRouteSnapshot,
     prepare_route_transition,
+    snapshot_tenant_routes,
 )
 
 _FIXTURE_ROOT = Path(__file__).parents[3] / "tests/static-publication/fixtures/accepted"
@@ -84,26 +86,28 @@ class _Runtime:
         self,
         active_generation_id: str = _SOURCE_GENERATION,
         *,
-        source_route_set: str = "both",
+        source_route_set: str | None = None,
     ) -> None:
         self.events: list[str] = []
         self.overlay: TenantRouteOverlay | None = None
         self.candidate: _Candidate | None = None
         self.active_generation_id = active_generation_id
-        source_state = "active" if source_route_set == "both" else "suspended"
-        self.source_snapshot = TenantRouteSnapshot(
-            {},
-            (
-                TenantRouteInput(
-                    {
-                        "metadata": {"id": _TENANT_ID},
-                        "spec": {"desiredState": source_state},
-                    },
-                    {},
-                    None,
+        self.source_snapshot: TenantRouteSnapshot | None = None
+        if source_route_set is not None:
+            source_state = "active" if source_route_set == "both" else "suspended"
+            self.source_snapshot = TenantRouteSnapshot(
+                {},
+                (
+                    TenantRouteInput(
+                        {
+                            "metadata": {"id": _TENANT_ID},
+                            "spec": {"desiredState": source_state},
+                        },
+                        {},
+                        None,
+                    ),
                 ),
-            ),
-        )
+            )
 
     @contextmanager
     def using_held_publication_lock(self, _repository: StateRepository) -> Iterator[None]:
@@ -116,6 +120,7 @@ class _Runtime:
 
     def read_generation_route_snapshot(self, generation_id: str) -> TenantRouteSnapshot:
         assert generation_id == self.active_generation_id
+        assert self.source_snapshot is not None
         return self.source_snapshot
 
     def prune_unreferenced_generations(
@@ -333,6 +338,9 @@ def _prepare(
     limits: HostCapacityLimits | None = None,
     gate: _Gate | None = None,
 ) -> PreparedRouteTransition:
+    if runtime.source_snapshot is None:
+        with repository.transaction(mode=LockMode.EXCLUSIVE) as transaction:
+            runtime.source_snapshot = snapshot_tenant_routes(transaction)
     return prepare_route_transition(
         repository,
         cast(CaddyRuntime, runtime),
@@ -361,7 +369,11 @@ def test_route_preparation_publishes_then_binds_one_exact_intent(
 ) -> None:
     root = _state_root(tmp_path)
     repository, job = _prepared_repository(root, operation, state, slug=slug)
-    runtime = _Runtime(source_route_set="both" if state == "active" else "absent")
+    runtime = _Runtime(
+        source_route_set=("both" if state == "active" else "absent")
+        if operation == "reconcile"
+        else None
+    )
     try:
         prepared = _prepare(repository, runtime, job)
 
@@ -477,6 +489,22 @@ def test_route_preparation_rejects_authority_drift_before_publication(
         repository.close()
 
 
+def test_route_preparation_rejects_stale_selected_snapshot_before_publication(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root, "suspend", "active")
+    runtime = _Runtime(source_route_set="both")
+    try:
+        with pytest.raises(RouteAuthorityDriftError, match="selected runtime generation"):
+            _prepare(repository, runtime, job)
+
+        assert runtime.events == ["locked", "active"]
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
 def test_route_preparation_rejects_undeployed_source_with_deployment_history(
     tmp_path: Path,
 ) -> None:
@@ -491,7 +519,7 @@ def test_route_preparation_rejects_undeployed_source_with_deployment_history(
         StateRecordPath.tenant_deployment(request["tenantId"], deployment["id"]),
         deployment,
     )
-    runtime = _Runtime()
+    runtime = _Runtime(source_route_set="absent")
     try:
         with pytest.raises(RouteAuthorityDriftError, match="retains deployment history"):
             _prepare(repository, runtime, job)
@@ -511,7 +539,7 @@ def test_route_preparation_classifies_disappeared_source_as_authority_drift(
     assert type(request) is dict
     tenant_id = cast(str, request["tenantId"])
     root.joinpath(*StateRecordPath.tenant_desired(tenant_id).components).unlink()
-    runtime = _Runtime()
+    runtime = _Runtime(source_route_set="both")
     try:
         with pytest.raises(RouteAuthorityDriftError, match="disappeared"):
             _prepare(repository, runtime, job)

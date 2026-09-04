@@ -44,6 +44,7 @@ from lowerduckpond_static_host_agent.route_snapshot import (
     RouteSnapshotError,
     TenantRouteOverlay,
     TenantRouteSnapshot,
+    snapshot_tenant_routes,
 )
 from lowerduckpond_static_host_agent.state_inventory import (
     IntentRecordInventory,
@@ -126,10 +127,22 @@ def prepare_route_transition(  # noqa: PLR0913 - authority sources stay explicit
             source_generation_id = active.generation_id
         finally:
             active.generation.close()
+        selected_snapshot = runtime.read_generation_route_snapshot(source_generation_id)
         source_route_set = _selected_tenant_route_set(
-            runtime.read_generation_route_snapshot(source_generation_id),
+            selected_snapshot,
             validate_uuid7(request["tenantId"]),
         )
+        if request["operation"] != "reconcile":
+            try:
+                expected_snapshot = snapshot_tenant_routes(transaction)
+            except (FileNotFoundError, RouteSnapshotError) as error:
+                raise RouteAuthorityDriftError(
+                    "authoritative tenant routes cannot produce a complete snapshot"
+                ) from error
+            if selected_snapshot != expected_snapshot:
+                raise RouteAuthorityDriftError(
+                    "selected runtime generation disagrees with authoritative tenant routes"
+                )
         candidate_generation_id = generate_uuid7(clock=clock, entropy=entropy)
         plan = plan_route_transition(
             job.document,

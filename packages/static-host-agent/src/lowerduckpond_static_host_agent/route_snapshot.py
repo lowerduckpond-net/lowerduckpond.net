@@ -107,7 +107,7 @@ def _snapshot_tenants(
     candidate, source = _prepare_overlay(transaction, overlay, inventory)
     overlay_id = None if candidate is None else _tenant_id(candidate)
 
-    tenants = []
+    tenants: list[tuple[TenantRouteInput, bool]] = []
     for tenant_id in inventory.tenant_ids:
         if tenant_id == overlay_id:
             if candidate is None:  # pragma: no cover - equality proves otherwise
@@ -117,22 +117,22 @@ def _snapshot_tenants(
                 raise RouteSnapshotError(
                     "replace route overlay source changed before the locked snapshot"
                 )
-            archived = _is_archived(transaction, candidate)
-            if include_archived or not archived:
-                tenants.append(candidate)
+            tenants.append((candidate, _is_archived(transaction, candidate)))
         else:
             current = _read_tenant(transaction, tenant_id)
-            archived = _is_archived(transaction, current)
-            if include_archived or not archived:
-                tenants.append(current)
+            tenants.append((current, _is_archived(transaction, current)))
     if overlay is not None and overlay.mode is RouteOverlayMode.ADD:
         if candidate is None:  # pragma: no cover - the add mode proves otherwise
             raise RouteSnapshotError("route overlay candidate was lost")
-        archived = _is_archived(transaction, candidate)
-        if include_archived or not archived:
-            tenants.append(candidate)
-    tenants.sort(key=_tenant_id)
-    return TenantRouteSnapshot(namespace, tuple(tenants))
+        tenants.append((candidate, _is_archived(transaction, candidate)))
+    tenants.sort(key=lambda item: _tenant_id(item[0]))
+    _require_unique_slugs(tuple(tenant for tenant, _archived in tenants))
+    selected = (
+        tuple(tenant for tenant, _archived in tenants)
+        if include_archived
+        else tuple(tenant for tenant, archived in tenants if not archived)
+    )
+    return TenantRouteSnapshot(namespace, selected)
 
 
 def _prepare_overlay(
@@ -192,6 +192,18 @@ def _reject_undeployed_history(
 
 def _tenant_id(tenant: TenantRouteInput) -> str:
     return _manifest_tenant_id(tenant.manifest)
+
+
+def _require_unique_slugs(tenants: tuple[TenantRouteInput, ...]) -> None:
+    slugs: set[str] = set()
+    for tenant in tenants:
+        metadata = tenant.manifest.get("metadata")
+        if type(metadata) is not dict:  # pragma: no cover - route input was validated
+            raise RouteSnapshotError("tenant route metadata is malformed")
+        slug = cast(str, metadata["slug"])
+        if slug in slugs:
+            raise RouteSnapshotError("tenant slug namespace is ambiguous")
+        slugs.add(slug)
 
 
 def _is_archived(

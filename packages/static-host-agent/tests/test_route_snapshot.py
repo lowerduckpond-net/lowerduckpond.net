@@ -4,6 +4,7 @@ import json
 import os
 from copy import deepcopy
 from pathlib import Path
+from typing import cast
 
 import pytest
 from lowerduckpond_static_contracts import canonical_json_bytes, manifest_digest
@@ -209,6 +210,44 @@ def test_snapshot_omits_archived_tenants_from_the_complete_runtime_input(
     assert snapshot.tenants == (active,)
     assert authority.tenants == (active, archived)
     assert replaced.tenants == (active,)
+
+
+def test_snapshot_rejects_duplicate_slug_before_omitting_archived_tenant(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    active = _active_tenant(root)
+    active_metadata = active.manifest["metadata"]
+    assert type(active_metadata) is dict
+    archived = _archived_tenant(
+        _SECOND_TENANT_ID,
+        slug=cast(str, active_metadata["slug"]),
+    )
+    _write(root, StateRecordPath.tenant_desired(_SECOND_TENANT_ID), archived.manifest)
+    _write(
+        root,
+        StateRecordPath.tenant_observed(_SECOND_TENANT_ID),
+        archived.observed_state,
+    )
+    assert archived.deployment is not None
+    _write(
+        root,
+        StateRecordPath.tenant_deployment(_SECOND_TENANT_ID, archived.deployment["id"]),
+        archived.deployment,
+    )
+    _write(
+        root,
+        StateRecordPath.tenant_archive(_SECOND_TENANT_ID, archived.deployment["id"]),
+        _archive_record(archived),
+    )
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        repository.transaction(mode=LockMode.EXCLUSIVE) as transaction,
+        pytest.raises(RouteSnapshotError, match="slug namespace is ambiguous"),
+    ):
+        snapshot_tenant_routes(transaction)
 
 
 @pytest.mark.parametrize(
