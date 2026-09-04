@@ -3659,17 +3659,19 @@ def _set_terminal_phase(
     )
     if job.document["phase"] == expected_phase and marker_is_current:
         return
-    terminal = job.document
+    terminal = deepcopy(job.document)
     terminal["phase"] = expected_phase
-    if terminal["compatibilityVersion"] == "static-job-v2" and execution_validated:
-        terminal["executionValidated"] = True
     try:
         path = StateRecordPath.authorization_job(terminal["jobId"])
         if terminal["compatibilityVersion"] == "static-job-v2" and execution_validated:
+            if job.document["phase"] != expected_phase:
+                job = transaction.compare_and_swap(path, job.revision, terminal)
+            validated = deepcopy(job.document)
+            validated["executionValidated"] = True
             transaction.commit_execution_validation(
                 path,
                 job.revision,
-                terminal,
+                validated,
                 capacity_limits=capacity_limits,
             )
         else:
