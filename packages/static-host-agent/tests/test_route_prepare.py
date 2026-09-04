@@ -401,6 +401,31 @@ def test_route_preparation_rejects_authority_drift_before_publication(tmp_path: 
         repository.close()
 
 
+def test_route_preparation_rejects_undeployed_source_with_deployment_history(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root, "rename", "undeployed", slug="renamed-duck")
+    request = job["request"]
+    assert type(request) is dict
+    deployment = _fixture("deployment-record.json")
+    deployment["tenantId"] = request["tenantId"]
+    _write(
+        root,
+        StateRecordPath.tenant_deployment(request["tenantId"], deployment["id"]),
+        deployment,
+    )
+    runtime = _Runtime()
+    try:
+        with pytest.raises(RouteAuthorityDriftError, match="retains deployment history"):
+            _prepare(repository, runtime, job)
+
+        assert runtime.events == ["locked"]
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
 def test_route_preparation_classifies_disappeared_source_as_authority_drift(
     tmp_path: Path,
 ) -> None:

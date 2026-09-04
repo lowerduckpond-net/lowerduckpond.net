@@ -211,6 +211,8 @@ def _read_route_source(
     validate_contract(observed, expected_kind=ContractKind.TENANT_OBSERVED_STATE)
     spec = cast(dict[str, object], manifest["spec"])
     if spec["desiredState"] == "undeployed":
+        if transaction.tenant_has_deployment_history(tenant_id):
+            raise RouteAuthorityDriftError("undeployed route source retains deployment history")
         return _RouteSource(manifest, observed, None, None)
     reference = cast(dict[str, object], spec["desiredDeployment"])
     deployment_id = validate_uuid7(reference["id"])
