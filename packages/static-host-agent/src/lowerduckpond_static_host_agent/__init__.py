@@ -275,6 +275,7 @@ from lowerduckpond_static_host_agent.route_snapshot import (
     RouteSnapshotError,
     TenantRouteOverlay,
     TenantRouteSnapshot,
+    snapshot_tenant_authority,
     snapshot_tenant_routes,
 )
 from lowerduckpond_static_host_agent.state_inventory import (
@@ -545,6 +546,7 @@ __all__ = [
     "reload_caddy_generation",
     "require_exact_file",
     "restore_caddy_generation",
+    "snapshot_tenant_authority",
     "snapshot_tenant_routes",
     "start_target",
     "validate_create_transition",

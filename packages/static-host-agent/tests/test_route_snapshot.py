@@ -16,6 +16,7 @@ from lowerduckpond_static_host_agent import (
     StateRepository,
     TenantRouteInput,
     TenantRouteOverlay,
+    snapshot_tenant_authority,
     snapshot_tenant_routes,
 )
 
@@ -199,12 +200,14 @@ def test_snapshot_omits_archived_tenants_from_the_complete_runtime_input(
         repository.transaction(mode=LockMode.EXCLUSIVE) as transaction,
     ):
         snapshot = snapshot_tenant_routes(transaction)
+        authority = snapshot_tenant_authority(transaction)
         replaced = snapshot_tenant_routes(
             transaction,
             overlay=TenantRouteOverlay(RouteOverlayMode.REPLACE, archived, archived),
         )
 
     assert snapshot.tenants == (active,)
+    assert authority.tenants == (active, archived)
     assert replaced.tenants == (active,)
 
 

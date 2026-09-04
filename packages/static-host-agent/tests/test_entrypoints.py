@@ -330,6 +330,11 @@ def test_selected_tenant_runtime_binds_the_active_verified_snapshot(  # noqa: PL
             tenants=tuple(authoritative),
         ),
     )
+    monkeypatch.setattr(
+        entrypoints,
+        "snapshot_tenant_authority",
+        lambda _transaction: SimpleNamespace(tenants=tuple(authoritative)),
+    )
 
     assert entrypoints._selected_tenant_runtime_matches(
         repository,  # type: ignore[arg-type]
@@ -368,6 +373,24 @@ def test_selected_tenant_runtime_binds_the_active_verified_snapshot(  # noqa: PL
         active.observed_state,
     )
     runtime.active_generation_id = generation_id
+    older_active = SimpleNamespace(
+        manifest=active.manifest,
+        observed_state={
+            **active.observed_state,
+            "runtimeGenerationId": "0198d17f-6f4a-7000-8000-000000000000",
+        },
+        deployment=deployment,
+    )
+    runtime.tenant = older_active
+    authoritative[:] = [older_active]
+    assert entrypoints._selected_tenant_runtime_matches(
+        repository,  # type: ignore[arg-type]
+        tenant_id,
+        "both",
+        generation_id,
+        older_active.manifest,
+        older_active.observed_state,
+    )
     runtime.tenant = suspended
     assert not entrypoints._all_tenant_runtime_state_matches(
         repository,  # type: ignore[arg-type]
@@ -572,7 +595,7 @@ def test_all_tenant_release_validation_remeasures_untouched_tenants(
 
     monkeypatch.setattr(
         entrypoints,
-        "snapshot_tenant_routes",
+        "snapshot_tenant_authority",
         lambda _transaction: SimpleNamespace(tenants=(selected, untouched)),
     )
     monkeypatch.setattr(entrypoints, "_tenant_release_namespace_ids", lambda: ())
@@ -583,6 +606,48 @@ def test_all_tenant_release_validation_remeasures_untouched_tenants(
         Repository(),  # type: ignore[arg-type]
     )
     assert measured == ["selected", "untouched"]
+
+
+def test_release_validation_retains_archived_authority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenant_id = "0198d17f-6f4a-7000-8000-000000000001"
+    manifest: dict[str, object] = {
+        "metadata": {"id": tenant_id},
+        "spec": {"desiredState": "archived"},
+    }
+    archived = SimpleNamespace(manifest=manifest)
+
+    class Repository:
+        @staticmethod
+        def publication_transaction(*, blocking: bool) -> nullcontext[object]:
+            assert blocking is True
+            return nullcontext(object())
+
+    monkeypatch.setattr(
+        entrypoints,
+        "snapshot_tenant_authority",
+        lambda _transaction: SimpleNamespace(tenants=(archived,)),
+    )
+    monkeypatch.setattr(
+        entrypoints,
+        "_tenant_release_state_matches",
+        lambda *_arguments: True,
+    )
+    monkeypatch.setattr(
+        entrypoints,
+        "_tenant_release_namespace_ids",
+        lambda: (tenant_id,),
+    )
+
+    assert entrypoints._selected_tenant_release_matches(
+        Repository(),  # type: ignore[arg-type]
+        tenant_id,
+        manifest,
+    )
+    assert entrypoints._all_tenant_release_state_matches(
+        Repository(),  # type: ignore[arg-type]
+    )
 
 
 def test_all_tenant_release_validation_rejects_unknown_tenant_namespace(
@@ -604,7 +669,7 @@ def test_all_tenant_release_validation_rejects_unknown_tenant_namespace(
     monkeypatch.setattr(entrypoints, "TENANT_RELEASE_ROOT", str(sites))
     monkeypatch.setattr(
         entrypoints,
-        "snapshot_tenant_routes",
+        "snapshot_tenant_authority",
         lambda _transaction: SimpleNamespace(tenants=(tenant,)),
     )
     monkeypatch.setattr(
@@ -637,7 +702,7 @@ def test_all_tenant_release_validation_rejects_extra_known_tenant_entries(
     monkeypatch.setattr(entrypoints, "TENANT_RELEASE_ROOT", str(sites))
     monkeypatch.setattr(
         entrypoints,
-        "snapshot_tenant_routes",
+        "snapshot_tenant_authority",
         lambda _transaction: SimpleNamespace(tenants=(tenant,)),
     )
     monkeypatch.setattr(

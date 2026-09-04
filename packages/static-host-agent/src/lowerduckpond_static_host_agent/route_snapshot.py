@@ -80,7 +80,26 @@ def snapshot_tenant_routes(
     *,
     overlay: TenantRouteOverlay | None = None,
 ) -> TenantRouteSnapshot:
-    """Read every tenant or substitute one explicit lifecycle candidate."""
+    """Read every runtime tenant or substitute one explicit lifecycle candidate."""
+
+    return _snapshot_tenants(transaction, overlay=overlay, include_archived=False)
+
+
+def snapshot_tenant_authority(
+    transaction: RouteSnapshotTransaction,
+) -> TenantRouteSnapshot:
+    """Read every validated tenant, including archived durable authority."""
+
+    return _snapshot_tenants(transaction, overlay=None, include_archived=True)
+
+
+def _snapshot_tenants(
+    transaction: RouteSnapshotTransaction,
+    *,
+    overlay: TenantRouteOverlay | None,
+    include_archived: bool,
+) -> TenantRouteSnapshot:
+    """Capture one complete tenant view under the caller's exclusive lock."""
 
     namespace = transaction.read(StateRecordPath.platform_namespace()).document
     validate_contract(namespace, expected_kind=ContractKind.PLATFORM_NAMESPACE)
@@ -98,16 +117,19 @@ def snapshot_tenant_routes(
                 raise RouteSnapshotError(
                     "replace route overlay source changed before the locked snapshot"
                 )
-            if not _is_archived(transaction, candidate):
+            archived = _is_archived(transaction, candidate)
+            if include_archived or not archived:
                 tenants.append(candidate)
         else:
             current = _read_tenant(transaction, tenant_id)
-            if not _is_archived(transaction, current):
+            archived = _is_archived(transaction, current)
+            if include_archived or not archived:
                 tenants.append(current)
     if overlay is not None and overlay.mode is RouteOverlayMode.ADD:
         if candidate is None:  # pragma: no cover - the add mode proves otherwise
             raise RouteSnapshotError("route overlay candidate was lost")
-        if not _is_archived(transaction, candidate):
+        archived = _is_archived(transaction, candidate)
+        if include_archived or not archived:
             tenants.append(candidate)
     tenants.sort(key=_tenant_id)
     return TenantRouteSnapshot(namespace, tuple(tenants))

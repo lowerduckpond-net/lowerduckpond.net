@@ -104,6 +104,7 @@ from lowerduckpond_static_host_agent.request_decoder import (
 )
 from lowerduckpond_static_host_agent.route_snapshot import (
     RouteSnapshotError,
+    snapshot_tenant_authority,
     snapshot_tenant_routes,
 )
 from lowerduckpond_static_host_agent.state_inventory import (
@@ -718,10 +719,7 @@ def _selected_tenant_runtime_matches(  # noqa: PLR0911,PLR0913,PLR0917
                 return (
                     spec.get("desiredState") == "active"
                     and observed.get("observedState") == "active"
-                    and (
-                        generation_id is None
-                        or observed.get("runtimeGenerationId") == generation_id
-                    )
+                    and observed.get("runtimeGenerationId") is not None
                 )
             return (
                 spec.get("desiredState") != "active"
@@ -751,7 +749,7 @@ def _selected_tenant_release_matches(
 
     try:
         with repository.publication_transaction(blocking=True) as transaction:
-            expected = snapshot_tenant_routes(transaction)
+            expected = snapshot_tenant_authority(transaction)
             matching = []
             for tenant in expected.tenants:
                 metadata = tenant.manifest.get("metadata")
@@ -780,7 +778,7 @@ def _all_tenant_release_state_matches(repository: StateRepository) -> bool:
 
     try:
         with repository.publication_transaction(blocking=True) as transaction:
-            expected = snapshot_tenant_routes(transaction)
+            expected = snapshot_tenant_authority(transaction)
             authoritative_tenant_ids = {_snapshot_tenant_id(tenant) for tenant in expected.tenants}
             if not set(_tenant_release_namespace_ids()).issubset(authoritative_tenant_ids):
                 return False
