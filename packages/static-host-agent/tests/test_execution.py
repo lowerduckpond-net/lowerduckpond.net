@@ -26,6 +26,7 @@ _FIXTURE_ROOT = Path(__file__).parents[3] / "tests/static-publication/fixtures/a
 _NOW = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
 _TENANT_ID = "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100"
 _DEPLOYMENT_ID = "0191e2ca-49f2-7608-8cf3-f80ab2cab151"
+_TENANT_ROOTED_RECORD_COMPONENTS = 3
 
 
 class _OpenGate:
@@ -86,6 +87,7 @@ def _state_root(tmp_path: Path) -> Path:
         ("authorization", "correlations"),
         ("authorization", "jobs"),
         ("authorization", "results"),
+        ("audit",),
         ("intents",),
         ("intake",),
         ("locks",),
@@ -99,6 +101,14 @@ def _write(root: Path, path: StateRecordPath, document: dict[str, object]) -> No
     target = root.joinpath(*path.components)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.parent.chmod(0o700)
+    if (
+        path.components[:1] == ("tenants",)
+        and len(path.components) == _TENANT_ROOTED_RECORD_COMPONENTS
+    ):
+        for name in ("archives", "deployments"):
+            child = target.parent / name
+            child.mkdir(exist_ok=True)
+            child.chmod(0o700)
     target.write_bytes(canonical_json_bytes(document))
     target.chmod(0o600)
 
@@ -165,6 +175,48 @@ def test_executor_revalidates_expected_source_before_claiming(tmp_path: Path) ->
         )
         outcome = AuthorizationExecutor(repository, intake).execute(issued.job_id)
 
+    assert outcome.result["errorCode"] == "state_drift"
+
+
+def test_executor_terminalizes_delete_that_becomes_ineligible(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    desired = _fixture("site.json")
+    spec = desired["spec"]
+    assert type(spec) is dict
+    spec["desiredState"] = "undeployed"
+    del spec["desiredDeployment"]
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), desired)
+    request = _fixture("operation-request.json")
+    request.update({"operation": "delete", "tenantId": _TENANT_ID})
+    request.pop("slug", None)
+    request.pop("quotas", None)
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued = AuthorizationIssuer(
+            repository,
+            gate=_OpenGate(),
+            entropy=_Entropy(),
+        ).issue(
+            canonical_json_bytes(request),
+            operator_principal="operator@example.test",
+            now=_NOW,
+            artifact=None,
+        )
+        _write(
+            root,
+            StateRecordPath.tenant_deployment(_TENANT_ID, _DEPLOYMENT_ID),
+            _fixture("deployment-record.json"),
+        )
+        outcome = AuthorizationExecutor(repository, intake).execute(issued.job_id)
+        stored = repository.read(StateRecordPath.authorization_result(issued.job_id)).document
+
+    assert outcome.created is True
+    assert outcome.result == stored
+    assert outcome.result["status"] == "failed"
     assert outcome.result["errorCode"] == "state_drift"
 
 

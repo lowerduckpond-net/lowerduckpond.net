@@ -4,6 +4,7 @@ import json
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -450,6 +451,42 @@ def test_create_recovery_reconstructs_and_activates_durable_preparation(
             cast(CaddyRuntime, runtime),
             _Gate(),
             intent_id,
+            reloader=runtime.reload,
+            restorer=runtime.restore,
+            verifier=runtime.verify,
+        )
+
+        assert result == prepared.plan.result
+        assert runtime.active == runtime.running == prepared.candidate_manifest.generation_id
+        assert repository.measure_intent_records().records == ()
+        assert repository.measure_inventory().tenant_ids == (prepared.plan.tenant_id,)
+    finally:
+        repository.close()
+
+
+def test_create_recovery_accepts_a_pre_upgrade_digest_only_intent(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root)
+    _write_correlation(root, job)
+    runtime = _Runtime()
+    try:
+        prepared = _prepare(repository, runtime, job)
+        path = StateRecordPath.transaction_intent(prepared.plan.intent_id)
+        stored = repository.read(path)
+        legacy = deepcopy(stored.document)
+        del legacy["compatibilityVersion"]
+        del legacy["sourceManifest"]
+        del legacy["candidateManifest"]
+        repository.compare_and_swap(path, stored.revision, legacy)
+        runtime.events.clear()
+
+        result = recover_create_transition(
+            repository,
+            cast(CaddyRuntime, runtime),
+            _Gate(),
+            prepared.plan.intent_id,
             reloader=runtime.reload,
             restorer=runtime.restore,
             verifier=runtime.verify,

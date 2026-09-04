@@ -488,13 +488,20 @@ def _validate_transaction_manifest_transform(
 def _validate_transaction_intent(document: dict[str, object]) -> None:
     _validate_restart_fence(document)
     operation = cast(str, document["operation"])
-    source_manifest = _validated_transaction_source(document, operation)
-    candidate = _validated_transaction_candidate(document, operation)
-    _validate_transaction_manifest_transform(operation, source_manifest, candidate)
+    current = document.get("compatibilityVersion") == "static-intent-v2"
+    source_manifest: dict[str, object] | None = None
+    candidate_manifest: dict[str, object] | None = None
+    if current:
+        source_manifest = _validated_transaction_source(document, operation)
+        candidate_manifest = _validated_transaction_candidate(document, operation)
+        _validate_transaction_manifest_transform(
+            operation,
+            source_manifest,
+            candidate_manifest,
+        )
     if operation != "archive":
-        _validate_nonarchive_transaction_intent(document, operation)
+        _validate_nonarchive_transaction_intent(document, operation, current=current)
         return
-    candidate = cast(dict[str, object], candidate)
     recovery = cast(dict[str, object], document["archiveRecovery"])
     source = cast(dict[str, object], recovery["sourceManifest"])
     archive_candidate = cast(dict[str, object], recovery["candidateManifest"])
@@ -508,9 +515,9 @@ def _validate_transaction_intent(document: dict[str, object]) -> None:
     candidate_metadata = cast(dict[str, object], archive_candidate["metadata"])
     if source_metadata["id"] != tenant_id or candidate_metadata != source_metadata:
         raise ContractError(ErrorCode.SCHEMA_INVALID, "archive intent tenant identity drifted")
-    if source != source_manifest:
+    if current and source != source_manifest:
         raise ContractError(ErrorCode.SCHEMA_INVALID, "archive source manifest copies drifted")
-    if candidate != archive_candidate:
+    if current and candidate_manifest != archive_candidate:
         raise ContractError(
             ErrorCode.SCHEMA_INVALID,
             "archive candidate manifest copies drifted",
@@ -560,6 +567,8 @@ def _validate_transaction_intent(document: dict[str, object]) -> None:
 def _validate_nonarchive_transaction_intent(
     document: dict[str, object],
     operation: str,
+    *,
+    current: bool,
 ) -> None:
     if operation == "export":
         if document["sourceManifestDigest"] != document["candidateManifestDigest"]:
@@ -575,10 +584,14 @@ def _validate_nonarchive_transaction_intent(
             ErrorCode.SCHEMA_INVALID,
             "reconcile intent manifest generation drifted",
         )
-    _validate_lifecycle_recovery(document)
+    _validate_lifecycle_recovery(document, current=current)
 
 
-def _validate_lifecycle_recovery(document: dict[str, object]) -> None:
+def _validate_lifecycle_recovery(
+    document: dict[str, object],
+    *,
+    current: bool,
+) -> None:
     operation = cast(str, document["operation"])
     recovery = cast(dict[str, object], document["lifecycleRecovery"])
     source = recovery["sourceObservedState"]
@@ -600,10 +613,11 @@ def _validate_lifecycle_recovery(document: dict[str, object]) -> None:
             route_set=recovery["sourceRouteSet"],
             runtime_generation=recovery["sourceRuntimeGenerationId"],
         )
-        _validate_observed_manifest_binding(
-            cast(dict[str, object], document["sourceManifest"]),
-            source_observed,
-        )
+        if current:
+            _validate_observed_manifest_binding(
+                cast(dict[str, object], document["sourceManifest"]),
+                source_observed,
+            )
     elif recovery["sourceRouteSet"] != "absent":
         raise ContractError(ErrorCode.SCHEMA_INVALID, "absent source retained tenant routes")
 
@@ -619,10 +633,11 @@ def _validate_lifecycle_recovery(document: dict[str, object]) -> None:
             route_set=recovery["candidateRouteSet"],
             runtime_generation=recovery["candidateRuntimeGenerationId"],
         )
-        _validate_observed_manifest_binding(
-            cast(dict[str, object], document["candidateManifest"]),
-            candidate_observed,
-        )
+        if current:
+            _validate_observed_manifest_binding(
+                cast(dict[str, object], document["candidateManifest"]),
+                candidate_observed,
+            )
     elif recovery["candidateRouteSet"] != "absent":
         raise ContractError(ErrorCode.SCHEMA_INVALID, "absent candidate retained tenant routes")
 
@@ -630,7 +645,8 @@ def _validate_lifecycle_recovery(document: dict[str, object]) -> None:
     if expected != candidate_state:
         raise ContractError(ErrorCode.SCHEMA_INVALID, "recovery states violate lifecycle matrix")
     _validate_manifest_transition_binding(document, operation, source_state, candidate_state)
-    if operation in {"deploy", "rollback", "restore"} and (
+    deployment_operations = {"deploy", "rollback", "restore"} if current else {"deploy", "rollback"}
+    if operation in deployment_operations and (
         source_observed is None
         or candidate_observed is None
         or source_observed["activeDeploymentId"] == candidate_observed["activeDeploymentId"]

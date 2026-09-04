@@ -654,6 +654,25 @@ def test_existing_tenant_intent_requires_a_source_manifest_digest() -> None:
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
 
+def test_pre_upgrade_transaction_intent_retains_digest_only_recovery() -> None:
+    intent = _load_object(FIXTURE_ROOT / "accepted/transaction-intent.json")
+    del intent["compatibilityVersion"]
+    del intent["sourceManifest"]
+    del intent["candidateManifest"]
+
+    assert validate_contract(intent) is ContractKind.TRANSACTION_INTENT
+
+
+def test_current_transaction_intent_requires_its_manifest_copies() -> None:
+    intent = _load_object(FIXTURE_ROOT / "accepted/transaction-intent.json")
+    del intent["candidateManifest"]
+
+    with pytest.raises(ContractError) as captured:
+        validate_contract(intent)
+
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
 SYSTEMD_INVOCATION_ID = "0123456789abcdef0123456789abcdef"
 
 

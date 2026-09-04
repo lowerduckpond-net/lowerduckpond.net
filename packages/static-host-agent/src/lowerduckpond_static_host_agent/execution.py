@@ -29,7 +29,11 @@ from lowerduckpond_static_host_agent.intake import (
     IntakeArtifactUnavailableError,
     IntakeError,
 )
-from lowerduckpond_static_host_agent.issuance import VerifiedArtifact, build_expected_source
+from lowerduckpond_static_host_agent.issuance import (
+    SourceStateError,
+    VerifiedArtifact,
+    build_expected_source,
+)
 from lowerduckpond_static_host_agent.locks import LockMode
 from lowerduckpond_static_host_agent.repository import (
     StateConflictError,
@@ -311,7 +315,7 @@ def _expected_source_error(
         raise ExecutionError("authorization job request is not an object")
     try:
         actual = build_expected_source(transaction, request)
-    except FileNotFoundError:
+    except FileNotFoundError, SourceStateError:
         return "state_drift"
     if actual != job["expectedSource"]:
         return "state_drift"

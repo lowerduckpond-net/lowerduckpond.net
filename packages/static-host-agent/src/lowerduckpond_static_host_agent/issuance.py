@@ -39,6 +39,10 @@ class IssuanceError(RuntimeError):
     """A request cannot become an expected-state-bound authorization job."""
 
 
+class SourceStateError(IssuanceError):
+    """Current tenant state cannot authorize the requested operation."""
+
+
 class PublicationDisabledError(IssuanceError):
     """Production publication is closed before intake or durable allocation."""
 
@@ -340,7 +344,7 @@ def _build_source_bindings(
         deletion_evidence: dict[str, object] | None = None
         if lifecycle == "undeployed":
             if reader.tenant_has_deployment_history(tenant_id):
-                raise IssuanceError("undeployed tenant retains deployment history")
+                raise SourceStateError("undeployed tenant retains deployment history")
             deletion_evidence = {
                 "mode": "never-deployed",
                 "releasedSlugs": [metadata["slug"]],
@@ -361,6 +365,6 @@ def _build_source_bindings(
                 "emergencyReason": None,
             }
         else:
-            raise IssuanceError("tenant lifecycle is not eligible for ordinary deletion")
+            raise SourceStateError("tenant lifecycle is not eligible for ordinary deletion")
         expected["deletionEvidence"] = deletion_evidence
     return expected, {"manifest": desired, "archiveRecord": archive}

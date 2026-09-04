@@ -179,6 +179,40 @@
   "additionalProperties": false,
   "allOf": [
     {
+      "if": {
+        "required": [
+          "compatibilityVersion"
+        ]
+      },
+      "then": {
+        "properties": {
+          "compatibilityVersion": {
+            "const": "static-intent-v2"
+          }
+        },
+        "required": [
+          "sourceManifest",
+          "candidateManifest"
+        ]
+      },
+      "else": {
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "sourceManifest"
+              ]
+            },
+            {
+              "required": [
+                "candidateManifest"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
       "else": {
         "properties": {
           "sourceManifest": {
@@ -352,6 +386,9 @@
         }
       ]
     },
+    "compatibilityVersion": {
+      "const": "static-intent-v2"
+    },
     "correlationId": {
       "$ref": "common.schema.json#/$defs/correlationId"
     },
@@ -432,9 +469,7 @@
     "operation",
     "archiveRecovery",
     "lifecycleRecovery",
-    "sourceManifest",
     "sourceManifestDigest",
-    "candidateManifest",
     "candidateManifestDigest",
     "phase",
     "restartFence",

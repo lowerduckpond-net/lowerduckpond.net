@@ -309,7 +309,7 @@ def _freeze_and_validate(job: StoredContract, plan: CreateTransitionPlan) -> _Cr
         or documents.observed_state["runtimeGenerationId"] is not None
         or documents.intent["operation"] != "create"
         or documents.intent["phase"] != "prepared"
-        or documents.intent["sourceManifest"] is not None
+        or documents.intent.get("sourceManifest") is not None
         or documents.intent["sourceManifestDigest"] is not None
         or documents.intent["candidateManifestDigest"] != desired_digest
         or recovery["sourceObservedState"] is not None
