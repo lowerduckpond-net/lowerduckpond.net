@@ -35,6 +35,7 @@ from lowerduckpond_static_host_agent.audit import (
     AuditLimits,
     AuditState,
     AuditTransition,
+    deployment_audit_history_tenant_ids,
     tenant_has_deployment_audit_history,
     tenant_has_identity_audit_history,
 )
@@ -897,6 +898,44 @@ class _StateTransaction:
             expected_directory_mode=self._repository._expected_directory_mode,
             expected_record_mode=self._repository._expected_record_mode,
         )
+
+    def deployment_history_tenant_ids(
+        self,
+        tenant_ids: tuple[str, ...],
+    ) -> frozenset[str]:
+        """Project every deployment-history source in one bounded audit pass."""
+
+        self._require_active()
+        self._require_exclusive()
+        canonical_ids = tuple(validate_uuid7(tenant_id) for tenant_id in tenant_ids)
+        if canonical_ids != tuple(sorted(set(canonical_ids))):
+            raise ValueError("deployment-history tenant IDs must be sorted and unique")
+        if not canonical_ids:
+            return frozenset()
+        current_ids = frozenset(self.measure_inventory().tenant_ids)
+        matches: set[str] = set()
+        for canonical_id in canonical_ids:
+            if canonical_id in current_ids and (
+                self.tenant_deployment_ids(canonical_id) or self.tenant_archive_ids(canonical_id)
+            ):
+                matches.add(canonical_id)
+                continue
+            if self._tenant_has_release_history(canonical_id):
+                matches.add(canonical_id)
+        audit_candidates = tuple(
+            tenant_id for tenant_id in canonical_ids if tenant_id not in matches
+        )
+        if audit_candidates:
+            matches.update(
+                deployment_audit_history_tenant_ids(
+                    self._repository._durable,
+                    audit_candidates,
+                    expected_owner=self._repository._expected_owner,
+                    expected_directory_mode=self._repository._expected_directory_mode,
+                    expected_record_mode=self._repository._expected_record_mode,
+                )
+            )
+        return frozenset(matches)
 
     def tenant_has_identity_history(self, tenant_id: object) -> bool:
         """Inspect current and audited identity history while state is serialized."""

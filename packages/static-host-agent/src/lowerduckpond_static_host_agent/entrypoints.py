@@ -39,7 +39,7 @@ from lowerduckpond_static_host_agent.caddy_generation import (
     CaddyGenerationError,
     CaddyGenerationStore,
 )
-from lowerduckpond_static_host_agent.caddy_routes import TENANT_RELEASE_ROOT
+from lowerduckpond_static_host_agent.caddy_routes import TENANT_RELEASE_ROOT, TenantRouteInput
 from lowerduckpond_static_host_agent.caddy_runtime import (
     CADDY_PUBLICATION_LOCK_MODE,
     CADDY_RUNTIME_ROOT_MODE,
@@ -104,6 +104,8 @@ from lowerduckpond_static_host_agent.request_decoder import (
 )
 from lowerduckpond_static_host_agent.route_snapshot import (
     RouteSnapshotError,
+    RouteSnapshotTransaction,
+    TenantRouteSnapshot,
     snapshot_tenant_authority,
     snapshot_tenant_routes,
 )
@@ -661,6 +663,7 @@ def _selected_tenant_runtime_matches(  # noqa: PLR0911,PLR0913,PLR0917
     generation_id: str | None,
     manifest: dict[str, object],
     observed_state: dict[str, object] | None,
+    allow_reconcile_source_drift: bool = False,
 ) -> bool:
     """Bind one lifecycle candidate to the selected verified route snapshot."""
 
@@ -678,7 +681,20 @@ def _selected_tenant_runtime_matches(  # noqa: PLR0911,PLR0913,PLR0917
             snapshot = runtime.read_generation_route_snapshot(active_generation_id)
             expected = snapshot_tenant_routes(transaction)
             if snapshot != expected:
-                return False
+                return (
+                    allow_reconcile_source_drift
+                    and generation_id is not None
+                    and observed_state is not None
+                    and _reconcile_source_runtime_matches(
+                        transaction,
+                        snapshot,
+                        expected,
+                        tenant_id=tenant_id,
+                        route_set=route_set,
+                        manifest=manifest,
+                        observed_state=observed_state,
+                    )
+                )
             matching = []
             for tenant in snapshot.tenants:
                 metadata = tenant.manifest.get("metadata")
@@ -738,6 +754,65 @@ def _selected_tenant_runtime_matches(  # noqa: PLR0911,PLR0913,PLR0917
         ValueError,
     ):
         return False
+
+
+def _reconcile_source_runtime_matches(  # noqa: PLR0911,PLR0913
+    transaction: RouteSnapshotTransaction,
+    selected: TenantRouteSnapshot,
+    expected: TenantRouteSnapshot,
+    *,
+    tenant_id: str,
+    route_set: str,
+    manifest: dict[str, object],
+    observed_state: dict[str, object],
+) -> bool:
+    """Validate a reconcile rollback against its bound immutable generation."""
+
+    if selected.platform_namespace != expected.platform_namespace:
+        return False
+    durable_manifest = transaction.read(StateRecordPath.tenant_desired(tenant_id)).document
+    durable_observed = transaction.read(StateRecordPath.tenant_observed(tenant_id)).document
+    if durable_manifest != manifest or durable_observed != observed_state:
+        return False
+    selected_target, selected_others = _partition_runtime_snapshot(selected, tenant_id)
+    _expected_target, expected_others = _partition_runtime_snapshot(expected, tenant_id)
+    if selected_others != expected_others or len(selected_target) > 1:
+        return False
+    if not selected_target:
+        return route_set == "absent"
+    tenant = selected_target[0]
+    spec = tenant.manifest.get("spec")
+    observed = tenant.observed_state
+    if type(spec) is not dict:
+        return False
+    if route_set == "both":
+        return (
+            spec.get("desiredState") == "active"
+            and observed.get("observedState") == "active"
+            and observed.get("runtimeGenerationId") is not None
+        )
+    return (
+        route_set == "absent"
+        and spec.get("desiredState") != "active"
+        and observed.get("observedState") == spec.get("desiredState")
+        and observed.get("runtimeGenerationId") is None
+    )
+
+
+def _partition_runtime_snapshot(
+    snapshot: TenantRouteSnapshot,
+    tenant_id: str,
+) -> tuple[tuple[TenantRouteInput, ...], tuple[TenantRouteInput, ...]]:
+    """Separate one tenant from an otherwise exact complete route snapshot."""
+
+    target: list[TenantRouteInput] = []
+    others: list[TenantRouteInput] = []
+    for tenant in snapshot.tenants:
+        metadata = tenant.manifest.get("metadata")
+        if type(metadata) is not dict:
+            raise RouteSnapshotError("runtime route metadata is malformed")
+        (target if metadata.get("id") == tenant_id else others).append(tenant)
+    return tuple(target), tuple(others)
 
 
 def _selected_tenant_release_matches(

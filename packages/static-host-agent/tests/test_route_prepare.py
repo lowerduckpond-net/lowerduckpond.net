@@ -454,6 +454,30 @@ def test_route_preparation_reconciles_drift_from_desired_authority(
         repository.close()
 
 
+def test_route_preparation_rejects_archive_retained_by_live_source(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root, "suspend", "active")
+    manifest, _observed, deployment, _archive = _route_source("active")
+    assert deployment is not None
+    archive = _fixture("archive-record.json")
+    archive["manifestDigest"] = manifest_digest(manifest).to_dict()
+    _write(
+        root,
+        StateRecordPath.tenant_archive(_TENANT_ID, deployment["id"]),
+        archive,
+    )
+    try:
+        with pytest.raises(
+            RouteAuthorityDriftError,
+            match="live route source retained an archive record",
+        ):
+            _prepare(repository, _Runtime(), job)
+    finally:
+        repository.close()
+
+
 def test_route_preparation_checks_gate_before_generation_cleanup(
     tmp_path: Path,
 ) -> None:

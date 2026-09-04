@@ -75,6 +75,11 @@ class RoutePreparationTransaction(Protocol):
 
     def read(self, path: StateRecordPath) -> StoredContract: ...
 
+    def deployment_history_tenant_ids(
+        self,
+        tenant_ids: tuple[str, ...],
+    ) -> frozenset[str]: ...
+
     def tenant_has_deployment_history(self, tenant_id: object) -> bool: ...
 
     def create_immutable(
@@ -253,7 +258,7 @@ def _read_route_source(
     validate_contract(observed, expected_kind=ContractKind.TENANT_OBSERVED_STATE)
     spec = cast(dict[str, object], manifest["spec"])
     if spec["desiredState"] == "undeployed":
-        if transaction.tenant_has_deployment_history(tenant_id):
+        if tenant_id in transaction.deployment_history_tenant_ids((tenant_id,)):
             raise RouteAuthorityDriftError("undeployed route source retains deployment history")
         return _RouteSource(manifest, observed, None, None)
     reference = cast(dict[str, object], spec["desiredDeployment"])
@@ -261,11 +266,16 @@ def _read_route_source(
     deployment = transaction.read(
         StateRecordPath.tenant_deployment(tenant_id, deployment_id)
     ).document
-    archive = (
-        transaction.read(StateRecordPath.tenant_archive(tenant_id, deployment_id)).document
-        if spec["desiredState"] == "archived"
-        else None
-    )
+    archive_path = StateRecordPath.tenant_archive(tenant_id, deployment_id)
+    if spec["desiredState"] == "archived":
+        archive = transaction.read(archive_path).document
+    else:
+        try:
+            transaction.read(archive_path)
+        except FileNotFoundError:
+            archive = None
+        else:
+            raise RouteAuthorityDriftError("live route source retained an archive record")
     return _RouteSource(manifest, observed, deployment, archive)
 
 

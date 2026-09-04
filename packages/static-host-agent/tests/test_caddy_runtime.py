@@ -244,6 +244,12 @@ class _RouteTransaction:
     def tenant_has_deployment_history(_tenant_id: object) -> bool:
         return False
 
+    @staticmethod
+    def deployment_history_tenant_ids(
+        _tenant_ids: tuple[str, ...],
+    ) -> frozenset[str]:
+        return frozenset()
+
 
 def _candidate_inputs() -> tuple[_RouteTransaction, TenantRouteOverlay, _OpenGate]:
     return (

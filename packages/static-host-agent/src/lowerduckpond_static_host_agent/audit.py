@@ -215,6 +215,45 @@ def tenant_has_deployment_audit_history(  # noqa: PLR0913 - storage contract is 
     )[1]
 
 
+def deployment_audit_history_tenant_ids(  # noqa: PLR0913
+    root: DurableDirectory,
+    tenant_ids: tuple[str, ...],
+    *,
+    expected_owner: int,
+    expected_directory_mode: int,
+    expected_record_mode: int,
+    limits: AuditLimits = DEFAULT_AUDIT_LIMITS,
+) -> frozenset[str]:
+    """Validate the chain once and project deployment history for bounded tenants."""
+
+    canonical_ids = tuple(validate_uuid7(tenant_id) for tenant_id in tenant_ids)
+    if canonical_ids != tuple(sorted(set(canonical_ids))):
+        raise ValueError("deployment-history tenant IDs must be sorted and unique")
+    if len(canonical_ids) > DEFAULT_STATE_INVENTORY_LIMITS.maximum_tenants:
+        raise ValueError("deployment-history tenant IDs exceed the tenant boundary")
+    audit_directory = root.open_descendant(("audit",))
+    try:
+        segments = _read_segments(
+            audit_directory,
+            expected_owner=expected_owner,
+            expected_directory_mode=expected_directory_mode,
+            expected_record_mode=expected_record_mode,
+            limits=limits,
+        )
+    finally:
+        audit_directory.close()
+    matches: set[str] = set()
+    _validate_chain_records(
+        segments,
+        limits=limits,
+        correlation_id=None,
+        history_tenant_id=None,
+        deployment_history_candidates=frozenset(canonical_ids),
+        deployment_history_matches=matches,
+    )
+    return frozenset(matches)
+
+
 def tenant_has_identity_audit_history(  # noqa: PLR0913 - storage contract is explicit
     root: DurableDirectory,
     tenant_id: object,
@@ -555,12 +594,14 @@ def _tenant_audit_history(
     return has_tenant_history, has_deployment_history
 
 
-def _validate_chain_records(  # noqa: PLR0912 - one bounded chain-validation pass
+def _validate_chain_records(  # noqa: PLR0912,PLR0913 - one bounded validation pass
     segments: list[_Segment],
     *,
     limits: AuditLimits,
     correlation_id: str | None,
     history_tenant_id: str | None,
+    deployment_history_candidates: frozenset[str] | None = None,
+    deployment_history_matches: set[str] | None = None,
 ) -> tuple[
     AuditState,
     dict[str, object] | None,
@@ -569,6 +610,8 @@ def _validate_chain_records(  # noqa: PLR0912 - one bounded chain-validation pas
     bool,
     bool,
 ]:
+    if (deployment_history_candidates is None) != (deployment_history_matches is None):
+        raise ValueError("deployment-history projection requires candidates and matches")
     sequence = 0
     terminal: dict[str, str] | None = None
     allocated = 0
@@ -621,19 +664,23 @@ def _validate_chain_records(  # noqa: PLR0912 - one bounded chain-validation pas
                 and operation in _TENANT_STATE_TRANSITIONS
             ):
                 has_tenant_history = True
-            if (
-                tenant_id == history_tenant_id
-                and document["resultStatus"] == "succeeded"
-                and (
-                    operation in _DEPLOYMENT_EVIDENCE_OPERATIONS
-                    or (
-                        operation == "delete"
-                        and type(deletion_evidence) is dict
-                        and deletion_evidence.get("mode") != "never-deployed"
-                    )
+            deployment_evidence = document["resultStatus"] == "succeeded" and (
+                operation in _DEPLOYMENT_EVIDENCE_OPERATIONS
+                or (
+                    operation == "delete"
+                    and type(deletion_evidence) is dict
+                    and deletion_evidence.get("mode") != "never-deployed"
                 )
-            ):
+            )
+            if tenant_id == history_tenant_id and deployment_evidence:
                 has_deployment_history = True
+            if (
+                deployment_evidence
+                and deployment_history_candidates is not None
+                and deployment_history_matches is not None
+                and tenant_id in deployment_history_candidates
+            ):
+                deployment_history_matches.add(tenant_id)
             terminal = audit_entry_digest(document).to_dict()
             sequence += 1
         previous_segment_bytes = len(segment.data)

@@ -286,7 +286,7 @@ class AuthorizationExecutor:
         retained_archive_validator: Callable[[dict[str, object]], bool] | None = None,
         retired_archive_validator: Callable[[dict[str, object]], bool] | None = None,
         tenant_runtime_validator: Callable[
-            [str, str, str | None, dict[str, object], dict[str, object] | None],
+            [str, str, str | None, dict[str, object], dict[str, object] | None, bool],
             bool,
         ]
         | None = None,
@@ -956,6 +956,7 @@ class AuthorizationExecutor:
                 generation_id,
                 candidate_manifest,
                 authority.candidate_observed_state,
+                False,
             )
             is not True
         ):
@@ -984,7 +985,7 @@ class AuthorizationExecutor:
         manifest: dict[str, object],
         observed_state: dict[str, object] | None,
         runtime_validator: Callable[
-            [str, str, str | None, dict[str, object], dict[str, object] | None],
+            [str, str, str | None, dict[str, object], dict[str, object] | None, bool],
             bool,
         ],
         blocking: bool,
@@ -1018,6 +1019,7 @@ class AuthorizationExecutor:
                 None,
                 manifest,
                 observed_state,
+                False,
             )
             is True
         )
@@ -1099,6 +1101,7 @@ class AuthorizationExecutor:
                 authority.source_runtime_generation_id,
                 source_manifest,
                 authority.source_observed_state,
+                result["operation"] == "reconcile",
             )
             is True
         ):

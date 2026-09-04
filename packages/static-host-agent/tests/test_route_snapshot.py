@@ -6,6 +6,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import cast
 
+import lowerduckpond_static_host_agent.repository as repository_module
 import pytest
 from lowerduckpond_static_contracts import canonical_json_bytes, manifest_digest
 from lowerduckpond_static_host_agent import (
@@ -446,3 +447,42 @@ def test_snapshot_rejects_unrelated_undeployed_tenant_with_deployment_history(
         pytest.raises(RouteSnapshotError, match="undeployed tenant retains deployment history"),
     ):
         snapshot_tenant_routes(transaction)
+
+
+def test_snapshot_projects_deployment_audit_history_once_for_all_tenants(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    tenant_ids = (_TENANT_ID, _SECOND_TENANT_ID)
+    for tenant_id, slug in zip(tenant_ids, ("first-duck", "second-duck"), strict=True):
+        tenant = _undeployed_tenant(tenant_id, slug=slug)
+        _mkdir(root / "tenants" / tenant_id)
+        _mkdir(root / "tenants" / tenant_id / "deployments")
+        _mkdir(root / "tenants" / tenant_id / "archives")
+        _write(root, StateRecordPath.tenant_desired(tenant_id), tenant.manifest)
+        _write(root, StateRecordPath.tenant_observed(tenant_id), tenant.observed_state)
+    calls: list[tuple[str, ...]] = []
+
+    def deployment_history(
+        _root: object,
+        candidates: tuple[str, ...],
+        **_arguments: object,
+    ) -> frozenset[str]:
+        calls.append(candidates)
+        return frozenset()
+
+    monkeypatch.setattr(
+        repository_module,
+        "deployment_audit_history_tenant_ids",
+        deployment_history,
+    )
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        repository.transaction(mode=LockMode.EXCLUSIVE) as transaction,
+    ):
+        snapshot = snapshot_tenant_routes(transaction)
+
+    assert len(snapshot.tenants) == len(tenant_ids)
+    assert calls == [tenant_ids]

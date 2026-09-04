@@ -1921,7 +1921,7 @@ def _write_committed_restore_replay(
     return job, result, previous, previous_result
 
 
-def _write_committed_transition_replay(
+def _write_committed_transition_replay(  # noqa: PLR0915
     root: Path,
     *,
     operation: str,
@@ -1939,12 +1939,23 @@ def _write_committed_transition_replay(
         candidate_spec["desiredState"] = "suspended"
         candidate_route_set = "absent"
         candidate_runtime = None
+    elif operation == "reconcile":
+        candidate_route_set = "both"
+        candidate_runtime = "0198d17f-6f4a-7000-8000-000000000006"
     else:  # pragma: no cover - tests call only the explicit lifecycle matrix
         raise AssertionError("unsupported transition fixture")
     source_digest = manifest_digest(source).to_dict()
     candidate_digest = manifest_digest(candidate).to_dict()
     source_observed = _fixture("tenant-observed-state.json")
     source_observed["desiredManifestDigest"] = source_digest
+    if operation == "reconcile":
+        source_observed["desiredManifestDigest"] = {
+            "format": "lowerduckpond-manifest-v1",
+            "algorithm": "sha256",
+            "value": "f" * 64,
+        }
+        source_observed["observedState"] = "suspended"
+        source_observed["runtimeGenerationId"] = None
     candidate_observed = json.loads(json.dumps(source_observed))
     candidate_observed.update(
         {
@@ -1994,7 +2005,11 @@ def _write_committed_transition_replay(
             "archiveRecovery": None,
             "lifecycleRecovery": {
                 "sourceObservedState": source_observed,
-                "sourceRuntimeGenerationId": source_observed["runtimeGenerationId"],
+                "sourceRuntimeGenerationId": (
+                    "0198d17f-6f4a-7000-8000-000000000004"
+                    if operation == "reconcile"
+                    else source_observed["runtimeGenerationId"]
+                ),
                 "sourceRouteSet": "both",
                 "candidateObservedState": candidate_observed,
                 "candidateRuntimeGenerationId": ("0198d17f-6f4a-7000-8000-000000000006"),
@@ -3021,6 +3036,7 @@ def test_executor_accepts_a_complete_successful_deployment_commit(tmp_path: Path
         generation_id: str | None,
         _manifest: dict[str, object],
         _observed_state: dict[str, object] | None,
+        _allow_reconcile_source_drift: bool,
     ) -> bool:
         runtime_calls.append((tenant_id, route_set, generation_id))
         return True
@@ -4208,6 +4224,7 @@ def test_executor_requires_complete_runtime_after_export(tmp_path: Path) -> None
         generation_id: str | None,
         _manifest: dict[str, object],
         _observed_state: dict[str, object] | None,
+        _allow_reconcile_source_drift: bool,
     ) -> bool:
         runtime_calls.append((tenant_id, route_set, generation_id))
         return False
@@ -6620,6 +6637,7 @@ def test_executor_requires_the_authorized_selected_runtime_generation(
         generation_id: str | None,
         _manifest: dict[str, object],
         _observed_state: dict[str, object] | None,
+        _allow_reconcile_source_drift: bool,
     ) -> bool:
         calls.append((tenant_id, candidate_route_set, generation_id))
         return False
@@ -6668,6 +6686,7 @@ def test_executor_accepts_a_newer_complete_cross_tenant_runtime_generation(
             generation_id: str | None,
             _manifest: dict[str, object],
             _observed_state: dict[str, object] | None,
+            _allow_reconcile_source_drift: bool,
         ) -> bool:
             calls.append(generation_id)
             if generation_id is not None:
@@ -6698,7 +6717,7 @@ def test_executor_accepts_a_newer_complete_cross_tenant_runtime_generation(
     assert calls == ["0198d17f-6f4a-7000-8000-000000000006", None]
 
 
-@pytest.mark.parametrize("operation", ["rename", "suspend"])
+@pytest.mark.parametrize("operation", ["rename", "suspend", "reconcile"])
 def test_executor_requires_the_authorized_source_runtime_after_handler_failure(
     tmp_path: Path,
     operation: str,
@@ -6732,17 +6751,27 @@ def test_executor_requires_the_authorized_source_runtime_after_handler_failure(
     _write(root, StateRecordPath.tenant_desired(_TENANT_ID), source)
     _write(root, StateRecordPath.tenant_observed(_TENANT_ID), source_observed)
     intent_path = StateRecordPath.transaction_intent(intent["intentId"])
-    calls: list[tuple[str, str, str | None, dict[str, object], dict[str, object]]] = []
+    calls: list[tuple[str, str, str | None, dict[str, object], dict[str, object], bool]] = []
 
-    def reject_unrestored(
+    def reject_unrestored(  # noqa: PLR0913,PLR0917
         tenant_id: str,
         route_set: str,
         generation_id: str | None,
         manifest: dict[str, object],
         observed_state: dict[str, object] | None,
+        allow_reconcile_source_drift: bool,
     ) -> bool:
         assert observed_state is not None
-        calls.append((tenant_id, route_set, generation_id, manifest, observed_state))
+        calls.append(
+            (
+                tenant_id,
+                route_set,
+                generation_id,
+                manifest,
+                observed_state,
+                allow_reconcile_source_drift,
+            )
+        )
         return False
 
     with (
@@ -6766,6 +6795,7 @@ def test_executor_requires_the_authorized_source_runtime_after_handler_failure(
             "0198d17f-6f4a-7000-8000-000000000004",
             source,
             source_observed,
+            operation == "reconcile",
         )
     ]
 
@@ -6807,6 +6837,7 @@ def test_executor_revalidates_source_runtime_after_failure_intent_cleanup(
         generation_id: str | None,
         _manifest: dict[str, object],
         _observed_state: dict[str, object] | None,
+        _allow_reconcile_source_drift: bool,
     ) -> bool:
         calls.append((tenant_id, route_set, generation_id))
         return False
@@ -6882,6 +6913,7 @@ def test_executor_requires_the_create_intent_candidate_runtime(
         generation_id: str | None,
         _manifest: dict[str, object],
         observed_state: dict[str, object] | None,
+        _allow_reconcile_source_drift: bool,
     ) -> bool:
         calls.append((tenant_id, route_set, generation_id, observed_state))
         return False

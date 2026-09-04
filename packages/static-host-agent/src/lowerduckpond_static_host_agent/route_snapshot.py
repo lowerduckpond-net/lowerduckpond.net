@@ -70,7 +70,10 @@ class RouteSnapshotTransaction(Protocol):
 
     def read(self, path: StateRecordPath) -> StoredContract: ...
 
-    def tenant_has_deployment_history(self, tenant_id: object) -> bool: ...
+    def deployment_history_tenant_ids(
+        self,
+        tenant_ids: tuple[str, ...],
+    ) -> frozenset[str]: ...
 
     def measure_inventory(self) -> StateInventory: ...
 
@@ -104,7 +107,13 @@ def _snapshot_tenants(
     namespace = transaction.read(StateRecordPath.platform_namespace()).document
     validate_contract(namespace, expected_kind=ContractKind.PLATFORM_NAMESPACE)
     inventory = transaction.measure_inventory()
-    candidate, source = _prepare_overlay(transaction, overlay, inventory)
+    history_candidates = set(inventory.tenant_ids)
+    if overlay is not None and overlay.mode is RouteOverlayMode.ADD:
+        history_candidates.add(_tenant_id(overlay.tenant))
+    deployment_history = transaction.deployment_history_tenant_ids(
+        tuple(sorted(history_candidates))
+    )
+    candidate, source = _prepare_overlay(overlay, inventory, deployment_history)
     overlay_id = None if candidate is None else _tenant_id(candidate)
 
     tenants: list[tuple[TenantRouteInput, bool]] = []
@@ -112,14 +121,14 @@ def _snapshot_tenants(
         if tenant_id == overlay_id:
             if candidate is None:  # pragma: no cover - equality proves otherwise
                 raise RouteSnapshotError("route overlay identity was lost")
-            current = _read_tenant(transaction, tenant_id)
+            current = _read_tenant(transaction, tenant_id, deployment_history)
             if source is None or current != source:
                 raise RouteSnapshotError(
                     "replace route overlay source changed before the locked snapshot"
                 )
             tenants.append((candidate, _is_archived(transaction, candidate)))
         else:
-            current = _read_tenant(transaction, tenant_id)
+            current = _read_tenant(transaction, tenant_id, deployment_history)
             tenants.append((current, _is_archived(transaction, current)))
     if overlay is not None and overlay.mode is RouteOverlayMode.ADD:
         if candidate is None:  # pragma: no cover - the add mode proves otherwise
@@ -136,9 +145,9 @@ def _snapshot_tenants(
 
 
 def _prepare_overlay(
-    transaction: RouteSnapshotTransaction,
     overlay: TenantRouteOverlay | None,
     inventory: StateInventory,
+    deployment_history: frozenset[str],
 ) -> tuple[TenantRouteInput | None, TenantRouteInput | None]:
     if overlay is None:
         return None, None
@@ -148,13 +157,14 @@ def _prepare_overlay(
     if (overlay.mode is RouteOverlayMode.ADD) == exists:
         disposition = "already exists" if exists else "is absent"
         raise RouteSnapshotError(f"{overlay.mode.value} route overlay tenant {disposition}")
-    _reject_undeployed_history(transaction, candidate)
+    _reject_undeployed_history(candidate, deployment_history)
     return candidate, source
 
 
 def _read_tenant(
     transaction: RouteSnapshotTransaction,
     tenant_id: str,
+    deployment_history: frozenset[str],
 ) -> TenantRouteInput:
     manifest = transaction.read(StateRecordPath.tenant_desired(tenant_id)).document
     observed = transaction.read(StateRecordPath.tenant_observed(tenant_id)).document
@@ -175,18 +185,16 @@ def _read_tenant(
         ).document
         validate_contract(deployment, expected_kind=ContractKind.DEPLOYMENT_RECORD)
     tenant = _copy_tenant(TenantRouteInput(manifest, observed, deployment))
-    _reject_undeployed_history(transaction, tenant)
+    _reject_undeployed_history(tenant, deployment_history)
     return tenant
 
 
 def _reject_undeployed_history(
-    transaction: RouteSnapshotTransaction,
     tenant: TenantRouteInput,
+    deployment_history: frozenset[str],
 ) -> None:
     spec = cast(dict[str, object], tenant.manifest["spec"])
-    if spec["desiredState"] == "undeployed" and transaction.tenant_has_deployment_history(
-        _tenant_id(tenant)
-    ):
+    if spec["desiredState"] == "undeployed" and _tenant_id(tenant) in deployment_history:
         raise RouteSnapshotError("undeployed tenant retains deployment history")
 
 

@@ -1512,6 +1512,25 @@ def test_deployment_history_finds_audit_after_tenant_namespace_removal(
         assert repository.tenant_has_deployment_history(_OTHER_TENANT_ID) is True
 
 
+def test_deployment_history_projects_multiple_tenants_in_one_transaction(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    audit = _fixture("audit-entry.json")
+    audit.update({"operation": "deploy", "tenantId": _OTHER_TENANT_ID})
+
+    with (
+        _repository(root) as repository,
+        repository.transaction(mode=LockMode.EXCLUSIVE) as transaction,
+    ):
+        transaction.append_audit(audit)
+        matches = transaction.deployment_history_tenant_ids(
+            tuple(sorted((_TENANT_ID, _OTHER_TENANT_ID)))
+        )
+
+    assert matches == frozenset({_OTHER_TENANT_ID})
+
+
 def test_identity_history_distinguishes_never_deployed_audit_history(
     tmp_path: Path,
 ) -> None:
