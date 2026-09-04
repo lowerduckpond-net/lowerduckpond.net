@@ -34,6 +34,7 @@ from lowerduckpond_static_host_agent.audit import (
     AuditCorrelationSnapshot,
     AuditLimits,
     AuditState,
+    AuditTransition,
     tenant_has_deployment_audit_history,
     tenant_has_identity_audit_history,
 )
@@ -45,6 +46,9 @@ from lowerduckpond_static_host_agent.audit import (
 )
 from lowerduckpond_static_host_agent.audit import (
     inspect_audit_correlation as inspect_audit_correlation_records,
+)
+from lowerduckpond_static_host_agent.audit import (
+    inspect_later_audit_transitions as inspect_later_audit_transition_records,
 )
 from lowerduckpond_static_host_agent.capacity import (
     DEFAULT_HOST_CAPACITY_LIMITS,
@@ -751,6 +755,23 @@ class StateRepository:
 
         with self.transaction(mode=LockMode.EXCLUSIVE, blocking=blocking) as transaction:
             return transaction.inspect_audit_correlation(correlation_id, limits=limits)
+
+    def inspect_later_audit_transitions(
+        self,
+        correlation_id: object,
+        *,
+        maximum_transitions: int,
+        limits: AuditLimits = DEFAULT_AUDIT_LIMITS,
+        blocking: bool = False,
+    ) -> tuple[AuditTransition, ...]:
+        """Return capped later transition authority under exclusive tenant-state."""
+
+        with self.transaction(mode=LockMode.EXCLUSIVE, blocking=blocking) as transaction:
+            return transaction.inspect_later_audit_transitions(
+                correlation_id,
+                maximum_transitions=maximum_transitions,
+                limits=limits,
+            )
 
     def append_audit(
         self,
@@ -1692,6 +1713,24 @@ class _StateTransaction:
         return inspect_audit_correlation_records(
             self._repository._durable,
             correlation_id,
+            expected_owner=self._repository._expected_owner,
+            expected_directory_mode=self._repository._expected_directory_mode,
+            expected_record_mode=self._repository._expected_record_mode,
+            limits=limits,
+        )
+
+    def inspect_later_audit_transitions(
+        self,
+        correlation_id: object,
+        *,
+        maximum_transitions: int,
+        limits: AuditLimits = DEFAULT_AUDIT_LIMITS,
+    ) -> tuple[AuditTransition, ...]:
+        self._require_exclusive()
+        return inspect_later_audit_transition_records(
+            self._repository._durable,
+            correlation_id,
+            maximum_transitions=maximum_transitions,
             expected_owner=self._repository._expected_owner,
             expected_directory_mode=self._repository._expected_directory_mode,
             expected_record_mode=self._repository._expected_record_mode,

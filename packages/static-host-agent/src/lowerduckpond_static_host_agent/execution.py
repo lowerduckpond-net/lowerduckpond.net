@@ -27,6 +27,7 @@ from lowerduckpond_static_host_agent.audit import (
     DEFAULT_AUDIT_LIMITS,
     AuditCorrelationSnapshot,
     AuditError,
+    AuditTransition,
 )
 from lowerduckpond_static_host_agent.capacity import (
     DEFAULT_HOST_CAPACITY_LIMITS,
@@ -155,6 +156,13 @@ class ExecutionTransaction(Protocol):
         self,
         correlation_id: object,
     ) -> AuditCorrelationSnapshot: ...
+
+    def inspect_later_audit_transitions(
+        self,
+        correlation_id: object,
+        *,
+        maximum_transitions: int,
+    ) -> tuple[AuditTransition, ...]: ...
 
     def append_audit(self, document: dict[str, object]) -> object: ...
 
@@ -948,10 +956,12 @@ class AuthorizationExecutor:
             if stored is None or stored.document != result:
                 raise ExecutionError("terminal result changed during runtime validation")
             audit_is_latest = _validate_result_audit(transaction, current.document, result)
-            snapshot = transaction.inspect_audit_correlation(result["correlationId"])
+            transitions, _inventory = _bounded_later_audit_transitions(
+                transaction,
+                result,
+            )
             has_later_cross_tenant_transition = any(
-                later_tenant_id != tenant_id
-                for _operation, later_tenant_id in snapshot.later_tenant_state_transitions
+                transition.tenant_id != tenant_id for transition in transitions
             )
         return (
             audit_is_latest
@@ -2060,7 +2070,8 @@ def _failure_result(job: dict[str, object], error_code: str) -> dict[str, object
     if request["operation"] == "archive":
         # Executor failures happen before an archive upload can be attempted.
         result["archiveRecord"] = None
-    validate_contract(result, expected_kind=ContractKind.OPERATION_RESULT)
+    # _publish_result binds and validates the atomic audit position while the
+    # transaction lock still protects that position.
     return result
 
 
@@ -2506,16 +2517,13 @@ def _validate_failed_tenant_inventory(
         if result["operation"] == "create" and _expected_source_error(transaction, job) is not None:
             raise ExecutionError("failed lifecycle handler did not restore its authorized source")
         return
-    try:
-        snapshot = transaction.inspect_audit_correlation(result["correlationId"])
-    except AuditError as error:
-        raise ExecutionError("failed lifecycle audit authority is invalid") from error
+    transitions, _inventory = _bounded_later_audit_transitions(transaction, result)
     expected = set(source_tenant_ids)
-    for operation, tenant_id in snapshot.later_tenant_inventory_transitions:
-        if operation == "create":
-            expected.add(tenant_id)
-        else:
-            expected.discard(tenant_id)
+    for transition in transitions:
+        if transition.operation == "create":
+            expected.add(transition.tenant_id)
+        elif transition.operation == "delete":
+            expected.discard(transition.tenant_id)
     if transaction.measure_inventory().tenant_ids != tuple(sorted(expected)):
         raise ExecutionError("failed lifecycle handler changed the authorized tenant inventory")
 
@@ -2542,15 +2550,12 @@ def _validate_success_tenant_inventory(
         expected.add(tenant_id)
     elif operation == "delete":
         expected.discard(tenant_id)
-    try:
-        snapshot = transaction.inspect_audit_correlation(result["correlationId"])
-    except AuditError as error:
-        raise ExecutionError("successful lifecycle audit authority is invalid") from error
-    for later_operation, later_tenant_id in snapshot.later_tenant_inventory_transitions:
-        if later_operation == "create":
-            expected.add(later_tenant_id)
-        else:
-            expected.discard(later_tenant_id)
+    transitions, _inventory = _bounded_later_audit_transitions(transaction, result)
+    for transition in transitions:
+        if transition.operation == "create":
+            expected.add(transition.tenant_id)
+        elif transition.operation == "delete":
+            expected.discard(transition.tenant_id)
     if transaction.measure_inventory().tenant_ids != tuple(sorted(expected)):
         raise ExecutionError(
             "successful lifecycle handler changed tenant inventory outside authority"
@@ -2758,14 +2763,10 @@ def _later_audited_results(
     transaction: ExecutionTransaction,
     result: dict[str, object],
 ) -> tuple[_AuditedTransition, ...]:
-    try:
-        snapshot = transaction.inspect_audit_correlation(result["correlationId"])
-    except AuditError as error:
-        raise ExecutionError("superseded lifecycle audit authority is invalid") from error
-    entries = snapshot.later_tenant_state_entries
-    expected_correlations = {validate_uuid7(entry["correlationId"]) for entry in entries}
+    transitions, inventory = _bounded_later_audit_transitions(transaction, result)
+    expected_correlations = {transition.correlation_id for transition in transitions}
     matched: dict[str, dict[str, object]] = {}
-    for job_id in transaction.measure_authorization_records().result_ids:
+    for job_id in inventory.result_ids:
         candidate = transaction.read(StateRecordPath.authorization_result(job_id)).document
         correlation_id = validate_uuid7(candidate["correlationId"])
         if correlation_id not in expected_correlations:
@@ -2782,15 +2783,13 @@ def _later_audited_results(
     if set(matched) != expected_correlations:
         raise ExecutionError("later audited lifecycle result is not durably exact")
     ordered: list[_AuditedTransition] = []
-    for entry in entries:
-        correlation_id = validate_uuid7(entry["correlationId"])
-        candidate = matched[correlation_id]
+    for transition in transitions:
+        candidate = matched[transition.correlation_id]
         if (
             candidate["status"] != "succeeded"
-            or candidate["operation"] != entry["operation"]
-            or candidate["tenantId"] != entry["tenantId"]
-            or result_digest(candidate).to_dict() != entry["resultDigest"]
-            or entry["resultStatus"] != candidate["status"]
+            or candidate["operation"] != transition.operation
+            or candidate["tenantId"] != transition.tenant_id
+            or result_digest(candidate).to_dict() != transition.result_digest
         ):
             raise ExecutionError("later lifecycle result disagrees with durable audit authority")
         restore_archive_id: str | None = None
@@ -2817,6 +2816,23 @@ def _later_audited_results(
             restore_archive_id = validate_uuid7(archive["deploymentId"])
         ordered.append(_AuditedTransition(candidate, restore_archive_id))
     return tuple(ordered)
+
+
+def _bounded_later_audit_transitions(
+    transaction: ExecutionTransaction,
+    result: dict[str, object],
+) -> tuple[tuple[AuditTransition, ...], AuthorizationRecordInventory]:
+    """Pair a slim audit suffix with the durable result inventory that bounds it."""
+
+    inventory = transaction.measure_authorization_records()
+    try:
+        transitions = transaction.inspect_later_audit_transitions(
+            result["correlationId"],
+            maximum_transitions=len(inventory.result_ids),
+        )
+    except AuditError as error:
+        raise ExecutionError("later lifecycle audit authority is invalid") from error
+    return transitions, inventory
 
 
 def _project_record_history(

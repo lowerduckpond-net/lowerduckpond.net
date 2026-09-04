@@ -334,6 +334,8 @@ def test_result_waiter_replays_an_executor_failure_missing_its_audit(
             "status": "failed",
             "errorCode": "not_implemented",
             "failurePublisher": "authorization-executor",
+            "failureAuditPredecessorDigest": None,
+            "failureAuditSequence": 0,
             "tenantId": None,
         }
         repository.create_immutable(

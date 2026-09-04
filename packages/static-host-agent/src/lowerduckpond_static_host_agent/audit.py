@@ -25,6 +25,9 @@ from lowerduckpond_static_host_agent.durable import (
     FailureHook,
     validate_state_directory,
 )
+from lowerduckpond_static_host_agent.state_inventory import (
+    DEFAULT_STATE_INVENTORY_LIMITS,
+)
 
 MEBIBYTE: Final = 1024 * 1024
 _INITIAL_MAXIMUM_SEGMENT_BYTES: Final = 8 * MEBIBYTE
@@ -126,6 +129,17 @@ class AuditCorrelationSnapshot:
     entry: dict[str, object] | None
     previous_tenant_state_transition: dict[str, object] | None
     has_later_tenant_state_transition: bool
+
+
+@dataclass(frozen=True, slots=True)
+class AuditTransition:
+    """One bounded projection of a successful tenant-state audit entry."""
+
+    sequence: int
+    correlation_id: str
+    tenant_id: str
+    operation: str
+    result_digest: dict[str, object]
 
 
 @dataclass(frozen=True, slots=True)
@@ -272,6 +286,56 @@ def inspect_audit_correlation(  # noqa: PLR0913 - keep every audit boundary expl
         entry=entry,
         previous_tenant_state_transition=previous_tenant_state_transition,
         has_later_tenant_state_transition=has_later_tenant_state_transition,
+    )
+
+
+def inspect_later_audit_transitions(  # noqa: PLR0913 - storage contract is explicit
+    root: DurableDirectory,
+    correlation_id: object,
+    *,
+    maximum_transitions: int,
+    expected_owner: int,
+    expected_directory_mode: int,
+    expected_record_mode: int,
+    limits: AuditLimits = DEFAULT_AUDIT_LIMITS,
+) -> tuple[AuditTransition, ...]:
+    """Return a capped slim projection after one verified correlation."""
+
+    if (
+        type(maximum_transitions) is not int
+        or maximum_transitions < 0
+        or maximum_transitions > DEFAULT_STATE_INVENTORY_LIMITS.maximum_authorization_records
+    ):
+        raise ValueError("later audit transition limit is outside the committed boundary")
+    canonical_correlation_id = validate_uuid7(correlation_id)
+    audit_directory = root.open_descendant(("audit",))
+    try:
+        segments = _read_segments(
+            audit_directory,
+            expected_owner=expected_owner,
+            expected_directory_mode=expected_directory_mode,
+            expected_record_mode=expected_record_mode,
+            limits=limits,
+        )
+    finally:
+        audit_directory.close()
+    (
+        _state,
+        matching_entry,
+        _previous_tenant_state_transition,
+        _has_later_tenant_state_transition,
+        _has_tenant_history,
+        _has_deployment_history,
+    ) = _validate_chain_records(
+        segments,
+        limits=limits,
+        correlation_id=canonical_correlation_id,
+        history_tenant_id=None,
+    )
+    return _later_audit_transitions(
+        segments,
+        matching_entry=matching_entry,
+        maximum_transitions=maximum_transitions,
     )
 
 
@@ -621,6 +685,63 @@ def _previous_tenant_state_transition(
             ):
                 previous = document
     return previous
+
+
+def _later_audit_transitions(
+    segments: list[_Segment],
+    *,
+    matching_entry: dict[str, object] | None,
+    maximum_transitions: int,
+) -> tuple[AuditTransition, ...]:
+    """Project only fixed-size transition authority, never complete entries."""
+
+    if matching_entry is None:
+        return ()
+    matching_sequence = matching_entry["sequence"]
+    if type(matching_sequence) is not int:  # pragma: no cover - schema validation proves this
+        raise AuditError("matching audit sequence is malformed")
+    transitions: list[AuditTransition] = []
+    transition_correlations: set[str] = set()
+    for segment in segments:
+        for line in segment.data.splitlines(keepends=True):
+            document = decode_contract(
+                line,
+                expected_kind=ContractKind.AUDIT_ENTRY,
+                maximum_raw_bytes=MAX_CANONICAL_BYTES,
+            )
+            sequence = document["sequence"]
+            correlation_id = document["correlationId"]
+            if type(sequence) is not int or type(correlation_id) is not str:
+                raise AuditError("audit transition identity is malformed")
+            if sequence <= matching_sequence:
+                continue
+            tenant_id = document["tenantId"]
+            operation = document["operation"]
+            if (
+                type(tenant_id) is not str
+                or type(operation) is not str
+                or document["resultStatus"] != "succeeded"
+                or operation not in _TENANT_STATE_TRANSITIONS
+            ):
+                continue
+            if correlation_id in transition_correlations:
+                raise AuditError("later audit transition correlation appears multiple times")
+            if len(transitions) >= maximum_transitions:
+                raise AuditCapacityError("later audit transitions exceed their result bound")
+            result_digest = document["resultDigest"]
+            if type(result_digest) is not dict:  # pragma: no cover - schema validation proves this
+                raise AuditError("audit result digest is malformed")
+            transitions.append(
+                AuditTransition(
+                    sequence=sequence,
+                    correlation_id=correlation_id,
+                    tenant_id=tenant_id,
+                    operation=operation,
+                    result_digest=dict(result_digest),
+                )
+            )
+            transition_correlations.add(correlation_id)
+    return tuple(transitions)
 
 
 def _is_later_tenant_state_transition(

@@ -14,6 +14,7 @@ from lowerduckpond_static_host_agent.audit import (
     AuditError,
     AuditLimits,
     AuditState,
+    AuditTransition,
 )
 from lowerduckpond_static_host_agent.caddy_admin import (
     CaddyAdminError,
@@ -346,6 +347,7 @@ __all__ = [
     "AuditError",
     "AuditLimits",
     "AuditState",
+    "AuditTransition",
     "AuthorizationExecutor",
     "AuthorizationIssuer",
     "AuthorizationRecordInventory",

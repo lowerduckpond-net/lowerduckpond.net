@@ -216,7 +216,14 @@ class _CompletingFailureHandler:
             "tenantId": None if request["operation"] == "create" else request["tenantId"],
         }
         if self._claim_executor_publication:
-            candidate["failurePublisher"] = "authorization-executor"
+            audit = self._repository.inspect_audit(blocking=blocking)
+            candidate.update(
+                {
+                    "failurePublisher": "authorization-executor",
+                    "failureAuditPredecessorDigest": audit.terminal_digest,
+                    "failureAuditSequence": audit.entry_count,
+                }
+            )
         if request["operation"] == "archive":
             candidate["archiveRecord"] = self._archive_cleanup_record
         try:
@@ -1862,6 +1869,11 @@ def _write_committed_restore_replay(
         "status": "succeeded",
         "tenantId": previous_request["tenantId"],
         "canonicalOrigin": result["canonicalOrigin"],
+        "manifest": source,
+        "archiveRecord": {
+            **archive,
+            "correlationId": previous_request["correlationId"],
+        },
     }
 
     _write(root, StateRecordPath.platform_namespace(), namespace)
@@ -8047,6 +8059,8 @@ def test_executor_repairs_a_result_first_terminal_failure_commit(
             "status": "failed",
             "errorCode": "not_implemented",
             "failurePublisher": "authorization-executor",
+            "failureAuditPredecessorDigest": None,
+            "failureAuditSequence": 0,
             "tenantId": None,
         }
         repository.create_immutable(StateRecordPath.authorization_result(issued.job_id), result)
