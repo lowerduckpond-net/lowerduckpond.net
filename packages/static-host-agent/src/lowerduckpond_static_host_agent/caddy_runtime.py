@@ -82,6 +82,7 @@ _ENVIRONMENT_NAME_PATTERN: Final = re.compile(r"[A-Z_][A-Z0-9_]*", flags=re.ASCI
 _CADDY_VALIDATION_OUTPUT_BYTES: Final = 262_144
 _CADDY_VALIDATION_TIMEOUT_SECONDS: Final = 30
 _CADDY_VALIDATION_API_TOKEN: Final = "0" * 40
+_CADDY_VALIDATION_DATA_MODE: Final = 0o770
 _BASH: Final = "/usr/bin/bash"
 _PRLIMIT: Final = "/usr/bin/prlimit"
 _SETPRIV: Final = "/usr/bin/setpriv"
@@ -1163,9 +1164,9 @@ def _create_validation_environment(
         data.mkdir(mode=0o700)
         if os.geteuid() == 0:
             os.chown(root, 0, validation_gid)
-            os.chown(data, validation_uid, validation_gid)
+            os.chown(data, 0, validation_gid)
         root.chmod(0o750)
-        data.chmod(0o700)
+        data.chmod(_CADDY_VALIDATION_DATA_MODE)
     except BaseException:
         shutil.rmtree(root)
         raise

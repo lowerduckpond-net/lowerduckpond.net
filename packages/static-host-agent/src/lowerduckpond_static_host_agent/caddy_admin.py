@@ -200,19 +200,22 @@ def _running_caddy_service_identity() -> tuple[int, str]:
         "MainPID",
         "InvocationID",
     )
-    completed = subprocess.run(  # noqa: S603 - every argument is fixed
-        [
-            "/usr/bin/systemctl",
-            "show",
-            "--no-pager",
-            *(f"--property={name}" for name in properties),
-            "caddy.service",
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=_ADMIN_TIMEOUT_SECONDS,
-    )
+    try:
+        completed = subprocess.run(  # noqa: S603 - every argument is fixed
+            [
+                "/usr/bin/systemctl",
+                "show",
+                "--no-pager",
+                *(f"--property={name}" for name in properties),
+                "caddy.service",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=_ADMIN_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise CaddyAdminError("Caddy service identity is unavailable") from error
     if len(completed.stdout) > _MAXIMUM_SYSTEMD_IDENTITY_BYTES:
         raise CaddyAdminError("Caddy service identity exceeds its bound")
     pairs = [line.partition("=") for line in completed.stdout.splitlines()]
@@ -290,14 +293,11 @@ def _normalize_admin_socket() -> None:
         or before.st_nlink != 1
     ):
         raise CaddyAdminError("Caddy admin socket identity is unsafe")
+    _chmod_admin_socket_as_owner(caddy_uid)
     try:
-        Path(CADDY_ADMIN_SOCKET).chmod(
-            _CADDY_ADMIN_SOCKET_MODE,
-            follow_symlinks=False,
-        )
         after = os.lstat(CADDY_ADMIN_SOCKET)
     except OSError as error:
-        raise CaddyAdminError("Caddy admin socket mode could not be restored") from error
+        raise CaddyAdminError("Caddy admin socket mode could not be verified") from error
     if (
         (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino)
         or not stat.S_ISSOCK(after.st_mode)
@@ -307,6 +307,33 @@ def _normalize_admin_socket() -> None:
         or stat.S_IMODE(after.st_mode) != _CADDY_ADMIN_SOCKET_MODE
     ):
         raise CaddyAdminError("Caddy admin socket changed during mode restoration")
+
+
+def _chmod_admin_socket_as_owner(caddy_uid: int) -> None:
+    """Change only the Caddy-owned socket while using its effective identity."""
+
+    original_euid = os.geteuid()
+    if original_euid not in {0, caddy_uid}:
+        raise CaddyAdminError("Caddy admin socket owner cannot be entered")
+    changed_identity = False
+    try:
+        if original_euid != caddy_uid:
+            os.seteuid(caddy_uid)
+            changed_identity = True
+        Path(CADDY_ADMIN_SOCKET).chmod(
+            _CADDY_ADMIN_SOCKET_MODE,
+            follow_symlinks=False,
+        )
+    except OSError as error:
+        raise CaddyAdminError("Caddy admin socket mode could not be restored") from error
+    finally:
+        if changed_identity:
+            try:
+                os.seteuid(original_euid)
+            except OSError as error:
+                raise CaddyAdminError(
+                    "Caddy admin socket identity could not be restored"
+                ) from error
 
 
 def _running_executable_digest(pid: int) -> str:

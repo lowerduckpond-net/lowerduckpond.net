@@ -482,7 +482,7 @@ def test_dark_worker_unit_consumes_the_reviewed_sandbox_contract() -> None:
     assert lines["BindReadOnlyPaths=/lib"] == 1
     assert lines["BindReadOnlyPaths=/lib64"] == 1
     assert lines["BindReadOnlyPaths=/etc/lowerduckpond/static-publication.json"] == 1
-    assert lines["BindReadOnlyPaths=/run/caddy"] == 1
+    assert lines["BindPaths=/run/caddy"] == 1
     assert lines["BindReadOnlyPaths=/run/systemd"] == 1
     assert lines["BindPaths=/etc/caddy"] == 1
     assert lines["InaccessiblePaths=/proc"] == 0

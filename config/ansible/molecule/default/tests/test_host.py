@@ -236,7 +236,7 @@ def assert_static_worker_caddy_runtime_access(host: Host) -> None:
     unit = host.file("/etc/systemd/system/lowerduckpond-static-worker@.service")
     assert unit.contains(f"BindPaths={STATIC_STATE_ROOT}")
     assert unit.contains("BindPaths=/etc/caddy")
-    assert unit.contains("BindReadOnlyPaths=/run/caddy")
+    assert unit.contains("BindPaths=/run/caddy")
     assert unit.contains("BindReadOnlyPaths=/run/systemd")
     assert not unit.contains("InaccessiblePaths=/proc")
     assert unit.contains(
@@ -247,13 +247,22 @@ def assert_static_worker_caddy_runtime_access(host: Host) -> None:
     selected = host.run(f"readlink --canonicalize {STATIC_HOST_AGENT_ROOT}/current")
     assert selected.rc == 0
     probe = (
-        "import os,pwd,sys;"
+        "import os,pwd,shutil,sys;"
         f"sys.path.insert(0,{(selected.stdout.strip() + '/site-packages')!r});"
         "import lowerduckpond_static_host_agent.caddy_admin as admin;"
+        "import lowerduckpond_static_host_agent.caddy_runtime as runtime;"
         "pid,invocation=admin._running_caddy_service_identity();"
         "assert pid>1 and len(invocation)==32;"
         "assert admin._read_caddy_admin_configuration();"
+        "admin._normalize_admin_socket();"
         "assert os.access('/usr/bin/bash',os.X_OK);"
+        "caddy=pwd.getpwnam('caddy');"
+        "validation_root,environment=runtime._create_validation_environment({},"
+        "validation_uid=caddy.pw_uid,validation_gid=caddy.pw_gid);"
+        "os.seteuid(caddy.pw_uid);"
+        "open(environment['TMPDIR']+'/candidate-output','w').close();"
+        "os.seteuid(0);"
+        "shutil.rmtree(validation_root);"
         "fd=os.open('/workspace/chown-probe',os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600);"
         "os.fchown(fd,0,pwd.getpwnam('caddy').pw_gid);"
         "os.close(fd)"
@@ -277,7 +286,7 @@ def assert_static_worker_caddy_runtime_access(host: Host) -> None:
             "--property=BindReadOnlyPaths=/etc/nsswitch.conf",
             "--property=BindReadOnlyPaths=/etc/passwd",
             f"--property=BindReadOnlyPaths={STATIC_HOST_AGENT_ROOT}",
-            "--property=BindReadOnlyPaths=/run/caddy",
+            "--property=BindPaths=/run/caddy",
             "--property=BindReadOnlyPaths=/run/systemd",
             "--property=ProtectProc=invisible",
             "--property=ProcSubset=pid",
