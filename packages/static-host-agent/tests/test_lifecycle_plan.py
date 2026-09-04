@@ -419,26 +419,33 @@ def test_route_plan_rejects_authority_source_drift() -> None:
         )
 
 
-def test_route_plan_rejects_observed_state_drift() -> None:
+def test_route_plan_retains_an_older_target_generation_than_the_selected_source() -> None:
     namespace = _fixture("platform-namespace.json")
     manifest, observed, deployment, archive = _route_source("active")
-    observed["runtimeGenerationId"] = _CANDIDATE_GENERATION
+    target_generation = "0198d17f-6f4a-7000-8000-000000000003"
+    observed["runtimeGenerationId"] = target_generation
 
-    with pytest.raises(LifecyclePlanError, match="observed-state"):
-        plan_route_transition(
-            _route_job("suspend", namespace, manifest, deployment, archive),
-            namespace,
-            manifest,
-            observed,
-            deployment,
-            archive,
-            source_runtime_generation_id=_SOURCE_GENERATION,
-            candidate_runtime_generation_id=_CANDIDATE_GENERATION,
-            audit_state=AuditState(0, 0, 0, None),
-            now=_NOW,
-            clock=lambda: 1_777_000_000_000,
-            entropy=_Entropy(),
-        )
+    plan = plan_route_transition(
+        _route_job("suspend", namespace, manifest, deployment, archive),
+        namespace,
+        manifest,
+        observed,
+        deployment,
+        archive,
+        source_runtime_generation_id=_SOURCE_GENERATION,
+        candidate_runtime_generation_id=_CANDIDATE_GENERATION,
+        audit_state=AuditState(0, 0, 0, None),
+        now=_NOW,
+        clock=lambda: 1_777_000_000_000,
+        entropy=_Entropy(),
+    )
+
+    recovery = plan.intent["lifecycleRecovery"]
+    assert type(recovery) is dict
+    source_observed = recovery["sourceObservedState"]
+    assert type(source_observed) is dict
+    assert recovery["sourceRuntimeGenerationId"] == _SOURCE_GENERATION
+    assert source_observed["runtimeGenerationId"] == target_generation
 
 
 def test_route_plan_rejects_an_archived_source_without_its_archive_record() -> None:

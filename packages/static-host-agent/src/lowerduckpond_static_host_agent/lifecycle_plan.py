@@ -309,7 +309,6 @@ def plan_route_transition(  # noqa: PLR0912, PLR0913, PLR0915, PLR0917 - authori
         source_digest=source_digest,
         source_state=source_state,
         active_deployment_id=active_deployment_id,
-        source_generation=source_generation,
     )
 
     candidate = deepcopy(source)
@@ -401,22 +400,19 @@ def plan_route_transition(  # noqa: PLR0912, PLR0913, PLR0915, PLR0917 - authori
     )
 
 
-def _validate_route_source_observed(  # noqa: PLR0913 - exact source tuple
+def _validate_route_source_observed(
     observed: dict[str, object],
     *,
     tenant_id: str,
     source_digest: dict[str, str],
     source_state: LifecycleState,
     active_deployment_id: str | None,
-    source_generation: str,
 ) -> None:
-    expected_runtime = source_generation if source_state is LifecycleState.ACTIVE else None
     if (
         observed["tenantId"] != tenant_id
         or observed["desiredManifestDigest"] != source_digest
         or observed["observedState"] != source_state.value
         or observed["activeDeploymentId"] != active_deployment_id
-        or observed["runtimeGenerationId"] != expected_runtime
     ):
         raise LifecyclePlanError("route source observed-state binding drifted")
 

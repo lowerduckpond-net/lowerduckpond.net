@@ -38,6 +38,7 @@ from lowerduckpond_static_host_agent import (
 
 _FIXTURE_ROOT = Path(__file__).parents[3] / "tests/static-publication/fixtures/accepted"
 _SOURCE_GENERATION = "0198d17f-6f4a-7000-8000-000000000004"
+_LATEST_SOURCE_GENERATION = "0198d17f-6f4a-7000-8000-000000000005"
 _NOW = datetime(2026, 9, 2, 13, 45, tzinfo=UTC)
 
 
@@ -76,10 +77,11 @@ class _Candidate:
 
 
 class _Runtime:
-    def __init__(self) -> None:
+    def __init__(self, active_generation_id: str = _SOURCE_GENERATION) -> None:
         self.events: list[str] = []
         self.overlay: TenantRouteOverlay | None = None
         self.candidate: _Candidate | None = None
+        self.active_generation_id = active_generation_id
 
     @contextmanager
     def using_held_publication_lock(self, _repository: StateRepository) -> Iterator[None]:
@@ -88,7 +90,7 @@ class _Runtime:
 
     def open_active_verified(self) -> _Selected:
         self.events.append("active")
-        return _Selected(_SOURCE_GENERATION, _Pinned())
+        return _Selected(self.active_generation_id, _Pinned())
 
     def prune_unreferenced_generations(
         self,
@@ -338,6 +340,32 @@ def test_route_preparation_publishes_then_binds_one_exact_intent(
             repository.read(StateRecordPath.transaction_intent(prepared.plan.intent_id)).document
             == prepared.plan.intent
         )
+    finally:
+        repository.close()
+
+
+def test_route_preparation_separates_target_and_complete_source_generations(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root, "suspend", "active")
+    request = job["request"]
+    assert type(request) is dict
+    tenant_id = cast(str, request["tenantId"])
+    observed_path = StateRecordPath.tenant_observed(tenant_id)
+    observed = repository.read(observed_path).document
+    observed["runtimeGenerationId"] = _SOURCE_GENERATION
+    _write(root, observed_path, observed)
+    runtime = _Runtime(_LATEST_SOURCE_GENERATION)
+    try:
+        prepared = _prepare(repository, runtime, job)
+
+        recovery = prepared.plan.intent["lifecycleRecovery"]
+        assert type(recovery) is dict
+        source_observed = recovery["sourceObservedState"]
+        assert type(source_observed) is dict
+        assert recovery["sourceRuntimeGenerationId"] == _LATEST_SOURCE_GENERATION
+        assert source_observed["runtimeGenerationId"] == _SOURCE_GENERATION
     finally:
         repository.close()
 

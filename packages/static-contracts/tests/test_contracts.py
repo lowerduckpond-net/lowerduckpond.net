@@ -1886,6 +1886,18 @@ def test_reconcile_intent_pins_one_unchanged_manifest_generation() -> None:
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
 
+def test_source_observed_generation_may_precede_the_complete_rollback_generation() -> None:
+    intent = _route_only_transaction_intent("rename", "active", "active")
+    recovery = intent["lifecycleRecovery"]
+    assert type(recovery) is dict
+    source = recovery["sourceObservedState"]
+    assert type(source) is dict
+    source["runtimeGenerationId"] = "0198d17f-6f4a-7000-8000-000000000003"
+
+    assert recovery["sourceRuntimeGenerationId"] == ("0198d17f-6f4a-7000-8000-000000000004")
+    assert validate_contract(intent) is ContractKind.TRANSACTION_INTENT
+
+
 @pytest.mark.parametrize(
     ("operation", "source_state", "candidate_state"),
     [

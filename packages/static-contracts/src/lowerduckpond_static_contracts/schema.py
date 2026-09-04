@@ -649,7 +649,6 @@ def _validate_transaction_intent(document: dict[str, object]) -> None:
         observed["runtimeGenerationId"] != recovery["sourceRuntimeGenerationId"]
     ):
         raise ContractError(ErrorCode.SCHEMA_INVALID, "archive source runtime binding is invalid")
-
     if (
         archive["tenantId"] != tenant_id
         or archive["deploymentId"] != source_deployment["id"]
@@ -710,7 +709,6 @@ def _validate_lifecycle_recovery(
             source_observed,
             digest_field="sourceManifestDigest",
             route_set=recovery["sourceRouteSet"],
-            runtime_generation=recovery["sourceRuntimeGenerationId"],
         )
         if current:
             _validate_observed_manifest_binding(
@@ -901,7 +899,7 @@ def _validate_observed_recovery_binding(
     *,
     digest_field: str,
     route_set: object,
-    runtime_generation: object,
+    runtime_generation: object | None = None,
 ) -> None:
     if (
         observed["tenantId"] != document["tenantId"]
@@ -912,7 +910,11 @@ def _validate_observed_recovery_binding(
     expected_routes = "both" if state == "active" else "absent"
     if route_set != expected_routes:
         raise ContractError(ErrorCode.SCHEMA_INVALID, "observed route binding is invalid")
-    if state == "active" and observed["runtimeGenerationId"] != runtime_generation:
+    if (
+        runtime_generation is not None
+        and state == "active"
+        and observed["runtimeGenerationId"] != runtime_generation
+    ):
         raise ContractError(ErrorCode.SCHEMA_INVALID, "observed runtime binding is invalid")
 
 
