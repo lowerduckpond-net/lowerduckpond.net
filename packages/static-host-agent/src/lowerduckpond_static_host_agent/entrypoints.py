@@ -254,15 +254,7 @@ def executor_main(arguments: list[str] | None = None) -> int:
                     repository,
                 ),
             ).execute(job_id, blocking=True)
-    except (
-        CapacityError,
-        ContractError,
-        ExecutionError,
-        IntakeError,
-        StateBusyError,
-        StateInventoryError,
-        StateRecordError,
-    ):
+    except _SAFE_ERRORS:
         return _fail("authorized_job_failed", 1)
     except (OSError, ValueError) as error:
         return _fail(f"authorized_job_failed:{type(error).__name__}", 1)

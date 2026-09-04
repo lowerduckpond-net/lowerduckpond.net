@@ -23,6 +23,7 @@ from lowerduckpond_static_host_agent.capacity import (
     HostCapacityLimits,
 )
 from lowerduckpond_static_host_agent.create_activate import (
+    CreateActivationError,
     GenerationReloader,
     GenerationRestorer,
     GenerationVerifier,
@@ -193,16 +194,25 @@ class CreateLifecycleHandler:
                     retry_after_race=False,
                 )
             raise
-        outcome = activate_create_transition_outcome(
-            self._repository,
-            self._runtime,
-            self._gate,
-            prepared,
-            reloader=self._reloader,
-            restorer=self._restorer,
-            verifier=self._verifier,
-            blocking=blocking,
-        )
+        try:
+            outcome = activate_create_transition_outcome(
+                self._repository,
+                self._runtime,
+                self._gate,
+                prepared,
+                reloader=self._reloader,
+                restorer=self._restorer,
+                verifier=self._verifier,
+                blocking=blocking,
+            )
+        except CreateActivationError:
+            if retry_after_race:
+                return self._execute_classified(
+                    job_id,
+                    blocking=blocking,
+                    retry_after_race=False,
+                )
+            raise
         return ExecutionOutcome(outcome.result, outcome.created)
 
     def _classify(self, job_id: str, *, blocking: bool) -> _CreateReplay:

@@ -597,6 +597,49 @@ def test_executor_replays_a_concurrent_executor_failure_from_create_handler(
         repository.close()
 
 
+def test_create_handler_reclassifies_after_concurrent_activation_and_later_intent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root)
+    _write_correlation(root, job)
+    runtime = _Runtime()
+    try:
+        original = activate_create_transition_outcome
+        unrelated = _fixture("transaction-intent.json")
+
+        def finish_elsewhere_then_report_lost_race(
+            *args: object,
+            **kwargs: object,
+        ) -> None:
+            cast(Callable[..., CreateCommitOutcome], original)(*args, **kwargs)
+            repository.create_immutable(
+                StateRecordPath.transaction_intent(unrelated["intentId"]),
+                unrelated,
+            )
+            raise CreateActivationError("concurrent activation removed the create intent")
+
+        monkeypatch.setattr(
+            create_handler_module,
+            "activate_create_transition_outcome",
+            finish_elsewhere_then_report_lost_race,
+        )
+        outcome = _create_handler(repository, runtime).execute(
+            cast(str, job["jobId"]),
+            claim=None,
+            blocking=False,
+        )
+
+        assert outcome.result["status"] == "succeeded"
+        assert outcome.created is False
+        assert tuple(
+            identity.intent_id for identity in repository.measure_intent_records().records
+        ) == (unrelated["intentId"],)
+    finally:
+        repository.close()
+
+
 def test_create_handler_terminalizes_postclaim_source_drift(tmp_path: Path) -> None:
     root = _state_root(tmp_path)
     repository, job = _prepared_repository(root)

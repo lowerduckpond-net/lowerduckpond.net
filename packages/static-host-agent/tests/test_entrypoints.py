@@ -14,6 +14,7 @@ from lowerduckpond_static_host_agent import entrypoints
 from lowerduckpond_static_host_agent.caddy_runtime import (
     CADDY_PUBLICATION_LOCK_MODE,
     CADDY_RUNTIME_ROOT_MODE,
+    CaddyRuntimeError,
 )
 from lowerduckpond_static_host_agent.caddy_startup import (
     CaddyStartIntent,
@@ -21,7 +22,10 @@ from lowerduckpond_static_host_agent.caddy_startup import (
     CaddyStartPhase,
     start_target,
 )
-from lowerduckpond_static_host_agent.create_handler import CreateLifecycleHandler
+from lowerduckpond_static_host_agent.create_handler import (
+    CreateLifecycleError,
+    CreateLifecycleHandler,
+)
 from lowerduckpond_static_host_agent.repository import StateRecordPath
 
 _DISABLED_STATUS = 78
@@ -94,6 +98,29 @@ def test_executor_entrypoint_registers_the_create_handler(
     assert captured["intake"] is intake
     assert captured["job_id"] == job_id
     assert captured["blocking"] is True
+
+
+@pytest.mark.parametrize("failure", [CreateLifecycleError, CaddyRuntimeError])
+def test_executor_entrypoint_sanitizes_registered_handler_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+    failure: type[RuntimeError],
+) -> None:
+    class _FailingContext:
+        def __enter__(self) -> None:
+            raise failure("unsafe implementation detail")
+
+        def __exit__(self, *_exception: object) -> None:
+            return None
+
+    monkeypatch.setattr(
+        entrypoints,
+        "StateRepository",
+        lambda *_args, **_kwargs: _FailingContext(),
+    )
+
+    assert entrypoints.executor_main(["0198d17f-6f4a-7000-8000-000000000001"]) == 1
+    assert capfd.readouterr().err == "authorized_job_failed\n"
 
 
 def test_disabled_operator_checks_the_gate_before_opening_state(
