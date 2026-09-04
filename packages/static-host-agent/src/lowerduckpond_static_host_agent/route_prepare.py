@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
 from typing import NoReturn, Protocol, cast
@@ -106,6 +107,7 @@ class RoutePreparationTransaction(Protocol):
         expected_revision: StateRevision,
         document: dict[str, object],
         *,
+        allow_reconcile_source_advance: bool,
         capacity_limits: HostCapacityLimits,
     ) -> StoredContract: ...
 
@@ -184,8 +186,12 @@ def prepare_route_transition(  # noqa: PLR0913 - authority sources stay explicit
         job = _bind_source_runtime_authority(
             transaction,
             job,
+            source_observed_state=source.observed_state,
             source_runtime_generation_id=source_generation_id,
             source_route_set=source_route_set,
+            allow_reconcile_source_advance=(
+                request["operation"] == "reconcile" and selected_snapshot == expected_snapshot
+            ),
             capacity_limits=capacity_limits,
         )
         candidate_generation_id = generate_uuid7(clock=clock, entropy=entropy)
@@ -234,12 +240,14 @@ def prepare_route_transition(  # noqa: PLR0913 - authority sources stay explicit
         return PreparedRouteTransition(job, plan, candidate_manifest, capacity_limits)
 
 
-def _bind_source_runtime_authority(
+def _bind_source_runtime_authority(  # noqa: PLR0913 - authority tuple stays explicit
     transaction: RoutePreparationTransaction,
     job: StoredContract,
     *,
+    source_observed_state: dict[str, object],
     source_runtime_generation_id: str,
     source_route_set: str,
+    allow_reconcile_source_advance: bool,
     capacity_limits: HostCapacityLimits,
 ) -> StoredContract:
     """Persist the selected source needed after terminal intent cleanup."""
@@ -249,25 +257,58 @@ def _bind_source_runtime_authority(
         return job
     existing_generation = document.get("dispatchSourceRuntimeGenerationId")
     existing_route_set = document.get("dispatchSourceRouteSet")
+    existing_observed = document.get("dispatchSourceObservedState")
     if existing_generation is not None or existing_route_set is not None:
-        if existing_route_set != source_route_set:
-            raise RouteAuthorityDriftError("route source runtime authority changed")
+        if (
+            existing_generation is None
+            or existing_route_set not in {"absent", "both"}
+            or (existing_observed is not None and type(existing_observed) is not dict)
+        ):
+            raise RouteAuthorityDriftError("route source runtime authority is partially bound")
         if existing_generation == source_runtime_generation_id:
+            if existing_route_set != source_route_set or (
+                existing_observed is not None and existing_observed != source_observed_state
+            ):
+                raise RouteAuthorityDriftError("route source runtime authority changed")
+            if existing_observed is None:
+                document["dispatchSourceObservedState"] = deepcopy(source_observed_state)
+                try:
+                    return transaction.bind_dispatch_authority(
+                        StateRecordPath.authorization_job(document["jobId"]),
+                        job.revision,
+                        document,
+                        capacity_limits=capacity_limits,
+                    )
+                except StateConflictError as error:
+                    raise RouteAuthorityDriftError(
+                        "route source runtime authority changed"
+                    ) from error
             return job
+        target_unchanged = existing_route_set == source_route_set and (
+            existing_observed is None or existing_observed == source_observed_state
+        )
+        if not target_unchanged and not allow_reconcile_source_advance:
+            raise RouteAuthorityDriftError("route source runtime authority changed")
         document["dispatchSourceRuntimeGenerationId"] = source_runtime_generation_id
+        document["dispatchSourceRouteSet"] = source_route_set
+        document["dispatchSourceObservedState"] = deepcopy(source_observed_state)
         try:
             return transaction.rebind_route_source_authority(
                 StateRecordPath.authorization_job(document["jobId"]),
                 job.revision,
                 document,
+                allow_reconcile_source_advance=(
+                    allow_reconcile_source_advance and not target_unchanged
+                ),
                 capacity_limits=capacity_limits,
             )
         except (StateConflictError, StateRecordError) as error:
             raise RouteAuthorityDriftError("route source runtime authority changed") from error
-    if "dispatchSourceRuntimeGenerationId" in document or "dispatchSourceRouteSet" in document:
+    if existing_observed is not None:
         raise RouteAuthorityDriftError("route source runtime authority is partially bound")
     document["dispatchSourceRuntimeGenerationId"] = source_runtime_generation_id
     document["dispatchSourceRouteSet"] = source_route_set
+    document["dispatchSourceObservedState"] = deepcopy(source_observed_state)
     try:
         return transaction.bind_dispatch_authority(
             StateRecordPath.authorization_job(document["jobId"]),

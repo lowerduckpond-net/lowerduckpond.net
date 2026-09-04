@@ -1320,6 +1320,8 @@ def _require_same_authority(
     second.pop("dispatchArchiveDeploymentIds", None)
     first.pop("dispatchArtifactReleaseTreeDigest", None)
     second.pop("dispatchArtifactReleaseTreeDigest", None)
+    first.pop("dispatchSourceObservedState", None)
+    second.pop("dispatchSourceObservedState", None)
     first.pop("dispatchSourceReleaseTreeDigest", None)
     second.pop("dispatchSourceReleaseTreeDigest", None)
     first.pop("dispatchSourceRouteSet", None)
@@ -1345,6 +1347,7 @@ def _require_same_bound_authority(
     first.pop("phase", None)
     second.pop("phase", None)
     for field in (
+        "dispatchSourceObservedState",
         "dispatchSourceRouteSet",
         "dispatchSourceRuntimeGenerationId",
     ):
@@ -1656,10 +1659,14 @@ def _capture_replay_authority(
         raise ExecutionError("terminal replay request authority is malformed")
     source, archive_record = _job_source_authority(job)
     if result["status"] != "succeeded":
-        source_observed: dict[str, object] | None = None
+        source_observed = _dispatch_source_observed_state(job)
         source_generation: str | None = None
         source_route_set: str | None = None
-        if audit_is_latest_for_tenant and request["operation"] != "create":
+        if (
+            source_observed is None
+            and audit_is_latest_for_tenant
+            and request["operation"] != "create"
+        ):
             if source is None:  # pragma: no cover - current contract validation proves this
                 raise ExecutionError("failed replay lost its exact source manifest")
             tenant_id = validate_uuid7(result["tenantId"])
@@ -1764,12 +1771,14 @@ def _capture_bound_source_runtime_authority(
 ) -> _LifecycleDispatchAuthority:
     generation = _dispatch_source_runtime_generation_id(job)
     route_set = _dispatch_source_route_set(job)
+    observed = _dispatch_source_observed_state(job)
     if (generation is None) != (route_set is None):
         raise ExecutionError("dispatch source runtime authority is partially bound")
     if generation is None:
         return authority
     return replace(
         authority,
+        source_observed_state=(authority.source_observed_state if observed is None else observed),
         source_runtime_generation_id=generation,
         source_route_set=route_set,
     )
@@ -2107,6 +2116,18 @@ def _dispatch_source_release_tree_digest(
         return None
     if type(raw) is not dict:
         raise ExecutionError("dispatch source release authority is malformed")
+    return deepcopy(raw)
+
+
+def _dispatch_source_observed_state(
+    job: dict[str, object],
+) -> dict[str, object] | None:
+    raw = job.get("dispatchSourceObservedState")
+    if raw is None:
+        return None
+    if type(raw) is not dict:
+        raise ExecutionError("dispatch source observed-state authority is malformed")
+    validate_contract(raw, expected_kind=ContractKind.TENANT_OBSERVED_STATE)
     return deepcopy(raw)
 
 

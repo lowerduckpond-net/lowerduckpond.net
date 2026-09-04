@@ -102,6 +102,7 @@ _DEFAULT_TENANT_RELEASE_ROOT: Final = Path("/srv/lowerduckpond/sites")
 _DISPATCH_AUTHORITY_FIELDS: Final = (
     "dispatchArchiveDeploymentIds",
     "dispatchArtifactReleaseTreeDigest",
+    "dispatchSourceObservedState",
     "dispatchSourceReleaseTreeDigest",
     "dispatchSourceRouteSet",
     "dispatchSourceRuntimeGenerationId",
@@ -1559,6 +1560,7 @@ class _StateTransaction:
         expected_revision: StateRevision,
         document: dict[str, object],
         *,
+        allow_reconcile_source_advance: bool = False,
         capacity_limits: HostCapacityLimits = DEFAULT_HOST_CAPACITY_LIMITS,
     ) -> StoredContract:
         """Advance only pre-intent route source generation authority."""
@@ -1572,7 +1574,11 @@ class _StateTransaction:
         current = self._repository._read_locked(path)
         if current.revision != expected_revision:
             raise StateConflictError("authoritative state changed before commit")
-        _validate_route_source_authority_replacement(current.document, document)
+        _validate_route_source_authority_replacement(
+            current.document,
+            document,
+            allow_reconcile_source_advance=allow_reconcile_source_advance,
+        )
         self._admit_atomic_authorization_replacement(
             path,
             candidate,
@@ -1962,6 +1968,8 @@ def _validate_dispatch_authority_replacement(
 def _validate_route_source_authority_replacement(
     current: dict[str, object],
     candidate: dict[str, object],
+    *,
+    allow_reconcile_source_advance: bool,
 ) -> None:
     if (
         current["phase"] != "claimed"
@@ -1976,15 +1984,31 @@ def _validate_route_source_authority_replacement(
     after_generation = after.pop("dispatchSourceRuntimeGenerationId", None)
     before_route_set = before.pop("dispatchSourceRouteSet", None)
     after_route_set = after.pop("dispatchSourceRouteSet", None)
+    before_observed = before.pop("dispatchSourceObservedState", None)
+    after_observed = after.pop("dispatchSourceObservedState", None)
+    target_unchanged = after_route_set == before_route_set and (
+        before_observed is None or after_observed == before_observed
+    )
+    request = candidate.get("request")
     if (
         before != after
         or before_route_set not in {"absent", "both"}
-        or after_route_set != before_route_set
+        or after_route_set not in {"absent", "both"}
+        or (before_observed is not None and type(before_observed) is not dict)
+        or type(after_observed) is not dict
         or before_generation is None
         or after_generation is None
         or before_generation == after_generation
+        or (
+            not target_unchanged
+            and (
+                not allow_reconcile_source_advance
+                or type(request) is not dict
+                or request.get("operation") != "reconcile"
+            )
+        )
     ):
-        raise StateRecordError("route source rebind changed authority outside its generation")
+        raise StateRecordError("route source rebind changed authority outside its proof")
 
 
 def _validate_execution_validation_replacement(

@@ -150,6 +150,16 @@
         }
       ]
     },
+    "dispatchSourceObservedState": {
+      "oneOf": [
+        {
+          "$ref": "tenant-observed-state.schema.json"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "dispatchSourceRouteSet": {
       "oneOf": [
         {

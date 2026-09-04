@@ -53,6 +53,8 @@ from lowerduckpond_static_host_agent import (
     build_portable_bundle,
 )
 from lowerduckpond_static_host_agent.execution import (
+    _capture_bound_source_runtime_authority,
+    _LifecycleDispatchAuthority,
     _validate_committed_manifest_request_binding,
 )
 
@@ -6666,6 +6668,35 @@ def test_executor_requires_the_authorized_selected_runtime_generation(
             "0198d17f-6f4a-7000-8000-000000000006",
         )
     ]
+
+
+def test_fresh_handler_recaptures_bound_reconcile_source_observed_state() -> None:
+    observed = _fixture("tenant-observed-state.json")
+    generation_id = "0198d17f-6f4a-7000-8000-000000000006"
+    authority = _LifecycleDispatchAuthority(
+        source_manifest=_fixture("site.json"),
+        source_observed_state=None,
+        source_runtime_generation_id=None,
+        source_route_set=None,
+        candidate_observed_state=None,
+        candidate_runtime_generation_id=None,
+        candidate_route_set=None,
+        archive_record=None,
+        archive_construction_present=False,
+    )
+
+    captured = _capture_bound_source_runtime_authority(
+        {
+            "dispatchSourceObservedState": observed,
+            "dispatchSourceRuntimeGenerationId": generation_id,
+            "dispatchSourceRouteSet": "absent",
+        },
+        authority,
+    )
+
+    assert captured.source_observed_state == observed
+    assert captured.source_runtime_generation_id == generation_id
+    assert captured.source_route_set == "absent"
 
 
 def test_executor_accepts_a_newer_complete_cross_tenant_runtime_generation(

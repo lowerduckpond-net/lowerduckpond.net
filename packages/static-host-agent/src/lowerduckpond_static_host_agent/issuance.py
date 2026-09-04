@@ -171,6 +171,7 @@ class AuthorizationIssuer:
             "sourceAuthority": source_authority,
             "dispatchArchiveDeploymentIds": None,
             "dispatchArtifactReleaseTreeDigest": None,
+            "dispatchSourceObservedState": None,
             "dispatchSourceReleaseTreeDigest": None,
             "dispatchDeploymentIds": None,
             "dispatchTenantIds": None,

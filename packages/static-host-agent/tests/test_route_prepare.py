@@ -4,6 +4,7 @@ import json
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -501,6 +502,7 @@ def test_route_preparation_binds_exact_source_runtime_for_terminal_replay(
         assert stored["dispatchSourceRouteSet"] == "absent"
         recovery = prepared.plan.intent["lifecycleRecovery"]
         assert type(recovery) is dict
+        assert stored["dispatchSourceObservedState"] == recovery["sourceObservedState"]
         assert recovery["sourceRuntimeGenerationId"] == _LATEST_SOURCE_GENERATION
         assert recovery["sourceRouteSet"] == "absent"
     finally:
@@ -536,8 +538,63 @@ def test_route_preparation_rebinds_pre_intent_source_after_other_tenant_advance(
         assert stored["dispatchSourceRouteSet"] == "both"
         recovery = prepared.plan.intent["lifecycleRecovery"]
         assert type(recovery) is dict
+        assert stored["dispatchSourceObservedState"] == recovery["sourceObservedState"]
         assert recovery["sourceRuntimeGenerationId"] == _LATEST_SOURCE_GENERATION
         assert recovery["sourceRouteSet"] == "both"
+    finally:
+        repository.close()
+
+
+def test_route_preparation_rebinds_repaired_reconcile_source_before_intent(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    repository, job = _prepared_repository(root, "reconcile", "active")
+    job["compatibilityVersion"] = "static-job-v2"
+    job["executionValidated"] = False
+    manifest = repository.read(StateRecordPath.tenant_desired(_TENANT_ID)).document
+    observed = repository.read(StateRecordPath.tenant_observed(_TENANT_ID)).document
+    spec = cast(dict[str, object], manifest["spec"])
+    desired = cast(dict[str, object], spec["desiredDeployment"])
+    deployment = repository.read(
+        StateRecordPath.tenant_deployment(
+            _TENANT_ID,
+            desired["id"],
+        )
+    ).document
+    job["sourceAuthority"] = {"manifest": manifest, "archiveRecord": None}
+    _write(root, StateRecordPath.authorization_job(job["jobId"]), job)
+    drifted_observed = deepcopy(observed)
+    drifted_observed["observedState"] = "suspended"
+    drifted_observed["runtimeGenerationId"] = None
+    with repository.transaction(mode=LockMode.EXCLUSIVE) as transaction:
+        current = transaction.read(StateRecordPath.authorization_job(job["jobId"]))
+        bound = current.document
+        bound["dispatchSourceObservedState"] = drifted_observed
+        bound["dispatchSourceRuntimeGenerationId"] = _SOURCE_GENERATION
+        bound["dispatchSourceRouteSet"] = "absent"
+        transaction.bind_dispatch_authority(
+            StateRecordPath.authorization_job(job["jobId"]),
+            current.revision,
+            bound,
+        )
+    runtime = _Runtime(_LATEST_SOURCE_GENERATION)
+    runtime.source_snapshot = TenantRouteSnapshot(
+        _fixture("platform-namespace.json"),
+        (TenantRouteInput(manifest, observed, deployment),),
+    )
+    try:
+        prepared = _prepare(repository, runtime, job)
+
+        stored = prepared.job.document
+        assert stored["dispatchSourceRuntimeGenerationId"] == _LATEST_SOURCE_GENERATION
+        assert stored["dispatchSourceRouteSet"] == "both"
+        assert stored["dispatchSourceObservedState"] == observed
+        recovery = prepared.plan.intent["lifecycleRecovery"]
+        assert type(recovery) is dict
+        assert recovery["sourceRuntimeGenerationId"] == _LATEST_SOURCE_GENERATION
+        assert recovery["sourceRouteSet"] == "both"
+        assert recovery["sourceObservedState"] == observed
     finally:
         repository.close()
 
