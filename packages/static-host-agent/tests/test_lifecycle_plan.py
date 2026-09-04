@@ -4,6 +4,7 @@ import json
 from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 import pytest
 from lowerduckpond_static_contracts import (
@@ -20,9 +21,11 @@ from lowerduckpond_static_contracts import (
 from lowerduckpond_static_host_agent import AuditState
 from lowerduckpond_static_host_agent.lifecycle_plan import (
     CreateTransitionPlan,
+    DeploymentTransitionPlan,
     LifecyclePlanError,
     RouteTransitionPlan,
     plan_create_transition,
+    plan_deployment_transition,
     plan_route_transition,
 )
 
@@ -31,6 +34,7 @@ _NOW = datetime(2026, 9, 2, 12, 30, tzinfo=UTC)
 _SOURCE_GENERATION = "0198d17f-6f4a-7000-8000-000000000004"
 _CANDIDATE_GENERATION = "0198d17f-6f4a-7000-8000-000000000006"
 _AUDIT_SEQUENCE = 3
+_ROLLBACK_DEPLOYMENT = "0190d17f-6f4a-7000-8000-000000000003"
 
 
 class _Entropy:
@@ -199,6 +203,118 @@ def _route_plan(
         ),
         source_runtime_generation_id=_SOURCE_GENERATION,
         candidate_runtime_generation_id=candidate_generation,
+        audit_state=AuditState(
+            _AUDIT_SEQUENCE,
+            1,
+            4096,
+            audit_entry_digest(_fixture("audit-entry.json")).to_dict(),
+        ),
+        now=_NOW,
+        clock=lambda: 1_777_000_000_000,
+        entropy=_Entropy(),
+    )
+
+
+def _deployment_job(  # noqa: PLR0913 - fixture authority tuple
+    operation: str,
+    namespace: dict[str, object],
+    manifest: dict[str, object],
+    deployment: dict[str, object] | None,
+    *,
+    release_tree_digest: dict[str, object] | None,
+    rollback_deployment_id: str | None = None,
+) -> dict[str, object]:
+    metadata = manifest["metadata"]
+    spec = manifest["spec"]
+    assert type(metadata) is dict
+    assert type(spec) is dict
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": operation,
+        "correlationId": "0198d17f-6f4a-7000-8000-000000000001",
+        "tenantId": metadata["id"],
+    }
+    if operation == "deploy":
+        request["artifact"] = {"size": 32, "sha256": "e" * 64}
+    else:
+        assert rollback_deployment_id is not None
+        request["deploymentId"] = rollback_deployment_id
+    history = [] if deployment is None else [deployment["id"]]
+    if rollback_deployment_id is not None and rollback_deployment_id not in history:
+        history.append(rollback_deployment_id)
+        history.sort()
+    job: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "AuthorizationJob",
+        "compatibilityVersion": "static-job-v2",
+        "jobId": "0198d17f-6f4a-7000-8000-000000000002",
+        "operatorPrincipal": "operator@example.test",
+        "request": request,
+        "requestDigest": request_digest(request).to_dict(),
+        "artifact": request.get("artifact"),
+        "expectedSource": {
+            "expectsTenantAbsent": False,
+            "lifecycle": spec["desiredState"],
+            "manifestDigest": manifest_digest(manifest).to_dict(),
+            "deploymentDigest": (
+                deployment_record_digest(deployment).to_dict() if deployment is not None else None
+            ),
+            "archiveRecordDigest": None,
+            "platformStateDigest": platform_state_digest(namespace).to_dict(),
+        },
+        "sourceAuthority": {"manifest": manifest, "archiveRecord": None},
+        "dispatchArchiveDeploymentIds": [],
+        "dispatchArtifactReleaseTreeDigest": release_tree_digest,
+        "dispatchSourceReleaseTreeDigest": (
+            None if deployment is None else deployment["releaseTreeDigest"]
+        ),
+        "dispatchDeploymentIds": history,
+        "dispatchTenantIds": [metadata["id"]],
+        "dispatchTenantRecordHistories": [[metadata["id"], [], history]],
+        "acceptedAt": "2026-09-02T12:00:01Z",
+        "phase": "claimed",
+        "executionValidated": False,
+    }
+    validate_contract(job, expected_kind=ContractKind.AUTHORIZATION_JOB)
+    return job
+
+
+def _deployment_plan(
+    operation: str,
+    state: str,
+) -> DeploymentTransitionPlan:
+    namespace = _fixture("platform-namespace.json")
+    manifest, observed, deployment, archive = _route_source(state)
+    assert archive is None
+    release_tree_digest = (
+        cast(dict[str, object], _fixture("deployment-record.json")["releaseTreeDigest"])
+        if operation == "deploy"
+        else None
+    )
+    rollback = None
+    rollback_id = None
+    if operation == "rollback":
+        rollback = _fixture("deployment-record.json")
+        rollback["id"] = _ROLLBACK_DEPLOYMENT
+        rollback_id = _ROLLBACK_DEPLOYMENT
+    return plan_deployment_transition(
+        _deployment_job(
+            operation,
+            namespace,
+            manifest,
+            deployment,
+            release_tree_digest=release_tree_digest,
+            rollback_deployment_id=rollback_id,
+        ),
+        namespace,
+        manifest,
+        observed,
+        deployment,
+        rollback,
+        artifact_release_tree_digest=release_tree_digest,
+        source_runtime_generation_id=_SOURCE_GENERATION,
+        candidate_runtime_generation_id=_CANDIDATE_GENERATION,
         audit_state=AuditState(
             _AUDIT_SEQUENCE,
             1,
@@ -550,3 +666,382 @@ def test_route_plan_rejects_reusing_the_runtime_generation() -> None:
 def test_route_plan_rejects_a_rename_to_the_current_slug() -> None:
     with pytest.raises(LifecyclePlanError, match="different slug"):
         _route_plan("rename", "active", slug="duck-repair")
+
+
+@pytest.mark.parametrize(
+    ("operation", "source_state", "target_state", "creates_deployment"),
+    [
+        ("deploy", "undeployed", "active", True),
+        ("deploy", "active", "active", True),
+        ("deploy", "suspended", "suspended", True),
+        ("rollback", "active", "active", False),
+        ("rollback", "suspended", "suspended", False),
+    ],
+)
+def test_deployment_plan_materializes_the_complete_lifecycle_matrix_entry(
+    operation: str,
+    source_state: str,
+    target_state: str,
+    creates_deployment: bool,
+) -> None:
+    plan = _deployment_plan(operation, source_state)
+
+    assert validate_contract(plan.manifest) is ContractKind.SITE
+    assert validate_contract(plan.observed_state) is ContractKind.TENANT_OBSERVED_STATE
+    assert validate_contract(plan.deployment) is ContractKind.DEPLOYMENT_RECORD
+    assert validate_contract(plan.intent) is ContractKind.TRANSACTION_INTENT
+    assert validate_contract(plan.result) is ContractKind.OPERATION_RESULT
+    assert validate_contract(plan.audit_entry) is ContractKind.AUDIT_ENTRY
+    spec = cast(dict[str, object], plan.manifest["spec"])
+    selected = cast(dict[str, object], spec["desiredDeployment"])
+    recovery = cast(dict[str, object], plan.intent["lifecycleRecovery"])
+    assert plan.creates_deployment is creates_deployment
+    assert spec["desiredState"] == target_state
+    assert selected == {
+        "id": plan.deployment["id"],
+        "archiveSha256": plan.deployment["archiveSha256"],
+    }
+    assert plan.observed_state["activeDeploymentId"] == plan.deployment["id"]
+    assert plan.observed_state["runtimeGenerationId"] == (
+        _CANDIDATE_GENERATION if target_state == "active" else None
+    )
+    assert recovery["sourceRouteSet"] == ("both" if source_state == "active" else "absent")
+    assert recovery["candidateRouteSet"] == ("both" if target_state == "active" else "absent")
+    assert plan.intent["sourceManifestDigest"] != plan.intent["candidateManifestDigest"]
+    assert plan.audit_entry["resultDigest"] == result_digest(plan.result).to_dict()
+    if operation == "rollback":
+        assert plan.deployment["id"] == _ROLLBACK_DEPLOYMENT
+    else:
+        assert plan.deployment["archiveSha256"] == "e" * 64
+
+
+def test_deployment_plan_rejects_release_content_outside_dispatch_authority() -> None:
+    namespace = _fixture("platform-namespace.json")
+    manifest, observed, deployment, archive = _route_source("active")
+    assert archive is None
+    release_tree_digest = cast(
+        dict[str, object],
+        _fixture("deployment-record.json")["releaseTreeDigest"],
+    )
+    job = _deployment_job(
+        "deploy",
+        namespace,
+        manifest,
+        deployment,
+        release_tree_digest=release_tree_digest,
+    )
+    drifted = deepcopy(release_tree_digest)
+    drifted["value"] = "f" * 64
+
+    with pytest.raises(LifecyclePlanError, match="dispatch authority"):
+        plan_deployment_transition(
+            job,
+            namespace,
+            manifest,
+            observed,
+            deployment,
+            None,
+            artifact_release_tree_digest=drifted,
+            source_runtime_generation_id=_SOURCE_GENERATION,
+            candidate_runtime_generation_id=_CANDIDATE_GENERATION,
+            audit_state=AuditState(0, 0, 0, None),
+            now=_NOW,
+            clock=lambda: 1_777_000_000_000,
+            entropy=_Entropy(),
+        )
+
+
+def test_deployment_plan_rejects_rollback_outside_retained_history() -> None:
+    namespace = _fixture("platform-namespace.json")
+    manifest, observed, deployment, archive = _route_source("active")
+    assert deployment is not None
+    assert archive is None
+    rollback = _fixture("deployment-record.json")
+    rollback["id"] = _ROLLBACK_DEPLOYMENT
+    job = _deployment_job(
+        "rollback",
+        namespace,
+        manifest,
+        deployment,
+        release_tree_digest=None,
+        rollback_deployment_id=_ROLLBACK_DEPLOYMENT,
+    )
+    job["dispatchDeploymentIds"] = [deployment["id"]]
+
+    with pytest.raises(LifecyclePlanError, match="retained history"):
+        plan_deployment_transition(
+            job,
+            namespace,
+            manifest,
+            observed,
+            deployment,
+            rollback,
+            artifact_release_tree_digest=None,
+            source_runtime_generation_id=_SOURCE_GENERATION,
+            candidate_runtime_generation_id=_CANDIDATE_GENERATION,
+            audit_state=AuditState(0, 0, 0, None),
+            now=_NOW,
+            clock=lambda: 1_777_000_000_000,
+            entropy=_Entropy(),
+        )
+
+
+def test_deployment_plan_rejects_rollback_to_selected_deployment() -> None:
+    namespace = _fixture("platform-namespace.json")
+    manifest, observed, deployment, archive = _route_source("active")
+    assert deployment is not None
+    assert archive is None
+    job = _deployment_job(
+        "rollback",
+        namespace,
+        manifest,
+        deployment,
+        release_tree_digest=None,
+        rollback_deployment_id=cast(str, deployment["id"]),
+    )
+
+    with pytest.raises(LifecyclePlanError, match="already selected"):
+        plan_deployment_transition(
+            job,
+            namespace,
+            manifest,
+            observed,
+            deployment,
+            deployment,
+            artifact_release_tree_digest=None,
+            source_runtime_generation_id=_SOURCE_GENERATION,
+            candidate_runtime_generation_id=_CANDIDATE_GENERATION,
+            audit_state=AuditState(0, 0, 0, None),
+            now=_NOW,
+            clock=lambda: 1_777_000_000_000,
+            entropy=_Entropy(),
+        )
+
+
+def test_deployment_plan_rejects_noncanonical_retained_history() -> None:
+    namespace = _fixture("platform-namespace.json")
+    manifest, observed, deployment, archive = _route_source("active")
+    assert deployment is not None
+    assert archive is None
+    release_tree_digest = cast(
+        dict[str, object],
+        _fixture("deployment-record.json")["releaseTreeDigest"],
+    )
+    job = _deployment_job(
+        "deploy",
+        namespace,
+        manifest,
+        deployment,
+        release_tree_digest=release_tree_digest,
+    )
+    job["dispatchDeploymentIds"] = [deployment["id"], _ROLLBACK_DEPLOYMENT]
+
+    with pytest.raises(LifecyclePlanError, match="not canonical"):
+        plan_deployment_transition(
+            job,
+            namespace,
+            manifest,
+            observed,
+            deployment,
+            None,
+            artifact_release_tree_digest=release_tree_digest,
+            source_runtime_generation_id=_SOURCE_GENERATION,
+            candidate_runtime_generation_id=_CANDIDATE_GENERATION,
+            audit_state=AuditState(0, 0, 0, None),
+            now=_NOW,
+            clock=lambda: 1_777_000_000_000,
+            entropy=_Entropy(),
+        )
+
+
+def test_deployment_plan_rejects_selected_source_before_history_tip() -> None:
+    namespace = _fixture("platform-namespace.json")
+    manifest, observed, deployment, archive = _route_source("active")
+    assert deployment is not None
+    assert archive is None
+    release_tree_digest = cast(
+        dict[str, object],
+        _fixture("deployment-record.json")["releaseTreeDigest"],
+    )
+    job = _deployment_job(
+        "deploy",
+        namespace,
+        manifest,
+        deployment,
+        release_tree_digest=release_tree_digest,
+    )
+    later_deployment_id = "019fd17f-6f4a-7000-8000-000000000009"
+    history = [cast(str, deployment["id"]), later_deployment_id]
+    job["dispatchDeploymentIds"] = history
+    metadata = cast(dict[str, object], manifest["metadata"])
+    job["dispatchTenantRecordHistories"] = [[metadata["id"], [], history]]
+    validate_contract(job, expected_kind=ContractKind.AUTHORIZATION_JOB)
+
+    with pytest.raises(LifecyclePlanError, match="does not terminate"):
+        plan_deployment_transition(
+            job,
+            namespace,
+            manifest,
+            observed,
+            deployment,
+            None,
+            artifact_release_tree_digest=release_tree_digest,
+            source_runtime_generation_id=_SOURCE_GENERATION,
+            candidate_runtime_generation_id=_CANDIDATE_GENERATION,
+            audit_state=AuditState(0, 0, 0, None),
+            now=_NOW,
+            clock=lambda: 1_777_000_000_000,
+            entropy=_Entropy(),
+        )
+
+
+def test_deployment_plan_accepts_independently_ordered_observed_runtime() -> None:
+    namespace = _fixture("platform-namespace.json")
+    manifest, observed, deployment, archive = _route_source("active")
+    assert deployment is not None
+    assert archive is None
+    release_tree_digest = cast(
+        dict[str, object],
+        _fixture("deployment-record.json")["releaseTreeDigest"],
+    )
+    job = _deployment_job(
+        "deploy",
+        namespace,
+        manifest,
+        deployment,
+        release_tree_digest=release_tree_digest,
+    )
+    observed["runtimeGenerationId"] = _CANDIDATE_GENERATION
+
+    plan = plan_deployment_transition(
+        job,
+        namespace,
+        manifest,
+        observed,
+        deployment,
+        None,
+        artifact_release_tree_digest=release_tree_digest,
+        source_runtime_generation_id=_SOURCE_GENERATION,
+        candidate_runtime_generation_id=_CANDIDATE_GENERATION,
+        audit_state=AuditState(0, 0, 0, None),
+        now=_NOW,
+        clock=lambda: 1_777_000_000_000,
+        entropy=_Entropy(),
+    )
+
+    recovery = cast(dict[str, object], plan.intent["lifecycleRecovery"])
+    source_observed = cast(dict[str, object], recovery["sourceObservedState"])
+    assert source_observed["runtimeGenerationId"] == _CANDIDATE_GENERATION
+    assert recovery["sourceRuntimeGenerationId"] == _SOURCE_GENERATION
+
+
+def test_deployment_plan_accepts_observed_runtime_before_selected_generation() -> None:
+    namespace = _fixture("platform-namespace.json")
+    manifest, observed, deployment, archive = _route_source("active")
+    assert deployment is not None
+    assert archive is None
+    release_tree_digest = cast(
+        dict[str, object],
+        _fixture("deployment-record.json")["releaseTreeDigest"],
+    )
+    job = _deployment_job(
+        "deploy",
+        namespace,
+        manifest,
+        deployment,
+        release_tree_digest=release_tree_digest,
+    )
+    observed["runtimeGenerationId"] = "0198d17f-6f4a-7000-8000-000000000003"
+
+    plan = plan_deployment_transition(
+        job,
+        namespace,
+        manifest,
+        observed,
+        deployment,
+        None,
+        artifact_release_tree_digest=release_tree_digest,
+        source_runtime_generation_id=_SOURCE_GENERATION,
+        candidate_runtime_generation_id=_CANDIDATE_GENERATION,
+        audit_state=AuditState(0, 0, 0, None),
+        now=_NOW,
+        clock=lambda: 1_777_000_000_000,
+        entropy=_Entropy(),
+    )
+
+    recovery = cast(dict[str, object], plan.intent["lifecycleRecovery"])
+    source_observed = cast(dict[str, object], recovery["sourceObservedState"])
+    assert source_observed["runtimeGenerationId"] == ("0198d17f-6f4a-7000-8000-000000000003")
+    assert recovery["sourceRuntimeGenerationId"] == _SOURCE_GENERATION
+
+
+def test_deployment_plan_rejects_clock_rollback_before_retained_history() -> None:
+    namespace = _fixture("platform-namespace.json")
+    manifest, observed, deployment, archive = _route_source("active")
+    assert deployment is not None
+    assert archive is None
+    release_tree_digest = cast(
+        dict[str, object],
+        _fixture("deployment-record.json")["releaseTreeDigest"],
+    )
+    job = _deployment_job(
+        "deploy",
+        namespace,
+        manifest,
+        deployment,
+        release_tree_digest=release_tree_digest,
+    )
+
+    with pytest.raises(LifecyclePlanError, match="does not follow retained"):
+        plan_deployment_transition(
+            job,
+            namespace,
+            manifest,
+            observed,
+            deployment,
+            None,
+            artifact_release_tree_digest=release_tree_digest,
+            source_runtime_generation_id=_SOURCE_GENERATION,
+            candidate_runtime_generation_id=_CANDIDATE_GENERATION,
+            audit_state=AuditState(0, 0, 0, None),
+            now=_NOW,
+            clock=lambda: 0,
+            entropy=_Entropy(),
+        )
+
+
+def test_deployment_plan_does_not_mutate_authority_or_source_inputs() -> None:
+    namespace = _fixture("platform-namespace.json")
+    manifest, observed, deployment, archive = _route_source("active")
+    assert deployment is not None
+    assert archive is None
+    release_tree_digest = cast(
+        dict[str, object],
+        _fixture("deployment-record.json")["releaseTreeDigest"],
+    )
+    job = _deployment_job(
+        "deploy",
+        namespace,
+        manifest,
+        deployment,
+        release_tree_digest=release_tree_digest,
+    )
+    before = deepcopy((job, namespace, manifest, observed, deployment, release_tree_digest))
+
+    plan_deployment_transition(
+        job,
+        namespace,
+        manifest,
+        observed,
+        deployment,
+        None,
+        artifact_release_tree_digest=release_tree_digest,
+        source_runtime_generation_id=_SOURCE_GENERATION,
+        candidate_runtime_generation_id=_CANDIDATE_GENERATION,
+        audit_state=AuditState(0, 0, 0, None),
+        now=_NOW,
+        clock=lambda: 1_777_000_000_000,
+        entropy=_Entropy(),
+    )
+
+    assert (job, namespace, manifest, observed, deployment, release_tree_digest) == before
