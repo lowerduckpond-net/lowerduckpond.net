@@ -18,6 +18,7 @@ from lowerduckpond_static_host_agent import (
     FilesystemCapacity,
     HostCapacityLimits,
     LockManager,
+    LockMode,
     StateAdmissionRejectedError,
     StateInventoryLimits,
     StateRecordError,
@@ -291,6 +292,10 @@ def test_reconciliation_accepts_a_job_whose_phase_advanced_after_acceptance(
     root = _state_root(tmp_path)
     candidate = _candidate(1)
     retry = _candidate(2, _BASE_TIME + timedelta(minutes=1))
+    for job in (candidate, retry):
+        job["compatibilityVersion"] = "static-job-v2"
+        job["executionValidated"] = False
+        job["sourceAuthority"] = None
     request = retry["request"]
     original_request = candidate["request"]
     assert type(request) is dict and type(original_request) is dict
@@ -301,17 +306,31 @@ def test_reconciliation_accepts_a_job_whose_phase_advanced_after_acceptance(
         first = CorrelationAdmission(repository).resolve(candidate, now=_BASE_TIME)
         claimed = deepcopy(candidate)
         claimed["phase"] = "claimed"
-        repository.compare_and_swap(
+        current = repository.compare_and_swap(
             StateRecordPath.authorization_job(candidate["jobId"]),
             first.job.revision,
             claimed,
         )
+        bound = current.document
+        bound["dispatchSourceRouteSet"] = "both"
+        bound["dispatchSourceRuntimeGenerationId"] = "0198d180-0003-7000-8000-000000000001"
+        with repository.transaction(mode=LockMode.EXCLUSIVE) as transaction:
+            transaction.bind_dispatch_authority(
+                StateRecordPath.authorization_job(candidate["jobId"]),
+                current.revision,
+                bound,
+            )
         result = CorrelationAdmission(repository).resolve(
             retry,
             now=_BASE_TIME + timedelta(minutes=1),
         )
 
     assert result.job.document["phase"] == "claimed"
+    assert result.job.document["dispatchSourceRouteSet"] == "both"
+    assert (
+        result.job.document["dispatchSourceRuntimeGenerationId"]
+        == "0198d180-0003-7000-8000-000000000001"
+    )
 
 
 def test_reconciliation_fails_closed_on_divergent_durable_pair(tmp_path: Path) -> None:

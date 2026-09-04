@@ -665,6 +665,14 @@ def test_selected_tenant_runtime_accepts_only_bound_reconcile_source_drift(
         durable_observed,
         True,
     )
+    assert entrypoints._all_tenant_runtime_state_matches(
+        Repository(),  # type: ignore[arg-type]
+        tenant_id,
+    )
+    assert not entrypoints._all_tenant_runtime_state_matches(
+        Repository(),  # type: ignore[arg-type]
+        other_id,
+    )
 
     changed_observed: dict[str, object] = {
         "observedState": "undeployed",
@@ -672,6 +680,10 @@ def test_selected_tenant_runtime_accepts_only_bound_reconcile_source_drift(
     }
     changed_other = TenantRouteInput(unrelated.manifest, changed_observed, None)
     selected = TenantRouteSnapshot({}, (selected_target, changed_other))
+    assert not entrypoints._all_tenant_runtime_state_matches(
+        Repository(),  # type: ignore[arg-type]
+        tenant_id,
+    )
     assert not entrypoints._selected_tenant_runtime_matches(
         Repository(),  # type: ignore[arg-type]
         tenant_id,

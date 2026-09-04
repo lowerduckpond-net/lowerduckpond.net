@@ -920,7 +920,24 @@ def _all_tenant_runtime_state_matches(
                 if observed_drift_tenant_id is not None
                 else snapshot_tenant_routes(transaction)
             )
-            return runtime.read_generation_route_snapshot(active_generation_id) == snapshot
+            selected = runtime.read_generation_route_snapshot(active_generation_id)
+            if observed_drift_tenant_id is None:
+                return selected == snapshot
+            if selected.platform_namespace != snapshot.platform_namespace:
+                return False
+            selected_target, selected_others = _partition_runtime_snapshot(
+                selected,
+                observed_drift_tenant_id,
+            )
+            expected_target, expected_others = _partition_runtime_snapshot(
+                snapshot,
+                observed_drift_tenant_id,
+            )
+            return (
+                selected_others == expected_others
+                and len(selected_target) <= 1
+                and len(expected_target) <= 1
+            )
     except (
         CaddyRuntimeError,
         KeyError,
