@@ -220,6 +220,41 @@ def test_executor_terminalizes_delete_that_becomes_ineligible(tmp_path: Path) ->
     assert outcome.result["errorCode"] == "state_drift"
 
 
+def test_executor_archive_failure_includes_explicit_absent_record(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), _fixture("site.json"))
+    _write(
+        root,
+        StateRecordPath.tenant_deployment(_TENANT_ID, _DEPLOYMENT_ID),
+        _fixture("deployment-record.json"),
+    )
+    request = _fixture("operation-request.json")
+    request.update({"operation": "archive", "tenantId": _TENANT_ID})
+    request.pop("slug", None)
+    request.pop("quotas", None)
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued = AuthorizationIssuer(
+            repository,
+            gate=_OpenGate(),
+            entropy=_Entropy(),
+        ).issue(
+            canonical_json_bytes(request),
+            operator_principal="operator@example.test",
+            now=_NOW,
+            artifact=None,
+        )
+        outcome = AuthorizationExecutor(repository, intake).execute(issued.job_id)
+
+    assert outcome.result["status"] == "failed"
+    assert outcome.result["errorCode"] == "not_implemented"
+    assert outcome.result["archiveRecord"] is None
+
+
 def test_executor_consumes_only_the_artifact_bound_to_the_job(tmp_path: Path) -> None:
     root = _state_root(tmp_path)
     _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))

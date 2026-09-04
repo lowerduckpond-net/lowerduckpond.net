@@ -235,11 +235,11 @@ def _validate_job(document: dict[str, object]) -> None:
     if lifecycle == "archived" and (deployment is None or archive is None):
         raise ContractError(ErrorCode.SCHEMA_INVALID, "archived source binding is invalid")
     _validate_job_deletion_authority(
+        document,
         request,
         expected,
         lifecycle,
         archive,
-        compatibility_version=document["compatibilityVersion"],
     )
 
 
@@ -303,12 +303,11 @@ def _validate_job_source_authority(
 
 
 def _validate_job_deletion_authority(
+    document: dict[str, object],
     request: dict[str, object],
     expected: dict[str, object],
     lifecycle: object,
-    archive: object,
-    *,
-    compatibility_version: object,
+    archive_digest: object,
 ) -> None:
     operation = request["operation"]
     if operation != "delete":
@@ -319,7 +318,7 @@ def _validate_job_deletion_authority(
             )
         return
     if "deletionEvidence" not in expected:
-        if compatibility_version == "static-job-v1":
+        if document["compatibilityVersion"] == "static-job-v1":
             return
         raise ContractError(
             ErrorCode.SCHEMA_INVALID,
@@ -335,13 +334,33 @@ def _validate_job_deletion_authority(
         return
     if type(deletion) is not dict:
         raise ContractError(ErrorCode.SCHEMA_INVALID, "delete source evidence is absent")
+    if document["compatibilityVersion"] == "static-job-v1":
+        _validate_legacy_job_deletion_authority(deletion, lifecycle, archive_digest)
+        return
+    expected_deletion = _current_job_deletion_authority(
+        document.get("sourceAuthority"),
+        lifecycle,
+        archive_digest,
+    )
+    if deletion != expected_deletion:
+        raise ContractError(
+            ErrorCode.SCHEMA_INVALID,
+            "delete source evidence disagrees with its durable authority",
+        )
+
+
+def _validate_legacy_job_deletion_authority(
+    deletion: dict[str, object],
+    lifecycle: object,
+    archive_digest: object,
+) -> None:
     if lifecycle == "undeployed" and deletion["mode"] != "never-deployed":
         raise ContractError(
             ErrorCode.SCHEMA_INVALID,
             "undeployed delete source evidence is invalid",
         )
     if lifecycle == "archived" and (
-        deletion["mode"] != "archived" or deletion["archiveRecordDigest"] != archive
+        deletion["mode"] != "archived" or deletion["archiveRecordDigest"] != archive_digest
     ):
         raise ContractError(
             ErrorCode.SCHEMA_INVALID,
@@ -349,19 +368,77 @@ def _validate_job_deletion_authority(
         )
 
 
+def _current_job_deletion_authority(
+    source_authority: object,
+    lifecycle: object,
+    archive_digest: object,
+) -> dict[str, object]:
+    if type(source_authority) is not dict:
+        raise ContractError(ErrorCode.SCHEMA_INVALID, "delete source authority is absent")
+    manifest = cast(dict[str, object], source_authority["manifest"])
+    metadata = cast(dict[str, object], manifest["metadata"])
+    expected_deletion: dict[str, object] = {
+        "mode": "never-deployed",
+        "releasedSlugs": [metadata["slug"]],
+        "archiveRecordDigest": None,
+        "bucket": None,
+        "key": None,
+        "versionId": None,
+        "emergencyReason": None,
+    }
+    if lifecycle == "archived":
+        archive_record = source_authority["archiveRecord"]
+        if type(archive_record) is not dict:
+            raise ContractError(
+                ErrorCode.SCHEMA_INVALID,
+                "archived delete source authority is absent",
+            )
+        expected_deletion.update(
+            {
+                "mode": "archived",
+                "archiveRecordDigest": archive_digest,
+                "bucket": archive_record["bucket"],
+                "key": archive_record["key"],
+                "versionId": archive_record["versionId"],
+            }
+        )
+    return expected_deletion
+
+
 def _validate_result(document: dict[str, object]) -> None:
     canonical_origin = document.get("canonicalOrigin")
     if canonical_origin is not None:
         validate_canonical_origin(document["tenantId"], canonical_origin)
-    if "manifest" not in document:
+    raw_manifest = document.get("manifest")
+    manifest: dict[str, object] | None = None
+    if type(raw_manifest) is dict:
+        manifest = raw_manifest
+        _validate_site(manifest)
+        metadata = cast(dict[str, object], manifest["metadata"])
+        if document["tenantId"] != metadata["id"]:
+            raise ContractError(ErrorCode.SCHEMA_INVALID, "result tenant identity does not match")
+        if canonical_origin != metadata["canonicalOrigin"]:
+            raise ContractError(ErrorCode.SCHEMA_INVALID, "result tenant origin does not match")
+    if document["operation"] != "archive" or document["status"] != "succeeded":
         return
-    manifest = cast(dict[str, object], document["manifest"])
-    _validate_site(manifest)
-    metadata = cast(dict[str, object], manifest["metadata"])
-    if document["tenantId"] != metadata["id"]:
-        raise ContractError(ErrorCode.SCHEMA_INVALID, "result tenant identity does not match")
-    if canonical_origin != metadata["canonicalOrigin"]:
-        raise ContractError(ErrorCode.SCHEMA_INVALID, "result tenant origin does not match")
+    archive = document.get("archiveRecord")
+    if manifest is None or type(archive) is not dict:
+        raise ContractError(
+            ErrorCode.SCHEMA_INVALID,
+            "successful archive result lacks durable archive authority",
+        )
+    spec = cast(dict[str, object], manifest["spec"])
+    deployment = spec.get("desiredDeployment")
+    if type(deployment) is not dict or (
+        archive["tenantId"] != document["tenantId"]
+        or archive["correlationId"] != document["correlationId"]
+        or archive["manifestDigest"] != _manifest_digest(manifest)
+        or archive["deploymentId"] != deployment["id"]
+    ):
+        raise ContractError(
+            ErrorCode.SCHEMA_INVALID,
+            "successful archive record disagrees with its result",
+        )
 
 
 def _validate_archive_construction_intent(document: dict[str, object]) -> None:

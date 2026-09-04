@@ -15,6 +15,11 @@
             "required": [
               "failureAuditSequence"
             ]
+          },
+          {
+            "required": [
+              "failurePublisher"
+            ]
           }
         ]
       },
@@ -24,6 +29,32 @@
           "failureAuditSequence",
           "failurePublisher"
         ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "failureAuditSequence": {
+            "const": 0
+          }
+        },
+        "required": [
+          "failureAuditSequence"
+        ]
+      },
+      "then": {
+        "properties": {
+          "failureAuditPredecessorDigest": {
+            "type": "null"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "failureAuditPredecessorDigest": {
+            "$ref": "common.schema.json#/$defs/auditEntryDigest"
+          }
+        }
       }
     },
     {
@@ -112,7 +143,11 @@
           "archiveRecord": {
             "$ref": "archive-record.schema.json"
           }
-        }
+        },
+        "required": [
+          "archiveRecord",
+          "manifest"
+        ]
       }
     },
     {

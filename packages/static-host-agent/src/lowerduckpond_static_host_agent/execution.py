@@ -362,6 +362,8 @@ def _failure_result(job: dict[str, object], error_code: str) -> dict[str, object
         "errorCode": error_code,
         "tenantId": None if request["operation"] == "create" else request["tenantId"],
     }
+    if request["operation"] == "archive":
+        result["archiveRecord"] = None
     validate_contract(result, expected_kind=ContractKind.OPERATION_RESULT)
     return result
 
