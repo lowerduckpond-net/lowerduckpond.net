@@ -39,7 +39,6 @@ def _state_root(tmp_path: Path) -> Path:
     root = tmp_path / "state"
     _mkdir(root, 0o700)
     _mkdir(root / "intake", 0o700)
-    _mkdir(root / "staging", 0o700)
     _mkdir(root / "locks", 0o700)
     manager = LockManager.initialize(root / "locks", expected_owner=os.geteuid())
     manager.close()
@@ -49,6 +48,7 @@ def _state_root(tmp_path: Path) -> Path:
 def _release_root(tmp_path: Path) -> Path:
     root = tmp_path / "sites"
     _mkdir(root, 0o710)
+    _mkdir(root / ".staging", 0o700)
     return root
 
 
@@ -101,7 +101,7 @@ def test_release_store_extracts_verifies_and_durably_publishes(tmp_path: Path) -
         ArtifactIntake(state_root, expected_owner=os.geteuid()) as intake,
         DeploymentReleaseStore(
             release_root,
-            state_root / "staging",
+            release_root / ".staging",
             expected_owner=os.geteuid(),
             expected_release_group=os.getegid(),
         ) as store,
@@ -144,7 +144,7 @@ def test_release_store_extracts_verifies_and_durably_publishes(tmp_path: Path) -
     assert (release / "assets" / "site.txt").read_bytes() == b"immutable release\n"
     assert stat.S_IMODE(release.stat().st_mode) == _DIRECTORY_MODE
     assert stat.S_IMODE((release / "assets" / "site.txt").stat().st_mode) == _FILE_MODE
-    assert not any((state_root / "staging").iterdir())
+    assert not any((release_root / ".staging").iterdir())
 
 
 def test_release_publication_exactly_replays_an_existing_identity(
@@ -158,7 +158,7 @@ def test_release_publication_exactly_replays_an_existing_identity(
         ArtifactIntake(state_root, expected_owner=os.geteuid()) as intake,
         DeploymentReleaseStore(
             release_root,
-            state_root / "staging",
+            release_root / ".staging",
             expected_owner=os.geteuid(),
             expected_release_group=os.getegid(),
         ) as store,
@@ -213,9 +213,9 @@ def test_release_publication_exactly_replays_an_existing_identity(
             monkeypatch.setattr(os, "fsync", track_fsync)
             assert store.publish(replay, publication_lock=locks).created is False
             releases = release_root / _TENANT_ID / "releases"
-            assert synced.index(releases) < synced.index(state_root / "staging")
+            assert synced.index(releases) < synced.index(release_root / ".staging")
 
-    assert not any((state_root / "staging").iterdir())
+    assert not any((release_root / ".staging").iterdir())
 
 
 def test_release_publication_refuses_an_existing_identity_with_other_content(
@@ -228,7 +228,7 @@ def test_release_publication_refuses_an_existing_identity_with_other_content(
         ArtifactIntake(state_root, expected_owner=os.geteuid()) as intake,
         DeploymentReleaseStore(
             release_root,
-            state_root / "staging",
+            release_root / ".staging",
             expected_owner=os.geteuid(),
             expected_release_group=os.getegid(),
         ) as store,
@@ -281,7 +281,9 @@ def test_release_publication_refuses_an_existing_identity_with_other_content(
                 store.publish(replay, publication_lock=locks)
 
 
-def test_release_staging_collision_preserves_the_existing_candidate(tmp_path: Path) -> None:
+def test_release_staging_collision_preserves_the_existing_candidate(
+    tmp_path: Path,
+) -> None:
     state_root = _state_root(tmp_path)
     release_root = _release_root(tmp_path)
     payload = _deployment_zip()
@@ -289,7 +291,7 @@ def test_release_staging_collision_preserves_the_existing_candidate(tmp_path: Pa
         ArtifactIntake(state_root, expected_owner=os.geteuid()) as intake,
         DeploymentReleaseStore(
             release_root,
-            state_root / "staging",
+            release_root / ".staging",
             expected_owner=os.geteuid(),
             expected_release_group=os.getegid(),
         ) as store,
@@ -333,7 +335,7 @@ def test_release_staging_collision_preserves_the_existing_candidate(tmp_path: Pa
                     retained_usage=ReleaseCapacityUsage(()),
                     publication_lock=locks,
                 )
-            preserved = state_root / "staging" / staged.staging_name
+            preserved = release_root / ".staging" / staged.staging_name
             assert (preserved / "assets" / "site.txt").read_bytes() == b"immutable release\n"
             store.discard_staged(staged, publication_lock=locks)
 
@@ -346,7 +348,7 @@ def test_release_store_reconciles_only_unprotected_safe_staging(tmp_path: Path) 
         ArtifactIntake(state_root, expected_owner=os.geteuid()) as intake,
         DeploymentReleaseStore(
             release_root,
-            state_root / "staging",
+            release_root / ".staging",
             expected_owner=os.geteuid(),
             expected_release_group=os.getegid(),
         ) as store,
@@ -380,7 +382,7 @@ def test_release_store_reconciles_only_unprotected_safe_staging(tmp_path: Path) 
                 retained_usage=ReleaseCapacityUsage(()),
                 publication_lock=locks,
             )
-            assert [path.name for path in (state_root / "staging").iterdir()] == [
+            assert [path.name for path in (release_root / ".staging").iterdir()] == [
                 staged.staging_name
             ]
             assert (
@@ -392,7 +394,7 @@ def test_release_store_reconciles_only_unprotected_safe_staging(tmp_path: Path) 
             )
             assert store.reconcile_staging({}, publication_lock=locks) == 1
 
-    assert not any((state_root / "staging").iterdir())
+    assert not any((release_root / ".staging").iterdir())
 
 
 def test_release_store_removes_staging_when_authority_digest_disagrees(
@@ -405,7 +407,7 @@ def test_release_store_removes_staging_when_authority_digest_disagrees(
         ArtifactIntake(state_root, expected_owner=os.geteuid()) as intake,
         DeploymentReleaseStore(
             release_root,
-            state_root / "staging",
+            release_root / ".staging",
             expected_owner=os.geteuid(),
             expected_release_group=os.getegid(),
         ) as store,
@@ -441,7 +443,7 @@ def test_release_store_removes_staging_when_authority_digest_disagrees(
                 publication_lock=locks,
             )
 
-    assert not any((state_root / "staging").iterdir())
+    assert not any((release_root / ".staging").iterdir())
 
 
 def test_release_store_requires_the_exclusive_publication_lock(tmp_path: Path) -> None:
@@ -450,7 +452,7 @@ def test_release_store_requires_the_exclusive_publication_lock(tmp_path: Path) -
     with (
         DeploymentReleaseStore(
             release_root,
-            state_root / "staging",
+            release_root / ".staging",
             expected_owner=os.geteuid(),
             expected_release_group=os.getegid(),
         ) as store,
@@ -467,11 +469,11 @@ def test_release_store_requires_the_exclusive_publication_lock(tmp_path: Path) -
 def test_release_store_rejects_an_unsafe_staging_inventory(tmp_path: Path) -> None:
     state_root = _state_root(tmp_path)
     release_root = _release_root(tmp_path)
-    (state_root / "staging" / "unexpected").write_text("unsafe\n", encoding="utf-8")
+    (release_root / ".staging" / "unexpected").write_text("unsafe\n", encoding="utf-8")
     with (
         DeploymentReleaseStore(
             release_root,
-            state_root / "staging",
+            release_root / ".staging",
             expected_owner=os.geteuid(),
             expected_release_group=os.getegid(),
         ) as store,
@@ -490,7 +492,7 @@ def test_release_store_removes_restrictive_partial_staging(tmp_path: Path) -> No
     state_root = _state_root(tmp_path)
     release_root = _release_root(tmp_path)
     staging_name = f"{_TENANT_ID}--{_DEPLOYMENT_ID}"
-    partial = state_root / "staging" / staging_name
+    partial = release_root / ".staging" / staging_name
     _mkdir(partial, 0o700)
     _mkdir(partial / "assets", 0o700)
     partial_file = partial / "assets" / "site.txt"
@@ -499,7 +501,7 @@ def test_release_store_removes_restrictive_partial_staging(tmp_path: Path) -> No
     with (
         DeploymentReleaseStore(
             release_root,
-            state_root / "staging",
+            release_root / ".staging",
             expected_owner=os.geteuid(),
             expected_release_group=os.getegid(),
         ) as store,
@@ -516,16 +518,49 @@ def test_release_store_removes_restrictive_partial_staging(tmp_path: Path) -> No
 
 
 def test_release_store_rejects_unsafe_root_metadata(tmp_path: Path) -> None:
-    state_root = _state_root(tmp_path)
     release_root = _release_root(tmp_path)
     release_root.chmod(0o755)
     with pytest.raises(ReleaseStoreError, match="unsafe inode shape"):
         DeploymentReleaseStore(
             release_root,
-            state_root / "staging",
+            release_root / ".staging",
             expected_owner=os.geteuid(),
             expected_release_group=os.getegid(),
         )
+
+
+@pytest.mark.parametrize("partial", ["tenant", "releases"])
+def test_release_namespace_repairs_a_restrictive_crash_left_directory(
+    tmp_path: Path,
+    partial: str,
+) -> None:
+    state_root = _state_root(tmp_path)
+    release_root = _release_root(tmp_path)
+    tenant = release_root / _TENANT_ID
+    _mkdir(tenant, 0o700 if partial == "tenant" else 0o755)
+    if partial == "releases":
+        _mkdir(tenant / "releases", 0o700)
+
+    with (
+        DeploymentReleaseStore(
+            release_root,
+            release_root / ".staging",
+            expected_owner=os.geteuid(),
+            expected_release_group=os.getegid(),
+        ) as store,
+        LockManager(
+            state_root / "locks",
+            expected_owner=os.geteuid(),
+            expected_directory_mode=0o700,
+        ) as locks,
+        locks.acquire(LockName.PUBLICATION, mode=LockMode.EXCLUSIVE),
+        locks.acquire(LockName.TENANT_STATE, mode=LockMode.EXCLUSIVE),
+    ):
+        descriptor = store._open_or_create_release_namespace(_TENANT_ID)
+        os.close(descriptor)
+
+    assert stat.S_IMODE(tenant.stat().st_mode) == _DIRECTORY_MODE
+    assert stat.S_IMODE((tenant / "releases").stat().st_mode) == _DIRECTORY_MODE
 
 
 def test_release_store_removes_only_the_exact_authorized_release(
@@ -539,7 +574,7 @@ def test_release_store_removes_only_the_exact_authorized_release(
         ArtifactIntake(state_root, expected_owner=os.geteuid()) as intake,
         DeploymentReleaseStore(
             release_root,
-            state_root / "staging",
+            release_root / ".staging",
             expected_owner=os.geteuid(),
             expected_release_group=os.getegid(),
         ) as store,
@@ -621,7 +656,7 @@ def test_release_removal_requires_exclusive_tenant_state(tmp_path: Path) -> None
     with (
         DeploymentReleaseStore(
             release_root,
-            state_root / "staging",
+            release_root / ".staging",
             expected_owner=os.geteuid(),
             expected_release_group=os.getegid(),
         ) as store,
@@ -649,7 +684,6 @@ def test_release_store_closes_both_roots_after_filesystem_rejection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    state_root = _state_root(tmp_path)
     release_root = _release_root(tmp_path)
     opened: list[int] = []
     original_open = release_store_module._open_validated_directory
@@ -686,7 +720,7 @@ def test_release_store_closes_both_roots_after_filesystem_rejection(
     with pytest.raises(ReleaseStoreError, match="not on the release filesystem"):
         DeploymentReleaseStore(
             release_root,
-            state_root / "staging",
+            release_root / ".staging",
             expected_owner=os.geteuid(),
             expected_release_group=os.getegid(),
         )

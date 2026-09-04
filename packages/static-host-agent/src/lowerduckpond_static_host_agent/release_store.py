@@ -529,37 +529,52 @@ def _open_or_create_directory(
     mode: int,
     label: str,
 ) -> int:
+    created = False
     try:
         descriptor = os.open(name, _DIRECTORY_FLAGS, dir_fd=parent_fd)
     except FileNotFoundError:
         try:
             os.mkdir(name, mode=mode, dir_fd=parent_fd)
-            os.chmod(name, mode, dir_fd=parent_fd, follow_symlinks=False)
-            os.fsync(parent_fd)
         except FileExistsError:
             pass
         except OSError as error:
             raise ReleaseStoreError(f"{label} could not be created durably") from error
-        return _open_child_directory(
-            parent_fd,
-            name,
-            expected_owner=expected_owner,
-            expected_mode=mode,
-            label=label,
-        )
+        else:
+            created = True
+        try:
+            descriptor = os.open(name, _DIRECTORY_FLAGS, dir_fd=parent_fd)
+        except OSError as error:
+            raise ReleaseStoreError(f"{label} cannot be opened safely") from error
     except OSError as error:
         raise ReleaseStoreError(f"{label} cannot be opened safely") from error
     try:
+        named = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        opened = os.fstat(descriptor)
+        if (named.st_dev, named.st_ino) != (opened.st_dev, opened.st_ino):
+            raise ReleaseStoreError(f"{label} changed while it was opened")
+        restrictive_mode = mode & 0o700
+        opened_mode = stat.S_IMODE(opened.st_mode)
+        if (
+            stat.S_ISDIR(opened.st_mode)
+            and opened.st_uid == expected_owner
+            and opened_mode == restrictive_mode
+            and restrictive_mode != mode
+        ):
+            os.fchmod(descriptor, mode)
+            os.fsync(descriptor)
+            os.fsync(parent_fd)
+            opened = os.fstat(descriptor)
+        elif created and opened_mode != mode:
+            raise ReleaseStoreError(f"{label} changed during creation")
         _validate_directory(
-            os.fstat(descriptor),
+            opened,
             expected_owner=expected_owner,
             expected_mode=mode,
             label=label,
         )
         named = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-        opened = os.fstat(descriptor)
         if (named.st_dev, named.st_ino) != (opened.st_dev, opened.st_ino):
-            raise ReleaseStoreError(f"{label} changed while it was opened")
+            raise ReleaseStoreError(f"{label} changed while it was normalized")
         return descriptor
     except BaseException:
         os.close(descriptor)

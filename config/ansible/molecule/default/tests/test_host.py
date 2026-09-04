@@ -32,7 +32,7 @@ BACKUP_SOURCE_PATHS = (
 )
 BACKUP_EXCLUDE_PATHS = (
     "/var/lib/lowerduckpond/static/intake",
-    "/var/lib/lowerduckpond/static/staging",
+    "/srv/lowerduckpond/sites/.staging",
     "/var/lib/lowerduckpond/static/exports",
     "/etc/caddy/generations",
     "/etc/caddy/environment",
@@ -97,6 +97,10 @@ UUID_REJECTION_ARGUMENTS = (
 )
 STATIC_HOST_AGENT_ROOT = "/opt/lowerduckpond/static-host-agent"
 STATIC_STATE_ROOT = "/var/lib/lowerduckpond/static"
+STATIC_RELEASE_ROOT = "/srv/lowerduckpond/sites"
+STATIC_RELEASE_STAGING_ROOT = f"{STATIC_RELEASE_ROOT}/.staging"
+STATIC_RELEASE_ROOT_MODE = 0o710
+STATIC_RELEASE_STAGING_ROOT_MODE = 0o700
 STATIC_HOST_AGENT_DIRECTORY_MODE = 0o555
 STATIC_HOST_AGENT_FILE_MODE = 0o444
 STATIC_STATE_DIRECTORY_MODE = 0o700
@@ -128,7 +132,6 @@ STATIC_STATE_DIRECTORIES = (
     "authorization/correlations",
     "intents",
     "intake",
-    "staging",
     "exports",
     "audit",
     "locks",
@@ -236,7 +239,10 @@ def assert_static_worker_caddy_runtime_access(host: Host) -> None:
     """Require only the host paths used by root-owned Caddy transactions."""
 
     unit = host.file("/etc/systemd/system/lowerduckpond-static-worker@.service")
+    assert unit.contains(f"ConditionPathIsReadWrite={STATIC_STATE_ROOT}")
+    assert unit.contains(f"ConditionPathIsReadWrite={STATIC_RELEASE_ROOT}")
     assert unit.contains(f"BindPaths={STATIC_STATE_ROOT}")
+    assert unit.contains(f"BindPaths={STATIC_RELEASE_ROOT}")
     assert unit.contains("BindPaths=/etc/caddy")
     assert unit.contains("BindPaths=/run/caddy")
     assert unit.contains("BindReadOnlyPaths=/run/systemd")
@@ -1072,6 +1078,17 @@ def test_static_state_migration_is_empty_root_owned_and_private(host: Host) -> N
     denied = host.run(f"runuser --user ldp-provisioner -- test -x {STATIC_STATE_ROOT}")
     assert denied.rc != 0
 
+    release_root = host.file(STATIC_RELEASE_ROOT)
+    assert release_root.is_directory
+    assert release_root.user == "root"
+    assert release_root.group == "caddy"
+    assert release_root.mode == STATIC_RELEASE_ROOT_MODE
+    staging_root = host.file(STATIC_RELEASE_STAGING_ROOT)
+    assert staging_root.is_directory
+    assert staging_root.user == "root"
+    assert staging_root.group == "root"
+    assert staging_root.mode == STATIC_RELEASE_STAGING_ROOT_MODE
+
 
 def test_static_publication_gate_rejects_before_allocation(host: Host) -> None:
     configuration = host.file("/etc/lowerduckpond/static-publication.json")
@@ -1098,7 +1115,9 @@ def test_static_publication_gate_rejects_before_allocation(host: Host) -> None:
     assert tenant_candidate.stderr.strip() == "publication_disabled"
 
 
-def test_static_operator_identity_is_root_bound_and_has_no_writable_home(host: Host) -> None:
+def test_static_operator_identity_is_root_bound_and_has_no_writable_home(
+    host: Host,
+) -> None:
     account = host.user("ldp-operator")
     assert account.exists
     assert account.group == "ldp-operator"
@@ -1313,6 +1332,7 @@ def assert_static_worker_execution(host: Host) -> None:
 
     reconciler = host.file("/etc/systemd/system/lowerduckpond-static-reconcile.service")
     assert reconciler.contains(f"ExecStart={STATIC_JOB_RECONCILER}")
+    assert reconciler.contains(f"ReadWritePaths={STATIC_STATE_ROOT} {STATIC_RELEASE_ROOT}")
     assert reconciler.contains("PrivateNetwork=true")
     assert reconciler.contains("RestrictAddressFamilies=AF_UNIX")
     assert not reconciler.contains("SystemCallFilter=~@network-io")

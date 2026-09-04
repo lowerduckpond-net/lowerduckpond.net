@@ -1,6 +1,7 @@
 [Unit]
 Description=Lower Duck Pond authorized static worker %i
 ConditionPathIsReadWrite={{ static_host_agent_state_root }}
+ConditionPathIsReadWrite={{ static_host_agent_release_root }}
 OnSuccess=lowerduckpond-static-reconcile.service
 
 [Service]
@@ -46,6 +47,7 @@ BindReadOnlyPaths=/etc/lowerduckpond/static-publication.json
 BindPaths=/run/caddy
 BindReadOnlyPaths=/run/systemd
 BindPaths={{ static_host_agent_state_root }}
+BindPaths={{ static_host_agent_release_root }}
 BindPaths=/etc/caddy
 ProtectHome=true
 ProtectHostname=true
