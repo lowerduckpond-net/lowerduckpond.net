@@ -163,6 +163,45 @@ def test_snapshot_omits_archived_tenants_from_the_complete_runtime_input(
     assert replaced.tenants == (active,)
 
 
+@pytest.mark.parametrize("corruption", ["observed-digest", "deployment-binding"])
+def test_snapshot_rejects_corrupt_archived_authority_before_omitting_it(
+    tmp_path: Path,
+    corruption: str,
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    _active_tenant(root)
+    archived = _archived_tenant(_SECOND_TENANT_ID, slug="archived-duck")
+    if corruption == "observed-digest":
+        digest = archived.observed_state["desiredManifestDigest"]
+        assert type(digest) is dict
+        digest["value"] = "f" * 64
+    else:
+        spec = archived.manifest["spec"]
+        assert type(spec) is dict
+        desired = spec["desiredDeployment"]
+        assert type(desired) is dict
+        desired["archiveSha256"] = "f" * 64
+        archived.observed_state["desiredManifestDigest"] = manifest_digest(
+            archived.manifest
+        ).to_dict()
+    _write(root, StateRecordPath.tenant_desired(_SECOND_TENANT_ID), archived.manifest)
+    _write(root, StateRecordPath.tenant_observed(_SECOND_TENANT_ID), archived.observed_state)
+    assert archived.deployment is not None
+    _write(
+        root,
+        StateRecordPath.tenant_deployment(_SECOND_TENANT_ID, archived.deployment["id"]),
+        archived.deployment,
+    )
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        repository.transaction(mode=LockMode.EXCLUSIVE) as transaction,
+        pytest.raises(RouteSnapshotError, match="archived tenant"),
+    ):
+        snapshot_tenant_routes(transaction)
+
+
 def test_add_overlay_extends_the_complete_snapshot_without_persisting(
     tmp_path: Path,
 ) -> None:

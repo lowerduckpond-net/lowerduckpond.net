@@ -7,7 +7,12 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol, cast
 
-from lowerduckpond_static_contracts import ContractKind, validate_contract, validate_uuid7
+from lowerduckpond_static_contracts import (
+    ContractKind,
+    manifest_digest,
+    validate_contract,
+    validate_uuid7,
+)
 
 from lowerduckpond_static_host_agent.caddy_routes import TenantRouteInput
 from lowerduckpond_static_host_agent.repository import (
@@ -145,7 +150,34 @@ def _is_archived(tenant: TenantRouteInput) -> bool:
     spec = tenant.manifest.get("spec")
     if type(spec) is not dict:  # pragma: no cover - copied route input was validated
         raise RouteSnapshotError("tenant route manifest spec is malformed")
-    return spec.get("desiredState") == "archived"
+    if spec.get("desiredState") != "archived":
+        return False
+    _validate_archived_bindings(tenant, spec)
+    return True
+
+
+def _validate_archived_bindings(
+    tenant: TenantRouteInput,
+    spec: dict[str, object],
+) -> None:
+    tenant_id = _tenant_id(tenant)
+    observed = tenant.observed_state
+    deployment = tenant.deployment
+    if (
+        observed["tenantId"] != tenant_id
+        or observed["desiredManifestDigest"] != manifest_digest(tenant.manifest).to_dict()
+        or observed["observedState"] != "archived"
+    ):
+        raise RouteSnapshotError("archived tenant desired and observed state disagree")
+    desired = spec.get("desiredDeployment")
+    if deployment is None or type(desired) is not dict:
+        raise RouteSnapshotError("archived tenant omitted its selected deployment")
+    if (
+        deployment["tenantId"] != tenant_id
+        or deployment["id"] != desired["id"]
+        or deployment["archiveSha256"] != desired["archiveSha256"]
+    ):
+        raise RouteSnapshotError("archived tenant deployment binding drifted")
 
 
 def _manifest_tenant_id(manifest: dict[str, object]) -> str:
