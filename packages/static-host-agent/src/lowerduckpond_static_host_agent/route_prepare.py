@@ -401,6 +401,16 @@ def _read_route_source(
     transaction: RoutePreparationTransaction,
     request: dict[str, object],
 ) -> _RouteSource:
+    try:
+        return _read_route_source_records(transaction, request)
+    except FileNotFoundError as error:
+        raise RouteAuthorityDriftError("route source state disappeared") from error
+
+
+def _read_route_source_records(
+    transaction: RoutePreparationTransaction,
+    request: dict[str, object],
+) -> _RouteSource:
     tenant_id = validate_uuid7(request["tenantId"])
     manifest = transaction.read(StateRecordPath.tenant_desired(tenant_id)).document
     observed = transaction.read(StateRecordPath.tenant_observed(tenant_id)).document
