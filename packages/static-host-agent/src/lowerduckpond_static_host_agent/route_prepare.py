@@ -69,6 +69,8 @@ class RoutePreparationTransaction(Protocol):
 
     def read(self, path: StateRecordPath) -> StoredContract: ...
 
+    def tenant_has_deployment_history(self, tenant_id: object) -> bool: ...
+
     def create_immutable(
         self,
         path: StateRecordPath,
