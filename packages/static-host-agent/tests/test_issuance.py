@@ -34,6 +34,7 @@ _FIXTURE_ROOT = Path(__file__).parents[3] / "tests/static-publication/fixtures/a
 _NOW = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
 _TENANT_ID = "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100"
 _DEPLOYMENT_ID = "0191e2ca-49f2-7608-8cf3-f80ab2cab151"
+_TENANT_ROOTED_RECORD_COMPONENTS = 3
 
 
 class _OpenGate:
@@ -97,6 +98,7 @@ def _state_root(tmp_path: Path) -> Path:
         ("authorization", "correlations"),
         ("authorization", "jobs"),
         ("authorization", "results"),
+        ("audit",),
         ("intents",),
         ("locks",),
     ):
@@ -110,6 +112,14 @@ def _write(root: Path, path: StateRecordPath, document: dict[str, object]) -> No
     target = root.joinpath(*path.components)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.parent.chmod(0o700)
+    if (
+        path.components[:1] == ("tenants",)
+        and len(path.components) == _TENANT_ROOTED_RECORD_COMPONENTS
+    ):
+        for name in ("archives", "deployments"):
+            child = target.parent / name
+            child.mkdir(exist_ok=True)
+            child.chmod(0o700)
     target.write_bytes(canonical_json_bytes(document))
     target.chmod(0o600)
 
@@ -224,6 +234,7 @@ def test_create_issues_immutable_platform_bound_job_and_exact_retry(tmp_path: Pa
         "archiveRecordDigest": None,
         "platformStateDigest": platform_state_digest(namespace).to_dict(),
     }
+    assert first.document["sourceAuthority"] is None
 
 
 def test_exact_retry_recognition_requires_the_original_full_binding(tmp_path: Path) -> None:
@@ -353,6 +364,127 @@ def test_noncreate_job_binds_manifest_and_current_deployment(tmp_path: Path) -> 
     assert expected["manifestDigest"] == manifest_digest(desired).to_dict()
     assert expected["deploymentDigest"] == deployment_record_digest(deployment).to_dict()
     assert expected["archiveRecordDigest"] is None
+    assert issued.document["sourceAuthority"] == {
+        "manifest": desired,
+        "archiveRecord": None,
+    }
+
+
+def test_undeployed_delete_requires_empty_deployment_history(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    namespace = _fixture("platform-namespace.json")
+    desired = _fixture("site.json")
+    spec = desired["spec"]
+    assert type(spec) is dict
+    spec["desiredState"] = "undeployed"
+    del spec["desiredDeployment"]
+    _write(root, StateRecordPath.platform_namespace(), namespace)
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), desired)
+    _write(
+        root,
+        StateRecordPath.tenant_deployment(_TENANT_ID, _DEPLOYMENT_ID),
+        _fixture("deployment-record.json"),
+    )
+    request = _fixture("operation-request.json")
+    request.update(
+        {
+            "operation": "delete",
+            "tenantId": _TENANT_ID,
+        }
+    )
+    request.pop("slug", None)
+    request.pop("quotas", None)
+
+    with (
+        _repository(root) as repository,
+        pytest.raises(IssuanceError, match="retains deployment history"),
+    ):
+        AuthorizationIssuer(
+            repository,
+            gate=_OpenGate(),
+            entropy=_Entropy(),
+        ).issue(
+            canonical_json_bytes(request),
+            operator_principal="operator@example.test",
+            now=_NOW,
+            artifact=None,
+        )
+
+
+def test_undeployed_delete_recovers_an_abandoned_deployment_temporary(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    namespace = _fixture("platform-namespace.json")
+    desired = _fixture("site.json")
+    spec = desired["spec"]
+    assert type(spec) is dict
+    spec["desiredState"] = "undeployed"
+    del spec["desiredDeployment"]
+    _write(root, StateRecordPath.platform_namespace(), namespace)
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), desired)
+    temporary = root / "tenants" / _TENANT_ID / "deployments" / f".ldp-state-{'a' * 32}"
+    temporary.write_bytes(b"incomplete")
+    temporary.chmod(0o600)
+    request = _fixture("operation-request.json")
+    request.update({"operation": "delete", "tenantId": _TENANT_ID})
+    request.pop("slug", None)
+    request.pop("quotas", None)
+
+    with _repository(root) as repository:
+        issued = AuthorizationIssuer(
+            repository,
+            gate=_OpenGate(),
+            entropy=_Entropy(),
+        ).issue(
+            canonical_json_bytes(request),
+            operator_principal="operator@example.test",
+            now=_NOW,
+            artifact=None,
+        )
+
+    expected = issued.document["expectedSource"]
+    assert type(expected) is dict
+    assert expected["deletionEvidence"] is not None
+    assert not temporary.exists()
+
+
+@pytest.mark.parametrize("lifecycle", ["active", "suspended"])
+def test_delete_rejects_an_ineligible_lifecycle_before_issuance(
+    tmp_path: Path,
+    lifecycle: str,
+) -> None:
+    root = _state_root(tmp_path)
+    desired = _fixture("site.json")
+    spec = desired["spec"]
+    assert type(spec) is dict
+    spec["desiredState"] = lifecycle
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), desired)
+    _write(
+        root,
+        StateRecordPath.tenant_deployment(_TENANT_ID, _DEPLOYMENT_ID),
+        _fixture("deployment-record.json"),
+    )
+    request = _fixture("operation-request.json")
+    request.update({"operation": "delete", "tenantId": _TENANT_ID})
+    request.pop("slug", None)
+    request.pop("quotas", None)
+
+    with (
+        _repository(root) as repository,
+        pytest.raises(IssuanceError, match="not eligible for ordinary deletion"),
+    ):
+        AuthorizationIssuer(
+            repository,
+            gate=_OpenGate(),
+            entropy=_Entropy(),
+        ).issue(
+            canonical_json_bytes(request),
+            operator_principal="operator@example.test",
+            now=_NOW,
+            artifact=None,
+        )
 
 
 def test_changed_source_or_artifact_binding_cannot_reuse_correlation(tmp_path: Path) -> None:

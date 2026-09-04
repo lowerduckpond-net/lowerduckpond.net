@@ -15,6 +15,7 @@ from jsonschema.exceptions import ValidationError
 from referencing import Registry, Resource
 
 from lowerduckpond_static_contracts._digest import (
+    ARCHIVE_RECORD_DIGEST_FORMAT,
     MANIFEST_DIGEST_FORMAT,
     REQUEST_DIGEST_FORMAT,
     digest_bytes,
@@ -208,6 +209,7 @@ def _validate_job(document: dict[str, object]) -> None:
     if document["artifact"] != request.get("artifact"):
         raise ContractError(ErrorCode.SCHEMA_INVALID, "job artifact binding does not match")
     expected = cast(dict[str, object], document["expectedSource"])
+    _validate_job_source_authority(document, request, expected)
     if request["operation"] == "create":
         if expected != {
             "expectsTenantAbsent": True,
@@ -232,6 +234,119 @@ def _validate_job(document: dict[str, object]) -> None:
         raise ContractError(ErrorCode.SCHEMA_INVALID, "deployed source binding is invalid")
     if lifecycle == "archived" and (deployment is None or archive is None):
         raise ContractError(ErrorCode.SCHEMA_INVALID, "archived source binding is invalid")
+    _validate_job_deletion_authority(
+        request,
+        expected,
+        lifecycle,
+        archive,
+        compatibility_version=document["compatibilityVersion"],
+    )
+
+
+def _validate_job_source_authority(
+    document: dict[str, object],
+    request: dict[str, object],
+    expected: dict[str, object],
+) -> None:
+    if document["compatibilityVersion"] == "static-job-v1":
+        if "sourceAuthority" in document:
+            raise ContractError(
+                ErrorCode.SCHEMA_INVALID,
+                "legacy job carries current source authority",
+            )
+        return
+    authority = document["sourceAuthority"]
+    if request["operation"] == "create":
+        if authority is not None:
+            raise ContractError(
+                ErrorCode.SCHEMA_INVALID,
+                "create job carries tenant source authority",
+            )
+        return
+    if type(authority) is not dict:
+        raise ContractError(ErrorCode.SCHEMA_INVALID, "tenant job source authority is absent")
+    manifest = cast(dict[str, object], authority["manifest"])
+    metadata = cast(dict[str, object], manifest["metadata"])
+    spec = cast(dict[str, object], manifest["spec"])
+    manifest_binding = digest_bytes(
+        canonical_json_bytes(manifest),
+        format_identifier=MANIFEST_DIGEST_FORMAT,
+    ).to_dict()
+    archive = authority["archiveRecord"]
+    if (
+        metadata["id"] != request["tenantId"]
+        or spec["desiredState"] != expected["lifecycle"]
+        or manifest_binding != expected["manifestDigest"]
+    ):
+        raise ContractError(ErrorCode.SCHEMA_INVALID, "tenant job source authority disagrees")
+    if expected["lifecycle"] != "archived":
+        if archive is not None:
+            raise ContractError(
+                ErrorCode.SCHEMA_INVALID,
+                "non-archived job carries archive source authority",
+            )
+        return
+    reference = cast(dict[str, object], spec["desiredDeployment"])
+    if type(archive) is not dict:
+        raise ContractError(ErrorCode.SCHEMA_INVALID, "archived job source authority is absent")
+    archive_binding = digest_bytes(
+        canonical_json_bytes(archive),
+        format_identifier=ARCHIVE_RECORD_DIGEST_FORMAT,
+    ).to_dict()
+    if (
+        archive_binding != expected["archiveRecordDigest"]
+        or archive["tenantId"] != request["tenantId"]
+        or archive["deploymentId"] != reference["id"]
+        or archive["manifestDigest"] != manifest_binding
+    ):
+        raise ContractError(ErrorCode.SCHEMA_INVALID, "archived job source authority disagrees")
+
+
+def _validate_job_deletion_authority(
+    request: dict[str, object],
+    expected: dict[str, object],
+    lifecycle: object,
+    archive: object,
+    *,
+    compatibility_version: object,
+) -> None:
+    operation = request["operation"]
+    if operation != "delete":
+        if "deletionEvidence" in expected:
+            raise ContractError(
+                ErrorCode.SCHEMA_INVALID,
+                "non-delete job carries deletion evidence",
+            )
+        return
+    if "deletionEvidence" not in expected:
+        if compatibility_version == "static-job-v1":
+            return
+        raise ContractError(
+            ErrorCode.SCHEMA_INVALID,
+            "delete job has no durable deletion authority",
+        )
+    deletion = expected["deletionEvidence"]
+    if lifecycle in {"active", "suspended"}:
+        if deletion is not None:
+            raise ContractError(
+                ErrorCode.SCHEMA_INVALID,
+                "ineligible delete source carries deletion evidence",
+            )
+        return
+    if type(deletion) is not dict:
+        raise ContractError(ErrorCode.SCHEMA_INVALID, "delete source evidence is absent")
+    if lifecycle == "undeployed" and deletion["mode"] != "never-deployed":
+        raise ContractError(
+            ErrorCode.SCHEMA_INVALID,
+            "undeployed delete source evidence is invalid",
+        )
+    if lifecycle == "archived" and (
+        deletion["mode"] != "archived" or deletion["archiveRecordDigest"] != archive
+    ):
+        raise ContractError(
+            ErrorCode.SCHEMA_INVALID,
+            "archived delete source evidence is invalid",
+        )
 
 
 def _validate_result(document: dict[str, object]) -> None:
@@ -263,6 +378,32 @@ def _validate_archive_construction_intent(document: dict[str, object]) -> None:
         )
 
 
+def _validate_archive_retirement_intent(document: dict[str, object]) -> None:
+    archive = cast(dict[str, object], document["archiveRecord"])
+    archive_digest = digest_bytes(
+        canonical_json_bytes(archive),
+        format_identifier=ARCHIVE_RECORD_DIGEST_FORMAT,
+    ).to_dict()
+    if document["archiveRecordDigest"] != archive_digest:
+        raise ContractError(
+            ErrorCode.SCHEMA_INVALID,
+            "archive retirement record digest binding is invalid",
+        )
+    if (
+        document["tenantId"] != archive["tenantId"]
+        or document["sourceManifestDigest"] != archive["manifestDigest"]
+        or document["bundleDigest"] != archive["bundleDigest"]
+        or document["bundleSize"] != archive["bundleSize"]
+        or document["bucket"] != archive["bucket"]
+        or document["key"] != archive["key"]
+        or document["versionId"] != archive["versionId"]
+    ):
+        raise ContractError(
+            ErrorCode.SCHEMA_INVALID,
+            "archive retirement object authority disagrees with its record",
+        )
+
+
 def _manifest_digest(document: dict[str, object]) -> dict[str, str]:
     return digest_bytes(
         canonical_json_bytes(document),
@@ -270,34 +411,117 @@ def _manifest_digest(document: dict[str, object]) -> dict[str, str]:
     ).to_dict()
 
 
+def _validated_transaction_candidate(
+    document: dict[str, object],
+    operation: str,
+) -> dict[str, object] | None:
+    candidate = document["candidateManifest"]
+    if operation == "delete":
+        return None
+    candidate_manifest = cast(dict[str, object], candidate)
+    _validate_site(candidate_manifest)
+    candidate_metadata = cast(dict[str, object], candidate_manifest["metadata"])
+    if candidate_metadata["id"] != document["tenantId"]:
+        raise ContractError(
+            ErrorCode.SCHEMA_INVALID,
+            "transaction candidate tenant identity drifted",
+        )
+    if _manifest_digest(candidate_manifest) != document["candidateManifestDigest"]:
+        raise ContractError(
+            ErrorCode.SCHEMA_INVALID,
+            "transaction candidate manifest binding is invalid",
+        )
+    return candidate_manifest
+
+
+def _validated_transaction_source(
+    document: dict[str, object],
+    operation: str,
+) -> dict[str, object] | None:
+    source = document["sourceManifest"]
+    if operation == "create":
+        return None
+    source_manifest = cast(dict[str, object], source)
+    _validate_site(source_manifest)
+    source_metadata = cast(dict[str, object], source_manifest["metadata"])
+    if source_metadata["id"] != document["tenantId"]:
+        raise ContractError(
+            ErrorCode.SCHEMA_INVALID,
+            "transaction source tenant identity drifted",
+        )
+    if _manifest_digest(source_manifest) != document["sourceManifestDigest"]:
+        raise ContractError(
+            ErrorCode.SCHEMA_INVALID,
+            "transaction source manifest binding is invalid",
+        )
+    return source_manifest
+
+
+def _validate_transaction_manifest_transform(
+    operation: str,
+    source: dict[str, object] | None,
+    candidate: dict[str, object] | None,
+) -> None:
+    if operation in {"create", "delete", "archive"}:
+        return
+    source_manifest = cast(dict[str, object], source)
+    candidate_manifest = cast(dict[str, object], candidate)
+    expected = deepcopy(source_manifest)
+    candidate_metadata = cast(dict[str, object], candidate_manifest["metadata"])
+    candidate_spec = cast(dict[str, object], candidate_manifest["spec"])
+    expected_metadata = cast(dict[str, object], expected["metadata"])
+    expected_spec = cast(dict[str, object], expected["spec"])
+    if operation == "rename":
+        expected_metadata["slug"] = candidate_metadata["slug"]
+    elif operation in {"suspend", "resume"}:
+        expected_spec["desiredState"] = candidate_spec["desiredState"]
+    elif operation in {"deploy", "rollback", "import", "restore"}:
+        expected_spec["desiredState"] = candidate_spec["desiredState"]
+        expected_spec["desiredDeployment"] = candidate_spec["desiredDeployment"]
+    if candidate_manifest != expected:
+        raise ContractError(
+            ErrorCode.SCHEMA_INVALID,
+            "transaction candidate changed fields outside its operation",
+        )
+
+
 def _validate_transaction_intent(document: dict[str, object]) -> None:
     _validate_restart_fence(document)
-    operation = document["operation"]
+    operation = cast(str, document["operation"])
+    source_manifest = _validated_transaction_source(document, operation)
+    candidate = _validated_transaction_candidate(document, operation)
+    _validate_transaction_manifest_transform(operation, source_manifest, candidate)
     if operation != "archive":
-        _validate_nonarchive_transaction_intent(document, cast(str, operation))
+        _validate_nonarchive_transaction_intent(document, operation)
         return
+    candidate = cast(dict[str, object], candidate)
     recovery = cast(dict[str, object], document["archiveRecovery"])
     source = cast(dict[str, object], recovery["sourceManifest"])
-    candidate = cast(dict[str, object], recovery["candidateManifest"])
+    archive_candidate = cast(dict[str, object], recovery["candidateManifest"])
     observed = cast(dict[str, object], recovery["sourceObservedState"])
     archive = cast(dict[str, object], recovery["candidateArchiveRecord"])
     _validate_site(source)
-    _validate_site(candidate)
+    _validate_site(archive_candidate)
 
     tenant_id = document["tenantId"]
     source_metadata = cast(dict[str, object], source["metadata"])
-    candidate_metadata = cast(dict[str, object], candidate["metadata"])
+    candidate_metadata = cast(dict[str, object], archive_candidate["metadata"])
     if source_metadata["id"] != tenant_id or candidate_metadata != source_metadata:
         raise ContractError(ErrorCode.SCHEMA_INVALID, "archive intent tenant identity drifted")
-    if document["sourceManifestDigest"] != _manifest_digest(source):
-        raise ContractError(ErrorCode.SCHEMA_INVALID, "archive source manifest binding is invalid")
-    if document["candidateManifestDigest"] != _manifest_digest(candidate):
+    if source != source_manifest:
+        raise ContractError(ErrorCode.SCHEMA_INVALID, "archive source manifest copies drifted")
+    if candidate != archive_candidate:
+        raise ContractError(
+            ErrorCode.SCHEMA_INVALID,
+            "archive candidate manifest copies drifted",
+        )
+    if document["candidateManifestDigest"] != _manifest_digest(archive_candidate):
         raise ContractError(
             ErrorCode.SCHEMA_INVALID, "archive candidate manifest binding is invalid"
         )
 
     source_spec = cast(dict[str, object], source["spec"])
-    candidate_spec = cast(dict[str, object], candidate["spec"])
+    candidate_spec = cast(dict[str, object], archive_candidate["spec"])
     source_state = source_spec["desiredState"]
     expected_candidate_spec = deepcopy(source_spec)
     expected_candidate_spec["desiredState"] = "archived"
@@ -376,6 +600,10 @@ def _validate_lifecycle_recovery(document: dict[str, object]) -> None:
             route_set=recovery["sourceRouteSet"],
             runtime_generation=recovery["sourceRuntimeGenerationId"],
         )
+        _validate_observed_manifest_binding(
+            cast(dict[str, object], document["sourceManifest"]),
+            source_observed,
+        )
     elif recovery["sourceRouteSet"] != "absent":
         raise ContractError(ErrorCode.SCHEMA_INVALID, "absent source retained tenant routes")
 
@@ -391,6 +619,10 @@ def _validate_lifecycle_recovery(document: dict[str, object]) -> None:
             route_set=recovery["candidateRouteSet"],
             runtime_generation=recovery["candidateRuntimeGenerationId"],
         )
+        _validate_observed_manifest_binding(
+            cast(dict[str, object], document["candidateManifest"]),
+            candidate_observed,
+        )
     elif recovery["candidateRouteSet"] != "absent":
         raise ContractError(ErrorCode.SCHEMA_INVALID, "absent candidate retained tenant routes")
 
@@ -398,7 +630,7 @@ def _validate_lifecycle_recovery(document: dict[str, object]) -> None:
     if expected != candidate_state:
         raise ContractError(ErrorCode.SCHEMA_INVALID, "recovery states violate lifecycle matrix")
     _validate_manifest_transition_binding(document, operation, source_state, candidate_state)
-    if operation in {"deploy", "rollback"} and (
+    if operation in {"deploy", "rollback", "restore"} and (
         source_observed is None
         or candidate_observed is None
         or source_observed["activeDeploymentId"] == candidate_observed["activeDeploymentId"]
@@ -419,6 +651,23 @@ def _validate_lifecycle_recovery(document: dict[str, object]) -> None:
         )
     if recovery["candidateRuntimeGenerationId"] == recovery["sourceRuntimeGenerationId"]:
         raise ContractError(ErrorCode.SCHEMA_INVALID, "runtime generations are not distinct")
+
+
+def _validate_observed_manifest_binding(
+    manifest: dict[str, object],
+    observed: dict[str, object],
+) -> None:
+    spec = cast(dict[str, object], manifest["spec"])
+    state = observed["observedState"]
+    deployment = spec.get("desiredDeployment")
+    deployment_id = None
+    if state in {"active", "suspended"}:
+        deployment_id = cast(dict[str, object], deployment)["id"]
+    if spec["desiredState"] != state or observed["activeDeploymentId"] != deployment_id:
+        raise ContractError(
+            ErrorCode.SCHEMA_INVALID,
+            "observed recovery state disagrees with its manifest",
+        )
 
 
 def _restart_fence_matches(
@@ -568,6 +817,7 @@ _SEMANTIC_VALIDATORS: Final[dict[ContractKind, Callable[[dict[str, object]], Non
     ContractKind.AUTHORIZATION_JOB: _validate_job,
     ContractKind.OPERATION_RESULT: _validate_result,
     ContractKind.ARCHIVE_CONSTRUCTION_INTENT: _validate_archive_construction_intent,
+    ContractKind.ARCHIVE_RETIREMENT_INTENT: _validate_archive_retirement_intent,
     ContractKind.TRANSACTION_INTENT: _validate_transaction_intent,
     ContractKind.AUDIT_ENTRY: _validate_audit_entry,
 }

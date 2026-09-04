@@ -77,6 +77,9 @@
     "archiveRecordDigest": {
       "$ref": "common.schema.json#/$defs/archiveRecordDigest"
     },
+    "archiveRecord": {
+      "$ref": "archive-record.schema.json"
+    },
     "bucket": {
       "$ref": "common.schema.json#/$defs/archiveBucket"
     },
@@ -144,6 +147,7 @@
     "correlationId",
     "transition",
     "sourceManifestDigest",
+    "archiveRecord",
     "archiveRecordDigest",
     "bundleDigest",
     "bundleSize",

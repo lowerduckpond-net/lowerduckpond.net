@@ -181,6 +181,9 @@
     {
       "else": {
         "properties": {
+          "sourceManifest": {
+            "$ref": "site.schema.json"
+          },
           "sourceManifestDigest": {
             "$ref": "common.schema.json#/$defs/manifestDigest"
           }
@@ -198,6 +201,9 @@
       },
       "then": {
         "properties": {
+          "sourceManifest": {
+            "type": "null"
+          },
           "sourceManifestDigest": {
             "type": "null"
           }
@@ -225,6 +231,32 @@
       "then": {
         "properties": {
           "candidateManifestDigest": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "else": {
+        "properties": {
+          "candidateManifest": {
+            "$ref": "site.schema.json"
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "delete"
+          }
+        },
+        "required": [
+          "operation"
+        ]
+      },
+      "then": {
+        "properties": {
+          "candidateManifest": {
             "type": "null"
           }
         }
@@ -300,6 +332,16 @@
         }
       ]
     },
+    "candidateManifest": {
+      "oneOf": [
+        {
+          "$ref": "site.schema.json"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "candidateManifestDigest": {
       "oneOf": [
         {
@@ -367,6 +409,16 @@
         }
       ]
     },
+    "sourceManifest": {
+      "oneOf": [
+        {
+          "$ref": "site.schema.json"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "tenantId": {
       "$ref": "common.schema.json#/$defs/uuidv7"
     }
@@ -380,7 +432,9 @@
     "operation",
     "archiveRecovery",
     "lifecycleRecovery",
+    "sourceManifest",
     "sourceManifestDigest",
+    "candidateManifest",
     "candidateManifestDigest",
     "phase",
     "restartFence",
