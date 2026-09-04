@@ -205,6 +205,40 @@ def test_execution_validation_admits_temporary_replacement_before_writing(
     assert retained == job
 
 
+@pytest.mark.parametrize("current_phase", ["pending", "claimed"])
+def test_execution_validation_cannot_terminalize_a_nonterminal_job(
+    tmp_path: Path,
+    current_phase: str,
+) -> None:
+    root = _state_root(tmp_path)
+    path = StateRecordPath.authorization_job(_JOB_ID)
+    job = _fixture("authorization-job.json")
+    job.update(
+        {
+            "compatibilityVersion": "static-job-v2",
+            "executionValidated": False,
+            "phase": current_phase,
+            "sourceAuthority": None,
+        }
+    )
+    _write_record(root, path, job)
+    validated = deepcopy(job)
+    validated.update({"executionValidated": True, "phase": "completed"})
+
+    with _repository(root) as repository:
+        with repository.transaction(mode=LockMode.EXCLUSIVE) as transaction:
+            current = transaction.read(path)
+            with pytest.raises(StateRecordError, match="marker transition"):
+                transaction.commit_execution_validation(
+                    path,
+                    current.revision,
+                    validated,
+                )
+        retained = repository.read(path).document
+
+    assert retained == job
+
+
 def _create_plan() -> CreateTransitionPlan:
     namespace = _fixture("platform-namespace.json")
     job = _fixture("authorization-job.json")

@@ -1837,7 +1837,8 @@ def _validate_execution_validation_replacement(
     if (
         current["executionValidated"] is not False
         or candidate["executionValidated"] is not True
-        or candidate["phase"] not in {"completed", "failed"}
+        or current["phase"] not in {"completed", "failed"}
+        or candidate["phase"] != current["phase"]
     ):
         raise StateRecordError("execution validation marker transition is invalid")
     before = deepcopy(current)
