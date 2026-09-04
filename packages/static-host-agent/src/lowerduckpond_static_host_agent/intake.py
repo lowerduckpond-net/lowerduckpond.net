@@ -38,8 +38,10 @@ from lowerduckpond_static_host_agent.portable_bundle import (
     inspect_portable_bundle,
 )
 from lowerduckpond_static_host_agent.zip_structure import (
+    ZipExtraction,
     ZipStructureError,
     deployment_zip_release_tree_digest,
+    extract_deployment_zip,
 )
 
 _CREATE_FLAGS: Final = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -276,6 +278,36 @@ class ArtifactIntake:
             )
         except (OSError, ValueError, ZipStructureError) as error:
             raise IntakeError("claimed deployment artifact cannot be derived safely") from error
+
+    def extract_deployment_release(
+        self,
+        artifact: AdmittedArtifact,
+        *,
+        staging_parent: Path,
+        staging_name: str,
+        retained_usage: ReleaseCapacityUsage,
+        limits: HostCapacityLimits = DEFAULT_HOST_CAPACITY_LIMITS,
+    ) -> ZipExtraction:
+        """Repeat validation and extract one claimed deploy into private staging."""
+
+        self._require_open()
+        self._locks.require_held(LockName.INTAKE, mode=LockMode.EXCLUSIVE)
+        if not _ADMITTED.fullmatch(artifact.filename):
+            raise IntakeError("claimed artifact filename is not canonical")
+        self._validate_entry(artifact.filename)
+        self._verify_existing(artifact.filename, declared=artifact.verified)
+        try:
+            return extract_deployment_zip(
+                self._intake_path / artifact.filename,
+                staging_parent=staging_parent,
+                staging_name=staging_name,
+                expected_owner=self._expected_owner,
+                retained_usage=retained_usage,
+                lock_manager=self._locks,
+                capacity_limits=limits,
+            )
+        except (OSError, ValueError, ZipStructureError) as error:
+            raise IntakeError("claimed deployment artifact cannot be extracted safely") from error
 
     def import_release_tree_digest(self, artifact: AdmittedArtifact) -> Digest:
         """Derive exact normalized content from one claimed portable bundle."""

@@ -15,6 +15,7 @@ backup_source_paths:
   - /var/lib/lowerduckpond/static
 backup_exclude_paths:
   - /var/lib/lowerduckpond/static/intake
+  - /var/lib/lowerduckpond/static/staging
   - /var/lib/lowerduckpond/static/exports
   - /etc/caddy/generations
   - /etc/caddy/environment

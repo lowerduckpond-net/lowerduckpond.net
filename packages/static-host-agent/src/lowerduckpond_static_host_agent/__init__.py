@@ -239,6 +239,12 @@ from lowerduckpond_static_host_agent.portable_bundle import (
     inspect_portable_bundle,
     inspect_portable_bundle_descriptor,
 )
+from lowerduckpond_static_host_agent.release_store import (
+    DeploymentReleaseStore,
+    PublishedDeploymentRelease,
+    ReleaseStoreError,
+    StagedDeploymentRelease,
+)
 from lowerduckpond_static_host_agent.release_tree import (
     InodeAllocation,
     ReleaseTreeBoundary,
@@ -434,6 +440,7 @@ __all__ = [
     "CreateTransitionPlan",
     "DeadlineReader",
     "DeadlineWriter",
+    "DeploymentReleaseStore",
     "DeploymentTransitionPlan",
     "DiscoveredIntent",
     "DurabilityBoundary",
@@ -482,9 +489,11 @@ __all__ = [
     "PreparedRouteTransition",
     "PublicationDisabledError",
     "PublicationGate",
+    "PublishedDeploymentRelease",
     "ReadDeadline",
     "ReconciliationOutcome",
     "ReleaseCapacityUsage",
+    "ReleaseStoreError",
     "ReleaseTreeBoundary",
     "ReleaseTreeError",
     "ReleaseTreeLimits",
@@ -506,6 +515,7 @@ __all__ = [
     "RouteTransitionPlan",
     "RuntimeBoundaryError",
     "SelectedCaddyGeneration",
+    "StagedDeploymentRelease",
     "StartupReconciler",
     "StateAdmissionRejectedError",
     "StateAlreadyExistsError",

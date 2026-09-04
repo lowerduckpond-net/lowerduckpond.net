@@ -152,6 +152,7 @@
     - "{{ static_host_agent_state_root }}/authorization/correlations"
     - "{{ static_host_agent_state_root }}/intents"
     - "{{ static_host_agent_state_root }}/intake"
+    - "{{ static_host_agent_state_root }}/staging"
     - "{{ static_host_agent_state_root }}/exports"
     - "{{ static_host_agent_state_root }}/audit"
     - "{{ static_host_agent_state_root }}/locks"

@@ -32,6 +32,7 @@ BACKUP_SOURCE_PATHS = (
 )
 BACKUP_EXCLUDE_PATHS = (
     "/var/lib/lowerduckpond/static/intake",
+    "/var/lib/lowerduckpond/static/staging",
     "/var/lib/lowerduckpond/static/exports",
     "/etc/caddy/generations",
     "/etc/caddy/environment",
@@ -127,6 +128,7 @@ STATIC_STATE_DIRECTORIES = (
     "authorization/correlations",
     "intents",
     "intake",
+    "staging",
     "exports",
     "audit",
     "locks",
