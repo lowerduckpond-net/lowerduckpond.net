@@ -7,6 +7,7 @@ import zipfile
 from io import BytesIO
 from pathlib import Path
 
+import lowerduckpond_static_host_agent.release_store as release_store_module
 import pytest
 from lowerduckpond_static_host_agent import (
     ArtifactIntake,
@@ -26,6 +27,7 @@ _TENANT_ID = "0198d17f-6f4a-7000-8000-000000000002"
 _DEPLOYMENT_ID = "0198d17f-6f4a-7000-8000-000000000003"
 _DIRECTORY_MODE = 0o755
 _FILE_MODE = 0o644
+_ROOT_DESCRIPTOR_COUNT = 2
 
 
 def _mkdir(path: Path, mode: int) -> None:
@@ -122,6 +124,7 @@ def test_release_store_extracts_verifies_and_durably_publishes(tmp_path: Path) -
                 declared=_binding(payload),
             ) as claim,
             locks.acquire(LockName.PUBLICATION, mode=LockMode.EXCLUSIVE),
+            locks.acquire(LockName.TENANT_STATE, mode=LockMode.EXCLUSIVE),
         ):
             expected = intake.deployment_release_tree_digest(claim.artifact).to_dict()
             staged = store.stage(
@@ -175,6 +178,7 @@ def test_release_publication_exactly_replays_an_existing_identity(tmp_path: Path
                 declared=_binding(payload),
             ) as claim,
             locks.acquire(LockName.PUBLICATION, mode=LockMode.EXCLUSIVE),
+            locks.acquire(LockName.TENANT_STATE, mode=LockMode.EXCLUSIVE),
         ):
             expected = intake.deployment_release_tree_digest(claim.artifact).to_dict()
             first = store.stage(
@@ -234,6 +238,7 @@ def test_release_publication_refuses_an_existing_identity_with_other_content(
                 declared=_binding(payload),
             ) as claim,
             locks.acquire(LockName.PUBLICATION, mode=LockMode.EXCLUSIVE),
+            locks.acquire(LockName.TENANT_STATE, mode=LockMode.EXCLUSIVE),
         ):
             expected = intake.deployment_release_tree_digest(claim.artifact).to_dict()
             first = store.stage(
@@ -424,7 +429,10 @@ def test_release_store_rejects_unsafe_root_metadata(tmp_path: Path) -> None:
         )
 
 
-def test_release_store_removes_only_the_exact_authorized_release(tmp_path: Path) -> None:
+def test_release_store_removes_only_the_exact_authorized_release(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     state_root = _state_root(tmp_path)
     release_root = _release_root(tmp_path)
     payload = _deployment_zip()
@@ -455,6 +463,7 @@ def test_release_store_removes_only_the_exact_authorized_release(tmp_path: Path)
                 declared=_binding(payload),
             ) as claim,
             locks.acquire(LockName.PUBLICATION, mode=LockMode.EXCLUSIVE),
+            locks.acquire(LockName.TENANT_STATE, mode=LockMode.EXCLUSIVE),
         ):
             expected = intake.deployment_release_tree_digest(claim.artifact).to_dict()
             staged = store.stage(
@@ -474,6 +483,29 @@ def test_release_store_removes_only_the_exact_authorized_release(tmp_path: Path)
                     expected_release_tree_digest={**expected, "value": "f" * 64},
                     publication_lock=locks,
                 )
+
+            def interrupt_removal(*_args: object, **_kwargs: object) -> None:
+                raise RuntimeError("simulated interruption")
+
+            original_remove = release_store_module._remove_tree
+            monkeypatch.setattr(
+                release_store_module,
+                "_remove_tree",
+                interrupt_removal,
+            )
+            with pytest.raises(RuntimeError, match="simulated interruption"):
+                store.remove_release(
+                    _TENANT_ID,
+                    _DEPLOYMENT_ID,
+                    expected_release_tree_digest=expected,
+                    publication_lock=locks,
+                )
+            releases = release_root / _TENANT_ID / "releases"
+            assert not (releases / _DEPLOYMENT_ID).exists()
+            assert [path.name for path in releases.iterdir()] == [
+                f".retired-{_DEPLOYMENT_ID}-{expected['value']}"
+            ]
+            monkeypatch.setattr(release_store_module, "_remove_tree", original_remove)
             store.remove_release(
                 _TENANT_ID,
                 _DEPLOYMENT_ID,
@@ -482,3 +514,85 @@ def test_release_store_removes_only_the_exact_authorized_release(tmp_path: Path)
             )
 
     assert not (release_root / _TENANT_ID / "releases" / _DEPLOYMENT_ID).exists()
+
+
+def test_release_removal_requires_exclusive_tenant_state(tmp_path: Path) -> None:
+    state_root = _state_root(tmp_path)
+    release_root = _release_root(tmp_path)
+    with (
+        DeploymentReleaseStore(
+            release_root,
+            state_root / "staging",
+            expected_owner=os.geteuid(),
+            expected_release_group=os.getegid(),
+        ) as store,
+        LockManager(
+            state_root / "locks",
+            expected_owner=os.geteuid(),
+            expected_directory_mode=0o700,
+        ) as locks,
+        locks.acquire(LockName.PUBLICATION, mode=LockMode.EXCLUSIVE),
+        pytest.raises(LockOrderError, match=r"tenant-state\.lock"),
+    ):
+        store.remove_release(
+            _TENANT_ID,
+            _DEPLOYMENT_ID,
+            expected_release_tree_digest={
+                "format": "lowerduckpond-release-tree-v1",
+                "algorithm": "sha256",
+                "value": "f" * 64,
+            },
+            publication_lock=locks,
+        )
+
+
+def test_release_store_closes_both_roots_after_filesystem_rejection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_root = _state_root(tmp_path)
+    release_root = _release_root(tmp_path)
+    opened: list[int] = []
+    original_open = release_store_module._open_validated_directory
+    original_fstat = os.fstat
+
+    def track_open(
+        path: Path,
+        *,
+        expected_owner: int,
+        expected_group: int | None,
+        expected_mode: int,
+        label: str,
+    ) -> int:
+        descriptor = original_open(
+            path,
+            expected_owner=expected_owner,
+            expected_group=expected_group,
+            expected_mode=expected_mode,
+            label=label,
+        )
+        opened.append(descriptor)
+        return descriptor
+
+    def drift_staging_device(descriptor: int) -> os.stat_result:
+        metadata = original_fstat(descriptor)
+        if len(opened) == _ROOT_DESCRIPTOR_COUNT and descriptor == opened[1]:
+            fields = list(metadata)
+            fields[2] += 1
+            return os.stat_result(fields)
+        return metadata
+
+    monkeypatch.setattr(release_store_module, "_open_validated_directory", track_open)
+    monkeypatch.setattr(os, "fstat", drift_staging_device)
+    with pytest.raises(ReleaseStoreError, match="not on the release filesystem"):
+        DeploymentReleaseStore(
+            release_root,
+            state_root / "staging",
+            expected_owner=os.geteuid(),
+            expected_release_group=os.getegid(),
+        )
+
+    assert len(opened) == _ROOT_DESCRIPTOR_COUNT
+    for descriptor in opened:
+        with pytest.raises(OSError):
+            original_fstat(descriptor)

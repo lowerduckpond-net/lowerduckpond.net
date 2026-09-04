@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Protocol
 
-from lowerduckpond_static_contracts import validate_uuid7
+from lowerduckpond_static_contracts import ContractError, Digest, validate_uuid7
 
 from lowerduckpond_static_host_agent.capacity import (
     DEFAULT_HOST_CAPACITY_LIMITS,
@@ -22,6 +22,7 @@ from lowerduckpond_static_host_agent.capacity import (
 from lowerduckpond_static_host_agent.intake import AdmittedArtifact, ArtifactIntake
 from lowerduckpond_static_host_agent.locks import LockMode, LockName
 from lowerduckpond_static_host_agent.release_tree import (
+    RELEASE_TREE_FORMAT,
     ReleaseTreeMeasurement,
     measure_release_tree,
 )
@@ -98,19 +99,23 @@ class DeploymentReleaseStore:
             expected_mode=_RELEASE_ROOT_MODE,
             label="release root",
         )
+        staging_fd: int | None = None
         try:
-            self._staging_fd = _open_validated_directory(
+            staging_fd = _open_validated_directory(
                 staging_root,
                 expected_owner=expected_owner,
                 expected_group=None,
                 expected_mode=_STAGING_ROOT_MODE,
                 label="release staging root",
             )
-            if os.fstat(self._release_fd).st_dev != os.fstat(self._staging_fd).st_dev:
+            if os.fstat(self._release_fd).st_dev != os.fstat(staging_fd).st_dev:
                 raise ReleaseStoreError("release staging is not on the release filesystem")
         except BaseException:
+            if staging_fd is not None:
+                os.close(staging_fd)
             os.close(self._release_fd)
             raise
+        self._staging_fd = staging_fd
         self._closed = False
 
     def __enter__(self) -> DeploymentReleaseStore:
@@ -184,7 +189,7 @@ class DeploymentReleaseStore:
     ) -> PublishedDeploymentRelease:
         """Durably publish or exactly replay one verified immutable release."""
 
-        self._require_locked(publication_lock)
+        self._require_mutation_locked(publication_lock)
         _validate_staged(staged)
         current = self._measure_staging(staged, publication_lock=publication_lock)
         if current != staged.measurement:
@@ -297,12 +302,11 @@ class DeploymentReleaseStore:
     ) -> None:
         """Durably remove one exact unreferenced immutable release."""
 
-        self._require_locked(publication_lock)
+        self._require_mutation_locked(publication_lock)
         tenant = validate_uuid7(tenant_id)
         deployment = validate_uuid7(deployment_id)
-        measurement = self.measure(tenant, deployment, publication_lock=publication_lock)
-        if measurement.digest.to_dict() != dict(expected_release_tree_digest):
-            raise ReleaseStoreError("release cleanup digest disagrees with authority")
+        expected_digest = _release_tree_digest(expected_release_tree_digest)
+        retired_name = _retired_name(deployment, expected_digest)
         tenant_fd = _open_child_directory(
             self._release_fd,
             tenant,
@@ -319,9 +323,32 @@ class DeploymentReleaseStore:
                 label="release namespace",
             )
             try:
+                canonical_exists = _entry_exists(releases_fd, deployment)
+                retired_exists = _entry_exists(releases_fd, retired_name)
+                if canonical_exists:
+                    if retired_exists:
+                        raise ReleaseStoreError(
+                            "release cleanup found canonical and retired identities"
+                        )
+                    measurement = self.measure(
+                        tenant,
+                        deployment,
+                        publication_lock=publication_lock,
+                    )
+                    if measurement.digest != expected_digest:
+                        raise ReleaseStoreError("release cleanup digest disagrees with authority")
+                    _rename_no_replace(
+                        releases_fd,
+                        deployment,
+                        releases_fd,
+                        retired_name,
+                    )
+                    os.fsync(releases_fd)
+                elif not retired_exists:
+                    return
                 _remove_tree(
                     releases_fd,
-                    deployment,
+                    retired_name,
                     expected_owner=self._expected_owner,
                 )
             finally:
@@ -369,6 +396,10 @@ class DeploymentReleaseStore:
         self._require_open()
         publication_lock.require_held(LockName.PUBLICATION, mode=LockMode.EXCLUSIVE)
 
+    def _require_mutation_locked(self, publication_lock: PublicationLockProof) -> None:
+        self._require_locked(publication_lock)
+        publication_lock.require_held(LockName.TENANT_STATE, mode=LockMode.EXCLUSIVE)
+
     def _require_open(self) -> None:
         if self._closed:
             raise RuntimeError("release store is closed")
@@ -379,6 +410,37 @@ def _staging_name(tenant_id: str, deployment_id: str) -> str:
     if _STAGING_NAME.fullmatch(name) is None:  # pragma: no cover - validated inputs derive it
         raise ReleaseStoreError("derived release staging name is not canonical")
     return name
+
+
+def _release_tree_digest(value: Mapping[str, object]) -> Digest:
+    if set(value) != {"format", "algorithm", "value"}:
+        raise ReleaseStoreError("release cleanup digest is not canonical")
+    format_value = value["format"]
+    algorithm = value["algorithm"]
+    digest_value = value["value"]
+    if type(format_value) is not str or type(algorithm) is not str or type(digest_value) is not str:
+        raise ReleaseStoreError("release cleanup digest is not canonical")
+    try:
+        digest = Digest(format_value, algorithm, digest_value)
+    except (ContractError, TypeError) as error:
+        raise ReleaseStoreError("release cleanup digest is not canonical") from error
+    if digest.format != RELEASE_TREE_FORMAT:
+        raise ReleaseStoreError("release cleanup digest has the wrong format")
+    return digest
+
+
+def _retired_name(deployment_id: str, digest: Digest) -> str:
+    return f".retired-{deployment_id}-{digest.value}"
+
+
+def _entry_exists(parent_fd: int, name: str) -> bool:
+    try:
+        os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    except OSError as error:
+        raise ReleaseStoreError("release identity could not be inspected safely") from error
+    return True
 
 
 def _validate_staged(staged: StagedDeploymentRelease) -> None:
