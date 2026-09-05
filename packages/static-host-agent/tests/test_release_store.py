@@ -693,6 +693,47 @@ def test_release_namespace_repairs_a_restrictive_crash_left_directory(
     assert stat.S_IMODE((tenant / "releases").stat().st_mode) == _DIRECTORY_MODE
 
 
+def test_release_namespace_syncs_new_directories_with_exact_modes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release_root = _release_root(tmp_path)
+    synced: list[tuple[int, int]] = []
+    original_fsync = os.fsync
+
+    def track_fsync(descriptor: int) -> None:
+        metadata = os.fstat(descriptor)
+        synced.append((metadata.st_dev, metadata.st_ino))
+        original_fsync(descriptor)
+
+    with DeploymentReleaseStore(
+        release_root,
+        release_root / ".staging",
+        expected_owner=os.geteuid(),
+        expected_release_group=os.getegid(),
+        expected_staging_group=os.getegid(),
+    ) as store:
+        monkeypatch.setattr(os, "fsync", track_fsync)
+        previous_umask = os.umask(0o022)
+        try:
+            descriptor = store._open_or_create_release_namespace(_TENANT_ID)
+        finally:
+            os.umask(previous_umask)
+        os.close(descriptor)
+
+    tenant = release_root / _TENANT_ID
+    releases = tenant / "releases"
+    root_identity = (release_root.stat().st_dev, release_root.stat().st_ino)
+    tenant_identity = (tenant.stat().st_dev, tenant.stat().st_ino)
+    releases_identity = (releases.stat().st_dev, releases.stat().st_ino)
+    assert synced == [
+        tenant_identity,
+        root_identity,
+        releases_identity,
+        tenant_identity,
+    ]
+
+
 def test_release_store_removes_only_the_exact_authorized_release(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
