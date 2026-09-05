@@ -763,6 +763,106 @@ def test_release_removal_retry_syncs_an_already_absent_identity(
             assert releases in synced
 
 
+def test_staging_removal_retry_syncs_an_already_absent_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_root = _state_root(tmp_path)
+    release_root = _release_root(tmp_path)
+    staging_root = release_root / ".staging"
+    staging_name = f"{_TENANT_ID}--{_DEPLOYMENT_ID}"
+    _mkdir(staging_root / staging_name, 0o700)
+
+    with (
+        DeploymentReleaseStore(
+            release_root,
+            staging_root,
+            expected_owner=os.geteuid(),
+            expected_release_group=os.getegid(),
+        ) as store,
+        LockManager(
+            state_root / "locks",
+            expected_owner=os.geteuid(),
+            expected_directory_mode=0o700,
+        ) as locks,
+        locks.acquire(LockName.PUBLICATION, mode=LockMode.EXCLUSIVE),
+    ):
+        original_fsync = os.fsync
+
+        def interrupt_final_parent_sync(descriptor: int) -> None:
+            if Path(f"/proc/self/fd/{descriptor}").resolve() == staging_root and not any(
+                staging_root.iterdir()
+            ):
+                raise RuntimeError("simulated post-rmdir interruption")
+            original_fsync(descriptor)
+
+        monkeypatch.setattr(os, "fsync", interrupt_final_parent_sync)
+        with pytest.raises(RuntimeError, match="post-rmdir interruption"):
+            store.reconcile_staging({}, publication_lock=locks)
+        assert not any(staging_root.iterdir())
+
+        synced: list[Path] = []
+
+        def track_retry_sync(descriptor: int) -> None:
+            synced.append(Path(f"/proc/self/fd/{descriptor}").resolve())
+            original_fsync(descriptor)
+
+        monkeypatch.setattr(os, "fsync", track_retry_sync)
+        staging_descriptor = os.open(staging_root, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            release_store_module._remove_staging_tree(
+                staging_descriptor,
+                staging_name,
+                expected_owner=os.geteuid(),
+            )
+        finally:
+            os.close(staging_descriptor)
+        assert staging_root in synced
+
+
+def test_release_removal_accepts_measured_hard_linked_files(tmp_path: Path) -> None:
+    state_root = _state_root(tmp_path)
+    release_root = _release_root(tmp_path)
+    release = release_root / _TENANT_ID / "releases" / _DEPLOYMENT_ID
+    _mkdir(release_root / _TENANT_ID, _DIRECTORY_MODE)
+    _mkdir(release.parent, _DIRECTORY_MODE)
+    _mkdir(release, _DIRECTORY_MODE)
+    _mkdir(release / "assets", _DIRECTORY_MODE)
+    source = release / "index.html"
+    source.write_bytes(b"shared immutable bytes\n")
+    source.chmod(_FILE_MODE)
+    os.link(source, release / "assets" / "same.html")
+
+    with (
+        DeploymentReleaseStore(
+            release_root,
+            release_root / ".staging",
+            expected_owner=os.geteuid(),
+            expected_release_group=os.getegid(),
+        ) as store,
+        LockManager(
+            state_root / "locks",
+            expected_owner=os.geteuid(),
+            expected_directory_mode=0o700,
+        ) as locks,
+        locks.acquire(LockName.PUBLICATION, mode=LockMode.EXCLUSIVE),
+        locks.acquire(LockName.TENANT_STATE, mode=LockMode.EXCLUSIVE),
+    ):
+        expected = store.measure(
+            _TENANT_ID,
+            _DEPLOYMENT_ID,
+            publication_lock=locks,
+        ).digest.to_dict()
+        store.remove_release(
+            _TENANT_ID,
+            _DEPLOYMENT_ID,
+            expected_release_tree_digest=expected,
+            publication_lock=locks,
+        )
+
+    assert not release.exists()
+
+
 def test_release_store_closes_both_roots_after_filesystem_rejection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

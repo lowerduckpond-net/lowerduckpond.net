@@ -659,6 +659,7 @@ def _remove_tree(parent_fd: int, name: str, *, expected_owner: int) -> None:
         try:
             os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
         except FileNotFoundError:
+            os.fsync(parent_fd)
             return
         raise error
     try:
@@ -694,7 +695,6 @@ def _remove_directory_contents(directory_fd: int, *, expected_owner: int) -> Non
             not stat.S_ISREG(metadata.st_mode)
             or metadata.st_uid != expected_owner
             or stat.S_IMODE(metadata.st_mode) != _RELEASE_FILE_MODE
-            or metadata.st_nlink != 1
         ):
             raise ReleaseStoreError("release cleanup encountered an unsafe inode")
         os.unlink(name, dir_fd=directory_fd)
@@ -712,6 +712,7 @@ def _remove_staging_tree(parent_fd: int, name: str, *, expected_owner: int) -> N
         try:
             os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
         except FileNotFoundError:
+            os.fsync(parent_fd)
             return
         raise error
     try:
@@ -745,7 +746,6 @@ def _remove_staging_contents(directory_fd: int, *, expected_owner: int) -> None:
             not stat.S_ISREG(metadata.st_mode)
             or metadata.st_uid != expected_owner
             or stat.S_IMODE(metadata.st_mode) not in {_RELEASE_FILE_MODE, 0o600}
-            or metadata.st_nlink != 1
         ):
             raise ReleaseStoreError("staging cleanup encountered an unsafe inode")
         os.unlink(name, dir_fd=directory_fd)
