@@ -161,6 +161,7 @@ def activate_deployment_transition_outcome(  # noqa: PLR0913
                     candidate,
                     restorer=restorer,
                     verifier=verifier,
+                    source_restoration_permitted=prepared.source_restoration_permitted,
                     error=error,
                 )
             _ensure_candidate_running(
@@ -171,6 +172,7 @@ def activate_deployment_transition_outcome(  # noqa: PLR0913
                 restorer=restorer,
                 verifier=verifier,
                 candidate_selection_is_durable=current_job.document["phase"] == "completed",
+                source_restoration_permitted=prepared.source_restoration_permitted,
             )
             try:
                 return finalize_deployment_transition_outcome(
@@ -182,7 +184,9 @@ def activate_deployment_transition_outcome(  # noqa: PLR0913
                     failure_hook=commit_failure_hook,
                 )
             except (AuditCapacityError, CapacityError, StateAdmissionRejectedError) as error:
-                _restore_source(runtime, source, restorer=restorer, error=error)
+                if prepared.source_restoration_permitted:
+                    _restore_source(runtime, source, restorer=restorer, error=error)
+                raise error from None
 
 
 def _require_exact_job(
@@ -247,11 +251,16 @@ def _ensure_candidate_running(  # noqa: PLR0913 - callbacks stay explicit
     restorer: GenerationRestorer,
     verifier: GenerationVerifier,
     candidate_selection_is_durable: bool,
+    source_restoration_permitted: bool,
 ) -> None:
     active_id = runtime.read_active()
     source_id = source.manifest.generation_id
     candidate_id = candidate.manifest.generation_id
     if active_id == source_id:
+        if not source_restoration_permitted:
+            raise DeploymentActivationError(
+                "active source cannot be used after its release was retired"
+            )
         try:
             try:
                 verifier(source)
@@ -267,16 +276,34 @@ def _ensure_candidate_running(  # noqa: PLR0913 - callbacks stay explicit
             try:
                 runtime.select_active(candidate_id)
             except BaseException as error:
-                _restore_source(runtime, source, restorer=restorer, error=error)
+                _handle_candidate_failure(
+                    runtime,
+                    source,
+                    restorer=restorer,
+                    source_restoration_permitted=source_restoration_permitted,
+                    error=error,
+                )
         try:
             verifier(candidate)
         except Exception:
             try:
                 reloader(source, candidate)
             except BaseException as error:
-                _restore_source(runtime, source, restorer=restorer, error=error)
+                _handle_candidate_failure(
+                    runtime,
+                    source,
+                    restorer=restorer,
+                    source_restoration_permitted=source_restoration_permitted,
+                    error=error,
+                )
         except BaseException as error:
-            _restore_source(runtime, source, restorer=restorer, error=error)
+            _handle_candidate_failure(
+                runtime,
+                source,
+                restorer=restorer,
+                source_restoration_permitted=source_restoration_permitted,
+                error=error,
+            )
         return
     raise DeploymentActivationError(
         "active Caddy generation is outside deployment recovery authority"
@@ -300,6 +327,21 @@ def _restore_source(
     raise error from None
 
 
+def _handle_candidate_failure(
+    runtime: CaddyRuntime,
+    source: PinnedCaddyGeneration,
+    *,
+    restorer: GenerationRestorer,
+    source_restoration_permitted: bool,
+    error: BaseException,
+) -> NoReturn:
+    if source_restoration_permitted:
+        _restore_source(runtime, source, restorer=restorer, error=error)
+    raise DeploymentActivationError(
+        "deployment candidate failed after source release retirement"
+    ) from error
+
+
 def _reject_capacity_before_activation(  # noqa: PLR0913 - callbacks explicit
     runtime: CaddyRuntime,
     source: PinnedCaddyGeneration,
@@ -307,10 +349,15 @@ def _reject_capacity_before_activation(  # noqa: PLR0913 - callbacks explicit
     *,
     restorer: GenerationRestorer,
     verifier: GenerationVerifier,
+    source_restoration_permitted: bool,
     error: BaseException,
 ) -> NoReturn:
     active_id = runtime.read_active()
     if active_id == source.manifest.generation_id:
+        if not source_restoration_permitted:
+            raise DeploymentActivationError(
+                "active source cannot be used after its release was retired"
+            )
         try:
             verifier(source)
         except Exception:
@@ -319,7 +366,9 @@ def _reject_capacity_before_activation(  # noqa: PLR0913 - callbacks explicit
             _restore_source(runtime, source, restorer=restorer, error=control_error)
         raise error from None
     if active_id == candidate.manifest.generation_id:
-        _restore_source(runtime, source, restorer=restorer, error=error)
+        if source_restoration_permitted:
+            _restore_source(runtime, source, restorer=restorer, error=error)
+        raise error from None
     raise DeploymentActivationError(
         "active Caddy generation is outside deployment recovery authority"
     )

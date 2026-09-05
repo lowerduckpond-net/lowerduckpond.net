@@ -126,7 +126,10 @@ class _ReleaseStore:
     ) -> _Measurement:
         assert tenant_id == _tenant_id()
         assert publication_lock is not None
-        digest = self.releases[cast(str, deployment_id)]
+        try:
+            digest = self.releases[cast(str, deployment_id)]
+        except KeyError as error:
+            raise FileNotFoundError(deployment_id) from error
         return _Measurement(
             Digest(
                 cast(str, digest["format"]),
@@ -1298,6 +1301,117 @@ def test_deployment_recovery_repairs_an_interrupted_terminal_commit(
             == plan.result
         )
         assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
+def test_deployment_recovery_accepts_a_retired_rollback_source_record(
+    tmp_path: Path,
+) -> None:
+    repository, job, plan, releases = _prepared(
+        tmp_path,
+        operation="rollback",
+        deployment_count=3,
+        state="active",
+    )
+    runtime = _recovery_runtime(repository, job, plan)
+    prepared = _prepared_activation(repository, job["jobId"], plan)
+    source_manifest = cast(dict[str, object], plan.intent["sourceManifest"])
+    source_spec = cast(dict[str, object], source_manifest["spec"])
+    source_selection = cast(dict[str, object], source_spec["desiredDeployment"])
+
+    def interrupt(boundary: DeploymentCommitBoundary) -> None:
+        if boundary is DeploymentCommitBoundary.RETIRED_DEPLOYMENT_REMOVED:
+            raise RuntimeError("interrupted after rollback source retirement")
+
+    try:
+        with pytest.raises(RuntimeError, match="rollback source retirement"):
+            _activate(repository, runtime, releases, prepared, failure_hook=interrupt)
+
+        with pytest.raises(FileNotFoundError):
+            repository.read(
+                StateRecordPath.tenant_deployment(
+                    plan.tenant_id,
+                    source_selection["id"],
+                )
+            )
+        assert (
+            recover_deployment_transition(
+                repository,
+                cast(CaddyRuntime, runtime),
+                cast(DeploymentReleaseStore, releases),
+                cast(PublicationGate, _Gate()),
+                plan.intent_id,
+                reloader=runtime.reload,
+                restorer=runtime.restore,
+                verifier=runtime.verify,
+            )
+            == plan.result
+        )
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
+def test_deployment_recovery_never_restores_a_retired_source_release(
+    tmp_path: Path,
+) -> None:
+    repository, job, plan, releases = _prepared(
+        tmp_path,
+        operation="rollback",
+        deployment_count=3,
+        state="active",
+    )
+    runtime = _recovery_runtime(repository, job, plan)
+    prepared = _prepared_activation(repository, job["jobId"], plan)
+
+    def interrupt(boundary: DeploymentCommitBoundary) -> None:
+        if boundary is DeploymentCommitBoundary.RETIRED_RELEASE_REMOVED:
+            raise RuntimeError("interrupted after rollback release retirement")
+
+    def reject_candidate(_generation: PinnedCaddyGeneration) -> None:
+        raise RuntimeError("candidate verification failed")
+
+    def reject_reload(
+        _source: PinnedCaddyGeneration,
+        _candidate: PinnedCaddyGeneration,
+    ) -> None:
+        raise RuntimeError("candidate reload failed")
+
+    try:
+        with pytest.raises(RuntimeError, match="rollback release retirement"):
+            _activate(repository, runtime, releases, prepared, failure_hook=interrupt)
+
+        runtime.events.clear()
+        with pytest.raises(DeploymentActivationError, match="source release retirement"):
+            recover_deployment_transition(
+                repository,
+                cast(CaddyRuntime, runtime),
+                cast(DeploymentReleaseStore, releases),
+                cast(PublicationGate, _Gate()),
+                plan.intent_id,
+                reloader=reject_reload,
+                restorer=runtime.restore,
+                verifier=reject_candidate,
+            )
+        assert runtime.active == runtime.running == _CANDIDATE_GENERATION
+        assert "restored" not in runtime.events
+        assert f"selected:{_SOURCE_GENERATION}" not in runtime.events
+        assert repository.measure_intent_records().records
+
+        assert (
+            recover_deployment_transition(
+                repository,
+                cast(CaddyRuntime, runtime),
+                cast(DeploymentReleaseStore, releases),
+                cast(PublicationGate, _Gate()),
+                plan.intent_id,
+                reloader=runtime.reload,
+                restorer=runtime.restore,
+                verifier=runtime.verify,
+            )
+            == plan.result
+        )
     finally:
         repository.close()
 

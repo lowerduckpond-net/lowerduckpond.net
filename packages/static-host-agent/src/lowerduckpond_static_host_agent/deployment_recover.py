@@ -193,10 +193,12 @@ def _reconstruct_deployment(  # noqa: PLR0913 - recovery authority stays explici
         deployment_transition_tenant_id=tenant_id,
     )
     source_snapshot = runtime.read_generation_route_snapshot(source_id)
+    source_tenant = _snapshot_tenant(source_snapshot, tenant_id)
     source_deployment = _require_source_authority(
         transaction,
         job.document,
         source_manifest,
+        source_tenant.deployment,
     )
     deployment = _candidate_deployment(
         transaction,
@@ -204,9 +206,9 @@ def _reconstruct_deployment(  # noqa: PLR0913 - recovery authority stays explici
         intent.document,
         candidate_manifest,
     )
-    source_tenant = TenantRouteInput(
-        source_manifest,
-        source_observed,
+    source_restoration_permitted = _source_restoration_permitted(
+        transaction,
+        release_store,
         source_deployment,
     )
     candidate_tenant = TenantRouteInput(
@@ -269,6 +271,7 @@ def _reconstruct_deployment(  # noqa: PLR0913 - recovery authority stays explici
         plan,
         candidate_generation_manifest,
         capacity_limits,
+        source_restoration_permitted,
     )
 
 
@@ -366,6 +369,7 @@ def _require_source_authority(
     transaction: DeploymentRecoveryTransaction,
     job: dict[str, object],
     source_manifest: dict[str, object],
+    source_deployment: dict[str, object] | None,
 ) -> dict[str, object] | None:
     expected = job["expectedSource"]
     metadata = source_manifest["metadata"]
@@ -374,14 +378,6 @@ def _require_source_authority(
         raise DeploymentRecoveryError("deployment source authority is malformed")
     tenant_id = validate_uuid7(metadata["id"])
     namespace = transaction.read(StateRecordPath.platform_namespace()).document
-    desired = spec.get("desiredDeployment")
-    source_deployment: dict[str, object] | None = None
-    if desired is not None:
-        if type(desired) is not dict:  # pragma: no cover - schema validation proves this
-            raise DeploymentRecoveryError("deployment source reference is malformed")
-        source_deployment = transaction.read(
-            StateRecordPath.tenant_deployment(tenant_id, desired["id"])
-        ).document
     if source_deployment is not None:
         validate_contract(source_deployment, expected_kind=ContractKind.DEPLOYMENT_RECORD)
     actual = {
@@ -401,6 +397,28 @@ def _require_source_authority(
     ):
         raise DeploymentRecoveryError("deployment recovery source authority drifted")
     return source_deployment
+
+
+def _source_restoration_permitted(
+    transaction: DeploymentRecoveryTransaction,
+    release_store: DeploymentReleaseStore,
+    source_deployment: dict[str, object] | None,
+) -> bool:
+    if source_deployment is None:
+        return True
+    try:
+        measured = release_store.measure(
+            source_deployment["tenantId"],
+            source_deployment["id"],
+            publication_lock=transaction,
+        )
+    except FileNotFoundError:
+        return False
+    except ReleaseStoreError as error:
+        raise DeploymentRecoveryError("deployment source release cannot be verified") from error
+    if measured.digest.to_dict() != source_deployment["releaseTreeDigest"]:
+        raise DeploymentRecoveryError("deployment source release authority drifted")
+    return True
 
 
 def _candidate_deployment(

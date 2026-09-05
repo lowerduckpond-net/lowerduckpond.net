@@ -82,6 +82,7 @@ class PreparedDeploymentTransition:
     plan: DeploymentTransitionPlan
     candidate_manifest: CaddyGenerationManifest
     capacity_limits: HostCapacityLimits
+    source_restoration_permitted: bool = True
 
 
 class DeploymentPreparationTransaction(Protocol):
