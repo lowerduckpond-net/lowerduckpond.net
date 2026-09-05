@@ -39,6 +39,7 @@ provisioner:
         caddy_domain: lowerduckpond.test
         caddy_tls_mode: internal
         caddy_generation_enabled: true
+        caddy_origin_pull_enforcement_enabled: true
         static_publication_enabled: false
         podman_cgroup_manager: cgroupfs
         backup_repository: /mnt/lowerduckpond-restic-test

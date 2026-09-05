@@ -184,6 +184,30 @@ def _assert_route(
         assert response_body.encode() == body
 
 
+def _assert_unauthenticated_route_rejected(host: Host, origin: str) -> None:
+    command = " ".join(
+        (
+            "/usr/bin/curl",
+            "--silent",
+            "--show-error",
+            "--cacert",
+            shlex.quote(ORIGIN_PULL_CA_CERTIFICATE),
+            "--interface",
+            "173.245.48.1",
+            "--resolve",
+            shlex.quote(f"{origin}:443:127.0.0.1"),
+            "--output",
+            "/dev/null",
+            "--write-out",
+            shlex.quote("%{http_code}"),
+            shlex.quote(f"https://{origin}/"),
+        )
+    )
+    result = host.run(command)
+    assert result.rc != 0
+    assert result.stdout == "000"
+
+
 def _operator_inputs(tmp_path: Path) -> tuple[str, Path, Path]:
     identity = tmp_path / "operator-key"
     identity.write_text(
@@ -347,6 +371,7 @@ def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lif
         status=302,
         redirect=f"https://{canonical_origin}/",
     )
+    _assert_unauthenticated_route_rejected(host, canonical_origin)
     assert (
         _submit(
             tmp_path,
@@ -359,16 +384,18 @@ def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lif
         == deployed
     )
 
+    suspend_request = _request("suspend", next(identities), tenantId=tenant_id)
     suspended = _submit(
         tmp_path,
         operator_host,
         identity,
         ssh,
-        _request("suspend", next(identities), tenantId=tenant_id),
+        suspend_request,
     )
     assert _lifecycle(suspended) == "suspended"
     _assert_route(host, canonical_origin, status=404)
     _assert_route(host, original_alias, status=404)
+    assert _submit(tmp_path, operator_host, identity, ssh, dict(suspend_request)) == suspended
 
     second = _deployment_zip(b"second installed M3.8 release\n")
     suspended_deploy = _submit(
@@ -400,12 +427,13 @@ def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lif
     _assert_route(host, canonical_origin, status=404)
     _assert_route(host, original_alias, status=404)
 
+    resume_request = _request("resume", next(identities), tenantId=tenant_id)
     resumed = _submit(
         tmp_path,
         operator_host,
         identity,
         ssh,
-        _request("resume", next(identities), tenantId=tenant_id),
+        resume_request,
     )
     assert _lifecycle(resumed) == "active"
     assert _desired_deployment(resumed) == first_deployment
@@ -416,6 +444,7 @@ def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lif
         status=302,
         redirect=f"https://{canonical_origin}/",
     )
+    assert _submit(tmp_path, operator_host, identity, ssh, dict(resume_request)) == resumed
 
     conflicting_create = _submit(
         tmp_path,
@@ -432,12 +461,18 @@ def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lif
     assert conflicting_create["status"] == "failed"
     assert conflicting_create["errorCode"] == "state_drift"
 
+    rename_request = _request(
+        "rename",
+        next(identities),
+        tenantId=tenant_id,
+        slug=renamed_slug,
+    )
     renamed = _submit(
         tmp_path,
         operator_host,
         identity,
         ssh,
-        _request("rename", next(identities), tenantId=tenant_id, slug=renamed_slug),
+        rename_request,
     )
     metadata = _manifest(renamed)["metadata"]
     assert type(metadata) is dict
@@ -450,15 +485,18 @@ def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lif
         status=302,
         redirect=f"https://{canonical_origin}/",
     )
+    assert _submit(tmp_path, operator_host, identity, ssh, dict(rename_request)) == renamed
 
+    reconcile_request = _request("reconcile", next(identities), tenantId=tenant_id)
     reconciled = _submit(
         tmp_path,
         operator_host,
         identity,
         ssh,
-        _request("reconcile", next(identities), tenantId=tenant_id),
+        reconcile_request,
     )
     assert _manifest(reconciled) == _manifest(renamed)
+    assert _submit(tmp_path, operator_host, identity, ssh, dict(reconcile_request)) == reconciled
 
     third = _deployment_zip(b"third installed M3.8 release\n")
     third_deploy = _submit(
