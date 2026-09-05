@@ -355,6 +355,11 @@ class DeploymentReleaseStore:
         try:
             if not _entry_exists(tenant_fd, "releases"):
                 os.fsync(tenant_fd)
+                _remove_empty_directory(
+                    self._release_fd,
+                    tenant,
+                    label="tenant release namespace",
+                )
                 return
             releases_fd = _open_child_directory(
                 tenant_fd,
@@ -387,14 +392,25 @@ class DeploymentReleaseStore:
                     os.fsync(releases_fd)
                 elif not retired_exists:
                     os.fsync(releases_fd)
-                    return
-                _remove_tree(
-                    releases_fd,
-                    retired_name,
-                    expected_owner=self._expected_owner,
+                if canonical_exists or retired_exists:
+                    _remove_tree(
+                        releases_fd,
+                        retired_name,
+                        expected_owner=self._expected_owner,
+                    )
+                releases_absent = _remove_empty_directory(
+                    tenant_fd,
+                    "releases",
+                    label="release namespace",
                 )
             finally:
                 os.close(releases_fd)
+            if releases_absent:
+                _remove_empty_directory(
+                    self._release_fd,
+                    tenant,
+                    label="tenant release namespace",
+                )
         finally:
             os.close(tenant_fd)
 
@@ -538,6 +554,22 @@ def _entry_exists(parent_fd: int, name: str) -> bool:
         return False
     except OSError as error:
         raise ReleaseStoreError("release identity could not be inspected safely") from error
+    return True
+
+
+def _remove_empty_directory(parent_fd: int, name: str, *, label: str) -> bool:
+    """Remove one empty child and durably record its absence in the parent."""
+
+    try:
+        os.rmdir(name, dir_fd=parent_fd)
+    except FileNotFoundError:
+        os.fsync(parent_fd)
+        return True
+    except OSError as error:
+        if error.errno == errno.ENOTEMPTY:
+            return False
+        raise ReleaseStoreError(f"{label} could not be removed durably") from error
+    os.fsync(parent_fd)
     return True
 
 

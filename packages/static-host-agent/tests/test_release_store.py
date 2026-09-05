@@ -870,7 +870,118 @@ def test_release_store_removes_only_the_exact_authorized_release(
                 publication_lock=locks,
             )
 
-    assert not (release_root / _TENANT_ID / "releases" / _DEPLOYMENT_ID).exists()
+    assert not (release_root / _TENANT_ID).exists()
+
+
+def test_release_store_retains_a_nonempty_tenant_namespace(tmp_path: Path) -> None:
+    state_root = _state_root(tmp_path)
+    release_root = _release_root(tmp_path)
+    tenant = release_root / _TENANT_ID
+    releases = tenant / "releases"
+    retained_deployment = "0198d17f-6f4a-7000-8000-000000000004"
+    _mkdir(tenant, _DIRECTORY_MODE)
+    _mkdir(releases, _DIRECTORY_MODE)
+    _mkdir(releases / retained_deployment, _DIRECTORY_MODE)
+
+    with (
+        DeploymentReleaseStore(
+            release_root,
+            release_root / ".staging",
+            expected_owner=os.geteuid(),
+            expected_release_group=os.getegid(),
+            expected_staging_group=os.getegid(),
+        ) as store,
+        LockManager(
+            state_root / "locks",
+            expected_owner=os.geteuid(),
+            expected_directory_mode=0o700,
+        ) as locks,
+        locks.acquire(LockName.PUBLICATION, mode=LockMode.EXCLUSIVE),
+        locks.acquire(LockName.TENANT_STATE, mode=LockMode.EXCLUSIVE),
+    ):
+        store.remove_release(
+            _TENANT_ID,
+            _DEPLOYMENT_ID,
+            expected_release_tree_digest={
+                "format": "lowerduckpond-release-tree-v1",
+                "algorithm": "sha256",
+                "value": "f" * 64,
+            },
+            publication_lock=locks,
+        )
+
+    assert [path.name for path in releases.iterdir()] == [retained_deployment]
+
+
+def test_release_removal_retries_namespace_cleanup_after_interruption(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_root = _state_root(tmp_path)
+    release_root = _release_root(tmp_path)
+    tenant = release_root / _TENANT_ID
+    releases = tenant / "releases"
+    _mkdir(tenant, _DIRECTORY_MODE)
+    _mkdir(releases, _DIRECTORY_MODE)
+    _mkdir(
+        releases / f".retired-{_DEPLOYMENT_ID}-{'f' * 64}",
+        _DIRECTORY_MODE,
+    )
+    original_remove_empty = release_store_module._remove_empty_directory
+
+    def interrupt_namespace_cleanup(*_args: object, **_kwargs: object) -> bool:
+        raise RuntimeError("simulated namespace cleanup interruption")
+
+    with (
+        DeploymentReleaseStore(
+            release_root,
+            release_root / ".staging",
+            expected_owner=os.geteuid(),
+            expected_release_group=os.getegid(),
+            expected_staging_group=os.getegid(),
+        ) as store,
+        LockManager(
+            state_root / "locks",
+            expected_owner=os.geteuid(),
+            expected_directory_mode=0o700,
+        ) as locks,
+        locks.acquire(LockName.PUBLICATION, mode=LockMode.EXCLUSIVE),
+        locks.acquire(LockName.TENANT_STATE, mode=LockMode.EXCLUSIVE),
+    ):
+        monkeypatch.setattr(
+            release_store_module,
+            "_remove_empty_directory",
+            interrupt_namespace_cleanup,
+        )
+        with pytest.raises(RuntimeError, match="namespace cleanup interruption"):
+            store.remove_release(
+                _TENANT_ID,
+                _DEPLOYMENT_ID,
+                expected_release_tree_digest={
+                    "format": "lowerduckpond-release-tree-v1",
+                    "algorithm": "sha256",
+                    "value": "f" * 64,
+                },
+                publication_lock=locks,
+            )
+        assert list(releases.iterdir()) == []
+        monkeypatch.setattr(
+            release_store_module,
+            "_remove_empty_directory",
+            original_remove_empty,
+        )
+        store.remove_release(
+            _TENANT_ID,
+            _DEPLOYMENT_ID,
+            expected_release_tree_digest={
+                "format": "lowerduckpond-release-tree-v1",
+                "algorithm": "sha256",
+                "value": "f" * 64,
+            },
+            publication_lock=locks,
+        )
+
+    assert not tenant.exists()
 
 
 def test_release_removal_requires_exclusive_tenant_state(tmp_path: Path) -> None:
@@ -950,7 +1061,8 @@ def test_release_removal_retry_syncs_an_absent_parent_namespace(
             publication_lock=locks,
         )
 
-    assert synced == [release_root if missing == "tenant" else tenant]
+    expected_syncs = [release_root] if missing == "tenant" else [tenant, release_root]
+    assert synced == expected_syncs
 
 
 def test_release_removal_retry_syncs_an_already_absent_identity(
