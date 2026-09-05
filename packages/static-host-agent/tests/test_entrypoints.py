@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 from lowerduckpond_static_host_agent import entrypoints
+from lowerduckpond_static_host_agent.audit import AuditCapacityError
 from lowerduckpond_static_host_agent.caddy_admin import CaddyAdminError
 from lowerduckpond_static_host_agent.caddy_generation import CaddyGenerationError
 from lowerduckpond_static_host_agent.caddy_routes import TenantRouteInput
@@ -31,7 +32,7 @@ from lowerduckpond_static_host_agent.create_handler import (
 )
 from lowerduckpond_static_host_agent.deployment_handler import DeploymentLifecycleHandler
 from lowerduckpond_static_host_agent.release_tree import ReleaseTreeError
-from lowerduckpond_static_host_agent.repository import StateRecordPath
+from lowerduckpond_static_host_agent.repository import StateConflictError, StateRecordPath
 from lowerduckpond_static_host_agent.route_handler import RouteLifecycleHandler
 from lowerduckpond_static_host_agent.route_snapshot import TenantRouteSnapshot
 
@@ -144,6 +145,8 @@ def test_executor_entrypoint_registers_the_available_lifecycle_handlers(
         CaddyAdminError,
         CaddyGenerationError,
         CaddyRuntimeError,
+        AuditCapacityError,
+        StateConflictError,
     ],
 )
 def test_executor_entrypoint_sanitizes_registered_handler_failures(
