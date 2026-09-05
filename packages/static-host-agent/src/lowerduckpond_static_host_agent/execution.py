@@ -1966,20 +1966,23 @@ def _bind_dispatch_authority(  # noqa: PLR0912,PLR0915 - dispatch authority matr
     if type(request) is not dict:
         raise ExecutionError("authorization request authority is malformed")
     artifact_operation = request["operation"] in {"deploy", "import"}
-    export_operation = request["operation"] == "export"
+    expected_source = job.get("expectedSource")
+    source_release_operation = request["operation"] in {"deploy", "rollback", "export"} and (
+        type(expected_source) is dict and type(expected_source.get("deploymentDigest")) is dict
+    )
     if not artifact_operation and existing_release_digest is not None:
         raise ExecutionError("non-artifact dispatch carries artifact release authority")
-    if not export_operation and existing_source_release_digest is not None:
-        raise ExecutionError("non-export dispatch carries source release authority")
+    if not source_release_operation and existing_source_release_digest is not None:
+        raise ExecutionError("dispatch without a selected source carries release authority")
     if (
-        export_operation
+        source_release_operation
         and existing_source_release_digest is not None
         and existing_archives is None
         and existing_deployments is None
         and existing_tenants is None
         and existing_tenant_histories is None
     ):
-        raise ExecutionError("dispatch export authority is only partially bound")
+        raise ExecutionError("dispatch source release authority is only partially bound")
     if (
         existing_archives is not None
         and existing_deployments is not None
@@ -1988,10 +1991,10 @@ def _bind_dispatch_authority(  # noqa: PLR0912,PLR0915 - dispatch authority matr
     ):
         if artifact_operation and existing_release_digest is None:
             raise ExecutionError("dispatch artifact authority is not bound")
-        if export_operation and existing_source_release_digest is None:
+        if source_release_operation and existing_source_release_digest is None:
             rebound = job
-            rebound["dispatchSourceReleaseTreeDigest"] = _export_source_release_tree_digest(
-                transaction, job, request
+            rebound["dispatchSourceReleaseTreeDigest"] = (
+                _derive_dispatch_source_release_tree_digest(transaction, job, request)
             )
             try:
                 return transaction.bind_dispatch_authority(
@@ -2001,7 +2004,7 @@ def _bind_dispatch_authority(  # noqa: PLR0912,PLR0915 - dispatch authority matr
                     capacity_limits=capacity_limits,
                 )
             except StateConflictError as error:
-                raise ExecutionError("export source authority changed during dispatch") from error
+                raise ExecutionError("source release authority changed during dispatch") from error
         if (
             artifact_release_tree_digest is not None
             and existing_release_digest != artifact_release_tree_digest
@@ -2023,8 +2026,8 @@ def _bind_dispatch_authority(  # noqa: PLR0912,PLR0915 - dispatch authority matr
     if artifact_operation and artifact_release_tree_digest is None:
         raise ExecutionError("dispatch artifact release authority is unavailable")
     source_release_tree_digest: dict[str, object] | None = None
-    if export_operation:
-        source_release_tree_digest = _export_source_release_tree_digest(
+    if source_release_operation:
+        source_release_tree_digest = _derive_dispatch_source_release_tree_digest(
             transaction,
             job,
             request,
@@ -2065,7 +2068,7 @@ def _bind_dispatch_authority(  # noqa: PLR0912,PLR0915 - dispatch authority matr
         raise ExecutionError("record-history authority changed during dispatch") from error
 
 
-def _export_source_release_tree_digest(
+def _derive_dispatch_source_release_tree_digest(
     transaction: ExecutionTransaction,
     job: dict[str, object],
     request: dict[str, object],
@@ -2073,19 +2076,17 @@ def _export_source_release_tree_digest(
     expected = job["expectedSource"]
     deployment_digest = None if type(expected) is not dict else expected.get("deploymentDigest")
     if type(deployment_digest) is not dict:
-        raise ExecutionError("dispatch export source deployment authority is unavailable")
+        raise ExecutionError("dispatch source deployment authority is unavailable")
     try:
         deployment = transaction.deployment_for_digest(
             request["tenantId"],
             deployment_digest,
         )
     except (FileNotFoundError, StatePathError, StateRecordError) as error:
-        raise ExecutionError(
-            "dispatch export source deployment authority is unavailable"
-        ) from error
+        raise ExecutionError("dispatch source deployment authority is unavailable") from error
     raw_source_release_tree_digest = deployment.get("releaseTreeDigest")
     if type(raw_source_release_tree_digest) is not dict:
-        raise ExecutionError("dispatch export source release authority is malformed")
+        raise ExecutionError("dispatch source release authority is malformed")
     return deepcopy(raw_source_release_tree_digest)
 
 
@@ -3100,7 +3101,7 @@ def _validate_export_bundle(
         request = job["request"]
         if type(request) is not dict:
             raise ExecutionError("successful export lost its source authority")
-        release_tree_digest = _export_source_release_tree_digest(
+        release_tree_digest = _derive_dispatch_source_release_tree_digest(
             transaction,
             job,
             request,
