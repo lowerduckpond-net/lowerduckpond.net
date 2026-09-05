@@ -156,6 +156,22 @@
     - "{{ static_host_agent_state_root }}/audit"
     - "{{ static_host_agent_state_root }}/locks"
 
+- name: Create the unpublished release root
+  ansible.builtin.file:
+    path: "{{ static_host_agent_release_root }}"
+    state: directory
+    owner: root
+    group: caddy
+    mode: "0710"
+
+- name: Create private release staging on the release filesystem
+  ansible.builtin.file:
+    path: "{{ static_host_agent_release_staging_root }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
 - name: Install and atomically select the pinned host-agent artifact
   ansible.builtin.command:
     argv:
@@ -434,14 +450,6 @@
   failed_when: >-
     static_host_agent_disabled_issuance.rc != 78 or
     static_host_agent_disabled_issuance.stderr | trim != 'publication_disabled'
-
-- name: Create the unpublished release root
-  ansible.builtin.file:
-    path: "{{ static_host_agent_release_root }}"
-    state: directory
-    owner: root
-    group: caddy
-    mode: "0710"
 
 - name: Create inert Caddy generation storage
   ansible.builtin.file:

@@ -1,0 +1,94 @@
+#!/usr/bin/python3
+"""Run one Restic backup while holding validated static-publication locks."""
+
+from __future__ import annotations
+
+import fcntl
+import os
+import stat
+import sys
+from pathlib import Path
+from typing import NoReturn
+
+_LOCKS = (
+    "/var/lib/lowerduckpond/static/locks/publication.lock",
+    "/var/lib/lowerduckpond/static/locks/tenant-state.lock",
+)
+_STAGING = "/srv/lowerduckpond/sites/.staging"
+_FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+_DIRECTORY_FLAGS = _FILE_FLAGS | os.O_NONBLOCK | os.O_DIRECTORY
+_LOCK_MODE = 0o600
+_STAGING_MODE = 0o700
+
+
+def _fail(message: str) -> NoReturn:
+    print(message, file=sys.stderr)
+    raise SystemExit(1)
+
+
+def _same_named_inode(path: str, descriptor: int) -> bool:
+    opened = os.fstat(descriptor)
+    named = Path(path).stat(follow_symlinks=False)
+    return (opened.st_dev, opened.st_ino) == (named.st_dev, named.st_ino)
+
+
+def _open_lock(path: str) -> int:
+    try:
+        descriptor = os.open(path, _FILE_FLAGS)
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != 0
+            or metadata.st_gid != 0
+            or stat.S_IMODE(metadata.st_mode) != _LOCK_MODE
+            or metadata.st_nlink != 1
+            or not _same_named_inode(path, descriptor)
+        ):
+            _fail("Static snapshot lock metadata is unsafe.")
+        fcntl.flock(descriptor, fcntl.LOCK_SH)
+        if not _same_named_inode(path, descriptor):
+            _fail("Static snapshot lock identity changed while locking.")
+        os.set_inheritable(descriptor, True)
+        return descriptor
+    except OSError:
+        _fail("Static snapshot lock could not be opened safely.")
+
+
+def _require_quiescent_staging() -> None:
+    try:
+        descriptor = os.open(_STAGING, _DIRECTORY_FLAGS)
+        try:
+            metadata = os.fstat(descriptor)
+            if (
+                metadata.st_uid != 0
+                or metadata.st_gid != 0
+                or stat.S_IMODE(metadata.st_mode) != _STAGING_MODE
+                or not _same_named_inode(_STAGING, descriptor)
+            ):
+                _fail("Release staging metadata is unsafe.")
+            with os.scandir(descriptor) as entries:
+                if next(entries, None) is not None:
+                    _fail("Refusing backup while release staging is nonempty.")
+        finally:
+            os.close(descriptor)
+    except OSError:
+        _fail("Release staging could not be opened safely.")
+
+
+def main() -> int:
+    if sys.argv[1:3] != ["/usr/bin/restic", "backup"]:
+        _fail("Static snapshot launcher accepts only Restic backup.")
+    descriptors = [_open_lock(path) for path in _LOCKS]
+    for path, descriptor in zip(_LOCKS, descriptors, strict=True):
+        try:
+            if not _same_named_inode(path, descriptor):
+                _fail("Static snapshot lock identity changed after acquisition.")
+        except OSError:
+            _fail("Static snapshot lock identity could not be revalidated.")
+    _require_quiescent_staging()
+    os.execve(sys.argv[1], sys.argv[1:], os.environ)  # noqa: S606
+    return 1  # pragma: no cover
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

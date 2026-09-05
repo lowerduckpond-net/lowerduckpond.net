@@ -144,6 +144,14 @@ def test_production_convergence_repeats_the_m3_6_preflight() -> None:
     assert "-o IdentitiesOnly=yes" in dark_host_preflight
     assert "expected_state_inventory=" in preflight
     assert "expected_authorization_inventory=" in preflight
+    assert "release_root=/srv/lowerduckpond/sites" in preflight
+    assert "release_root_inventory=" in preflight
+    assert ") == root:caddy:710" in preflight
+    assert "release_staging_root=${release_root}/.staging" in preflight
+    assert ") == root:root:700" in preflight
+    assert 'remote_fail "${release_staging_root} is not empty"' in preflight
+    assert 'remote_fail "${release_root} inventory drifted"' in preflight
+    assert "/srv/lowerduckpond/sites\\|root:caddy:710" not in preflight
     assert "export.lock | intake.lock | publication.lock | tenant-state.lock" in preflight
     assert "regular\\ empty\\ file:root:root:600:1:0" in preflight
     assert "expected_locks=" not in preflight

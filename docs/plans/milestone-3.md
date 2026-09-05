@@ -697,8 +697,8 @@ a private 64-MiB/4,096-inode workspace and the accepted systemd sandbox.
 
 Add `static_publication_enabled: false` to defaults and production inventory.
 Install the gate at both job issuance and Caddy generation. Back up the new
-authoritative state, but exclude intake, export spool, Caddy runtime generations,
-and secrets.
+authoritative state, but exclude intake, private release staging, export spool,
+Caddy runtime generations, and secrets.
 
 Gate result: two Molecule converges plus installed Testinfra checks proved
 ownership, modes, mounts, unit hardening, backup inclusion/exclusion, zero

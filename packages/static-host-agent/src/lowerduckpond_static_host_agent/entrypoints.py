@@ -9,6 +9,7 @@ import pwd
 import re
 import secrets
 import ssl
+import stat
 import subprocess
 import sys
 import time
@@ -135,6 +136,10 @@ _SYSTEMD_DESCRIPTOR_START: Final = 3
 _CADDY_ACCOUNT: Final = "caddy"
 _MAXIMUM_CA_PEM_BYTES: Final = 64 * 1024
 _MAXIMUM_TENANT_RELEASES: Final = 3
+_RELEASE_STAGING_NAME: Final = ".staging"
+_RELEASE_STAGING_OWNER: Final = 0
+_RELEASE_STAGING_GROUP: Final = 0
+_RELEASE_STAGING_MODE: Final = 0o700
 _CADDY_BOOTSTRAP_MINIMUM_ARGUMENTS: Final = 5
 _CADDY_ORIGIN_PULL_MODES: Final = {
     "--origin-pull-staged": False,
@@ -1049,12 +1054,17 @@ def _tenant_release_namespace_ids() -> tuple[str, ...]:
     try:
         with os.scandir(TENANT_RELEASE_ROOT) as entries:
             found = tuple(sorted(entries, key=lambda entry: entry.name))
-    except FileNotFoundError:
-        return ()
-    if len(found) > DEFAULT_STATE_INVENTORY_LIMITS.maximum_tenants:
+    except FileNotFoundError as error:
+        raise ReleaseTreeError("tenant release root is absent") from error
+    staging = tuple(entry for entry in found if entry.name == _RELEASE_STAGING_NAME)
+    tenant_entries = tuple(entry for entry in found if entry.name != _RELEASE_STAGING_NAME)
+    if len(staging) != 1:
+        raise ReleaseTreeError("release staging root is absent")
+    _validate_release_staging_root(staging[0])
+    if len(tenant_entries) > DEFAULT_STATE_INVENTORY_LIMITS.maximum_tenants:
         raise ReleaseTreeError("tenant release namespace exceeds its tenant bound")
     identities: list[str] = []
-    for entry in found:
+    for entry in tenant_entries:
         if not entry.is_dir(follow_symlinks=False):
             raise ReleaseTreeError("tenant release namespace contains a non-directory entry")
         try:
@@ -1073,6 +1083,27 @@ def _tenant_release_namespace_ids() -> tuple[str, ...]:
         ):
             raise ReleaseTreeError("tenant release namespace has an unexpected shape")
     return tuple(identities)
+
+
+def _validate_release_staging_root(entry: os.DirEntry[str]) -> None:
+    """Require the one reserved staging namespace to be private and quiescent."""
+
+    if not entry.is_dir(follow_symlinks=False):
+        raise ReleaseTreeError("release staging root has an unexpected type")
+    try:
+        metadata = entry.stat(follow_symlinks=False)
+        with os.scandir(entry.path) as children:
+            populated = next(children, None) is not None
+    except OSError as error:
+        raise ReleaseTreeError("release staging root could not be inspected") from error
+    if (
+        metadata.st_uid != _RELEASE_STAGING_OWNER
+        or metadata.st_gid != _RELEASE_STAGING_GROUP
+        or stat.S_IMODE(metadata.st_mode) != _RELEASE_STAGING_MODE
+    ):
+        raise ReleaseTreeError("release staging root metadata drifted")
+    if populated:
+        raise ReleaseTreeError("release staging root is not quiescent")
 
 
 def _systemd_publication_lock_descriptor() -> int:

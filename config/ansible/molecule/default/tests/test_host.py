@@ -9,6 +9,7 @@ from lowerduckpond_static_contracts import result_digest
 from testinfra.host import Host
 
 BACKUP_ENVIRONMENT_MODE = 0o600
+BACKUP_COMMAND_MODE = 0o755
 CONTENT_ROOT_MODE = 0o711
 ROUTE_DIRECTORY_MODE = 0o750
 DATABASE_BACKUP_PRIVILEGES = {
@@ -32,6 +33,7 @@ BACKUP_SOURCE_PATHS = (
 )
 BACKUP_EXCLUDE_PATHS = (
     "/var/lib/lowerduckpond/static/intake",
+    "/srv/lowerduckpond/sites/.staging",
     "/var/lib/lowerduckpond/static/exports",
     "/etc/caddy/generations",
     "/etc/caddy/environment",
@@ -96,6 +98,10 @@ UUID_REJECTION_ARGUMENTS = (
 )
 STATIC_HOST_AGENT_ROOT = "/opt/lowerduckpond/static-host-agent"
 STATIC_STATE_ROOT = "/var/lib/lowerduckpond/static"
+STATIC_RELEASE_ROOT = "/srv/lowerduckpond/sites"
+STATIC_RELEASE_STAGING_ROOT = f"{STATIC_RELEASE_ROOT}/.staging"
+STATIC_RELEASE_ROOT_MODE = 0o710
+STATIC_RELEASE_STAGING_ROOT_MODE = 0o700
 STATIC_HOST_AGENT_DIRECTORY_MODE = 0o555
 STATIC_HOST_AGENT_FILE_MODE = 0o444
 STATIC_STATE_DIRECTORY_MODE = 0o700
@@ -234,7 +240,10 @@ def assert_static_worker_caddy_runtime_access(host: Host) -> None:
     """Require only the host paths used by root-owned Caddy transactions."""
 
     unit = host.file("/etc/systemd/system/lowerduckpond-static-worker@.service")
+    assert unit.contains(f"ConditionPathIsReadWrite={STATIC_STATE_ROOT}")
+    assert unit.contains(f"ConditionPathIsReadWrite={STATIC_RELEASE_ROOT}")
     assert unit.contains(f"BindPaths={STATIC_STATE_ROOT}")
+    assert unit.contains(f"BindPaths={STATIC_RELEASE_ROOT}")
     assert unit.contains("BindPaths=/etc/caddy")
     assert unit.contains("BindPaths=/run/caddy")
     assert unit.contains("BindReadOnlyPaths=/run/systemd")
@@ -704,6 +713,71 @@ def test_backup_configuration_is_atomic_and_sandboxed(host: Host) -> None:
     assert maintenance_unit.contains("ProtectHome=true")
 
 
+def test_backup_serializes_the_static_snapshot_boundary(host: Host) -> None:
+    backup_script = host.file("/usr/local/libexec/lowerduckpond/backup")
+    content = backup_script.content_string
+    credential_export_index = content.index("export AWS_ACCESS_KEY_ID")
+    snapshot_index = content.index("backup-static-snapshot")
+    backup_index = content.index("/usr/bin/restic backup")
+
+    assert credential_export_index < snapshot_index < backup_index
+    snapshot = host.file("/usr/local/libexec/lowerduckpond/backup-static-snapshot")
+    snapshot_content = snapshot.content_string
+    assert snapshot.user == "root"
+    assert snapshot.group == "root"
+    assert snapshot.mode == BACKUP_COMMAND_MODE
+    assert '"/var/lib/lowerduckpond/static/locks/publication.lock"' in snapshot_content
+    assert '"/var/lib/lowerduckpond/static/locks/tenant-state.lock"' in snapshot_content
+    assert 'sys.argv[1:3] != ["/usr/bin/restic", "backup"]' in snapshot_content
+    assert "os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC" in snapshot_content
+    assert "os.O_CREAT" not in snapshot_content
+    assert "metadata.st_nlink != 1" in snapshot_content
+    assert "fcntl.flock(descriptor, fcntl.LOCK_SH)" in snapshot_content
+    assert "_require_quiescent_staging()" in snapshot_content
+
+
+def test_backup_refuses_missing_or_linked_static_locks(host: Host) -> None:
+    lock_path = "/var/lib/lowerduckpond/static/locks/publication.lock"
+    saved_path = "/var/lib/lowerduckpond/static/locks/publication.lock.acceptance"
+    tenant_lock_path = "/var/lib/lowerduckpond/static/locks/tenant-state.lock"
+    moved = host.run("mv -- %s %s", lock_path, saved_path)
+    assert moved.rc == 0
+    try:
+        missing = host.run("/usr/local/libexec/lowerduckpond/backup")
+        assert missing.rc != 0
+        assert "lock could not be opened safely" in missing.stderr
+
+        linked = host.run("ln -s -- %s %s", tenant_lock_path, lock_path)
+        assert linked.rc == 0
+        rejected = host.run("/usr/local/libexec/lowerduckpond/backup")
+        assert rejected.rc != 0
+        assert "lock could not be opened safely" in rejected.stderr
+    finally:
+        host.run("rm -f -- %s", lock_path)
+        restored = host.run("mv -- %s %s", saved_path, lock_path)
+        assert restored.rc == 0
+
+
+def test_backup_rejects_nonempty_release_staging(host: Host) -> None:
+    staging_entry = (
+        "/srv/lowerduckpond/sites/.staging/"
+        "0198d17f-6f4a-7000-8000-000000000001--"
+        "0198d17f-6f4a-7000-8000-000000000002"
+    )
+    created = host.run("install -d -m 0700 %s", staging_entry)
+    assert created.rc == 0
+    try:
+        blocked = host.run("/usr/local/libexec/lowerduckpond/backup")
+        assert blocked.rc != 0
+        assert "release staging is nonempty" in blocked.stderr
+    finally:
+        removed = host.run("rmdir %s", staging_entry)
+        assert removed.rc == 0
+
+    recovered = host.run("/usr/local/libexec/lowerduckpond/backup")
+    assert recovered.rc == 0, recovered.stderr
+
+
 def test_backup_scope_excludes_ephemeral_static_state(host: Host) -> None:
     backup_script = host.file("/usr/local/libexec/lowerduckpond/backup")
     for exclude_path in BACKUP_EXCLUDE_PATHS:
@@ -1070,6 +1144,17 @@ def test_static_state_migration_is_empty_root_owned_and_private(host: Host) -> N
     denied = host.run(f"runuser --user ldp-provisioner -- test -x {STATIC_STATE_ROOT}")
     assert denied.rc != 0
 
+    release_root = host.file(STATIC_RELEASE_ROOT)
+    assert release_root.is_directory
+    assert release_root.user == "root"
+    assert release_root.group == "caddy"
+    assert release_root.mode == STATIC_RELEASE_ROOT_MODE
+    staging_root = host.file(STATIC_RELEASE_STAGING_ROOT)
+    assert staging_root.is_directory
+    assert staging_root.user == "root"
+    assert staging_root.group == "root"
+    assert staging_root.mode == STATIC_RELEASE_STAGING_ROOT_MODE
+
 
 def test_static_publication_gate_rejects_before_allocation(host: Host) -> None:
     configuration = host.file("/etc/lowerduckpond/static-publication.json")
@@ -1096,7 +1181,9 @@ def test_static_publication_gate_rejects_before_allocation(host: Host) -> None:
     assert tenant_candidate.stderr.strip() == "publication_disabled"
 
 
-def test_static_operator_identity_is_root_bound_and_has_no_writable_home(host: Host) -> None:
+def test_static_operator_identity_is_root_bound_and_has_no_writable_home(
+    host: Host,
+) -> None:
     account = host.user("ldp-operator")
     assert account.exists
     assert account.group == "ldp-operator"
@@ -1311,6 +1398,7 @@ def assert_static_worker_execution(host: Host) -> None:
 
     reconciler = host.file("/etc/systemd/system/lowerduckpond-static-reconcile.service")
     assert reconciler.contains(f"ExecStart={STATIC_JOB_RECONCILER}")
+    assert reconciler.contains(f"ReadWritePaths={STATIC_STATE_ROOT} {STATIC_RELEASE_ROOT}")
     assert reconciler.contains("PrivateNetwork=true")
     assert reconciler.contains("RestrictAddressFamilies=AF_UNIX")
     assert not reconciler.contains("SystemCallFilter=~@network-io")
