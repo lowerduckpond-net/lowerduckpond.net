@@ -885,6 +885,18 @@ class _StateTransaction:
         self._require_active()
         return self._repository._read_locked(path)
 
+    def require_held(
+        self,
+        name: LockName,
+        *,
+        mode: LockMode | None = None,
+        descriptor: int | None = None,
+    ) -> None:
+        """Prove a repository-owned lock while this transaction is active."""
+
+        self._require_active()
+        self._repository.require_held(name, mode=mode, descriptor=descriptor)
+
     def tenant_has_deployment_history(self, tenant_id: object) -> bool:
         """Inspect every deployment-history source while state is serialized."""
 
@@ -976,6 +988,39 @@ class _StateTransaction:
     def tenant_deployment_ids(self, tenant_id: object) -> tuple[str, ...]:
         """Return the complete bounded deployment-record identity set."""
 
+        return self._tenant_deployment_ids(
+            tenant_id,
+            maximum_records=_MAX_RETAINED_DEPLOYMENT_RECORDS,
+        )
+
+    def tenant_deployment_transition_ids(
+        self,
+        tenant_id: object,
+        *,
+        candidate_id: object,
+    ) -> tuple[str, ...]:
+        """Return retained history plus at most one named transition candidate."""
+
+        canonical_candidate_id = validate_uuid7(candidate_id)
+        identities = self._tenant_deployment_ids(
+            tenant_id,
+            maximum_records=_MAX_RETAINED_DEPLOYMENT_RECORDS + 1,
+        )
+        if (
+            len(identities) > _MAX_RETAINED_DEPLOYMENT_RECORDS
+            and canonical_candidate_id not in identities
+        ):
+            raise StateRecordError("deployment transition exceeds its candidate authority")
+        return identities
+
+    def _tenant_deployment_ids(
+        self,
+        tenant_id: object,
+        *,
+        maximum_records: int,
+    ) -> tuple[str, ...]:
+        """Inspect one explicitly bounded deployment-record namespace."""
+
         self._require_active()
         self._require_exclusive()
         canonical_id = validate_uuid7(tenant_id)
@@ -986,7 +1031,7 @@ class _StateTransaction:
             deployments.remove_abandoned_publication_temporaries(
                 expected_owner=self._repository._expected_owner,
                 expected_mode=self._repository._expected_record_mode,
-                maximum_entries=_MAX_RETAINED_DEPLOYMENT_RECORDS + 1,
+                maximum_entries=maximum_records + 1,
             )
             descriptor = deployments.duplicate_descriptor()
             try:
@@ -996,7 +1041,7 @@ class _StateTransaction:
                 os.close(descriptor)
         finally:
             deployments.close()
-        if len(names) > _MAX_RETAINED_DEPLOYMENT_RECORDS:
+        if len(names) > maximum_records:
             raise StateRecordError("tenant deployment history exceeds its retention bound")
         identities: list[str] = []
         for name in names:
@@ -1138,6 +1183,26 @@ class _StateTransaction:
         self._require_exclusive()
         candidate = self._repository._encode_new(path, document)
         return self._create_immutable_bytes(path, candidate)
+
+    def remove_exact_deployment(self, expected: StoredContract) -> None:
+        """Durably remove only one exact retained deployment generation."""
+
+        self._require_exclusive()
+        document = expected.document
+        try:
+            path = StateRecordPath.tenant_deployment(
+                document["tenantId"],
+                document["id"],
+            )
+        except KeyError as error:
+            raise StateRecordError("deployment removal authority is malformed") from error
+        candidate = self._repository._encode(path, document)
+        current = self._repository._read_locked(path)
+        if current.revision != expected.revision or current.revision != _revision(
+            path.contract_kind, candidate
+        ):
+            raise StateConflictError("deployment changed before exact removal")
+        self._repository._durable.remove(path.components)
 
     def ensure_create_tenant_namespace(
         self,
