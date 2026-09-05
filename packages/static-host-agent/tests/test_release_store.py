@@ -28,6 +28,7 @@ _DEPLOYMENT_ID = "0198d17f-6f4a-7000-8000-000000000003"
 _DIRECTORY_MODE = 0o755
 _FILE_MODE = 0o644
 _ROOT_DESCRIPTOR_COUNT = 2
+_PUBLISHED_NAMESPACE_DIRECTORIES = 2
 
 
 def _mkdir(path: Path, mode: int) -> None:
@@ -138,6 +139,9 @@ def test_release_store_extracts_verifies_and_durably_publishes(tmp_path: Path) -
                 publication_lock=locks,
             )
             outcome = store.publish(staged, publication_lock=locks)
+            inventory = store.published_inventory(publication_lock=locks)
+            assert inventory.tenant_releases == ((_TENANT_ID, (_DEPLOYMENT_ID,)),)
+            assert inventory.namespace_usage.unique_inodes == _PUBLISHED_NAMESPACE_DIRECTORIES
 
     release = release_root / _TENANT_ID / "releases" / _DEPLOYMENT_ID
     assert outcome.created is True

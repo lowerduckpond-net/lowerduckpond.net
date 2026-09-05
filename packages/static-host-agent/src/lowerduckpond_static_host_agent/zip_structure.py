@@ -18,6 +18,7 @@ from lowerduckpond_static_contracts import Digest
 
 from lowerduckpond_static_host_agent.capacity import (
     DEFAULT_HOST_CAPACITY_LIMITS,
+    NO_CAPACITY_RESERVATION,
     CapacityProjection,
     CapacityReservation,
     HostCapacityLimits,
@@ -348,6 +349,7 @@ def extract_deployment_zip(  # noqa: PLR0913,PLR0915 - explicit extraction trust
     staging_name: str,
     expected_owner: int,
     retained_usage: ReleaseCapacityUsage,
+    publication_reservation: CapacityReservation = NO_CAPACITY_RESERVATION,
     lock_manager: LockManager,
     expected_mode: int = 0o600,
     limits: ZipLimits = DEFAULT_ZIP_LIMITS,
@@ -393,7 +395,11 @@ def extract_deployment_zip(  # noqa: PLR0913,PLR0915 - explicit extraction trust
             parent_metadata,
             "ZIP staging parent changed while it was opened",
         )
-        reservation = _extraction_reservation(structure, parent_fd)
+        extraction_reservation = _extraction_reservation(structure, parent_fd)
+        reservation = CapacityReservation(
+            extraction_reservation.allocated_bytes + publication_reservation.allocated_bytes,
+            extraction_reservation.unique_inodes + publication_reservation.unique_inodes,
+        )
         projection = admit_release_capacity(
             retained_usage,
             reservation,
@@ -416,7 +422,7 @@ def extract_deployment_zip(  # noqa: PLR0913,PLR0915 - explicit extraction trust
             root_fd,
             structure,
             expected_owner=expected_owner,
-            reservation=reservation,
+            reservation=extraction_reservation,
         )
         os.fsync(root_fd)
         os.fsync(parent_fd)

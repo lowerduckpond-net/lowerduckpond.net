@@ -156,6 +156,12 @@ from lowerduckpond_static_host_agent.deployment_commit import (
     finalize_deployment_transition_outcome,
     validate_deployment_transition,
 )
+from lowerduckpond_static_host_agent.deployment_prepare import (
+    DeploymentAuthorityDriftError,
+    DeploymentPreparationError,
+    PreparedDeploymentTransition,
+    prepare_deployment_transition,
+)
 from lowerduckpond_static_host_agent.durable import (
     DurabilityBoundary,
     DurableDirectory,
@@ -251,6 +257,7 @@ from lowerduckpond_static_host_agent.portable_bundle import (
 from lowerduckpond_static_host_agent.release_store import (
     DeploymentReleaseStore,
     PublishedDeploymentRelease,
+    PublishedReleaseInventory,
     ReleaseStoreError,
     StagedDeploymentRelease,
 )
@@ -450,9 +457,11 @@ __all__ = [
     "CreateTransitionPlan",
     "DeadlineReader",
     "DeadlineWriter",
+    "DeploymentAuthorityDriftError",
     "DeploymentCommitBoundary",
     "DeploymentCommitError",
     "DeploymentCommitOutcome",
+    "DeploymentPreparationError",
     "DeploymentReleaseStore",
     "DeploymentRemovalToken",
     "DeploymentTransitionPlan",
@@ -500,10 +509,12 @@ __all__ = [
     "PortableBundleInspection",
     "PreparedCaddyExecution",
     "PreparedCreateTransition",
+    "PreparedDeploymentTransition",
     "PreparedRouteTransition",
     "PublicationDisabledError",
     "PublicationGate",
     "PublishedDeploymentRelease",
+    "PublishedReleaseInventory",
     "ReadDeadline",
     "ReconciliationOutcome",
     "ReleaseCapacityUsage",
@@ -604,6 +615,7 @@ __all__ = [
     "platform_generation_state",
     "prepare_active_caddy_execution",
     "prepare_create_transition",
+    "prepare_deployment_transition",
     "prepare_route_transition",
     "recover_create_transition",
     "recover_route_transition",

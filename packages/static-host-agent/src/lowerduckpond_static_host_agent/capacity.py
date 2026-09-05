@@ -82,6 +82,9 @@ class CapacityReservation:
             raise ValueError("capacity reservation must be nonnegative")
 
 
+NO_CAPACITY_RESERVATION: Final = CapacityReservation(0, 0)
+
+
 @dataclass(frozen=True, slots=True)
 class ReleaseCapacityUsage:
     """Deduplicated physical allocation already present on one filesystem."""
