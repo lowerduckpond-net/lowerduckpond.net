@@ -64,6 +64,14 @@ from lowerduckpond_static_host_agent.create_handler import (
 )
 from lowerduckpond_static_host_agent.create_prepare import CreatePreparationError
 from lowerduckpond_static_host_agent.create_recover import CreateRecoveryError
+from lowerduckpond_static_host_agent.deployment_activate import DeploymentActivationError
+from lowerduckpond_static_host_agent.deployment_commit import DeploymentCommitError
+from lowerduckpond_static_host_agent.deployment_handler import (
+    DeploymentLifecycleError,
+    DeploymentLifecycleHandler,
+)
+from lowerduckpond_static_host_agent.deployment_prepare import DeploymentPreparationError
+from lowerduckpond_static_host_agent.deployment_recover import DeploymentRecoveryError
 from lowerduckpond_static_host_agent.execution import (
     AuthorizationExecutor,
     ExecutionError,
@@ -89,6 +97,10 @@ from lowerduckpond_static_host_agent.operator_adapter import (
     OperatorAdapterError,
 )
 from lowerduckpond_static_host_agent.operator_stream import DeadlineReader, StreamError
+from lowerduckpond_static_host_agent.release_store import (
+    DeploymentReleaseStore,
+    ReleaseStoreError,
+)
 from lowerduckpond_static_host_agent.release_tree import (
     ReleaseTreeError,
     measure_release_tree,
@@ -164,6 +176,11 @@ _SAFE_ERRORS: Final = (
     CreateLifecycleError,
     CreatePreparationError,
     CreateRecoveryError,
+    DeploymentActivationError,
+    DeploymentCommitError,
+    DeploymentLifecycleError,
+    DeploymentPreparationError,
+    DeploymentRecoveryError,
     RouteActivationError,
     RouteCommitError,
     RouteLifecycleError,
@@ -176,6 +193,7 @@ _SAFE_ERRORS: Final = (
     IssuanceError,
     OperatorAdapterError,
     RequestDecodeError,
+    ReleaseStoreError,
     RuntimeBoundaryError,
     StateRecordError,
     StateBusyError,
@@ -244,10 +262,18 @@ def executor_main(arguments: list[str] | None = None) -> int:
         with (
             StateRepository(_STATE_ROOT, expected_owner=_EXPECTED_OWNER) as repository,
             ArtifactIntake(_STATE_ROOT, expected_owner=_EXPECTED_OWNER) as intake,
+            _open_deployment_release_store() as release_store,
             _open_caddy_control_runtime() as runtime,
         ):
             publication_gate = CommandPublicationGate(_PUBLICATION_GATE)
             route_handler = RouteLifecycleHandler(repository, runtime, publication_gate)
+            deployment_handler = DeploymentLifecycleHandler(
+                repository,
+                runtime,
+                intake,
+                release_store,
+                publication_gate,
+            )
             AuthorizationExecutor(
                 repository,
                 intake,
@@ -257,6 +283,8 @@ def executor_main(arguments: list[str] | None = None) -> int:
                         runtime,
                         publication_gate,
                     ),
+                    "deploy": deployment_handler,
+                    "rollback": deployment_handler,
                     "suspend": route_handler,
                     "resume": route_handler,
                     "rename": route_handler,
@@ -624,6 +652,20 @@ def _open_caddy_control_runtime() -> CaddyRuntime:
         expected_lock_group=0,
         root_mode=CADDY_RUNTIME_ROOT_MODE,
         lock_mode=CADDY_PUBLICATION_LOCK_MODE,
+    )
+
+
+def _open_deployment_release_store() -> DeploymentReleaseStore:
+    """Open the fixed production release and private staging roots."""
+
+    caddy_group = grp.getgrnam(_CADDY_ACCOUNT)
+    release_root = Path(TENANT_RELEASE_ROOT)
+    return DeploymentReleaseStore(
+        release_root,
+        release_root / _RELEASE_STAGING_NAME,
+        expected_owner=_RELEASE_STAGING_OWNER,
+        expected_release_group=caddy_group.gr_gid,
+        expected_staging_group=_RELEASE_STAGING_GROUP,
     )
 
 
