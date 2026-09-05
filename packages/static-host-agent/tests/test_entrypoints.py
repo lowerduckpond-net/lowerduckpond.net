@@ -29,6 +29,7 @@ from lowerduckpond_static_host_agent.create_handler import (
     CreateLifecycleError,
     CreateLifecycleHandler,
 )
+from lowerduckpond_static_host_agent.release_tree import ReleaseTreeError
 from lowerduckpond_static_host_agent.repository import StateRecordPath
 from lowerduckpond_static_host_agent.route_handler import RouteLifecycleHandler
 from lowerduckpond_static_host_agent.route_snapshot import TenantRouteSnapshot
@@ -846,6 +847,50 @@ def test_all_tenant_release_validation_rejects_extra_known_tenant_entries(
     assert not entrypoints._all_tenant_release_state_matches(
         Repository(),  # type: ignore[arg-type]
     )
+
+
+def test_release_namespace_accepts_one_exact_quiescent_staging_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenant_id = "0198d17f-6f4a-7000-8000-000000000001"
+    sites = tmp_path / "sites"
+    (sites / tenant_id / "releases").mkdir(parents=True)
+    staging = sites / ".staging"
+    staging.mkdir(mode=0o700)
+
+    monkeypatch.setattr(entrypoints, "TENANT_RELEASE_ROOT", str(sites))
+    monkeypatch.setattr(entrypoints, "_RELEASE_STAGING_OWNER", staging.stat().st_uid)
+    monkeypatch.setattr(entrypoints, "_RELEASE_STAGING_GROUP", staging.stat().st_gid)
+
+    assert entrypoints._tenant_release_namespace_ids() == (tenant_id,)
+
+
+@pytest.mark.parametrize("drift", ["mode", "content", "symlink"])
+def test_release_namespace_rejects_unsafe_reserved_staging_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    drift: str,
+) -> None:
+    sites = tmp_path / "sites"
+    sites.mkdir()
+    staging = sites / ".staging"
+    if drift == "symlink":
+        staging.symlink_to(tmp_path / "missing", target_is_directory=True)
+    else:
+        staging.mkdir(mode=0o700)
+        if drift == "mode":
+            staging.chmod(0o755)
+        else:
+            (staging / "partial-release").mkdir()
+
+    monkeypatch.setattr(entrypoints, "TENANT_RELEASE_ROOT", str(sites))
+    if not staging.is_symlink():
+        monkeypatch.setattr(entrypoints, "_RELEASE_STAGING_OWNER", staging.stat().st_uid)
+        monkeypatch.setattr(entrypoints, "_RELEASE_STAGING_GROUP", staging.stat().st_gid)
+
+    with pytest.raises(ReleaseTreeError, match="release staging root"):
+        entrypoints._tenant_release_namespace_ids()
 
 
 def test_deleted_tenant_publication_requires_the_complete_namespace_absent(

@@ -143,7 +143,6 @@ empty_directory_contracts=(
     /var/lib/lowerduckpond/static/intake\|root:root:700
     /var/lib/lowerduckpond/static/exports\|root:root:700
     /var/lib/lowerduckpond/static/audit\|root:root:700
-    /srv/lowerduckpond/sites\|root:caddy:710
 )
 for contract in "${empty_directory_contracts[@]}"; do
     path=${contract%%|*}
@@ -155,6 +154,30 @@ for contract in "${empty_directory_contracts[@]}"; do
     [[ -z $(find "${path}" -mindepth 1 -print -quit) ]] ||
         remote_fail "${path} is not empty"
 done
+
+release_root=/srv/lowerduckpond/sites
+[[ -d ${release_root} && ! -L ${release_root} ]] ||
+    remote_fail "${release_root} has an unexpected type"
+[[ $(stat --format='%U:%G:%a' -- "${release_root}") == root:caddy:710 ]] ||
+    remote_fail "${release_root} metadata drifted"
+release_root_inventory=$(
+    find "${release_root}" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort
+)
+case ${release_root_inventory} in
+    "") ;;
+    .staging)
+        release_staging_root=${release_root}/.staging
+        [[ -d ${release_staging_root} && ! -L ${release_staging_root} ]] ||
+            remote_fail "${release_staging_root} has an unexpected type"
+        [[ $(stat --format='%U:%G:%a' -- "${release_staging_root}") == root:root:700 ]] ||
+            remote_fail "${release_staging_root} metadata drifted"
+        [[ -z $(find "${release_staging_root}" -mindepth 1 -print -quit) ]] ||
+            remote_fail "${release_staging_root} is not empty"
+        ;;
+    *)
+        remote_fail "${release_root} inventory drifted"
+        ;;
+esac
 
 caddy_intent_root=/etc/caddy/intents
 [[ -d ${caddy_intent_root} && ! -L ${caddy_intent_root} ]] ||
