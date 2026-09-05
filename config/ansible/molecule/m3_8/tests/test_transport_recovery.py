@@ -7,6 +7,7 @@ import subprocess
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 
 import test_lifecycle as support
@@ -21,6 +22,15 @@ from testinfra.host import Host
 _WORKER_DROP_IN_DIRECTORY = "/etc/systemd/system/lowerduckpond-static-worker@.service.d"
 _WORKER_DELAY_DROP_IN = f"{_WORKER_DROP_IN_DIRECTORY}/m3-8-delay.conf"
 _CADDY_ADMIN_SOCKET = "/run/caddy/admin.sock"
+
+
+@dataclass(frozen=True, slots=True)
+class _CaddyReloadFault:
+    unit: str
+    script_path: str
+    ready_path: str
+    blocked_path: str
+    release_path: str
 
 
 def _issue_artifact_without_handoff(
@@ -212,20 +222,26 @@ def _job_id_for_correlation(host: Host, correlation_id: str) -> str:
     raise AssertionError(f"correlation {correlation_id} was not admitted")
 
 
-def _install_caddy_reload_fault(host: Host) -> tuple[str, str, str]:
+def _install_caddy_reload_fault(host: Host, *, block_on_load: bool = False) -> _CaddyReloadFault:
     identity = str(uuid.uuid7()).replace("-", "")
     unit = f"lowerduckpond-m3-8-caddy-fault-{identity}.service"
     script_path = f"/run/lowerduckpond-m3-8-caddy-fault-{identity}.py"
     ready_path = f"/run/lowerduckpond-m3-8-caddy-fault-{identity}.ready"
+    blocked_path = f"/run/lowerduckpond-m3-8-caddy-fault-{identity}.blocked"
+    release_path = f"/run/lowerduckpond-m3-8-caddy-fault-{identity}.release"
     real_socket = f"{_CADDY_ADMIN_SOCKET}.m3-8-{identity}"
     script = f"""import os
 import pathlib
 import pwd
 import socket
+import time
 
 admin_path = {str(_CADDY_ADMIN_SOCKET)!r}
 real_path = {real_socket!r}
 ready_path = {ready_path!r}
+blocked_path = {blocked_path!r}
+release_path = {release_path!r}
+block_on_load = {block_on_load!r}
 
 
 def request(path, payload):
@@ -292,10 +308,20 @@ try:
             if request_line != expected_line:
                 raise RuntimeError("unexpected Caddy fault request")
             if index == 2:
-                connection.sendall(
-                    b"HTTP/1.0 500 Injected Failure\\r\\n"
-                    b"Content-Length: 0\\r\\nConnection: close\\r\\n\\r\\n"
-                )
+                if block_on_load:
+                    pathlib.Path(blocked_path).write_text("blocked\\n", encoding="ascii")
+                    while not pathlib.Path(release_path).exists():
+                        time.sleep(0.01)
+                try:
+                    connection.sendall(
+                        b"HTTP/1.0 500 Injected Failure\\r\\n"
+                        b"Content-Length: 0\\r\\nConnection: close\\r\\n\\r\\n"
+                    )
+                except (BrokenPipeError, ConnectionResetError):
+                    if not block_on_load:
+                        raise
+                if block_on_load:
+                    break
             else:
                 body = source if index in (0, 1, 4) else b""
                 response = (
@@ -329,30 +355,38 @@ finally:
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
         if host.run("test -f %s", shlex.quote(ready_path)).rc == 0:
-            return unit, script_path, ready_path
+            return _CaddyReloadFault(
+                unit,
+                script_path,
+                ready_path,
+                blocked_path,
+                release_path,
+            )
         state = host.run("systemctl is-failed --quiet %s", shlex.quote(unit))
         assert state.rc != 0, host.run("journalctl -u %s --no-pager", unit).stdout
         time.sleep(0.1)
     raise AssertionError("Caddy reload fault did not become ready")
 
 
-def _remove_caddy_reload_fault(host: Host, unit: str, script_path: str, ready_path: str) -> None:
-    identity = unit.removeprefix("lowerduckpond-m3-8-caddy-fault-").removesuffix(".service")
+def _remove_caddy_reload_fault(host: Host, fault: _CaddyReloadFault) -> None:
+    identity = fault.unit.removeprefix("lowerduckpond-m3-8-caddy-fault-").removesuffix(".service")
     real_socket = f"{_CADDY_ADMIN_SOCKET}.m3-8-{identity}"
     result = host.run(
         "systemctl stop %s >/dev/null 2>&1 || true; "
         "if test -S %s; then rm -f %s; fi; "
         "if test -S %s; then mv %s %s; fi; "
-        "rm -f %s %s; systemctl reset-failed %s >/dev/null 2>&1 || true",
-        shlex.quote(unit),
+        "rm -f %s %s %s %s; systemctl reset-failed %s >/dev/null 2>&1 || true",
+        shlex.quote(fault.unit),
         shlex.quote(real_socket),
         shlex.quote(_CADDY_ADMIN_SOCKET),
         shlex.quote(real_socket),
         shlex.quote(real_socket),
         shlex.quote(_CADDY_ADMIN_SOCKET),
-        shlex.quote(script_path),
-        shlex.quote(ready_path),
-        shlex.quote(unit),
+        shlex.quote(fault.script_path),
+        shlex.quote(fault.ready_path),
+        shlex.quote(fault.blocked_path),
+        shlex.quote(fault.release_path),
+        shlex.quote(fault.unit),
     )
     assert result.rc == 0, result.stderr
 
@@ -495,9 +529,9 @@ def test_installed_transport_and_admission_recovery(  # noqa: PLR0915 - ordered 
             caddy_failure_job,
         )
         assert rejected_reload.rc != 0
-        _await_caddy_reload_fault(host, fault[0])
+        _await_caddy_reload_fault(host, fault.unit)
     finally:
-        _remove_caddy_reload_fault(host, *fault)
+        _remove_caddy_reload_fault(host, fault)
     assert host.run("test ! -e %s", shlex.quote(caddy_failure_result_path)).rc == 0
     assert support._read_state(host, desired_path) == desired_before_caddy_failure
     assert (
@@ -566,6 +600,81 @@ def test_installed_transport_and_admission_recovery(  # noqa: PLR0915 - ordered 
         == disconnected_result
     )
     support._assert_route(host, canonical_origin, status=404)
+
+    termination_request = support._request(
+        "resume",
+        next(identities),
+        tenantId=tenant_id,
+    )
+    termination_job = support._issue_without_handoff(host, termination_request)
+    termination_result_path = f"{support.STATE_ROOT}/authorization/results/{termination_job}.json"
+    fault = _install_caddy_reload_fault(host, block_on_load=True)
+    worker_unit = f"lowerduckpond-static-worker@{termination_job}.service"
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            worker_future = executor.submit(
+                host.run,
+                "/usr/bin/systemctl start --wait %s",
+                worker_unit,
+            )
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                if host.run("test -f %s", shlex.quote(fault.blocked_path)).rc == 0:
+                    break
+                time.sleep(0.1)
+            else:
+                raise AssertionError("worker did not reach the blocked Caddy reload")
+
+            active_intent = host.run(
+                "find %s -mindepth 1 -maxdepth 1 -type f -print -quit",
+                f"{support.STATE_ROOT}/intents",
+            )
+            assert active_intent.rc == 0, active_intent.stderr
+            assert active_intent.stdout.strip() != ""
+            killed = host.run(
+                "/usr/bin/systemctl kill --kill-whom=all --signal=KILL %s",
+                worker_unit,
+            )
+            assert killed.rc == 0, killed.stderr
+            released = host.run("touch %s", shlex.quote(fault.release_path))
+            assert released.rc == 0, released.stderr
+            terminated_worker = worker_future.result(timeout=30)
+        assert terminated_worker.rc != 0
+        _await_caddy_reload_fault(host, fault.unit)
+    finally:
+        host.run("touch %s", shlex.quote(fault.release_path))
+        _remove_caddy_reload_fault(host, fault)
+
+    assert host.run("test ! -e %s", shlex.quote(termination_result_path)).rc == 0
+    desired_after_termination = support._read_state(host, desired_path)
+    desired_after_termination_spec = desired_after_termination["spec"]
+    assert type(desired_after_termination_spec) is dict
+    assert desired_after_termination_spec["desiredState"] == "suspended"
+    support._assert_route(host, canonical_origin, status=404)
+    recovered_termination = host.run(
+        "systemctl start --wait lowerduckpond-static-reconcile.service"
+    )
+    assert recovered_termination.rc == 0, recovered_termination.stderr
+    terminated_result = _await_result(host, termination_job)
+    assert terminated_result["status"] == "succeeded"
+    assert support._lifecycle(terminated_result) == "active"
+    assert (
+        support._submit(
+            tmp_path,
+            operator_host,
+            identity,
+            ssh,
+            dict(termination_request),
+        )
+        == terminated_result
+    )
+    support._assert_route(
+        host, canonical_origin, status=200, body=b"bound artifact deployed only after recovery\n"
+    )
+    for intent_root in ("/etc/caddy/intents", f"{support.STATE_ROOT}/intents"):
+        remaining_intent = host.run("find %s -mindepth 1 -maxdepth 1 -print -quit", intent_root)
+        assert remaining_intent.rc == 0, remaining_intent.stderr
+        assert remaining_intent.stdout == ""
 
     contested_slug = f"{slug}-contested"
     contested = [
