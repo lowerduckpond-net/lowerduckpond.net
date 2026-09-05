@@ -63,6 +63,7 @@ from lowerduckpond_static_host_agent.state_inventory import (
 )
 
 _DEPLOYMENT_OPERATIONS = frozenset({"deploy", "rollback"})
+_TENANT_HISTORY_FIELDS = 3
 
 
 class DeploymentPreparationError(RuntimeError):
@@ -231,6 +232,7 @@ def prepare_deployment_transition(  # noqa: PLR0913,PLR0917 - authority tuple
         retained_usage = _measure_retained_releases(
             release_store,
             transaction,
+            job.document,
         )
         staged = _stage_candidate_release(
             intake,
@@ -406,6 +408,8 @@ def _require_bound_history(
     canonical_archives = tuple(validate_uuid7(value) for value in bound_archives)
     if canonical_archives != current_archives:
         raise DeploymentAuthorityDriftError("retained archive history changed")
+    if canonical_archives:
+        raise DeploymentPreparationError("deployment preparation requires empty archive history")
     return current_deployments
 
 
@@ -494,13 +498,17 @@ def _artifact_release_digest(
 def _measure_retained_releases(
     release_store: DeploymentReleaseStore,
     transaction: DeploymentPreparationTransaction,
+    job: dict[str, object],
 ) -> ReleaseCapacityUsage:
+    tenant_ids, tenant_histories = _require_global_history(transaction, job)
     expected_inventory: list[tuple[str, tuple[str, ...]]] = []
-    for tenant_id in transaction.measure_inventory().tenant_ids:
-        deployment_ids = transaction.tenant_deployment_ids(tenant_id)
+    for tenant_id, _archive_ids, deployment_ids in tenant_histories:
         if deployment_ids:
             expected_inventory.append((tenant_id, deployment_ids))
-    if release_store.published_inventory(publication_lock=transaction) != tuple(expected_inventory):
+    if tuple(value[0] for value in tenant_histories) != tenant_ids:
+        raise DeploymentPreparationError("dispatch tenant retained-history authority is malformed")
+    published = release_store.published_inventory(publication_lock=transaction)
+    if published.tenant_releases != tuple(expected_inventory):
         raise DeploymentAuthorityDriftError(
             "published release inventory disagrees with deployment authority"
         )
@@ -527,7 +535,84 @@ def _measure_retained_releases(
                     "retained release disagrees with deployment authority"
                 )
             measurements.append(measured)
-    return aggregate_release_usage(measurements)
+    release_usage = aggregate_release_usage(measurements)
+    return ReleaseCapacityUsage(
+        (*published.namespace_usage.allocations, *release_usage.allocations)
+    )
+
+
+def _require_global_history(
+    transaction: DeploymentPreparationTransaction,
+    job: dict[str, object],
+) -> tuple[
+    tuple[str, ...],
+    tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...],
+]:
+    tenant_ids = _validated_dispatch_ids(
+        job.get("dispatchTenantIds"),
+        label="tenant inventory",
+    )
+    current_tenants = transaction.measure_inventory().tenant_ids
+    if tenant_ids != current_tenants:
+        raise DeploymentAuthorityDriftError("global tenant inventory changed")
+
+    raw_histories = job.get("dispatchTenantRecordHistories")
+    if type(raw_histories) is not list:
+        raise DeploymentPreparationError("dispatch tenant retained-history authority is malformed")
+    histories: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = []
+    try:
+        for entry in raw_histories:
+            if type(entry) is dict and set(entry) == {
+                "tenantId",
+                "archiveDeploymentIds",
+                "deploymentIds",
+            }:
+                raw_tenant_id = entry["tenantId"]
+                raw_archive_ids = entry["archiveDeploymentIds"]
+                raw_deployment_ids = entry["deploymentIds"]
+            elif type(entry) is list and len(entry) == _TENANT_HISTORY_FIELDS:
+                raw_tenant_id, raw_archive_ids, raw_deployment_ids = entry
+            else:
+                raise TypeError
+            histories.append(
+                (
+                    validate_uuid7(raw_tenant_id),
+                    _validated_dispatch_ids(raw_archive_ids, label="archive history"),
+                    _validated_dispatch_ids(raw_deployment_ids, label="deployment history"),
+                )
+            )
+    except (TypeError, ValueError) as error:
+        raise DeploymentPreparationError(
+            "dispatch tenant retained-history authority is malformed"
+        ) from error
+    canonical_histories = tuple(histories)
+    if tuple(value[0] for value in canonical_histories) != tuple(
+        sorted({value[0] for value in canonical_histories})
+    ):
+        raise DeploymentPreparationError("dispatch tenant retained-history authority is malformed")
+    current_histories = tuple(
+        (
+            tenant_id,
+            transaction.tenant_archive_ids(tenant_id),
+            transaction.tenant_deployment_ids(tenant_id),
+        )
+        for tenant_id in current_tenants
+    )
+    if canonical_histories != current_histories:
+        raise DeploymentAuthorityDriftError("global tenant retained history changed")
+    return tenant_ids, canonical_histories
+
+
+def _validated_dispatch_ids(raw: object, *, label: str) -> tuple[str, ...]:
+    if type(raw) is not list:
+        raise DeploymentPreparationError(f"dispatch {label} authority is malformed")
+    try:
+        values = tuple(validate_uuid7(value) for value in raw)
+    except (TypeError, ValueError) as error:
+        raise DeploymentPreparationError(f"dispatch {label} authority is malformed") from error
+    if values != tuple(sorted(set(values))):
+        raise DeploymentPreparationError(f"dispatch {label} authority is malformed")
+    return values
 
 
 def _stage_candidate_release(  # noqa: PLR0913 - extraction authorities stay explicit

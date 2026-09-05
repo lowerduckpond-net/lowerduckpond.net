@@ -24,6 +24,7 @@ from lowerduckpond_static_contracts import (
 
 from lowerduckpond_static_host_agent.capacity import (
     DEFAULT_HOST_CAPACITY_LIMITS,
+    NO_CAPACITY_RESERVATION,
     CapacityReservation,
     HostCapacityLimits,
     ReleaseCapacityUsage,
@@ -279,13 +280,14 @@ class ArtifactIntake:
         except (OSError, ValueError, ZipStructureError) as error:
             raise IntakeError("claimed deployment artifact cannot be derived safely") from error
 
-    def extract_deployment_release(
+    def extract_deployment_release(  # noqa: PLR0913 - capacity authorities stay explicit
         self,
         artifact: AdmittedArtifact,
         *,
         staging_parent: Path,
         staging_name: str,
         retained_usage: ReleaseCapacityUsage,
+        publication_reservation: CapacityReservation = NO_CAPACITY_RESERVATION,
         limits: HostCapacityLimits = DEFAULT_HOST_CAPACITY_LIMITS,
     ) -> ZipExtraction:
         """Repeat validation and extract one claimed deploy into private staging."""
@@ -303,6 +305,7 @@ class ArtifactIntake:
                 staging_name=staging_name,
                 expected_owner=self._expected_owner,
                 retained_usage=retained_usage,
+                publication_reservation=publication_reservation,
                 lock_manager=self._locks,
                 capacity_limits=limits,
             )

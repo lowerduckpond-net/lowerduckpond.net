@@ -50,6 +50,7 @@ from lowerduckpond_static_host_agent.capacity import (
 )
 from lowerduckpond_static_host_agent.release_store import (
     PublishedDeploymentRelease,
+    PublishedReleaseInventory,
     StagedDeploymentRelease,
 )
 
@@ -174,14 +175,21 @@ class _ReleaseStore:
         self,
         *,
         publication_lock: object,
-    ) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    ) -> PublishedReleaseInventory:
         del publication_lock
         inventory: dict[str, list[str]] = {}
         for tenant_id, deployment_id in self.releases:
             inventory.setdefault(tenant_id, []).append(deployment_id)
-        return tuple(
+        tenant_releases = tuple(
             (tenant_id, tuple(sorted(deployment_ids)))
             for tenant_id, deployment_ids in sorted(inventory.items())
+        )
+        namespace_allocations = tuple(
+            InodeAllocation(1, 1_000 + index, 4_096) for index in range(len(tenant_releases) * 2)
+        )
+        return PublishedReleaseInventory(
+            tenant_releases,
+            ReleaseCapacityUsage(namespace_allocations),
         )
 
     def stage(  # noqa: PLR0913 - mirrors the release-store boundary
@@ -199,13 +207,15 @@ class _ReleaseStore:
         del intake, capacity_limits
         assert artifact.verified.sha256 == "e" * 64
         assert publication_lock.measure_intent_records().records == ()  # type: ignore[attr-defined]
-        assert retained_usage.unique_inodes == len(
+        release_inodes = len(
             {
                 (item.device, item.inode)
                 for value in self.releases.values()
                 for item in value.allocations
             }
         )
+        tenant_count = len({tenant_id for tenant_id, _deployment_id in self.releases})
+        assert retained_usage.unique_inodes == release_inodes + tenant_count * 2
         self.events.append("staged")
         measurement = _measurement(expected_release_tree_digest, inode=900)
         return StagedDeploymentRelease(
@@ -799,6 +809,65 @@ def test_unexpected_target_archive_history_fails_before_staging(tmp_path: Path) 
     )
     try:
         with pytest.raises(DeploymentAuthorityDriftError, match="archive history"):
+            _prepare(repository, runtime, releases, artifact)
+
+        assert releases.events == ["reconciled"]
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
+def test_bound_archive_history_is_rejected_before_staging(tmp_path: Path) -> None:
+    repository, runtime, releases, artifact, deployments = _prepared_state(tmp_path)
+    tenant_id = _tenant_id()
+    deployment = deployments[-1]
+    deployment_id = cast(str, deployment["id"])
+    manifest = repository.read(StateRecordPath.tenant_desired(tenant_id)).document
+    archive = _fixture("archive-record.json")
+    archive["tenantId"] = tenant_id
+    archive["deploymentId"] = deployment_id
+    archive["releaseTreeDigest"] = deployment["releaseTreeDigest"]
+    archive["manifestDigest"] = manifest_digest(manifest).to_dict()
+    _write(
+        tmp_path / "state",
+        StateRecordPath.tenant_archive(tenant_id, deployment_id),
+        archive,
+    )
+    job = repository.read(StateRecordPath.authorization_job(_JOB_ID)).document
+    job["dispatchArchiveDeploymentIds"] = [deployment_id]
+    job["dispatchTenantRecordHistories"] = [
+        [tenant_id, [deployment_id], job["dispatchDeploymentIds"]]
+    ]
+    _write(tmp_path / "state", StateRecordPath.authorization_job(_JOB_ID), job)
+    try:
+        with pytest.raises(DeploymentPreparationError, match="empty archive history"):
+            _prepare(repository, runtime, releases, artifact)
+
+        assert releases.events == ["reconciled"]
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
+def test_global_retained_history_drift_fails_before_staging(tmp_path: Path) -> None:
+    repository, runtime, releases, artifact, _deployments = _prepared_state(
+        tmp_path,
+        include_other_tenant=True,
+    )
+    deployment_id = "0198d17f-6f4a-7000-8000-000000000097"
+    deployment = _deployment(deployment_id, value="9" * 64)
+    deployment["tenantId"] = _OTHER_TENANT_ID
+    _write(
+        tmp_path / "state",
+        StateRecordPath.tenant_deployment(_OTHER_TENANT_ID, deployment_id),
+        deployment,
+    )
+    releases.releases[(_OTHER_TENANT_ID, deployment_id)] = _measurement(
+        cast(dict[str, object], deployment["releaseTreeDigest"]),
+        inode=300,
+    )
+    try:
+        with pytest.raises(DeploymentAuthorityDriftError, match="global tenant retained"):
             _prepare(repository, runtime, releases, artifact)
 
         assert releases.events == ["reconciled"]

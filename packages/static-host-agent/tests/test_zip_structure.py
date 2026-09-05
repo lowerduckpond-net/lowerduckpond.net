@@ -16,6 +16,7 @@ from hypothesis import HealthCheck, given, settings, strategies
 from lowerduckpond_static_host_agent import (
     CapacityProjection,
     CapacityRejectedError,
+    CapacityReservation,
     FilesystemCapacity,
     InodeAllocation,
     LockManager,
@@ -36,6 +37,7 @@ from lowerduckpond_static_host_agent import (
 from lowerduckpond_static_host_agent import (
     extract_deployment_zip as _extract_deployment_zip,
 )
+from lowerduckpond_static_host_agent.capacity import NO_CAPACITY_RESERVATION
 
 _OWNER = os.geteuid()
 _LOCAL = struct.Struct("<I5H3I2H")
@@ -193,13 +195,14 @@ def _staging_parent(tmp_path: Path) -> Path:
     return parent
 
 
-def _extract_with_intake_lock(
+def _extract_with_intake_lock(  # noqa: PLR0913 - mirrors extraction authority
     path: Path,
     *,
     staging_parent: Path,
     staging_name: str,
     expected_owner: int,
     retained_usage: ReleaseCapacityUsage,
+    publication_reservation: CapacityReservation = NO_CAPACITY_RESERVATION,
 ) -> ZipExtraction:
     lock_root = path.parent / ".intake-locks"
     lock_root.mkdir(mode=0o700, exist_ok=True)
@@ -214,6 +217,7 @@ def _extract_with_intake_lock(
             staging_name=staging_name,
             expected_owner=expected_owner,
             retained_usage=retained_usage,
+            publication_reservation=publication_reservation,
             lock_manager=manager,
         )
 
@@ -1056,6 +1060,23 @@ def test_extraction_runs_capacity_admission_before_creating_the_tree(tmp_path: P
             staging_name="candidate",
             expected_owner=_OWNER,
             retained_usage=retained,
+        )
+
+    assert list(parent.iterdir()) == []
+
+
+def test_extraction_reserves_future_publication_namespace(tmp_path: Path) -> None:
+    source = _write(tmp_path, _archive(_MemberSpec(name=b"index.html", content=b"home")))
+    parent = _staging_parent(tmp_path)
+
+    with pytest.raises(CapacityRejectedError, match="host byte ceiling"):
+        _extract_with_intake_lock(
+            source,
+            staging_parent=parent,
+            staging_name="candidate",
+            expected_owner=_OWNER,
+            retained_usage=ReleaseCapacityUsage(()),
+            publication_reservation=CapacityReservation(10 * 1024 * 1024 * 1024, 2),
         )
 
     assert list(parent.iterdir()) == []

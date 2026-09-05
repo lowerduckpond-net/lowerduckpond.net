@@ -16,6 +16,7 @@ from lowerduckpond_static_contracts import ContractError, Digest, validate_uuid7
 
 from lowerduckpond_static_host_agent.capacity import (
     DEFAULT_HOST_CAPACITY_LIMITS,
+    CapacityReservation,
     HostCapacityLimits,
     ReleaseCapacityUsage,
 )
@@ -23,6 +24,7 @@ from lowerduckpond_static_host_agent.intake import AdmittedArtifact, ArtifactInt
 from lowerduckpond_static_host_agent.locks import LockMode, LockName
 from lowerduckpond_static_host_agent.release_tree import (
     RELEASE_TREE_FORMAT,
+    InodeAllocation,
     ReleaseTreeMeasurement,
     measure_release_tree,
 )
@@ -38,6 +40,7 @@ _RELEASE_DIRECTORY_MODE: Final = 0o755
 _RELEASE_FILE_MODE: Final = 0o644
 _MAXIMUM_STAGING_ENTRIES: Final = 2
 _MAXIMUM_TENANT_RELEASES: Final = 3
+_BLOCK_BYTES: Final = 512
 _STAGING_NAME = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
     r"--[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}",
@@ -84,6 +87,14 @@ class PublishedDeploymentRelease:
 
     measurement: ReleaseTreeMeasurement
     created: bool
+
+
+@dataclass(frozen=True, slots=True)
+class PublishedReleaseInventory:
+    """Complete published identities and their dynamic namespace allocations."""
+
+    tenant_releases: tuple[tuple[str, tuple[str, ...]], ...]
+    namespace_usage: ReleaseCapacityUsage
 
 
 class DeploymentReleaseStore:
@@ -166,6 +177,7 @@ class DeploymentReleaseStore:
                 staging_parent=self._staging_root,
                 staging_name=staging_name,
                 retained_usage=retained_usage,
+                publication_reservation=self._publication_namespace_reservation(canonical_tenant),
                 limits=capacity_limits,
             )
             owns_staging = True
@@ -264,7 +276,7 @@ class DeploymentReleaseStore:
         self,
         *,
         publication_lock: PublicationLockProof,
-    ) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    ) -> PublishedReleaseInventory:
         """Enumerate the complete bounded published release namespace."""
 
         self._require_locked(publication_lock)
@@ -284,6 +296,7 @@ class DeploymentReleaseStore:
             raise ReleaseStoreError("release staging root changed while it was open")
 
         inventory: list[tuple[str, tuple[str, ...]]] = []
+        namespace_allocations: list[InodeAllocation] = []
         for name in names:
             if name == ".staging":
                 continue
@@ -299,6 +312,7 @@ class DeploymentReleaseStore:
                 label="tenant release namespace",
             )
             try:
+                namespace_allocations.append(_inode_allocation(os.fstat(tenant_fd)))
                 if _scan_names(
                     tenant_fd,
                     maximum=1,
@@ -313,6 +327,7 @@ class DeploymentReleaseStore:
                     label="release namespace",
                 )
                 try:
+                    namespace_allocations.append(_inode_allocation(os.fstat(releases_fd)))
                     release_names = _scan_names(
                         releases_fd,
                         maximum=_MAXIMUM_TENANT_RELEASES,
@@ -340,7 +355,10 @@ class DeploymentReleaseStore:
             finally:
                 os.close(tenant_fd)
             inventory.append((tenant_id, tuple(deployment_ids)))
-        return tuple(inventory)
+        return PublishedReleaseInventory(
+            tuple(inventory),
+            ReleaseCapacityUsage(tuple(namespace_allocations)),
+        )
 
     def discard_staged(
         self,
@@ -516,6 +534,15 @@ class DeploymentReleaseStore:
             )
         finally:
             os.close(tenant_fd)
+
+    def _publication_namespace_reservation(self, tenant_id: str) -> CapacityReservation:
+        if _entry_exists(self._release_fd, tenant_id):
+            return CapacityReservation(0, 0)
+        filesystem = os.fstatvfs(self._release_fd)
+        fragment = filesystem.f_frsize or filesystem.f_bsize
+        if fragment <= 0:
+            raise ReleaseStoreError("release filesystem has no allocation fragment")
+        return CapacityReservation(fragment * 2, 2)
 
     def _measure_staging(
         self,
@@ -820,6 +847,14 @@ def _scan_names(
     finally:
         os.close(scan_fd)
     return tuple(sorted(names))
+
+
+def _inode_allocation(metadata: os.stat_result) -> InodeAllocation:
+    return InodeAllocation(
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_blocks * _BLOCK_BYTES,
+    )
 
 
 def _rename_no_replace(

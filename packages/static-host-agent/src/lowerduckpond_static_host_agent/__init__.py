@@ -257,6 +257,7 @@ from lowerduckpond_static_host_agent.portable_bundle import (
 from lowerduckpond_static_host_agent.release_store import (
     DeploymentReleaseStore,
     PublishedDeploymentRelease,
+    PublishedReleaseInventory,
     ReleaseStoreError,
     StagedDeploymentRelease,
 )
@@ -513,6 +514,7 @@ __all__ = [
     "PublicationDisabledError",
     "PublicationGate",
     "PublishedDeploymentRelease",
+    "PublishedReleaseInventory",
     "ReadDeadline",
     "ReconciliationOutcome",
     "ReleaseCapacityUsage",
