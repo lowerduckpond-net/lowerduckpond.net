@@ -6,6 +6,7 @@ import shlex
 import stat
 import subprocess
 import time
+import uuid
 import zipfile
 from collections.abc import Iterator
 from io import BytesIO
@@ -24,24 +25,9 @@ ORIGIN_PULL_CA_CERTIFICATE = "/etc/caddy/origin-pull-ca-0.pem"
 PUBLICATION_CONFIGURATION = "/etc/lowerduckpond/static-publication.json"
 STATE_ROOT = "/var/lib/lowerduckpond/static"
 RELEASE_ROOT = "/srv/lowerduckpond/sites"
-UUIDS = (
-    "019b1a00-0000-7000-8000-000000000001",
-    "019b1a00-0000-7000-8000-000000000002",
-    "019b1a00-0000-7000-8000-000000000003",
-    "019b1a00-0000-7000-8000-000000000004",
-    "019b1a00-0000-7000-8000-000000000005",
-    "019b1a00-0000-7000-8000-000000000006",
-    "019b1a00-0000-7000-8000-000000000007",
-    "019b1a00-0000-7000-8000-000000000008",
-    "019b1a00-0000-7000-8000-000000000009",
-    "019b1a00-0000-7000-8000-00000000000a",
-    "019b1a00-0000-7000-8000-00000000000b",
-    "019b1a00-0000-7000-8000-00000000000c",
-    "019b1a00-0000-7000-8000-00000000000d",
-    "019b1a00-0000-7000-8000-00000000000e",
-)
 _BURST_CAPACITY = 5
 _CORRELATION_INTERVAL_SECONDS = 60.25
+_BURST_REFILL_SECONDS = _BURST_CAPACITY * _CORRELATION_INTERVAL_SECONDS
 _FIRST_CORRELATION_COMPLETED_AT: float | None = None
 _SEEN_CORRELATIONS: set[str] = set()
 
@@ -133,6 +119,32 @@ finally:
 def _prepare_edge_probe(host: Host) -> None:
     result = host.run("/usr/sbin/ip address replace 173.245.48.1/32 dev lo")
     assert result.rc == 0, result.stderr
+
+
+def _await_persisted_admission_burst(host: Host) -> None:
+    command = f"""
+import datetime
+import json
+import pathlib
+
+timestamps = []
+root = pathlib.Path({(STATE_ROOT + "/authorization/correlations")!r})
+for path in root.glob("*.json"):
+    document = json.loads(path.read_text(encoding="ascii"))
+    timestamps.append(
+        datetime.datetime.fromisoformat(
+            document["acceptedAt"].replace("Z", "+00:00")
+        )
+    )
+if timestamps:
+    elapsed = (datetime.datetime.now(datetime.UTC) - max(timestamps)).total_seconds()
+    print(max(0.0, {_BURST_REFILL_SECONDS!r} - elapsed))
+else:
+    print(0.0)
+"""
+    result = host.run("/usr/bin/python3 -I -B -c %s", command)
+    assert result.rc == 0, result.stderr
+    time.sleep(float(result.stdout.strip()))
 
 
 def _assert_route(
@@ -279,23 +291,27 @@ def _lifecycle(result: dict[str, object]) -> str:
 
 
 def _ids() -> Iterator[str]:
-    return iter(UUIDS)
+    while True:
+        yield str(uuid.uuid7())
 
 
 def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lifecycle table
     host: Host, tmp_path: Path
 ) -> None:
-    fresh_namespace = _initialize_namespace(host)
+    _initialize_namespace(host)
     assert not _initialize_namespace(host)
     _enable_disposable_publication(host)
     _prepare_edge_probe(host)
+    _await_persisted_admission_burst(host)
     operator_host, identity, ssh = _operator_inputs(tmp_path)
     identities = _ids()
+    slug = f"m3-eight-{str(uuid.uuid7()).replace('-', '')[-12:]}"
+    renamed_slug = f"{slug}-renamed"
 
     create_request = _request(
         "create",
         next(identities),
-        slug="m3-eight",
+        slug=slug,
         quotas={"storageMiB": 100, "entries": 5000},
     )
     created = _submit(tmp_path, operator_host, identity, ssh, create_request)
@@ -305,8 +321,8 @@ def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lif
     assert type(tenant_id) is str
     canonical_origin = created["canonicalOrigin"]
     assert type(canonical_origin) is str
-    original_alias = "m3-eight.lowerduckpond.com"
-    renamed_alias = "m3-eight-renamed.lowerduckpond.com"
+    original_alias = f"{slug}.lowerduckpond.com"
+    renamed_alias = f"{renamed_slug}.lowerduckpond.com"
 
     replay = _submit(tmp_path, operator_host, identity, ssh, dict(create_request))
     assert replay == created
@@ -324,14 +340,13 @@ def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lif
     )
     first_deployment = _desired_deployment(deployed)
     assert _lifecycle(deployed) == "active"
-    if fresh_namespace:
-        _assert_route(host, canonical_origin, status=200, body=first_content)
-        _assert_route(
-            host,
-            original_alias,
-            status=302,
-            redirect=f"https://{canonical_origin}/",
-        )
+    _assert_route(host, canonical_origin, status=200, body=first_content)
+    _assert_route(
+        host,
+        original_alias,
+        status=302,
+        redirect=f"https://{canonical_origin}/",
+    )
     assert (
         _submit(
             tmp_path,
@@ -352,9 +367,8 @@ def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lif
         _request("suspend", next(identities), tenantId=tenant_id),
     )
     assert _lifecycle(suspended) == "suspended"
-    if fresh_namespace:
-        _assert_route(host, canonical_origin, status=404)
-        _assert_route(host, original_alias, status=404)
+    _assert_route(host, canonical_origin, status=404)
+    _assert_route(host, original_alias, status=404)
 
     second = _deployment_zip(b"second installed M3.8 release\n")
     suspended_deploy = _submit(
@@ -383,9 +397,8 @@ def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lif
     )
     assert _lifecycle(suspended_rollback) == "suspended"
     assert _desired_deployment(suspended_rollback) == first_deployment
-    if fresh_namespace:
-        _assert_route(host, canonical_origin, status=404)
-        _assert_route(host, original_alias, status=404)
+    _assert_route(host, canonical_origin, status=404)
+    _assert_route(host, original_alias, status=404)
 
     resumed = _submit(
         tmp_path,
@@ -396,14 +409,13 @@ def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lif
     )
     assert _lifecycle(resumed) == "active"
     assert _desired_deployment(resumed) == first_deployment
-    if fresh_namespace:
-        _assert_route(host, canonical_origin, status=200, body=first_content)
-        _assert_route(
-            host,
-            original_alias,
-            status=302,
-            redirect=f"https://{canonical_origin}/",
-        )
+    _assert_route(host, canonical_origin, status=200, body=first_content)
+    _assert_route(
+        host,
+        original_alias,
+        status=302,
+        redirect=f"https://{canonical_origin}/",
+    )
 
     conflicting_create = _submit(
         tmp_path,
@@ -413,7 +425,7 @@ def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lif
         _request(
             "create",
             next(identities),
-            slug="m3-eight",
+            slug=slug,
             quotas={"storageMiB": 100, "entries": 5000},
         ),
     )
@@ -425,20 +437,19 @@ def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lif
         operator_host,
         identity,
         ssh,
-        _request("rename", next(identities), tenantId=tenant_id, slug="m3-eight-renamed"),
+        _request("rename", next(identities), tenantId=tenant_id, slug=renamed_slug),
     )
     metadata = _manifest(renamed)["metadata"]
     assert type(metadata) is dict
-    assert metadata["slug"] == "m3-eight-renamed"
-    if fresh_namespace:
-        _assert_route(host, canonical_origin, status=200, body=first_content)
-        _assert_route(host, original_alias, status=404)
-        _assert_route(
-            host,
-            renamed_alias,
-            status=302,
-            redirect=f"https://{canonical_origin}/",
-        )
+    assert metadata["slug"] == renamed_slug
+    _assert_route(host, canonical_origin, status=200, body=first_content)
+    _assert_route(host, original_alias, status=404)
+    _assert_route(
+        host,
+        renamed_alias,
+        status=302,
+        redirect=f"https://{canonical_origin}/",
+    )
 
     reconciled = _submit(
         tmp_path,
@@ -534,7 +545,7 @@ def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lif
         _request(
             "create",
             next(identities),
-            slug="m3-eight",
+            slug=slug,
             quotas={"storageMiB": 100, "entries": 5000},
         ),
     )
