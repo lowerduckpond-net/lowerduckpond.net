@@ -712,6 +712,23 @@ def test_backup_configuration_is_atomic_and_sandboxed(host: Host) -> None:
     assert maintenance_unit.contains("ProtectHome=true")
 
 
+def test_backup_serializes_the_static_snapshot_boundary(host: Host) -> None:
+    backup_script = host.file("/usr/local/libexec/lowerduckpond/backup")
+    content = backup_script.content_string
+    credential_export_index = content.index("export AWS_ACCESS_KEY_ID")
+    publication_lock_index = content.index("flock --shared 8")
+    tenant_state_lock_index = content.index("flock --shared 7")
+    backup_index = content.index("restic backup")
+
+    assert credential_export_index < publication_lock_index < tenant_state_lock_index < backup_index
+    assert backup_script.contains(
+        "publication_lock_path=/var/lib/lowerduckpond/static/locks/publication.lock"
+    )
+    assert backup_script.contains(
+        "tenant_state_lock_path=/var/lib/lowerduckpond/static/locks/tenant-state.lock"
+    )
+
+
 def test_backup_scope_excludes_ephemeral_static_state(host: Host) -> None:
     backup_script = host.file("/usr/local/libexec/lowerduckpond/backup")
     for exclude_path in BACKUP_EXCLUDE_PATHS:

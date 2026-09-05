@@ -41,6 +41,13 @@ _STAGING_NAME = re.compile(
     r"--[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}",
     flags=re.ASCII,
 )
+_DISCARDED_STAGING_NAME = re.compile(
+    r"\.discarded-("
+    r"[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
+    r"--[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
+    r")",
+    flags=re.ASCII,
+)
 
 
 class ReleaseStoreError(RuntimeError):
@@ -87,6 +94,7 @@ class DeploymentReleaseStore:
         *,
         expected_owner: int,
         expected_release_group: int,
+        expected_staging_group: int,
     ) -> None:
         self._release_root = release_root
         self._staging_root = staging_root
@@ -104,7 +112,7 @@ class DeploymentReleaseStore:
             staging_fd = _open_validated_directory(
                 staging_root,
                 expected_owner=expected_owner,
-                expected_group=None,
+                expected_group=expected_staging_group,
                 expected_mode=_STAGING_ROOT_MODE,
                 label="release staging root",
             )
@@ -260,10 +268,7 @@ class DeploymentReleaseStore:
 
         self._require_locked(publication_lock)
         _validate_staged(staged)
-        current = self._measure_staging(staged, publication_lock=publication_lock)
-        if current != staged.measurement:
-            raise ReleaseStoreError("staged release changed before cleanup")
-        self._discard_name(staged.staging_name)
+        self._discard_staged(staged, publication_lock=publication_lock)
 
     def reconcile_staging(
         self,
@@ -275,13 +280,39 @@ class DeploymentReleaseStore:
 
         self._require_locked(publication_lock)
         names = _scan_names(self._staging_fd, maximum=_MAXIMUM_STAGING_ENTRIES)
-        if any(_STAGING_NAME.fullmatch(name) is None for name in names):
+        if any(
+            _STAGING_NAME.fullmatch(name) is None
+            and _DISCARDED_STAGING_NAME.fullmatch(name) is None
+            for name in names
+        ):
             raise ReleaseStoreError("release staging contains an unrecognized entry")
-        unknown_protected = set(protected).difference(names)
+        discarded: set[str] = set()
+        for name in names:
+            match = _DISCARDED_STAGING_NAME.fullmatch(name)
+            if match is None:
+                continue
+            staging_name = match.group(1)
+            if staging_name in discarded:
+                raise ReleaseStoreError("release staging has duplicate discard transitions")
+            discarded.add(staging_name)
+        recognized = {name for name in names if _STAGING_NAME.fullmatch(name) is not None}.union(
+            discarded
+        )
+        if any(staging_name in names for staging_name in discarded):
+            raise ReleaseStoreError("staging cleanup found canonical and discarded identities")
+        unknown_protected = set(protected).difference(recognized)
         if unknown_protected:
             raise ReleaseStoreError("protected release staging is absent")
         removed = 0
         for name in names:
+            if _DISCARDED_STAGING_NAME.fullmatch(name) is not None:
+                _remove_staging_tree(
+                    self._staging_fd,
+                    name,
+                    expected_owner=self._expected_owner,
+                )
+                removed += 1
+                continue
             expected = protected.get(name)
             if expected is not None:
                 measurement = measure_release_tree(
@@ -395,9 +426,55 @@ class DeploymentReleaseStore:
     def _discard_name(self, name: str) -> None:
         if _STAGING_NAME.fullmatch(name) is None:
             raise ReleaseStoreError("release staging name is not canonical")
+        self._remove_discard_transition(name)
+
+    def _discard_staged(
+        self,
+        staged: StagedDeploymentRelease,
+        *,
+        publication_lock: PublicationLockProof,
+    ) -> None:
+        discarded_name = _discarded_staging_name(staged.staging_name)
+        canonical_exists = _entry_exists(self._staging_fd, staged.staging_name)
+        discarded_exists = _entry_exists(self._staging_fd, discarded_name)
+        if canonical_exists:
+            if discarded_exists:
+                raise ReleaseStoreError("staging cleanup found canonical and discarded identities")
+            current = self._measure_staging(staged, publication_lock=publication_lock)
+            if current != staged.measurement:
+                raise ReleaseStoreError("staged release changed before cleanup")
+            _rename_no_replace(
+                self._staging_fd,
+                staged.staging_name,
+                self._staging_fd,
+                discarded_name,
+            )
+            os.fsync(self._staging_fd)
+        elif not discarded_exists:
+            os.fsync(self._staging_fd)
+            return
+        self._remove_discard_transition(staged.staging_name)
+
+    def _remove_discard_transition(self, staging_name: str) -> None:
+        discarded_name = _discarded_staging_name(staging_name)
+        canonical_exists = _entry_exists(self._staging_fd, staging_name)
+        discarded_exists = _entry_exists(self._staging_fd, discarded_name)
+        if canonical_exists:
+            if discarded_exists:
+                raise ReleaseStoreError("staging cleanup found canonical and discarded identities")
+            _rename_no_replace(
+                self._staging_fd,
+                staging_name,
+                self._staging_fd,
+                discarded_name,
+            )
+            os.fsync(self._staging_fd)
+        elif not discarded_exists:
+            os.fsync(self._staging_fd)
+            return
         _remove_staging_tree(
             self._staging_fd,
-            name,
+            discarded_name,
             expected_owner=self._expected_owner,
         )
 
@@ -419,6 +496,12 @@ def _staging_name(tenant_id: str, deployment_id: str) -> str:
     if _STAGING_NAME.fullmatch(name) is None:  # pragma: no cover - validated inputs derive it
         raise ReleaseStoreError("derived release staging name is not canonical")
     return name
+
+
+def _discarded_staging_name(staging_name: str) -> str:
+    if _STAGING_NAME.fullmatch(staging_name) is None:
+        raise ReleaseStoreError("release staging name is not canonical")
+    return f".discarded-{staging_name}"
 
 
 def _release_tree_digest(value: Mapping[str, object]) -> Digest:

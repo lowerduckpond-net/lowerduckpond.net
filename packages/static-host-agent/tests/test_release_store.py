@@ -104,6 +104,7 @@ def test_release_store_extracts_verifies_and_durably_publishes(tmp_path: Path) -
             release_root / ".staging",
             expected_owner=os.geteuid(),
             expected_release_group=os.getegid(),
+            expected_staging_group=os.getegid(),
         ) as store,
         LockManager(
             state_root / "locks",
@@ -161,6 +162,7 @@ def test_release_publication_exactly_replays_an_existing_identity(
             release_root / ".staging",
             expected_owner=os.geteuid(),
             expected_release_group=os.getegid(),
+            expected_staging_group=os.getegid(),
         ) as store,
         LockManager(
             state_root / "locks",
@@ -231,6 +233,7 @@ def test_release_publication_refuses_an_existing_identity_with_other_content(
             release_root / ".staging",
             expected_owner=os.geteuid(),
             expected_release_group=os.getegid(),
+            expected_staging_group=os.getegid(),
         ) as store,
         LockManager(
             state_root / "locks",
@@ -294,6 +297,7 @@ def test_release_staging_collision_preserves_the_existing_candidate(
             release_root / ".staging",
             expected_owner=os.geteuid(),
             expected_release_group=os.getegid(),
+            expected_staging_group=os.getegid(),
         ) as store,
         LockManager(
             state_root / "locks",
@@ -351,6 +355,7 @@ def test_release_store_reconciles_only_unprotected_safe_staging(tmp_path: Path) 
             release_root / ".staging",
             expected_owner=os.geteuid(),
             expected_release_group=os.getegid(),
+            expected_staging_group=os.getegid(),
         ) as store,
         LockManager(
             state_root / "locks",
@@ -410,6 +415,7 @@ def test_release_store_removes_staging_when_authority_digest_disagrees(
             release_root / ".staging",
             expected_owner=os.geteuid(),
             expected_release_group=os.getegid(),
+            expected_staging_group=os.getegid(),
         ) as store,
         LockManager(
             state_root / "locks",
@@ -455,6 +461,7 @@ def test_release_store_requires_the_exclusive_publication_lock(tmp_path: Path) -
             release_root / ".staging",
             expected_owner=os.geteuid(),
             expected_release_group=os.getegid(),
+            expected_staging_group=os.getegid(),
         ) as store,
         LockManager(
             state_root / "locks",
@@ -476,6 +483,7 @@ def test_release_store_rejects_an_unsafe_staging_inventory(tmp_path: Path) -> No
             release_root / ".staging",
             expected_owner=os.geteuid(),
             expected_release_group=os.getegid(),
+            expected_staging_group=os.getegid(),
         ) as store,
         LockManager(
             state_root / "locks",
@@ -484,6 +492,31 @@ def test_release_store_rejects_an_unsafe_staging_inventory(tmp_path: Path) -> No
         ) as locks,
         locks.acquire(LockName.PUBLICATION, mode=LockMode.EXCLUSIVE),
         pytest.raises(ReleaseStoreError, match="unrecognized entry"),
+    ):
+        store.reconcile_staging({}, publication_lock=locks)
+
+
+def test_release_store_rejects_conflicting_discard_identity(tmp_path: Path) -> None:
+    state_root = _state_root(tmp_path)
+    release_root = _release_root(tmp_path)
+    staging_name = f"{_TENANT_ID}--{_DEPLOYMENT_ID}"
+    _mkdir(release_root / ".staging" / staging_name, 0o700)
+    _mkdir(release_root / ".staging" / f".discarded-{staging_name}", 0o700)
+    with (
+        DeploymentReleaseStore(
+            release_root,
+            release_root / ".staging",
+            expected_owner=os.geteuid(),
+            expected_release_group=os.getegid(),
+            expected_staging_group=os.getegid(),
+        ) as store,
+        LockManager(
+            state_root / "locks",
+            expected_owner=os.geteuid(),
+            expected_directory_mode=0o700,
+        ) as locks,
+        locks.acquire(LockName.PUBLICATION, mode=LockMode.EXCLUSIVE),
+        pytest.raises(ReleaseStoreError, match="canonical and discarded"),
     ):
         store.reconcile_staging({}, publication_lock=locks)
 
@@ -504,6 +537,7 @@ def test_release_store_removes_restrictive_partial_staging(tmp_path: Path) -> No
             release_root / ".staging",
             expected_owner=os.geteuid(),
             expected_release_group=os.getegid(),
+            expected_staging_group=os.getegid(),
         ) as store,
         LockManager(
             state_root / "locks",
@@ -526,7 +560,102 @@ def test_release_store_rejects_unsafe_root_metadata(tmp_path: Path) -> None:
             release_root / ".staging",
             expected_owner=os.geteuid(),
             expected_release_group=os.getegid(),
+            expected_staging_group=os.getegid(),
         )
+
+
+def test_release_store_rejects_staging_root_group_drift(tmp_path: Path) -> None:
+    release_root = _release_root(tmp_path)
+    with pytest.raises(ReleaseStoreError, match="wrong group"):
+        DeploymentReleaseStore(
+            release_root,
+            release_root / ".staging",
+            expected_owner=os.geteuid(),
+            expected_release_group=os.getegid(),
+            expected_staging_group=os.getegid() + 1,
+        )
+
+
+def test_protected_partial_staging_discard_resumes_without_remeasurement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_root = _state_root(tmp_path)
+    release_root = _release_root(tmp_path)
+    payload = _deployment_zip()
+    with (
+        ArtifactIntake(state_root, expected_owner=os.geteuid()) as intake,
+        DeploymentReleaseStore(
+            release_root,
+            release_root / ".staging",
+            expected_owner=os.geteuid(),
+            expected_release_group=os.getegid(),
+            expected_staging_group=os.getegid(),
+        ) as store,
+        LockManager(
+            state_root / "locks",
+            expected_owner=os.geteuid(),
+            expected_directory_mode=0o700,
+        ) as locks,
+    ):
+        with intake.admit(
+            operation="deploy",
+            correlation_id=_CORRELATION_ID,
+            declared=_binding(payload),
+            read=BytesIO(payload).read,
+        ) as lease:
+            lease.commit()
+        with (
+            intake.claim(
+                correlation_id=_CORRELATION_ID,
+                declared=_binding(payload),
+            ) as claim,
+            locks.acquire(LockName.PUBLICATION, mode=LockMode.EXCLUSIVE),
+        ):
+            expected = intake.deployment_release_tree_digest(claim.artifact).to_dict()
+            staged = store.stage(
+                intake,
+                claim.artifact,
+                tenant_id=_TENANT_ID,
+                deployment_id=_DEPLOYMENT_ID,
+                expected_release_tree_digest=expected,
+                retained_usage=ReleaseCapacityUsage(()),
+                publication_lock=locks,
+            )
+            original_remove = release_store_module._remove_staging_contents
+            interrupted = False
+
+            def interrupt_after_one_unlink(
+                directory_fd: int,
+                *,
+                expected_owner: int,
+            ) -> None:
+                nonlocal interrupted
+                if not interrupted:
+                    interrupted = True
+                    os.unlink("index.html", dir_fd=directory_fd)
+                    raise RuntimeError("simulated partial staging discard")
+                original_remove(directory_fd, expected_owner=expected_owner)
+
+            monkeypatch.setattr(
+                release_store_module,
+                "_remove_staging_contents",
+                interrupt_after_one_unlink,
+            )
+            with pytest.raises(RuntimeError, match="partial staging discard"):
+                store.discard_staged(staged, publication_lock=locks)
+            names = [path.name for path in (release_root / ".staging").iterdir()]
+            assert names == [f".discarded-{staged.staging_name}"]
+
+            assert (
+                store.reconcile_staging(
+                    {staged.staging_name: expected},
+                    publication_lock=locks,
+                )
+                == 1
+            )
+
+    assert not any((release_root / ".staging").iterdir())
 
 
 @pytest.mark.parametrize("partial", ["tenant", "releases"])
@@ -547,6 +676,7 @@ def test_release_namespace_repairs_a_restrictive_crash_left_directory(
             release_root / ".staging",
             expected_owner=os.geteuid(),
             expected_release_group=os.getegid(),
+            expected_staging_group=os.getegid(),
         ) as store,
         LockManager(
             state_root / "locks",
@@ -577,6 +707,7 @@ def test_release_store_removes_only_the_exact_authorized_release(
             release_root / ".staging",
             expected_owner=os.geteuid(),
             expected_release_group=os.getegid(),
+            expected_staging_group=os.getegid(),
         ) as store,
         LockManager(
             state_root / "locks",
@@ -659,6 +790,7 @@ def test_release_removal_requires_exclusive_tenant_state(tmp_path: Path) -> None
             release_root / ".staging",
             expected_owner=os.geteuid(),
             expected_release_group=os.getegid(),
+            expected_staging_group=os.getegid(),
         ) as store,
         LockManager(
             state_root / "locks",
@@ -694,6 +826,7 @@ def test_release_removal_retry_syncs_an_already_absent_identity(
             release_root / ".staging",
             expected_owner=os.geteuid(),
             expected_release_group=os.getegid(),
+            expected_staging_group=os.getegid(),
         ) as store,
         LockManager(
             state_root / "locks",
@@ -779,6 +912,7 @@ def test_staging_removal_retry_syncs_an_already_absent_identity(
             staging_root,
             expected_owner=os.geteuid(),
             expected_release_group=os.getegid(),
+            expected_staging_group=os.getegid(),
         ) as store,
         LockManager(
             state_root / "locks",
@@ -839,6 +973,7 @@ def test_release_removal_accepts_measured_hard_linked_files(tmp_path: Path) -> N
             release_root / ".staging",
             expected_owner=os.geteuid(),
             expected_release_group=os.getegid(),
+            expected_staging_group=os.getegid(),
         ) as store,
         LockManager(
             state_root / "locks",
@@ -906,6 +1041,7 @@ def test_release_store_closes_both_roots_after_filesystem_rejection(
             release_root / ".staging",
             expected_owner=os.geteuid(),
             expected_release_group=os.getegid(),
+            expected_staging_group=os.getegid(),
         )
 
     assert len(opened) == _ROOT_DESCRIPTOR_COUNT
