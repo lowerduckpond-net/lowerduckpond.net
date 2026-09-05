@@ -9,6 +9,7 @@ from lowerduckpond_static_contracts import result_digest
 from testinfra.host import Host
 
 BACKUP_ENVIRONMENT_MODE = 0o600
+BACKUP_COMMAND_MODE = 0o755
 CONTENT_ROOT_MODE = 0o711
 ROUTE_DIRECTORY_MODE = 0o750
 DATABASE_BACKUP_PRIVILEGES = {
@@ -716,25 +717,45 @@ def test_backup_serializes_the_static_snapshot_boundary(host: Host) -> None:
     backup_script = host.file("/usr/local/libexec/lowerduckpond/backup")
     content = backup_script.content_string
     credential_export_index = content.index("export AWS_ACCESS_KEY_ID")
-    publication_lock_index = content.index("flock --shared 8")
-    tenant_state_lock_index = content.index("flock --shared 7")
-    staging_check_index = content.index('find -- "${release_staging_path}"')
-    backup_index = content.index("restic backup")
+    snapshot_index = content.index("backup-static-snapshot")
+    backup_index = content.index("/usr/bin/restic backup")
 
-    assert (
-        credential_export_index
-        < publication_lock_index
-        < tenant_state_lock_index
-        < staging_check_index
-        < backup_index
-    )
-    assert backup_script.contains(
-        "publication_lock_path=/var/lib/lowerduckpond/static/locks/publication.lock"
-    )
-    assert backup_script.contains(
-        "tenant_state_lock_path=/var/lib/lowerduckpond/static/locks/tenant-state.lock"
-    )
-    assert backup_script.contains("release_staging_path=/srv/lowerduckpond/sites/.staging")
+    assert credential_export_index < snapshot_index < backup_index
+    snapshot = host.file("/usr/local/libexec/lowerduckpond/backup-static-snapshot")
+    snapshot_content = snapshot.content_string
+    assert snapshot.user == "root"
+    assert snapshot.group == "root"
+    assert snapshot.mode == BACKUP_COMMAND_MODE
+    assert '"/var/lib/lowerduckpond/static/locks/publication.lock"' in snapshot_content
+    assert '"/var/lib/lowerduckpond/static/locks/tenant-state.lock"' in snapshot_content
+    assert 'sys.argv[1:3] != ["/usr/bin/restic", "backup"]' in snapshot_content
+    assert "os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC" in snapshot_content
+    assert "os.O_CREAT" not in snapshot_content
+    assert "metadata.st_nlink != 1" in snapshot_content
+    assert "fcntl.flock(descriptor, fcntl.LOCK_SH)" in snapshot_content
+    assert "_require_quiescent_staging()" in snapshot_content
+
+
+def test_backup_refuses_missing_or_linked_static_locks(host: Host) -> None:
+    lock_path = "/var/lib/lowerduckpond/static/locks/publication.lock"
+    saved_path = "/var/lib/lowerduckpond/static/locks/publication.lock.acceptance"
+    tenant_lock_path = "/var/lib/lowerduckpond/static/locks/tenant-state.lock"
+    moved = host.run("mv -- %s %s", lock_path, saved_path)
+    assert moved.rc == 0
+    try:
+        missing = host.run("/usr/local/libexec/lowerduckpond/backup")
+        assert missing.rc != 0
+        assert "lock could not be opened safely" in missing.stderr
+
+        linked = host.run("ln -s -- %s %s", tenant_lock_path, lock_path)
+        assert linked.rc == 0
+        rejected = host.run("/usr/local/libexec/lowerduckpond/backup")
+        assert rejected.rc != 0
+        assert "lock could not be opened safely" in rejected.stderr
+    finally:
+        host.run("rm -f -- %s", lock_path)
+        restored = host.run("mv -- %s %s", saved_path, lock_path)
+        assert restored.rc == 0
 
 
 def test_backup_rejects_nonempty_release_staging(host: Host) -> None:

@@ -144,6 +144,8 @@
     group: root
     mode: "0755"
   loop:
+    - src: backup-static-snapshot.j2
+      dest: backup-static-snapshot
     - src: backup.j2
       dest: backup
     - src: backup-maintenance.j2
