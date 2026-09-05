@@ -149,6 +149,7 @@ def test_generation_migration_is_stopped_masked_and_defaults_on() -> None:
     assert "caddy_tenant_environment_input_probe.changed" in source_drift
     assert "caddy_tenant_origin_pull_ca_input_probe.results" in source_drift
     assert "caddy_tenant_retired_origin_pull_ca_probe.results" in source_drift
+
     assert "Stop Caddy for the immutable bootstrap transaction" in tasks
     assert "Runtime-mask Caddy for the immutable bootstrap transaction" in tasks
     assert "mask\n      - --runtime\n      - caddy.service" in tasks
@@ -253,14 +254,31 @@ def test_production_acceptance_and_health_use_the_generation_check() -> None:
     assert "check-caddy-generation" in acceptance
     assert "check-current-caddy-generation" in acceptance
     assert "acceptance_tenant_caddy_generation.stdout | trim != 'current'" in acceptance
+    assert "Inspect the authoritative tenant inventory" in acceptance
+    assert "acceptance_authoritative_tenant_inventory.stdout | trim | length == 0" in acceptance
+    assert "acceptance_authoritative_tenant_inventory.stdout | trim | length > 0" in acceptance
     assert "check-caddy-generation" in health
     assert "check_exact_output 'Caddy generation is complete and current' unchanged" in health
+    assert "Empty platform Caddy generation is complete and current" in health
+    assert "authoritative tenant inventory is unavailable" in health
     assert "static_publication_enabled" in health
     assert "check-current-caddy-generation" in health
     assert "Selected Caddy generation matches authoritative tenant state" in health
     assert "bootstrap-caddy-generation" in check
     assert "static_host_agent_artifact_sha256" in check
     assert "--check" in check
+
+
+def test_enabled_publication_refuses_host_agent_selection_drift_before_mutation() -> None:
+    tasks = (_ROOT / "config/ansible/roles/static_host_agent/tasks/main.yml").read_text(
+        encoding="utf-8"
+    )
+    assertion = "Refuse host-agent selection drift while tenant publication is enabled"
+    selection = "Install and atomically select the pinned host-agent artifact"
+
+    assert assertion in tasks
+    assert tasks.index(assertion) < tasks.index(selection)
+    assert "when: not static_publication_enabled | bool" in tasks[tasks.index(selection) :]
 
     health_unit = (
         _ROOT / "config/ansible/roles/monitoring/templates/lowerduckpond-health.service.j2"

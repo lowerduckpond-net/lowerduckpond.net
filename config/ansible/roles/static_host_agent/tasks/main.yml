@@ -31,6 +31,31 @@
       - static_host_agent_controller_artifact.stat.checksum == static_host_agent_artifact_sha256
     fail_msg: The controller host-agent artifact does not match its pinned SHA-256.
 
+- name: Inspect the selected host-agent artifact while tenant publication is enabled
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/readlink
+      - --canonicalize-existing
+      - "{{ static_host_agent_install_root }}/current"
+  register: static_host_agent_enabled_selection
+  changed_when: false
+  failed_when: false
+  when: static_publication_enabled | bool
+
+- name: Refuse host-agent selection drift while tenant publication is enabled
+  ansible.builtin.assert:
+    that:
+      - static_host_agent_enabled_selection.rc == 0
+      - >-
+        static_host_agent_enabled_selection.stdout | trim ==
+        static_host_agent_install_root ~ '/' ~ static_host_agent_artifact_sha256
+    fail_msg: >-
+      The selected host-agent artifact differs from the pinned artifact while
+      tenant publication is enabled; refusing to alter the live selector
+      without a tenant-capable generation migration.
+    quiet: true
+  when: static_publication_enabled | bool
+
 - name: Create the versioned host-agent installation root
   ansible.builtin.file:
     path: "{{ static_host_agent_install_root }}"
@@ -184,6 +209,7 @@
       - "{{ static_host_agent_state_root }}"
   register: static_host_agent_installation
   changed_when: static_host_agent_installation.stdout | trim == 'changed'
+  when: not static_publication_enabled | bool
 
 - name: Inspect retired writable Milestone 2 directories
   ansible.builtin.stat:

@@ -16,7 +16,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from lowerduckpond_static_contracts import canonical_json_bytes, manifest_digest
-from lowerduckpond_static_operator import submit
+from lowerduckpond_static_operator import OperatorClientError, submit
 from testinfra.host import Host
 
 CONTAINER = "lowerduckpond-ubuntu-2604"
@@ -34,6 +34,9 @@ _BURST_REFILL_SECONDS = _BURST_CAPACITY * _CORRELATION_INTERVAL_SECONDS
 _AVAILABLE_CORRELATION_TOKENS = float(_BURST_CAPACITY)
 _CORRELATION_TOKENS_UPDATED_AT: float | None = None
 _SEEN_CORRELATIONS: set[str] = set()
+_RETRYABLE_BUSY = "operator transport failed: tenant-state.lock is busy"
+_BUSY_RETRY_ATTEMPTS = 50
+_BUSY_RETRY_SECONDS = 0.1
 
 
 def _run(arguments: list[str]) -> str:
@@ -388,16 +391,24 @@ def _submit(  # noqa: PLR0913
     request_path.write_bytes(canonical_json_bytes(request))
     request_path.chmod(0o600)
     try:
-        result = submit(
-            host=host,
-            identity_path=identity,
-            request_path=request_path,
-            artifact_path=artifact_path,
-            ssh_executable=ssh,
-        )
+        for attempt in range(_BUSY_RETRY_ATTEMPTS):
+            try:
+                return submit(
+                    host=host,
+                    identity_path=identity,
+                    request_path=request_path,
+                    artifact_path=artifact_path,
+                    ssh_executable=ssh,
+                )
+            except OperatorClientError as error:
+                if str(error) != _RETRYABLE_BUSY or attempt == _BUSY_RETRY_ATTEMPTS - 1:
+                    raise
+                time.sleep(_BUSY_RETRY_SECONDS)
     finally:
         _complete_correlation_pacing(new_correlation)
-    return result
+    raise AssertionError(
+        "busy retry loop exhausted without a terminal response"
+    )  # pragma: no cover
 
 
 def _pace_new_correlation(request: dict[str, object]) -> bool:
@@ -481,6 +492,7 @@ def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lif
     _initialize_namespace(host)
     assert not _initialize_namespace(host)
     _enable_disposable_publication(host)
+    _reapply_ansible()
     _prepare_edge_probe(host)
     _await_persisted_admission_burst(host)
     operator_host, identity, ssh = _operator_inputs(tmp_path)
