@@ -24,7 +24,7 @@ from lowerduckpond_static_contracts import (
 )
 from lowerduckpond_static_domain import generate_uuid7
 
-from lowerduckpond_static_host_agent.audit import AuditCapacityError
+from lowerduckpond_static_host_agent.audit import AuditError
 from lowerduckpond_static_host_agent.caddy_admin import (
     CaddyAdminError,
     verify_starting_caddy,
@@ -168,7 +168,7 @@ class _ReleaseStateTransaction(Protocol):
 
 
 _SAFE_ERRORS: Final = (
-    AuditCapacityError,
+    AuditError,
     ContractError,
     CapacityError,
     CaddyAdminError,
@@ -189,6 +189,7 @@ _SAFE_ERRORS: Final = (
     RouteLifecycleError,
     RoutePreparationError,
     RouteRecoveryError,
+    RouteSnapshotError,
     ProtocolError,
     CorrelationError,
     ExecutionError,
@@ -197,6 +198,7 @@ _SAFE_ERRORS: Final = (
     OperatorAdapterError,
     RequestDecodeError,
     ReleaseStoreError,
+    ReleaseTreeError,
     RuntimeBoundaryError,
     StateConflictError,
     StateRecordError,
