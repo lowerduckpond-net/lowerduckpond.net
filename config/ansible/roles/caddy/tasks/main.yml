@@ -545,6 +545,13 @@
   changed_when: caddy_generation_unmask.stdout | trim != ''
   when: caddy_generation_enabled | bool
 
+- name: Reload systemd after removing the immutable-bootstrap runtime mask
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when:
+    - caddy_generation_enabled | bool
+    - caddy_generation_bootstrap_required | bool
+
 - name: Reset immutable Caddy startup limits after bootstrap
   ansible.builtin.command:
     argv:

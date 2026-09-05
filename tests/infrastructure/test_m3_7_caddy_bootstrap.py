@@ -155,6 +155,16 @@ def test_generation_migration_is_stopped_masked_and_defaults_on() -> None:
         in tasks[tasks.index(reset_limits) : tasks.index("Enable and start immutable Caddy")]
     )
     assert tasks.index("Remove any immutable-bootstrap runtime mask") < tasks.index(reset_limits)
+    post_unmask_reload = "Reload systemd after removing the immutable-bootstrap runtime mask"
+    assert post_unmask_reload in tasks
+    assert tasks.index("Remove any immutable-bootstrap runtime mask") < tasks.index(
+        post_unmask_reload
+    )
+    assert tasks.index(post_unmask_reload) < tasks.index(reset_limits)
+    assert (
+        "caddy_generation_bootstrap_required | bool"
+        in tasks[tasks.index(post_unmask_reload) : tasks.index(reset_limits)]
+    )
     assert tasks.index(reset_limits) < tasks.index("Enable and start immutable Caddy")
     assert "Remove the retired mutable Caddy configuration" in site
     assert "--check" in tasks
