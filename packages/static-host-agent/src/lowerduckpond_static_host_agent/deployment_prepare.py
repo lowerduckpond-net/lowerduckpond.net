@@ -97,6 +97,8 @@ class DeploymentPreparationTransaction(Protocol):
 
     def tenant_deployment_ids(self, tenant_id: object) -> tuple[str, ...]: ...
 
+    def tenant_archive_ids(self, tenant_id: object) -> tuple[str, ...]: ...
+
     def create_immutable(
         self,
         path: StateRecordPath,
@@ -350,13 +352,7 @@ def _read_deployment_source(
             raise DeploymentAuthorityDriftError("selected deployment record disappeared") from error
         validate_contract(deployment, expected_kind=ContractKind.DEPLOYMENT_RECORD)
 
-    current_ids = transaction.tenant_deployment_ids(tenant_id)
-    bound_ids = job.get("dispatchDeploymentIds")
-    if type(bound_ids) is not list or any(type(value) is not str for value in bound_ids):
-        raise DeploymentPreparationError("deployment history authority is unavailable")
-    canonical_bound = tuple(validate_uuid7(value) for value in bound_ids)
-    if canonical_bound != current_ids:
-        raise DeploymentAuthorityDriftError("retained deployment history changed")
+    current_ids = _require_bound_history(transaction, tenant_id, job)
     history: list[dict[str, object]] = []
     try:
         for deployment_id in current_ids:
@@ -380,6 +376,31 @@ def _read_deployment_source(
     if bound_source_digest != expected_source_digest:
         raise DeploymentAuthorityDriftError("selected source release authority changed")
     return _DeploymentSource(manifest, observed, deployment, rollback)
+
+
+def _require_bound_history(
+    transaction: DeploymentPreparationTransaction,
+    tenant_id: str,
+    job: dict[str, object],
+) -> tuple[str, ...]:
+    current_deployments = transaction.tenant_deployment_ids(tenant_id)
+    bound_deployments = job.get("dispatchDeploymentIds")
+    if type(bound_deployments) is not list or any(
+        type(value) is not str for value in bound_deployments
+    ):
+        raise DeploymentPreparationError("deployment history authority is unavailable")
+    canonical_deployments = tuple(validate_uuid7(value) for value in bound_deployments)
+    if canonical_deployments != current_deployments:
+        raise DeploymentAuthorityDriftError("retained deployment history changed")
+
+    current_archives = transaction.tenant_archive_ids(tenant_id)
+    bound_archives = job.get("dispatchArchiveDeploymentIds")
+    if type(bound_archives) is not list or any(type(value) is not str for value in bound_archives):
+        raise DeploymentPreparationError("archive history authority is unavailable")
+    canonical_archives = tuple(validate_uuid7(value) for value in bound_archives)
+    if canonical_archives != current_archives:
+        raise DeploymentAuthorityDriftError("retained archive history changed")
+    return current_deployments
 
 
 def _source_route_set(manifest: dict[str, object]) -> str:

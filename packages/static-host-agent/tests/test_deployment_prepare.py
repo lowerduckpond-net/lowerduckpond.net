@@ -735,6 +735,31 @@ def test_retained_release_drift_fails_before_staging(tmp_path: Path) -> None:
         repository.close()
 
 
+def test_unexpected_target_archive_history_fails_before_staging(tmp_path: Path) -> None:
+    repository, runtime, releases, artifact, deployments = _prepared_state(tmp_path)
+    tenant_id = _tenant_id()
+    deployment = deployments[-1]
+    manifest = repository.read(StateRecordPath.tenant_desired(tenant_id)).document
+    archive = _fixture("archive-record.json")
+    archive["tenantId"] = tenant_id
+    archive["deploymentId"] = deployment["id"]
+    archive["releaseTreeDigest"] = deployment["releaseTreeDigest"]
+    archive["manifestDigest"] = manifest_digest(manifest).to_dict()
+    _write(
+        tmp_path / "state",
+        StateRecordPath.tenant_archive(tenant_id, deployment["id"]),
+        archive,
+    )
+    try:
+        with pytest.raises(DeploymentAuthorityDriftError, match="archive history"):
+            _prepare(repository, runtime, releases, artifact)
+
+        assert releases.events == ["reconciled"]
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
 def test_bound_source_release_drift_fails_before_staging(tmp_path: Path) -> None:
     repository, runtime, releases, artifact, _deployments = _prepared_state(tmp_path)
     stored = repository.read(StateRecordPath.authorization_job(_JOB_ID))
