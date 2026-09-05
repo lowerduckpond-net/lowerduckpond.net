@@ -25,6 +25,7 @@ from lowerduckpond_static_host_agent import (
     ArtifactIntake,
     CaddyGenerationManifest,
     CaddyRuntime,
+    CapacityRejectedError,
     DeploymentAuthorityDriftError,
     DeploymentPreparationError,
     DeploymentReleaseStore,
@@ -57,6 +58,7 @@ _NOW = datetime(2026, 9, 5, 12, 30, tzinfo=UTC)
 _SOURCE_GENERATION = "0198d17f-6f4a-7000-8000-000000000020"
 _JOB_ID = "0198d17f-6f4a-7000-8000-000000000022"
 _CORRELATION_ID = "0198d17f-6f4a-7000-8000-000000000023"
+_OTHER_TENANT_ID = "0198d17f-6f4a-7000-8000-000000000099"
 
 
 class _Entropy:
@@ -143,6 +145,17 @@ class _ReleaseStore:
         self.releases = dict(releases)
         self.events: list[str] = []
         self.discarded = False
+
+    def reconcile_staging(
+        self,
+        protected: dict[str, dict[str, object]],
+        *,
+        publication_lock: object,
+    ) -> int:
+        assert protected == {}
+        assert publication_lock.measure_intent_records().records == ()  # type: ignore[attr-defined]
+        self.events.append("reconciled")
+        return 1
 
     def measure(
         self,
@@ -384,11 +397,12 @@ def _job(
     }
 
 
-def _prepared_state(
+def _prepared_state(  # noqa: PLR0915 - fixture constructs complete host authority
     tmp_path: Path,
     *,
     operation: str = "deploy",
     state: str = "active",
+    include_other_tenant: bool = False,
 ) -> tuple[
     StateRepository,
     _Runtime,
@@ -413,6 +427,54 @@ def _prepared_state(
     namespace = _fixture("platform-namespace.json")
     rollback = deployments[0] if operation == "rollback" else None
     job = _job(operation, namespace, manifest, deployments, rollback=rollback)
+    other_route: TenantRouteInput | None = None
+    other_deployment: dict[str, object] | None = None
+    if include_other_tenant:
+        other_deployment = _deployment(
+            "0198d17f-6f4a-7000-8000-000000000098",
+            value="a" * 64,
+        )
+        other_deployment["tenantId"] = _OTHER_TENANT_ID
+        other_manifest = deepcopy(manifest)
+        other_metadata = cast(dict[str, object], other_manifest["metadata"])
+        other_metadata["id"] = _OTHER_TENANT_ID
+        other_metadata["slug"] = "other-tenant"
+        other_metadata["canonicalOrigin"] = "t-0198d17f6f4a70008000000000000099.lowerduckpond.com"
+        other_spec = cast(dict[str, object], other_manifest["spec"])
+        other_spec["desiredDeployment"] = {
+            "id": other_deployment["id"],
+            "archiveSha256": other_deployment["archiveSha256"],
+        }
+        other_observed = deepcopy(observed)
+        other_observed["tenantId"] = _OTHER_TENANT_ID
+        other_observed["desiredManifestDigest"] = manifest_digest(other_manifest).to_dict()
+        other_observed["activeDeploymentId"] = other_deployment["id"]
+        other_root = root / "tenants" / _OTHER_TENANT_ID
+        _mkdir(other_root)
+        _mkdir(other_root / "deployments")
+        _mkdir(other_root / "archives")
+        _write(root, StateRecordPath.tenant_desired(_OTHER_TENANT_ID), other_manifest)
+        _write(root, StateRecordPath.tenant_observed(_OTHER_TENANT_ID), other_observed)
+        _write(
+            root,
+            StateRecordPath.tenant_deployment(
+                _OTHER_TENANT_ID,
+                other_deployment["id"],
+            ),
+            other_deployment,
+        )
+        tenant_ids = sorted([tenant_id, _OTHER_TENANT_ID])
+        histories = {
+            tenant_id: [tenant_id, [], job["dispatchDeploymentIds"]],
+            _OTHER_TENANT_ID: [
+                _OTHER_TENANT_ID,
+                [],
+                [other_deployment["id"]],
+            ],
+        }
+        job["dispatchTenantIds"] = tenant_ids
+        job["dispatchTenantRecordHistories"] = [histories[value] for value in tenant_ids]
+        other_route = TenantRouteInput(other_manifest, other_observed, other_deployment)
     _write(root, StateRecordPath.platform_namespace(), namespace)
     _write(root, StateRecordPath.tenant_desired(tenant_id), manifest)
     _write(root, StateRecordPath.tenant_observed(tenant_id), observed)
@@ -424,10 +486,11 @@ def _prepared_state(
         )
     _write(root, StateRecordPath.authorization_job(_JOB_ID), job)
     repository = StateRepository(root, expected_owner=os.geteuid())
-    snapshot = TenantRouteSnapshot(
-        namespace,
-        (TenantRouteInput(manifest, observed, selected),),
-    )
+    routes = [TenantRouteInput(manifest, observed, selected)]
+    if other_route is not None:
+        routes.append(other_route)
+    routes.sort(key=lambda value: cast(str, value.manifest["metadata"]["id"]))  # type: ignore[index]
+    snapshot = TenantRouteSnapshot(namespace, tuple(routes))
     releases = {
         cast(str, deployment["id"]): _measurement(
             cast(dict[str, object], deployment["releaseTreeDigest"]),
@@ -435,6 +498,11 @@ def _prepared_state(
         )
         for index, deployment in enumerate(deployments, start=100)
     }
+    if other_deployment is not None:
+        releases[cast(str, other_deployment["id"])] = _measurement(
+            cast(dict[str, object], other_deployment["releaseTreeDigest"]),
+            inode=200,
+        )
     artifact = (
         AdmittedArtifact("artifact", VerifiedArtifact(32, "e" * 64))
         if operation == "deploy"
@@ -469,7 +537,7 @@ def test_deploy_stages_before_intent_and_publishes_after_it(tmp_path: Path) -> N
         prepared = _prepare(repository, runtime, releases, artifact)
 
         assert prepared.plan.creates_deployment is True
-        assert releases.events == ["staged", "published"]
+        assert releases.events == ["reconciled", "staged", "published"]
         assert runtime.events == ["locked", "active", "pruned", "candidate"]
         assert (
             repository.read(StateRecordPath.transaction_intent(prepared.plan.intent_id)).document
@@ -485,6 +553,20 @@ def test_deploy_stages_before_intent_and_publishes_after_it(tmp_path: Path) -> N
         repository.close()
 
 
+def test_deploy_capacity_accounts_for_every_tenant_release(tmp_path: Path) -> None:
+    repository, runtime, releases, artifact, _deployments = _prepared_state(
+        tmp_path,
+        include_other_tenant=True,
+    )
+    try:
+        prepared = _prepare(repository, runtime, releases, artifact)
+
+        assert prepared.plan.creates_deployment is True
+        assert releases.events == ["reconciled", "staged", "published"]
+    finally:
+        repository.close()
+
+
 def test_rollback_reuses_retained_release_without_staging(tmp_path: Path) -> None:
     repository, runtime, releases, artifact, deployments = _prepared_state(
         tmp_path,
@@ -495,7 +577,7 @@ def test_rollback_reuses_retained_release_without_staging(tmp_path: Path) -> Non
 
         assert prepared.plan.creates_deployment is False
         assert prepared.plan.deployment == deployments[0]
-        assert releases.events == []
+        assert releases.events == ["reconciled"]
         assert runtime.overlay is not None
         assert runtime.overlay.tenant.deployment == deployments[0]
         assert len(repository.measure_intent_records().records) == 1
@@ -520,7 +602,7 @@ def test_failed_intent_admission_discards_private_staging(
         with pytest.raises(RuntimeError, match="intent admission"):
             _prepare(repository, runtime, releases, artifact)
 
-        assert releases.events == ["staged", "discarded"]
+        assert releases.events == ["reconciled", "staged", "discarded"]
         assert repository.measure_intent_records().records == ()
         assert "candidate" not in runtime.events
     finally:
@@ -537,8 +619,32 @@ def test_failure_after_intent_preserves_recoverable_release_authority(
             _prepare(repository, runtime, releases, artifact)
 
         assert len(repository.measure_intent_records().records) == 1
-        assert releases.events == ["staged", "published"]
+        assert releases.events == ["reconciled", "staged", "published"]
         assert releases.discarded is False
+    finally:
+        repository.close()
+
+
+def test_terminal_capacity_is_admitted_before_release_or_candidate_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, runtime, releases, artifact, _deployments = _prepared_state(tmp_path)
+
+    def reject(*_args: object, **_kwargs: object) -> None:
+        raise CapacityRejectedError("injected terminal capacity rejection")
+
+    monkeypatch.setattr(
+        "lowerduckpond_static_host_agent.deployment_prepare.admit_deployment_transition",
+        reject,
+    )
+    try:
+        with pytest.raises(CapacityRejectedError, match="terminal capacity"):
+            _prepare(repository, runtime, releases, artifact)
+
+        assert len(repository.measure_intent_records().records) == 1
+        assert releases.events == ["reconciled", "staged"]
+        assert "candidate" not in runtime.events
     finally:
         repository.close()
 
@@ -570,14 +676,14 @@ def test_ambiguous_intent_commit_preserves_staging_for_recovery(
             _prepare(repository, runtime, releases, artifact)
 
         assert len(repository.measure_intent_records().records) == 1
-        assert releases.events == ["staged"]
+        assert releases.events == ["reconciled", "staged"]
         assert releases.discarded is False
         assert "candidate" not in runtime.events
     finally:
         repository.close()
 
 
-def test_source_runtime_drift_fails_before_release_staging(tmp_path: Path) -> None:
+def test_pre_intent_source_generation_is_safely_rebound(tmp_path: Path) -> None:
     repository, runtime, releases, artifact, _deployments = _prepared_state(tmp_path)
     stored = repository.read(StateRecordPath.authorization_job(_JOB_ID))
     changed = stored.document
@@ -592,9 +698,12 @@ def test_source_runtime_drift_fails_before_release_staging(tmp_path: Path) -> No
             capacity_limits=DEFAULT_HOST_CAPACITY_LIMITS,
         )
     try:
-        with pytest.raises(DeploymentAuthorityDriftError, match="runtime authority"):
-            _prepare(repository, runtime, releases, artifact)
-        assert releases.events == []
+        prepared = _prepare(repository, runtime, releases, artifact)
+        rebound = repository.read(StateRecordPath.authorization_job(_JOB_ID)).document
+
+        assert rebound["dispatchSourceRuntimeGenerationId"] == _SOURCE_GENERATION
+        assert prepared.job.document == rebound
+        assert releases.events == ["reconciled", "staged", "published"]
     finally:
         repository.close()
 
@@ -608,7 +717,7 @@ def test_selected_runtime_drift_fails_before_release_staging(tmp_path: Path) -> 
     try:
         with pytest.raises(DeploymentAuthorityDriftError, match="selected runtime"):
             _prepare(repository, runtime, releases, artifact)
-        assert releases.events == []
+        assert releases.events == ["reconciled"]
     finally:
         repository.close()
 
@@ -620,7 +729,7 @@ def test_retained_release_drift_fails_before_staging(tmp_path: Path) -> None:
     try:
         with pytest.raises(DeploymentAuthorityDriftError, match="retained release"):
             _prepare(repository, runtime, releases, artifact)
-        assert releases.events == []
+        assert releases.events == ["reconciled"]
         assert repository.measure_intent_records().records == ()
     finally:
         repository.close()
@@ -635,7 +744,7 @@ def test_bound_source_release_drift_fails_before_staging(tmp_path: Path) -> None
     try:
         with pytest.raises(DeploymentAuthorityDriftError, match="source release"):
             _prepare(repository, runtime, releases, artifact)
-        assert releases.events == []
+        assert releases.events == ["reconciled"]
     finally:
         repository.close()
 
@@ -646,6 +755,6 @@ def test_claimed_artifact_drift_is_rejected(tmp_path: Path) -> None:
     try:
         with pytest.raises(DeploymentPreparationError, match="artifact changed"):
             _prepare(repository, runtime, releases, changed)
-        assert releases.events == []
+        assert releases.events == ["reconciled"]
     finally:
         repository.close()

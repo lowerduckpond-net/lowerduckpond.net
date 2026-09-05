@@ -26,6 +26,11 @@ from lowerduckpond_static_host_agent.capacity import (
     HostCapacityLimits,
     ReleaseCapacityUsage,
     admit_release_capacity,
+    aggregate_release_usage,
+)
+from lowerduckpond_static_host_agent.deployment_commit import (
+    DeploymentCommitTransaction,
+    admit_deployment_transition,
 )
 from lowerduckpond_static_host_agent.intake import AdmittedArtifact, ArtifactIntake
 from lowerduckpond_static_host_agent.issuance import PublicationGate, build_expected_source
@@ -38,9 +43,9 @@ from lowerduckpond_static_host_agent.release_store import (
     DeploymentReleaseStore,
     StagedDeploymentRelease,
 )
-from lowerduckpond_static_host_agent.release_tree import InodeAllocation
 from lowerduckpond_static_host_agent.repository import (
     StateConflictError,
+    StateRecordError,
     StateRecordPath,
     StateRepository,
     StateRevision,
@@ -107,6 +112,16 @@ class DeploymentPreparationTransaction(Protocol):
         capacity_limits: HostCapacityLimits,
     ) -> StoredContract: ...
 
+    def rebind_route_source_authority(
+        self,
+        path: StateRecordPath,
+        expected_revision: StateRevision,
+        document: dict[str, object],
+        *,
+        allow_reconcile_source_advance: bool,
+        capacity_limits: HostCapacityLimits,
+    ) -> StoredContract: ...
+
     def measure_inventory(self) -> StateInventory: ...
 
     def measure_intent_records(self) -> IntentRecordInventory: ...
@@ -134,7 +149,6 @@ class _DeploymentSource:
     observed_state: dict[str, object]
     deployment: dict[str, object] | None
     rollback_deployment: dict[str, object] | None
-    history: tuple[dict[str, object], ...]
 
 
 def prepare_deployment_transition(  # noqa: PLR0913,PLR0917 - authority tuple
@@ -166,6 +180,7 @@ def prepare_deployment_transition(  # noqa: PLR0913,PLR0917 - authority tuple
             raise DeploymentPreparationError(
                 "deployment preparation requires an empty intent store"
             )
+        release_store.reconcile_staging({}, publication_lock=transaction)
 
         source = _read_deployment_source(transaction, request, job.document)
         active = runtime.open_active_verified()
@@ -214,8 +229,6 @@ def prepare_deployment_transition(  # noqa: PLR0913,PLR0917 - authority tuple
         retained_usage = _measure_retained_releases(
             release_store,
             transaction,
-            plan.tenant_id,
-            source.history,
         )
         staged = _stage_candidate_release(
             intake,
@@ -240,6 +253,13 @@ def prepare_deployment_transition(  # noqa: PLR0913,PLR0917 - authority tuple
                 staged,
                 error,
             )
+
+        admit_deployment_transition(
+            cast(DeploymentCommitTransaction, transaction),
+            job,
+            plan,
+            capacity_limits=capacity_limits,
+        )
 
         if staged is not None:
             release_store.publish(staged, publication_lock=transaction)
@@ -359,7 +379,7 @@ def _read_deployment_source(
     expected_source_digest = None if deployment is None else deployment["releaseTreeDigest"]
     if bound_source_digest != expected_source_digest:
         raise DeploymentAuthorityDriftError("selected source release authority changed")
-    return _DeploymentSource(manifest, observed, deployment, rollback, tuple(history))
+    return _DeploymentSource(manifest, observed, deployment, rollback)
 
 
 def _source_route_set(manifest: dict[str, object]) -> str:
@@ -377,19 +397,36 @@ def _bind_source_runtime_authority(  # noqa: PLR0913 - authority tuple stays exp
     capacity_limits: HostCapacityLimits,
 ) -> StoredContract:
     document = job.document
-    existing = (
-        document.get("dispatchSourceObservedState"),
-        document.get("dispatchSourceRuntimeGenerationId"),
-        document.get("dispatchSourceRouteSet"),
-    )
-    if any(value is not None for value in existing):
-        if existing != (
-            source_observed_state,
-            source_runtime_generation_id,
-            source_route_set,
+    existing_observed = document.get("dispatchSourceObservedState")
+    existing_generation = document.get("dispatchSourceRuntimeGenerationId")
+    existing_route_set = document.get("dispatchSourceRouteSet")
+    if any(
+        value is not None for value in (existing_observed, existing_generation, existing_route_set)
+    ):
+        if (
+            type(existing_observed) is not dict
+            or existing_generation is None
+            or existing_route_set not in {"absent", "both"}
+            or existing_observed != source_observed_state
+            or existing_route_set != source_route_set
         ):
             raise DeploymentAuthorityDriftError("deployment source runtime authority changed")
-        return job
+        if existing_generation == source_runtime_generation_id:
+            return job
+        rebound = deepcopy(document)
+        rebound["dispatchSourceRuntimeGenerationId"] = source_runtime_generation_id
+        try:
+            return transaction.rebind_route_source_authority(
+                StateRecordPath.authorization_job(document["jobId"]),
+                job.revision,
+                rebound,
+                allow_reconcile_source_advance=False,
+                capacity_limits=capacity_limits,
+            )
+        except (StateConflictError, StateRecordError) as error:
+            raise DeploymentAuthorityDriftError(
+                "deployment source runtime authority changed"
+            ) from error
     bound = deepcopy(document)
     bound["dispatchSourceObservedState"] = deepcopy(source_observed_state)
     bound["dispatchSourceRuntimeGenerationId"] = source_runtime_generation_id
@@ -430,23 +467,30 @@ def _artifact_release_digest(
 def _measure_retained_releases(
     release_store: DeploymentReleaseStore,
     transaction: DeploymentPreparationTransaction,
-    tenant_id: str,
-    history: tuple[dict[str, object], ...],
 ) -> ReleaseCapacityUsage:
-    allocations: dict[tuple[int, int], InodeAllocation] = {}
-    for deployment in history:
-        measured = release_store.measure(
-            tenant_id,
-            deployment["id"],
-            publication_lock=transaction,
-        )
-        if measured.digest.to_dict() != deployment["releaseTreeDigest"]:
-            raise DeploymentAuthorityDriftError(
-                "retained release disagrees with deployment authority"
+    measurements = []
+    for tenant_id in transaction.measure_inventory().tenant_ids:
+        for deployment_id in transaction.tenant_deployment_ids(tenant_id):
+            try:
+                deployment = transaction.read(
+                    StateRecordPath.tenant_deployment(tenant_id, deployment_id)
+                ).document
+            except FileNotFoundError as error:
+                raise DeploymentAuthorityDriftError(
+                    "retained deployment history changed"
+                ) from error
+            validate_contract(deployment, expected_kind=ContractKind.DEPLOYMENT_RECORD)
+            measured = release_store.measure(
+                tenant_id,
+                deployment_id,
+                publication_lock=transaction,
             )
-        for allocation in measured.allocations:
-            allocations[(allocation.device, allocation.inode)] = allocation
-    return ReleaseCapacityUsage(tuple(sorted(allocations.values())))
+            if measured.digest.to_dict() != deployment["releaseTreeDigest"]:
+                raise DeploymentAuthorityDriftError(
+                    "retained release disagrees with deployment authority"
+                )
+            measurements.append(measured)
+    return aggregate_release_usage(measurements)
 
 
 def _stage_candidate_release(  # noqa: PLR0913 - extraction authorities stay explicit
