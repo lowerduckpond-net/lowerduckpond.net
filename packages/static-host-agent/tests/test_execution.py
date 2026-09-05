@@ -299,6 +299,7 @@ class _CompletingDeployHandler:
         deployment_record: bool = True,
         deployment_archive_sha256: str | None = None,
         deployment_release_tree_digest: dict[str, object] | None = None,
+        desired_state: str = "active",
         write_observed: bool = True,
         extra_archive: dict[str, object] | None = None,
         extra_deployment: dict[str, object] | None = None,
@@ -309,6 +310,7 @@ class _CompletingDeployHandler:
         self._deployment_record = deployment_record
         self._deployment_archive_sha256 = deployment_archive_sha256
         self._deployment_release_tree_digest = deployment_release_tree_digest
+        self._desired_state = desired_state
         self._write_observed = write_observed
         self._extra_archive = extra_archive
         self._extra_deployment = extra_deployment
@@ -337,6 +339,7 @@ class _CompletingDeployHandler:
         metadata = manifest["metadata"]
         assert type(spec) is dict
         assert type(metadata) is dict
+        spec["desiredState"] = self._desired_state
         selected = spec["desiredDeployment"]
         assert type(selected) is dict
         selected.update(
@@ -3026,11 +3029,25 @@ def test_executor_rejects_an_incomplete_successful_deployment_commit(
     assert [path.name for path in (root / "intake").iterdir()] == [f"{correlation_id}.artifact"]
 
 
-def test_executor_accepts_a_complete_successful_deployment_commit(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("lifecycle", "route_set", "runtime_generation_id"),
+    [
+        ("active", "both", "0198d17f-6f4a-7000-8000-000000000006"),
+        ("suspended", "absent", None),
+    ],
+)
+def test_executor_binds_a_complete_redeployment_to_its_selected_source_release(
+    tmp_path: Path,
+    lifecycle: str,
+    route_set: str,
+    runtime_generation_id: str | None,
+) -> None:
     root = _state_root(tmp_path)
     _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
     _write_deployment_record(root, _DEPLOYMENT_ID, "0" * 64)
-    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), _fixture("site.json"))
+    source = _fixture("site.json")
+    _mapping(source["spec"])["desiredState"] = lifecycle
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), source)
     runtime_calls: list[tuple[str, str, str | None]] = []
 
     def accept_runtime(
@@ -3049,19 +3066,168 @@ def test_executor_accepts_a_complete_successful_deployment_commit(tmp_path: Path
         ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
     ):
         issued, artifact, _correlation_id = _issue_deploy(repository, intake)
-        handler = _CompletingDeployHandler(repository, root)
-        outcome = AuthorizationExecutor(
+        handler = _CompletingDeployHandler(repository, root, desired_state=lifecycle)
+        executor = AuthorizationExecutor(
             repository,
             intake,
             handlers={"deploy": handler},
             tenant_runtime_validator=accept_runtime,
-        ).execute(issued.job_id)
+        )
+        outcome = executor.execute(issued.job_id)
+        job = repository.read(StateRecordPath.authorization_job(issued.job_id)).document
+        replay = executor.execute(issued.job_id)
 
     assert outcome.result["status"] == "succeeded"
+    assert replay.result == outcome.result
+    assert replay.created is False
+    assert len(handler.claims) == 1
     assert handler.claims[0] is not None
     assert handler.claims[0].artifact.verified == artifact
     assert list((root / "intake").iterdir()) == []
-    assert runtime_calls == [(_TENANT_ID, "both", "0198d17f-6f4a-7000-8000-000000000006")]
+    assert (
+        job["dispatchSourceReleaseTreeDigest"]
+        == _fixture("deployment-record.json")["releaseTreeDigest"]
+    )
+    assert runtime_calls == [
+        (_TENANT_ID, route_set, runtime_generation_id),
+        (_TENANT_ID, route_set, runtime_generation_id),
+    ]
+
+
+def test_executor_leaves_first_deploy_without_source_release_authority(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    source = _fixture("site.json")
+    source_spec = _mapping(source["spec"])
+    source_spec["desiredState"] = "undeployed"
+    source_spec.pop("desiredDeployment")
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), source)
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued, _artifact, _correlation_id = _issue_deploy(repository, intake)
+        outcome = AuthorizationExecutor(
+            repository,
+            intake,
+            handlers={"deploy": _CompletingDeployHandler(repository, root)},
+            tenant_runtime_validator=lambda *_arguments: True,
+        ).execute(issued.job_id)
+        job = repository.read(StateRecordPath.authorization_job(issued.job_id)).document
+
+    assert outcome.result["status"] == "succeeded"
+    assert job["dispatchSourceReleaseTreeDigest"] is None
+
+
+@pytest.mark.parametrize("tamper", ["missing", "drifted"])
+def test_executor_rejects_redeploy_when_its_selected_source_record_changes(
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    root = _state_root(tmp_path)
+    deployment_path = StateRecordPath.tenant_deployment(_TENANT_ID, _DEPLOYMENT_ID)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    _write_deployment_record(root, _DEPLOYMENT_ID, "0" * 64)
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), _fixture("site.json"))
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued, _artifact, _correlation_id = _issue_deploy(repository, intake)
+        handler = _CompletingDeployHandler(repository, root)
+        deployment_file = root.joinpath(*deployment_path.components)
+        if tamper == "missing":
+            deployment_file.unlink()
+        else:
+            deployment = _fixture("deployment-record.json")
+            deployment["archiveSha256"] = "e" * 64
+            _write(root, deployment_path, deployment)
+
+        outcome = AuthorizationExecutor(
+            repository,
+            intake,
+            handlers={"deploy": handler},
+        ).execute(issued.job_id)
+
+    assert outcome.result["status"] == "failed"
+    assert outcome.result["errorCode"] == "state_drift"
+    assert handler.claims == []
+    assert list((root / "intake").iterdir()) == []
+
+
+def test_executor_binds_rollback_to_the_pre_dispatch_selected_release(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    source_deployment = _fixture("deployment-record.json")
+    source_release_digest = _mapping(source_deployment["releaseTreeDigest"])
+    target_id = "0198d17f-6f4a-7000-8000-000000000009"
+    target_deployment = _fixture("deployment-record.json")
+    target_deployment.update(
+        {
+            "id": target_id,
+            "archiveSha256": "e" * 64,
+            "correlationId": "0198d17f-6f4a-7000-8000-000000000002",
+        }
+    )
+    target_release_digest = _mapping(target_deployment["releaseTreeDigest"])
+    target_release_digest["value"] = "e" * 64
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    _write(
+        root,
+        StateRecordPath.tenant_deployment(_TENANT_ID, _DEPLOYMENT_ID),
+        source_deployment,
+    )
+    _write(
+        root,
+        StateRecordPath.tenant_deployment(_TENANT_ID, target_id),
+        target_deployment,
+    )
+    _write(root, StateRecordPath.tenant_desired(_TENANT_ID), _fixture("site.json"))
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "rollback",
+        "correlationId": "0198d17f-6f4a-7000-8000-000000000003",
+        "tenantId": _TENANT_ID,
+        "deploymentId": target_id,
+    }
+
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued = AuthorizationIssuer(
+            repository,
+            gate=_OpenGate(),
+            entropy=_Entropy(),
+        ).issue(
+            canonical_json_bytes(request),
+            operator_principal="operator@example.test",
+            now=_NOW,
+            artifact=None,
+        )
+        outcome = AuthorizationExecutor(
+            repository,
+            intake,
+            handlers={
+                "rollback": _CompletingRollbackHandler(
+                    repository,
+                    root,
+                    remove_deployment_record=False,
+                )
+            },
+            tenant_runtime_validator=lambda *_arguments: True,
+        ).execute(issued.job_id)
+        job = repository.read(StateRecordPath.authorization_job(issued.job_id)).document
+
+    assert outcome.result["status"] == "succeeded"
+    assert job["dispatchSourceReleaseTreeDigest"] == source_release_digest
+    assert job["dispatchSourceReleaseTreeDigest"] != target_release_digest
 
 
 def test_executor_accepts_deployment_retention_pruning_at_the_history_bound(
