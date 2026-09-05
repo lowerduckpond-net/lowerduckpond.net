@@ -11,6 +11,100 @@
     quiet: true
   when: caddy_generation_enabled | bool
 
+- name: Inspect the generation-bound Caddy binary before tenant convergence
+  ansible.builtin.stat:
+    path: "{{ caddy_binary_path }}"
+    checksum_algorithm: sha256
+    follow: false
+  register: caddy_tenant_binary_input_probe
+  when:
+    - caddy_generation_enabled | bool
+    - static_publication_enabled | bool
+
+- name: Inspect the selected Caddy binary before tenant convergence
+  ansible.builtin.stat:
+    path: /usr/local/bin/caddy
+    follow: false
+  register: caddy_tenant_binary_selection_probe
+  when:
+    - caddy_generation_enabled | bool
+    - static_publication_enabled | bool
+
+- name: Probe the generation-bound Caddy environment before tenant convergence
+  ansible.builtin.template:
+    src: environment.j2
+    dest: /etc/caddy/environment
+    owner: root
+    group: caddy
+    mode: "0640"
+  check_mode: true
+  no_log: true
+  register: caddy_tenant_environment_input_probe
+  when:
+    - caddy_generation_enabled | bool
+    - static_publication_enabled | bool
+
+- name: Probe generation-bound origin-pull CA inputs before tenant convergence
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/etc/caddy/origin-pull-ca-{{ index }}.pem"
+    owner: root
+    group: caddy
+    mode: "0440"
+  check_mode: true
+  no_log: true
+  loop: "{{ caddy_origin_pull_ca_paths }}"
+  loop_control:
+    index_var: index
+  register: caddy_tenant_origin_pull_ca_input_probe
+  when:
+    - caddy_generation_enabled | bool
+    - static_publication_enabled | bool
+
+- name: Probe retired origin-pull CA inputs before tenant convergence
+  ansible.builtin.file:
+    path: "/etc/caddy/origin-pull-ca-{{ item }}.pem"
+    state: absent
+  check_mode: true
+  loop: "{{ range(caddy_origin_pull_ca_paths | length, 2) | list }}"
+  register: caddy_tenant_retired_origin_pull_ca_probe
+  when:
+    - caddy_generation_enabled | bool
+    - static_publication_enabled | bool
+
+- name: Refuse generation-bound source drift while tenant publication is enabled
+  ansible.builtin.assert:
+    that:
+      - caddy_origin_pull_ca_paths | length in [1, 2]
+      - caddy_tenant_binary_input_probe.stat.exists
+      - caddy_tenant_binary_input_probe.stat.isreg
+      - not caddy_tenant_binary_input_probe.stat.islnk
+      - caddy_tenant_binary_input_probe.stat.pw_name == 'root'
+      - caddy_tenant_binary_input_probe.stat.gr_name == 'root'
+      - caddy_tenant_binary_input_probe.stat.mode == '0755'
+      - >-
+        caddy_tenant_binary_input_probe.stat.checksum is
+        match('^[0-9a-f]{64}$')
+      - caddy_tenant_binary_selection_probe.stat.islnk | default(false)
+      - >-
+        caddy_tenant_binary_selection_probe.stat.lnk_source | default('') ==
+        caddy_binary_path
+      - not caddy_tenant_environment_input_probe.changed
+      - >-
+        caddy_tenant_origin_pull_ca_input_probe.results |
+        selectattr('changed') | list | length == 0
+      - >-
+        caddy_tenant_retired_origin_pull_ca_probe.results |
+        selectattr('changed') | list | length == 0
+    fail_msg: >-
+      Generation-bound Caddy binary, environment, or origin-pull trust changed
+      while tenant publication is enabled; refusing to alter staged inputs
+      without a tenant-capable generation migration.
+    quiet: true
+  when:
+    - caddy_generation_enabled | bool
+    - static_publication_enabled | bool
+
 - name: Install Caddy build dependencies
   ansible.builtin.apt:
     name:
@@ -407,21 +501,42 @@
     caddy_generation_check.stdout | trim not in ['changed', 'pending', 'unchanged']
   when:
     - caddy_generation_enabled | bool
+    - not static_publication_enabled | bool
     - >-
       caddy_generation_bootstrap_probe.results |
       selectattr('changed') | list | length == 0
 
+- name: Refuse immutable Caddy input drift while tenant publication is enabled
+  ansible.builtin.assert:
+    that:
+      - not static_host_agent_installation.changed | default(false)
+      - >-
+        caddy_generation_bootstrap_probe.results |
+        selectattr('changed') | list | length == 0
+      - not caddy_generation_check_probe.changed
+      - not caddy_generation_unit_probe.changed
+      - not caddy_generation_recovery_unit_probe.changed
+    fail_msg: >-
+      Immutable Caddy inputs changed while tenant publication is enabled;
+      refusing to replace the selected tenant-capable generation with a
+      platform-only bootstrap generation.
+    quiet: true
+  when:
+    - caddy_generation_enabled | bool
+    - static_publication_enabled | bool
+
 - name: Decide whether a stopped and masked bootstrap transaction is required
   ansible.builtin.set_fact:
     caddy_generation_bootstrap_required: >-
-      {{ caddy_generation_check.skipped | default(false) or
-         caddy_generation_check.stdout | default('changed') | trim != 'unchanged' or
-         static_host_agent_installation.changed | default(false) or
-         caddy_generation_bootstrap_probe.results |
-         selectattr('changed') | list | length > 0 or
-         caddy_generation_check_probe.changed or
-         caddy_generation_unit_probe.changed or
-         caddy_generation_recovery_unit_probe.changed }}
+      {{ not static_publication_enabled | bool and
+         (caddy_generation_check.skipped | default(false) or
+          caddy_generation_check.stdout | default('changed') | trim != 'unchanged' or
+          static_host_agent_installation.changed | default(false) or
+          caddy_generation_bootstrap_probe.results |
+          selectattr('changed') | list | length > 0 or
+          caddy_generation_check_probe.changed or
+          caddy_generation_unit_probe.changed or
+          caddy_generation_recovery_unit_probe.changed) }}
   when: caddy_generation_enabled | bool
 
 - name: Inspect the existing Caddy unit before the bootstrap transaction

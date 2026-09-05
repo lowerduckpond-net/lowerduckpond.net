@@ -166,8 +166,26 @@ jobs:
       - name: Check OpenTofu
         run: just check-opentofu
 
-  ansible:
-    name: Ansible
+  ansible-static:
+    name: Ansible static
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install tools
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        env:
+          MISE_GITHUB_TOKEN: ${{ github.token }}
+        with:
+          github_token: ${{ github.token }}
+          version: 2026.8.8
+          install_args: just python uv
+      - name: Check static and baseline Ansible behavior
+        run: just check-ansible-static
+
+  ansible-m3-8:
+    name: Ansible M3.8
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -181,8 +199,23 @@ jobs:
           github_token: ${{ github.token }}
           version: 2026.8.8
           install_args: just python uv
-      - name: Check Ansible
-        run: just check-ansible
+      - name: Check installed M3.8 lifecycle behavior
+        run: just check-ansible-m3-8
+
+  ansible:
+    name: Ansible
+    if: always()
+    needs: [ansible-static, ansible-m3-8]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require both Ansible validation lanes
+        env:
+          STATIC_RESULT: ${{ needs.ansible-static.result }}
+          M3_8_RESULT: ${{ needs.ansible-m3-8.result }}
+        run: |
+          test "$STATIC_RESULT" = success
+          test "$M3_8_RESULT" = success
 
   actions:
     name: Actions

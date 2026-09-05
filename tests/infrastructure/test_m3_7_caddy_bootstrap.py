@@ -137,6 +137,19 @@ def test_generation_migration_is_stopped_masked_and_defaults_on() -> None:
         "        '/var/lib/lowerduckpond/static/locks/publication.lock'"
     ) in tasks
     assert tasks.index(canonical_lock_assertion) < tasks.index("Install Caddy build dependencies")
+    source_drift_assertion = (
+        "Refuse generation-bound source drift while tenant publication is enabled"
+    )
+    assert source_drift_assertion in tasks
+    assert tasks.index(source_drift_assertion) < tasks.index("Install Caddy build dependencies")
+    source_drift = tasks[
+        tasks.index(source_drift_assertion) : tasks.index("Install Caddy build dependencies")
+    ]
+    assert "caddy_tenant_binary_input_probe.stat.checksum" in source_drift
+    assert "caddy_tenant_environment_input_probe.changed" in source_drift
+    assert "caddy_tenant_origin_pull_ca_input_probe.results" in source_drift
+    assert "caddy_tenant_retired_origin_pull_ca_probe.results" in source_drift
+
     assert "Stop Caddy for the immutable bootstrap transaction" in tasks
     assert "Runtime-mask Caddy for the immutable bootstrap transaction" in tasks
     assert "mask\n      - --runtime\n      - caddy.service" in tasks
@@ -239,18 +252,68 @@ def test_production_acceptance_and_health_use_the_generation_check() -> None:
     check = (_CADDY_ROLE / "templates/check-caddy-generation.j2").read_text(encoding="utf-8")
 
     assert "check-caddy-generation" in acceptance
+    assert "check-current-caddy-generation" not in acceptance
+    assert "acceptance_authoritative_caddy_generation.stdout | trim != 'current'" in acceptance
+    assert "Inspect the authoritative tenant inventory" not in acceptance
+    assert "/usr/bin/find" not in acceptance
     assert "check-caddy-generation" in health
-    assert "check_exact_output 'Caddy generation is complete and current' unchanged" in health
+    assert "Selected Caddy generation matches authoritative host state" in health
+    assert "check-current-caddy-generation" not in health
+    assert "find /var/lib/lowerduckpond/static/tenants" not in health
     assert "bootstrap-caddy-generation" in check
     assert "static_host_agent_artifact_sha256" in check
-    assert "--check" in check
+    assert "--authoritative-check" in check
+
+
+def test_enabled_publication_refuses_host_agent_selection_drift_before_mutation() -> None:
+    tasks = (_ROOT / "config/ansible/roles/static_host_agent/tasks/main.yml").read_text(
+        encoding="utf-8"
+    )
+    assertion = "Refuse host-agent selection drift while tenant publication is enabled"
+    command_assertion = "Refuse host-agent command drift while tenant publication is enabled"
+    command_installation = "Install host-agent artifact commands"
+    selection = "Install and atomically select the pinned host-agent artifact"
+
+    assert assertion in tasks
+    assert tasks.index(assertion) < tasks.index(selection)
+    assert tasks.index(command_assertion) < tasks.index(command_installation)
+    assert "check_mode: true" in tasks[tasks.index(assertion) : tasks.index(command_assertion)]
+    assert (
+        "when: not static_publication_enabled | bool"
+        in tasks[tasks.index(command_installation) : tasks.index(selection)]
+    )
+    assert "when: not static_publication_enabled | bool" in tasks[tasks.index(selection) :]
 
     health_unit = (
         _ROOT / "config/ansible/roles/monitoring/templates/lowerduckpond-health.service.j2"
     ).read_text(encoding="utf-8")
     assert "monitoring_caddy_publication_lock_path" in health_unit
+    assert "monitoring_caddy_tenant_state_lock_path" in health_unit
+    assert "static_publication_enabled" not in health_unit
 
     preflight = (_ROOT / "scripts/preflight-m3-6-production").read_text(encoding="utf-8")
     assert "the Caddy startup-intent inventory is not resumable" in preflight
     assert "pending)" in preflight
     assert "the pending Caddy transaction has no durable intent" in preflight
+
+
+def test_publication_opens_only_after_complete_host_convergence() -> None:
+    tasks = (_ROOT / "config/ansible/roles/static_host_agent/tasks/main.yml").read_text(
+        encoding="utf-8"
+    )
+    site = (_ROOT / "config/ansible/playbooks/site.yml").read_text(encoding="utf-8")
+    enable = (
+        _ROOT / "config/ansible/roles/static_host_agent/tasks/enable-publication.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "Hold static publication closed until complete host convergence" in tasks
+    assert "static_publication_gate_enabled: false" in tasks
+    assert "static_publication_gate_enabled: true" not in tasks
+    assert "Open static publication only after complete host convergence" in site
+    assert site.index("role: monitoring") < site.index(
+        "Open static publication only after complete host convergence"
+    )
+    assert "tasks_from: enable-publication" in site
+    assert "Open static publication after complete host convergence" in enable
+    assert "static_publication_gate_enabled: true" in enable
+    assert "job-issuance" in enable

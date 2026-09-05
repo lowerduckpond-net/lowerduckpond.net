@@ -4,3 +4,4 @@ monitoring_backup_max_age_seconds: 129600
 monitoring_backup_maintenance_max_age_seconds: 691200
 monitoring_textfile_directory: /var/lib/prometheus/node-exporter
 monitoring_caddy_publication_lock_path: /var/lib/lowerduckpond/static/locks/publication.lock
+monitoring_caddy_tenant_state_lock_path: /var/lib/lowerduckpond/static/locks/tenant-state.lock

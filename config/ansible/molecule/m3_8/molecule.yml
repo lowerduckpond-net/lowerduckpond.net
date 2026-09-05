@@ -1,0 +1,62 @@
+---
+prerun: false
+dependency:
+  name: galaxy
+driver:
+  name: docker
+platforms:
+  - name: lowerduckpond-ubuntu-2604
+    image: ubuntu:26.04
+    groups:
+      - hosting_nodes
+    dockerfile: Dockerfile.j2
+    pre_build_image: false
+    privileged: true
+    command: /sbin/init
+    published_ports:
+      - "2222:22"
+    tmpfs:
+      - /run
+      - /run/lock
+      - /tmp
+      - /etc/caddy:exec,size=8G,nr_inodes=1000000,mode=0755
+      - /srv/lowerduckpond:size=8G,nr_inodes=1000000,mode=0755
+      - /var/lib/lowerduckpond:size=8G,nr_inodes=1000000,mode=0755
+provisioner:
+  name: ansible
+  config_options:
+    defaults:
+      roles_path: ${MOLECULE_PROJECT_DIRECTORY}/roles
+      remote_tmp: /tmp/.ansible-molecule
+  inventory:
+    group_vars:
+      hosting_nodes:
+        firewall_admin_source_cidrs:
+          - 192.0.2.0/24
+        base_start_time_synchronization: false
+        firewall_enable_service: false
+        caddy_cloudflare_api_token: "0000000000000000000000000000000000000000"
+        caddy_domain: lowerduckpond.test
+        caddy_tls_mode: internal
+        caddy_generation_enabled: true
+        caddy_origin_pull_enforcement_enabled: true
+        static_publication_enabled: false
+        podman_cgroup_manager: cgroupfs
+        backup_repository: /mnt/lowerduckpond-restic-test
+        backup_restic_password: molecule-restic-password-0000000000
+        backup_spaces_access_key_id: molecule-spaces-access-key
+        backup_spaces_secret_access_key: molecule-spaces-secret-key
+        backup_spaces_region: us-east-1
+        backup_node_name: molecule
+verifier:
+  name: testinfra
+scenario:
+  test_sequence:
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - destroy

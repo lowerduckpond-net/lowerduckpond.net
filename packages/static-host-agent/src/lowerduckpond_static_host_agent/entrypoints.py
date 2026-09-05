@@ -30,8 +30,10 @@ from lowerduckpond_static_host_agent.caddy_admin import (
     verify_starting_caddy,
 )
 from lowerduckpond_static_host_agent.caddy_bootstrap import (
+    PlatformGenerationState,
     ensure_platform_generation,
     platform_generation_state,
+    platform_generation_state_under_lock,
     require_exact_file,
 )
 from lowerduckpond_static_host_agent.caddy_generation import (
@@ -488,12 +490,28 @@ def caddy_start_recovery_main(arguments: list[str] | None = None) -> int:
     return 0
 
 
+def caddy_current_generation_main(arguments: list[str] | None = None) -> int:
+    """Prove the selected tenant generation equals authoritative host state."""
+
+    values = sys.argv[1:] if arguments is None else arguments
+    try:
+        _require_no_arguments(values)
+        with StateRepository(_STATE_ROOT, expected_owner=_EXPECTED_OWNER) as repository:
+            if not _all_tenant_runtime_state_matches(repository):
+                raise CaddyRuntimeError("selected Caddy generation is not current")
+    except KeyError, OSError, RuntimeError, ValueError:
+        return _fail("caddy_generation_not_current", 1)
+    os.write(sys.stdout.fileno(), b"current\n")
+    return 0
+
+
 def caddy_bootstrap_main(arguments: list[str] | None = None) -> int:
     """Create or verify the first production-dark complete generation."""
 
     values = sys.argv[1:] if arguments is None else arguments
     check_only = bool(values and values[0] == "--check")
-    if check_only:
+    authoritative_check = bool(values and values[0] == "--authoritative-check")
+    if check_only or authoritative_check:
         values = values[1:]
     if (
         len(values) < _CADDY_BOOTSTRAP_MINIMUM_ARGUMENTS
@@ -564,7 +582,19 @@ def caddy_bootstrap_main(arguments: list[str] | None = None) -> int:
             ) as store,
             CaddyStartupStore.open(_CADDY_INTENT_ROOT, expected_owner=0) as startup,
         ):
-            if check_only:
+            if authoritative_check:
+                current = _authoritative_caddy_generation_matches(
+                    runtime,
+                    store,
+                    binary=binary,
+                    environment=environment,
+                    origin_pull_ca_der=origin_pull_ca_der,
+                    origin_pull_required=origin_pull_required,
+                    startup=startup,
+                )
+                if not current:
+                    raise CaddyRuntimeError("selected Caddy generation is not authoritative")
+            elif check_only:
                 state = platform_generation_state(
                     runtime,
                     store,
@@ -597,11 +627,46 @@ def caddy_bootstrap_main(arguments: list[str] | None = None) -> int:
         ValueError,
     ):
         return _fail("caddy_generation_bootstrap_failed", 1)
-    if check_only:
+    if authoritative_check:
+        os.write(sys.stdout.fileno(), b"current\n")
+    elif check_only:
         os.write(sys.stdout.fileno(), f"{state.value}\n".encode("ascii"))
     else:
         os.write(sys.stdout.fileno(), b"changed\n" if changed else b"unchanged\n")
     return 0
+
+
+def _authoritative_caddy_generation_matches(  # noqa: PLR0913
+    runtime: CaddyRuntime,
+    store: CaddyGenerationStore,
+    *,
+    binary: CaddyBinarySource,
+    environment: bytes,
+    origin_pull_ca_der: tuple[bytes, ...],
+    origin_pull_required: bool,
+    startup: CaddyStartupStore,
+) -> bool:
+    """Choose the empty or tenant check under one ordered state snapshot."""
+
+    with (
+        StateRepository(_STATE_ROOT, expected_owner=_EXPECTED_OWNER) as repository,
+        repository.publication_transaction(blocking=True) as transaction,
+        runtime.using_held_publication_lock(repository),
+    ):
+        if transaction.measure_inventory().tenant_ids:
+            return _tenant_runtime_state_matches_under_lock(runtime, transaction)
+        return (
+            platform_generation_state_under_lock(
+                runtime,
+                store,
+                binary=binary,
+                environment=environment,
+                origin_pull_ca_der=origin_pull_ca_der,
+                origin_pull_required=origin_pull_required,
+                startup=startup,
+            )
+            is PlatformGenerationState.UNCHANGED
+        )
 
 
 def _require_no_arguments(values: list[str]) -> None:
@@ -983,32 +1048,10 @@ def _all_tenant_runtime_state_matches(
             repository.publication_transaction(blocking=True) as transaction,
             runtime.using_held_publication_lock(repository),
         ):
-            active_generation_id = runtime.read_active()
-            snapshot = (
-                snapshot_tenant_routes(
-                    transaction,
-                    observed_drift_tenant_id=observed_drift_tenant_id,
-                )
-                if observed_drift_tenant_id is not None
-                else snapshot_tenant_routes(transaction)
-            )
-            selected = runtime.read_generation_route_snapshot(active_generation_id)
-            if observed_drift_tenant_id is None:
-                return selected == snapshot
-            if selected.platform_namespace != snapshot.platform_namespace:
-                return False
-            selected_target, selected_others = _partition_runtime_snapshot(
-                selected,
-                observed_drift_tenant_id,
-            )
-            expected_target, expected_others = _partition_runtime_snapshot(
-                snapshot,
-                observed_drift_tenant_id,
-            )
-            return (
-                selected_others == expected_others
-                and len(selected_target) <= 1
-                and len(expected_target) <= 1
+            return _tenant_runtime_state_matches_under_lock(
+                runtime,
+                transaction,
+                observed_drift_tenant_id=observed_drift_tenant_id,
             )
     except (
         CaddyRuntimeError,
@@ -1022,6 +1065,42 @@ def _all_tenant_runtime_state_matches(
         ValueError,
     ):
         return False
+
+
+def _tenant_runtime_state_matches_under_lock(
+    runtime: CaddyRuntime,
+    transaction: RouteSnapshotTransaction,
+    observed_drift_tenant_id: str | None = None,
+) -> bool:
+    """Compare runtime with one authoritative snapshot under both host locks."""
+
+    active_generation_id = runtime.read_active()
+    snapshot = (
+        snapshot_tenant_routes(
+            transaction,
+            observed_drift_tenant_id=observed_drift_tenant_id,
+        )
+        if observed_drift_tenant_id is not None
+        else snapshot_tenant_routes(transaction)
+    )
+    selected = runtime.read_generation_route_snapshot(active_generation_id)
+    if observed_drift_tenant_id is None:
+        return selected == snapshot
+    if selected.platform_namespace != snapshot.platform_namespace:
+        return False
+    selected_target, selected_others = _partition_runtime_snapshot(
+        selected,
+        observed_drift_tenant_id,
+    )
+    expected_target, expected_others = _partition_runtime_snapshot(
+        snapshot,
+        observed_drift_tenant_id,
+    )
+    return (
+        selected_others == expected_others
+        and len(selected_target) <= 1
+        and len(expected_target) <= 1
+    )
 
 
 def _tenant_release_state_matches(  # noqa: PLR0911 - explicit fail-closed matrix

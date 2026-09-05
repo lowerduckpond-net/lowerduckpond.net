@@ -15,14 +15,14 @@
       no_log: true
       when: not acceptance_caddy_generation_enabled | bool
 
-    - name: Validate the selected complete Caddy generation
+    - name: Validate the selected authoritative Caddy generation
       ansible.builtin.command:
         cmd: /usr/local/libexec/lowerduckpond/check-caddy-generation
-      register: acceptance_caddy_generation
+      register: acceptance_authoritative_caddy_generation
       changed_when: false
       failed_when: >-
-        acceptance_caddy_generation.rc != 0 or
-        acceptance_caddy_generation.stdout | trim != 'unchanged'
+        acceptance_authoritative_caddy_generation.rc != 0 or
+        acceptance_authoritative_caddy_generation.stdout | trim != 'current'
       when: acceptance_caddy_generation_enabled | bool
 
     - name: Verify the HTTPS fixture locally  # noqa command-instead-of-module
@@ -114,7 +114,7 @@
             static_host_agent_artifact_sha256 }}
       changed_when: false
 
-    - name: Verify static job issuance remains disabled
+    - name: Verify static job issuance matches the configured boundary
       ansible.builtin.command:
         argv:
           - /usr/local/libexec/lowerduckpond/static-publication-gate
@@ -122,8 +122,11 @@
       register: acceptance_static_job_gate
       changed_when: false
       failed_when: >-
-        acceptance_static_job_gate.rc != 78 or
-        acceptance_static_job_gate.stderr | trim != 'publication_disabled'
+        (static_publication_enabled | bool and
+         acceptance_static_job_gate.rc != 0) or
+        (not static_publication_enabled | bool and
+         (acceptance_static_job_gate.rc != 78 or
+          acceptance_static_job_gate.stderr | trim != 'publication_disabled'))
 
     - name: Inspect active tenant route inputs
       ansible.builtin.find:
@@ -134,13 +137,13 @@
       register: acceptance_static_routes
       when: not acceptance_caddy_generation_enabled | bool
 
-    - name: Verify static publication remains dark
+    - name: Verify the configured static publication boundary
       ansible.builtin.assert:
         that:
           - >-
+            static_publication_enabled | bool or
             acceptance_caddy_generation_enabled | bool or
             acceptance_static_routes.matched == 0
-          - not static_publication_enabled | bool
 
     - name: Verify the static worker unit contract
       ansible.builtin.command:
