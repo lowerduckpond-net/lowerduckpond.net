@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shlex
 import stat
 import subprocess
 import time
@@ -17,6 +18,9 @@ from testinfra.host import Host
 
 CONTAINER = "lowerduckpond-ubuntu-2604"
 OPERATOR_KEY = "/run/lowerduckpond-molecule/operator-key"
+ORIGIN_PULL_CLIENT_CERTIFICATE = "/run/lowerduckpond-molecule/origin-pull-client.pem"
+ORIGIN_PULL_CLIENT_KEY = "/run/lowerduckpond-molecule/origin-pull-client.key"
+ORIGIN_PULL_CA_CERTIFICATE = "/etc/caddy/origin-pull-ca-0.pem"
 PUBLICATION_CONFIGURATION = "/etc/lowerduckpond/static-publication.json"
 STATE_ROOT = "/var/lib/lowerduckpond/static"
 RELEASE_ROOT = "/srv/lowerduckpond/sites"
@@ -34,10 +38,11 @@ UUIDS = (
     "019b1a00-0000-7000-8000-00000000000b",
     "019b1a00-0000-7000-8000-00000000000c",
     "019b1a00-0000-7000-8000-00000000000d",
+    "019b1a00-0000-7000-8000-00000000000e",
 )
 _BURST_CAPACITY = 5
 _CORRELATION_INTERVAL_SECONDS = 60.25
-_FIRST_CORRELATION_AT: float | None = None
+_FIRST_CORRELATION_COMPLETED_AT: float | None = None
 _SEEN_CORRELATIONS: set[str] = set()
 
 
@@ -86,7 +91,7 @@ def _enable_disposable_publication(host: Host) -> None:
     assert result.rc == 0, result.stderr
 
 
-def _initialize_namespace(host: Host) -> None:
+def _initialize_namespace(host: Host) -> bool:
     selected = host.run("readlink --canonicalize /opt/lowerduckpond/static-host-agent/current")
     assert selected.rc == 0, selected.stderr
     namespace = {
@@ -96,16 +101,75 @@ def _initialize_namespace(host: Host) -> None:
         "initializedAt": "2026-09-05T12:00:00Z",
     }
     document = canonical_json_bytes(namespace).decode("ascii")
-    command = (
-        "import json,pathlib,sys;"
-        f"sys.path.insert(0,{(selected.stdout.strip() + '/site-packages')!r});"
-        "from lowerduckpond_static_host_agent import StateRecordPath,StateRepository;"
-        f"repository=StateRepository(pathlib.Path({STATE_ROOT!r}),expected_owner=0);"
-        f"repository.create_immutable(StateRecordPath.platform_namespace(),json.loads({document!r}));"
-        "repository.close()"
-    )
+    command = f"""
+import json
+import pathlib
+import sys
+
+sys.path.insert(0, {(selected.stdout.strip() + "/site-packages")!r})
+from lowerduckpond_static_host_agent import StateRecordPath, StateRepository
+
+repository = StateRepository(pathlib.Path({STATE_ROOT!r}), expected_owner=0)
+path = StateRecordPath.platform_namespace()
+expected = json.loads({document!r})
+try:
+    existing = repository.read(path).document
+except FileNotFoundError:
+    repository.create_immutable(path, expected)
+    print("created")
+else:
+    if existing != expected:
+        raise RuntimeError("existing platform namespace disagrees with the fixture")
+    print("existing")
+finally:
+    repository.close()
+"""
     result = host.run("/usr/bin/python3 -I -B -c %s", command)
     assert result.rc == 0, result.stderr
+    assert result.stdout.strip() in {"created", "existing"}
+    return result.stdout.strip() == "created"
+
+
+def _prepare_edge_probe(host: Host) -> None:
+    result = host.run("/usr/sbin/ip address replace 173.245.48.1/32 dev lo")
+    assert result.rc == 0, result.stderr
+
+
+def _assert_route(
+    host: Host,
+    origin: str,
+    *,
+    status: int,
+    body: bytes | None = None,
+    redirect: str = "",
+) -> None:
+    command = " ".join(
+        (
+            "/usr/bin/curl",
+            "--silent",
+            "--show-error",
+            "--cacert",
+            shlex.quote(ORIGIN_PULL_CA_CERTIFICATE),
+            "--interface",
+            "173.245.48.1",
+            "--cert",
+            shlex.quote(ORIGIN_PULL_CLIENT_CERTIFICATE),
+            "--key",
+            shlex.quote(ORIGIN_PULL_CLIENT_KEY),
+            "--resolve",
+            shlex.quote(f"{origin}:443:127.0.0.1"),
+            "--write-out",
+            shlex.quote("\\n%{http_code}\\n%{redirect_url}"),
+            shlex.quote(f"https://{origin}/"),
+        )
+    )
+    result = host.run(command)
+    assert result.rc == 0, result.stderr
+    response_body, response_status, response_redirect = result.stdout.rsplit("\n", 2)
+    assert int(response_status) == status
+    assert response_redirect == redirect
+    if body is not None:
+        assert response_body.encode() == body
 
 
 def _operator_inputs(tmp_path: Path) -> tuple[str, Path, Path]:
@@ -136,7 +200,9 @@ def _submit(  # noqa: PLR0913
     *,
     artifact: bytes | None = None,
 ) -> dict[str, object]:
-    _pace_new_correlation(request)
+    global _FIRST_CORRELATION_COMPLETED_AT  # noqa: PLW0603 - one integration run
+
+    first_correlation = _pace_new_correlation(request)
     request_path = tmp_path / f"{request['correlationId']}.json"
     artifact_path = None
     if artifact is not None:
@@ -147,33 +213,35 @@ def _submit(  # noqa: PLR0913
         artifact_path.chmod(0o600)
     request_path.write_bytes(canonical_json_bytes(request))
     request_path.chmod(0o600)
-    return submit(
+    result = submit(
         host=host,
         identity_path=identity,
         request_path=request_path,
         artifact_path=artifact_path,
         ssh_executable=ssh,
     )
+    if first_correlation:
+        _FIRST_CORRELATION_COMPLETED_AT = time.monotonic()
+    return result
 
 
-def _pace_new_correlation(request: dict[str, object]) -> None:
-    global _FIRST_CORRELATION_AT  # noqa: PLW0603 - one ordered integration run
-
+def _pace_new_correlation(request: dict[str, object]) -> bool:
     correlation_id = request["correlationId"]
     assert type(correlation_id) is str
     if correlation_id in _SEEN_CORRELATIONS:
-        return
+        return False
 
     sequence = len(_SEEN_CORRELATIONS) + 1
-    now = time.monotonic()
-    if _FIRST_CORRELATION_AT is None:
-        _FIRST_CORRELATION_AT = now
-    elif sequence > _BURST_CAPACITY:
+    if sequence > _BURST_CAPACITY:
+        assert _FIRST_CORRELATION_COMPLETED_AT is not None
+        now = time.monotonic()
         target = (
-            _FIRST_CORRELATION_AT + (sequence - _BURST_CAPACITY) * _CORRELATION_INTERVAL_SECONDS
+            _FIRST_CORRELATION_COMPLETED_AT
+            + (sequence - _BURST_CAPACITY) * _CORRELATION_INTERVAL_SECONDS
         )
         time.sleep(max(0.0, target - now))
     _SEEN_CORRELATIONS.add(correlation_id)
+    return sequence == 1
 
 
 def _request(operation: str, correlation_id: str, **fields: object) -> dict[str, object]:
@@ -217,8 +285,10 @@ def _ids() -> Iterator[str]:
 def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lifecycle table
     host: Host, tmp_path: Path
 ) -> None:
-    _initialize_namespace(host)
+    fresh_namespace = _initialize_namespace(host)
+    assert not _initialize_namespace(host)
     _enable_disposable_publication(host)
+    _prepare_edge_probe(host)
     operator_host, identity, ssh = _operator_inputs(tmp_path)
     identities = _ids()
 
@@ -233,11 +303,16 @@ def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lif
     assert _lifecycle(created) == "undeployed"
     tenant_id = created["tenantId"]
     assert type(tenant_id) is str
+    canonical_origin = created["canonicalOrigin"]
+    assert type(canonical_origin) is str
+    original_alias = "m3-eight.lowerduckpond.com"
+    renamed_alias = "m3-eight-renamed.lowerduckpond.com"
 
     replay = _submit(tmp_path, operator_host, identity, ssh, dict(create_request))
     assert replay == created
 
-    first = _deployment_zip(b"first installed M3.8 release\n")
+    first_content = b"first installed M3.8 release\n"
+    first = _deployment_zip(first_content)
     first_deploy_request = _request("deploy", next(identities), tenantId=tenant_id)
     deployed = _submit(
         tmp_path,
@@ -249,6 +324,14 @@ def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lif
     )
     first_deployment = _desired_deployment(deployed)
     assert _lifecycle(deployed) == "active"
+    if fresh_namespace:
+        _assert_route(host, canonical_origin, status=200, body=first_content)
+        _assert_route(
+            host,
+            original_alias,
+            status=302,
+            redirect=f"https://{canonical_origin}/",
+        )
     assert (
         _submit(
             tmp_path,
@@ -269,6 +352,9 @@ def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lif
         _request("suspend", next(identities), tenantId=tenant_id),
     )
     assert _lifecycle(suspended) == "suspended"
+    if fresh_namespace:
+        _assert_route(host, canonical_origin, status=404)
+        _assert_route(host, original_alias, status=404)
 
     second = _deployment_zip(b"second installed M3.8 release\n")
     suspended_deploy = _submit(
@@ -297,6 +383,9 @@ def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lif
     )
     assert _lifecycle(suspended_rollback) == "suspended"
     assert _desired_deployment(suspended_rollback) == first_deployment
+    if fresh_namespace:
+        _assert_route(host, canonical_origin, status=404)
+        _assert_route(host, original_alias, status=404)
 
     resumed = _submit(
         tmp_path,
@@ -307,6 +396,29 @@ def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lif
     )
     assert _lifecycle(resumed) == "active"
     assert _desired_deployment(resumed) == first_deployment
+    if fresh_namespace:
+        _assert_route(host, canonical_origin, status=200, body=first_content)
+        _assert_route(
+            host,
+            original_alias,
+            status=302,
+            redirect=f"https://{canonical_origin}/",
+        )
+
+    conflicting_create = _submit(
+        tmp_path,
+        operator_host,
+        identity,
+        ssh,
+        _request(
+            "create",
+            next(identities),
+            slug="m3-eight",
+            quotas={"storageMiB": 100, "entries": 5000},
+        ),
+    )
+    assert conflicting_create["status"] == "failed"
+    assert conflicting_create["errorCode"] == "state_drift"
 
     renamed = _submit(
         tmp_path,
@@ -318,6 +430,15 @@ def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lif
     metadata = _manifest(renamed)["metadata"]
     assert type(metadata) is dict
     assert metadata["slug"] == "m3-eight-renamed"
+    if fresh_namespace:
+        _assert_route(host, canonical_origin, status=200, body=first_content)
+        _assert_route(host, original_alias, status=404)
+        _assert_route(
+            host,
+            renamed_alias,
+            status=302,
+            redirect=f"https://{canonical_origin}/",
+        )
 
     reconciled = _submit(
         tmp_path,
@@ -339,7 +460,8 @@ def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lif
     )
     third_deployment = _desired_deployment(third_deploy)
 
-    fourth = _deployment_zip(b"fourth installed M3.8 release\n")
+    fourth_content = b"fourth installed M3.8 release\n"
+    fourth = _deployment_zip(fourth_content)
     fourth_deploy = _submit(
         tmp_path,
         operator_host,
@@ -386,6 +508,13 @@ def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lif
     )
     assert _lifecycle(active_rollback) == "active"
     assert _desired_deployment(active_rollback) == fourth_deployment
+    _assert_route(host, canonical_origin, status=200, body=fourth_content)
+    _assert_route(
+        host,
+        renamed_alias,
+        status=302,
+        redirect=f"https://{canonical_origin}/",
+    )
     assert (
         _submit(
             tmp_path,
@@ -415,9 +544,22 @@ def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lif
     assert reused_tenant_id != tenant_id
 
     assert host.run("systemctl is-active --quiet caddy.service").rc == 0
-    assert host.run("find /etc/caddy/intents -mindepth 1 -print -quit").stdout == ""
-    assert host.run(f"find {RELEASE_ROOT}/.staging -mindepth 1 -print -quit").stdout == ""
-    assert host.run(f"find {STATE_ROOT}/intents -mindepth 1 -print -quit").stdout == ""
+    _assert_route(host, canonical_origin, status=200, body=fourth_content)
+    _assert_route(
+        host,
+        renamed_alias,
+        status=302,
+        redirect=f"https://{canonical_origin}/",
+    )
+    _assert_route(host, original_alias, status=404)
+    for path in (
+        "/etc/caddy/intents",
+        f"{RELEASE_ROOT}/.staging",
+        f"{STATE_ROOT}/intents",
+    ):
+        cleanup = host.run(f"find {path} -mindepth 1 -print -quit")
+        assert cleanup.rc == 0
+        assert cleanup.stdout == ""
     releases = host.run(
         f"find {RELEASE_ROOT}/{tenant_id}/releases -mindepth 1 -maxdepth 1 -type d -printf '%f\\n'"
     )
