@@ -296,6 +296,33 @@ class DurableDirectory:
                 os.close(file_fd)
             os.close(parent_fd)
 
+    def regular_metadata_generation(
+        self,
+        components: tuple[str, ...],
+        *,
+        expected_owner: int,
+        expected_mode: int,
+    ) -> tuple[int, int, int, int, int]:
+        """Return one verified regular file's exact storage generation."""
+
+        parent_fd, filename = self._open_parent(components)
+        file_fd: int | None = None
+        try:
+            file_fd = os.open(filename, _FILE_READ_FLAGS, dir_fd=parent_fd)
+            opened = validate_regular_state_file(
+                file_fd,
+                expected_owner=expected_owner,
+                expected_mode=expected_mode,
+            )
+            current = os.stat(filename, dir_fd=parent_fd, follow_symlinks=False)
+            if (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
+                raise StatePathError("state inode changed while reading its generation")
+            return _state_file_generation(opened)
+        finally:
+            if file_fd is not None:
+                os.close(file_fd)
+            os.close(parent_fd)
+
     def namespace_allocation_upper_bound(self, entry_count: int) -> int:
         """Reserve ext4 directory growth for temporary creation and rename."""
 

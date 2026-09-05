@@ -660,9 +660,11 @@ def test_publication_transaction_holds_publication_before_tenant_state(
         with pytest.raises(LockOrderError, match="must already be held"):
             repository.require_held(LockName.PUBLICATION, mode=LockMode.EXCLUSIVE)
         with repository.publication_transaction() as transaction:
-            repository.require_held(LockName.PUBLICATION, mode=LockMode.EXCLUSIVE)
-            repository.require_held(LockName.TENANT_STATE, mode=LockMode.EXCLUSIVE)
+            transaction.require_held(LockName.PUBLICATION, mode=LockMode.EXCLUSIVE)
+            transaction.require_held(LockName.TENANT_STATE, mode=LockMode.EXCLUSIVE)
             assert transaction.read(StateRecordPath.platform_namespace()).document == namespace
+        with pytest.raises(RuntimeError, match="no longer active"):
+            transaction.require_held(LockName.PUBLICATION, mode=LockMode.EXCLUSIVE)
         with pytest.raises(LockOrderError, match="must already be held"):
             repository.require_held(LockName.TENANT_STATE, mode=LockMode.EXCLUSIVE)
 
@@ -1468,6 +1470,124 @@ def test_transaction_returns_the_complete_sorted_deployment_identity_set(
         deployment_ids = transaction.tenant_deployment_ids(_TENANT_ID)
 
     assert deployment_ids == tuple(sorted((_DEPLOYMENT_ID, _OTHER_DEPLOYMENT_ID)))
+
+
+def test_deployment_transition_inventory_permits_only_its_extra_candidate(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    deployment_ids = tuple(f"0198d17f-6f4a-7000-8000-{index:012x}" for index in range(1, 5))
+    for deployment_id in deployment_ids:
+        deployment = _fixture("deployment-record.json")
+        deployment["id"] = deployment_id
+        _write_record(
+            root,
+            StateRecordPath.tenant_deployment(_TENANT_ID, deployment_id),
+            deployment,
+        )
+
+    with (
+        _repository(root) as repository,
+        repository.transaction(mode=LockMode.EXCLUSIVE) as transaction,
+    ):
+        with pytest.raises(StateRecordError, match="retention bound"):
+            transaction.tenant_deployment_ids(_TENANT_ID)
+        assert (
+            transaction.tenant_deployment_transition_ids(
+                _TENANT_ID,
+                candidate_id=deployment_ids[-1],
+            )
+            == deployment_ids
+        )
+        with pytest.raises(StateRecordError, match="candidate authority"):
+            transaction.tenant_deployment_transition_ids(
+                _TENANT_ID,
+                candidate_id=deployment_ids[-2],
+            )
+
+    fifth = _fixture("deployment-record.json")
+    fifth_id = "0198d17f-6f4a-7000-8000-000000000005"
+    fifth["id"] = fifth_id
+    _write_record(
+        root,
+        StateRecordPath.tenant_deployment(_TENANT_ID, fifth_id),
+        fifth,
+    )
+    with (
+        _repository(root) as repository,
+        repository.transaction(mode=LockMode.EXCLUSIVE) as transaction,
+        pytest.raises(StateRecordError, match="retention bound"),
+    ):
+        transaction.tenant_deployment_transition_ids(
+            _TENANT_ID,
+            candidate_id=fifth_id,
+        )
+
+
+def test_exact_deployment_removal_deletes_only_the_read_generation(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    path = StateRecordPath.tenant_deployment(_TENANT_ID, _DEPLOYMENT_ID)
+    _write_record(root, path, _fixture("deployment-record.json"))
+
+    with (
+        _repository(root) as repository,
+        repository.transaction(mode=LockMode.EXCLUSIVE) as transaction,
+    ):
+        expected = transaction.read(path)
+        token = transaction.deployment_removal_token(expected)
+        transaction.remove_exact_deployment(expected, token)
+
+    assert not root.joinpath(*path.components).exists()
+
+
+def test_exact_deployment_removal_rejects_a_changed_generation(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    path = StateRecordPath.tenant_deployment(_TENANT_ID, _DEPLOYMENT_ID)
+    deployment = _fixture("deployment-record.json")
+    target = _write_record(root, path, deployment)
+
+    with (
+        _repository(root) as repository,
+        repository.transaction(mode=LockMode.EXCLUSIVE) as transaction,
+    ):
+        expected = transaction.read(path)
+        token = transaction.deployment_removal_token(expected)
+        deployment["archiveSha256"] = "f" * 64
+        target.write_bytes(canonical_json_bytes(deployment))
+        with pytest.raises(StateConflictError, match="changed before exact removal"):
+            transaction.remove_exact_deployment(expected, token)
+
+    assert target.read_bytes() == canonical_json_bytes(deployment)
+
+
+def test_exact_deployment_removal_rejects_same_bytes_on_a_new_inode(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    path = StateRecordPath.tenant_deployment(_TENANT_ID, _DEPLOYMENT_ID)
+    deployment = _fixture("deployment-record.json")
+    target = _write_record(root, path, deployment)
+
+    with (
+        _repository(root) as repository,
+        repository.transaction(mode=LockMode.EXCLUSIVE) as transaction,
+    ):
+        expected = transaction.read(path)
+        token = transaction.deployment_removal_token(expected)
+
+    target.unlink()
+    _write_record(root, path, deployment)
+
+    with (
+        _repository(root) as repository,
+        repository.transaction(mode=LockMode.EXCLUSIVE) as transaction,
+        pytest.raises(StateConflictError, match="changed before exact removal"),
+    ):
+        transaction.remove_exact_deployment(expected, token)
+
+    assert target.read_bytes() == canonical_json_bytes(deployment)
 
 
 def test_transaction_returns_the_complete_sorted_archive_identity_set(
