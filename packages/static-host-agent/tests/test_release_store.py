@@ -138,6 +138,9 @@ def test_release_store_extracts_verifies_and_durably_publishes(tmp_path: Path) -
                 publication_lock=locks,
             )
             outcome = store.publish(staged, publication_lock=locks)
+            assert store.published_inventory(publication_lock=locks) == (
+                (_TENANT_ID, (_DEPLOYMENT_ID,)),
+            )
 
     release = release_root / _TENANT_ID / "releases" / _DEPLOYMENT_ID
     assert outcome.created is True

@@ -141,7 +141,10 @@ class _Runtime:
 
 
 class _ReleaseStore:
-    def __init__(self, releases: dict[str, ReleaseTreeMeasurement]) -> None:
+    def __init__(
+        self,
+        releases: dict[tuple[str, str], ReleaseTreeMeasurement],
+    ) -> None:
         self.releases = dict(releases)
         self.events: list[str] = []
         self.discarded = False
@@ -164,8 +167,22 @@ class _ReleaseStore:
         *,
         publication_lock: object,
     ) -> ReleaseTreeMeasurement:
-        del tenant_id, publication_lock
-        return self.releases[cast(str, deployment_id)]
+        del publication_lock
+        return self.releases[(cast(str, tenant_id), cast(str, deployment_id))]
+
+    def published_inventory(
+        self,
+        *,
+        publication_lock: object,
+    ) -> tuple[tuple[str, tuple[str, ...]], ...]:
+        del publication_lock
+        inventory: dict[str, list[str]] = {}
+        for tenant_id, deployment_id in self.releases:
+            inventory.setdefault(tenant_id, []).append(deployment_id)
+        return tuple(
+            (tenant_id, tuple(sorted(deployment_ids)))
+            for tenant_id, deployment_ids in sorted(inventory.items())
+        )
 
     def stage(  # noqa: PLR0913 - mirrors the release-store boundary
         self,
@@ -206,7 +223,7 @@ class _ReleaseStore:
     ) -> PublishedDeploymentRelease:
         assert len(publication_lock.measure_intent_records().records) == 1  # type: ignore[attr-defined]
         self.events.append("published")
-        self.releases[staged.deployment_id] = staged.measurement
+        self.releases[(staged.tenant_id, staged.deployment_id)] = staged.measurement
         return PublishedDeploymentRelease(staged.measurement, True)
 
     def discard_staged(
@@ -492,14 +509,14 @@ def _prepared_state(  # noqa: PLR0915 - fixture constructs complete host authori
     routes.sort(key=lambda value: cast(str, value.manifest["metadata"]["id"]))  # type: ignore[index]
     snapshot = TenantRouteSnapshot(namespace, tuple(routes))
     releases = {
-        cast(str, deployment["id"]): _measurement(
+        (tenant_id, cast(str, deployment["id"])): _measurement(
             cast(dict[str, object], deployment["releaseTreeDigest"]),
             inode=index,
         )
         for index, deployment in enumerate(deployments, start=100)
     }
     if other_deployment is not None:
-        releases[cast(str, other_deployment["id"])] = _measurement(
+        releases[(_OTHER_TENANT_ID, cast(str, other_deployment["id"]))] = _measurement(
             cast(dict[str, object], other_deployment["releaseTreeDigest"]),
             inode=200,
         )
@@ -543,7 +560,7 @@ def test_deploy_stages_before_intent_and_publishes_after_it(tmp_path: Path) -> N
             repository.read(StateRecordPath.transaction_intent(prepared.plan.intent_id)).document
             == prepared.plan.intent
         )
-        assert prepared.plan.deployment["id"] in releases.releases
+        assert (prepared.plan.tenant_id, prepared.plan.deployment["id"]) in releases.releases
         assert runtime.overlay is not None
         assert runtime.overlay.tenant.deployment == prepared.plan.deployment
         stored_job = repository.read(StateRecordPath.authorization_job(_JOB_ID)).document
@@ -722,13 +739,43 @@ def test_selected_runtime_drift_fails_before_release_staging(tmp_path: Path) -> 
         repository.close()
 
 
+def test_missing_authorized_source_is_classified_as_authority_drift(tmp_path: Path) -> None:
+    repository, runtime, releases, artifact, _deployments = _prepared_state(tmp_path)
+    desired = (tmp_path / "state").joinpath(
+        *StateRecordPath.tenant_desired(_tenant_id()).components
+    )
+    desired.unlink()
+    try:
+        with pytest.raises(DeploymentAuthorityDriftError, match="source state disappeared"):
+            _prepare(repository, runtime, releases, artifact)
+
+        assert releases.events == []
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
 def test_retained_release_drift_fails_before_staging(tmp_path: Path) -> None:
     repository, runtime, releases, artifact, deployments = _prepared_state(tmp_path)
     deployment_id = cast(str, deployments[-1]["id"])
-    releases.releases[deployment_id] = _measurement(_digest("f" * 64), inode=300)
+    releases.releases[(_tenant_id(), deployment_id)] = _measurement(_digest("f" * 64), inode=300)
     try:
         with pytest.raises(DeploymentAuthorityDriftError, match="retained release"):
             _prepare(repository, runtime, releases, artifact)
+        assert releases.events == ["reconciled"]
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
+def test_unbound_published_release_fails_before_staging(tmp_path: Path) -> None:
+    repository, runtime, releases, artifact, _deployments = _prepared_state(tmp_path)
+    unexpected_id = "0198d17f-6f4a-7000-8000-000000000077"
+    releases.releases[(_tenant_id(), unexpected_id)] = _measurement(_digest("7" * 64), inode=300)
+    try:
+        with pytest.raises(DeploymentAuthorityDriftError, match="release inventory"):
+            _prepare(repository, runtime, releases, artifact)
+
         assert releases.events == ["reconciled"]
         assert repository.measure_intent_records().records == ()
     finally:

@@ -26,6 +26,7 @@ from lowerduckpond_static_host_agent.release_tree import (
     ReleaseTreeMeasurement,
     measure_release_tree,
 )
+from lowerduckpond_static_host_agent.state_inventory import DEFAULT_STATE_INVENTORY_LIMITS
 
 _DIRECTORY_FLAGS: Final = (
     os.O_RDONLY | os.O_NONBLOCK | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -36,6 +37,7 @@ _STAGING_ROOT_MODE: Final = 0o700
 _RELEASE_DIRECTORY_MODE: Final = 0o755
 _RELEASE_FILE_MODE: Final = 0o644
 _MAXIMUM_STAGING_ENTRIES: Final = 2
+_MAXIMUM_TENANT_RELEASES: Final = 3
 _STAGING_NAME = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
     r"--[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}",
@@ -257,6 +259,88 @@ class DeploymentReleaseStore:
             lock_manager=publication_lock,
             expected_owner=self._expected_owner,
         )
+
+    def published_inventory(
+        self,
+        *,
+        publication_lock: PublicationLockProof,
+    ) -> tuple[tuple[str, tuple[str, ...]], ...]:
+        """Enumerate the complete bounded published release namespace."""
+
+        self._require_locked(publication_lock)
+        names = _scan_names(
+            self._release_fd,
+            maximum=DEFAULT_STATE_INVENTORY_LIMITS.maximum_tenants + 1,
+            label="release root",
+        )
+        if ".staging" not in names:
+            raise ReleaseStoreError("release staging root is absent")
+        named_staging = os.stat(".staging", dir_fd=self._release_fd, follow_symlinks=False)
+        opened_staging = os.fstat(self._staging_fd)
+        if (named_staging.st_dev, named_staging.st_ino) != (
+            opened_staging.st_dev,
+            opened_staging.st_ino,
+        ):
+            raise ReleaseStoreError("release staging root changed while it was open")
+
+        inventory: list[tuple[str, tuple[str, ...]]] = []
+        for name in names:
+            if name == ".staging":
+                continue
+            try:
+                tenant_id = validate_uuid7(name)
+            except ContractError as error:
+                raise ReleaseStoreError("release root has an invalid tenant identity") from error
+            tenant_fd = _open_child_directory(
+                self._release_fd,
+                tenant_id,
+                expected_owner=self._expected_owner,
+                expected_mode=_RELEASE_DIRECTORY_MODE,
+                label="tenant release namespace",
+            )
+            try:
+                if _scan_names(
+                    tenant_fd,
+                    maximum=1,
+                    label="tenant release namespace",
+                ) != ("releases",):
+                    raise ReleaseStoreError("tenant release namespace has an unexpected shape")
+                releases_fd = _open_child_directory(
+                    tenant_fd,
+                    "releases",
+                    expected_owner=self._expected_owner,
+                    expected_mode=_RELEASE_DIRECTORY_MODE,
+                    label="release namespace",
+                )
+                try:
+                    release_names = _scan_names(
+                        releases_fd,
+                        maximum=_MAXIMUM_TENANT_RELEASES,
+                        label="tenant release history",
+                    )
+                    deployment_ids: list[str] = []
+                    for release_name in release_names:
+                        try:
+                            deployment_id = validate_uuid7(release_name)
+                        except ContractError as error:
+                            raise ReleaseStoreError(
+                                "tenant release history has an invalid identity"
+                            ) from error
+                        release_fd = _open_child_directory(
+                            releases_fd,
+                            deployment_id,
+                            expected_owner=self._expected_owner,
+                            expected_mode=_RELEASE_DIRECTORY_MODE,
+                            label="published release",
+                        )
+                        os.close(release_fd)
+                        deployment_ids.append(deployment_id)
+                finally:
+                    os.close(releases_fd)
+            finally:
+                os.close(tenant_fd)
+            inventory.append((tenant_id, tuple(deployment_ids)))
+        return tuple(inventory)
 
     def discard_staged(
         self,
@@ -719,7 +803,12 @@ def _validate_directory(
     return metadata
 
 
-def _scan_names(directory_fd: int, *, maximum: int) -> tuple[str, ...]:
+def _scan_names(
+    directory_fd: int,
+    *,
+    maximum: int,
+    label: str = "release staging",
+) -> tuple[str, ...]:
     names: list[str] = []
     scan_fd = os.open(".", _DIRECTORY_FLAGS, dir_fd=directory_fd)
     try:
@@ -727,7 +816,7 @@ def _scan_names(directory_fd: int, *, maximum: int) -> tuple[str, ...]:
             for entry in entries:
                 names.append(entry.name)
                 if len(names) > maximum:
-                    raise ReleaseStoreError("release staging exceeds its entry bound")
+                    raise ReleaseStoreError(f"{label} exceeds its entry bound")
     finally:
         os.close(scan_fd)
     return tuple(sorted(names))

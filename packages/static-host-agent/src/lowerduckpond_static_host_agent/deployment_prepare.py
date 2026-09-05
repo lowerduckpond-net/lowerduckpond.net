@@ -320,7 +320,13 @@ def _require_current_deployment_authority(
         raise DeploymentPreparationError(
             "deployment artifact presence disagrees with the authorized operation"
         )
-    if build_expected_source(transaction, request) != document["expectedSource"]:
+    try:
+        current_source = build_expected_source(transaction, request)
+    except FileNotFoundError as error:
+        raise DeploymentAuthorityDriftError(
+            "deployment authorization source state disappeared"
+        ) from error
+    if current_source != document["expectedSource"]:
         raise DeploymentAuthorityDriftError("deployment authorization source state drifted")
     return request
 
@@ -489,9 +495,19 @@ def _measure_retained_releases(
     release_store: DeploymentReleaseStore,
     transaction: DeploymentPreparationTransaction,
 ) -> ReleaseCapacityUsage:
-    measurements = []
+    expected_inventory: list[tuple[str, tuple[str, ...]]] = []
     for tenant_id in transaction.measure_inventory().tenant_ids:
-        for deployment_id in transaction.tenant_deployment_ids(tenant_id):
+        deployment_ids = transaction.tenant_deployment_ids(tenant_id)
+        if deployment_ids:
+            expected_inventory.append((tenant_id, deployment_ids))
+    if release_store.published_inventory(publication_lock=transaction) != tuple(expected_inventory):
+        raise DeploymentAuthorityDriftError(
+            "published release inventory disagrees with deployment authority"
+        )
+
+    measurements = []
+    for tenant_id, deployment_ids in expected_inventory:
+        for deployment_id in deployment_ids:
             try:
                 deployment = transaction.read(
                     StateRecordPath.tenant_deployment(tenant_id, deployment_id)
