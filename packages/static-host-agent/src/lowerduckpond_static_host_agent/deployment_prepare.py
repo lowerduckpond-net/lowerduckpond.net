@@ -82,6 +82,7 @@ class PreparedDeploymentTransition:
     plan: DeploymentTransitionPlan
     candidate_manifest: CaddyGenerationManifest
     capacity_limits: HostCapacityLimits
+    source_restoration_permitted: bool = True
 
 
 class DeploymentPreparationTransaction(Protocol):
@@ -293,6 +294,7 @@ def prepare_deployment_transition(  # noqa: PLR0913,PLR0917 - authority tuple
             transaction=transaction,
             overlay=overlay,
             gate=gate,
+            deployment_transition_tenant_id=plan.tenant_id,
         )
         return PreparedDeploymentTransition(
             job,

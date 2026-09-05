@@ -152,6 +152,69 @@ def test_release_store_extracts_verifies_and_durably_publishes(tmp_path: Path) -
     assert not any((release_root / ".staging").iterdir())
 
 
+def test_release_store_resumes_intent_protected_publication(tmp_path: Path) -> None:
+    state_root = _state_root(tmp_path)
+    release_root = _release_root(tmp_path)
+    payload = _deployment_zip()
+    with (
+        ArtifactIntake(state_root, expected_owner=os.geteuid()) as intake,
+        DeploymentReleaseStore(
+            release_root,
+            release_root / ".staging",
+            expected_owner=os.geteuid(),
+            expected_release_group=os.getegid(),
+            expected_staging_group=os.getegid(),
+        ) as store,
+        LockManager(
+            state_root / "locks",
+            expected_owner=os.geteuid(),
+            expected_directory_mode=0o700,
+        ) as locks,
+    ):
+        with intake.admit(
+            operation="deploy",
+            correlation_id=_CORRELATION_ID,
+            declared=_binding(payload),
+            read=BytesIO(payload).read,
+        ) as lease:
+            lease.commit()
+        with (
+            intake.claim(
+                correlation_id=_CORRELATION_ID,
+                declared=_binding(payload),
+            ) as claim,
+            locks.acquire(LockName.PUBLICATION, mode=LockMode.EXCLUSIVE),
+            locks.acquire(LockName.TENANT_STATE, mode=LockMode.EXCLUSIVE),
+        ):
+            expected = intake.deployment_release_tree_digest(claim.artifact).to_dict()
+            store.stage(
+                intake,
+                claim.artifact,
+                tenant_id=_TENANT_ID,
+                deployment_id=_DEPLOYMENT_ID,
+                expected_release_tree_digest=expected,
+                retained_usage=ReleaseCapacityUsage(()),
+                publication_lock=locks,
+            )
+            first = store.resume_publication(
+                _TENANT_ID,
+                _DEPLOYMENT_ID,
+                expected_release_tree_digest=expected,
+                publication_lock=locks,
+            )
+            second = store.resume_publication(
+                _TENANT_ID,
+                _DEPLOYMENT_ID,
+                expected_release_tree_digest=expected,
+                publication_lock=locks,
+            )
+
+    assert first.created is True
+    assert second.created is False
+    assert first.measurement == second.measurement
+    assert not any((release_root / ".staging").iterdir())
+
+
 def test_release_publication_exactly_replays_an_existing_identity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

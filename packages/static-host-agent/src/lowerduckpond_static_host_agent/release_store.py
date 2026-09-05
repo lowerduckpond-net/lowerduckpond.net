@@ -254,6 +254,57 @@ class DeploymentReleaseStore:
             raise ReleaseStoreError("published release changed across its durable rename")
         return PublishedDeploymentRelease(published, True)
 
+    def resume_publication(
+        self,
+        tenant_id: object,
+        deployment_id: object,
+        *,
+        expected_release_tree_digest: Mapping[str, object],
+        publication_lock: PublicationLockProof,
+    ) -> PublishedDeploymentRelease:
+        """Publish an exact intent-protected staging tree or verify its result."""
+
+        self._require_mutation_locked(publication_lock)
+        tenant = validate_uuid7(tenant_id)
+        deployment = validate_uuid7(deployment_id)
+        expected = _release_tree_digest(expected_release_tree_digest)
+        staging_name = _staging_name(tenant, deployment)
+        staged_exists = _entry_exists(self._staging_fd, staging_name)
+        self.reconcile_staging(
+            ({staging_name: expected.to_dict()} if staged_exists else {}),
+            publication_lock=publication_lock,
+        )
+        if staged_exists:
+            measurement = measure_release_tree(
+                self._staging_root / staging_name,
+                lock_manager=publication_lock,
+                expected_owner=self._expected_owner,
+            )
+            if measurement.digest != expected:
+                raise ReleaseStoreError("protected release staging digest drifted")
+            return self.publish(
+                StagedDeploymentRelease(
+                    tenant,
+                    deployment,
+                    staging_name,
+                    measurement,
+                ),
+                publication_lock=publication_lock,
+            )
+        try:
+            published = self.measure(
+                tenant,
+                deployment,
+                publication_lock=publication_lock,
+            )
+        except FileNotFoundError as error:
+            raise ReleaseStoreError(
+                "intent-protected release is absent from staging and publication"
+            ) from error
+        if published.digest != expected:
+            raise ReleaseStoreError("published release disagrees with recovery authority")
+        return PublishedDeploymentRelease(published, False)
+
     def measure(
         self,
         tenant_id: object,

@@ -34,9 +34,12 @@ from lowerduckpond_static_host_agent import (
     LockMode,
     PinnedCaddyGeneration,
     PublicationGate,
+    ReleaseStoreError,
     StateConflictError,
     StateRecordPath,
     StateRepository,
+    TenantRouteInput,
+    TenantRouteOverlay,
 )
 from lowerduckpond_static_host_agent.capacity import DEFAULT_HOST_CAPACITY_LIMITS
 from lowerduckpond_static_host_agent.deployment_activate import (
@@ -51,9 +54,19 @@ from lowerduckpond_static_host_agent.deployment_commit import (
 from lowerduckpond_static_host_agent.deployment_prepare import (
     PreparedDeploymentTransition,
 )
+from lowerduckpond_static_host_agent.deployment_recover import (
+    DeploymentRecoveryError,
+    recover_deployment_transition,
+)
 from lowerduckpond_static_host_agent.lifecycle_plan import (
     DeploymentTransitionPlan,
     plan_deployment_transition,
+)
+from lowerduckpond_static_host_agent.route_snapshot import (
+    RouteOverlayMode,
+    RouteSnapshotTransaction,
+    TenantRouteSnapshot,
+    snapshot_tenant_routes,
 )
 
 _FIXTURE_ROOT = Path(__file__).parents[3] / "tests/static-publication/fixtures/accepted"
@@ -81,7 +94,28 @@ class _Measurement:
 class _ReleaseStore:
     def __init__(self, releases: dict[str, dict[str, object]]) -> None:
         self.releases = deepcopy(releases)
+        self.staged: dict[str, dict[str, object]] = {}
         self.removed: list[str] = []
+
+    def resume_publication(
+        self,
+        tenant_id: object,
+        deployment_id: object,
+        *,
+        expected_release_tree_digest: object,
+        publication_lock: object,
+    ) -> object:
+        assert tenant_id == _tenant_id()
+        assert publication_lock is not None
+        deployment = cast(str, deployment_id)
+        expected = cast(dict[str, object], expected_release_tree_digest)
+        current = self.releases.get(deployment)
+        if current is None:
+            current = self.staged.pop(deployment)
+            self.releases[deployment] = current
+        if current != expected:
+            raise ReleaseStoreError("published release disagrees with recovery authority")
+        return object()
 
     def measure(
         self,
@@ -92,7 +126,10 @@ class _ReleaseStore:
     ) -> _Measurement:
         assert tenant_id == _tenant_id()
         assert publication_lock is not None
-        digest = self.releases[cast(str, deployment_id)]
+        try:
+            digest = self.releases[cast(str, deployment_id)]
+        except KeyError as error:
+            raise FileNotFoundError(deployment_id) from error
         return _Measurement(
             Digest(
                 cast(str, digest["format"]),
@@ -149,6 +186,8 @@ class _Runtime:
         self.active = _SOURCE_GENERATION
         self.running = _SOURCE_GENERATION
         self.events: list[str] = []
+        self.snapshots: dict[str, TenantRouteSnapshot] = {}
+        self.missing_generations: set[str] = set()
 
     @contextmanager
     def using_held_publication_lock(self, _repository: StateRepository) -> Iterator[None]:
@@ -158,10 +197,50 @@ class _Runtime:
     def open_verified_generation(self, generation_id: object) -> _Generation:
         assert type(generation_id) is str
         self.events.append(f"opened:{generation_id}")
+        if generation_id in self.missing_generations:
+            raise FileNotFoundError(generation_id)
         return _Generation(generation_id)
 
     def remove_abandoned_reference_temporaries(self) -> None:
         self.events.append("cleaned-reference-temporaries")
+
+    def read_generation_route_snapshot(self, generation_id: str) -> TenantRouteSnapshot:
+        self.events.append(f"snapshot:{generation_id}")
+        try:
+            return deepcopy(self.snapshots[generation_id])
+        except KeyError as error:
+            raise FileNotFoundError(generation_id) from error
+
+    def prune_unreferenced_generations(
+        self,
+        _protected: object,
+        *,
+        keep_newest_unprotected: int,
+    ) -> tuple[str, ...]:
+        assert keep_newest_unprotected == 1
+        self.events.append("pruned-generations")
+        return ()
+
+    def publish_candidate(
+        self,
+        generation_id: str,
+        *,
+        transaction: object,
+        overlay: TenantRouteOverlay,
+        gate: object,
+        deployment_transition_tenant_id: object,
+    ) -> _GenerationManifest:
+        assert generation_id == _CANDIDATE_GENERATION
+        assert deployment_transition_tenant_id == _tenant_id()
+        assert gate is not None
+        self.snapshots[generation_id] = snapshot_tenant_routes(
+            cast(RouteSnapshotTransaction, transaction),
+            overlay=overlay,
+            deployment_transition_tenant_id=deployment_transition_tenant_id,
+        )
+        self.missing_generations.discard(generation_id)
+        self.events.append(f"published:{generation_id}")
+        return _GenerationManifest(generation_id)
 
     def read_active(self) -> str:
         self.events.append("read-active")
@@ -523,6 +602,64 @@ def _activate(
         verifier=runtime.verify,
         commit_failure_hook=failure_hook,
     )
+
+
+def _write_correlation(
+    repository: StateRepository,
+    job: dict[str, object],
+) -> None:
+    correlation = deepcopy(job)
+    correlation["phase"] = "pending"
+    repository.create_immutable(
+        StateRecordPath.authorization_correlation(
+            cast(dict[str, object], job["request"])["correlationId"]
+        ),
+        correlation,
+    )
+
+
+def _recovery_runtime(
+    repository: StateRepository,
+    job: dict[str, object],
+    plan: DeploymentTransitionPlan,
+) -> _Runtime:
+    _write_correlation(repository, job)
+    recovery = cast(dict[str, object], plan.intent["lifecycleRecovery"])
+    source_manifest = cast(dict[str, object], plan.intent["sourceManifest"])
+    source_observed = cast(dict[str, object], recovery["sourceObservedState"])
+    source_spec = cast(dict[str, object], source_manifest["spec"])
+    source_selected = source_spec.get("desiredDeployment")
+    source_deployment = None
+    if type(source_selected) is dict:
+        source_deployment = repository.read(
+            StateRecordPath.tenant_deployment(plan.tenant_id, source_selected["id"])
+        ).document
+    source_tenant = TenantRouteInput(
+        source_manifest,
+        source_observed,
+        source_deployment,
+    )
+    candidate_tenant = TenantRouteInput(
+        plan.manifest,
+        plan.observed_state,
+        plan.deployment,
+    )
+    with repository.publication_transaction() as transaction:
+        source_snapshot = snapshot_tenant_routes(transaction)
+        candidate_snapshot = snapshot_tenant_routes(
+            transaction,
+            overlay=TenantRouteOverlay(
+                RouteOverlayMode.REPLACE,
+                candidate_tenant,
+                source_tenant,
+            ),
+        )
+    runtime = _Runtime()
+    runtime.snapshots = {
+        _SOURCE_GENERATION: source_snapshot,
+        _CANDIDATE_GENERATION: candidate_snapshot,
+    }
+    return runtime
 
 
 @pytest.mark.parametrize(
@@ -1004,5 +1141,444 @@ def test_deployment_activation_rejects_runtime_outside_recovery_authority(
             )
 
         assert repository.measure_intent_records().records
+    finally:
+        repository.close()
+
+
+@pytest.mark.parametrize(
+    ("operation", "deployment_count"),
+    [("deploy", 1), ("rollback", 2)],
+)
+def test_deployment_recovery_reconstructs_and_activates_durable_preparation(
+    tmp_path: Path,
+    operation: str,
+    deployment_count: int,
+) -> None:
+    repository, job, plan, releases = _prepared(
+        tmp_path,
+        operation=operation,
+        deployment_count=deployment_count,
+        state="active",
+    )
+    runtime = _recovery_runtime(repository, job, plan)
+    try:
+        result = recover_deployment_transition(
+            repository,
+            cast(CaddyRuntime, runtime),
+            cast(DeploymentReleaseStore, releases),
+            cast(PublicationGate, _Gate()),
+            plan.intent_id,
+            reloader=runtime.reload,
+            restorer=runtime.restore,
+            verifier=runtime.verify,
+        )
+
+        assert result == plan.result
+        assert runtime.active == runtime.running == _CANDIDATE_GENERATION
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
+def test_deployment_recovery_resumes_release_and_candidate_publication(
+    tmp_path: Path,
+) -> None:
+    repository, job, plan, releases = _prepared(
+        tmp_path,
+        operation="deploy",
+        deployment_count=0,
+        state="undeployed",
+    )
+    runtime = _recovery_runtime(repository, job, plan)
+    deployment_id = cast(str, plan.deployment["id"])
+    releases.staged[deployment_id] = releases.releases.pop(deployment_id)
+    runtime.snapshots.pop(_CANDIDATE_GENERATION)
+    runtime.missing_generations.add(_CANDIDATE_GENERATION)
+    try:
+        result = recover_deployment_transition(
+            repository,
+            cast(CaddyRuntime, runtime),
+            cast(DeploymentReleaseStore, releases),
+            cast(PublicationGate, _Gate()),
+            plan.intent_id,
+            reloader=runtime.reload,
+            restorer=runtime.restore,
+            verifier=runtime.verify,
+        )
+
+        assert result == plan.result
+        assert releases.staged == {}
+        assert releases.releases[deployment_id] == plan.deployment["releaseTreeDigest"]
+        assert f"published:{_CANDIDATE_GENERATION}" in runtime.events
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
+def test_deployment_recovery_accepts_its_fourth_transition_record(
+    tmp_path: Path,
+) -> None:
+    repository, job, plan, releases = _prepared(
+        tmp_path,
+        operation="deploy",
+        deployment_count=3,
+        state="active",
+    )
+    runtime = _recovery_runtime(repository, job, plan)
+    repository.create_immutable(
+        StateRecordPath.tenant_deployment(plan.tenant_id, plan.deployment["id"]),
+        plan.deployment,
+    )
+    try:
+        result = recover_deployment_transition(
+            repository,
+            cast(CaddyRuntime, runtime),
+            cast(DeploymentReleaseStore, releases),
+            cast(PublicationGate, _Gate()),
+            plan.intent_id,
+            reloader=runtime.reload,
+            restorer=runtime.restore,
+            verifier=runtime.verify,
+        )
+
+        assert result == plan.result
+        with repository.publication_transaction() as transaction:
+            assert transaction.tenant_deployment_ids(plan.tenant_id) == tuple(
+                sorted(
+                    [
+                        "0198d17f-6f4a-7000-8000-000000000002",
+                        "0198d17f-6f4a-7000-8000-000000000003",
+                        cast(str, plan.deployment["id"]),
+                    ]
+                )
+            )
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
+@pytest.mark.parametrize(
+    "interruption",
+    [DeploymentCommitBoundary.DESIRED_STATE_SYNC, DeploymentCommitBoundary.AUDIT_SYNC],
+)
+def test_deployment_recovery_repairs_an_interrupted_terminal_commit(
+    tmp_path: Path,
+    interruption: DeploymentCommitBoundary,
+) -> None:
+    repository, job, plan, releases = _prepared(
+        tmp_path,
+        operation="deploy",
+        deployment_count=1,
+        state="active",
+    )
+    runtime = _recovery_runtime(repository, job, plan)
+    prepared = _prepared_activation(repository, job["jobId"], plan)
+
+    def interrupt(boundary: DeploymentCommitBoundary) -> None:
+        if boundary is interruption:
+            raise RuntimeError("interrupted deployment terminal commit")
+
+    try:
+        with pytest.raises(RuntimeError, match="interrupted deployment terminal commit"):
+            _activate(repository, runtime, releases, prepared, failure_hook=interrupt)
+
+        assert (
+            repository.read(StateRecordPath.tenant_desired(plan.tenant_id)).document
+            == plan.manifest
+        )
+        assert repository.measure_intent_records().records
+        assert (
+            recover_deployment_transition(
+                repository,
+                cast(CaddyRuntime, runtime),
+                cast(DeploymentReleaseStore, releases),
+                cast(PublicationGate, _Gate()),
+                plan.intent_id,
+                reloader=runtime.reload,
+                restorer=runtime.restore,
+                verifier=runtime.verify,
+            )
+            == plan.result
+        )
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
+def test_deployment_recovery_accepts_a_retired_rollback_source_record(
+    tmp_path: Path,
+) -> None:
+    repository, job, plan, releases = _prepared(
+        tmp_path,
+        operation="rollback",
+        deployment_count=3,
+        state="active",
+    )
+    runtime = _recovery_runtime(repository, job, plan)
+    prepared = _prepared_activation(repository, job["jobId"], plan)
+    source_manifest = cast(dict[str, object], plan.intent["sourceManifest"])
+    source_spec = cast(dict[str, object], source_manifest["spec"])
+    source_selection = cast(dict[str, object], source_spec["desiredDeployment"])
+
+    def interrupt(boundary: DeploymentCommitBoundary) -> None:
+        if boundary is DeploymentCommitBoundary.RETIRED_DEPLOYMENT_REMOVED:
+            raise RuntimeError("interrupted after rollback source retirement")
+
+    try:
+        with pytest.raises(RuntimeError, match="rollback source retirement"):
+            _activate(repository, runtime, releases, prepared, failure_hook=interrupt)
+
+        with pytest.raises(FileNotFoundError):
+            repository.read(
+                StateRecordPath.tenant_deployment(
+                    plan.tenant_id,
+                    source_selection["id"],
+                )
+            )
+        assert (
+            recover_deployment_transition(
+                repository,
+                cast(CaddyRuntime, runtime),
+                cast(DeploymentReleaseStore, releases),
+                cast(PublicationGate, _Gate()),
+                plan.intent_id,
+                reloader=runtime.reload,
+                restorer=runtime.restore,
+                verifier=runtime.verify,
+            )
+            == plan.result
+        )
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
+def test_deployment_recovery_never_restores_a_retired_source_release(
+    tmp_path: Path,
+) -> None:
+    repository, job, plan, releases = _prepared(
+        tmp_path,
+        operation="rollback",
+        deployment_count=3,
+        state="active",
+    )
+    runtime = _recovery_runtime(repository, job, plan)
+    prepared = _prepared_activation(repository, job["jobId"], plan)
+
+    def interrupt(boundary: DeploymentCommitBoundary) -> None:
+        if boundary is DeploymentCommitBoundary.RETIRED_RELEASE_REMOVED:
+            raise RuntimeError("interrupted after rollback release retirement")
+
+    def reject_candidate(_generation: PinnedCaddyGeneration) -> None:
+        raise RuntimeError("candidate verification failed")
+
+    def reject_reload(
+        _source: PinnedCaddyGeneration,
+        _candidate: PinnedCaddyGeneration,
+    ) -> None:
+        raise RuntimeError("candidate reload failed")
+
+    try:
+        with pytest.raises(RuntimeError, match="rollback release retirement"):
+            _activate(repository, runtime, releases, prepared, failure_hook=interrupt)
+
+        runtime.events.clear()
+        with pytest.raises(DeploymentActivationError, match="source release retirement"):
+            recover_deployment_transition(
+                repository,
+                cast(CaddyRuntime, runtime),
+                cast(DeploymentReleaseStore, releases),
+                cast(PublicationGate, _Gate()),
+                plan.intent_id,
+                reloader=reject_reload,
+                restorer=runtime.restore,
+                verifier=reject_candidate,
+            )
+        assert runtime.active == runtime.running == _CANDIDATE_GENERATION
+        assert "restored" not in runtime.events
+        assert f"selected:{_SOURCE_GENERATION}" not in runtime.events
+        assert repository.measure_intent_records().records
+
+        assert (
+            recover_deployment_transition(
+                repository,
+                cast(CaddyRuntime, runtime),
+                cast(DeploymentReleaseStore, releases),
+                cast(PublicationGate, _Gate()),
+                plan.intent_id,
+                reloader=runtime.reload,
+                restorer=runtime.restore,
+                verifier=runtime.verify,
+            )
+            == plan.result
+        )
+    finally:
+        repository.close()
+
+
+@pytest.mark.parametrize(
+    ("operation", "deployment_count"),
+    [("deploy", 1), ("rollback", 3)],
+)
+def test_deployment_recovery_rejects_a_source_release_missing_before_retirement(
+    tmp_path: Path,
+    operation: str,
+    deployment_count: int,
+) -> None:
+    repository, job, plan, releases = _prepared(
+        tmp_path,
+        operation=operation,
+        deployment_count=deployment_count,
+        state="active",
+    )
+    runtime = _recovery_runtime(repository, job, plan)
+    source_manifest = cast(dict[str, object], plan.intent["sourceManifest"])
+    source_spec = cast(dict[str, object], source_manifest["spec"])
+    source_selection = cast(dict[str, object], source_spec["desiredDeployment"])
+    releases.releases.pop(cast(str, source_selection["id"]))
+    try:
+        with pytest.raises(
+            DeploymentRecoveryError,
+            match="source release disappeared before rollback retirement",
+        ):
+            recover_deployment_transition(
+                repository,
+                cast(CaddyRuntime, runtime),
+                cast(DeploymentReleaseStore, releases),
+                cast(PublicationGate, _Gate()),
+                plan.intent_id,
+                reloader=runtime.reload,
+                restorer=runtime.restore,
+                verifier=runtime.verify,
+            )
+        assert runtime.active == runtime.running == _SOURCE_GENERATION
+        assert repository.measure_intent_records().records
+    finally:
+        repository.close()
+
+
+def test_deployment_recovery_rejects_archive_history_drift(tmp_path: Path) -> None:
+    repository, job, plan, releases = _prepared(
+        tmp_path,
+        operation="deploy",
+        deployment_count=1,
+        state="active",
+    )
+    runtime = _recovery_runtime(repository, job, plan)
+    archive = _fixture("archive-record.json")
+    archive["tenantId"] = plan.tenant_id
+    archive["deploymentId"] = "0198d17f-6f4a-7000-8000-000000000090"
+    repository.create_immutable(
+        StateRecordPath.tenant_archive(plan.tenant_id, archive["deploymentId"]),
+        archive,
+    )
+    try:
+        with pytest.raises(DeploymentRecoveryError, match="archive history drifted"):
+            recover_deployment_transition(
+                repository,
+                cast(CaddyRuntime, runtime),
+                cast(DeploymentReleaseStore, releases),
+                cast(PublicationGate, _Gate()),
+                plan.intent_id,
+                reloader=runtime.reload,
+                restorer=runtime.restore,
+                verifier=runtime.verify,
+            )
+        assert runtime.active == runtime.running == _SOURCE_GENERATION
+        assert repository.measure_intent_records().records
+    finally:
+        repository.close()
+
+
+def test_deployment_recovery_rejects_job_source_authority_drift(
+    tmp_path: Path,
+) -> None:
+    repository, job, plan, releases = _prepared(
+        tmp_path,
+        operation="deploy",
+        deployment_count=1,
+        state="active",
+    )
+    runtime = _recovery_runtime(repository, job, plan)
+    path = StateRecordPath.authorization_job(job["jobId"])
+    current = repository.read(path)
+    drifted = current.document
+    drifted["dispatchSourceRouteSet"] = "absent"
+    repository.close()
+    _write(tmp_path / "state", path, drifted)
+    repository = StateRepository(tmp_path / "state", expected_owner=os.geteuid())
+    try:
+        with pytest.raises(DeploymentRecoveryError, match="durable job binding"):
+            recover_deployment_transition(
+                repository,
+                cast(CaddyRuntime, runtime),
+                cast(DeploymentReleaseStore, releases),
+                cast(PublicationGate, _Gate()),
+                plan.intent_id,
+                reloader=runtime.reload,
+                restorer=runtime.restore,
+                verifier=runtime.verify,
+            )
+    finally:
+        repository.close()
+
+
+def test_deployment_recovery_rejects_candidate_generation_snapshot_drift(
+    tmp_path: Path,
+) -> None:
+    repository, job, plan, releases = _prepared(
+        tmp_path,
+        operation="deploy",
+        deployment_count=1,
+        state="active",
+    )
+    runtime = _recovery_runtime(repository, job, plan)
+    snapshot = deepcopy(runtime.snapshots[_CANDIDATE_GENERATION])
+    snapshot.platform_namespace["tenantBaseDomain"] = "other.invalid"
+    runtime.snapshots[_CANDIDATE_GENERATION] = snapshot
+    try:
+        with pytest.raises(DeploymentRecoveryError, match="unrelated tenant authority"):
+            recover_deployment_transition(
+                repository,
+                cast(CaddyRuntime, runtime),
+                cast(DeploymentReleaseStore, releases),
+                cast(PublicationGate, _Gate()),
+                plan.intent_id,
+                reloader=runtime.reload,
+                restorer=runtime.restore,
+                verifier=runtime.verify,
+            )
+    finally:
+        repository.close()
+
+
+def test_deployment_recovery_rejects_selected_release_drift(
+    tmp_path: Path,
+) -> None:
+    repository, job, plan, releases = _prepared(
+        tmp_path,
+        operation="deploy",
+        deployment_count=1,
+        state="active",
+    )
+    runtime = _recovery_runtime(repository, job, plan)
+    releases.releases[cast(str, plan.deployment["id"])] = {
+        "format": "lowerduckpond-release-tree-v1",
+        "algorithm": "sha256",
+        "value": "f" * 64,
+    }
+    try:
+        with pytest.raises(DeploymentRecoveryError, match="release publication"):
+            recover_deployment_transition(
+                repository,
+                cast(CaddyRuntime, runtime),
+                cast(DeploymentReleaseStore, releases),
+                cast(PublicationGate, _Gate()),
+                plan.intent_id,
+                reloader=runtime.reload,
+                restorer=runtime.restore,
+                verifier=runtime.verify,
+            )
+        assert runtime.active == runtime.running == _SOURCE_GENERATION
     finally:
         repository.close()
