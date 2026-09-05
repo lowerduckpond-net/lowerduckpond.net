@@ -342,6 +342,9 @@ class DeploymentReleaseStore:
         deployment = validate_uuid7(deployment_id)
         expected_digest = _release_tree_digest(expected_release_tree_digest)
         retired_name = _retired_name(deployment, expected_digest)
+        if not _entry_exists(self._release_fd, tenant):
+            os.fsync(self._release_fd)
+            return
         tenant_fd = _open_child_directory(
             self._release_fd,
             tenant,
@@ -350,6 +353,9 @@ class DeploymentReleaseStore:
             label="tenant release namespace",
         )
         try:
+            if not _entry_exists(tenant_fd, "releases"):
+                os.fsync(tenant_fd)
+                return
             releases_fd = _open_child_directory(
                 tenant_fd,
                 "releases",

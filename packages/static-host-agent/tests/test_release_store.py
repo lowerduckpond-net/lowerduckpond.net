@@ -904,6 +904,55 @@ def test_release_removal_requires_exclusive_tenant_state(tmp_path: Path) -> None
         )
 
 
+@pytest.mark.parametrize("missing", ["tenant", "releases"])
+def test_release_removal_retry_syncs_an_absent_parent_namespace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    missing: str,
+) -> None:
+    state_root = _state_root(tmp_path)
+    release_root = _release_root(tmp_path)
+    tenant = release_root / _TENANT_ID
+    if missing == "releases":
+        _mkdir(tenant, _DIRECTORY_MODE)
+    original_fsync = os.fsync
+    synced: list[Path] = []
+
+    def track_retry_sync(descriptor: int) -> None:
+        synced.append(Path(f"/proc/self/fd/{descriptor}").resolve())
+        original_fsync(descriptor)
+
+    with (
+        DeploymentReleaseStore(
+            release_root,
+            release_root / ".staging",
+            expected_owner=os.geteuid(),
+            expected_release_group=os.getegid(),
+            expected_staging_group=os.getegid(),
+        ) as store,
+        LockManager(
+            state_root / "locks",
+            expected_owner=os.geteuid(),
+            expected_directory_mode=0o700,
+        ) as locks,
+        locks.acquire(LockName.PUBLICATION, mode=LockMode.EXCLUSIVE),
+        locks.acquire(LockName.TENANT_STATE, mode=LockMode.EXCLUSIVE),
+    ):
+        monkeypatch.setattr(os, "fsync", track_retry_sync)
+        store.remove_release(
+            _TENANT_ID,
+            _DEPLOYMENT_ID,
+            expected_release_tree_digest={
+                "format": "lowerduckpond-release-tree-v1",
+                "algorithm": "sha256",
+                "value": "f" * 64,
+            },
+            publication_lock=locks,
+        )
+
+    assert synced == [release_root if missing == "tenant" else tenant]
+
+
 def test_release_removal_retry_syncs_an_already_absent_identity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
