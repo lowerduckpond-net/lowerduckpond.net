@@ -1,8 +1,7 @@
 ---
-- name: Require the disabled static-operator installation contract
+- name: Require the static-operator installation contract
   ansible.builtin.assert:
     that:
-      - not static_publication_enabled | bool
       - static_operator_user == 'ldp-operator'
       - static_operator_group == 'ldp-operator'
       - static_operator_home == '/var/empty/lowerduckpond-static-operator'
@@ -19,8 +18,8 @@
       - static_operator_authorized_keys_path ==
         static_operator_authorized_keys_directory ~ '/' ~ static_operator_user
     fail_msg: >-
-      M3.6 requires one Ed25519 public key, one bounded audit principal, and a
-      disabled publication boundary.
+      Static publication requires one Ed25519 public key and one bounded audit
+      principal.
 
 - name: Create the static-operator group
   ansible.builtin.group:

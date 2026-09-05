@@ -15,4 +15,4 @@ ProtectControlGroups=true
 NoNewPrivileges=true
 RestrictSUIDSGID=true
 LockPersonality=true
-ReadWritePaths={{ monitoring_textfile_directory }} {{ monitoring_caddy_publication_lock_path }}
+ReadWritePaths={{ monitoring_textfile_directory }} {{ monitoring_caddy_publication_lock_path }}{% if static_publication_enabled | bool %} {{ monitoring_caddy_tenant_state_lock_path }}{% endif %}

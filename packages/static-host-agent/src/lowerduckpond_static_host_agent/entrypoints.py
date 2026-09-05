@@ -488,6 +488,21 @@ def caddy_start_recovery_main(arguments: list[str] | None = None) -> int:
     return 0
 
 
+def caddy_current_generation_main(arguments: list[str] | None = None) -> int:
+    """Prove the selected tenant generation equals authoritative host state."""
+
+    values = sys.argv[1:] if arguments is None else arguments
+    try:
+        _require_no_arguments(values)
+        with StateRepository(_STATE_ROOT, expected_owner=_EXPECTED_OWNER) as repository:
+            if not _all_tenant_runtime_state_matches(repository):
+                raise CaddyRuntimeError("selected Caddy generation is not current")
+    except KeyError, OSError, RuntimeError, ValueError:
+        return _fail("caddy_generation_not_current", 1)
+    os.write(sys.stdout.fileno(), b"current\n")
+    return 0
+
+
 def caddy_bootstrap_main(arguments: list[str] | None = None) -> int:
     """Create or verify the first production-dark complete generation."""
 

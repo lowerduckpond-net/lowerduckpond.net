@@ -31,6 +31,9 @@
     m3_8_https_server_certificate: >-
       {{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY')
          }}/https-server.pem
+    m3_8_static_publication_enabled: >-
+      {{ lookup('ansible.builtin.env', 'M3_8_STATIC_PUBLICATION_ENABLED') |
+         default('false', true) | bool }}
   tasks:
     - name: Build the locked static host-agent artifact
       ansible.builtin.command:
@@ -185,6 +188,8 @@
           {{ static_host_agent_molecule_artifact }}
         static_host_agent_artifact_sha256: >-
           {{ static_host_agent_molecule_build.stdout | trim }}
+        static_publication_enabled: >-
+          {{ m3_8_static_publication_enabled }}
         m3_8_origin_pull_client_key: >-
           {{ m3_8_origin_pull_client_key }}
         m3_8_origin_pull_client_certificate: >-

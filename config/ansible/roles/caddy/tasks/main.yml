@@ -407,21 +407,42 @@
     caddy_generation_check.stdout | trim not in ['changed', 'pending', 'unchanged']
   when:
     - caddy_generation_enabled | bool
+    - not static_publication_enabled | bool
     - >-
       caddy_generation_bootstrap_probe.results |
       selectattr('changed') | list | length == 0
 
+- name: Refuse immutable Caddy input drift while tenant publication is enabled
+  ansible.builtin.assert:
+    that:
+      - not static_host_agent_installation.changed | default(false)
+      - >-
+        caddy_generation_bootstrap_probe.results |
+        selectattr('changed') | list | length == 0
+      - not caddy_generation_check_probe.changed
+      - not caddy_generation_unit_probe.changed
+      - not caddy_generation_recovery_unit_probe.changed
+    fail_msg: >-
+      Immutable Caddy inputs changed while tenant publication is enabled;
+      refusing to replace the selected tenant-capable generation with a
+      platform-only bootstrap generation.
+    quiet: true
+  when:
+    - caddy_generation_enabled | bool
+    - static_publication_enabled | bool
+
 - name: Decide whether a stopped and masked bootstrap transaction is required
   ansible.builtin.set_fact:
     caddy_generation_bootstrap_required: >-
-      {{ caddy_generation_check.skipped | default(false) or
-         caddy_generation_check.stdout | default('changed') | trim != 'unchanged' or
-         static_host_agent_installation.changed | default(false) or
-         caddy_generation_bootstrap_probe.results |
-         selectattr('changed') | list | length > 0 or
-         caddy_generation_check_probe.changed or
-         caddy_generation_unit_probe.changed or
-         caddy_generation_recovery_unit_probe.changed }}
+      {{ not static_publication_enabled | bool and
+         (caddy_generation_check.skipped | default(false) or
+          caddy_generation_check.stdout | default('changed') | trim != 'unchanged' or
+          static_host_agent_installation.changed | default(false) or
+          caddy_generation_bootstrap_probe.results |
+          selectattr('changed') | list | length > 0 or
+          caddy_generation_check_probe.changed or
+          caddy_generation_unit_probe.changed or
+          caddy_generation_recovery_unit_probe.changed) }}
   when: caddy_generation_enabled | bool
 
 - name: Inspect the existing Caddy unit before the bootstrap transaction

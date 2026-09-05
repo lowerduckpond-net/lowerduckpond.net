@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import shlex
+import shutil
 import stat
 import subprocess
 import time
@@ -30,7 +31,8 @@ RELEASE_ROOT = "/srv/lowerduckpond/sites"
 _BURST_CAPACITY = 5
 _CORRELATION_INTERVAL_SECONDS = 60.25
 _BURST_REFILL_SECONDS = _BURST_CAPACITY * _CORRELATION_INTERVAL_SECONDS
-_FIRST_CORRELATION_COMPLETED_AT: float | None = None
+_AVAILABLE_CORRELATION_TOKENS = float(_BURST_CAPACITY)
+_CORRELATION_TOKENS_UPDATED_AT: float | None = None
 _SEEN_CORRELATIONS: set[str] = set()
 
 
@@ -259,9 +261,7 @@ def _replace_state(host: Host, path: str, document: dict[str, object]) -> None:
 
 
 def _issue_without_handoff(host: Host, request: dict[str, object]) -> str:
-    global _FIRST_CORRELATION_COMPLETED_AT  # noqa: PLW0603 - one integration run
-
-    first_correlation = _pace_new_correlation(request)
+    new_correlation = _pace_new_correlation(request)
     selected = host.run("readlink --canonicalize /opt/lowerduckpond/static-host-agent/current")
     assert selected.rc == 0, selected.stderr
     request_hex = canonical_json_bytes(request).hex()
@@ -291,10 +291,11 @@ with StateRepository(pathlib.Path({STATE_ROOT!r}), expected_owner=0) as reposito
     )
     print(issued.job_id)
 """
-    result = host.run("/usr/bin/python3 -I -B -c %s", command)
+    try:
+        result = host.run("/usr/bin/python3 -I -B -c %s", command)
+    finally:
+        _complete_correlation_pacing(new_correlation)
     assert result.rc == 0, result.stderr
-    if first_correlation:
-        _FIRST_CORRELATION_COMPLETED_AT = time.monotonic()
     return result.stdout.strip()
 
 
@@ -308,6 +309,34 @@ def _execute_issued_job(host: Host, job_id: str) -> dict[str, object]:
     return document
 
 
+def _reapply_ansible() -> None:
+    project = Path(__file__).resolve().parents[3]
+    uv = shutil.which("uv")
+    assert uv is not None
+    environment = {
+        key: value for key, value in os.environ.items() if not key.startswith("MOLECULE_")
+    }
+    environment["M3_8_STATIC_PUBLICATION_ENABLED"] = "true"
+    result = subprocess.run(  # noqa: S603 - resolved trusted tool path
+        [uv, "run", "molecule", "converge", "--scenario-name", "m3_8"],
+        cwd=project,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def _restart_installed_services(host: Host) -> None:
+    stopped = host.run("/usr/bin/systemctl stop caddy.service")
+    assert stopped.rc == 0, stopped.stderr
+    reconciled = host.run("/usr/bin/systemctl restart lowerduckpond-static-reconcile.service")
+    assert reconciled.rc == 0, reconciled.stderr
+    started = host.run("/usr/bin/systemctl start caddy.service")
+    assert started.rc == 0, started.stderr
+
+
 def _submit(  # noqa: PLR0913
     tmp_path: Path,
     host: str,
@@ -317,9 +346,7 @@ def _submit(  # noqa: PLR0913
     *,
     artifact: bytes | None = None,
 ) -> dict[str, object]:
-    global _FIRST_CORRELATION_COMPLETED_AT  # noqa: PLW0603 - one integration run
-
-    first_correlation = _pace_new_correlation(request)
+    new_correlation = _pace_new_correlation(request)
     request_path = tmp_path / f"{request['correlationId']}.json"
     artifact_path = None
     if artifact is not None:
@@ -330,35 +357,53 @@ def _submit(  # noqa: PLR0913
         artifact_path.chmod(0o600)
     request_path.write_bytes(canonical_json_bytes(request))
     request_path.chmod(0o600)
-    result = submit(
-        host=host,
-        identity_path=identity,
-        request_path=request_path,
-        artifact_path=artifact_path,
-        ssh_executable=ssh,
-    )
-    if first_correlation:
-        _FIRST_CORRELATION_COMPLETED_AT = time.monotonic()
+    try:
+        result = submit(
+            host=host,
+            identity_path=identity,
+            request_path=request_path,
+            artifact_path=artifact_path,
+            ssh_executable=ssh,
+        )
+    finally:
+        _complete_correlation_pacing(new_correlation)
     return result
 
 
 def _pace_new_correlation(request: dict[str, object]) -> bool:
+    global _AVAILABLE_CORRELATION_TOKENS  # noqa: PLW0603 - one integration run
+    global _CORRELATION_TOKENS_UPDATED_AT  # noqa: PLW0603 - one integration run
+
     correlation_id = request["correlationId"]
     assert type(correlation_id) is str
     if correlation_id in _SEEN_CORRELATIONS:
         return False
 
-    sequence = len(_SEEN_CORRELATIONS) + 1
-    if sequence > _BURST_CAPACITY:
-        assert _FIRST_CORRELATION_COMPLETED_AT is not None
-        now = time.monotonic()
-        target = (
-            _FIRST_CORRELATION_COMPLETED_AT
-            + (sequence - _BURST_CAPACITY) * _CORRELATION_INTERVAL_SECONDS
+    now = time.monotonic()
+    if _CORRELATION_TOKENS_UPDATED_AT is not None:
+        _AVAILABLE_CORRELATION_TOKENS = min(
+            float(_BURST_CAPACITY),
+            _AVAILABLE_CORRELATION_TOKENS
+            + (now - _CORRELATION_TOKENS_UPDATED_AT) / _CORRELATION_INTERVAL_SECONDS,
         )
-        time.sleep(max(0.0, target - now))
+    if _AVAILABLE_CORRELATION_TOKENS < 1.0:
+        time.sleep((1.0 - _AVAILABLE_CORRELATION_TOKENS) * _CORRELATION_INTERVAL_SECONDS)
+        now = time.monotonic()
+        _AVAILABLE_CORRELATION_TOKENS = 1.0
+
+    _AVAILABLE_CORRELATION_TOKENS -= 1.0
+    _CORRELATION_TOKENS_UPDATED_AT = now
     _SEEN_CORRELATIONS.add(correlation_id)
-    return sequence == 1
+    return True
+
+
+def _complete_correlation_pacing(new_correlation: bool) -> None:
+    global _CORRELATION_TOKENS_UPDATED_AT  # noqa: PLW0603 - one integration run
+
+    if new_correlation:
+        # Admission happens before the response completes. Discarding that elapsed
+        # time keeps the test-side bucket slightly more conservative than the host.
+        _CORRELATION_TOKENS_UPDATED_AT = time.monotonic()
 
 
 def _request(operation: str, correlation_id: str, **fields: object) -> dict[str, object]:
@@ -464,6 +509,52 @@ def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lif
         )
         == deployed
     )
+
+    first_manifest_path = f"{STATE_ROOT}/tenants/{tenant_id}/desired.json"
+    first_manifest = _read_state(host, first_manifest_path)
+    selected_generation = host.run("cat /etc/caddy/active")
+    assert selected_generation.rc == 0, selected_generation.stderr
+    selected_generation_id = selected_generation.stdout.strip()
+
+    _reapply_ansible()
+    assert _read_state(host, first_manifest_path) == first_manifest
+    assert host.run("cat /etc/caddy/active").stdout.strip() == selected_generation_id
+    _assert_route(host, canonical_origin, status=200, body=first_content)
+    _assert_route(
+        host,
+        original_alias,
+        status=302,
+        redirect=f"https://{canonical_origin}/",
+    )
+
+    _restart_installed_services(host)
+    assert _read_state(host, first_manifest_path) == first_manifest
+    assert host.run("cat /etc/caddy/active").stdout.strip() == selected_generation_id
+    recovery = host.run(
+        "systemctl show lowerduckpond-static-reconcile.service "
+        "--property=ActiveState --property=Result"
+    )
+    assert recovery.rc == 0, recovery.stderr
+    assert set(recovery.stdout.splitlines()) == {
+        "ActiveState=inactive",
+        "Result=success",
+    }
+    assert host.run("systemctl is-active --quiet caddy.service").rc == 0
+    _assert_route(host, canonical_origin, status=200, body=first_content)
+    _assert_route(
+        host,
+        original_alias,
+        status=302,
+        redirect=f"https://{canonical_origin}/",
+    )
+    for path in (
+        "/etc/caddy/intents",
+        f"{RELEASE_ROOT}/.staging",
+        f"{STATE_ROOT}/intents",
+    ):
+        cleanup = host.run(f"find {path} -mindepth 1 -print -quit")
+        assert cleanup.rc == 0
+        assert cleanup.stdout == ""
 
     second_content = b"second installed M3.8 release\n"
     second = _deployment_zip(second_content)
@@ -604,7 +695,6 @@ def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lif
     occupied_deployment = _desired_deployment(occupied_deploy)
     assert _lifecycle(occupied_deploy) == "active"
 
-    first_manifest_path = f"{STATE_ROOT}/tenants/{tenant_id}/desired.json"
     occupied_manifest_path = f"{STATE_ROOT}/tenants/{occupied_tenant_id}/desired.json"
     first_before_conflicts = _read_state(host, first_manifest_path)
     occupied_before_conflicts = _read_state(host, occupied_manifest_path)
@@ -807,6 +897,7 @@ def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lif
 
     assert host.run("systemctl is-active --quiet caddy.service").rc == 0
     _assert_route(host, canonical_origin, status=200, body=fifth_content)
+    _assert_route(host, occupied_origin, status=200, body=occupied_content)
     _assert_route(
         host,
         renamed_alias,

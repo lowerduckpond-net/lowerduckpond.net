@@ -10,10 +10,8 @@
       - static_host_agent_artifact_path | length > 0
       - static_host_agent_artifact_path is ansible.builtin.match('^/')
       - static_host_agent_artifact_sha256 is ansible.builtin.match('^[0-9a-f]{64}$')
-      - not static_publication_enabled | bool
     fail_msg: >-
-      M3.5 requires one absolute hash-pinned host-agent artifact and keeps
-      static publication disabled.
+      Static publication requires one absolute hash-pinned host-agent artifact.
 
 - name: Inspect the controller host-agent artifact
   ansible.builtin.stat:
@@ -85,6 +83,7 @@
     - verify-static-host-agent-artifact
     - execute-authorized-job
     - reconcile-authorized-jobs
+    - check-current-caddy-generation
 
 - name: Wait for pre-lock static host-agent processes to finish
   ansible.builtin.command:
@@ -363,7 +362,7 @@
     group: root
     mode: "0700"
 
-- name: Install the disabled static publication configuration atomically
+- name: Install the static publication configuration atomically
   ansible.builtin.template:
     src: static-publication.json.j2
     dest: /etc/lowerduckpond/static-publication.json
@@ -432,7 +431,7 @@
     name: lowerduckpond-static-reconcile.timer
     state: started
 
-- name: Prove an empty Caddy candidate passes the disabled boundary
+- name: Prove an empty Caddy candidate passes the publication boundary
   ansible.builtin.command:
     argv:
       - /usr/local/libexec/lowerduckpond/static-publication-gate
@@ -440,16 +439,19 @@
       - "0"
   changed_when: false
 
-- name: Prove job issuance rejects before allocation while disabled
+- name: Prove job issuance matches the configured publication boundary
   ansible.builtin.command:
     argv:
       - /usr/local/libexec/lowerduckpond/static-publication-gate
       - job-issuance
-  register: static_host_agent_disabled_issuance
+  register: static_host_agent_issuance_gate
   changed_when: false
   failed_when: >-
-    static_host_agent_disabled_issuance.rc != 78 or
-    static_host_agent_disabled_issuance.stderr | trim != 'publication_disabled'
+    (static_publication_enabled | bool and
+     static_host_agent_issuance_gate.rc != 0) or
+    (not static_publication_enabled | bool and
+     (static_host_agent_issuance_gate.rc != 78 or
+      static_host_agent_issuance_gate.stderr | trim != 'publication_disabled'))
 
 - name: Create inert Caddy generation storage
   ansible.builtin.file:

@@ -66,8 +66,13 @@ check 'MariaDB service is active' systemctl is-active --quiet mariadb.service
 check 'node exporter service is active' \
     systemctl is-active --quiet prometheus-node-exporter.service
 {% if caddy_generation_enabled | bool %}
+{% if static_publication_enabled | bool %}
+check_exact_output 'Selected Caddy generation matches authoritative tenant state' current \
+    /usr/local/libexec/lowerduckpond/check-current-caddy-generation
+{% else %}
 check_exact_output 'Caddy generation is complete and current' unchanged \
     /usr/local/libexec/lowerduckpond/check-caddy-generation
+{% endif %}
 {% else %}
 check 'Caddy configuration validates' \
     /usr/local/libexec/lowerduckpond/caddy-validate /etc/caddy/Caddyfile

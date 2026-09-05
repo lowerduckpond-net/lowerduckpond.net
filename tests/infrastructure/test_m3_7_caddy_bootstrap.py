@@ -239,8 +239,13 @@ def test_production_acceptance_and_health_use_the_generation_check() -> None:
     check = (_CADDY_ROLE / "templates/check-caddy-generation.j2").read_text(encoding="utf-8")
 
     assert "check-caddy-generation" in acceptance
+    assert "check-current-caddy-generation" in acceptance
+    assert "acceptance_tenant_caddy_generation.stdout | trim != 'current'" in acceptance
     assert "check-caddy-generation" in health
     assert "check_exact_output 'Caddy generation is complete and current' unchanged" in health
+    assert "static_publication_enabled" in health
+    assert "check-current-caddy-generation" in health
+    assert "Selected Caddy generation matches authoritative tenant state" in health
     assert "bootstrap-caddy-generation" in check
     assert "static_host_agent_artifact_sha256" in check
     assert "--check" in check
@@ -249,6 +254,7 @@ def test_production_acceptance_and_health_use_the_generation_check() -> None:
         _ROOT / "config/ansible/roles/monitoring/templates/lowerduckpond-health.service.j2"
     ).read_text(encoding="utf-8")
     assert "monitoring_caddy_publication_lock_path" in health_unit
+    assert "monitoring_caddy_tenant_state_lock_path" in health_unit
 
     preflight = (_ROOT / "scripts/preflight-m3-6-production").read_text(encoding="utf-8")
     assert "the Caddy startup-intent inventory is not resumable" in preflight

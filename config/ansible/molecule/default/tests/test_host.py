@@ -116,6 +116,7 @@ STATIC_OPERATOR_AUTHORIZED_KEYS_PATH = "/etc/ssh/lowerduckpond/authorized_keys/l
 STATIC_OPERATOR_COMMAND = "/usr/local/libexec/lowerduckpond/static-operator-adapter"
 STATIC_JOB_EXECUTOR = "/usr/local/libexec/lowerduckpond/execute-authorized-job"
 STATIC_JOB_RECONCILER = "/usr/local/libexec/lowerduckpond/reconcile-authorized-jobs"
+STATIC_CADDY_CURRENT_CHECK = "/usr/local/libexec/lowerduckpond/check-current-caddy-generation"
 STATIC_OPERATOR_REQUEST_DECODER = "/usr/local/libexec/lowerduckpond/static-request-decoder"
 STATIC_OPERATOR_COMMAND_MODE = 0o755
 STATIC_OPERATOR_KEY_DIRECTORY_MODE = 0o755
@@ -1107,6 +1108,7 @@ def test_static_host_agent_selection_is_locked(host: Host) -> None:
     for command in (
         STATIC_JOB_EXECUTOR,
         STATIC_JOB_RECONCILER,
+        STATIC_CADDY_CURRENT_CHECK,
         STATIC_OPERATOR_COMMAND,
         STATIC_OPERATOR_REQUEST_DECODER,
     ):

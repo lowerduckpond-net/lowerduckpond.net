@@ -204,6 +204,7 @@ def test_caddy_bootstrap_and_launcher_reject_unfixed_invocations(
     assert entrypoints.caddy_start_gate_main(["unexpected"]) == 1
     assert entrypoints.caddy_start_verifier_main(["unexpected"]) == 1
     assert entrypoints.caddy_start_recovery_main(["unexpected"]) == 1
+    assert entrypoints.caddy_current_generation_main(["unexpected"]) == 1
 
     assert capfd.readouterr().err == (
         "invalid_caddy_launcher_invocation\n"
@@ -211,7 +212,57 @@ def test_caddy_bootstrap_and_launcher_reject_unfixed_invocations(
         "caddy_start_gate_failed\n"
         "caddy_start_verification_failed\n"
         "caddy_start_recovery_failed\n"
+        "caddy_generation_not_current\n"
     )
+
+
+def test_caddy_current_generation_check_binds_runtime_to_authoritative_state(
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    repository = object()
+
+    class Repository:
+        def __init__(self, root: Path, *, expected_owner: int) -> None:
+            assert root == entrypoints._STATE_ROOT
+            assert expected_owner == entrypoints._EXPECTED_OWNER
+
+        def __enter__(self) -> object:
+            return repository
+
+        def __exit__(self, *_exception: object) -> None:
+            pass
+
+    monkeypatch.setattr(entrypoints, "StateRepository", Repository)
+    monkeypatch.setattr(
+        entrypoints,
+        "_all_tenant_runtime_state_matches",
+        lambda selected: selected is repository,
+    )
+
+    assert entrypoints.caddy_current_generation_main([]) == 0
+    assert capfd.readouterr().out == "current\n"
+
+
+def test_caddy_current_generation_check_fails_closed_on_runtime_drift(
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    class Repository:
+        def __init__(self, _root: Path, *, expected_owner: int) -> None:
+            assert expected_owner == entrypoints._EXPECTED_OWNER
+
+        def __enter__(self) -> Repository:
+            return self
+
+        def __exit__(self, *_exception: object) -> None:
+            pass
+
+    monkeypatch.setattr(entrypoints, "StateRepository", Repository)
+    monkeypatch.setattr(entrypoints, "_all_tenant_runtime_state_matches", lambda _repository: False)
+
+    assert entrypoints.caddy_current_generation_main([]) == 1
+    assert capfd.readouterr().err == "caddy_generation_not_current\n"
 
 
 def test_origin_pull_pem_conversion_returns_the_exact_der_bytes() -> None:
