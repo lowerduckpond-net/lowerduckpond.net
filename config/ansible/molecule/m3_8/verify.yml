@@ -1,0 +1,12 @@
+---
+- name: Run disposable M3.8 installed-host qualification
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Execute Testinfra
+      ansible.builtin.command:
+        cmd: python -m pytest --verbose tests
+      args:
+        chdir: >-
+          {{ lookup('ansible.builtin.env', 'MOLECULE_SCENARIO_DIRECTORY') }}
+      changed_when: false

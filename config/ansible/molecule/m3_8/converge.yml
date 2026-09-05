@@ -1,0 +1,89 @@
+---
+- name: Build disposable M3.8 controller inputs
+  hosts: localhost
+  connection: local
+  become: false
+  gather_facts: false
+  vars:
+    static_host_agent_molecule_artifact: >-
+      /tmp/lowerduckpond-static-host-agent-m3-8.tar
+    m3_8_origin_pull_ca_key: >-
+      {{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY')
+         }}/origin-pull-ca.key
+    m3_8_origin_pull_ca_certificate: >-
+      {{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY')
+         }}/origin-pull-ca.pem
+  tasks:
+    - name: Build the locked static host-agent artifact
+      ansible.builtin.command:
+        argv:
+          - "{{ playbook_dir }}/../../../../scripts/build-static-host-agent"
+          - "{{ static_host_agent_molecule_artifact }}"
+      register: static_host_agent_molecule_build
+      changed_when: false
+
+    - name: Create a disposable origin-pull CA
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/openssl
+          - req
+          - -x509
+          - -newkey
+          - rsa:2048
+          - -nodes
+          - -keyout
+          - "{{ m3_8_origin_pull_ca_key }}"
+          - -out
+          - "{{ m3_8_origin_pull_ca_certificate }}"
+          - -days
+          - "14"
+          - -subj
+          - /CN=Lower Duck Pond disposable M3.8 origin pull CA
+          - -addext
+          - basicConstraints=critical,CA:TRUE
+          - -addext
+          - keyUsage=critical,keyCertSign,cRLSign
+      args:
+        creates: "{{ m3_8_origin_pull_ca_certificate }}"
+
+    - name: Protect the disposable CA inputs
+      ansible.builtin.file:
+        path: "{{ item }}"
+        mode: "0600"
+      loop:
+        - "{{ m3_8_origin_pull_ca_key }}"
+        - "{{ m3_8_origin_pull_ca_certificate }}"
+
+    - name: Attach the pinned artifact to the installed host
+      ansible.builtin.add_host:
+        name: "{{ item }}"
+        caddy_origin_pull_ca_paths:
+          - "{{ m3_8_origin_pull_ca_certificate }}"
+        static_host_agent_artifact_path: >-
+          {{ static_host_agent_molecule_artifact }}
+        static_host_agent_artifact_sha256: >-
+          {{ static_host_agent_molecule_build.stdout | trim }}
+      loop: "{{ groups['hosting_nodes'] }}"
+      changed_when: false
+
+- name: Load the disposable operator identity
+  hosts: hosting_nodes
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read the disposable operator public key
+      ansible.builtin.slurp:
+        src: /run/lowerduckpond-molecule/operator-key.pub
+      register: static_operator_molecule_public_key
+
+    - name: Attach the operator identity to the installed host
+      ansible.builtin.set_fact:
+        static_operator_public_key: >-
+          {{ static_operator_molecule_public_key.content | b64decode | trim }}
+        static_operator_principal: molecule-m3-8-operator-v1
+
+- name: Import the hosting-node playbook
+  ansible.builtin.import_playbook: ../../playbooks/site.yml
+
+- name: Run the standalone host acceptance playbook
+  ansible.builtin.import_playbook: ../../playbooks/acceptance.yml
