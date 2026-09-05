@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shlex
 import stat
@@ -13,7 +14,7 @@ from io import BytesIO
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from lowerduckpond_static_contracts import canonical_json_bytes
+from lowerduckpond_static_contracts import canonical_json_bytes, manifest_digest
 from lowerduckpond_static_operator import submit
 from testinfra.host import Host
 
@@ -23,6 +24,7 @@ ORIGIN_PULL_CLIENT_CERTIFICATE = "/run/lowerduckpond-molecule/origin-pull-client
 ORIGIN_PULL_CLIENT_KEY = "/run/lowerduckpond-molecule/origin-pull-client.key"
 ORIGIN_PULL_CA_CERTIFICATE = "/etc/caddy/origin-pull-ca-0.pem"
 PUBLICATION_CONFIGURATION = "/etc/lowerduckpond/static-publication.json"
+PUBLICATION_GATE = "/usr/local/libexec/lowerduckpond/static-publication-gate"
 STATE_ROOT = "/var/lib/lowerduckpond/static"
 RELEASE_ROOT = "/srv/lowerduckpond/sites"
 _BURST_CAPACITY = 5
@@ -227,6 +229,85 @@ def _operator_inputs(tmp_path: Path) -> tuple[str, Path, Path]:
     return host, identity, ssh
 
 
+def _read_state(host: Host, path: str) -> dict[str, object]:
+    result = host.run("/usr/bin/cat %s", path)
+    assert result.rc == 0, result.stderr
+    document = json.loads(result.stdout)
+    assert type(document) is dict
+    return document
+
+
+def _replace_state(host: Host, path: str, document: dict[str, object]) -> None:
+    encoded = canonical_json_bytes(document).hex()
+    command = (
+        "import os,pathlib;"
+        f"target=pathlib.Path({path!r});"
+        "temporary=target.with_name('.m3-8-drift');"
+        f"temporary.write_bytes(bytes.fromhex({encoded!r}));"
+        "temporary.chmod(0o600);"
+        "os.chown(temporary,0,0);"
+        "descriptor=os.open(temporary,os.O_RDONLY);"
+        "os.fsync(descriptor);"
+        "os.close(descriptor);"
+        "os.replace(temporary,target);"
+        "directory=os.open(target.parent,os.O_RDONLY|os.O_DIRECTORY);"
+        "os.fsync(directory);"
+        "os.close(directory)"
+    )
+    result = host.run("/usr/bin/python3 -I -B -c %s", command)
+    assert result.rc == 0, result.stderr
+
+
+def _issue_without_handoff(host: Host, request: dict[str, object]) -> str:
+    global _FIRST_CORRELATION_COMPLETED_AT  # noqa: PLW0603 - one integration run
+
+    first_correlation = _pace_new_correlation(request)
+    selected = host.run("readlink --canonicalize /opt/lowerduckpond/static-host-agent/current")
+    assert selected.rc == 0, selected.stderr
+    request_hex = canonical_json_bytes(request).hex()
+    command = f"""
+import os
+import pathlib
+import sys
+from datetime import UTC, datetime
+
+sys.path.insert(0, {(selected.stdout.strip() + "/site-packages")!r})
+from lowerduckpond_static_host_agent import (
+    AuthorizationIssuer,
+    CommandPublicationGate,
+    StateRepository,
+)
+
+with StateRepository(pathlib.Path({STATE_ROOT!r}), expected_owner=0) as repository:
+    issued = AuthorizationIssuer(
+        repository,
+        gate=CommandPublicationGate(pathlib.Path({PUBLICATION_GATE!r})),
+        entropy=os.getrandom,
+    ).issue(
+        bytes.fromhex({request_hex!r}),
+        operator_principal="molecule-m3-8-operator-v1",
+        now=datetime.now(UTC),
+        artifact=None,
+    )
+    print(issued.job_id)
+"""
+    result = host.run("/usr/bin/python3 -I -B -c %s", command)
+    assert result.rc == 0, result.stderr
+    if first_correlation:
+        _FIRST_CORRELATION_COMPLETED_AT = time.monotonic()
+    return result.stdout.strip()
+
+
+def _execute_issued_job(host: Host, job_id: str) -> dict[str, object]:
+    result = host.run(
+        "/usr/bin/systemctl start --wait lowerduckpond-static-worker@%s.service",
+        job_id,
+    )
+    document = _read_state(host, f"{STATE_ROOT}/authorization/results/{job_id}.json")
+    assert result.rc == 0 or document["status"] == "failed", result.stderr
+    return document
+
+
 def _submit(  # noqa: PLR0913
     tmp_path: Path,
     host: str,
@@ -384,6 +465,29 @@ def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lif
         == deployed
     )
 
+    second_content = b"second installed M3.8 release\n"
+    second = _deployment_zip(second_content)
+    active_second_deploy = _submit(
+        tmp_path,
+        operator_host,
+        identity,
+        ssh,
+        _request("deploy", next(identities), tenantId=tenant_id),
+        artifact=second,
+    )
+    second_deployment = _desired_deployment(active_second_deploy)
+    assert _lifecycle(active_second_deploy) == "active"
+    assert second_deployment != first_deployment
+    _assert_route(host, canonical_origin, status=200, body=second_content)
+
+    delayed_rollback_request = _request(
+        "rollback",
+        next(identities),
+        tenantId=tenant_id,
+        deploymentId=first_deployment,
+    )
+    delayed_rollback_job = _issue_without_handoff(host, delayed_rollback_request)
+
     suspend_request = _request("suspend", next(identities), tenantId=tenant_id)
     suspended = _submit(
         tmp_path,
@@ -397,18 +501,27 @@ def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lif
     _assert_route(host, original_alias, status=404)
     assert _submit(tmp_path, operator_host, identity, ssh, dict(suspend_request)) == suspended
 
-    second = _deployment_zip(b"second installed M3.8 release\n")
+    delayed_rollback = _execute_issued_job(host, delayed_rollback_job)
+    assert delayed_rollback["status"] == "failed"
+    assert delayed_rollback["errorCode"] == "state_drift"
+    assert _read_state(host, f"{STATE_ROOT}/tenants/{tenant_id}/desired.json") == _manifest(
+        suspended
+    )
+    _assert_route(host, canonical_origin, status=404)
+    _assert_route(host, original_alias, status=404)
+
+    third = _deployment_zip(b"third installed M3.8 release\n")
     suspended_deploy = _submit(
         tmp_path,
         operator_host,
         identity,
         ssh,
         _request("deploy", next(identities), tenantId=tenant_id),
-        artifact=second,
+        artifact=third,
     )
-    second_deployment = _desired_deployment(suspended_deploy)
+    third_deployment = _desired_deployment(suspended_deploy)
     assert _lifecycle(suspended_deploy) == "suspended"
-    assert second_deployment != first_deployment
+    assert third_deployment not in {first_deployment, second_deployment}
 
     suspended_rollback = _submit(
         tmp_path,
@@ -461,6 +574,90 @@ def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lif
     assert conflicting_create["status"] == "failed"
     assert conflicting_create["errorCode"] == "state_drift"
 
+    occupied_slug = f"{slug}-occupied"
+    occupied = _submit(
+        tmp_path,
+        operator_host,
+        identity,
+        ssh,
+        _request(
+            "create",
+            next(identities),
+            slug=occupied_slug,
+            quotas={"storageMiB": 100, "entries": 5000},
+        ),
+    )
+    occupied_tenant_id = occupied["tenantId"]
+    occupied_origin = occupied["canonicalOrigin"]
+    assert type(occupied_tenant_id) is str
+    assert type(occupied_origin) is str
+    occupied_alias = f"{occupied_slug}.lowerduckpond.com"
+    occupied_content = b"isolated installed M3.8 tenant\n"
+    occupied_deploy = _submit(
+        tmp_path,
+        operator_host,
+        identity,
+        ssh,
+        _request("deploy", next(identities), tenantId=occupied_tenant_id),
+        artifact=_deployment_zip(occupied_content),
+    )
+    occupied_deployment = _desired_deployment(occupied_deploy)
+    assert _lifecycle(occupied_deploy) == "active"
+
+    first_manifest_path = f"{STATE_ROOT}/tenants/{tenant_id}/desired.json"
+    occupied_manifest_path = f"{STATE_ROOT}/tenants/{occupied_tenant_id}/desired.json"
+    first_before_conflicts = _read_state(host, first_manifest_path)
+    occupied_before_conflicts = _read_state(host, occupied_manifest_path)
+    cross_tenant_rollback = _submit(
+        tmp_path,
+        operator_host,
+        identity,
+        ssh,
+        _request(
+            "rollback",
+            next(identities),
+            tenantId=tenant_id,
+            deploymentId=occupied_deployment,
+        ),
+    )
+    assert cross_tenant_rollback["status"] == "failed"
+    assert cross_tenant_rollback["errorCode"] == "state_drift"
+    assert _read_state(host, first_manifest_path) == first_before_conflicts
+    assert _read_state(host, occupied_manifest_path) == occupied_before_conflicts
+    _assert_route(host, canonical_origin, status=200, body=first_content)
+    _assert_route(host, occupied_origin, status=200, body=occupied_content)
+
+    occupied_rename = _submit(
+        tmp_path,
+        operator_host,
+        identity,
+        ssh,
+        _request(
+            "rename",
+            next(identities),
+            tenantId=tenant_id,
+            slug=occupied_slug,
+        ),
+    )
+    assert occupied_rename["status"] == "failed"
+    assert occupied_rename["errorCode"] == "state_drift"
+    assert _read_state(host, first_manifest_path) == first_before_conflicts
+    assert _read_state(host, occupied_manifest_path) == occupied_before_conflicts
+    _assert_route(
+        host,
+        occupied_alias,
+        status=302,
+        redirect=f"https://{occupied_origin}/",
+    )
+    _assert_route(
+        host,
+        original_alias,
+        status=302,
+        redirect=f"https://{canonical_origin}/",
+    )
+
+    observed_path = f"{STATE_ROOT}/tenants/{tenant_id}/observed.json"
+    pre_rename_observed = _read_state(host, observed_path)
     rename_request = _request(
         "rename",
         next(identities),
@@ -487,6 +684,10 @@ def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lif
     )
     assert _submit(tmp_path, operator_host, identity, ssh, dict(rename_request)) == renamed
 
+    _replace_state(host, observed_path, pre_rename_observed)
+    drifted_observed = _read_state(host, observed_path)
+    expected_manifest_digest = manifest_digest(_manifest(renamed)).to_dict()
+    assert drifted_observed["desiredManifestDigest"] != expected_manifest_digest
     reconcile_request = _request("reconcile", next(identities), tenantId=tenant_id)
     reconciled = _submit(
         tmp_path,
@@ -496,21 +697,21 @@ def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lif
         reconcile_request,
     )
     assert _manifest(reconciled) == _manifest(renamed)
+    repaired_observed = _read_state(host, observed_path)
+    assert repaired_observed["desiredManifestDigest"] == expected_manifest_digest
+    assert repaired_observed["observedState"] == "active"
+    assert repaired_observed["activeDeploymentId"] == first_deployment
+    _assert_route(host, canonical_origin, status=200, body=first_content)
+    _assert_route(host, original_alias, status=404)
+    _assert_route(
+        host,
+        renamed_alias,
+        status=302,
+        redirect=f"https://{canonical_origin}/",
+    )
     assert _submit(tmp_path, operator_host, identity, ssh, dict(reconcile_request)) == reconciled
 
-    third = _deployment_zip(b"third installed M3.8 release\n")
-    third_deploy = _submit(
-        tmp_path,
-        operator_host,
-        identity,
-        ssh,
-        _request("deploy", next(identities), tenantId=tenant_id),
-        artifact=third,
-    )
-    third_deployment = _desired_deployment(third_deploy)
-
-    fourth_content = b"fourth installed M3.8 release\n"
-    fourth = _deployment_zip(fourth_content)
+    fourth = _deployment_zip(b"fourth installed M3.8 release\n")
     fourth_deploy = _submit(
         tmp_path,
         operator_host,
@@ -521,7 +722,8 @@ def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lif
     )
     fourth_deployment = _desired_deployment(fourth_deploy)
 
-    fifth = _deployment_zip(b"fifth installed M3.8 release\n")
+    fifth_content = b"fifth installed M3.8 release\n"
+    fifth = _deployment_zip(fifth_content)
     fifth_deploy = _submit(
         tmp_path,
         operator_host,
@@ -532,21 +734,32 @@ def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lif
     )
     fifth_deployment = _desired_deployment(fifth_deploy)
 
+    sixth = _deployment_zip(b"sixth installed M3.8 release\n")
+    sixth_deploy = _submit(
+        tmp_path,
+        operator_host,
+        identity,
+        ssh,
+        _request("deploy", next(identities), tenantId=tenant_id),
+        artifact=sixth,
+    )
+    sixth_deployment = _desired_deployment(sixth_deploy)
+
     releases = host.run(
         f"find {RELEASE_ROOT}/{tenant_id}/releases -mindepth 1 -maxdepth 1 -type d -printf '%f\\n'"
     )
     assert releases.rc == 0
     assert set(releases.stdout.splitlines()) == {
-        third_deployment,
         fourth_deployment,
         fifth_deployment,
+        sixth_deployment,
     }
 
     active_rollback_request = _request(
         "rollback",
         next(identities),
         tenantId=tenant_id,
-        deploymentId=fourth_deployment,
+        deploymentId=fifth_deployment,
     )
     active_rollback = _submit(
         tmp_path,
@@ -556,8 +769,8 @@ def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lif
         active_rollback_request,
     )
     assert _lifecycle(active_rollback) == "active"
-    assert _desired_deployment(active_rollback) == fourth_deployment
-    _assert_route(host, canonical_origin, status=200, body=fourth_content)
+    assert _desired_deployment(active_rollback) == fifth_deployment
+    _assert_route(host, canonical_origin, status=200, body=fifth_content)
     _assert_route(
         host,
         renamed_alias,
@@ -593,7 +806,7 @@ def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lif
     assert reused_tenant_id != tenant_id
 
     assert host.run("systemctl is-active --quiet caddy.service").rc == 0
-    _assert_route(host, canonical_origin, status=200, body=fourth_content)
+    _assert_route(host, canonical_origin, status=200, body=fifth_content)
     _assert_route(
         host,
         renamed_alias,
@@ -614,6 +827,6 @@ def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lif
     )
     assert releases.rc == 0
     assert set(releases.stdout.splitlines()) == {
-        third_deployment,
         fourth_deployment,
+        fifth_deployment,
     }
