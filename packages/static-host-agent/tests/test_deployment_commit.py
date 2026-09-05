@@ -20,6 +20,8 @@ from lowerduckpond_static_contracts import (
     request_digest,
 )
 from lowerduckpond_static_host_agent import (
+    AdmittedArtifact,
+    ArtifactIntake,
     AuditCapacityError,
     AuditState,
     CaddyGenerationManifest,
@@ -30,6 +32,9 @@ from lowerduckpond_static_host_agent import (
     DeploymentReleaseStore,
     FilesystemCapacity,
     HostCapacityLimits,
+    InodeAllocation,
+    LifecycleArtifact,
+    LifecycleJobRejectionError,
     LockManager,
     LockMode,
     PinnedCaddyGeneration,
@@ -40,8 +45,12 @@ from lowerduckpond_static_host_agent import (
     StateRepository,
     TenantRouteInput,
     TenantRouteOverlay,
+    VerifiedArtifact,
 )
-from lowerduckpond_static_host_agent.capacity import DEFAULT_HOST_CAPACITY_LIMITS
+from lowerduckpond_static_host_agent.capacity import (
+    DEFAULT_HOST_CAPACITY_LIMITS,
+    ReleaseCapacityUsage,
+)
 from lowerduckpond_static_host_agent.deployment_activate import (
     DeploymentActivationError,
     activate_deployment_transition,
@@ -51,6 +60,7 @@ from lowerduckpond_static_host_agent.deployment_commit import (
     finalize_deployment_transition_outcome,
     validate_deployment_transition,
 )
+from lowerduckpond_static_host_agent.deployment_handler import DeploymentLifecycleHandler
 from lowerduckpond_static_host_agent.deployment_prepare import (
     PreparedDeploymentTransition,
 )
@@ -62,6 +72,7 @@ from lowerduckpond_static_host_agent.lifecycle_plan import (
     DeploymentTransitionPlan,
     plan_deployment_transition,
 )
+from lowerduckpond_static_host_agent.release_store import PublishedReleaseInventory
 from lowerduckpond_static_host_agent.route_snapshot import (
     RouteOverlayMode,
     RouteSnapshotTransaction,
@@ -89,6 +100,13 @@ class _Entropy:
 @dataclass(frozen=True, slots=True)
 class _Measurement:
     digest: Digest
+    allocations: tuple[InodeAllocation, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class _Staged:
+    deployment_id: str
+    digest: dict[str, object]
 
 
 class _ReleaseStore:
@@ -96,6 +114,41 @@ class _ReleaseStore:
         self.releases = deepcopy(releases)
         self.staged: dict[str, dict[str, object]] = {}
         self.removed: list[str] = []
+        self.reconciled = False
+
+    def reconcile_staging(
+        self,
+        protected: dict[str, str],
+        *,
+        publication_lock: object,
+    ) -> None:
+        assert protected == {}
+        assert publication_lock is not None
+        self.reconciled = True
+
+    def stage(  # noqa: PLR0913 - fake mirrors the release-store authority tuple
+        self,
+        _intake: object,
+        _artifact: object,
+        *,
+        tenant_id: object,
+        deployment_id: object,
+        expected_release_tree_digest: object,
+        retained_usage: object,
+        publication_lock: object,
+        capacity_limits: object,
+    ) -> _Staged:
+        assert tenant_id == _tenant_id()
+        assert type(deployment_id) is str
+        assert type(expected_release_tree_digest) is dict
+        assert retained_usage is not None
+        assert publication_lock is not None
+        assert capacity_limits is not None
+        return _Staged(deployment_id, deepcopy(expected_release_tree_digest))
+
+    def publish(self, staged: _Staged, *, publication_lock: object) -> None:
+        assert publication_lock is not None
+        self.releases[staged.deployment_id] = deepcopy(staged.digest)
 
     def resume_publication(
         self,
@@ -136,6 +189,18 @@ class _ReleaseStore:
                 cast(str, digest["algorithm"]),
                 cast(str, digest["value"]),
             )
+        )
+
+    def published_inventory(
+        self,
+        *,
+        publication_lock: object,
+    ) -> PublishedReleaseInventory:
+        assert publication_lock is not None
+        releases = tuple(sorted(self.releases))
+        return PublishedReleaseInventory(
+            ((_tenant_id(), releases),) if releases else (),
+            ReleaseCapacityUsage(()),
         )
 
     def remove_release(
@@ -181,6 +246,12 @@ class _Generation:
         return
 
 
+@dataclass(frozen=True, slots=True)
+class _Selected:
+    generation_id: str
+    generation: _Generation
+
+
 class _Runtime:
     def __init__(self) -> None:
         self.active = _SOURCE_GENERATION
@@ -200,6 +271,10 @@ class _Runtime:
         if generation_id in self.missing_generations:
             raise FileNotFoundError(generation_id)
         return _Generation(generation_id)
+
+    def open_active_verified(self) -> _Selected:
+        self.events.append("active")
+        return _Selected(self.active, _Generation(self.active))
 
     def remove_abandoned_reference_temporaries(self) -> None:
         self.events.append("cleaned-reference-temporaries")
@@ -230,7 +305,6 @@ class _Runtime:
         gate: object,
         deployment_transition_tenant_id: object,
     ) -> _GenerationManifest:
-        assert generation_id == _CANDIDATE_GENERATION
         assert deployment_transition_tenant_id == _tenant_id()
         assert gate is not None
         self.snapshots[generation_id] = snapshot_tenant_routes(
@@ -455,6 +529,7 @@ def _prepared(  # noqa: PLR0913 - fixture authority tuple
     selected_index: int = -1,
     rollback_index: int = -2,
     include_other_tenant: bool = False,
+    create_intent: bool = True,
 ) -> tuple[
     StateRepository,
     dict[str, object],
@@ -534,17 +609,19 @@ def _prepared(  # noqa: PLR0913 - fixture authority tuple
         )
     _write(root, StateRecordPath.authorization_job(_JOB_ID), job)
     repository = StateRepository(root, expected_owner=os.geteuid())
-    repository.create_immutable(
-        StateRecordPath.transaction_intent(plan.intent_id),
-        plan.intent,
-    )
+    if create_intent:
+        repository.create_immutable(
+            StateRecordPath.transaction_intent(plan.intent_id),
+            plan.intent,
+        )
     releases = {
         cast(str, deployment["id"]): cast(dict[str, object], deployment["releaseTreeDigest"])
         for deployment in deployments
     }
-    releases[cast(str, plan.deployment["id"])] = cast(
-        dict[str, object], plan.deployment["releaseTreeDigest"]
-    )
+    if create_intent or operation == "rollback":
+        releases[cast(str, plan.deployment["id"])] = cast(
+            dict[str, object], plan.deployment["releaseTreeDigest"]
+        )
     return repository, job, plan, _ReleaseStore(releases)
 
 
@@ -1580,5 +1657,145 @@ def test_deployment_recovery_rejects_selected_release_drift(
                 verifier=runtime.verify,
             )
         assert runtime.active == runtime.running == _SOURCE_GENERATION
+    finally:
+        repository.close()
+
+
+@pytest.mark.parametrize(
+    ("operation", "deployment_count"),
+    [("deploy", 1), ("rollback", 2)],
+)
+def test_deployment_handler_completes_and_replays_a_fresh_claimed_job(
+    tmp_path: Path,
+    operation: str,
+    deployment_count: int,
+) -> None:
+    repository, job, bootstrap_plan, releases = _prepared(
+        tmp_path,
+        operation=operation,
+        deployment_count=deployment_count,
+        state="active",
+        create_intent=False,
+    )
+    runtime = _recovery_runtime(repository, job, bootstrap_plan)
+    entropy = _Entropy()
+    entropy._value = 50
+    handler = DeploymentLifecycleHandler(
+        repository,
+        cast(CaddyRuntime, runtime),
+        cast(ArtifactIntake, object()),
+        cast(DeploymentReleaseStore, releases),
+        cast(PublicationGate, _Gate()),
+        now=lambda: _NOW,
+        clock=lambda: 1_777_000_000_000,
+        entropy=entropy,
+        reloader=runtime.reload,
+        restorer=runtime.restore,
+        verifier=runtime.verify,
+    )
+    claim = (
+        LifecycleArtifact(AdmittedArtifact("deploy.artifact", VerifiedArtifact(32, "e" * 64)))
+        if operation == "deploy"
+        else None
+    )
+    try:
+        first = handler.execute(cast(str, job["jobId"]), claim=claim, blocking=False)
+        completed_events = tuple(runtime.events)
+        second = handler.execute(cast(str, job["jobId"]), claim=claim, blocking=False)
+
+        assert first.result == second.result
+        assert first.created is True
+        assert second.created is False
+        assert first.result["status"] == "succeeded"
+        assert runtime.active == runtime.running
+        assert runtime.active != _SOURCE_GENERATION
+        assert runtime.events == list(completed_events)
+        assert releases.reconciled is True
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
+@pytest.mark.parametrize(
+    ("operation", "deployment_count"),
+    [("deploy", 1), ("rollback", 2)],
+)
+def test_deployment_handler_recovers_and_replays_a_durable_intent(
+    tmp_path: Path,
+    operation: str,
+    deployment_count: int,
+) -> None:
+    repository, job, plan, releases = _prepared(
+        tmp_path,
+        operation=operation,
+        deployment_count=deployment_count,
+        state="active",
+    )
+    runtime = _recovery_runtime(repository, job, plan)
+    handler = DeploymentLifecycleHandler(
+        repository,
+        cast(CaddyRuntime, runtime),
+        cast(ArtifactIntake, object()),
+        cast(DeploymentReleaseStore, releases),
+        cast(PublicationGate, _Gate()),
+        reloader=runtime.reload,
+        restorer=runtime.restore,
+        verifier=runtime.verify,
+    )
+    try:
+        first = handler.execute(cast(str, job["jobId"]), claim=None, blocking=False)
+        completed_events = tuple(runtime.events)
+        second = handler.execute(cast(str, job["jobId"]), claim=None, blocking=False)
+
+        assert first.result == second.result == plan.result
+        assert first.created is True
+        assert second.created is False
+        assert runtime.active == runtime.running == _CANDIDATE_GENERATION
+        assert runtime.events == list(completed_events)
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
+@pytest.mark.parametrize(
+    ("operation", "deployment_count", "claim"),
+    [
+        ("deploy", 1, None),
+        (
+            "rollback",
+            2,
+            LifecycleArtifact(
+                AdmittedArtifact("unexpected.artifact", VerifiedArtifact(32, "e" * 64))
+            ),
+        ),
+    ],
+)
+def test_deployment_handler_rejects_fresh_artifact_presence_mismatch(
+    tmp_path: Path,
+    operation: str,
+    deployment_count: int,
+    claim: LifecycleArtifact | None,
+) -> None:
+    repository, job, bootstrap_plan, releases = _prepared(
+        tmp_path,
+        operation=operation,
+        deployment_count=deployment_count,
+        state="active",
+        create_intent=False,
+    )
+    runtime = _recovery_runtime(repository, job, bootstrap_plan)
+    handler = DeploymentLifecycleHandler(
+        repository,
+        cast(CaddyRuntime, runtime),
+        cast(ArtifactIntake, object()),
+        cast(DeploymentReleaseStore, releases),
+        cast(PublicationGate, _Gate()),
+    )
+    try:
+        with pytest.raises(LifecycleJobRejectionError) as failure:
+            handler.execute(cast(str, job["jobId"]), claim=claim, blocking=False)
+
+        assert failure.value.error_code == "invalid_artifact"
+        assert repository.measure_intent_records().records == ()
     finally:
         repository.close()

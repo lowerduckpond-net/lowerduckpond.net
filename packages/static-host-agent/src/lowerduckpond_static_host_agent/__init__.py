@@ -161,6 +161,10 @@ from lowerduckpond_static_host_agent.deployment_commit import (
     finalize_deployment_transition_outcome,
     validate_deployment_transition,
 )
+from lowerduckpond_static_host_agent.deployment_handler import (
+    DeploymentLifecycleError,
+    DeploymentLifecycleHandler,
+)
 from lowerduckpond_static_host_agent.deployment_prepare import (
     DeploymentAuthorityDriftError,
     DeploymentPreparationError,
@@ -472,6 +476,8 @@ __all__ = [
     "DeploymentCommitBoundary",
     "DeploymentCommitError",
     "DeploymentCommitOutcome",
+    "DeploymentLifecycleError",
+    "DeploymentLifecycleHandler",
     "DeploymentPreparationError",
     "DeploymentRecoveryError",
     "DeploymentReleaseStore",
