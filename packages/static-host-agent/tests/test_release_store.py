@@ -680,6 +680,89 @@ def test_release_removal_requires_exclusive_tenant_state(tmp_path: Path) -> None
         )
 
 
+def test_release_removal_retry_syncs_an_already_absent_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_root = _state_root(tmp_path)
+    release_root = _release_root(tmp_path)
+    payload = _deployment_zip()
+    with (
+        ArtifactIntake(state_root, expected_owner=os.geteuid()) as intake,
+        DeploymentReleaseStore(
+            release_root,
+            release_root / ".staging",
+            expected_owner=os.geteuid(),
+            expected_release_group=os.getegid(),
+        ) as store,
+        LockManager(
+            state_root / "locks",
+            expected_owner=os.geteuid(),
+            expected_directory_mode=0o700,
+        ) as locks,
+    ):
+        with intake.admit(
+            operation="deploy",
+            correlation_id=_CORRELATION_ID,
+            declared=_binding(payload),
+            read=BytesIO(payload).read,
+        ) as lease:
+            lease.commit()
+        with (
+            intake.claim(
+                correlation_id=_CORRELATION_ID,
+                declared=_binding(payload),
+            ) as claim,
+            locks.acquire(LockName.PUBLICATION, mode=LockMode.EXCLUSIVE),
+            locks.acquire(LockName.TENANT_STATE, mode=LockMode.EXCLUSIVE),
+        ):
+            expected = intake.deployment_release_tree_digest(claim.artifact).to_dict()
+            staged = store.stage(
+                intake,
+                claim.artifact,
+                tenant_id=_TENANT_ID,
+                deployment_id=_DEPLOYMENT_ID,
+                expected_release_tree_digest=expected,
+                retained_usage=ReleaseCapacityUsage(()),
+                publication_lock=locks,
+            )
+            store.publish(staged, publication_lock=locks)
+            releases = release_root / _TENANT_ID / "releases"
+            original_fsync = os.fsync
+
+            def interrupt_final_parent_sync(descriptor: int) -> None:
+                if Path(f"/proc/self/fd/{descriptor}").resolve() == releases and not any(
+                    releases.iterdir()
+                ):
+                    raise RuntimeError("simulated post-rmdir interruption")
+                original_fsync(descriptor)
+
+            monkeypatch.setattr(os, "fsync", interrupt_final_parent_sync)
+            with pytest.raises(RuntimeError, match="post-rmdir interruption"):
+                store.remove_release(
+                    _TENANT_ID,
+                    _DEPLOYMENT_ID,
+                    expected_release_tree_digest=expected,
+                    publication_lock=locks,
+                )
+            assert not any(releases.iterdir())
+
+            synced: list[Path] = []
+
+            def track_retry_sync(descriptor: int) -> None:
+                synced.append(Path(f"/proc/self/fd/{descriptor}").resolve())
+                original_fsync(descriptor)
+
+            monkeypatch.setattr(os, "fsync", track_retry_sync)
+            store.remove_release(
+                _TENANT_ID,
+                _DEPLOYMENT_ID,
+                expected_release_tree_digest=expected,
+                publication_lock=locks,
+            )
+            assert releases in synced
+
+
 def test_release_store_closes_both_roots_after_filesystem_rejection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

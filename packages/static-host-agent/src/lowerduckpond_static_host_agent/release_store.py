@@ -349,6 +349,7 @@ class DeploymentReleaseStore:
                     )
                     os.fsync(releases_fd)
                 elif not retired_exists:
+                    os.fsync(releases_fd)
                     return
                 _remove_tree(
                     releases_fd,
