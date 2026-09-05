@@ -1536,7 +1536,8 @@ def test_exact_deployment_removal_deletes_only_the_read_generation(
         repository.transaction(mode=LockMode.EXCLUSIVE) as transaction,
     ):
         expected = transaction.read(path)
-        transaction.remove_exact_deployment(expected)
+        token = transaction.deployment_removal_token(expected)
+        transaction.remove_exact_deployment(expected, token)
 
     assert not root.joinpath(*path.components).exists()
 
@@ -1552,10 +1553,39 @@ def test_exact_deployment_removal_rejects_a_changed_generation(tmp_path: Path) -
         repository.transaction(mode=LockMode.EXCLUSIVE) as transaction,
     ):
         expected = transaction.read(path)
+        token = transaction.deployment_removal_token(expected)
         deployment["archiveSha256"] = "f" * 64
         target.write_bytes(canonical_json_bytes(deployment))
         with pytest.raises(StateConflictError, match="changed before exact removal"):
-            transaction.remove_exact_deployment(expected)
+            transaction.remove_exact_deployment(expected, token)
+
+    assert target.read_bytes() == canonical_json_bytes(deployment)
+
+
+def test_exact_deployment_removal_rejects_same_bytes_on_a_new_inode(
+    tmp_path: Path,
+) -> None:
+    root = _state_root(tmp_path)
+    path = StateRecordPath.tenant_deployment(_TENANT_ID, _DEPLOYMENT_ID)
+    deployment = _fixture("deployment-record.json")
+    target = _write_record(root, path, deployment)
+
+    with (
+        _repository(root) as repository,
+        repository.transaction(mode=LockMode.EXCLUSIVE) as transaction,
+    ):
+        expected = transaction.read(path)
+        token = transaction.deployment_removal_token(expected)
+
+    target.unlink()
+    _write_record(root, path, deployment)
+
+    with (
+        _repository(root) as repository,
+        repository.transaction(mode=LockMode.EXCLUSIVE) as transaction,
+        pytest.raises(StateConflictError, match="changed before exact removal"),
+    ):
+        transaction.remove_exact_deployment(expected, token)
 
     assert target.read_bytes() == canonical_json_bytes(deployment)
 

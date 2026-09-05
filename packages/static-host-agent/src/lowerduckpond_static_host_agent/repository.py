@@ -505,6 +505,20 @@ class IntentRemovalToken:
             raise ValueError("intent removal metadata generation is invalid")
 
 
+@dataclass(frozen=True, slots=True)
+class DeploymentRemovalToken:
+    """Exact canonical and inode generation authorized for deployment removal."""
+
+    revision: StateRevision
+    metadata_generation: tuple[int, ...]
+
+    def __post_init__(self) -> None:
+        if not self.metadata_generation or any(
+            type(value) is not int for value in self.metadata_generation
+        ):
+            raise ValueError("deployment removal metadata generation is invalid")
+
+
 class StoredContract:
     """A validated immutable snapshot and its storage-local revision token."""
 
@@ -1184,10 +1198,58 @@ class _StateTransaction:
         candidate = self._repository._encode_new(path, document)
         return self._create_immutable_bytes(path, candidate)
 
-    def remove_exact_deployment(self, expected: StoredContract) -> None:
+    def deployment_removal_token(
+        self,
+        expected: StoredContract,
+    ) -> DeploymentRemovalToken:
+        """Bind one validated deployment snapshot to its current inode generation."""
+
+        self._require_exclusive()
+        path, candidate = self._deployment_removal_authority(expected)
+        current = self._repository._read_locked(path)
+        if current.revision != expected.revision or current.revision != _revision(
+            path.contract_kind, candidate
+        ):
+            raise StateConflictError("deployment changed before removal authorization")
+        generation = self._repository._durable.regular_metadata_generation(
+            path.components,
+            expected_owner=self._repository._expected_owner,
+            expected_mode=self._repository._expected_record_mode,
+        )
+        if self._repository._read_locked(path).revision != current.revision:
+            raise StateConflictError("deployment changed during removal authorization")
+        return DeploymentRemovalToken(current.revision, generation)
+
+    def remove_exact_deployment(
+        self,
+        expected: StoredContract,
+        token: DeploymentRemovalToken,
+    ) -> None:
         """Durably remove only one exact retained deployment generation."""
 
         self._require_exclusive()
+        if type(token) is not DeploymentRemovalToken:
+            raise TypeError("deployment removal requires its exact generation token")
+        path, candidate = self._deployment_removal_authority(expected)
+        current = self._repository._read_locked(path)
+        generation = self._repository._durable.regular_metadata_generation(
+            path.components,
+            expected_owner=self._repository._expected_owner,
+            expected_mode=self._repository._expected_record_mode,
+        )
+        if (
+            token.revision != expected.revision
+            or current.revision != expected.revision
+            or current.revision != _revision(path.contract_kind, candidate)
+            or generation != token.metadata_generation
+        ):
+            raise StateConflictError("deployment changed before exact removal")
+        self._repository._durable.remove(path.components)
+
+    def _deployment_removal_authority(
+        self,
+        expected: StoredContract,
+    ) -> tuple[StateRecordPath, bytes]:
         document = expected.document
         try:
             path = StateRecordPath.tenant_deployment(
@@ -1197,12 +1259,7 @@ class _StateTransaction:
         except KeyError as error:
             raise StateRecordError("deployment removal authority is malformed") from error
         candidate = self._repository._encode(path, document)
-        current = self._repository._read_locked(path)
-        if current.revision != expected.revision or current.revision != _revision(
-            path.contract_kind, candidate
-        ):
-            raise StateConflictError("deployment changed before exact removal")
-        self._repository._durable.remove(path.components)
+        return path, candidate
 
     def ensure_create_tenant_namespace(
         self,

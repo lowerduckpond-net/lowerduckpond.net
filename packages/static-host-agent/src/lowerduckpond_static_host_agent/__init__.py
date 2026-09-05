@@ -256,6 +256,7 @@ from lowerduckpond_static_host_agent.release_tree import (
 )
 from lowerduckpond_static_host_agent.repository import (
     CreateStateBoundary,
+    DeploymentRemovalToken,
     IntentRemovalToken,
     StateConflictError,
     StateRecordError,
@@ -441,6 +442,7 @@ __all__ = [
     "DeadlineReader",
     "DeadlineWriter",
     "DeploymentReleaseStore",
+    "DeploymentRemovalToken",
     "DeploymentTransitionPlan",
     "DiscoveredIntent",
     "DurabilityBoundary",
