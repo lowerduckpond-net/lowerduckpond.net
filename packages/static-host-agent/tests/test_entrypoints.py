@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 from lowerduckpond_static_host_agent import entrypoints
+from lowerduckpond_static_host_agent.audit import AuditError
 from lowerduckpond_static_host_agent.caddy_admin import CaddyAdminError
 from lowerduckpond_static_host_agent.caddy_generation import CaddyGenerationError
 from lowerduckpond_static_host_agent.caddy_routes import TenantRouteInput
@@ -29,10 +30,14 @@ from lowerduckpond_static_host_agent.create_handler import (
     CreateLifecycleError,
     CreateLifecycleHandler,
 )
+from lowerduckpond_static_host_agent.deployment_handler import DeploymentLifecycleHandler
 from lowerduckpond_static_host_agent.release_tree import ReleaseTreeError
-from lowerduckpond_static_host_agent.repository import StateRecordPath
+from lowerduckpond_static_host_agent.repository import StateConflictError, StateRecordPath
 from lowerduckpond_static_host_agent.route_handler import RouteLifecycleHandler
-from lowerduckpond_static_host_agent.route_snapshot import TenantRouteSnapshot
+from lowerduckpond_static_host_agent.route_snapshot import (
+    RouteSnapshotError,
+    TenantRouteSnapshot,
+)
 
 _DISABLED_STATUS = 78
 _USAGE_STATUS = 64
@@ -44,6 +49,7 @@ def test_executor_entrypoint_registers_the_available_lifecycle_handlers(
     job_id = "0198d17f-6f4a-7000-8000-000000000001"
     repository = object()
     intake = object()
+    release_store = object()
     runtime = object()
     captured: dict[str, object] = {}
 
@@ -85,6 +91,11 @@ def test_executor_entrypoint_registers_the_available_lifecycle_handlers(
     )
     monkeypatch.setattr(
         entrypoints,
+        "_open_deployment_release_store",
+        lambda: _Context(release_store),
+    )
+    monkeypatch.setattr(
+        entrypoints,
         "_open_caddy_control_runtime",
         lambda: _Context(runtime),
     )
@@ -96,7 +107,15 @@ def test_executor_entrypoint_registers_the_available_lifecycle_handlers(
     assert type(arguments) is dict
     handlers = arguments["handlers"]
     assert type(handlers) is dict
-    assert set(handlers) == {"create", "suspend", "resume", "rename", "reconcile"}
+    assert set(handlers) == {
+        "create",
+        "deploy",
+        "rollback",
+        "suspend",
+        "resume",
+        "rename",
+        "reconcile",
+    }
     handler = handlers["create"]
     assert isinstance(handler, CreateLifecycleHandler)
     assert handler._repository is repository
@@ -109,6 +128,14 @@ def test_executor_entrypoint_registers_the_available_lifecycle_handlers(
     assert isinstance(route_handler, RouteLifecycleHandler)
     assert route_handler._repository is repository
     assert route_handler._runtime is runtime
+    deployment_handlers = {handlers[operation] for operation in ("deploy", "rollback")}
+    assert len(deployment_handlers) == 1
+    deployment_handler = deployment_handlers.pop()
+    assert isinstance(deployment_handler, DeploymentLifecycleHandler)
+    assert deployment_handler._repository is repository
+    assert deployment_handler._runtime is runtime
+    assert deployment_handler._intake is intake
+    assert deployment_handler._release_store is release_store
     assert captured["intake"] is intake
     assert captured["job_id"] == job_id
     assert captured["blocking"] is True
@@ -121,6 +148,10 @@ def test_executor_entrypoint_registers_the_available_lifecycle_handlers(
         CaddyAdminError,
         CaddyGenerationError,
         CaddyRuntimeError,
+        AuditError,
+        ReleaseTreeError,
+        RouteSnapshotError,
+        StateConflictError,
     ],
 )
 def test_executor_entrypoint_sanitizes_registered_handler_failures(
@@ -229,6 +260,43 @@ def test_caddy_control_runtime_opens_the_validated_lock_path(
                 "expected_lock_group": 0,
                 "root_mode": CADDY_RUNTIME_ROOT_MODE,
                 "lock_mode": CADDY_PUBLICATION_LOCK_MODE,
+            },
+        )
+    ]
+
+
+def test_deployment_release_store_opens_the_fixed_release_roots(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opened: list[tuple[Path, Path, dict[str, object]]] = []
+    expected = object()
+
+    def open_store(
+        release_root: Path,
+        staging_root: Path,
+        **arguments: object,
+    ) -> object:
+        opened.append((release_root, staging_root, arguments))
+        return expected
+
+    monkeypatch.setattr(entrypoints, "DeploymentReleaseStore", open_store)
+    monkeypatch.setattr(entrypoints, "TENANT_RELEASE_ROOT", str(tmp_path / "sites"))
+    monkeypatch.setattr(
+        grp,
+        "getgrnam",
+        lambda _name: SimpleNamespace(gr_gid=1002),
+    )
+
+    assert entrypoints._open_deployment_release_store() is expected
+    assert opened == [
+        (
+            tmp_path / "sites",
+            tmp_path / "sites" / entrypoints._RELEASE_STAGING_NAME,
+            {
+                "expected_owner": entrypoints._RELEASE_STAGING_OWNER,
+                "expected_release_group": 1002,
+                "expected_staging_group": entrypoints._RELEASE_STAGING_GROUP,
             },
         )
     ]
