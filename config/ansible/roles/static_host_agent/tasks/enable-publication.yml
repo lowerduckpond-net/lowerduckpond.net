@@ -1,0 +1,17 @@
+---
+- name: Open static publication after complete host convergence
+  ansible.builtin.template:
+    src: static-publication.json.j2
+    dest: /etc/lowerduckpond/static-publication.json
+    owner: root
+    group: root
+    mode: "0400"
+  vars:
+    static_publication_gate_enabled: true
+
+- name: Prove job issuance is enabled at the converged publication boundary
+  ansible.builtin.command:
+    argv:
+      - /usr/local/libexec/lowerduckpond/static-publication-gate
+      - job-issuance
+  changed_when: false

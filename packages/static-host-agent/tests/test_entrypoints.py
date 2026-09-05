@@ -13,6 +13,7 @@ import pytest
 from lowerduckpond_static_host_agent import entrypoints
 from lowerduckpond_static_host_agent.audit import AuditError
 from lowerduckpond_static_host_agent.caddy_admin import CaddyAdminError
+from lowerduckpond_static_host_agent.caddy_bootstrap import PlatformGenerationState
 from lowerduckpond_static_host_agent.caddy_generation import CaddyGenerationError
 from lowerduckpond_static_host_agent.caddy_routes import TenantRouteInput
 from lowerduckpond_static_host_agent.caddy_runtime import (
@@ -263,6 +264,125 @@ def test_caddy_current_generation_check_fails_closed_on_runtime_drift(
 
     assert entrypoints.caddy_current_generation_main([]) == 1
     assert capfd.readouterr().err == "caddy_generation_not_current\n"
+
+
+@pytest.mark.parametrize("tenant_ids", [(), ("tenant",)])
+def test_authoritative_generation_selects_one_check_under_both_locks(
+    monkeypatch: pytest.MonkeyPatch,
+    tenant_ids: tuple[str, ...],
+) -> None:
+    calls: list[str] = []
+    transaction = SimpleNamespace(measure_inventory=lambda: SimpleNamespace(tenant_ids=tenant_ids))
+
+    class _Context:
+        def __init__(self, label: str, value: object) -> None:
+            self.label = label
+            self.value = value
+
+        def __enter__(self) -> object:
+            calls.append(f"enter:{self.label}")
+            return self.value
+
+        def __exit__(self, *_exception: object) -> None:
+            calls.append(f"exit:{self.label}")
+
+    class Repository:
+        def __init__(self, root: Path, *, expected_owner: int) -> None:
+            assert root == entrypoints._STATE_ROOT
+            assert expected_owner == entrypoints._EXPECTED_OWNER
+
+        def __enter__(self) -> Repository:
+            calls.append("enter:repository")
+            return self
+
+        def __exit__(self, *_exception: object) -> None:
+            calls.append("exit:repository")
+
+        @staticmethod
+        def publication_transaction(*, blocking: bool) -> _Context:
+            assert blocking is True
+            return _Context("tenant-state", transaction)
+
+    class Runtime:
+        @staticmethod
+        def using_held_publication_lock(repository: object) -> _Context:
+            assert isinstance(repository, Repository)
+            return _Context("publication", None)
+
+    def tenant_check(runtime: object, selected: object) -> bool:
+        assert isinstance(runtime, Runtime)
+        assert selected is transaction
+        calls.append("tenant-check")
+        return True
+
+    def platform_check(runtime: object, store: object, **arguments: object) -> object:
+        assert isinstance(runtime, Runtime)
+        assert store == "store"
+        assert arguments["binary"] == "binary"
+        calls.append("platform-check")
+        return PlatformGenerationState.UNCHANGED
+
+    monkeypatch.setattr(entrypoints, "StateRepository", Repository)
+    monkeypatch.setattr(
+        entrypoints,
+        "_tenant_runtime_state_matches_under_lock",
+        tenant_check,
+    )
+    monkeypatch.setattr(
+        entrypoints,
+        "platform_generation_state_under_lock",
+        platform_check,
+    )
+
+    assert entrypoints._authoritative_caddy_generation_matches(
+        Runtime(),  # type: ignore[arg-type]
+        "store",  # type: ignore[arg-type]
+        binary="binary",  # type: ignore[arg-type]
+        environment=b"environment",
+        origin_pull_ca_der=(b"ca",),
+        origin_pull_required=True,
+        startup="startup",  # type: ignore[arg-type]
+    )
+    assert calls == [
+        "enter:repository",
+        "enter:tenant-state",
+        "enter:publication",
+        "tenant-check" if tenant_ids else "platform-check",
+        "exit:publication",
+        "exit:tenant-state",
+        "exit:repository",
+    ]
+
+
+def test_authoritative_platform_generation_fails_closed_on_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = SimpleNamespace(
+        publication_transaction=lambda **_arguments: nullcontext(
+            SimpleNamespace(measure_inventory=lambda: SimpleNamespace(tenant_ids=()))
+        )
+    )
+    monkeypatch.setattr(
+        entrypoints,
+        "StateRepository",
+        lambda *_arguments, **_keywords: nullcontext(repository),
+    )
+    monkeypatch.setattr(
+        entrypoints,
+        "platform_generation_state_under_lock",
+        lambda *_arguments, **_keywords: PlatformGenerationState.CHANGED,
+    )
+    runtime = SimpleNamespace(using_held_publication_lock=lambda _repository: nullcontext())
+
+    assert not entrypoints._authoritative_caddy_generation_matches(
+        runtime,  # type: ignore[arg-type]
+        object(),  # type: ignore[arg-type]
+        binary=object(),  # type: ignore[arg-type]
+        environment=b"environment",
+        origin_pull_ca_der=(b"ca",),
+        origin_pull_required=True,
+        startup=object(),  # type: ignore[arg-type]
+    )
 
 
 def test_origin_pull_pem_conversion_returns_the_exact_der_bytes() -> None:

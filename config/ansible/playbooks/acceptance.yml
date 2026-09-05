@@ -8,21 +8,6 @@
       ansible.builtin.import_tasks: tasks/resolve-acceptance-contract.yml
 
   tasks:
-    - name: Inspect the authoritative tenant inventory
-      ansible.builtin.command:
-        argv:
-          - /usr/bin/find
-          - /var/lib/lowerduckpond/static/tenants
-          - -mindepth
-          - "1"
-          - -maxdepth
-          - "1"
-          - -print
-          - -quit
-      register: acceptance_authoritative_tenant_inventory
-      changed_when: false
-      when: acceptance_caddy_generation_enabled | bool
-
     - name: Validate the installed legacy Caddy configuration
       ansible.builtin.command:
         cmd: /usr/local/libexec/lowerduckpond/caddy-validate /etc/caddy/Caddyfile
@@ -30,32 +15,15 @@
       no_log: true
       when: not acceptance_caddy_generation_enabled | bool
 
-    - name: Validate the selected complete platform-only Caddy generation
+    - name: Validate the selected authoritative Caddy generation
       ansible.builtin.command:
         cmd: /usr/local/libexec/lowerduckpond/check-caddy-generation
-      register: acceptance_platform_caddy_generation
+      register: acceptance_authoritative_caddy_generation
       changed_when: false
       failed_when: >-
-        acceptance_platform_caddy_generation.rc != 0 or
-        acceptance_platform_caddy_generation.stdout | trim != 'unchanged'
-      when:
-        - acceptance_caddy_generation_enabled | bool
-        - >-
-          not static_publication_enabled | bool or
-          acceptance_authoritative_tenant_inventory.stdout | trim | length == 0
-
-    - name: Validate the selected tenant-capable Caddy generation
-      ansible.builtin.command:
-        cmd: /usr/local/libexec/lowerduckpond/check-current-caddy-generation
-      register: acceptance_tenant_caddy_generation
-      changed_when: false
-      failed_when: >-
-        acceptance_tenant_caddy_generation.rc != 0 or
-        acceptance_tenant_caddy_generation.stdout | trim != 'current'
-      when:
-        - acceptance_caddy_generation_enabled | bool
-        - static_publication_enabled | bool
-        - acceptance_authoritative_tenant_inventory.stdout | trim | length > 0
+        acceptance_authoritative_caddy_generation.rc != 0 or
+        acceptance_authoritative_caddy_generation.stdout | trim != 'current'
+      when: acceptance_caddy_generation_enabled | bool
 
     - name: Verify the HTTPS fixture locally  # noqa command-instead-of-module
       ansible.builtin.command:

@@ -66,25 +66,8 @@ check 'MariaDB service is active' systemctl is-active --quiet mariadb.service
 check 'node exporter service is active' \
     systemctl is-active --quiet prometheus-node-exporter.service
 {% if caddy_generation_enabled | bool %}
-{% if static_publication_enabled | bool %}
-tenant_entry=
-if ! tenant_entry=$(
-    find /var/lib/lowerduckpond/static/tenants \
-        -mindepth 1 -maxdepth 1 -print -quit
-); then
-    printf 'health check failed: authoritative tenant inventory is unavailable\n' >&2
-    failure_count=$((failure_count + 1))
-elif [[ -n "${tenant_entry}" ]]; then
-    check_exact_output 'Selected Caddy generation matches authoritative tenant state' current \
-        /usr/local/libexec/lowerduckpond/check-current-caddy-generation
-else
-    check_exact_output 'Empty platform Caddy generation is complete and current' unchanged \
-        /usr/local/libexec/lowerduckpond/check-caddy-generation
-fi
-{% else %}
-check_exact_output 'Caddy generation is complete and current' unchanged \
+check_exact_output 'Selected Caddy generation matches authoritative host state' current \
     /usr/local/libexec/lowerduckpond/check-caddy-generation
-{% endif %}
 {% else %}
 check 'Caddy configuration validates' \
     /usr/local/libexec/lowerduckpond/caddy-validate /etc/caddy/Caddyfile

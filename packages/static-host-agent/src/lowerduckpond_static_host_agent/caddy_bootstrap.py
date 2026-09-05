@@ -145,26 +145,49 @@ def platform_generation_state(  # noqa: PLR0913
 ) -> PlatformGenerationState:
     """Classify exact current, safely resumable, and ordinary changed state."""
 
+    with runtime.locked():
+        return platform_generation_state_under_lock(
+            runtime,
+            store,
+            binary=binary,
+            environment=environment,
+            origin_pull_ca_der=origin_pull_ca_der,
+            origin_pull_required=origin_pull_required,
+            startup=startup,
+        )
+
+
+def platform_generation_state_under_lock(  # noqa: PLR0913
+    runtime: CaddyRuntime,
+    store: CaddyGenerationStore,
+    *,
+    binary: CaddyBinarySource,
+    environment: bytes,
+    origin_pull_ca_der: tuple[bytes, ...],
+    origin_pull_required: bool,
+    startup: CaddyStartupStore | None = None,
+) -> PlatformGenerationState:
+    """Classify the platform generation while the caller holds publication."""
+
     payload = _platform_payload(
         binary,
         environment,
         origin_pull_ca_der,
         origin_pull_required=origin_pull_required,
     )
-    with runtime.locked():
-        if startup is not None and not startup.inventory_is_empty():
-            intent = startup.read()
-            if intent is None:
-                raise CaddyStartupError("startup intent namespace is not resumable")
-            _require_resumable_transaction(runtime, store, payload, intent)
-            return PlatformGenerationState.PENDING
-        if not _active_matches(runtime, payload):
-            return PlatformGenerationState.CHANGED
-        return (
-            PlatformGenerationState.UNCHANGED
-            if store.bootstrap_retention_matches(runtime.read_active())
-            else PlatformGenerationState.CHANGED
-        )
+    if startup is not None and not startup.inventory_is_empty():
+        intent = startup.read()
+        if intent is None:
+            raise CaddyStartupError("startup intent namespace is not resumable")
+        _require_resumable_transaction(runtime, store, payload, intent)
+        return PlatformGenerationState.PENDING
+    if not _active_matches(runtime, payload):
+        return PlatformGenerationState.CHANGED
+    return (
+        PlatformGenerationState.UNCHANGED
+        if store.bootstrap_retention_matches(runtime.read_active())
+        else PlatformGenerationState.CHANGED
+    )
 
 
 def _require_resumable_transaction(

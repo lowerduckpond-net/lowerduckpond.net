@@ -73,3 +73,9 @@
         path: /etc/caddy/Caddyfile
         state: absent
       when: caddy_generation_enabled | bool
+
+    - name: Open static publication only after complete host convergence
+      ansible.builtin.include_role:
+        name: static_host_agent
+        tasks_from: enable-publication
+      when: static_publication_enabled | bool

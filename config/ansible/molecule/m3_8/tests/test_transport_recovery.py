@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
+import pytest
 import test_lifecycle as support
 from lowerduckpond_static_contracts import (
     FrameHeader,
@@ -128,6 +129,11 @@ def _await_result(host: Host, job_id: str, *, timeout: float = 60.0) -> dict[str
             return support._read_state(host, path)
         time.sleep(0.1)
     raise AssertionError(f"authorization result {job_id} did not become durable")
+
+
+def _start_reconcile_timer(host: Host) -> None:
+    started = host.run("systemctl start lowerduckpond-static-reconcile.timer")
+    assert started.rc == 0, started.stderr
 
 
 def _install_worker_delay(host: Host, *, seconds: int) -> None:
@@ -409,7 +415,9 @@ def _await_caddy_reload_fault(host: Host, unit: str) -> None:
 
 
 def test_installed_transport_and_admission_recovery(  # noqa: PLR0915 - ordered fault table
-    host: Host, tmp_path: Path
+    host: Host,
+    tmp_path: Path,
+    request: pytest.FixtureRequest,
 ) -> None:
     support._initialize_namespace(host)
     support._enable_disposable_publication(host)
@@ -418,6 +426,9 @@ def test_installed_transport_and_admission_recovery(  # noqa: PLR0915 - ordered 
     operator_host, identity, ssh = support._operator_inputs(tmp_path)
     identities = support._ids()
     slug = f"m3-eight-transport-{str(uuid.uuid7()).replace('-', '')[-12:]}"
+    timer_stopped = host.run("systemctl stop lowerduckpond-static-reconcile.timer")
+    assert timer_stopped.rc == 0, timer_stopped.stderr
+    request.addfinalizer(lambda: _start_reconcile_timer(host))
 
     lost_handoff_request = support._request(
         "create",
@@ -425,17 +436,11 @@ def test_installed_transport_and_admission_recovery(  # noqa: PLR0915 - ordered 
         slug=slug,
         quotas={"storageMiB": 100, "entries": 5000},
     )
-    timer_stopped = host.run("systemctl stop lowerduckpond-static-reconcile.timer")
-    assert timer_stopped.rc == 0, timer_stopped.stderr
-    try:
-        lost_handoff_job = support._issue_without_handoff(host, lost_handoff_request)
-        result_path = f"{support.STATE_ROOT}/authorization/results/{lost_handoff_job}.json"
-        assert host.run("test ! -e %s", shlex.quote(result_path)).rc == 0
-        reconciled = host.run("systemctl start --wait lowerduckpond-static-reconcile.service")
-        assert reconciled.rc == 0, reconciled.stderr
-    finally:
-        timer_started = host.run("systemctl start lowerduckpond-static-reconcile.timer")
-        assert timer_started.rc == 0, timer_started.stderr
+    lost_handoff_job = support._issue_without_handoff(host, lost_handoff_request)
+    result_path = f"{support.STATE_ROOT}/authorization/results/{lost_handoff_job}.json"
+    assert host.run("test ! -e %s", shlex.quote(result_path)).rc == 0
+    reconciled = host.run("systemctl start --wait lowerduckpond-static-reconcile.service")
+    assert reconciled.rc == 0, reconciled.stderr
     recovered_create = _await_result(host, lost_handoff_job)
     assert recovered_create["status"] == "succeeded"
     assert support._lifecycle(recovered_create) == "undeployed"
@@ -735,6 +740,7 @@ def test_installed_transport_and_admission_recovery(  # noqa: PLR0915 - ordered 
     assert [_await_result(host, job_id) for job_id in contested_jobs] == contested_results
 
     assert host.run("systemctl is-active --quiet caddy.service").rc == 0
+    _start_reconcile_timer(host)
     assert host.run("systemctl is-active --quiet lowerduckpond-static-reconcile.timer").rc == 0
     assert host.run("test ! -e %s", shlex.quote(_WORKER_DELAY_DROP_IN)).rc == 0
     intake = host.run(

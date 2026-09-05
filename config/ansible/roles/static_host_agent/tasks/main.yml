@@ -56,6 +56,39 @@
     quiet: true
   when: static_publication_enabled | bool
 
+- name: Probe installed host-agent command compatibility while tenant publication is enabled
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/usr/local/libexec/lowerduckpond/{{ item }}"
+    owner: root
+    group: root
+    mode: "0755"
+  check_mode: true
+  register: static_host_agent_enabled_command_probe
+  loop:
+    - install-static-host-agent-artifact
+    - static-publication-gate
+    - verify-static-host-agent-artifact
+    - execute-authorized-job
+    - reconcile-authorized-jobs
+    - check-current-caddy-generation
+  when: static_publication_enabled | bool
+
+- name: Refuse host-agent command drift while tenant publication is enabled
+  ansible.builtin.assert:
+    that:
+      - >-
+        static_host_agent_enabled_command_probe.results |
+        selectattr('changed', 'defined') |
+        selectattr('changed', 'equalto', true) |
+        list | length == 0
+    fail_msg: >-
+      An installed host-agent command differs from the pinned artifact while
+      tenant publication is enabled; refusing to mutate the live command
+      contract before a tenant-capable generation migration.
+    quiet: true
+  when: static_publication_enabled | bool
+
 - name: Create the versioned host-agent installation root
   ansible.builtin.file:
     path: "{{ static_host_agent_install_root }}"
@@ -109,6 +142,7 @@
     - execute-authorized-job
     - reconcile-authorized-jobs
     - check-current-caddy-generation
+  when: not static_publication_enabled | bool
 
 - name: Wait for pre-lock static host-agent processes to finish
   ansible.builtin.command:
@@ -388,13 +422,25 @@
     group: root
     mode: "0700"
 
-- name: Install the static publication configuration atomically
+- name: Inspect the static publication configuration
+  ansible.builtin.stat:
+    path: /etc/lowerduckpond/static-publication.json
+    follow: false
+  register: static_host_agent_publication_configuration
+
+- name: Hold static publication closed until complete host convergence
   ansible.builtin.template:
     src: static-publication.json.j2
     dest: /etc/lowerduckpond/static-publication.json
     owner: root
     group: root
     mode: "0400"
+  vars:
+    static_publication_gate_enabled: false
+  when:
+    - >-
+      not static_publication_enabled | bool or
+      not static_host_agent_publication_configuration.stat.exists
 
 - name: Install the inert static worker boundary
   ansible.builtin.template:
@@ -465,7 +511,7 @@
       - "0"
   changed_when: false
 
-- name: Prove job issuance matches the configured publication boundary
+- name: Prove job issuance remains disabled at the closed publication boundary
   ansible.builtin.command:
     argv:
       - /usr/local/libexec/lowerduckpond/static-publication-gate
@@ -473,11 +519,9 @@
   register: static_host_agent_issuance_gate
   changed_when: false
   failed_when: >-
-    (static_publication_enabled | bool and
-     static_host_agent_issuance_gate.rc != 0) or
-    (not static_publication_enabled | bool and
-     (static_host_agent_issuance_gate.rc != 78 or
-      static_host_agent_issuance_gate.stderr | trim != 'publication_disabled'))
+    static_host_agent_issuance_gate.rc != 78 or
+    static_host_agent_issuance_gate.stderr | trim != 'publication_disabled'
+  when: not static_publication_enabled | bool
 
 - name: Create inert Caddy generation storage
   ansible.builtin.file:
