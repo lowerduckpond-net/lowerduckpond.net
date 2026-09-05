@@ -37,6 +37,8 @@ from lowerduckpond_static_host_agent import (
     StateConflictError,
     StateRecordPath,
     StateRepository,
+    TenantRouteInput,
+    TenantRouteOverlay,
 )
 from lowerduckpond_static_host_agent.capacity import DEFAULT_HOST_CAPACITY_LIMITS
 from lowerduckpond_static_host_agent.deployment_activate import (
@@ -51,9 +53,18 @@ from lowerduckpond_static_host_agent.deployment_commit import (
 from lowerduckpond_static_host_agent.deployment_prepare import (
     PreparedDeploymentTransition,
 )
+from lowerduckpond_static_host_agent.deployment_recover import (
+    DeploymentRecoveryError,
+    recover_deployment_transition,
+)
 from lowerduckpond_static_host_agent.lifecycle_plan import (
     DeploymentTransitionPlan,
     plan_deployment_transition,
+)
+from lowerduckpond_static_host_agent.route_snapshot import (
+    RouteOverlayMode,
+    TenantRouteSnapshot,
+    snapshot_tenant_routes,
 )
 
 _FIXTURE_ROOT = Path(__file__).parents[3] / "tests/static-publication/fixtures/accepted"
@@ -149,6 +160,7 @@ class _Runtime:
         self.active = _SOURCE_GENERATION
         self.running = _SOURCE_GENERATION
         self.events: list[str] = []
+        self.snapshots: dict[str, TenantRouteSnapshot] = {}
 
     @contextmanager
     def using_held_publication_lock(self, _repository: StateRepository) -> Iterator[None]:
@@ -162,6 +174,10 @@ class _Runtime:
 
     def remove_abandoned_reference_temporaries(self) -> None:
         self.events.append("cleaned-reference-temporaries")
+
+    def read_generation_route_snapshot(self, generation_id: str) -> TenantRouteSnapshot:
+        self.events.append(f"snapshot:{generation_id}")
+        return deepcopy(self.snapshots[generation_id])
 
     def read_active(self) -> str:
         self.events.append("read-active")
@@ -523,6 +539,64 @@ def _activate(
         verifier=runtime.verify,
         commit_failure_hook=failure_hook,
     )
+
+
+def _write_correlation(
+    repository: StateRepository,
+    job: dict[str, object],
+) -> None:
+    correlation = deepcopy(job)
+    correlation["phase"] = "pending"
+    repository.create_immutable(
+        StateRecordPath.authorization_correlation(
+            cast(dict[str, object], job["request"])["correlationId"]
+        ),
+        correlation,
+    )
+
+
+def _recovery_runtime(
+    repository: StateRepository,
+    job: dict[str, object],
+    plan: DeploymentTransitionPlan,
+) -> _Runtime:
+    _write_correlation(repository, job)
+    recovery = cast(dict[str, object], plan.intent["lifecycleRecovery"])
+    source_manifest = cast(dict[str, object], plan.intent["sourceManifest"])
+    source_observed = cast(dict[str, object], recovery["sourceObservedState"])
+    source_spec = cast(dict[str, object], source_manifest["spec"])
+    source_selected = source_spec.get("desiredDeployment")
+    source_deployment = None
+    if type(source_selected) is dict:
+        source_deployment = repository.read(
+            StateRecordPath.tenant_deployment(plan.tenant_id, source_selected["id"])
+        ).document
+    source_tenant = TenantRouteInput(
+        source_manifest,
+        source_observed,
+        source_deployment,
+    )
+    candidate_tenant = TenantRouteInput(
+        plan.manifest,
+        plan.observed_state,
+        plan.deployment,
+    )
+    with repository.publication_transaction() as transaction:
+        source_snapshot = snapshot_tenant_routes(transaction)
+        candidate_snapshot = snapshot_tenant_routes(
+            transaction,
+            overlay=TenantRouteOverlay(
+                RouteOverlayMode.REPLACE,
+                candidate_tenant,
+                source_tenant,
+            ),
+        )
+    runtime = _Runtime()
+    runtime.snapshots = {
+        _SOURCE_GENERATION: source_snapshot,
+        _CANDIDATE_GENERATION: candidate_snapshot,
+    }
+    return runtime
 
 
 @pytest.mark.parametrize(
@@ -1004,5 +1078,182 @@ def test_deployment_activation_rejects_runtime_outside_recovery_authority(
             )
 
         assert repository.measure_intent_records().records
+    finally:
+        repository.close()
+
+
+@pytest.mark.parametrize(
+    ("operation", "deployment_count"),
+    [("deploy", 1), ("rollback", 2)],
+)
+def test_deployment_recovery_reconstructs_and_activates_durable_preparation(
+    tmp_path: Path,
+    operation: str,
+    deployment_count: int,
+) -> None:
+    repository, job, plan, releases = _prepared(
+        tmp_path,
+        operation=operation,
+        deployment_count=deployment_count,
+        state="active",
+    )
+    runtime = _recovery_runtime(repository, job, plan)
+    try:
+        result = recover_deployment_transition(
+            repository,
+            cast(CaddyRuntime, runtime),
+            cast(DeploymentReleaseStore, releases),
+            cast(PublicationGate, _Gate()),
+            plan.intent_id,
+            reloader=runtime.reload,
+            restorer=runtime.restore,
+            verifier=runtime.verify,
+        )
+
+        assert result == plan.result
+        assert runtime.active == runtime.running == _CANDIDATE_GENERATION
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
+@pytest.mark.parametrize(
+    "interruption",
+    [DeploymentCommitBoundary.DESIRED_STATE_SYNC, DeploymentCommitBoundary.AUDIT_SYNC],
+)
+def test_deployment_recovery_repairs_an_interrupted_terminal_commit(
+    tmp_path: Path,
+    interruption: DeploymentCommitBoundary,
+) -> None:
+    repository, job, plan, releases = _prepared(
+        tmp_path,
+        operation="deploy",
+        deployment_count=1,
+        state="active",
+    )
+    runtime = _recovery_runtime(repository, job, plan)
+    prepared = _prepared_activation(repository, job["jobId"], plan)
+
+    def interrupt(boundary: DeploymentCommitBoundary) -> None:
+        if boundary is interruption:
+            raise RuntimeError("interrupted deployment terminal commit")
+
+    try:
+        with pytest.raises(RuntimeError, match="interrupted deployment terminal commit"):
+            _activate(repository, runtime, releases, prepared, failure_hook=interrupt)
+
+        assert (
+            repository.read(StateRecordPath.tenant_desired(plan.tenant_id)).document
+            == plan.manifest
+        )
+        assert repository.measure_intent_records().records
+        assert (
+            recover_deployment_transition(
+                repository,
+                cast(CaddyRuntime, runtime),
+                cast(DeploymentReleaseStore, releases),
+                cast(PublicationGate, _Gate()),
+                plan.intent_id,
+                reloader=runtime.reload,
+                restorer=runtime.restore,
+                verifier=runtime.verify,
+            )
+            == plan.result
+        )
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
+def test_deployment_recovery_rejects_job_source_authority_drift(
+    tmp_path: Path,
+) -> None:
+    repository, job, plan, releases = _prepared(
+        tmp_path,
+        operation="deploy",
+        deployment_count=1,
+        state="active",
+    )
+    runtime = _recovery_runtime(repository, job, plan)
+    path = StateRecordPath.authorization_job(job["jobId"])
+    current = repository.read(path)
+    drifted = current.document
+    drifted["dispatchSourceRouteSet"] = "absent"
+    repository.close()
+    _write(tmp_path / "state", path, drifted)
+    repository = StateRepository(tmp_path / "state", expected_owner=os.geteuid())
+    try:
+        with pytest.raises(DeploymentRecoveryError, match="durable job binding"):
+            recover_deployment_transition(
+                repository,
+                cast(CaddyRuntime, runtime),
+                cast(DeploymentReleaseStore, releases),
+                cast(PublicationGate, _Gate()),
+                plan.intent_id,
+                reloader=runtime.reload,
+                restorer=runtime.restore,
+                verifier=runtime.verify,
+            )
+    finally:
+        repository.close()
+
+
+def test_deployment_recovery_rejects_candidate_generation_snapshot_drift(
+    tmp_path: Path,
+) -> None:
+    repository, job, plan, releases = _prepared(
+        tmp_path,
+        operation="deploy",
+        deployment_count=1,
+        state="active",
+    )
+    runtime = _recovery_runtime(repository, job, plan)
+    snapshot = deepcopy(runtime.snapshots[_CANDIDATE_GENERATION])
+    snapshot.platform_namespace["tenantBaseDomain"] = "other.invalid"
+    runtime.snapshots[_CANDIDATE_GENERATION] = snapshot
+    try:
+        with pytest.raises(DeploymentRecoveryError, match="unrelated tenant authority"):
+            recover_deployment_transition(
+                repository,
+                cast(CaddyRuntime, runtime),
+                cast(DeploymentReleaseStore, releases),
+                cast(PublicationGate, _Gate()),
+                plan.intent_id,
+                reloader=runtime.reload,
+                restorer=runtime.restore,
+                verifier=runtime.verify,
+            )
+    finally:
+        repository.close()
+
+
+def test_deployment_recovery_rejects_selected_release_drift(
+    tmp_path: Path,
+) -> None:
+    repository, job, plan, releases = _prepared(
+        tmp_path,
+        operation="deploy",
+        deployment_count=1,
+        state="active",
+    )
+    runtime = _recovery_runtime(repository, job, plan)
+    releases.releases[cast(str, plan.deployment["id"])] = {
+        "format": "lowerduckpond-release-tree-v1",
+        "algorithm": "sha256",
+        "value": "f" * 64,
+    }
+    try:
+        with pytest.raises(DeploymentActivationError, match="selected release disagrees"):
+            recover_deployment_transition(
+                repository,
+                cast(CaddyRuntime, runtime),
+                cast(DeploymentReleaseStore, releases),
+                cast(PublicationGate, _Gate()),
+                plan.intent_id,
+                reloader=runtime.reload,
+                restorer=runtime.restore,
+                verifier=runtime.verify,
+            )
+        assert runtime.active == runtime.running == _SOURCE_GENERATION
     finally:
         repository.close()

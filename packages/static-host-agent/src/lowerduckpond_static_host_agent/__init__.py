@@ -167,6 +167,11 @@ from lowerduckpond_static_host_agent.deployment_prepare import (
     PreparedDeploymentTransition,
     prepare_deployment_transition,
 )
+from lowerduckpond_static_host_agent.deployment_recover import (
+    DeploymentRecoveryError,
+    recover_deployment_transition,
+    recover_deployment_transition_outcome,
+)
 from lowerduckpond_static_host_agent.durable import (
     DurabilityBoundary,
     DurableDirectory,
@@ -468,6 +473,7 @@ __all__ = [
     "DeploymentCommitError",
     "DeploymentCommitOutcome",
     "DeploymentPreparationError",
+    "DeploymentRecoveryError",
     "DeploymentReleaseStore",
     "DeploymentRemovalToken",
     "DeploymentTransitionPlan",
@@ -626,6 +632,8 @@ __all__ = [
     "prepare_deployment_transition",
     "prepare_route_transition",
     "recover_create_transition",
+    "recover_deployment_transition",
+    "recover_deployment_transition_outcome",
     "recover_route_transition",
     "reload_caddy_generation",
     "require_exact_file",
