@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -21,6 +22,8 @@ from lowerduckpond_static_contracts import (
 from lowerduckpond_static_host_agent import (
     AuditCapacityError,
     AuditState,
+    CaddyGenerationManifest,
+    CaddyRuntime,
     CapacityRejectedError,
     DeploymentCommitBoundary,
     DeploymentCommitError,
@@ -29,15 +32,24 @@ from lowerduckpond_static_host_agent import (
     HostCapacityLimits,
     LockManager,
     LockMode,
+    PinnedCaddyGeneration,
+    PublicationGate,
     StateConflictError,
     StateRecordPath,
     StateRepository,
 )
 from lowerduckpond_static_host_agent.capacity import DEFAULT_HOST_CAPACITY_LIMITS
+from lowerduckpond_static_host_agent.deployment_activate import (
+    DeploymentActivationError,
+    activate_deployment_transition,
+)
 from lowerduckpond_static_host_agent.deployment_commit import (
     DeploymentCommitOutcome,
     finalize_deployment_transition_outcome,
     validate_deployment_transition,
+)
+from lowerduckpond_static_host_agent.deployment_prepare import (
+    PreparedDeploymentTransition,
 )
 from lowerduckpond_static_host_agent.lifecycle_plan import (
     DeploymentTransitionPlan,
@@ -106,6 +118,78 @@ class _ReleaseStore:
             raise AssertionError("test release authority drifted")
         self.releases.pop(deployment, None)
         self.removed.append(deployment)
+
+
+class _Gate:
+    def require_enabled(self) -> None:
+        return
+
+
+@dataclass(frozen=True, slots=True)
+class _GenerationManifest:
+    generation_id: str
+
+
+class _Generation:
+    def __init__(self, generation_id: str) -> None:
+        self.manifest = _GenerationManifest(generation_id)
+
+    def __enter__(self) -> _Generation:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return
+
+    def close(self) -> None:
+        return
+
+
+class _Runtime:
+    def __init__(self) -> None:
+        self.active = _SOURCE_GENERATION
+        self.running = _SOURCE_GENERATION
+        self.events: list[str] = []
+
+    @contextmanager
+    def using_held_publication_lock(self, _repository: StateRepository) -> Iterator[None]:
+        self.events.append("locked")
+        yield
+
+    def open_verified_generation(self, generation_id: object) -> _Generation:
+        assert type(generation_id) is str
+        self.events.append(f"opened:{generation_id}")
+        return _Generation(generation_id)
+
+    def remove_abandoned_reference_temporaries(self) -> None:
+        self.events.append("cleaned-reference-temporaries")
+
+    def read_active(self) -> str:
+        self.events.append("read-active")
+        return self.active
+
+    def select_active(self, generation_id: str) -> None:
+        self.active = generation_id
+        self.events.append(f"selected:{generation_id}")
+
+    def reload(
+        self,
+        source: PinnedCaddyGeneration,
+        candidate: PinnedCaddyGeneration,
+    ) -> None:
+        assert source.manifest.generation_id == _SOURCE_GENERATION
+        assert self.active == candidate.manifest.generation_id
+        self.running = candidate.manifest.generation_id
+        self.events.append("reloaded")
+
+    def restore(self, source: PinnedCaddyGeneration) -> None:
+        assert self.active == source.manifest.generation_id
+        self.running = source.manifest.generation_id
+        self.events.append("restored")
+
+    def verify(self, generation: PinnedCaddyGeneration) -> None:
+        if self.running != generation.manifest.generation_id:
+            raise RuntimeError("generation is not running")
+        self.events.append(f"verified:{generation.manifest.generation_id}")
 
 
 @pytest.fixture(autouse=True)
@@ -405,6 +489,42 @@ def _finalize(
         )
 
 
+def _prepared_activation(
+    repository: StateRepository,
+    job_id: object,
+    plan: DeploymentTransitionPlan,
+    *,
+    capacity_limits: HostCapacityLimits = DEFAULT_HOST_CAPACITY_LIMITS,
+) -> PreparedDeploymentTransition:
+    return PreparedDeploymentTransition(
+        repository.read(StateRecordPath.authorization_job(job_id)),
+        plan,
+        cast(CaddyGenerationManifest, _GenerationManifest(_CANDIDATE_GENERATION)),
+        capacity_limits,
+    )
+
+
+def _activate(
+    repository: StateRepository,
+    runtime: _Runtime,
+    releases: _ReleaseStore,
+    prepared: PreparedDeploymentTransition,
+    *,
+    failure_hook: Callable[[DeploymentCommitBoundary], None] | None = None,
+) -> dict[str, object]:
+    return activate_deployment_transition(
+        repository,
+        cast(CaddyRuntime, runtime),
+        cast(DeploymentReleaseStore, releases),
+        cast(PublicationGate, _Gate()),
+        prepared,
+        reloader=runtime.reload,
+        restorer=runtime.restore,
+        verifier=runtime.verify,
+        commit_failure_hook=failure_hook,
+    )
+
+
 @pytest.mark.parametrize(
     ("operation", "deployment_count", "state"),
     [
@@ -689,5 +809,200 @@ def test_exact_deployment_removal_rejects_a_changed_record(tmp_path: Path) -> No
             target.write_bytes(canonical_json_bytes(changed))
             with pytest.raises(StateConflictError, match="changed before exact removal"):
                 transaction.remove_exact_deployment(expected, token)
+    finally:
+        repository.close()
+
+
+def test_deployment_activation_selects_reloads_and_commits_terminal_state(
+    tmp_path: Path,
+) -> None:
+    repository, job, plan, releases = _prepared(
+        tmp_path,
+        operation="deploy",
+        deployment_count=1,
+        state="active",
+    )
+    runtime = _Runtime()
+    try:
+        result = _activate(
+            repository,
+            runtime,
+            releases,
+            _prepared_activation(repository, job["jobId"], plan),
+        )
+
+        assert result == plan.result
+        assert runtime.active == runtime.running == _CANDIDATE_GENERATION
+        assert runtime.events == [
+            "locked",
+            f"opened:{_SOURCE_GENERATION}",
+            f"opened:{_CANDIDATE_GENERATION}",
+            "cleaned-reference-temporaries",
+            "read-active",
+            f"verified:{_SOURCE_GENERATION}",
+            f"selected:{_CANDIDATE_GENERATION}",
+            "reloaded",
+        ]
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
+def test_deployment_activation_restores_source_when_reload_fails(
+    tmp_path: Path,
+) -> None:
+    repository, job, plan, releases = _prepared(
+        tmp_path,
+        operation="deploy",
+        deployment_count=1,
+        state="active",
+    )
+    runtime = _Runtime()
+    prepared = _prepared_activation(repository, job["jobId"], plan)
+
+    def fail_reload(
+        _source: PinnedCaddyGeneration,
+        _candidate: PinnedCaddyGeneration,
+    ) -> None:
+        runtime.events.append("reload-failed")
+        raise RuntimeError("injected deployment reload failure")
+
+    try:
+        with pytest.raises(RuntimeError, match="injected deployment reload failure"):
+            activate_deployment_transition(
+                repository,
+                cast(CaddyRuntime, runtime),
+                cast(DeploymentReleaseStore, releases),
+                cast(PublicationGate, _Gate()),
+                prepared,
+                reloader=fail_reload,
+                restorer=runtime.restore,
+                verifier=runtime.verify,
+            )
+
+        assert runtime.active == runtime.running == _SOURCE_GENERATION
+        assert runtime.events[-3:] == [
+            "reload-failed",
+            f"selected:{_SOURCE_GENERATION}",
+            "restored",
+        ]
+        assert repository.measure_intent_records().records
+    finally:
+        repository.close()
+
+
+def test_deployment_activation_replays_an_interrupted_terminal_commit(
+    tmp_path: Path,
+) -> None:
+    repository, job, plan, releases = _prepared(
+        tmp_path,
+        operation="deploy",
+        deployment_count=1,
+        state="active",
+    )
+    runtime = _Runtime()
+    prepared = _prepared_activation(repository, job["jobId"], plan)
+
+    def interrupt(boundary: DeploymentCommitBoundary) -> None:
+        if boundary is DeploymentCommitBoundary.JOB_SYNC:
+            raise RuntimeError("interrupted deployment activation commit")
+
+    try:
+        with pytest.raises(RuntimeError, match="interrupted deployment activation commit"):
+            _activate(repository, runtime, releases, prepared, failure_hook=interrupt)
+
+        assert runtime.active == runtime.running == _CANDIDATE_GENERATION
+        assert repository.measure_intent_records().records
+        runtime.events.clear()
+        assert _activate(repository, runtime, releases, prepared) == plan.result
+        assert runtime.events[-2:] == [
+            "read-active",
+            f"verified:{_CANDIDATE_GENERATION}",
+        ]
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
+def test_deployment_activation_rejects_capacity_before_runtime_selection(
+    tmp_path: Path,
+) -> None:
+    repository, job, plan, releases = _prepared(
+        tmp_path,
+        operation="deploy",
+        deployment_count=3,
+        state="active",
+    )
+    runtime = _Runtime()
+    prepared = _prepared_activation(
+        repository,
+        job["jobId"],
+        plan,
+        capacity_limits=HostCapacityLimits(maximum_allocated_bytes=0),
+    )
+    try:
+        with pytest.raises(CapacityRejectedError):
+            _activate(repository, runtime, releases, prepared)
+
+        assert runtime.active == runtime.running == _SOURCE_GENERATION
+        assert not any(event.startswith("selected:") for event in runtime.events)
+        assert repository.measure_intent_records().records
+    finally:
+        repository.close()
+
+
+def test_deployment_activation_rejects_selected_release_drift_before_selection(
+    tmp_path: Path,
+) -> None:
+    repository, job, plan, releases = _prepared(
+        tmp_path,
+        operation="deploy",
+        deployment_count=1,
+        state="active",
+    )
+    target = cast(str, plan.deployment["id"])
+    releases.releases[target] = {
+        "format": "lowerduckpond-release-tree-v1",
+        "algorithm": "sha256",
+        "value": "f" * 64,
+    }
+    runtime = _Runtime()
+    try:
+        with pytest.raises(DeploymentActivationError, match="selected release disagrees"):
+            _activate(
+                repository,
+                runtime,
+                releases,
+                _prepared_activation(repository, job["jobId"], plan),
+            )
+
+        assert runtime.active == runtime.running == _SOURCE_GENERATION
+        assert not any(event.startswith("selected:") for event in runtime.events)
+        assert repository.measure_intent_records().records
+    finally:
+        repository.close()
+
+
+def test_deployment_activation_rejects_runtime_outside_recovery_authority(
+    tmp_path: Path,
+) -> None:
+    repository, job, plan, releases = _prepared(
+        tmp_path,
+        operation="rollback",
+        deployment_count=2,
+        state="active",
+    )
+    runtime = _Runtime()
+    runtime.active = runtime.running = "0198d17f-6f4a-7000-8000-000000000099"
+    try:
+        with pytest.raises(DeploymentActivationError, match="outside deployment recovery"):
+            _activate(
+                repository,
+                runtime,
+                releases,
+                _prepared_activation(repository, job["jobId"], plan),
+            )
+
+        assert repository.measure_intent_records().records
     finally:
         repository.close()

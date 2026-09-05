@@ -147,6 +147,11 @@ from lowerduckpond_static_host_agent.create_recover import (
     CreateRecoveryError,
     recover_create_transition,
 )
+from lowerduckpond_static_host_agent.deployment_activate import (
+    DeploymentActivationError,
+    activate_deployment_transition,
+    activate_deployment_transition_outcome,
+)
 from lowerduckpond_static_host_agent.deployment_commit import (
     DeploymentCommitBoundary,
     DeploymentCommitError,
@@ -457,6 +462,7 @@ __all__ = [
     "CreateTransitionPlan",
     "DeadlineReader",
     "DeadlineWriter",
+    "DeploymentActivationError",
     "DeploymentAuthorityDriftError",
     "DeploymentCommitBoundary",
     "DeploymentCommitError",
@@ -576,6 +582,8 @@ __all__ = [
     "ZipStructure",
     "ZipStructureError",
     "activate_create_transition",
+    "activate_deployment_transition",
+    "activate_deployment_transition_outcome",
     "activate_route_transition",
     "admit_deployment_transition",
     "admit_release_capacity",
