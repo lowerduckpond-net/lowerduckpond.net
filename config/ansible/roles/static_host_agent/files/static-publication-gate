@@ -69,7 +69,6 @@ def main() -> None:
 
     if not publication_enabled():
         fail("publication_disabled", 78)
-    fail("static publication enablement is not implemented in this boundary", 69)
 
 
 if __name__ == "__main__":
