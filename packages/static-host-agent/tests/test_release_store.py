@@ -734,6 +734,57 @@ def test_release_namespace_syncs_new_directories_with_exact_modes(
     ]
 
 
+def test_release_namespace_retry_syncs_after_chmod_interruption(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent = tmp_path / "parent"
+    child = parent / "child"
+    _mkdir(parent, _DIRECTORY_MODE)
+    _mkdir(child, 0o700)
+    parent_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
+    original_fsync = os.fsync
+
+    def interrupt_after_chmod(descriptor: int) -> None:
+        raise RuntimeError("simulated post-chmod interruption")
+
+    try:
+        monkeypatch.setattr(os, "fsync", interrupt_after_chmod)
+        with pytest.raises(RuntimeError, match="post-chmod interruption"):
+            release_store_module._open_or_create_directory(
+                parent_fd,
+                "child",
+                expected_owner=os.geteuid(),
+                mode=_DIRECTORY_MODE,
+                label="test release namespace",
+            )
+        assert stat.S_IMODE(child.stat().st_mode) == _DIRECTORY_MODE
+
+        synced: list[tuple[int, int]] = []
+
+        def track_fsync(descriptor: int) -> None:
+            metadata = os.fstat(descriptor)
+            synced.append((metadata.st_dev, metadata.st_ino))
+            original_fsync(descriptor)
+
+        monkeypatch.setattr(os, "fsync", track_fsync)
+        descriptor = release_store_module._open_or_create_directory(
+            parent_fd,
+            "child",
+            expected_owner=os.geteuid(),
+            mode=_DIRECTORY_MODE,
+            label="test release namespace",
+        )
+        os.close(descriptor)
+    finally:
+        os.close(parent_fd)
+
+    assert synced == [
+        (child.stat().st_dev, child.stat().st_ino),
+        (parent.stat().st_dev, parent.stat().st_ino),
+    ]
+
+
 def test_release_store_removes_only_the_exact_authorized_release(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -632,7 +632,6 @@ def _open_or_create_directory(
     except OSError as error:
         raise ReleaseStoreError(f"{label} cannot be opened safely") from error
     try:
-        directory_and_parent_synced = False
         named = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
         opened = os.fstat(descriptor)
         if (named.st_dev, named.st_ino) != (opened.st_dev, opened.st_ino):
@@ -646,9 +645,6 @@ def _open_or_create_directory(
             and restrictive_mode != mode
         ):
             os.fchmod(descriptor, mode)
-            os.fsync(descriptor)
-            os.fsync(parent_fd)
-            directory_and_parent_synced = True
             opened = os.fstat(descriptor)
         elif created and opened_mode != mode:
             raise ReleaseStoreError(f"{label} changed during creation")
@@ -661,9 +657,8 @@ def _open_or_create_directory(
         named = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
         if (named.st_dev, named.st_ino) != (opened.st_dev, opened.st_ino):
             raise ReleaseStoreError(f"{label} changed while it was normalized")
-        if created and not directory_and_parent_synced:
-            os.fsync(descriptor)
-            os.fsync(parent_fd)
+        os.fsync(descriptor)
+        os.fsync(parent_fd)
         return descriptor
     except BaseException:
         os.close(descriptor)
