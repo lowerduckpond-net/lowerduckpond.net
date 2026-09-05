@@ -563,6 +563,7 @@
   when:
     - caddy_generation_enabled | bool
     - caddy_generation_bootstrap_required | bool
+    - caddy_generation_existing_unit.stdout | trim == 'loaded'
 
 - name: Enable and start immutable Caddy
   ansible.builtin.systemd_service:
