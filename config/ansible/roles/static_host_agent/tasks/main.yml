@@ -1,4 +1,61 @@
 ---
+- name: Inspect authoritative tenant storage before disabled convergence
+  ansible.builtin.stat:
+    path: "{{ static_host_agent_state_root }}/tenants"
+    follow: false
+  register: static_host_agent_disabled_tenant_storage
+  when:
+    - caddy_generation_enabled | bool
+    - not static_publication_enabled | bool
+
+- name: Refuse unsafe authoritative tenant storage before disabled convergence
+  ansible.builtin.assert:
+    that:
+      - >-
+        not static_host_agent_disabled_tenant_storage.stat.exists or
+        (static_host_agent_disabled_tenant_storage.stat.isdir and
+         not static_host_agent_disabled_tenant_storage.stat.islnk)
+    fail_msg: >-
+      Authoritative tenant storage is not a safe directory; refusing disabled
+      convergence before changing publication state.
+    quiet: true
+  when:
+    - caddy_generation_enabled | bool
+    - not static_publication_enabled | bool
+
+- name: Inspect authoritative tenant inventory before disabled convergence
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/find
+      - "{{ static_host_agent_state_root }}/tenants"
+      - -mindepth
+      - "1"
+      - -maxdepth
+      - "1"
+      - -print
+      - -quit
+  register: static_host_agent_disabled_tenant_inventory
+  changed_when: false
+  when:
+    - caddy_generation_enabled | bool
+    - not static_publication_enabled | bool
+    - static_host_agent_disabled_tenant_storage.stat.exists
+
+- name: Refuse disabling publication after tenant history exists
+  ansible.builtin.assert:
+    that:
+      - >-
+        not static_host_agent_disabled_tenant_storage.stat.exists or
+        static_host_agent_disabled_tenant_inventory.stdout | default('') |
+        trim | length == 0
+    fail_msg: >-
+      Tenant history exists; refusing to disable static publication or select
+      a platform-only generation. Use a tenant lifecycle or emergency action.
+    quiet: true
+  when:
+    - caddy_generation_enabled | bool
+    - not static_publication_enabled | bool
+
 - name: Create the shared Caddy system group before generation storage
   ansible.builtin.group:
     name: caddy

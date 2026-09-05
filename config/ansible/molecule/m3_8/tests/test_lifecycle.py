@@ -313,7 +313,9 @@ def _execute_issued_job(host: Host, job_id: str) -> dict[str, object]:
 
 
 def _run_ansible_reapply(
-    *, cloudflare_api_token: str | None = None
+    *,
+    cloudflare_api_token: str | None = None,
+    static_publication_enabled: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     project = Path(__file__).resolve().parents[3]
     uv = shutil.which("uv")
@@ -321,7 +323,7 @@ def _run_ansible_reapply(
     environment = {
         key: value for key, value in os.environ.items() if not key.startswith("MOLECULE_")
     }
-    environment["M3_8_STATIC_PUBLICATION_ENABLED"] = "true"
+    environment["M3_8_STATIC_PUBLICATION_ENABLED"] = str(static_publication_enabled).lower()
     if cloudflare_api_token is not None:
         environment["M3_8_CLOUDFLARE_API_TOKEN"] = cloudflare_api_token
     return subprocess.run(  # noqa: S603 - resolved trusted tool path
@@ -359,6 +361,31 @@ def _assert_ansible_refuses_generation_input_drift(host: Host) -> None:
     assert selected_after.stdout == selected_before.stdout
     assert environment_after.stdout == environment_before.stdout
     assert host.run("systemctl is-active --quiet caddy.service").rc == 0
+
+    _reapply_ansible()
+    issuance = host.run("%s job-issuance", PUBLICATION_GATE)
+    assert issuance.rc == 0, issuance.stderr
+
+
+def _assert_ansible_refuses_publication_disable(host: Host) -> None:
+    selected_before = host.run("cat /etc/caddy/active")
+    configuration_before = host.run("cat %s", PUBLICATION_CONFIGURATION)
+    assert selected_before.rc == 0, selected_before.stderr
+    assert configuration_before.rc == 0, configuration_before.stderr
+
+    result = _run_ansible_reapply(static_publication_enabled=False)
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "refusing to disable static publication" in result.stdout
+
+    selected_after = host.run("cat /etc/caddy/active")
+    configuration_after = host.run("cat %s", PUBLICATION_CONFIGURATION)
+    assert selected_after.rc == 0, selected_after.stderr
+    assert configuration_after.rc == 0, configuration_after.stderr
+    assert selected_after.stdout == selected_before.stdout
+    assert configuration_after.stdout == configuration_before.stdout
+    assert host.run("systemctl is-active --quiet caddy.service").rc == 0
+    issuance = host.run("%s job-issuance", PUBLICATION_GATE)
+    assert issuance.rc == 0, issuance.stderr
 
 
 def _restart_installed_services(host: Host) -> None:
@@ -569,6 +596,7 @@ def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lif
         redirect=f"https://{canonical_origin}/",
     )
 
+    _assert_ansible_refuses_publication_disable(host)
     _assert_ansible_refuses_generation_input_drift(host)
     _assert_route(host, canonical_origin, status=200, body=first_content)
     _assert_route(

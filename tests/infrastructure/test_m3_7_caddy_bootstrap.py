@@ -306,6 +306,12 @@ def test_publication_opens_only_after_complete_host_convergence() -> None:
         _ROOT / "config/ansible/roles/static_host_agent/tasks/enable-publication.yml"
     ).read_text(encoding="utf-8")
 
+    guard_index = tasks.index("Refuse disabling publication after tenant history exists")
+    assert guard_index < tasks.index(
+        "Create the shared Caddy system group before generation storage"
+    )
+    assert "Inspect authoritative tenant inventory before disabled convergence" in tasks
+    assert "static_host_agent_disabled_tenant_inventory.stdout" in tasks
     assert "Hold static publication closed until complete host convergence" in tasks
     assert "static_publication_gate_enabled: false" in tasks
     assert "static_publication_gate_enabled: true" not in tasks
