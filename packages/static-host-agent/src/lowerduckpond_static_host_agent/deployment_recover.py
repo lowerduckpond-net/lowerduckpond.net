@@ -21,6 +21,7 @@ from lowerduckpond_static_host_agent.caddy_admin import (
     restore_caddy_generation,
     verify_running_caddy,
 )
+from lowerduckpond_static_host_agent.caddy_generation import CaddyGenerationManifest
 from lowerduckpond_static_host_agent.caddy_routes import TenantRouteInput
 from lowerduckpond_static_host_agent.caddy_runtime import CaddyRuntime
 from lowerduckpond_static_host_agent.capacity import (
@@ -44,13 +45,19 @@ from lowerduckpond_static_host_agent.deployment_prepare import (
 )
 from lowerduckpond_static_host_agent.issuance import PublicationGate
 from lowerduckpond_static_host_agent.lifecycle_plan import DeploymentTransitionPlan
-from lowerduckpond_static_host_agent.release_store import DeploymentReleaseStore
+from lowerduckpond_static_host_agent.release_store import (
+    DeploymentReleaseStore,
+    PublicationLockProof,
+    ReleaseStoreError,
+)
 from lowerduckpond_static_host_agent.repository import (
     StateRecordPath,
     StateRepository,
     StoredContract,
 )
 from lowerduckpond_static_host_agent.route_snapshot import (
+    RouteOverlayMode,
+    TenantRouteOverlay,
     TenantRouteSnapshot,
     snapshot_tenant_routes,
 )
@@ -66,7 +73,7 @@ class DeploymentRecoveryError(RuntimeError):
     """Durable deployment evidence cannot reconstruct one exact transition."""
 
 
-class DeploymentRecoveryTransaction(Protocol):
+class DeploymentRecoveryTransaction(PublicationLockProof, Protocol):
     """The locked state surface needed to reconstruct a deployment transition."""
 
     def read(self, path: StateRecordPath) -> StoredContract: ...
@@ -144,6 +151,8 @@ def recover_deployment_transition_outcome(  # noqa: PLR0913
         prepared = _reconstruct_deployment(
             transaction,
             runtime,
+            release_store,
+            gate,
             canonical_intent_id,
             capacity_limits=capacity_limits,
         )
@@ -161,9 +170,11 @@ def recover_deployment_transition_outcome(  # noqa: PLR0913
     )
 
 
-def _reconstruct_deployment(
+def _reconstruct_deployment(  # noqa: PLR0913 - recovery authority stays explicit
     transaction: DeploymentRecoveryTransaction,
     runtime: CaddyRuntime,
+    release_store: DeploymentReleaseStore,
+    gate: PublicationGate,
     intent_id: str,
     *,
     capacity_limits: HostCapacityLimits,
@@ -177,30 +188,32 @@ def _reconstruct_deployment(
     source_id = validate_uuid7(recovery["sourceRuntimeGenerationId"])
     candidate_id = validate_uuid7(recovery["candidateRuntimeGenerationId"])
     tenant_id = validate_uuid7(intent.document["tenantId"])
-    current_snapshot = snapshot_tenant_routes(transaction)
-    source_snapshot = runtime.read_generation_route_snapshot(source_id)
-    candidate_snapshot = runtime.read_generation_route_snapshot(candidate_id)
-    source_tenant, candidate_tenant = _require_generation_snapshots(
-        current_snapshot,
-        source_snapshot,
-        candidate_snapshot,
-        tenant_id=tenant_id,
-        source_manifest=source_manifest,
-        source_observed=source_observed,
-        candidate_manifest=candidate_manifest,
-        candidate_observed=candidate_observed,
+    current_snapshot = snapshot_tenant_routes(
+        transaction,
+        deployment_transition_tenant_id=tenant_id,
     )
-    _require_source_authority(
+    source_snapshot = runtime.read_generation_route_snapshot(source_id)
+    source_deployment = _require_source_authority(
         transaction,
         job.document,
         source_manifest,
-        source_tenant.deployment,
     )
-    deployment = candidate_tenant.deployment
-    if deployment is None:
-        raise DeploymentRecoveryError("deployment candidate omitted its selected release")
-    with runtime.open_verified_generation(candidate_id) as candidate:
-        candidate_generation_manifest = candidate.manifest
+    deployment = _candidate_deployment(
+        transaction,
+        job.document,
+        intent.document,
+        candidate_manifest,
+    )
+    source_tenant = TenantRouteInput(
+        source_manifest,
+        source_observed,
+        source_deployment,
+    )
+    candidate_tenant = TenantRouteInput(
+        candidate_manifest,
+        candidate_observed,
+        deployment,
+    )
 
     result = _deployment_result(job.document, candidate_manifest)
     audit_entry = _recover_audit_entry(
@@ -225,6 +238,31 @@ def _reconstruct_deployment(
         job,
         plan,
         capacity_limits=capacity_limits,
+    )
+    _resume_release_publication(
+        transaction,
+        release_store,
+        plan,
+    )
+    candidate_generation_manifest = _resume_candidate_publication(
+        transaction,
+        runtime,
+        gate,
+        source_tenant,
+        candidate_tenant,
+        candidate_id=candidate_id,
+        tenant_id=tenant_id,
+    )
+    candidate_snapshot = runtime.read_generation_route_snapshot(candidate_id)
+    _require_generation_snapshots(
+        current_snapshot,
+        source_snapshot,
+        candidate_snapshot,
+        tenant_id=tenant_id,
+        source_manifest=source_manifest,
+        source_observed=source_observed,
+        candidate_manifest=candidate_manifest,
+        candidate_observed=candidate_observed,
     )
     return PreparedDeploymentTransition(
         job,
@@ -328,8 +366,7 @@ def _require_source_authority(
     transaction: DeploymentRecoveryTransaction,
     job: dict[str, object],
     source_manifest: dict[str, object],
-    source_deployment: dict[str, object] | None,
-) -> None:
+) -> dict[str, object] | None:
     expected = job["expectedSource"]
     metadata = source_manifest["metadata"]
     spec = source_manifest["spec"]
@@ -337,6 +374,14 @@ def _require_source_authority(
         raise DeploymentRecoveryError("deployment source authority is malformed")
     tenant_id = validate_uuid7(metadata["id"])
     namespace = transaction.read(StateRecordPath.platform_namespace()).document
+    desired = spec.get("desiredDeployment")
+    source_deployment: dict[str, object] | None = None
+    if desired is not None:
+        if type(desired) is not dict:  # pragma: no cover - schema validation proves this
+            raise DeploymentRecoveryError("deployment source reference is malformed")
+        source_deployment = transaction.read(
+            StateRecordPath.tenant_deployment(tenant_id, desired["id"])
+        ).document
     if source_deployment is not None:
         validate_contract(source_deployment, expected_kind=ContractKind.DEPLOYMENT_RECORD)
     actual = {
@@ -355,6 +400,105 @@ def _require_source_authority(
         source_deployment is not None and source_deployment["tenantId"] != tenant_id
     ):
         raise DeploymentRecoveryError("deployment recovery source authority drifted")
+    return source_deployment
+
+
+def _candidate_deployment(
+    transaction: DeploymentRecoveryTransaction,
+    job: dict[str, object],
+    intent: dict[str, object],
+    candidate_manifest: dict[str, object],
+) -> dict[str, object]:
+    request = job.get("request")
+    metadata = candidate_manifest.get("metadata")
+    spec = candidate_manifest.get("spec")
+    if type(request) is not dict or type(metadata) is not dict or type(spec) is not dict:
+        raise DeploymentRecoveryError("deployment candidate authority is malformed")
+    selected = spec.get("desiredDeployment")
+    if type(selected) is not dict:
+        raise DeploymentRecoveryError("deployment candidate omitted its selected release")
+    tenant_id = validate_uuid7(metadata["id"])
+    deployment_id = validate_uuid7(selected["id"])
+    if intent["operation"] == "rollback":
+        deployment = transaction.read(
+            StateRecordPath.tenant_deployment(tenant_id, deployment_id)
+        ).document
+    else:
+        release_digest = job.get("dispatchArtifactReleaseTreeDigest")
+        if type(release_digest) is not dict:
+            raise DeploymentRecoveryError("deployment release authority is malformed")
+        deployment = {
+            "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+            "kind": "DeploymentRecord",
+            "id": deployment_id,
+            "tenantId": tenant_id,
+            "archiveSha256": selected["archiveSha256"],
+            "releaseTreeDigest": deepcopy(release_digest),
+            "createdAt": intent["createdAt"],
+            "correlationId": intent["correlationId"],
+        }
+    validate_contract(deployment, expected_kind=ContractKind.DEPLOYMENT_RECORD)
+    return deployment
+
+
+def _resume_release_publication(
+    transaction: DeploymentRecoveryTransaction,
+    release_store: DeploymentReleaseStore,
+    plan: DeploymentTransitionPlan,
+) -> None:
+    deployment = plan.deployment
+    try:
+        if plan.creates_deployment:
+            release_store.resume_publication(
+                plan.tenant_id,
+                deployment["id"],
+                expected_release_tree_digest=cast(
+                    dict[str, object],
+                    deployment["releaseTreeDigest"],
+                ),
+                publication_lock=transaction,
+            )
+            return
+        measured = release_store.measure(
+            plan.tenant_id,
+            deployment["id"],
+            publication_lock=transaction,
+        )
+    except (FileNotFoundError, ReleaseStoreError) as error:
+        raise DeploymentRecoveryError(
+            "deployment release publication cannot be recovered"
+        ) from error
+    if measured.digest.to_dict() != deployment["releaseTreeDigest"]:
+        raise DeploymentRecoveryError("rollback release disagrees with recovery authority")
+
+
+def _resume_candidate_publication(  # noqa: PLR0913 - publication authority explicit
+    transaction: DeploymentRecoveryTransaction,
+    runtime: CaddyRuntime,
+    gate: PublicationGate,
+    source_tenant: TenantRouteInput,
+    candidate_tenant: TenantRouteInput,
+    *,
+    candidate_id: str,
+    tenant_id: str,
+) -> CaddyGenerationManifest:
+    try:
+        candidate = runtime.open_verified_generation(candidate_id)
+    except FileNotFoundError:
+        runtime.prune_unreferenced_generations((), keep_newest_unprotected=1)
+        return runtime.publish_candidate(
+            candidate_id,
+            transaction=transaction,
+            overlay=TenantRouteOverlay(
+                RouteOverlayMode.REPLACE,
+                candidate_tenant,
+                source_tenant,
+            ),
+            gate=gate,
+            deployment_transition_tenant_id=tenant_id,
+        )
+    with candidate:
+        return candidate.manifest
 
 
 def _require_generation_snapshots(  # noqa: PLR0913 - exact authority tuple

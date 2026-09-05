@@ -130,8 +130,10 @@ class _Runtime:
         transaction: object,
         overlay: TenantRouteOverlay,
         gate: _Gate,
+        deployment_transition_tenant_id: object | None = None,
     ) -> CaddyGenerationManifest:
         del gate
+        assert deployment_transition_tenant_id == _tenant_id()
         inventory = transaction.measure_intent_records()  # type: ignore[attr-defined]
         assert len(inventory.records) == 1
         self.events.append("candidate")

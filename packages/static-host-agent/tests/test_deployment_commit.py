@@ -34,6 +34,7 @@ from lowerduckpond_static_host_agent import (
     LockMode,
     PinnedCaddyGeneration,
     PublicationGate,
+    ReleaseStoreError,
     StateConflictError,
     StateRecordPath,
     StateRepository,
@@ -63,6 +64,7 @@ from lowerduckpond_static_host_agent.lifecycle_plan import (
 )
 from lowerduckpond_static_host_agent.route_snapshot import (
     RouteOverlayMode,
+    RouteSnapshotTransaction,
     TenantRouteSnapshot,
     snapshot_tenant_routes,
 )
@@ -92,7 +94,28 @@ class _Measurement:
 class _ReleaseStore:
     def __init__(self, releases: dict[str, dict[str, object]]) -> None:
         self.releases = deepcopy(releases)
+        self.staged: dict[str, dict[str, object]] = {}
         self.removed: list[str] = []
+
+    def resume_publication(
+        self,
+        tenant_id: object,
+        deployment_id: object,
+        *,
+        expected_release_tree_digest: object,
+        publication_lock: object,
+    ) -> object:
+        assert tenant_id == _tenant_id()
+        assert publication_lock is not None
+        deployment = cast(str, deployment_id)
+        expected = cast(dict[str, object], expected_release_tree_digest)
+        current = self.releases.get(deployment)
+        if current is None:
+            current = self.staged.pop(deployment)
+            self.releases[deployment] = current
+        if current != expected:
+            raise ReleaseStoreError("published release disagrees with recovery authority")
+        return object()
 
     def measure(
         self,
@@ -161,6 +184,7 @@ class _Runtime:
         self.running = _SOURCE_GENERATION
         self.events: list[str] = []
         self.snapshots: dict[str, TenantRouteSnapshot] = {}
+        self.missing_generations: set[str] = set()
 
     @contextmanager
     def using_held_publication_lock(self, _repository: StateRepository) -> Iterator[None]:
@@ -170,6 +194,8 @@ class _Runtime:
     def open_verified_generation(self, generation_id: object) -> _Generation:
         assert type(generation_id) is str
         self.events.append(f"opened:{generation_id}")
+        if generation_id in self.missing_generations:
+            raise FileNotFoundError(generation_id)
         return _Generation(generation_id)
 
     def remove_abandoned_reference_temporaries(self) -> None:
@@ -177,7 +203,41 @@ class _Runtime:
 
     def read_generation_route_snapshot(self, generation_id: str) -> TenantRouteSnapshot:
         self.events.append(f"snapshot:{generation_id}")
-        return deepcopy(self.snapshots[generation_id])
+        try:
+            return deepcopy(self.snapshots[generation_id])
+        except KeyError as error:
+            raise FileNotFoundError(generation_id) from error
+
+    def prune_unreferenced_generations(
+        self,
+        _protected: object,
+        *,
+        keep_newest_unprotected: int,
+    ) -> tuple[str, ...]:
+        assert keep_newest_unprotected == 1
+        self.events.append("pruned-generations")
+        return ()
+
+    def publish_candidate(
+        self,
+        generation_id: str,
+        *,
+        transaction: object,
+        overlay: TenantRouteOverlay,
+        gate: object,
+        deployment_transition_tenant_id: object,
+    ) -> _GenerationManifest:
+        assert generation_id == _CANDIDATE_GENERATION
+        assert deployment_transition_tenant_id == _tenant_id()
+        assert gate is not None
+        self.snapshots[generation_id] = snapshot_tenant_routes(
+            cast(RouteSnapshotTransaction, transaction),
+            overlay=overlay,
+            deployment_transition_tenant_id=deployment_transition_tenant_id,
+        )
+        self.missing_generations.discard(generation_id)
+        self.events.append(f"published:{generation_id}")
+        return _GenerationManifest(generation_id)
 
     def read_active(self) -> str:
         self.events.append("read-active")
@@ -1117,6 +1177,83 @@ def test_deployment_recovery_reconstructs_and_activates_durable_preparation(
         repository.close()
 
 
+def test_deployment_recovery_resumes_release_and_candidate_publication(
+    tmp_path: Path,
+) -> None:
+    repository, job, plan, releases = _prepared(
+        tmp_path,
+        operation="deploy",
+        deployment_count=0,
+        state="undeployed",
+    )
+    runtime = _recovery_runtime(repository, job, plan)
+    deployment_id = cast(str, plan.deployment["id"])
+    releases.staged[deployment_id] = releases.releases.pop(deployment_id)
+    runtime.snapshots.pop(_CANDIDATE_GENERATION)
+    runtime.missing_generations.add(_CANDIDATE_GENERATION)
+    try:
+        result = recover_deployment_transition(
+            repository,
+            cast(CaddyRuntime, runtime),
+            cast(DeploymentReleaseStore, releases),
+            cast(PublicationGate, _Gate()),
+            plan.intent_id,
+            reloader=runtime.reload,
+            restorer=runtime.restore,
+            verifier=runtime.verify,
+        )
+
+        assert result == plan.result
+        assert releases.staged == {}
+        assert releases.releases[deployment_id] == plan.deployment["releaseTreeDigest"]
+        assert f"published:{_CANDIDATE_GENERATION}" in runtime.events
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
+def test_deployment_recovery_accepts_its_fourth_transition_record(
+    tmp_path: Path,
+) -> None:
+    repository, job, plan, releases = _prepared(
+        tmp_path,
+        operation="deploy",
+        deployment_count=3,
+        state="active",
+    )
+    runtime = _recovery_runtime(repository, job, plan)
+    repository.create_immutable(
+        StateRecordPath.tenant_deployment(plan.tenant_id, plan.deployment["id"]),
+        plan.deployment,
+    )
+    try:
+        result = recover_deployment_transition(
+            repository,
+            cast(CaddyRuntime, runtime),
+            cast(DeploymentReleaseStore, releases),
+            cast(PublicationGate, _Gate()),
+            plan.intent_id,
+            reloader=runtime.reload,
+            restorer=runtime.restore,
+            verifier=runtime.verify,
+        )
+
+        assert result == plan.result
+        with repository.publication_transaction() as transaction:
+            assert transaction.tenant_deployment_ids(plan.tenant_id) == tuple(
+                sorted(
+                    [
+                        "0198d17f-6f4a-7000-8000-000000000002",
+                        "0198d17f-6f4a-7000-8000-000000000003",
+                        cast(str, plan.deployment["id"]),
+                    ]
+                )
+            )
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
 @pytest.mark.parametrize(
     "interruption",
     [DeploymentCommitBoundary.DESIRED_STATE_SYNC, DeploymentCommitBoundary.AUDIT_SYNC],
@@ -1243,7 +1380,7 @@ def test_deployment_recovery_rejects_selected_release_drift(
         "value": "f" * 64,
     }
     try:
-        with pytest.raises(DeploymentActivationError, match="selected release disagrees"):
+        with pytest.raises(DeploymentRecoveryError, match="release publication"):
             recover_deployment_transition(
                 repository,
                 cast(CaddyRuntime, runtime),

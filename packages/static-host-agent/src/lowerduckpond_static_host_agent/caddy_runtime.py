@@ -449,6 +449,7 @@ class CaddyRuntime:
         transaction: RouteSnapshotTransaction,
         overlay: TenantRouteOverlay,
         gate: PublicationGate,
+        deployment_transition_tenant_id: object | None = None,
     ) -> CaddyGenerationManifest:
         """Derive, admit, and validate one unselected tenant generation."""
 
@@ -461,7 +462,11 @@ class CaddyRuntime:
                 raise CaddyRuntimeError("candidate Caddy generation is already active")
             payload = derive_tenant_generation_payload(
                 active.generation,
-                snapshot_tenant_routes(transaction, overlay=overlay),
+                snapshot_tenant_routes(
+                    transaction,
+                    overlay=overlay,
+                    deployment_transition_tenant_id=deployment_transition_tenant_id,
+                ),
                 candidate_generation_id=candidate_id,
             )
 

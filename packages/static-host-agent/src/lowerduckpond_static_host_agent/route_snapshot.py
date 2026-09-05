@@ -83,17 +83,24 @@ def snapshot_tenant_routes(
     *,
     overlay: TenantRouteOverlay | None = None,
     observed_drift_tenant_id: object | None = None,
+    deployment_transition_tenant_id: object | None = None,
 ) -> TenantRouteSnapshot:
     """Read every runtime tenant or substitute one explicit lifecycle candidate."""
 
     drift_tenant_id = (
         None if observed_drift_tenant_id is None else validate_uuid7(observed_drift_tenant_id)
     )
+    transition_tenant_id = (
+        None
+        if deployment_transition_tenant_id is None
+        else validate_uuid7(deployment_transition_tenant_id)
+    )
     return _snapshot_tenants(
         transaction,
         overlay=overlay,
         include_archived=False,
         observed_drift_tenant_id=drift_tenant_id,
+        deployment_transition_tenant_id=transition_tenant_id,
     )
 
 
@@ -112,6 +119,7 @@ def snapshot_tenant_authority(
         overlay=None,
         include_archived=True,
         observed_drift_tenant_id=drift_tenant_id,
+        deployment_transition_tenant_id=None,
     )
 
 
@@ -121,6 +129,7 @@ def _snapshot_tenants(
     overlay: TenantRouteOverlay | None,
     include_archived: bool,
     observed_drift_tenant_id: str | None,
+    deployment_transition_tenant_id: str | None,
 ) -> TenantRouteSnapshot:
     """Capture one complete tenant view under the caller's exclusive lock."""
 
@@ -128,6 +137,15 @@ def _snapshot_tenants(
     validate_contract(namespace, expected_kind=ContractKind.PLATFORM_NAMESPACE)
     inventory = transaction.measure_inventory()
     history_candidates = set(inventory.tenant_ids)
+    if deployment_transition_tenant_id is not None:
+        if deployment_transition_tenant_id not in history_candidates:
+            raise RouteSnapshotError("deployment transition tenant is absent")
+        # A durable deploy intent authorizes one candidate release and, during
+        # terminal replay, one extra deployment record. Neither is historical
+        # authority for deciding whether the still-undeployed source is valid.
+        # The deployment commit path separately validates the exact candidate
+        # and bounded transition history before either can become terminal.
+        history_candidates.remove(deployment_transition_tenant_id)
     if overlay is not None and overlay.mode is RouteOverlayMode.ADD:
         history_candidates.add(_tenant_id(overlay.tenant))
     deployment_history = transaction.deployment_history_tenant_ids(
