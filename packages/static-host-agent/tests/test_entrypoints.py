@@ -326,6 +326,11 @@ def test_selected_tenant_runtime_binds_the_active_verified_snapshot(  # noqa: PL
         "_tenant_release_ids",
         lambda _tenant_id: (deployment_id,),
     )
+    monkeypatch.setattr(
+        entrypoints,
+        "_tenant_release_namespace_ids",
+        lambda: (tenant_id,),
+    )
     measured_digests = {deployment_id: release_tree_digest}
     monkeypatch.setattr(
         entrypoints,
@@ -866,7 +871,7 @@ def test_release_namespace_accepts_one_exact_quiescent_staging_root(
     assert entrypoints._tenant_release_namespace_ids() == (tenant_id,)
 
 
-@pytest.mark.parametrize("drift", ["mode", "content", "symlink"])
+@pytest.mark.parametrize("drift", ["absent", "mode", "content", "symlink"])
 def test_release_namespace_rejects_unsafe_reserved_staging_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -875,7 +880,9 @@ def test_release_namespace_rejects_unsafe_reserved_staging_root(
     sites = tmp_path / "sites"
     sites.mkdir()
     staging = sites / ".staging"
-    if drift == "symlink":
+    if drift == "absent":
+        pass
+    elif drift == "symlink":
         staging.symlink_to(tmp_path / "missing", target_is_directory=True)
     else:
         staging.mkdir(mode=0o700)
@@ -885,11 +892,21 @@ def test_release_namespace_rejects_unsafe_reserved_staging_root(
             (staging / "partial-release").mkdir()
 
     monkeypatch.setattr(entrypoints, "TENANT_RELEASE_ROOT", str(sites))
-    if not staging.is_symlink():
+    if drift not in {"absent", "symlink"}:
         monkeypatch.setattr(entrypoints, "_RELEASE_STAGING_OWNER", staging.stat().st_uid)
         monkeypatch.setattr(entrypoints, "_RELEASE_STAGING_GROUP", staging.stat().st_gid)
 
     with pytest.raises(ReleaseTreeError, match="release staging root"):
+        entrypoints._tenant_release_namespace_ids()
+
+
+def test_release_namespace_rejects_an_absent_publication_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(entrypoints, "TENANT_RELEASE_ROOT", str(tmp_path / "missing"))
+
+    with pytest.raises(ReleaseTreeError, match="tenant release root is absent"):
         entrypoints._tenant_release_namespace_ids()
 
 

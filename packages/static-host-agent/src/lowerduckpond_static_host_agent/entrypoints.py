@@ -1054,12 +1054,13 @@ def _tenant_release_namespace_ids() -> tuple[str, ...]:
     try:
         with os.scandir(TENANT_RELEASE_ROOT) as entries:
             found = tuple(sorted(entries, key=lambda entry: entry.name))
-    except FileNotFoundError:
-        return ()
+    except FileNotFoundError as error:
+        raise ReleaseTreeError("tenant release root is absent") from error
     staging = tuple(entry for entry in found if entry.name == _RELEASE_STAGING_NAME)
     tenant_entries = tuple(entry for entry in found if entry.name != _RELEASE_STAGING_NAME)
-    if len(staging) == 1:
-        _validate_release_staging_root(staging[0])
+    if len(staging) != 1:
+        raise ReleaseTreeError("release staging root is absent")
+    _validate_release_staging_root(staging[0])
     if len(tenant_entries) > DEFAULT_STATE_INVENTORY_LIMITS.maximum_tenants:
         raise ReleaseTreeError("tenant release namespace exceeds its tenant bound")
     identities: list[str] = []
