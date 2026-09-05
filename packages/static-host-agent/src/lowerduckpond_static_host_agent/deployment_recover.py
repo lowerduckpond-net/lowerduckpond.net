@@ -83,6 +83,8 @@ class DeploymentRecoveryTransaction(PublicationLockProof, Protocol):
         tenant_ids: tuple[str, ...],
     ) -> frozenset[str]: ...
 
+    def tenant_archive_ids(self, tenant_id: object) -> tuple[str, ...]: ...
+
     def measure_intent_records(self) -> IntentRecordInventory: ...
 
     def measure_inventory(self) -> StateInventory: ...
@@ -188,6 +190,7 @@ def _reconstruct_deployment(  # noqa: PLR0913 - recovery authority stays explici
     source_id = validate_uuid7(recovery["sourceRuntimeGenerationId"])
     candidate_id = validate_uuid7(recovery["candidateRuntimeGenerationId"])
     tenant_id = validate_uuid7(intent.document["tenantId"])
+    _require_bound_archive_history(transaction, job.document, tenant_id)
     current_snapshot = snapshot_tenant_routes(
         transaction,
         deployment_transition_tenant_id=tenant_id,
@@ -205,11 +208,6 @@ def _reconstruct_deployment(  # noqa: PLR0913 - recovery authority stays explici
         job.document,
         intent.document,
         candidate_manifest,
-    )
-    source_restoration_permitted = _source_restoration_permitted(
-        transaction,
-        release_store,
-        source_deployment,
     )
     candidate_tenant = TenantRouteInput(
         candidate_manifest,
@@ -234,6 +232,12 @@ def _reconstruct_deployment(  # noqa: PLR0913 - recovery authority stays explici
         intent=intent.document,
         result=result,
         audit_entry=audit_entry,
+    )
+    source_restoration_permitted = _source_restoration_permitted(
+        transaction,
+        release_store,
+        plan,
+        source_deployment,
     )
     admit_deployment_transition(
         cast(DeploymentCommitTransaction, transaction),
@@ -402,6 +406,7 @@ def _require_source_authority(
 def _source_restoration_permitted(
     transaction: DeploymentRecoveryTransaction,
     release_store: DeploymentReleaseStore,
+    plan: DeploymentTransitionPlan,
     source_deployment: dict[str, object] | None,
 ) -> bool:
     if source_deployment is None:
@@ -413,12 +418,46 @@ def _source_restoration_permitted(
             publication_lock=transaction,
         )
     except FileNotFoundError:
+        if plan.intent["operation"] != "rollback" or not _rollback_state_is_committed(
+            transaction,
+            plan.manifest,
+            plan.observed_state,
+        ):
+            raise DeploymentRecoveryError(
+                "deployment source release disappeared before rollback retirement"
+            ) from None
         return False
     except ReleaseStoreError as error:
         raise DeploymentRecoveryError("deployment source release cannot be verified") from error
     if measured.digest.to_dict() != source_deployment["releaseTreeDigest"]:
         raise DeploymentRecoveryError("deployment source release authority drifted")
     return True
+
+
+def _rollback_state_is_committed(
+    transaction: DeploymentRecoveryTransaction,
+    candidate_manifest: dict[str, object],
+    candidate_observed: dict[str, object],
+) -> bool:
+    metadata = candidate_manifest.get("metadata")
+    if type(metadata) is not dict:
+        raise DeploymentRecoveryError("deployment candidate authority is malformed")
+    tenant_id = validate_uuid7(metadata["id"])
+    return (
+        transaction.read(StateRecordPath.tenant_desired(tenant_id)).document == candidate_manifest
+        and transaction.read(StateRecordPath.tenant_observed(tenant_id)).document
+        == candidate_observed
+    )
+
+
+def _require_bound_archive_history(
+    transaction: DeploymentRecoveryTransaction,
+    job: dict[str, object],
+    tenant_id: str,
+) -> None:
+    bound = job.get("dispatchArchiveDeploymentIds")
+    if bound != [] or transaction.tenant_archive_ids(tenant_id):
+        raise DeploymentRecoveryError("deployment recovery archive history drifted")
 
 
 def _candidate_deployment(

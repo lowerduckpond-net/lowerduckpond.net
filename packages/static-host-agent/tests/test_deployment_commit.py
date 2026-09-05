@@ -1416,6 +1416,80 @@ def test_deployment_recovery_never_restores_a_retired_source_release(
         repository.close()
 
 
+@pytest.mark.parametrize(
+    ("operation", "deployment_count"),
+    [("deploy", 1), ("rollback", 3)],
+)
+def test_deployment_recovery_rejects_a_source_release_missing_before_retirement(
+    tmp_path: Path,
+    operation: str,
+    deployment_count: int,
+) -> None:
+    repository, job, plan, releases = _prepared(
+        tmp_path,
+        operation=operation,
+        deployment_count=deployment_count,
+        state="active",
+    )
+    runtime = _recovery_runtime(repository, job, plan)
+    source_manifest = cast(dict[str, object], plan.intent["sourceManifest"])
+    source_spec = cast(dict[str, object], source_manifest["spec"])
+    source_selection = cast(dict[str, object], source_spec["desiredDeployment"])
+    releases.releases.pop(cast(str, source_selection["id"]))
+    try:
+        with pytest.raises(
+            DeploymentRecoveryError,
+            match="source release disappeared before rollback retirement",
+        ):
+            recover_deployment_transition(
+                repository,
+                cast(CaddyRuntime, runtime),
+                cast(DeploymentReleaseStore, releases),
+                cast(PublicationGate, _Gate()),
+                plan.intent_id,
+                reloader=runtime.reload,
+                restorer=runtime.restore,
+                verifier=runtime.verify,
+            )
+        assert runtime.active == runtime.running == _SOURCE_GENERATION
+        assert repository.measure_intent_records().records
+    finally:
+        repository.close()
+
+
+def test_deployment_recovery_rejects_archive_history_drift(tmp_path: Path) -> None:
+    repository, job, plan, releases = _prepared(
+        tmp_path,
+        operation="deploy",
+        deployment_count=1,
+        state="active",
+    )
+    runtime = _recovery_runtime(repository, job, plan)
+    archive = _fixture("archive-record.json")
+    archive["tenantId"] = plan.tenant_id
+    archive["deploymentId"] = "0198d17f-6f4a-7000-8000-000000000090"
+    repository.create_immutable(
+        StateRecordPath.tenant_archive(plan.tenant_id, archive["deploymentId"]),
+        archive,
+    )
+    try:
+        with pytest.raises(DeploymentRecoveryError, match="archive history drifted"):
+            recover_deployment_transition(
+                repository,
+                cast(CaddyRuntime, runtime),
+                cast(DeploymentReleaseStore, releases),
+                cast(PublicationGate, _Gate()),
+                plan.intent_id,
+                reloader=runtime.reload,
+                restorer=runtime.restore,
+                verifier=runtime.verify,
+            )
+        assert runtime.active == runtime.running == _SOURCE_GENERATION
+        assert repository.measure_intent_records().records
+    finally:
+        repository.close()
+
+
 def test_deployment_recovery_rejects_job_source_authority_drift(
     tmp_path: Path,
 ) -> None:
