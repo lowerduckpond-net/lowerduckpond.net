@@ -1008,7 +1008,7 @@ class _StateTransaction:
         )
         if (
             len(identities) > _MAX_RETAINED_DEPLOYMENT_RECORDS
-            and canonical_candidate_id not in identities
+            and identities[-1] != canonical_candidate_id
         ):
             raise StateRecordError("deployment transition exceeds its candidate authority")
         return identities

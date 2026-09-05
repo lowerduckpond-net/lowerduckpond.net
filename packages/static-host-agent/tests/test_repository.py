@@ -1502,7 +1502,7 @@ def test_deployment_transition_inventory_permits_only_its_extra_candidate(
         with pytest.raises(StateRecordError, match="candidate authority"):
             transaction.tenant_deployment_transition_ids(
                 _TENANT_ID,
-                candidate_id="0198d17f-6f4a-7000-8000-000000000009",
+                candidate_id=deployment_ids[-2],
             )
 
     fifth = _fixture("deployment-record.json")
