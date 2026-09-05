@@ -39,6 +39,7 @@ from lowerduckpond_static_host_agent.lifecycle_plan import DeploymentTransitionP
 from lowerduckpond_static_host_agent.locks import LockMode, LockName
 from lowerduckpond_static_host_agent.release_store import DeploymentReleaseStore
 from lowerduckpond_static_host_agent.repository import (
+    DeploymentRemovalToken,
     IntentRemovalToken,
     StateConflictError,
     StateRecordPath,
@@ -94,7 +95,16 @@ class DeploymentCommitTransaction(Protocol):
         document: dict[str, object],
     ) -> StoredContract: ...
 
-    def remove_exact_deployment(self, expected: StoredContract) -> None: ...
+    def deployment_removal_token(
+        self,
+        expected: StoredContract,
+    ) -> DeploymentRemovalToken: ...
+
+    def remove_exact_deployment(
+        self,
+        expected: StoredContract,
+        token: DeploymentRemovalToken,
+    ) -> None: ...
 
     def tenant_deployment_ids(self, tenant_id: object) -> tuple[str, ...]: ...
 
@@ -260,7 +270,9 @@ def finalize_deployment_transition_outcome(  # noqa: PLR0913 - explicit authorit
             documents.observed_state,
         )
     _notify(failure_hook, DeploymentCommitBoundary.OBSERVED_STATE_SYNC)
+    removal_authorities: list[tuple[StoredContract, DeploymentRemovalToken]] = []
     for retired_record in progress.retired:
+        removal_token = transaction.deployment_removal_token(retired_record)
         retired = retired_record.document
         release_store.remove_release(
             documents.tenant_id,
@@ -271,9 +283,10 @@ def finalize_deployment_transition_outcome(  # noqa: PLR0913 - explicit authorit
             ),
             publication_lock=transaction,
         )
+        removal_authorities.append((retired_record, removal_token))
         _notify(failure_hook, DeploymentCommitBoundary.RETIRED_RELEASE_REMOVED)
-    for retired_record in progress.retired:
-        transaction.remove_exact_deployment(retired_record)
+    for retired_record, removal_token in removal_authorities:
+        transaction.remove_exact_deployment(retired_record, removal_token)
         _notify(failure_hook, DeploymentCommitBoundary.RETIRED_DEPLOYMENT_REMOVED)
     _ensure_audit(transaction, documents.audit_entry)
     _notify(failure_hook, DeploymentCommitBoundary.AUDIT_SYNC)

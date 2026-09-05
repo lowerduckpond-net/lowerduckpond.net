@@ -682,11 +682,12 @@ def test_exact_deployment_removal_rejects_a_changed_record(tmp_path: Path) -> No
     try:
         with repository.publication_transaction() as transaction:
             expected = transaction.read(oldest_path)
+            token = transaction.deployment_removal_token(expected)
             changed = expected.document
             changed["archiveSha256"] = "f" * 64
             target = (tmp_path / "state").joinpath(*oldest_path.components)
             target.write_bytes(canonical_json_bytes(changed))
             with pytest.raises(StateConflictError, match="changed before exact removal"):
-                transaction.remove_exact_deployment(expected)
+                transaction.remove_exact_deployment(expected, token)
     finally:
         repository.close()
