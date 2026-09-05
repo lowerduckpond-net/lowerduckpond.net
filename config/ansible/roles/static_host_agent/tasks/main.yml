@@ -89,6 +89,23 @@
     quiet: true
   when: static_publication_enabled | bool
 
+- name: Inspect the static publication configuration before host convergence
+  ansible.builtin.stat:
+    path: /etc/lowerduckpond/static-publication.json
+    follow: false
+  register: static_host_agent_publication_configuration
+
+- name: Hold static publication closed until complete host convergence
+  ansible.builtin.template:
+    src: static-publication.json.j2
+    dest: /etc/lowerduckpond/static-publication.json
+    owner: root
+    group: root
+    mode: "0400"
+  vars:
+    static_publication_gate_enabled: false
+  when: static_host_agent_publication_configuration.stat.exists
+
 - name: Create the versioned host-agent installation root
   ansible.builtin.file:
     path: "{{ static_host_agent_install_root }}"
@@ -422,13 +439,7 @@
     group: root
     mode: "0700"
 
-- name: Inspect the static publication configuration
-  ansible.builtin.stat:
-    path: /etc/lowerduckpond/static-publication.json
-    follow: false
-  register: static_host_agent_publication_configuration
-
-- name: Hold static publication closed until complete host convergence
+- name: Initialize the static publication configuration closed
   ansible.builtin.template:
     src: static-publication.json.j2
     dest: /etc/lowerduckpond/static-publication.json
@@ -437,10 +448,7 @@
     mode: "0400"
   vars:
     static_publication_gate_enabled: false
-  when:
-    - >-
-      not static_publication_enabled | bool or
-      not static_host_agent_publication_configuration.stat.exists
+  when: not static_host_agent_publication_configuration.stat.exists
 
 - name: Install the inert static worker boundary
   ansible.builtin.template:

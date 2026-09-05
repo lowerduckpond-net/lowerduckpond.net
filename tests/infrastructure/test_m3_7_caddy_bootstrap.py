@@ -309,6 +309,19 @@ def test_publication_opens_only_after_complete_host_convergence() -> None:
     assert "Hold static publication closed until complete host convergence" in tasks
     assert "static_publication_gate_enabled: false" in tasks
     assert "static_publication_gate_enabled: true" not in tasks
+    close_index = tasks.index("Hold static publication closed until complete host convergence")
+    assert (
+        tasks.index("Refuse host-agent command drift while tenant publication is enabled")
+        < close_index
+    )
+    assert close_index < tasks.index("Install host-agent artifact commands")
+    assert close_index < tasks.index("Wait for pre-lock static host-agent processes to finish")
+    assert (
+        "when: static_host_agent_publication_configuration.stat.exists"
+        in tasks[close_index : tasks.index("Create the versioned host-agent installation root")]
+    )
+    assert "Initialize the static publication configuration closed" in tasks
+    assert "when: not static_host_agent_publication_configuration.stat.exists" in tasks
     assert "Open static publication only after complete host convergence" in site
     assert site.index("role: monitoring") < site.index(
         "Open static publication only after complete host convergence"
