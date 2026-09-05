@@ -874,7 +874,8 @@ def test_monitoring_is_local_and_healthy(host: Host) -> None:
     assert not health_unit.contains("ReadWritePaths=/var/lib/lowerduckpond/runtime")
     assert health_unit.contains(
         "ReadWritePaths=/var/lib/prometheus/node-exporter "
-        "/var/lib/lowerduckpond/static/locks/publication.lock"
+        "/var/lib/lowerduckpond/static/locks/publication.lock "
+        "/var/lib/lowerduckpond/static/locks/tenant-state.lock"
     )
     assert not health_unit.contains("BindReadOnlyPaths=/run/user/21000")
     readiness_unit = host.file(

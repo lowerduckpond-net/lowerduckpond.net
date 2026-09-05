@@ -289,6 +289,7 @@ def test_enabled_publication_refuses_host_agent_selection_drift_before_mutation(
     ).read_text(encoding="utf-8")
     assert "monitoring_caddy_publication_lock_path" in health_unit
     assert "monitoring_caddy_tenant_state_lock_path" in health_unit
+    assert "static_publication_enabled" not in health_unit
 
     preflight = (_ROOT / "scripts/preflight-m3-6-production").read_text(encoding="utf-8")
     assert "the Caddy startup-intent inventory is not resumable" in preflight
