@@ -7,6 +7,7 @@ staging_directory=/var/cache/lowerduckpond-backup/staging
 lock_path=/var/cache/lowerduckpond-backup/repository.lock
 publication_lock_path=/var/lib/lowerduckpond/static/locks/publication.lock
 tenant_state_lock_path=/var/lib/lowerduckpond/static/locks/tenant-state.lock
+release_staging_path=/srv/lowerduckpond/sites/.staging
 exec 9>"${lock_path}"
 flock --exclusive 9
 
@@ -73,6 +74,15 @@ exec 8<>"${publication_lock_path}"
 flock --shared 8
 exec 7<>"${tenant_state_lock_path}"
 flock --shared 7
+
+staging_entry=$(
+    /usr/bin/find -- "${release_staging_path}" \
+        -mindepth 1 -maxdepth 1 -print -quit
+)
+if [[ -n "${staging_entry}" ]]; then
+    echo "Refusing backup while release staging is nonempty." >&2
+    exit 1
+fi
 
 restic backup \
     --host "${LOWERDUCKPOND_BACKUP_NODE_NAME}" \

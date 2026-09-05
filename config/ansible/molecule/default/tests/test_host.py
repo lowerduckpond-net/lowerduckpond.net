@@ -718,15 +718,43 @@ def test_backup_serializes_the_static_snapshot_boundary(host: Host) -> None:
     credential_export_index = content.index("export AWS_ACCESS_KEY_ID")
     publication_lock_index = content.index("flock --shared 8")
     tenant_state_lock_index = content.index("flock --shared 7")
+    staging_check_index = content.index('find -- "${release_staging_path}"')
     backup_index = content.index("restic backup")
 
-    assert credential_export_index < publication_lock_index < tenant_state_lock_index < backup_index
+    assert (
+        credential_export_index
+        < publication_lock_index
+        < tenant_state_lock_index
+        < staging_check_index
+        < backup_index
+    )
     assert backup_script.contains(
         "publication_lock_path=/var/lib/lowerduckpond/static/locks/publication.lock"
     )
     assert backup_script.contains(
         "tenant_state_lock_path=/var/lib/lowerduckpond/static/locks/tenant-state.lock"
     )
+    assert backup_script.contains("release_staging_path=/srv/lowerduckpond/sites/.staging")
+
+
+def test_backup_rejects_nonempty_release_staging(host: Host) -> None:
+    staging_entry = (
+        "/srv/lowerduckpond/sites/.staging/"
+        "0198d17f-6f4a-7000-8000-000000000001--"
+        "0198d17f-6f4a-7000-8000-000000000002"
+    )
+    created = host.run("install -d -m 0700 %s", staging_entry)
+    assert created.rc == 0
+    try:
+        blocked = host.run("/usr/local/libexec/lowerduckpond/backup")
+        assert blocked.rc != 0
+        assert "release staging is nonempty" in blocked.stderr
+    finally:
+        removed = host.run("rmdir %s", staging_entry)
+        assert removed.rc == 0
+
+    recovered = host.run("/usr/local/libexec/lowerduckpond/backup")
+    assert recovered.rc == 0, recovered.stderr
 
 
 def test_backup_scope_excludes_ephemeral_static_state(host: Host) -> None:
