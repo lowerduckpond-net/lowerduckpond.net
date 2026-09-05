@@ -137,6 +137,18 @@ def test_generation_migration_is_stopped_masked_and_defaults_on() -> None:
         "        '/var/lib/lowerduckpond/static/locks/publication.lock'"
     ) in tasks
     assert tasks.index(canonical_lock_assertion) < tasks.index("Install Caddy build dependencies")
+    source_drift_assertion = (
+        "Refuse generation-bound source drift while tenant publication is enabled"
+    )
+    assert source_drift_assertion in tasks
+    assert tasks.index(source_drift_assertion) < tasks.index("Install Caddy build dependencies")
+    source_drift = tasks[
+        tasks.index(source_drift_assertion) : tasks.index("Install Caddy build dependencies")
+    ]
+    assert "caddy_tenant_binary_input_probe.stat.checksum" in source_drift
+    assert "caddy_tenant_environment_input_probe.changed" in source_drift
+    assert "caddy_tenant_origin_pull_ca_input_probe.results" in source_drift
+    assert "caddy_tenant_retired_origin_pull_ca_probe.results" in source_drift
     assert "Stop Caddy for the immutable bootstrap transaction" in tasks
     assert "Runtime-mask Caddy for the immutable bootstrap transaction" in tasks
     assert "mask\n      - --runtime\n      - caddy.service" in tasks
