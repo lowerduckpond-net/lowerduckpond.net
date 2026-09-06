@@ -37,6 +37,8 @@
     m3_8_cloudflare_api_token: >-
       {{ lookup('ansible.builtin.env', 'M3_8_CLOUDFLARE_API_TOKEN') |
          default('0000000000000000000000000000000000000000', true) }}
+    m3_8_docker_host: >-
+      {{ lookup('ansible.builtin.env', 'DOCKER_HOST') }}
   tasks:
     - name: Build the locked static host-agent artifact
       ansible.builtin.command:
@@ -182,6 +184,34 @@
         - "{{ m3_8_https_server_request }}"
         - "{{ m3_8_https_server_certificate }}"
 
+    - name: Resolve the exact controller address used for operator transport
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - -I
+          - -B
+          - -c
+          - |
+            import ipaddress
+            import socket
+            import sys
+            from urllib.parse import urlsplit
+
+            endpoint = urlsplit(sys.argv[1])
+            if endpoint.scheme in {"tcp", "http", "https"} and endpoint.hostname:
+                port = endpoint.port or 2375
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as connection:
+                    connection.connect((endpoint.hostname, port))
+                    source = connection.getsockname()[0]
+            elif not endpoint.scheme or endpoint.scheme == "unix":
+                source = "192.0.2.1"
+            else:
+                raise SystemExit("unsupported Docker endpoint for M3.8 transport")
+            print(f"{ipaddress.IPv4Address(source).compressed}/32")
+          - "{{ m3_8_docker_host }}"
+      register: m3_8_operator_transport_source
+      changed_when: false
+
     - name: Attach the pinned artifact to the installed host
       ansible.builtin.add_host:
         name: "{{ item }}"
@@ -195,6 +225,8 @@
           {{ m3_8_static_publication_enabled }}
         caddy_cloudflare_api_token: >-
           {{ m3_8_cloudflare_api_token }}
+        firewall_admin_source_cidrs:
+          - "{{ m3_8_operator_transport_source.stdout | trim }}"
         m3_8_origin_pull_client_key: >-
           {{ m3_8_origin_pull_client_key }}
         m3_8_origin_pull_client_certificate: >-

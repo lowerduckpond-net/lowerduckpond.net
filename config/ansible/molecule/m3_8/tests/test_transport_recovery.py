@@ -165,7 +165,11 @@ def _await_authorization_quiescent(
             properties = set(state.stdout.splitlines())
         if unit is None or "ActiveState=inactive" in properties:
             if unit is not None:
-                assert {"SubState=dead", "Result=success", "ExecMainStatus=0"} <= properties
+                assert {
+                    "SubState=dead",
+                    "Result=success",
+                    "ExecMainStatus=0",
+                } <= properties
             if not reconcile_drained:
                 reconciled = host.run(
                     "systemctl start --wait lowerduckpond-static-reconcile.service"
@@ -555,7 +559,20 @@ def _exercise_caddy_failure_recovery(
             "/usr/bin/systemctl start --wait lowerduckpond-static-worker@%s.service",
             job_id,
         )
-        assert failed.rc != 0
+        if failed.rc == 0:
+            result = host.run("cat %s", shlex.quote(result_path))
+            worker = host.run(
+                "systemctl show --property=ActiveState --property=Result "
+                "--property=ExecMainStatus lowerduckpond-static-worker@%s.service",
+                job_id,
+            )
+            fault_log = host.run("journalctl -u %s --no-pager", fault.unit)
+            raise AssertionError(
+                "Caddy-faulted worker unexpectedly succeeded:\n"
+                f"result={result.stdout or '<absent>'}\n"
+                f"worker={worker.stdout}\n"
+                f"fault={fault_log.stdout}"
+            )
         _await_caddy_reload_fault(host, fault.unit)
     finally:
         _remove_caddy_reload_fault(host, fault)
@@ -690,7 +707,10 @@ def test_installed_transport_and_admission_recovery(  # noqa: PLR0915 - ordered 
     )
     _await_authorization_quiescent(host)
     support._assert_route(
-        host, canonical_origin, status=200, body=b"bound artifact deployed only after recovery\n"
+        host,
+        canonical_origin,
+        status=200,
+        body=b"bound artifact deployed only after recovery\n",
     )
 
     caddy_failure_request = support._request(
@@ -728,7 +748,10 @@ def test_installed_transport_and_admission_recovery(  # noqa: PLR0915 - ordered 
     assert host.run("cat /etc/caddy/active").stdout == generation_before_caddy_failure.stdout
     assert host.run("systemctl is-active --quiet caddy.service").rc == 0
     support._assert_route(
-        host, canonical_origin, status=200, body=b"bound artifact deployed only after recovery\n"
+        host,
+        canonical_origin,
+        status=200,
+        body=b"bound artifact deployed only after recovery\n",
     )
     recovered_reload = host.run("systemctl start --wait lowerduckpond-static-reconcile.service")
     assert recovered_reload.rc == 0, recovered_reload.stderr
@@ -747,7 +770,10 @@ def test_installed_transport_and_admission_recovery(  # noqa: PLR0915 - ordered 
     )
     _await_authorization_quiescent(host)
     support._assert_route(
-        host, canonical_origin, status=200, body=b"bound artifact deployed only after recovery\n"
+        host,
+        canonical_origin,
+        status=200,
+        body=b"bound artifact deployed only after recovery\n",
     )
 
     disconnect_request = support._request(
@@ -862,7 +888,10 @@ def test_installed_transport_and_admission_recovery(  # noqa: PLR0915 - ordered 
     )
     _await_authorization_quiescent(host)
     support._assert_route(
-        host, canonical_origin, status=200, body=b"bound artifact deployed only after recovery\n"
+        host,
+        canonical_origin,
+        status=200,
+        body=b"bound artifact deployed only after recovery\n",
     )
     for intent_root in ("/etc/caddy/intents", f"{support.STATE_ROOT}/intents"):
         remaining_intent = host.run("find %s -mindepth 1 -maxdepth 1 -print -quit", intent_root)
@@ -918,7 +947,10 @@ def test_installed_transport_and_admission_recovery(  # noqa: PLR0915 - ordered 
     assert support._lifecycle(caddy_rollback) == "active"
     assert support._desired_deployment(caddy_rollback) != caddy_deployment
     support._assert_route(
-        host, canonical_origin, status=200, body=b"bound artifact deployed only after recovery\n"
+        host,
+        canonical_origin,
+        status=200,
+        body=b"bound artifact deployed only after recovery\n",
     )
 
     desired_before_caddy_suspend = support._read_state(host, desired_path)
@@ -1003,7 +1035,10 @@ def test_installed_transport_and_admission_recovery(  # noqa: PLR0915 - ordered 
     assert support._lifecycle(ansible_rollback) == "active"
     assert support._desired_deployment(ansible_rollback) != overlap_deployment
     support._assert_route(
-        host, canonical_origin, status=200, body=b"bound artifact deployed only after recovery\n"
+        host,
+        canonical_origin,
+        status=200,
+        body=b"bound artifact deployed only after recovery\n",
     )
 
     ansible_suspend = _exercise_ansible_worker_overlap(
@@ -1021,7 +1056,10 @@ def test_installed_transport_and_admission_recovery(  # noqa: PLR0915 - ordered 
     assert ansible_resume["status"] == "succeeded"
     assert support._lifecycle(ansible_resume) == "active"
     support._assert_route(
-        host, canonical_origin, status=200, body=b"bound artifact deployed only after recovery\n"
+        host,
+        canonical_origin,
+        status=200,
+        body=b"bound artifact deployed only after recovery\n",
     )
 
     observed_before_ansible_rename = support._read_state(host, observed_path)
@@ -1050,7 +1088,10 @@ def test_installed_transport_and_admission_recovery(  # noqa: PLR0915 - ordered 
         == manifest_digest(support._manifest(ansible_rename)).to_dict()
     )
     support._assert_route(
-        host, canonical_origin, status=200, body=b"bound artifact deployed only after recovery\n"
+        host,
+        canonical_origin,
+        status=200,
+        body=b"bound artifact deployed only after recovery\n",
     )
 
     contested_slug = f"{slug}-contested"
