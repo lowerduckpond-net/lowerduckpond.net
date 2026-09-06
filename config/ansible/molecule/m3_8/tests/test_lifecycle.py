@@ -1049,9 +1049,25 @@ def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lif
     reused_tenant_id = reused["tenantId"]
     assert type(reused_tenant_id) is str
     assert reused_tenant_id != tenant_id
+    reused_origin = reused["canonicalOrigin"]
+    assert type(reused_origin) is str
+    assert reused_origin != canonical_origin
+
+    reused_content = b"reused slug belongs to its replacement tenant\n"
+    reused_deploy = _submit(
+        tmp_path,
+        operator_host,
+        identity,
+        ssh,
+        _request("deploy", next(identities), tenantId=reused_tenant_id),
+        artifact=_deployment_zip(reused_content),
+    )
+    assert reused_deploy["status"] == "succeeded"
+    assert _lifecycle(reused_deploy) == "active"
 
     assert host.run("systemctl is-active --quiet caddy.service").rc == 0
     _assert_route(host, canonical_origin, status=200, body=fifth_content)
+    _assert_route(host, reused_origin, status=200, body=reused_content)
     _assert_route(host, occupied_origin, status=200, body=occupied_content)
     _assert_route(
         host,
@@ -1059,7 +1075,12 @@ def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lif
         status=302,
         redirect=f"https://{canonical_origin}/",
     )
-    _assert_route(host, original_alias, status=404)
+    _assert_route(
+        host,
+        original_alias,
+        status=302,
+        redirect=f"https://{reused_origin}/",
+    )
     for path in (
         "/etc/caddy/intents",
         f"{RELEASE_ROOT}/.staging",

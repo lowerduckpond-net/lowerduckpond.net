@@ -666,6 +666,10 @@ def _authoritative_caddy_generation_matches(  # noqa: PLR0913
         repository.publication_transaction(blocking=True) as transaction,
         runtime.using_held_publication_lock(repository),
     ):
+        # Publication authority always includes the immutable platform
+        # namespace, even before the first tenant exists. Repository reads
+        # validate its kind, canonical representation, metadata, and binding.
+        transaction.read(StateRecordPath.platform_namespace())
         if transaction.measure_inventory().tenant_ids:
             return _tenant_runtime_state_matches_under_lock(
                 runtime,

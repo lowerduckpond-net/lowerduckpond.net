@@ -272,7 +272,16 @@ def test_authoritative_generation_selects_one_check_under_both_locks(
     tenant_ids: tuple[str, ...],
 ) -> None:
     calls: list[str] = []
-    transaction = SimpleNamespace(measure_inventory=lambda: SimpleNamespace(tenant_ids=tenant_ids))
+
+    def read(path: StateRecordPath) -> object:
+        assert path == StateRecordPath.platform_namespace()
+        calls.append("namespace-check")
+        return object()
+
+    transaction = SimpleNamespace(
+        read=read,
+        measure_inventory=lambda: SimpleNamespace(tenant_ids=tenant_ids),
+    )
 
     class _Context:
         def __init__(self, label: str, value: object) -> None:
@@ -359,6 +368,7 @@ def test_authoritative_generation_selects_one_check_under_both_locks(
         "enter:repository",
         "enter:tenant-state",
         "enter:publication",
+        "namespace-check",
         "tenant-check" if tenant_ids else "platform-check",
         *(["release-check"] if tenant_ids else []),
         "exit:publication",
@@ -370,7 +380,10 @@ def test_authoritative_generation_selects_one_check_under_both_locks(
 def test_authoritative_tenant_generation_fails_closed_on_release_drift(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    transaction = SimpleNamespace(measure_inventory=lambda: SimpleNamespace(tenant_ids=("tenant",)))
+    transaction = SimpleNamespace(
+        read=lambda _path: object(),
+        measure_inventory=lambda: SimpleNamespace(tenant_ids=("tenant",)),
+    )
     repository = SimpleNamespace(
         publication_transaction=lambda **_arguments: nullcontext(transaction)
     )
@@ -405,7 +418,10 @@ def test_authoritative_tenant_generation_fails_closed_on_release_drift(
 def test_runtime_authoritative_generation_does_not_traverse_retained_releases(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    transaction = SimpleNamespace(measure_inventory=lambda: SimpleNamespace(tenant_ids=("tenant",)))
+    transaction = SimpleNamespace(
+        read=lambda _path: object(),
+        measure_inventory=lambda: SimpleNamespace(tenant_ids=("tenant",)),
+    )
     repository = SimpleNamespace(
         publication_transaction=lambda **_arguments: nullcontext(transaction)
     )
@@ -447,7 +463,10 @@ def test_authoritative_platform_generation_fails_closed_on_drift(
 ) -> None:
     repository = SimpleNamespace(
         publication_transaction=lambda **_arguments: nullcontext(
-            SimpleNamespace(measure_inventory=lambda: SimpleNamespace(tenant_ids=()))
+            SimpleNamespace(
+                read=lambda _path: object(),
+                measure_inventory=lambda: SimpleNamespace(tenant_ids=()),
+            )
         )
     )
     monkeypatch.setattr(
@@ -471,6 +490,44 @@ def test_authoritative_platform_generation_fails_closed_on_drift(
         origin_pull_required=True,
         startup=object(),  # type: ignore[arg-type]
     )
+
+
+def test_authoritative_platform_generation_requires_namespace_authority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def missing_namespace(_path: StateRecordPath) -> object:
+        raise FileNotFoundError
+
+    repository = SimpleNamespace(
+        publication_transaction=lambda **_arguments: nullcontext(
+            SimpleNamespace(
+                read=missing_namespace,
+                measure_inventory=lambda: SimpleNamespace(tenant_ids=()),
+            )
+        )
+    )
+    monkeypatch.setattr(
+        entrypoints,
+        "StateRepository",
+        lambda *_arguments, **_keywords: nullcontext(repository),
+    )
+    monkeypatch.setattr(
+        entrypoints,
+        "platform_generation_state_under_lock",
+        lambda *_arguments, **_keywords: PlatformGenerationState.UNCHANGED,
+    )
+    runtime = SimpleNamespace(using_held_publication_lock=lambda _repository: nullcontext())
+
+    with pytest.raises(FileNotFoundError):
+        entrypoints._authoritative_caddy_generation_matches(
+            runtime,  # type: ignore[arg-type]
+            object(),  # type: ignore[arg-type]
+            binary=object(),  # type: ignore[arg-type]
+            environment=b"environment",
+            origin_pull_ca_der=(b"ca",),
+            origin_pull_required=True,
+            startup=object(),  # type: ignore[arg-type]
+        )
 
 
 def test_origin_pull_pem_conversion_returns_the_exact_der_bytes() -> None:
