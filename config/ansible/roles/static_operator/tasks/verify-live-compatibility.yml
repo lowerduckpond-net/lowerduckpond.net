@@ -1,0 +1,174 @@
+---
+- name: Inspect the static publication gate before operator convergence
+  ansible.builtin.stat:
+    path: /etc/lowerduckpond/static-publication.json
+    follow: false
+  register: static_operator_publication_configuration
+
+- name: Refuse unsafe static publication gate metadata before operator convergence
+  ansible.builtin.assert:
+    that:
+      - static_operator_publication_configuration.stat.isreg
+      - not static_operator_publication_configuration.stat.islnk
+      - static_operator_publication_configuration.stat.uid == 0
+      - static_operator_publication_configuration.stat.gid == 0
+      - static_operator_publication_configuration.stat.mode == '0400'
+      - static_operator_publication_configuration.stat.nlink == 1
+      - static_operator_publication_configuration.stat.size <= 256
+    fail_msg: >-
+      The static publication gate has unsafe metadata; refusing to inspect or
+      mutate the operator boundary.
+    quiet: true
+  when: static_operator_publication_configuration.stat.exists
+
+- name: Read the static publication gate before operator convergence
+  ansible.builtin.slurp:
+    src: /etc/lowerduckpond/static-publication.json
+  register: static_operator_publication_configuration_content
+  when: static_operator_publication_configuration.stat.exists
+
+- name: Parse the static publication gate before operator convergence
+  ansible.builtin.set_fact:
+    static_operator_publication_configuration_document: >-
+      {{ static_operator_publication_configuration_content.content |
+      b64decode | from_json }}
+  when: static_operator_publication_configuration.stat.exists
+
+- name: Determine whether the installed operator boundary is live
+  ansible.builtin.set_fact:
+    static_operator_publication_is_live: >-
+      {{
+        static_operator_publication_configuration.stat.exists and
+        (static_operator_publication_configuration_document | default({})) ==
+        {
+          'format': 'lowerduckpond-static-publication-gate-v1',
+          'static_publication_enabled': true,
+        }
+      }}
+
+- name: Probe the live static-operator group contract
+  ansible.builtin.group:
+    name: "{{ static_operator_group }}"
+    system: true
+  check_mode: true
+  register: static_operator_live_group_probe
+  when: static_operator_publication_is_live | bool
+
+- name: Probe the live static-operator account contract
+  ansible.builtin.user:
+    name: "{{ static_operator_user }}"
+    group: "{{ static_operator_group }}"
+    home: "{{ static_operator_home }}"
+    shell: /bin/sh
+    password: "{{ static_operator_unusable_password_hash }}"
+    update_password: always
+    create_home: false
+    system: true
+  check_mode: true
+  register: static_operator_live_account_probe
+  when: static_operator_publication_is_live | bool
+
+- name: Probe the live static-operator directory contract
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  check_mode: true
+  register: static_operator_live_directory_probe
+  loop:
+    - path: /var/empty
+      mode: "0755"
+    - path: "{{ static_operator_home }}"
+      mode: "0555"
+    - path: /etc/ssh/lowerduckpond
+      mode: "0755"
+    - path: "{{ static_operator_authorized_keys_directory }}"
+      mode: "0755"
+  when: static_operator_publication_is_live | bool
+
+- name: Probe the live static-operator command contract
+  ansible.builtin.copy:
+    src: "{{ item.source }}"
+    dest: "{{ item.destination }}"
+    owner: root
+    group: root
+    mode: "0755"
+  check_mode: true
+  register: static_operator_live_command_probe
+  loop:
+    - source: static-operator-adapter
+      destination: "{{ static_operator_command }}"
+    - source: static-request-decoder
+      destination: "{{ static_operator_request_decoder }}"
+  when: static_operator_publication_is_live | bool
+
+- name: Probe removal of the superseded live denial command
+  ansible.builtin.file:
+    path: /usr/local/libexec/lowerduckpond/static-operator-disabled
+    state: absent
+  check_mode: true
+  register: static_operator_live_denial_probe
+  when: static_operator_publication_is_live | bool
+
+- name: Probe the live static-operator sudo contract
+  ansible.builtin.template:
+    src: sudoers.j2
+    dest: /etc/sudoers.d/lowerduckpond-static-operator
+    owner: root
+    group: root
+    mode: "0440"
+    validate: /usr/sbin/visudo --check --file=%s
+  check_mode: true
+  register: static_operator_live_sudo_probe
+  when: static_operator_publication_is_live | bool
+
+- name: Probe the live key-bound static-operator principal
+  ansible.builtin.template:
+    src: authorized_keys.j2
+    dest: "{{ static_operator_authorized_keys_path }}"
+    owner: root
+    group: "{{ static_operator_group }}"
+    mode: "0640"
+    validate: /usr/bin/ssh-keygen -l -f %s
+  check_mode: true
+  register: static_operator_live_key_probe
+  when: static_operator_publication_is_live | bool
+
+- name: Probe the live static-operator OpenSSH policy
+  ansible.builtin.template:
+    src: sshd-static-operator.conf.j2
+    dest: /etc/ssh/sshd_config.d/60-lowerduckpond-static-operator.conf
+    owner: root
+    group: root
+    mode: "0644"
+  check_mode: true
+  register: static_operator_live_sshd_probe
+  when: static_operator_publication_is_live | bool
+
+- name: Refuse live static-operator boundary drift before mutation
+  ansible.builtin.assert:
+    that:
+      - not static_operator_live_group_probe.changed
+      - not static_operator_live_account_probe.changed
+      - >-
+        static_operator_live_directory_probe.results |
+        selectattr('changed', 'defined') |
+        selectattr('changed', 'equalto', true) |
+        list | length == 0
+      - >-
+        static_operator_live_command_probe.results |
+        selectattr('changed', 'defined') |
+        selectattr('changed', 'equalto', true) |
+        list | length == 0
+      - not static_operator_live_denial_probe.changed
+      - not static_operator_live_sudo_probe.changed
+      - not static_operator_live_key_probe.changed
+      - not static_operator_live_sshd_probe.changed
+    fail_msg: >-
+      The installed static-operator boundary differs from the requested
+      contract while publication is live; refusing to mutate an admitted
+      request path. Close publication before changing the operator contract.
+    quiet: true
+  when: static_operator_publication_is_live | bool

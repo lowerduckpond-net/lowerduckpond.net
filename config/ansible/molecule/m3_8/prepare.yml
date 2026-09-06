@@ -1,0 +1,3 @@
+---
+- name: Import the shared installed-host preparation
+  ansible.builtin.import_playbook: ../default/prepare.yml

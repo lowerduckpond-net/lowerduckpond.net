@@ -1,0 +1,47 @@
+#!/usr/bin/python3 -I
+from __future__ import annotations
+
+import fcntl
+import os
+import pathlib
+import stat
+import sys
+
+sys.dont_write_bytecode = True
+
+SITE_PACKAGES = pathlib.Path("/opt/lowerduckpond/static-host-agent/current/site-packages")
+SELECTION_LOCK = pathlib.Path("/opt/lowerduckpond/static-host-agent/selection.lock")
+SELECTION_LOCK_MODE = 0o600
+
+
+def acquire_selection_lock() -> int:
+    try:
+        descriptor = os.open(
+            SELECTION_LOCK,
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        )
+    except OSError as error:
+        raise SystemExit("host_agent_selection_lock_invalid") from error
+    metadata = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or stat.S_IMODE(metadata.st_mode) != SELECTION_LOCK_MODE
+        or metadata.st_uid != 0
+        or metadata.st_gid != 0
+        or metadata.st_nlink != 1
+        or metadata.st_size != 0
+    ):
+        os.close(descriptor)
+        raise SystemExit("host_agent_selection_lock_invalid")
+    fcntl.flock(descriptor, fcntl.LOCK_SH)
+    return descriptor
+
+
+_SELECTION_LOCK_FD = acquire_selection_lock()
+sys.path.insert(0, str(SITE_PACKAGES))
+
+from lowerduckpond_static_host_agent.entrypoints import (  # noqa: E402
+    caddy_current_generation_main,
+)
+
+raise SystemExit(caddy_current_generation_main())
