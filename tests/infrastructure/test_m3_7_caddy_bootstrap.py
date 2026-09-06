@@ -297,6 +297,34 @@ def test_enabled_publication_refuses_host_agent_selection_drift_before_mutation(
     assert "the pending Caddy transaction has no durable intent" in preflight
 
 
+def test_live_publication_refuses_operator_boundary_drift_before_mutation() -> None:
+    tasks = (_ROOT / "config/ansible/roles/static_operator/tasks/main.yml").read_text(
+        encoding="utf-8"
+    )
+    compatibility = (
+        _ROOT / "config/ansible/roles/static_operator/tasks/verify-live-compatibility.yml"
+    ).read_text(encoding="utf-8")
+
+    guard = "Verify the live static-operator boundary is already compatible"
+    first_mutation = "Create the static-operator group"
+    assert guard in tasks
+    assert tasks.index(guard) < tasks.index(first_mutation)
+    assert "static_operator_publication_is_live" in compatibility
+    assert "check_mode: true" in compatibility
+    for boundary in (
+        "static_operator_live_group_probe",
+        "static_operator_live_account_probe",
+        "static_operator_live_directory_probe",
+        "static_operator_live_command_probe",
+        "static_operator_live_denial_probe",
+        "static_operator_live_sudo_probe",
+        "static_operator_live_key_probe",
+        "static_operator_live_sshd_probe",
+    ):
+        assert boundary in compatibility
+    assert "Refuse live static-operator boundary drift before mutation" in compatibility
+
+
 def test_publication_opens_only_after_complete_host_convergence() -> None:
     tasks = (_ROOT / "config/ansible/roles/static_host_agent/tasks/main.yml").read_text(
         encoding="utf-8"

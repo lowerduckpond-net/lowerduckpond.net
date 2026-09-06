@@ -35,7 +35,10 @@ _BURST_REFILL_SECONDS = _BURST_CAPACITY * _CORRELATION_INTERVAL_SECONDS
 _AVAILABLE_CORRELATION_TOKENS = float(_BURST_CAPACITY)
 _CORRELATION_TOKENS_UPDATED_AT: float | None = None
 _SEEN_CORRELATIONS: set[str] = set()
-_RETRYABLE_BUSY = "operator transport failed: tenant-state.lock is busy"
+_RETRYABLE_BUSY = frozenset(
+    f"operator transport failed: {name}.lock is busy"
+    for name in ("intake", "export", "publication", "tenant-state")
+)
 _BUSY_RETRY_ATTEMPTS = 50
 _BUSY_RETRY_SECONDS = 0.1
 _PUBLICATION_DISABLED_STATUS = 78
@@ -376,6 +379,43 @@ def _assert_ansible_refuses_generation_input_drift(host: Host) -> None:
     assert issuance.rc == 0, issuance.stderr
 
 
+def _assert_ansible_refuses_live_operator_boundary_drift(host: Host) -> None:
+    adapter = "/usr/local/libexec/lowerduckpond/static-operator-adapter"
+    backup = "/run/lowerduckpond-molecule/static-operator-adapter.backup"
+    prepared = host.run(
+        "install --owner=root --group=root --mode=0755 %s %s && "
+        "printf '\\n# disposable-live-drift\\n' >> %s",
+        adapter,
+        backup,
+        adapter,
+    )
+    assert prepared.rc == 0, prepared.stderr
+    drifted = host.run("sha256sum %s", adapter)
+    assert drifted.rc == 0, drifted.stderr
+
+    try:
+        result = _run_ansible_reapply()
+        assert result.returncode != 0, result.stdout + result.stderr
+        assert "refusing to mutate an admitted request path" in result.stdout, (
+            result.stdout + result.stderr
+        )
+        unchanged = host.run("sha256sum %s", adapter)
+        assert unchanged.rc == 0, unchanged.stderr
+        assert unchanged.stdout == drifted.stdout
+        issuance = host.run("%s job-issuance", PUBLICATION_GATE)
+        assert issuance.rc == 0, issuance.stderr
+    finally:
+        restored = host.run(
+            "install --owner=root --group=root --mode=0755 %s %s && rm -f %s",
+            backup,
+            adapter,
+            backup,
+        )
+        assert restored.rc == 0, restored.stderr
+
+    _reapply_ansible()
+
+
 def _assert_ansible_refuses_publication_disable(host: Host) -> None:
     selected_before = host.run("cat /etc/caddy/active")
     configuration_before = host.run("cat %s", PUBLICATION_CONFIGURATION)
@@ -437,7 +477,7 @@ def _submit(  # noqa: PLR0913
                     ssh_executable=ssh,
                 )
             except OperatorClientError as error:
-                if str(error) != _RETRYABLE_BUSY or attempt == _BUSY_RETRY_ATTEMPTS - 1:
+                if str(error) not in _RETRYABLE_BUSY or attempt == _BUSY_RETRY_ATTEMPTS - 1:
                     raise
                 time.sleep(_BUSY_RETRY_SECONDS)
     finally:
@@ -606,6 +646,7 @@ def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lif
     )
 
     _assert_ansible_refuses_publication_disable(host)
+    _assert_ansible_refuses_live_operator_boundary_drift(host)
     _assert_ansible_refuses_generation_input_drift(host)
     _assert_route(host, canonical_origin, status=200, body=first_content)
     _assert_route(

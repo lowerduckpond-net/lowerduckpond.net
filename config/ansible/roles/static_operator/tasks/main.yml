@@ -21,6 +21,9 @@
       Static publication requires one Ed25519 public key and one bounded audit
       principal.
 
+- name: Verify the live static-operator boundary is already compatible
+  ansible.builtin.import_tasks: verify-live-compatibility.yml
+
 - name: Create the static-operator group
   ansible.builtin.group:
     name: "{{ static_operator_group }}"

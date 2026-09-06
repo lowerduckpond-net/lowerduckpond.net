@@ -169,6 +169,10 @@ class _ReleaseStateTransaction(Protocol):
     def tenant_deployment_ids(self, tenant_id: object) -> tuple[str, ...]: ...
 
 
+class _ReleaseAuthorityTransaction(RouteSnapshotTransaction, _ReleaseStateTransaction, Protocol):
+    """Locked transaction surface for authority and release validation."""
+
+
 _SAFE_ERRORS: Final = (
     AuditError,
     ContractError,
@@ -654,7 +658,13 @@ def _authoritative_caddy_generation_matches(  # noqa: PLR0913
         runtime.using_held_publication_lock(repository),
     ):
         if transaction.measure_inventory().tenant_ids:
-            return _tenant_runtime_state_matches_under_lock(runtime, transaction)
+            return _tenant_runtime_state_matches_under_lock(
+                runtime,
+                transaction,
+            ) and _all_tenant_release_state_matches_under_lock(
+                repository,
+                transaction,
+            )
         return (
             platform_generation_state_under_lock(
                 runtime,
@@ -1008,20 +1018,10 @@ def _all_tenant_release_state_matches(
 
     try:
         with repository.publication_transaction(blocking=True) as transaction:
-            expected = (
-                snapshot_tenant_authority(
-                    transaction,
-                    observed_drift_tenant_id=observed_drift_tenant_id,
-                )
-                if observed_drift_tenant_id is not None
-                else snapshot_tenant_authority(transaction)
-            )
-            authoritative_tenant_ids = {_snapshot_tenant_id(tenant) for tenant in expected.tenants}
-            if not set(_tenant_release_namespace_ids()).issubset(authoritative_tenant_ids):
-                return False
-            return all(
-                _tenant_release_state_matches(repository, transaction, tenant)
-                for tenant in expected.tenants
+            return _all_tenant_release_state_matches_under_lock(
+                repository,
+                transaction,
+                observed_drift_tenant_id=observed_drift_tenant_id,
             )
     except (
         KeyError,
@@ -1034,6 +1034,30 @@ def _all_tenant_release_state_matches(
         ValueError,
     ):
         return False
+
+
+def _all_tenant_release_state_matches_under_lock(
+    repository: StateRepository,
+    transaction: _ReleaseAuthorityTransaction,
+    observed_drift_tenant_id: str | None = None,
+) -> bool:
+    """Remeasure complete release authority under an already-held state lock."""
+
+    expected = (
+        snapshot_tenant_authority(
+            transaction,
+            observed_drift_tenant_id=observed_drift_tenant_id,
+        )
+        if observed_drift_tenant_id is not None
+        else snapshot_tenant_authority(transaction)
+    )
+    authoritative_tenant_ids = {_snapshot_tenant_id(tenant) for tenant in expected.tenants}
+    if not set(_tenant_release_namespace_ids()).issubset(authoritative_tenant_ids):
+        return False
+    return all(
+        _tenant_release_state_matches(repository, transaction, tenant)
+        for tenant in expected.tenants
+    )
 
 
 def _all_tenant_runtime_state_matches(

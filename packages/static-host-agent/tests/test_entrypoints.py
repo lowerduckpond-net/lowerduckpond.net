@@ -328,6 +328,18 @@ def test_authoritative_generation_selects_one_check_under_both_locks(
         "_tenant_runtime_state_matches_under_lock",
         tenant_check,
     )
+
+    def release_check(repository: object, selected: object) -> bool:
+        assert isinstance(repository, Repository)
+        assert selected is transaction
+        calls.append("release-check")
+        return True
+
+    monkeypatch.setattr(
+        entrypoints,
+        "_all_tenant_release_state_matches_under_lock",
+        release_check,
+    )
     monkeypatch.setattr(
         entrypoints,
         "platform_generation_state_under_lock",
@@ -348,10 +360,46 @@ def test_authoritative_generation_selects_one_check_under_both_locks(
         "enter:tenant-state",
         "enter:publication",
         "tenant-check" if tenant_ids else "platform-check",
+        *(["release-check"] if tenant_ids else []),
         "exit:publication",
         "exit:tenant-state",
         "exit:repository",
     ]
+
+
+def test_authoritative_tenant_generation_fails_closed_on_release_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transaction = SimpleNamespace(measure_inventory=lambda: SimpleNamespace(tenant_ids=("tenant",)))
+    repository = SimpleNamespace(
+        publication_transaction=lambda **_arguments: nullcontext(transaction)
+    )
+    monkeypatch.setattr(
+        entrypoints,
+        "StateRepository",
+        lambda *_arguments, **_keywords: nullcontext(repository),
+    )
+    monkeypatch.setattr(
+        entrypoints,
+        "_tenant_runtime_state_matches_under_lock",
+        lambda *_arguments, **_keywords: True,
+    )
+    monkeypatch.setattr(
+        entrypoints,
+        "_all_tenant_release_state_matches_under_lock",
+        lambda *_arguments, **_keywords: False,
+    )
+    runtime = SimpleNamespace(using_held_publication_lock=lambda _repository: nullcontext())
+
+    assert not entrypoints._authoritative_caddy_generation_matches(
+        runtime,  # type: ignore[arg-type]
+        object(),  # type: ignore[arg-type]
+        binary=object(),  # type: ignore[arg-type]
+        environment=b"environment",
+        origin_pull_ca_der=(b"ca",),
+        origin_pull_required=True,
+        startup=object(),  # type: ignore[arg-type]
+    )
 
 
 def test_authoritative_platform_generation_fails_closed_on_drift(
