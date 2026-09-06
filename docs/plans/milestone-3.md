@@ -970,8 +970,10 @@ Never restore the old mutable `Caddyfile` path once tenant-capable code exists.
 ### M3.8: implement core tenant lifecycle
 
 Implementation status (2026-09-06): complete. The reviewed M3.8 change series
-culminating in PR `#119` implements replay-safe `create`, `deploy`, `rollback`,
-`suspend`, `resume`, `rename`, and `reconcile` authorization jobs. Durable
+through PR `#119` implements replay-safe `create`, `deploy`, `rollback`,
+`suspend`, `resume`, `rename`, and `reconcile` authorization jobs. PR `#121`
+completes the installed-host proof with an actual disposable systemd-host
+restart. Durable
 tenant, slug, release, deployment, and Caddy-generation authority now remains
 consistent across exact retries, concurrent requests, process interruption,
 reload failure, reboot, and startup reconciliation. Immutable release and
@@ -983,7 +985,10 @@ exact reviewed PR head. The installed gate covers lifecycle semantics,
 issuance and expected-state defenses, artifact replacement, replay,
 disconnect, lost handoff and result delivery, Caddy/systemd failure recovery,
 and Ansible overlap for deploy, rollback, suspend, resume, rename, and
-reconcile. Publication was enabled
+reconcile. The reboot gate proves a new PID 1 and cleared volatile state while
+retaining exact durable trees, metadata, selected generation, and routes, then
+runs the complete transport and recovery matrix after startup reconciliation.
+Publication was enabled
 only inside that disposable environment; production publication remains
 disabled. Restoration and deletion stay deferred to M3.10, and M3.9 portable
 export and import is the next implementation phase.

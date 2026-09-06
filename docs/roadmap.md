@@ -47,8 +47,11 @@ browser policy, and provider-owned reserved-namespace isolation passed their
 production gates. M3.8's replay-safe create, deploy, rollback, suspend, resume,
 rename, and reconcile jobs are complete. Their durable tenant and release
 authority, immutable Caddy publication, crash recovery, retention, concurrency,
-failure-injection, reboot, and Ansible-overlap gates passed on the disposable
-installed host. M3.9 portable export and import is next.
+failure-injection, and Ansible-overlap gates passed on the disposable installed
+host. An actual systemd-host restart additionally preserved the exact durable
+trees, selected generation, and routes, completed startup reconciliation, and
+passed the full transport and recovery matrix afterward. M3.9 portable export
+and import is next.
 Production publication remains disabled, and Milestone 3 remains incomplete
 until every phase gate through M3.12 passes.
 
