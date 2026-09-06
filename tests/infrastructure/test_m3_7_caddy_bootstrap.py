@@ -266,6 +266,8 @@ def test_production_acceptance_and_health_use_the_generation_check() -> None:
     assert "caddy_generation_check_mode | default('--authoritative-check')" in check
 
     tasks = (_CADDY_ROLE / "tasks/main.yml").read_text(encoding="utf-8")
+    assert "check-caddy-publication-open" in tasks
+    assert "caddy_generation_check_mode: --publication-open-check" in tasks
     assert "check-caddy-runtime-generation" in tasks
     assert "caddy_generation_check_mode: --runtime-authoritative-check" in tasks
 
@@ -401,7 +403,8 @@ def test_publication_opens_only_after_complete_host_convergence() -> None:
     )
     open_index = enable.index("Open static publication after complete host convergence")
     assert authoritative_index < open_index
-    assert "check-caddy-generation" in enable
+    assert "check-caddy-publication-open" in enable
+    assert "check-caddy-generation" not in enable
     assert "static_host_agent_publication_gate_probe.rc | default(78) != 0" in enable
     assert "Open static publication after complete host convergence" in enable
     assert "static_publication_gate_enabled: true" in enable

@@ -32,6 +32,7 @@ from lowerduckpond_static_host_agent.create_handler import (
     CreateLifecycleHandler,
 )
 from lowerduckpond_static_host_agent.deployment_handler import DeploymentLifecycleHandler
+from lowerduckpond_static_host_agent.issuance import PublicationDisabledError
 from lowerduckpond_static_host_agent.release_tree import ReleaseTreeError
 from lowerduckpond_static_host_agent.repository import StateConflictError, StateRecordPath
 from lowerduckpond_static_host_agent.route_handler import RouteLifecycleHandler
@@ -528,6 +529,73 @@ def test_authoritative_platform_generation_requires_namespace_authority(
             origin_pull_required=True,
             startup=object(),  # type: ignore[arg-type]
         )
+
+
+def test_dark_platform_health_can_skip_uninitialized_namespace_authority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    namespace_reads = 0
+
+    def unexpected_namespace(_path: StateRecordPath) -> object:
+        nonlocal namespace_reads
+        namespace_reads += 1
+        raise AssertionError("dark platform health read publication authority")
+
+    repository = SimpleNamespace(
+        publication_transaction=lambda **_arguments: nullcontext(
+            SimpleNamespace(
+                read=unexpected_namespace,
+                measure_inventory=lambda: SimpleNamespace(tenant_ids=()),
+            )
+        )
+    )
+    monkeypatch.setattr(
+        entrypoints,
+        "StateRepository",
+        lambda *_arguments, **_keywords: nullcontext(repository),
+    )
+    monkeypatch.setattr(
+        entrypoints,
+        "platform_generation_state_under_lock",
+        lambda *_arguments, **_keywords: PlatformGenerationState.UNCHANGED,
+    )
+    runtime = SimpleNamespace(using_held_publication_lock=lambda _repository: nullcontext())
+
+    assert entrypoints._authoritative_caddy_generation_matches(
+        runtime,  # type: ignore[arg-type]
+        object(),  # type: ignore[arg-type]
+        binary=object(),  # type: ignore[arg-type]
+        environment=b"environment",
+        origin_pull_ca_der=(b"ca",),
+        origin_pull_required=True,
+        startup=object(),  # type: ignore[arg-type]
+        verify_release_integrity=False,
+        require_namespace_authority=False,
+    )
+    assert namespace_reads == 0
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [(None, True), (PublicationDisabledError("publication_disabled"), False)],
+)
+def test_publication_gate_state_controls_runtime_namespace_authority(
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception | None,
+    expected: bool,
+) -> None:
+    class Gate:
+        def __init__(self, executable: Path) -> None:
+            assert executable == entrypoints._PUBLICATION_GATE
+
+        @staticmethod
+        def require_enabled() -> None:
+            if error is not None:
+                raise error
+
+    monkeypatch.setattr(entrypoints, "CommandPublicationGate", Gate)
+
+    assert entrypoints._publication_gate_is_enabled() is expected
 
 
 def test_origin_pull_pem_conversion_returns_the_exact_der_bytes() -> None:

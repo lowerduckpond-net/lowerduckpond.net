@@ -2,7 +2,7 @@
 - name: Prove the selected Caddy generation is authoritative before opening publication
   ansible.builtin.command:
     argv:
-      - /usr/local/libexec/lowerduckpond/check-caddy-generation
+      - /usr/local/libexec/lowerduckpond/check-caddy-publication-open
   register: static_host_agent_authoritative_generation
   changed_when: false
   failed_when: >-

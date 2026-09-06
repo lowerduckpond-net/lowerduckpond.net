@@ -516,7 +516,8 @@ def caddy_bootstrap_main(arguments: list[str] | None = None) -> int:
     check_only = bool(values and values[0] == "--check")
     authoritative_check = bool(values and values[0] == "--authoritative-check")
     runtime_authoritative_check = bool(values and values[0] == "--runtime-authoritative-check")
-    if check_only or authoritative_check or runtime_authoritative_check:
+    publication_open_check = bool(values and values[0] == "--publication-open-check")
+    if check_only or authoritative_check or runtime_authoritative_check or publication_open_check:
         values = values[1:]
     if (
         len(values) < _CADDY_BOOTSTRAP_MINIMUM_ARGUMENTS
@@ -587,7 +588,7 @@ def caddy_bootstrap_main(arguments: list[str] | None = None) -> int:
             ) as store,
             CaddyStartupStore.open(_CADDY_INTENT_ROOT, expected_owner=0) as startup,
         ):
-            if authoritative_check or runtime_authoritative_check:
+            if authoritative_check or runtime_authoritative_check or publication_open_check:
                 current = _authoritative_caddy_generation_matches(
                     runtime,
                     store,
@@ -596,7 +597,10 @@ def caddy_bootstrap_main(arguments: list[str] | None = None) -> int:
                     origin_pull_ca_der=origin_pull_ca_der,
                     origin_pull_required=origin_pull_required,
                     startup=startup,
-                    verify_release_integrity=authoritative_check,
+                    verify_release_integrity=(authoritative_check or publication_open_check),
+                    require_namespace_authority=(
+                        publication_open_check or _publication_gate_is_enabled()
+                    ),
                 )
                 if not current:
                     raise CaddyRuntimeError("selected Caddy generation is not authoritative")
@@ -633,7 +637,7 @@ def caddy_bootstrap_main(arguments: list[str] | None = None) -> int:
         ValueError,
     ):
         return _fail("caddy_generation_bootstrap_failed", 1)
-    if authoritative_check or runtime_authoritative_check:
+    if authoritative_check or runtime_authoritative_check or publication_open_check:
         os.write(sys.stdout.fileno(), b"current\n")
     elif check_only:
         os.write(sys.stdout.fileno(), f"{state.value}\n".encode("ascii"))
@@ -652,6 +656,7 @@ def _authoritative_caddy_generation_matches(  # noqa: PLR0913
     origin_pull_required: bool,
     startup: CaddyStartupStore,
     verify_release_integrity: bool = True,
+    require_namespace_authority: bool = True,
 ) -> bool:
     """Choose the empty or tenant check under one ordered state snapshot.
 
@@ -666,10 +671,11 @@ def _authoritative_caddy_generation_matches(  # noqa: PLR0913
         repository.publication_transaction(blocking=True) as transaction,
         runtime.using_held_publication_lock(repository),
     ):
-        # Publication authority always includes the immutable platform
-        # namespace, even before the first tenant exists. Repository reads
-        # validate its kind, canonical representation, metadata, and binding.
-        transaction.read(StateRecordPath.platform_namespace())
+        if require_namespace_authority:
+            # Publication authority always includes the immutable platform
+            # namespace, even before the first tenant exists. Repository reads
+            # validate its kind, canonical representation, metadata, and binding.
+            transaction.read(StateRecordPath.platform_namespace())
         if transaction.measure_inventory().tenant_ids:
             return _tenant_runtime_state_matches_under_lock(
                 runtime,
@@ -693,6 +699,16 @@ def _authoritative_caddy_generation_matches(  # noqa: PLR0913
             )
             is PlatformGenerationState.UNCHANGED
         )
+
+
+def _publication_gate_is_enabled() -> bool:
+    """Read the installed fail-closed gate for routine health semantics."""
+
+    try:
+        CommandPublicationGate(_PUBLICATION_GATE).require_enabled()
+    except PublicationDisabledError:
+        return False
+    return True
 
 
 def _require_no_arguments(values: list[str]) -> None:

@@ -459,6 +459,19 @@
   register: caddy_generation_check_probe
   when: caddy_generation_enabled | bool
 
+- name: Probe the immutable Caddy publication-open check
+  ansible.builtin.template:
+    src: check-caddy-generation.j2
+    dest: /usr/local/libexec/lowerduckpond/check-caddy-publication-open
+    owner: root
+    group: root
+    mode: "0755"
+  vars:
+    caddy_generation_check_mode: --publication-open-check
+  check_mode: true
+  register: caddy_generation_publication_open_check_probe
+  when: caddy_generation_enabled | bool
+
 - name: Probe the lightweight immutable Caddy runtime check
   ansible.builtin.template:
     src: check-caddy-generation.j2
@@ -527,6 +540,7 @@
         caddy_generation_bootstrap_probe.results |
         selectattr('changed') | list | length == 0
       - not caddy_generation_check_probe.changed
+      - not caddy_generation_publication_open_check_probe.changed
       - not caddy_generation_runtime_check_probe.changed
       - not caddy_generation_unit_probe.changed
       - not caddy_generation_recovery_unit_probe.changed
@@ -549,6 +563,7 @@
           caddy_generation_bootstrap_probe.results |
           selectattr('changed') | list | length > 0 or
           caddy_generation_check_probe.changed or
+          caddy_generation_publication_open_check_probe.changed or
           caddy_generation_runtime_check_probe.changed or
           caddy_generation_unit_probe.changed or
           caddy_generation_recovery_unit_probe.changed) }}
@@ -612,6 +627,19 @@
     owner: root
     group: root
     mode: "0755"
+  when:
+    - caddy_generation_enabled | bool
+    - caddy_generation_bootstrap_required | bool
+
+- name: Install the immutable Caddy publication-open check
+  ansible.builtin.template:
+    src: check-caddy-generation.j2
+    dest: /usr/local/libexec/lowerduckpond/check-caddy-publication-open
+    owner: root
+    group: root
+    mode: "0755"
+  vars:
+    caddy_generation_check_mode: --publication-open-check
   when:
     - caddy_generation_enabled | bool
     - caddy_generation_bootstrap_required | bool
