@@ -676,18 +676,23 @@ def _authoritative_caddy_generation_matches(  # noqa: PLR0913
             # namespace, even before the first tenant exists. Repository reads
             # validate its kind, canonical representation, metadata, and binding.
             transaction.read(StateRecordPath.platform_namespace())
-        if transaction.measure_inventory().tenant_ids:
-            return _tenant_runtime_state_matches_under_lock(
-                runtime,
-                transaction,
-            ) and (
+        tenant_ids = transaction.measure_inventory().tenant_ids
+        if tenant_ids:
+            generation_matches = (
+                startup.inventory_is_empty()
+                and _tenant_runtime_state_matches_under_lock(
+                    runtime,
+                    transaction,
+                )
+            )
+            return generation_matches and (
                 not verify_release_integrity
                 or _all_tenant_release_state_matches_under_lock(
                     repository,
                     transaction,
                 )
             )
-        return (
+        generation_matches = (
             platform_generation_state_under_lock(
                 runtime,
                 store,
@@ -698,6 +703,13 @@ def _authoritative_caddy_generation_matches(  # noqa: PLR0913
                 startup=startup,
             )
             is PlatformGenerationState.UNCHANGED
+        )
+        # A dark platform bootstrap deliberately has no authoritative
+        # platform namespace yet. Still validate the entire on-disk
+        # publication root so an orphan tenant or populated staging tree
+        # cannot pass the empty-state check.
+        return generation_matches and (
+            not verify_release_integrity or not _tenant_release_namespace_ids()
         )
 
 
