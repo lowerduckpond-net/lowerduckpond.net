@@ -152,6 +152,16 @@
     follow: false
   register: static_host_agent_publication_configuration
 
+- name: Probe the existing static publication state before host convergence
+  ansible.builtin.command:
+    argv:
+      - /usr/local/libexec/lowerduckpond/static-publication-gate
+      - job-issuance
+  register: static_host_agent_publication_gate_probe
+  changed_when: false
+  failed_when: static_host_agent_publication_gate_probe.rc not in [0, 78]
+  when: static_host_agent_publication_configuration.stat.exists
+
 - name: Hold static publication closed until complete host convergence
   ansible.builtin.template:
     src: static-publication.json.j2
@@ -161,6 +171,9 @@
     mode: "0400"
   vars:
     static_publication_gate_enabled: false
+  changed_when: >-
+    not static_publication_enabled | bool and
+    static_host_agent_publication_gate_probe.rc == 0
   when: static_host_agent_publication_configuration.stat.exists
 
 - name: Create the versioned host-agent installation root

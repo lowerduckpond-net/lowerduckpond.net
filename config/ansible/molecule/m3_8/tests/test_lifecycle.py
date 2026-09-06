@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import stat
@@ -37,6 +38,7 @@ _SEEN_CORRELATIONS: set[str] = set()
 _RETRYABLE_BUSY = "operator transport failed: tenant-state.lock is busy"
 _BUSY_RETRY_ATTEMPTS = 50
 _BUSY_RETRY_SECONDS = 0.1
+_PUBLICATION_DISABLED_STATUS = 78
 
 
 def _run(arguments: list[str]) -> str:
@@ -336,9 +338,14 @@ def _run_ansible_reapply(
     )
 
 
-def _reapply_ansible() -> None:
+def _reapply_ansible(*, expected_changes: int = 0) -> None:
     result = _run_ansible_reapply()
     assert result.returncode == 0, result.stdout + result.stderr
+    recap = re.compile(
+        rf"^{re.escape(CONTAINER)}\s+: ok=\d+\s+changed={expected_changes}\s+",
+        re.MULTILINE,
+    )
+    assert recap.search(result.stdout) is not None, result.stdout + result.stderr
 
 
 def _assert_ansible_refuses_generation_input_drift(host: Host) -> None:
@@ -361,8 +368,10 @@ def _assert_ansible_refuses_generation_input_drift(host: Host) -> None:
     assert selected_after.stdout == selected_before.stdout
     assert environment_after.stdout == environment_before.stdout
     assert host.run("systemctl is-active --quiet caddy.service").rc == 0
+    closed_issuance = host.run("%s job-issuance", PUBLICATION_GATE)
+    assert closed_issuance.rc == _PUBLICATION_DISABLED_STATUS
 
-    _reapply_ansible()
+    _reapply_ansible(expected_changes=1)
     issuance = host.run("%s job-issuance", PUBLICATION_GATE)
     assert issuance.rc == 0, issuance.stderr
 

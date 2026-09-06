@@ -322,6 +322,9 @@ def test_publication_opens_only_after_complete_host_convergence() -> None:
     )
     assert close_index < tasks.index("Install host-agent artifact commands")
     assert close_index < tasks.index("Wait for pre-lock static host-agent processes to finish")
+    assert "Probe the existing static publication state before host convergence" in tasks
+    assert "static_host_agent_publication_gate_probe.rc not in [0, 78]" in tasks
+    assert "not static_publication_enabled | bool" in tasks[close_index:]
     assert (
         "when: static_host_agent_publication_configuration.stat.exists"
         in tasks[close_index : tasks.index("Create the versioned host-agent installation root")]
@@ -333,6 +336,13 @@ def test_publication_opens_only_after_complete_host_convergence() -> None:
         "Open static publication only after complete host convergence"
     )
     assert "tasks_from: enable-publication" in site
+    authoritative_index = enable.index(
+        "Prove the selected Caddy generation is authoritative before opening publication"
+    )
+    open_index = enable.index("Open static publication after complete host convergence")
+    assert authoritative_index < open_index
+    assert "check-caddy-generation" in enable
+    assert "static_host_agent_publication_gate_probe.rc | default(78) != 0" in enable
     assert "Open static publication after complete host convergence" in enable
     assert "static_publication_gate_enabled: true" in enable
     assert "job-issuance" in enable
