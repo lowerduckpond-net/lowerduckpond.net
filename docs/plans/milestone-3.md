@@ -968,6 +968,24 @@ Never restore the old mutable `Caddyfile` path once tenant-capable code exists.
 
 ### M3.8: implement core tenant lifecycle
 
+Implementation status (2026-09-06): complete. The reviewed M3.8 change series
+culminating in PR `#119` implements replay-safe `create`, `deploy`, `rollback`,
+`suspend`, `resume`, `rename`, and `reconcile` authorization jobs. Durable
+tenant, slug, release, deployment, and Caddy-generation authority now remains
+consistent across exact retries, concurrent requests, process interruption,
+reload failure, reboot, and startup reconciliation. Immutable release and
+generation retention is bounded, and failed transitions preserve recoverable
+evidence without publishing partial state.
+
+The full Python suite and disposable installed-host qualification passed on the
+exact reviewed PR head. The installed gate covers lifecycle semantics,
+issuance and expected-state defenses, artifact replacement, replay,
+disconnect, lost handoff and result delivery, Caddy/systemd failure recovery,
+and Ansible overlap for every M3.8 lifecycle operation. Publication was enabled
+only inside that disposable environment; production publication remains
+disabled. Restoration and deletion stay deferred to M3.10, and M3.9 portable
+export and import is the next implementation phase.
+
 Implement `create`, `deploy`, `rollback`, `suspend`, `resume`, `rename`, and
 `reconcile` through authorization jobs. Initialize the namespace record only
 before tenant history exists. Create starts undeployed; deploy generates the
