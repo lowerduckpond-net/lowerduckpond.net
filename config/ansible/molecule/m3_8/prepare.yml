@@ -1,7 +1,4 @@
 ---
-- name: Import the shared installed-host preparation
-  ansible.builtin.import_playbook: ../default/prepare.yml
-
 - name: Prepare reboot-persistent ext4 qualification filesystems
   hosts: all
   become: true
@@ -71,6 +68,7 @@
           - -L
           - "{{ item.item.label }}"
           - "{{ item.item.image }}"
+      changed_when: true
       loop: "{{ m3_8_durable_image_types.results }}"
       loop_control:
         label: "{{ item.item.image }}"
@@ -102,3 +100,6 @@
         opts: loop,nodev,nosuid
         state: mounted
       loop: "{{ m3_8_durable_images }}"
+
+- name: Import the shared installed-host preparation onto durable storage
+  ansible.builtin.import_playbook: ../default/prepare.yml

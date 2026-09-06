@@ -198,8 +198,9 @@
             from urllib.parse import urlsplit
 
             endpoint = urlsplit(sys.argv[1])
-            if endpoint.scheme in {"tcp", "http", "https"} and endpoint.hostname:
-                port = endpoint.port or 2375
+            if endpoint.scheme in {"tcp", "http", "https", "ssh"} and endpoint.hostname:
+                default_ports = {"tcp": 2375, "http": 2375, "https": 2376, "ssh": 22}
+                port = endpoint.port or default_ports[endpoint.scheme]
                 with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as connection:
                     connection.connect((endpoint.hostname, port))
                     source = connection.getsockname()[0]

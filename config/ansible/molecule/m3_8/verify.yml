@@ -41,6 +41,26 @@
       delay: 1
       until: m3_8_reboot_caddy.rc == 0
 
+    - name: Wait for startup reconciliation to complete after reboot
+      ansible.builtin.command:
+        cmd: >-
+          docker exec lowerduckpond-ubuntu-2604
+          systemctl show
+          --property=ActiveState
+          --property=SubState
+          --property=Result
+          --property=ExecMainStatus
+          lowerduckpond-static-reconcile.service
+      register: m3_8_reboot_reconcile
+      changed_when: false
+      retries: 120
+      delay: 1
+      until:
+        - "'ActiveState=inactive' in m3_8_reboot_reconcile.stdout_lines"
+        - "'SubState=dead' in m3_8_reboot_reconcile.stdout_lines"
+        - "'Result=success' in m3_8_reboot_reconcile.stdout_lines"
+        - "'ExecMainStatus=0' in m3_8_reboot_reconcile.stdout_lines"
+
     - name: Verify exact persisted state and boot recovery
       ansible.builtin.command:
         cmd: >-
