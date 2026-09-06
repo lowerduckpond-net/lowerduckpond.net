@@ -65,30 +65,6 @@ def _deployment_zip(content: bytes) -> bytes:
     return stream.getvalue()
 
 
-def _enable_disposable_publication(host: Host) -> None:
-    payload = (
-        b'{"format":"lowerduckpond-static-publication-gate-v1","static_publication_enabled":true}\n'
-    )
-    encoded = payload.hex()
-    command = (
-        "import os,pathlib;"
-        f"target=pathlib.Path({PUBLICATION_CONFIGURATION!r});"
-        "temporary=target.with_name('.static-publication.m3-8');"
-        f"temporary.write_bytes(bytes.fromhex({encoded!r}));"
-        "temporary.chmod(0o400);"
-        "os.chown(temporary,0,0);"
-        "descriptor=os.open(temporary,os.O_RDONLY);"
-        "os.fsync(descriptor);"
-        "os.close(descriptor);"
-        "os.replace(temporary,target);"
-        "directory=os.open(target.parent,os.O_RDONLY|os.O_DIRECTORY);"
-        "os.fsync(directory);"
-        "os.close(directory)"
-    )
-    result = host.run("/usr/bin/python3 -I -B -c %s", command)
-    assert result.rc == 0, result.stderr
-
-
 def _initialize_namespace(host: Host) -> bool:
     selected = host.run("readlink --canonicalize /opt/lowerduckpond/static-host-agent/current")
     assert selected.rc == 0, selected.stderr
@@ -341,14 +317,33 @@ def _run_ansible_reapply(
     )
 
 
-def _reapply_ansible(*, expected_changes: int = 0) -> None:
-    result = _run_ansible_reapply()
+def _assert_ansible_reapply_result(
+    result: subprocess.CompletedProcess[str],
+    *,
+    expected_changes: int = 0,
+) -> None:
     assert result.returncode == 0, result.stdout + result.stderr
     recap = re.compile(
         rf"^{re.escape(CONTAINER)}\s+: ok=\d+\s+changed={expected_changes}\s+",
         re.MULTILINE,
     )
     assert recap.search(result.stdout) is not None, result.stdout + result.stderr
+
+
+def _reapply_ansible(*, expected_changes: int = 0) -> None:
+    _assert_ansible_reapply_result(
+        _run_ansible_reapply(),
+        expected_changes=expected_changes,
+    )
+
+
+def _ensure_disposable_publication(host: Host) -> None:
+    issuance = host.run("%s job-issuance", PUBLICATION_GATE)
+    assert issuance.rc in {0, _PUBLICATION_DISABLED_STATUS}, issuance.stderr
+    if issuance.rc == _PUBLICATION_DISABLED_STATUS:
+        _reapply_ansible(expected_changes=1)
+    enabled = host.run("%s job-issuance", PUBLICATION_GATE)
+    assert enabled.rc == 0, enabled.stderr
 
 
 def _assert_ansible_refuses_generation_input_drift(host: Host) -> None:
@@ -593,8 +588,9 @@ def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lif
 ) -> None:
     _initialize_namespace(host)
     assert not _initialize_namespace(host)
-    _enable_disposable_publication(host)
-    _reapply_ansible()
+    initially_closed = host.run("%s job-issuance", PUBLICATION_GATE)
+    assert initially_closed.rc == _PUBLICATION_DISABLED_STATUS
+    _ensure_disposable_publication(host)
     _prepare_edge_probe(host)
     _await_persisted_admission_burst(host)
     operator_host, identity, ssh = _operator_inputs(tmp_path)

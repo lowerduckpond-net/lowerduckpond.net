@@ -6,6 +6,7 @@ import shlex
 import subprocess
 import time
 import uuid
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +18,7 @@ from lowerduckpond_static_contracts import (
     FrameKind,
     canonical_json_bytes,
     encode_header,
+    manifest_digest,
 )
 from testinfra.host import Host
 
@@ -32,6 +34,16 @@ class _CaddyReloadFault:
     ready_path: str
     blocked_path: str
     release_path: str
+
+
+@dataclass(frozen=True, slots=True)
+class _TenantSnapshot:
+    tenant_id: str
+    canonical_origin: str
+    desired: dict[str, object]
+    observed: dict[str, object]
+    status: int
+    body: bytes | None = None
 
 
 def _issue_artifact_without_handoff(
@@ -273,6 +285,49 @@ def _await_worker_start(host: Host, job_id: str, *, timeout: float = 30.0) -> No
     raise AssertionError(f"worker {job_id} did not enter its delayed start")
 
 
+def _exercise_ansible_worker_overlap(
+    host: Host,
+    request: dict[str, object],
+    *,
+    artifact: bytes | None = None,
+) -> dict[str, object]:
+    job_id = (
+        support._issue_without_handoff(host, request)
+        if artifact is None
+        else _issue_artifact_without_handoff(host, request, artifact)
+    )
+    unit = f"lowerduckpond-static-worker@{job_id}.service"
+    _install_worker_delay(host, seconds=30)
+    worker_result = None
+    ansible_result = None
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            worker = executor.submit(
+                host.run,
+                "/usr/bin/systemctl start --wait %s",
+                unit,
+            )
+            _await_worker_start(host, job_id)
+            ansible = executor.submit(support._run_ansible_reapply)
+            # The role deliberately waits for pre-lock workers before closing
+            # publication. Prove both operations are genuinely concurrent,
+            # then let that ordering drain the worker ahead of convergence.
+            time.sleep(5)
+            assert not worker.done(), "worker did not overlap Ansible convergence"
+            assert not ansible.done(), "Ansible did not overlap the active worker"
+            worker_result = worker.result(timeout=90)
+            ansible_result = ansible.result(timeout=600)
+    finally:
+        _remove_worker_delay(host)
+    assert worker_result is not None
+    assert ansible_result is not None
+    result = _await_result(host, job_id)
+    assert worker_result.rc == 0 or result["status"] == "failed", worker_result.stderr
+    assert ansible_result.returncode == 0, ansible_result.stdout + ansible_result.stderr
+    _await_authorization_quiescent(host, job_id)
+    return result
+
+
 def _job_id_for_correlation(host: Host, correlation_id: str) -> str:
     path = f"{support.STATE_ROOT}/authorization/correlations/{correlation_id}.json"
     deadline = time.monotonic() + 30.0
@@ -359,20 +414,26 @@ try:
     os.chmod(admin_path, 0o620)
     server.listen(1)
     pathlib.Path(ready_path).write_text("ready\\n", encoding="ascii")
-    expected = (
-        b"GET /config/ HTTP/1.0",
-        b"GET /config/ HTTP/1.0",
-        b"POST /load HTTP/1.0",
-        b"POST /load HTTP/1.0",
-        b"GET /config/ HTTP/1.0",
-    )
-    for index, expected_line in enumerate(expected):
+    failed_load = False
+    restored_load = False
+    for _attempt in range(8):
         connection, _ = server.accept()
         with connection:
             request_line, _body = receive(connection)
-            if request_line != expected_line:
+            if request_line == b"GET /config/ HTTP/1.0":
+                response = (
+                    b"HTTP/1.0 200 OK\\r\\nContent-Length: "
+                    + str(len(source)).encode("ascii")
+                    + b"\\r\\nConnection: close\\r\\n\\r\\n"
+                    + source
+                )
+                connection.sendall(response)
+                if restored_load:
+                    break
+                continue
+            if request_line != b"POST /load HTTP/1.0":
                 raise RuntimeError("unexpected Caddy fault request")
-            if index == 2:
+            if not failed_load:
                 if block_on_load:
                     pathlib.Path(blocked_path).write_text("blocked\\n", encoding="ascii")
                     while not pathlib.Path(release_path).exists():
@@ -387,15 +448,17 @@ try:
                         raise
                 if block_on_load:
                     break
+                failed_load = True
             else:
-                body = source if index in (0, 1, 4) else b""
-                response = (
-                    b"HTTP/1.0 200 OK\\r\\nContent-Length: "
-                    + str(len(body)).encode("ascii")
-                    + b"\\r\\nConnection: close\\r\\n\\r\\n"
-                    + body
+                if restored_load:
+                    raise RuntimeError("unexpected additional Caddy load")
+                connection.sendall(
+                    b"HTTP/1.0 200 OK\\r\\n"
+                    b"Content-Length: 0\\r\\nConnection: close\\r\\n\\r\\n"
                 )
-                connection.sendall(response)
+                restored_load = True
+    else:
+        raise RuntimeError("Caddy fault request bound was exceeded")
 finally:
     server.close()
     pathlib.Path(admin_path).unlink(missing_ok=True)
@@ -473,13 +536,68 @@ def _await_caddy_reload_fault(host: Host, unit: str) -> None:
     raise AssertionError("Caddy reload fault did not complete")
 
 
+def _exercise_caddy_failure_recovery(
+    host: Host,
+    request: dict[str, object],
+    *,
+    artifact: bytes | None = None,
+    assert_rolled_back: Callable[[], None],
+) -> dict[str, object]:
+    job_id = (
+        support._issue_without_handoff(host, request)
+        if artifact is None
+        else _issue_artifact_without_handoff(host, request, artifact)
+    )
+    result_path = f"{support.STATE_ROOT}/authorization/results/{job_id}.json"
+    fault = _install_caddy_reload_fault(host)
+    try:
+        failed = host.run(
+            "/usr/bin/systemctl start --wait lowerduckpond-static-worker@%s.service",
+            job_id,
+        )
+        assert failed.rc != 0
+        _await_caddy_reload_fault(host, fault.unit)
+    finally:
+        _remove_caddy_reload_fault(host, fault)
+    assert host.run("test ! -e %s", shlex.quote(result_path)).rc == 0
+    assert_rolled_back()
+    reconciled = host.run("systemctl start --wait lowerduckpond-static-reconcile.service")
+    assert reconciled.rc == 0, reconciled.stderr
+    result = _await_result(host, job_id)
+    _await_authorization_quiescent(host, job_id)
+    assert result["status"] == "succeeded"
+    return result
+
+
+def _assert_tenant_snapshot(
+    host: Host,
+    snapshot: _TenantSnapshot,
+) -> None:
+    assert (
+        support._read_state(host, f"{support.STATE_ROOT}/tenants/{snapshot.tenant_id}/desired.json")
+        == snapshot.desired
+    )
+    assert (
+        support._read_state(
+            host, f"{support.STATE_ROOT}/tenants/{snapshot.tenant_id}/observed.json"
+        )
+        == snapshot.observed
+    )
+    support._assert_route(
+        host,
+        snapshot.canonical_origin,
+        status=snapshot.status,
+        body=snapshot.body,
+    )
+
+
 def test_installed_transport_and_admission_recovery(  # noqa: PLR0915 - ordered fault table
     host: Host,
     tmp_path: Path,
     request: pytest.FixtureRequest,
 ) -> None:
     support._initialize_namespace(host)
-    support._enable_disposable_publication(host)
+    support._ensure_disposable_publication(host)
     support._prepare_edge_probe(host)
     support._await_persisted_admission_burst(host)
     operator_host, identity, ssh = support._operator_inputs(tmp_path)
@@ -515,6 +633,7 @@ def test_installed_transport_and_admission_recovery(  # noqa: PLR0915 - ordered 
         )
         == recovered_create
     )
+    _await_authorization_quiescent(host)
 
     tenant_id = recovered_create["tenantId"]
     canonical_origin = recovered_create["canonicalOrigin"]
@@ -569,6 +688,7 @@ def test_installed_transport_and_admission_recovery(  # noqa: PLR0915 - ordered 
         )
         == recovered_deploy
     )
+    _await_authorization_quiescent(host)
     support._assert_route(
         host, canonical_origin, status=200, body=b"bound artifact deployed only after recovery\n"
     )
@@ -625,6 +745,7 @@ def test_installed_transport_and_admission_recovery(  # noqa: PLR0915 - ordered 
         )
         == renamed_after_reload_failure
     )
+    _await_authorization_quiescent(host)
     support._assert_route(
         host, canonical_origin, status=200, body=b"bound artifact deployed only after recovery\n"
     )
@@ -668,6 +789,7 @@ def test_installed_transport_and_admission_recovery(  # noqa: PLR0915 - ordered 
         )
         == disconnected_result
     )
+    _await_authorization_quiescent(host)
     support._assert_route(host, canonical_origin, status=404)
 
     termination_request = support._request(
@@ -738,6 +860,7 @@ def test_installed_transport_and_admission_recovery(  # noqa: PLR0915 - ordered 
         )
         == terminated_result
     )
+    _await_authorization_quiescent(host)
     support._assert_route(
         host, canonical_origin, status=200, body=b"bound artifact deployed only after recovery\n"
     )
@@ -745,6 +868,190 @@ def test_installed_transport_and_admission_recovery(  # noqa: PLR0915 - ordered 
         remaining_intent = host.run("find %s -mindepth 1 -maxdepth 1 -print -quit", intent_root)
         assert remaining_intent.rc == 0, remaining_intent.stderr
         assert remaining_intent.stdout == ""
+
+    observed_path = f"{support.STATE_ROOT}/tenants/{tenant_id}/observed.json"
+    desired_before_fault_matrix = support._read_state(host, desired_path)
+    observed_before_fault_matrix = support._read_state(host, observed_path)
+    caddy_deploy_content = b"Caddy-fault-recovered M3.8 release\n"
+    caddy_deploy = _exercise_caddy_failure_recovery(
+        host,
+        support._request("deploy", next(identities), tenantId=tenant_id),
+        artifact=support._deployment_zip(caddy_deploy_content),
+        assert_rolled_back=lambda: _assert_tenant_snapshot(
+            host,
+            _TenantSnapshot(
+                tenant_id,
+                canonical_origin,
+                desired_before_fault_matrix,
+                observed_before_fault_matrix,
+                200,
+                b"bound artifact deployed only after recovery\n",
+            ),
+        ),
+    )
+    assert support._lifecycle(caddy_deploy) == "active"
+    caddy_deployment = support._desired_deployment(caddy_deploy)
+    support._assert_route(host, canonical_origin, status=200, body=caddy_deploy_content)
+
+    desired_before_caddy_rollback = support._read_state(host, desired_path)
+    observed_before_caddy_rollback = support._read_state(host, observed_path)
+    caddy_rollback = _exercise_caddy_failure_recovery(
+        host,
+        support._request(
+            "rollback",
+            next(identities),
+            tenantId=tenant_id,
+            deploymentId=support._desired_deployment(recovered_deploy),
+        ),
+        assert_rolled_back=lambda: _assert_tenant_snapshot(
+            host,
+            _TenantSnapshot(
+                tenant_id,
+                canonical_origin,
+                desired_before_caddy_rollback,
+                observed_before_caddy_rollback,
+                200,
+                caddy_deploy_content,
+            ),
+        ),
+    )
+    assert support._lifecycle(caddy_rollback) == "active"
+    assert support._desired_deployment(caddy_rollback) != caddy_deployment
+    support._assert_route(
+        host, canonical_origin, status=200, body=b"bound artifact deployed only after recovery\n"
+    )
+
+    desired_before_caddy_suspend = support._read_state(host, desired_path)
+    observed_before_caddy_suspend = support._read_state(host, observed_path)
+    caddy_suspend = _exercise_caddy_failure_recovery(
+        host,
+        support._request("suspend", next(identities), tenantId=tenant_id),
+        assert_rolled_back=lambda: _assert_tenant_snapshot(
+            host,
+            _TenantSnapshot(
+                tenant_id,
+                canonical_origin,
+                desired_before_caddy_suspend,
+                observed_before_caddy_suspend,
+                200,
+                b"bound artifact deployed only after recovery\n",
+            ),
+        ),
+    )
+    assert support._lifecycle(caddy_suspend) == "suspended"
+    support._assert_route(host, canonical_origin, status=404)
+
+    resumed_for_reconcile = support._submit(
+        tmp_path,
+        operator_host,
+        identity,
+        ssh,
+        support._request("resume", next(identities), tenantId=tenant_id),
+    )
+    assert support._lifecycle(resumed_for_reconcile) == "active"
+    _await_authorization_quiescent(host)
+    desired_before_caddy_reconcile = support._read_state(host, desired_path)
+    drifted_observed = support._read_state(host, observed_path)
+    drifted_observed["desiredManifestDigest"] = {
+        "algorithm": "sha256",
+        "format": "lowerduckpond-manifest-v1",
+        "value": "0" * 64,
+    }
+    support._replace_state(host, observed_path, drifted_observed)
+    caddy_reconcile = _exercise_caddy_failure_recovery(
+        host,
+        support._request("reconcile", next(identities), tenantId=tenant_id),
+        assert_rolled_back=lambda: _assert_tenant_snapshot(
+            host,
+            _TenantSnapshot(
+                tenant_id,
+                canonical_origin,
+                desired_before_caddy_reconcile,
+                drifted_observed,
+                200,
+                b"bound artifact deployed only after recovery\n",
+            ),
+        ),
+    )
+    assert support._lifecycle(caddy_reconcile) == "active"
+    assert (
+        support._read_state(host, observed_path)["desiredManifestDigest"]
+        == manifest_digest(support._manifest(caddy_reconcile)).to_dict()
+    )
+
+    overlap_content = b"Ansible-overlapped M3.8 release\n"
+    overlap_deploy = _exercise_ansible_worker_overlap(
+        host,
+        support._request("deploy", next(identities), tenantId=tenant_id),
+        artifact=support._deployment_zip(overlap_content),
+    )
+    assert overlap_deploy["status"] == "succeeded"
+    assert support._lifecycle(overlap_deploy) == "active"
+    overlap_deployment = support._desired_deployment(overlap_deploy)
+    support._assert_route(host, canonical_origin, status=200, body=overlap_content)
+
+    ansible_rollback = _exercise_ansible_worker_overlap(
+        host,
+        support._request(
+            "rollback",
+            next(identities),
+            tenantId=tenant_id,
+            deploymentId=support._desired_deployment(recovered_deploy),
+        ),
+    )
+    assert ansible_rollback["status"] == "succeeded"
+    assert support._lifecycle(ansible_rollback) == "active"
+    assert support._desired_deployment(ansible_rollback) != overlap_deployment
+    support._assert_route(
+        host, canonical_origin, status=200, body=b"bound artifact deployed only after recovery\n"
+    )
+
+    ansible_suspend = _exercise_ansible_worker_overlap(
+        host,
+        support._request("suspend", next(identities), tenantId=tenant_id),
+    )
+    assert ansible_suspend["status"] == "succeeded"
+    assert support._lifecycle(ansible_suspend) == "suspended"
+    support._assert_route(host, canonical_origin, status=404)
+
+    ansible_resume = _exercise_ansible_worker_overlap(
+        host,
+        support._request("resume", next(identities), tenantId=tenant_id),
+    )
+    assert ansible_resume["status"] == "succeeded"
+    assert support._lifecycle(ansible_resume) == "active"
+    support._assert_route(
+        host, canonical_origin, status=200, body=b"bound artifact deployed only after recovery\n"
+    )
+
+    observed_before_ansible_rename = support._read_state(host, observed_path)
+    ansible_rename = _exercise_ansible_worker_overlap(
+        host,
+        support._request(
+            "rename",
+            next(identities),
+            tenantId=tenant_id,
+            slug=f"{slug}-ansible-overlap",
+        ),
+    )
+    assert ansible_rename["status"] == "succeeded"
+    assert support._lifecycle(ansible_rename) == "active"
+    support._replace_state(host, observed_path, observed_before_ansible_rename)
+
+    ansible_reconcile = _exercise_ansible_worker_overlap(
+        host,
+        support._request("reconcile", next(identities), tenantId=tenant_id),
+    )
+    assert ansible_reconcile["status"] == "succeeded"
+    assert support._manifest(ansible_reconcile) == support._manifest(ansible_rename)
+    repaired_observed = support._read_state(host, observed_path)
+    assert (
+        repaired_observed["desiredManifestDigest"]
+        == manifest_digest(support._manifest(ansible_rename)).to_dict()
+    )
+    support._assert_route(
+        host, canonical_origin, status=200, body=b"bound artifact deployed only after recovery\n"
+    )
 
     contested_slug = f"{slug}-contested"
     contested = [
@@ -800,6 +1107,7 @@ def test_installed_transport_and_admission_recovery(  # noqa: PLR0915 - ordered 
         )
         == results_by_correlation[winning_request["correlationId"]]
     )
+    _await_authorization_quiescent(host)
     reconciled = host.run("systemctl start --wait lowerduckpond-static-reconcile.service")
     assert reconciled.rc == 0, reconciled.stderr
     assert [_await_result(host, job_id) for job_id in contested_jobs] == contested_results
