@@ -402,6 +402,46 @@ def test_authoritative_tenant_generation_fails_closed_on_release_drift(
     )
 
 
+def test_runtime_authoritative_generation_does_not_traverse_retained_releases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transaction = SimpleNamespace(measure_inventory=lambda: SimpleNamespace(tenant_ids=("tenant",)))
+    repository = SimpleNamespace(
+        publication_transaction=lambda **_arguments: nullcontext(transaction)
+    )
+    monkeypatch.setattr(
+        entrypoints,
+        "StateRepository",
+        lambda *_arguments, **_keywords: nullcontext(repository),
+    )
+    monkeypatch.setattr(
+        entrypoints,
+        "_tenant_runtime_state_matches_under_lock",
+        lambda *_arguments, **_keywords: True,
+    )
+
+    def unexpected_release_traversal(*_arguments: object, **_keywords: object) -> bool:
+        pytest.fail("routine runtime health traversed retained release content")
+
+    monkeypatch.setattr(
+        entrypoints,
+        "_all_tenant_release_state_matches_under_lock",
+        unexpected_release_traversal,
+    )
+    runtime = SimpleNamespace(using_held_publication_lock=lambda _repository: nullcontext())
+
+    assert entrypoints._authoritative_caddy_generation_matches(
+        runtime,  # type: ignore[arg-type]
+        object(),  # type: ignore[arg-type]
+        binary=object(),  # type: ignore[arg-type]
+        environment=b"environment",
+        origin_pull_ca_der=(b"ca",),
+        origin_pull_required=True,
+        startup=object(),  # type: ignore[arg-type]
+        verify_release_integrity=False,
+    )
+
+
 def test_authoritative_platform_generation_fails_closed_on_drift(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

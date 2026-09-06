@@ -67,7 +67,7 @@ check 'node exporter service is active' \
     systemctl is-active --quiet prometheus-node-exporter.service
 {% if caddy_generation_enabled | bool %}
 check_exact_output 'Selected Caddy generation matches authoritative host state' current \
-    /usr/local/libexec/lowerduckpond/check-caddy-generation
+    /usr/local/libexec/lowerduckpond/check-caddy-runtime-generation
 {% else %}
 check 'Caddy configuration validates' \
     /usr/local/libexec/lowerduckpond/caddy-validate /etc/caddy/Caddyfile

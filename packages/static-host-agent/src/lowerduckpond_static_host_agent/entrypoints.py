@@ -515,7 +515,8 @@ def caddy_bootstrap_main(arguments: list[str] | None = None) -> int:
     values = sys.argv[1:] if arguments is None else arguments
     check_only = bool(values and values[0] == "--check")
     authoritative_check = bool(values and values[0] == "--authoritative-check")
-    if check_only or authoritative_check:
+    runtime_authoritative_check = bool(values and values[0] == "--runtime-authoritative-check")
+    if check_only or authoritative_check or runtime_authoritative_check:
         values = values[1:]
     if (
         len(values) < _CADDY_BOOTSTRAP_MINIMUM_ARGUMENTS
@@ -586,7 +587,7 @@ def caddy_bootstrap_main(arguments: list[str] | None = None) -> int:
             ) as store,
             CaddyStartupStore.open(_CADDY_INTENT_ROOT, expected_owner=0) as startup,
         ):
-            if authoritative_check:
+            if authoritative_check or runtime_authoritative_check:
                 current = _authoritative_caddy_generation_matches(
                     runtime,
                     store,
@@ -595,6 +596,7 @@ def caddy_bootstrap_main(arguments: list[str] | None = None) -> int:
                     origin_pull_ca_der=origin_pull_ca_der,
                     origin_pull_required=origin_pull_required,
                     startup=startup,
+                    verify_release_integrity=authoritative_check,
                 )
                 if not current:
                     raise CaddyRuntimeError("selected Caddy generation is not authoritative")
@@ -631,7 +633,7 @@ def caddy_bootstrap_main(arguments: list[str] | None = None) -> int:
         ValueError,
     ):
         return _fail("caddy_generation_bootstrap_failed", 1)
-    if authoritative_check:
+    if authoritative_check or runtime_authoritative_check:
         os.write(sys.stdout.fileno(), b"current\n")
     elif check_only:
         os.write(sys.stdout.fileno(), f"{state.value}\n".encode("ascii"))
@@ -649,8 +651,15 @@ def _authoritative_caddy_generation_matches(  # noqa: PLR0913
     origin_pull_ca_der: tuple[bytes, ...],
     origin_pull_required: bool,
     startup: CaddyStartupStore,
+    verify_release_integrity: bool = True,
 ) -> bool:
-    """Choose the empty or tenant check under one ordered state snapshot."""
+    """Choose the empty or tenant check under one ordered state snapshot.
+
+    Routine health may bind the selected routes to authoritative runtime state
+    without traversing every retained release. Acceptance and publication-open
+    authorization additionally verify all release content while holding the
+    same ordered locks.
+    """
 
     with (
         StateRepository(_STATE_ROOT, expected_owner=_EXPECTED_OWNER) as repository,
@@ -661,9 +670,12 @@ def _authoritative_caddy_generation_matches(  # noqa: PLR0913
             return _tenant_runtime_state_matches_under_lock(
                 runtime,
                 transaction,
-            ) and _all_tenant_release_state_matches_under_lock(
-                repository,
-                transaction,
+            ) and (
+                not verify_release_integrity
+                or _all_tenant_release_state_matches_under_lock(
+                    repository,
+                    transaction,
+                )
             )
         return (
             platform_generation_state_under_lock(

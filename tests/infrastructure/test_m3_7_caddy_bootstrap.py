@@ -256,13 +256,18 @@ def test_production_acceptance_and_health_use_the_generation_check() -> None:
     assert "acceptance_authoritative_caddy_generation.stdout | trim != 'current'" in acceptance
     assert "Inspect the authoritative tenant inventory" not in acceptance
     assert "/usr/bin/find" not in acceptance
-    assert "check-caddy-generation" in health
+    assert "check-caddy-runtime-generation" in health
+    assert "/usr/local/libexec/lowerduckpond/check-caddy-generation" not in health
     assert "Selected Caddy generation matches authoritative host state" in health
     assert "check-current-caddy-generation" not in health
     assert "find /var/lib/lowerduckpond/static/tenants" not in health
     assert "bootstrap-caddy-generation" in check
     assert "static_host_agent_artifact_sha256" in check
-    assert "--authoritative-check" in check
+    assert "caddy_generation_check_mode | default('--authoritative-check')" in check
+
+    tasks = (_CADDY_ROLE / "tasks/main.yml").read_text(encoding="utf-8")
+    assert "check-caddy-runtime-generation" in tasks
+    assert "caddy_generation_check_mode: --runtime-authoritative-check" in tasks
 
 
 def test_enabled_publication_refuses_host_agent_selection_drift_before_mutation() -> None:
@@ -310,6 +315,8 @@ def test_live_publication_refuses_operator_boundary_drift_before_mutation() -> N
     assert guard in tasks
     assert tasks.index(guard) < tasks.index(first_mutation)
     assert "static_operator_publication_is_live" in compatibility
+    assert "b64decode | from_json" in compatibility
+    assert "static_operator_publication_configuration_document" in compatibility
     assert "check_mode: true" in compatibility
     for boundary in (
         "static_operator_live_group_probe",
@@ -334,28 +341,53 @@ def test_publication_opens_only_after_complete_host_convergence() -> None:
         _ROOT / "config/ansible/roles/static_host_agent/tasks/enable-publication.yml"
     ).read_text(encoding="utf-8")
 
+    inventory_index = tasks.index(
+        "Inspect authoritative tenant inventory before disabled convergence"
+    )
+    close_index = tasks.index("Close job issuance before inspecting disabled-state tenant history")
+    timer_stop_index = tasks.index(
+        "Stop reconciliation scheduling before inspecting disabled-state tenant history"
+    )
+    operator_drain_index = tasks.index(
+        "Drain admitted static operator requests before inspecting disabled-state tenant history"
+    )
+    worker_drain_index = tasks.index(
+        "Drain admitted static workers before inspecting disabled-state tenant history"
+    )
     guard_index = tasks.index("Refuse disabling publication after tenant history exists")
+    assert (
+        close_index < timer_stop_index < operator_drain_index < worker_drain_index < inventory_index
+    )
+    assert (
+        "static_host_agent_publication_gate_probe.rc == 0"
+        in tasks[timer_stop_index:operator_drain_index]
+    )
     assert guard_index < tasks.index(
         "Create the shared Caddy system group before generation storage"
     )
-    assert "Inspect authoritative tenant inventory before disabled convergence" in tasks
     assert "static_host_agent_disabled_tenant_inventory.stdout" in tasks
-    assert "Hold static publication closed until complete host convergence" in tasks
+    assert "Hold enabled static publication closed until complete host convergence" in tasks
     assert "static_publication_gate_enabled: false" in tasks
     assert "static_publication_gate_enabled: true" not in tasks
-    close_index = tasks.index("Hold static publication closed until complete host convergence")
+    enabled_close_index = tasks.index(
+        "Hold enabled static publication closed until complete host convergence"
+    )
     assert (
         tasks.index("Refuse host-agent command drift while tenant publication is enabled")
-        < close_index
+        < enabled_close_index
     )
-    assert close_index < tasks.index("Install host-agent artifact commands")
-    assert close_index < tasks.index("Wait for pre-lock static host-agent processes to finish")
+    assert enabled_close_index < tasks.index("Install host-agent artifact commands")
+    assert enabled_close_index < tasks.index(
+        "Wait for pre-lock static host-agent processes to finish"
+    )
     assert "Probe the existing static publication state before host convergence" in tasks
     assert "static_host_agent_publication_gate_probe.rc not in [0, 78]" in tasks
-    assert "not static_publication_enabled | bool" in tasks[close_index:]
+    assert "not static_publication_enabled | bool" in tasks[close_index:inventory_index]
     assert (
-        "when: static_host_agent_publication_configuration.stat.exists"
-        in tasks[close_index : tasks.index("Create the versioned host-agent installation root")]
+        "- static_host_agent_publication_configuration.stat.exists"
+        in tasks[
+            enabled_close_index : tasks.index("Create the versioned host-agent installation root")
+        ]
     )
     assert "Initialize the static publication configuration closed" in tasks
     assert "when: not static_host_agent_publication_configuration.stat.exists" in tasks

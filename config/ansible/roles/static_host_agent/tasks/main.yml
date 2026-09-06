@@ -1,4 +1,79 @@
 ---
+- name: Inspect the static publication configuration before host convergence
+  ansible.builtin.stat:
+    path: /etc/lowerduckpond/static-publication.json
+    follow: false
+  register: static_host_agent_publication_configuration
+
+- name: Probe the existing static publication state before host convergence
+  ansible.builtin.command:
+    argv:
+      - /usr/local/libexec/lowerduckpond/static-publication-gate
+      - job-issuance
+  register: static_host_agent_publication_gate_probe
+  changed_when: false
+  failed_when: static_host_agent_publication_gate_probe.rc not in [0, 78]
+  when: static_host_agent_publication_configuration.stat.exists
+
+- name: Close job issuance before inspecting disabled-state tenant history
+  ansible.builtin.template:
+    src: static-publication.json.j2
+    dest: /etc/lowerduckpond/static-publication.json
+    owner: root
+    group: root
+    mode: "0400"
+  vars:
+    static_publication_gate_enabled: false
+  when:
+    - not static_publication_enabled | bool
+    - static_host_agent_publication_configuration.stat.exists
+
+- name: Stop reconciliation scheduling before inspecting disabled-state tenant history
+  ansible.builtin.systemd_service:
+    name: lowerduckpond-static-reconcile.timer
+    state: stopped
+  when:
+    - not static_publication_enabled | bool
+    - static_host_agent_publication_configuration.stat.exists
+    - static_host_agent_publication_gate_probe.rc == 0
+
+- name: Drain admitted static operator requests before inspecting disabled-state tenant history
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/pgrep
+      - --full
+      - --
+      - >-
+        [s]tatic-operator-adapter|[s]tatic-request-decoder
+  register: static_host_agent_disabled_active_operator_processes
+  changed_when: false
+  failed_when: static_host_agent_disabled_active_operator_processes.rc not in [0, 1]
+  until: static_host_agent_disabled_active_operator_processes.rc == 1
+  retries: 61
+  delay: 5
+  when:
+    - not static_publication_enabled | bool
+    - static_host_agent_publication_configuration.stat.exists
+
+- name: Drain admitted static workers before inspecting disabled-state tenant history
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - list-units
+      - --state=active,activating,deactivating,reloading,refreshing,maintenance
+      - --plain
+      - --no-legend
+      - lowerduckpond-static-reconcile.service
+      - lowerduckpond-static-worker@*.service
+  register: static_host_agent_disabled_active_processes
+  changed_when: false
+  until: static_host_agent_disabled_active_processes.stdout | trim | length == 0
+  retries: 61
+  delay: 5
+  when:
+    - not static_publication_enabled | bool
+    - static_host_agent_publication_configuration.stat.exists
+
 - name: Inspect authoritative tenant storage before disabled convergence
   ansible.builtin.stat:
     path: "{{ static_host_agent_state_root }}/tenants"
@@ -146,23 +221,7 @@
     quiet: true
   when: static_publication_enabled | bool
 
-- name: Inspect the static publication configuration before host convergence
-  ansible.builtin.stat:
-    path: /etc/lowerduckpond/static-publication.json
-    follow: false
-  register: static_host_agent_publication_configuration
-
-- name: Probe the existing static publication state before host convergence
-  ansible.builtin.command:
-    argv:
-      - /usr/local/libexec/lowerduckpond/static-publication-gate
-      - job-issuance
-  register: static_host_agent_publication_gate_probe
-  changed_when: false
-  failed_when: static_host_agent_publication_gate_probe.rc not in [0, 78]
-  when: static_host_agent_publication_configuration.stat.exists
-
-- name: Hold static publication closed until complete host convergence
+- name: Hold enabled static publication closed until complete host convergence
   ansible.builtin.template:
     src: static-publication.json.j2
     dest: /etc/lowerduckpond/static-publication.json
@@ -171,10 +230,10 @@
     mode: "0400"
   vars:
     static_publication_gate_enabled: false
-  changed_when: >-
-    not static_publication_enabled | bool and
-    static_host_agent_publication_gate_probe.rc == 0
-  when: static_host_agent_publication_configuration.stat.exists
+  changed_when: false
+  when:
+    - static_publication_enabled | bool
+    - static_host_agent_publication_configuration.stat.exists
 
 - name: Create the versioned host-agent installation root
   ansible.builtin.file:

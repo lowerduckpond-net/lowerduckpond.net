@@ -382,11 +382,26 @@ def _assert_ansible_refuses_generation_input_drift(host: Host) -> None:
 def _assert_ansible_refuses_live_operator_boundary_drift(host: Host) -> None:
     adapter = "/usr/local/libexec/lowerduckpond/static-operator-adapter"
     backup = "/run/lowerduckpond-molecule/static-operator-adapter.backup"
+    configuration_backup = "/run/lowerduckpond-molecule/static-publication.json.backup"
+    reformatted_configuration = json.dumps(
+        {
+            "static_publication_enabled": True,
+            "format": "lowerduckpond-static-publication-gate-v1",
+        },
+        indent=2,
+        sort_keys=False,
+    )
     prepared = host.run(
         "install --owner=root --group=root --mode=0755 %s %s && "
+        "install --owner=root --group=root --mode=0400 %s %s && "
+        "printf '%%s\\n' %s > %s && "
         "printf '\\n# disposable-live-drift\\n' >> %s",
         adapter,
         backup,
+        PUBLICATION_CONFIGURATION,
+        configuration_backup,
+        reformatted_configuration,
+        PUBLICATION_CONFIGURATION,
         adapter,
     )
     assert prepared.rc == 0, prepared.stderr
@@ -406,10 +421,15 @@ def _assert_ansible_refuses_live_operator_boundary_drift(host: Host) -> None:
         assert issuance.rc == 0, issuance.stderr
     finally:
         restored = host.run(
-            "install --owner=root --group=root --mode=0755 %s %s && rm -f %s",
+            "install --owner=root --group=root --mode=0755 %s %s && "
+            "install --owner=root --group=root --mode=0400 %s %s && "
+            "rm -f %s %s",
             backup,
             adapter,
+            configuration_backup,
+            PUBLICATION_CONFIGURATION,
             backup,
+            configuration_backup,
         )
         assert restored.rc == 0, restored.stderr
 
@@ -431,8 +451,14 @@ def _assert_ansible_refuses_publication_disable(host: Host) -> None:
     assert selected_after.rc == 0, selected_after.stderr
     assert configuration_after.rc == 0, configuration_after.stderr
     assert selected_after.stdout == selected_before.stdout
-    assert configuration_after.stdout == configuration_before.stdout
+    assert configuration_after.stdout != configuration_before.stdout
     assert host.run("systemctl is-active --quiet caddy.service").rc == 0
+    assert host.run("systemctl is-active --quiet lowerduckpond-static-reconcile.timer").rc != 0
+    issuance = host.run("%s job-issuance", PUBLICATION_GATE)
+    assert issuance.rc == _PUBLICATION_DISABLED_STATUS
+
+    _reapply_ansible(expected_changes=2)
+    assert host.run("systemctl is-active --quiet lowerduckpond-static-reconcile.timer").rc == 0
     issuance = host.run("%s job-issuance", PUBLICATION_GATE)
     assert issuance.rc == 0, issuance.stderr
 

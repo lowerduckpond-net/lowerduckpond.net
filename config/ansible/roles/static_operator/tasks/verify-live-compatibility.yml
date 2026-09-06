@@ -27,15 +27,23 @@
   register: static_operator_publication_configuration_content
   when: static_operator_publication_configuration.stat.exists
 
+- name: Parse the static publication gate before operator convergence
+  ansible.builtin.set_fact:
+    static_operator_publication_configuration_document: >-
+      {{ static_operator_publication_configuration_content.content |
+      b64decode | from_json }}
+  when: static_operator_publication_configuration.stat.exists
+
 - name: Determine whether the installed operator boundary is live
   ansible.builtin.set_fact:
     static_operator_publication_is_live: >-
       {{
         static_operator_publication_configuration.stat.exists and
-        (static_operator_publication_configuration_content.content |
-         default('') | b64decode | trim) ==
-        '{"format":"lowerduckpond-static-publication-gate-v1",' ~
-        '"static_publication_enabled":true}'
+        (static_operator_publication_configuration_document | default({})) ==
+        {
+          'format': 'lowerduckpond-static-publication-gate-v1',
+          'static_publication_enabled': true,
+        }
       }}
 
 - name: Probe the live static-operator group contract
