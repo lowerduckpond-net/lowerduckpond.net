@@ -131,6 +131,65 @@ def _await_result(host: Host, job_id: str, *, timeout: float = 60.0) -> dict[str
     raise AssertionError(f"authorization result {job_id} did not become durable")
 
 
+def _await_authorization_quiescent(
+    host: Host,
+    job_id: str | None = None,
+    *,
+    timeout: float = 30.0,
+) -> None:
+    unit = f"lowerduckpond-static-worker@{job_id}.service" if job_id is not None else None
+    deadline = time.monotonic() + timeout
+    reconcile_drained = False
+    settled_once = False
+    while time.monotonic() < deadline:
+        properties: set[str] = set()
+        if unit is not None:
+            state = host.run(
+                "systemctl show --property=ActiveState --property=SubState "
+                "--property=Result --property=ExecMainStatus %s",
+                shlex.quote(unit),
+            )
+            assert state.rc == 0, state.stderr
+            properties = set(state.stdout.splitlines())
+        if unit is None or "ActiveState=inactive" in properties:
+            if unit is not None:
+                assert {"SubState=dead", "Result=success", "ExecMainStatus=0"} <= properties
+            if not reconcile_drained:
+                reconciled = host.run(
+                    "systemctl start --wait lowerduckpond-static-reconcile.service"
+                )
+                assert reconciled.rc == 0, reconciled.stderr
+                reconcile_drained = True
+                continue
+            active = host.run(
+                "systemctl list-units "
+                "--state=active,activating,deactivating,reloading,refreshing,maintenance "
+                "--plain --no-legend lowerduckpond-static-reconcile.service "
+                "'lowerduckpond-static-worker@*.service'"
+            )
+            assert active.rc == 0, active.stderr
+            jobs = host.run(
+                "systemctl list-jobs --no-legend --no-pager "
+                "lowerduckpond-static-reconcile.service "
+                "'lowerduckpond-static-worker@*.service'"
+            )
+            assert jobs.rc == 0, jobs.stderr
+            lock = host.run(
+                "flock --exclusive --nonblock %s true",
+                shlex.quote(f"{support.STATE_ROOT}/locks/tenant-state.lock"),
+            )
+            if active.stdout == "" and jobs.stdout == "" and lock.rc == 0:
+                if settled_once:
+                    return
+                settled_once = True
+            else:
+                settled_once = False
+        assert "ActiveState=failed" not in properties
+        time.sleep(0.1)
+    subject = f"worker {job_id}" if job_id is not None else "authorization system"
+    raise AssertionError(f"{subject} did not become quiescent")
+
+
 def _start_reconcile_timer(host: Host) -> None:
     started = host.run("systemctl start lowerduckpond-static-reconcile.timer")
     assert started.rc == 0, started.stderr
@@ -429,6 +488,7 @@ def test_installed_transport_and_admission_recovery(  # noqa: PLR0915 - ordered 
     timer_stopped = host.run("systemctl stop lowerduckpond-static-reconcile.timer")
     assert timer_stopped.rc == 0, timer_stopped.stderr
     request.addfinalizer(lambda: _start_reconcile_timer(host))
+    _await_authorization_quiescent(host)
 
     lost_handoff_request = support._request(
         "create",
@@ -442,6 +502,7 @@ def test_installed_transport_and_admission_recovery(  # noqa: PLR0915 - ordered 
     reconciled = host.run("systemctl start --wait lowerduckpond-static-reconcile.service")
     assert reconciled.rc == 0, reconciled.stderr
     recovered_create = _await_result(host, lost_handoff_job)
+    _await_authorization_quiescent(host, lost_handoff_job)
     assert recovered_create["status"] == "succeeded"
     assert support._lifecycle(recovered_create) == "undeployed"
     assert (
@@ -494,6 +555,7 @@ def test_installed_transport_and_admission_recovery(  # noqa: PLR0915 - ordered 
     recovered = host.run("systemctl start --wait lowerduckpond-static-reconcile.service")
     assert recovered.rc == 0, recovered.stderr
     recovered_deploy = _await_result(host, replaced_job)
+    _await_authorization_quiescent(host, replaced_job)
     assert recovered_deploy["status"] == "succeeded"
     assert support._lifecycle(recovered_deploy) == "active"
     assert (
@@ -551,6 +613,7 @@ def test_installed_transport_and_admission_recovery(  # noqa: PLR0915 - ordered 
     recovered_reload = host.run("systemctl start --wait lowerduckpond-static-reconcile.service")
     assert recovered_reload.rc == 0, recovered_reload.stderr
     renamed_after_reload_failure = _await_result(host, caddy_failure_job)
+    _await_authorization_quiescent(host, caddy_failure_job)
     assert renamed_after_reload_failure["status"] == "succeeded"
     assert (
         support._submit(
@@ -592,6 +655,7 @@ def test_installed_transport_and_admission_recovery(  # noqa: PLR0915 - ordered 
         _remove_worker_delay(host)
         support._complete_correlation_pacing(new_correlation)
     disconnected_result = _await_result(host, disconnect_job)
+    _await_authorization_quiescent(host, disconnect_job)
     assert disconnected_result["status"] == "succeeded"
     assert support._lifecycle(disconnected_result) == "suspended"
     assert (
@@ -661,6 +725,7 @@ def test_installed_transport_and_admission_recovery(  # noqa: PLR0915 - ordered 
     )
     assert recovered_termination.rc == 0, recovered_termination.stderr
     terminated_result = _await_result(host, termination_job)
+    _await_authorization_quiescent(host, termination_job)
     assert terminated_result["status"] == "succeeded"
     assert support._lifecycle(terminated_result) == "active"
     assert (
