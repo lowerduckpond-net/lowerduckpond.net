@@ -4,14 +4,14 @@ This roadmap turns the architecture in [`architecture.md`](architecture.md) into
 
 ## Progress
 
-Status as of 2026-09-02:
+Status as of 2026-09-06:
 
 | Milestone | Status | Outcome |
 | --- | --- | --- |
 | 0: Repository foundation | Complete | The public repository, development workflow, CI gates, application boundaries, and architecture decisions are established. |
 | 1: DigitalOcean foundation | Complete | OpenTofu manages the production network, Droplet, reserved IP, firewall, DNS, state, and durable backup storage; the guarded rebuild drill succeeded. |
 | 2: Reproducible host configuration | Complete | One trusted-workstation command converges production idempotently and passes host, HTTPS, backup, restore, and post-reboot acceptance checks. |
-| 3: Static tenant MVP | Current | M3.0 through M3.7 are complete; M3.8 core tenant lifecycle is next. Production publication remains disabled. |
+| 3: Static tenant MVP | Current | M3.0 through M3.8 are complete; M3.9 portable export and import is next. Production publication remains disabled. |
 | 4: Control plane and lifecycle automation | Planned | Expose the static lifecycle through the FastAPI control plane with approvals, jobs, policy, and audit history. |
 | 5: Backup, observability, and operations | Planned | Complete platform-level recovery, central observability, alerting, and operator runbooks. Host backup and monitoring foundations arrived early in Milestone 2. |
 | 6: Dynamic PHP pilot | Planned | Introduce isolated PHP and tenant-scoped SQL only after the static platform and recovery path are proven. |
@@ -38,14 +38,17 @@ expected-state binding, immutable exact-retry issuance, fixed-UUID systemd
 handoff, immutable terminal-result delivery, authenticated export plumbing,
 and startup repair are complete. Its live production preflight, idempotent
 convergence, acceptance, backup, restore, and dedicated-operator denial proof
-passed. Lifecycle handlers still
-return a versioned mutation-free `not_implemented` result until M3.8.
+passed.
 M3.7's complete immutable Caddy generations, platform-only routes, fail-safe
 host bootstrap, and two-zone Cloudflare edge are live. Full (strict),
 account-specific Authenticated Origin Pulls, Cloudflare-only ingress,
 direct-origin denial, reboot recovery, forwarded-address authenticity,
 browser policy, and provider-owned reserved-namespace isolation passed their
-production gates. M3.8 core tenant lifecycle is next.
+production gates. M3.8's replay-safe create, deploy, rollback, suspend, resume,
+rename, and reconcile jobs are complete. Their durable tenant and release
+authority, immutable Caddy publication, crash recovery, retention, concurrency,
+failure-injection, reboot, and Ansible-overlap gates passed on the disposable
+installed host. M3.9 portable export and import is next.
 Production publication remains disabled, and Milestone 3 remains incomplete
 until every phase gate through M3.12 passes.
 
