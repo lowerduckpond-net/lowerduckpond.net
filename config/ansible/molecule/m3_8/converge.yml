@@ -37,6 +37,11 @@
     m3_8_cloudflare_api_token: >-
       {{ lookup('ansible.builtin.env', 'M3_8_CLOUDFLARE_API_TOKEN') |
          default('0000000000000000000000000000000000000000', true) }}
+    m3_8_docker_host: >-
+      {{ lookup('ansible.builtin.env', 'DOCKER_HOST') }}
+    m3_8_operator_transport_path: >-
+      {{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY')
+         }}/operator-transport.json
   tasks:
     - name: Build the locked static host-agent artifact
       ansible.builtin.command:
@@ -182,6 +187,24 @@
         - "{{ m3_8_https_server_request }}"
         - "{{ m3_8_https_server_certificate }}"
 
+    - name: Resolve the exact controller address used for operator transport
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - -I
+          - -B
+          - "{{ playbook_dir }}/resolve_operator_transport.py"
+          - "{{ m3_8_docker_host }}"
+          - lowerduckpond-ubuntu-2604
+      register: m3_8_operator_transport_source
+      changed_when: false
+
+    - name: Record the exact operator transport endpoint
+      ansible.builtin.copy:
+        content: "{{ m3_8_operator_transport_source.stdout | trim }}\n"
+        dest: "{{ m3_8_operator_transport_path }}"
+        mode: "0600"
+
     - name: Attach the pinned artifact to the installed host
       ansible.builtin.add_host:
         name: "{{ item }}"
@@ -195,6 +218,9 @@
           {{ m3_8_static_publication_enabled }}
         caddy_cloudflare_api_token: >-
           {{ m3_8_cloudflare_api_token }}
+        firewall_admin_source_cidrs:
+          - >-
+            {{ (m3_8_operator_transport_source.stdout | from_json).sourceCidr }}
         m3_8_origin_pull_client_key: >-
           {{ m3_8_origin_pull_client_key }}
         m3_8_origin_pull_client_certificate: >-

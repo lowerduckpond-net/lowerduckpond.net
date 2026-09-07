@@ -13,15 +13,13 @@ platforms:
     pre_build_image: false
     privileged: true
     command: /sbin/init
+    keep_volumes: false
     published_ports:
       - "2222:22"
     tmpfs:
       - /run
       - /run/lock
       - /tmp
-      - /etc/caddy:exec,size=8G,nr_inodes=1000000,mode=0755
-      - /srv/lowerduckpond:size=8G,nr_inodes=1000000,mode=0755
-      - /var/lib/lowerduckpond:size=8G,nr_inodes=1000000,mode=0755
 provisioner:
   name: ansible
   config_options:
@@ -34,7 +32,7 @@ provisioner:
         firewall_admin_source_cidrs:
           - 192.0.2.0/24
         base_start_time_synchronization: false
-        firewall_enable_service: false
+        firewall_enable_service: true
         caddy_cloudflare_api_token: "0000000000000000000000000000000000000000"
         caddy_domain: lowerduckpond.test
         caddy_tls_mode: internal
@@ -49,7 +47,7 @@ provisioner:
         backup_spaces_region: us-east-1
         backup_node_name: molecule
 verifier:
-  name: testinfra
+  name: ansible
 scenario:
   test_sequence:
     - destroy

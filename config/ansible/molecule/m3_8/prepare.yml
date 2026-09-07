@@ -1,3 +1,105 @@
 ---
-- name: Import the shared installed-host preparation
+- name: Prepare reboot-persistent ext4 qualification filesystems
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    m3_8_durable_images:
+      - image: /var/lib/lowerduckpond-m3-8-disks/caddy.ext4
+        label: m3_8_caddy
+        mount: /etc/caddy
+      - image: /var/lib/lowerduckpond-m3-8-disks/releases.ext4
+        label: m3_8_releases
+        mount: /srv/lowerduckpond
+      - image: /var/lib/lowerduckpond-m3-8-disks/state.ext4
+        label: m3_8_state
+        mount: /var/lib/lowerduckpond
+  tasks:
+    - name: Create the private durable-image directory
+      ansible.builtin.file:
+        path: /var/lib/lowerduckpond-m3-8-disks
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Allocate sparse durable filesystem images
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/truncate
+          - --size=8G
+          - "{{ item.image }}"
+        creates: "{{ item.image }}"
+      loop: "{{ m3_8_durable_images }}"
+
+    - name: Inspect durable filesystem image types
+      ansible.builtin.command:
+        argv:
+          - /usr/sbin/blkid
+          - --probe
+          - --output
+          - value
+          - --match-tag
+          - TYPE
+          - "{{ item.image }}"
+      loop: "{{ m3_8_durable_images }}"
+      register: m3_8_durable_image_types
+      changed_when: false
+      failed_when: false
+
+    - name: Refuse an unexpected durable filesystem image type
+      ansible.builtin.assert:
+        that:
+          - item.rc in [0, 2]
+          - item.stdout | trim in ['', 'ext4']
+        fail_msg: "The disposable durable filesystem image has an unexpected type."
+      loop: "{{ m3_8_durable_image_types.results }}"
+      loop_control:
+        label: "{{ item.item.image }}"
+
+    - name: Format new durable filesystem images as ext4
+      ansible.builtin.command:
+        argv:
+          - /usr/sbin/mkfs.ext4
+          - -F
+          - -q
+          - -m
+          - "0"
+          - -L
+          - "{{ item.item.label }}"
+          - "{{ item.item.image }}"
+      changed_when: true
+      loop: "{{ m3_8_durable_image_types.results }}"
+      loop_control:
+        label: "{{ item.item.image }}"
+      when: item.rc == 2
+
+    - name: Protect durable filesystem images
+      ansible.builtin.file:
+        path: "{{ item.image }}"
+        state: file
+        owner: root
+        group: root
+        mode: "0600"
+      loop: "{{ m3_8_durable_images }}"
+
+    - name: Create durable filesystem mount points
+      ansible.builtin.file:
+        path: "{{ item.mount }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      loop: "{{ m3_8_durable_images }}"
+
+    - name: Mount reboot-persistent disposable ext4 filesystems
+      ansible.posix.mount:
+        path: "{{ item.mount }}"
+        src: "{{ item.image }}"
+        fstype: ext4
+        opts: loop,nodev,nosuid
+        state: mounted
+      loop: "{{ m3_8_durable_images }}"
+
+- name: Import the shared installed-host preparation onto durable storage
   ansible.builtin.import_playbook: ../default/prepare.yml
