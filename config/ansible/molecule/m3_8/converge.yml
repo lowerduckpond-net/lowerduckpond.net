@@ -193,7 +193,9 @@
           - -c
           - |
             import ipaddress
+            import json
             import socket
+            import subprocess
             import sys
             from urllib.parse import urlsplit
 
@@ -205,10 +207,26 @@
                     connection.connect((endpoint.hostname, port))
                     source = connection.getsockname()[0]
             elif not endpoint.scheme or endpoint.scheme == "unix":
-                source = "192.0.2.1"
+                result = subprocess.run(
+                    ["/usr/bin/docker", "inspect", "lowerduckpond-ubuntu-2604"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                inspection = json.loads(result.stdout)
+                networks = inspection[0]["NetworkSettings"]["Networks"]
+                gateways = {
+                    network["Gateway"]
+                    for network in networks.values()
+                    if network.get("Gateway")
+                }
+                if len(gateways) != 1:
+                    raise SystemExit("M3.8 container gateway is ambiguous")
+                source = gateways.pop()
             else:
                 raise SystemExit("unsupported Docker endpoint for M3.8 transport")
-            print(f"{ipaddress.IPv4Address(source).compressed}/32")
+            address = ipaddress.ip_address(source)
+            print(f"{address.compressed}/{address.max_prefixlen}")
           - "{{ m3_8_docker_host }}"
       register: m3_8_operator_transport_source
       changed_when: false
