@@ -435,8 +435,14 @@ try:
                 if restored_load:
                     break
                 continue
+            if request_line in {{b"GET /metrics HTTP/1.0", b"GET /metrics HTTP/1.1"}}:
+                connection.sendall(
+                    b"HTTP/1.0 200 OK\\r\\n"
+                    b"Content-Length: 0\\r\\nConnection: close\\r\\n\\r\\n"
+                )
+                continue
             if request_line != b"POST /load HTTP/1.0":
-                raise RuntimeError("unexpected Caddy fault request")
+                raise RuntimeError(f"unexpected Caddy fault request: {{request_line!r}}")
             if not failed_load:
                 if block_on_load:
                     pathlib.Path(blocked_path).write_text("blocked\\n", encoding="ascii")
@@ -555,6 +561,11 @@ def _exercise_caddy_failure_recovery(
     result_path = f"{support.STATE_ROOT}/authorization/results/{job_id}.json"
     fault = _install_caddy_reload_fault(host)
     try:
+        health = host.run(
+            "/usr/bin/curl --fail --silent --show-error --unix-socket %s http://localhost/metrics",
+            shlex.quote(_CADDY_ADMIN_SOCKET),
+        )
+        assert health.rc == 0, health.stderr
         failed = host.run(
             "/usr/bin/systemctl start --wait lowerduckpond-static-worker@%s.service",
             job_id,
