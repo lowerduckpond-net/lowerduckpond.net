@@ -204,10 +204,15 @@ def _operator_inputs(tmp_path: Path) -> tuple[str, Path, Path]:
     )
     identity.chmod(0o600)
     host = urlsplit(os.environ.get("DOCKER_HOST", "")).hostname or "127.0.0.1"
+    transport_path = Path(os.environ["MOLECULE_EPHEMERAL_DIRECTORY"]) / "operator-transport.json"
+    transport = json.loads(transport_path.read_text(encoding="ascii"))
+    peer_address = transport["peerAddress"]
+    assert isinstance(peer_address, str)
     ssh = tmp_path / "ssh"
     ssh.write_text(
         "#!/bin/sh\n"
         "exec /usr/bin/ssh -p 2222 -o StrictHostKeyChecking=no "
+        f"-o {shlex.quote(f'Hostname={peer_address}')} "
         '-o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "$@"\n',
         encoding="ascii",
     )

@@ -25,6 +25,18 @@
           {{ lookup('ansible.builtin.env', 'MOLECULE_SCENARIO_DIRECTORY') }}
       changed_when: false
 
+    - name: Capture the pre-reboot reconciliation invocation
+      ansible.builtin.command:
+        cmd: >-
+          docker exec lowerduckpond-ubuntu-2604
+          systemctl show --property=InvocationID --value
+          lowerduckpond-static-reconcile.service
+      register: m3_8_pre_reboot_reconcile_invocation
+      changed_when: false
+      failed_when:
+        - m3_8_pre_reboot_reconcile_invocation.rc != 0 or
+          not (m3_8_pre_reboot_reconcile_invocation.stdout | trim)
+
     - name: Reboot the disposable systemd host
       ansible.builtin.command:
         cmd: docker restart --timeout 30 lowerduckpond-ubuntu-2604
@@ -50,6 +62,7 @@
           --property=SubState
           --property=Result
           --property=ExecMainStatus
+          --property=InvocationID
           lowerduckpond-static-reconcile.service
       register: m3_8_reboot_reconcile
       changed_when: false
@@ -60,6 +73,13 @@
         - "'SubState=dead' in m3_8_reboot_reconcile.stdout_lines"
         - "'Result=success' in m3_8_reboot_reconcile.stdout_lines"
         - "'ExecMainStatus=0' in m3_8_reboot_reconcile.stdout_lines"
+        - >-
+          ('InvocationID=' ~
+           (m3_8_pre_reboot_reconcile_invocation.stdout | trim)) not in
+          m3_8_reboot_reconcile.stdout_lines
+        - >-
+          m3_8_reboot_reconcile.stdout is
+          regex('(?m)^InvocationID=[0-9a-f]+$')
 
     - name: Verify exact persisted state and boot recovery
       ansible.builtin.command:

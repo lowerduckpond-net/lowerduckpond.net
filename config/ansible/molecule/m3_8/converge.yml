@@ -39,6 +39,9 @@
          default('0000000000000000000000000000000000000000', true) }}
     m3_8_docker_host: >-
       {{ lookup('ansible.builtin.env', 'DOCKER_HOST') }}
+    m3_8_operator_transport_path: >-
+      {{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY')
+         }}/operator-transport.json
   tasks:
     - name: Build the locked static host-agent artifact
       ansible.builtin.command:
@@ -203,9 +206,9 @@
             if endpoint.scheme in {"tcp", "http", "https", "ssh"} and endpoint.hostname:
                 default_ports = {"tcp": 2375, "http": 2375, "https": 2376, "ssh": 22}
                 port = endpoint.port or default_ports[endpoint.scheme]
-                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as connection:
-                    connection.connect((endpoint.hostname, port))
+                with socket.create_connection((endpoint.hostname, port)) as connection:
                     source = connection.getsockname()[0]
+                    peer = connection.getpeername()[0]
             elif not endpoint.scheme or endpoint.scheme == "unix":
                 result = subprocess.run(
                     ["/usr/bin/docker", "inspect", "lowerduckpond-ubuntu-2604"],
@@ -223,13 +226,32 @@
                 if len(gateways) != 1:
                     raise SystemExit("M3.8 container gateway is ambiguous")
                 source = gateways.pop()
+                peer = "127.0.0.1"
             else:
                 raise SystemExit("unsupported Docker endpoint for M3.8 transport")
-            address = ipaddress.ip_address(source)
-            print(f"{address.compressed}/{address.max_prefixlen}")
+            source_address = ipaddress.ip_address(source)
+            peer_address = ipaddress.ip_address(peer)
+            print(
+                json.dumps(
+                    {
+                        "peerAddress": peer_address.compressed,
+                        "sourceCidr": (
+                            f"{source_address.compressed}/{source_address.max_prefixlen}"
+                        ),
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
           - "{{ m3_8_docker_host }}"
       register: m3_8_operator_transport_source
       changed_when: false
+
+    - name: Record the exact operator transport endpoint
+      ansible.builtin.copy:
+        content: "{{ m3_8_operator_transport_source.stdout | trim }}\n"
+        dest: "{{ m3_8_operator_transport_path }}"
+        mode: "0600"
 
     - name: Attach the pinned artifact to the installed host
       ansible.builtin.add_host:
@@ -245,7 +267,8 @@
         caddy_cloudflare_api_token: >-
           {{ m3_8_cloudflare_api_token }}
         firewall_admin_source_cidrs:
-          - "{{ m3_8_operator_transport_source.stdout | trim }}"
+          - >-
+            {{ (m3_8_operator_transport_source.stdout | from_json).sourceCidr }}
         m3_8_origin_pull_client_key: >-
           {{ m3_8_origin_pull_client_key }}
         m3_8_origin_pull_client_certificate: >-
