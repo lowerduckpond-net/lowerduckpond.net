@@ -6,7 +6,7 @@ import socket
 import subprocess
 import sys
 from collections.abc import Sequence
-from urllib.parse import urlsplit
+from urllib.parse import SplitResult, urlsplit
 
 _ARGUMENT_COUNT = 2
 
@@ -31,10 +31,44 @@ def _connected_addresses(host: str, port: int) -> tuple[str, str]:
         return connection.getsockname()[0], connection.getpeername()[0]
 
 
+def _ssh_connection_addresses(endpoint: SplitResult) -> tuple[str, str]:
+    command = [
+        "/usr/bin/ssh",
+        "-T",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ClearAllForwardings=yes",
+    ]
+    if endpoint.username:
+        command.extend(("-l", endpoint.username))
+    if endpoint.port:
+        command.extend(("-p", str(endpoint.port)))
+    if not endpoint.hostname:
+        raise RuntimeError("SSH Docker endpoint has no hostname")
+    command.extend(("--", endpoint.hostname, 'printf "%s\\n" "$SSH_CONNECTION"'))
+    result = subprocess.run(  # noqa: S603 - fixed OpenSSH command with a Docker endpoint
+        command,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    fields = result.stdout.strip().split()
+    if len(fields) != 4:  # noqa: PLR2004 - SSH_CONNECTION has exactly four fields
+        raise RuntimeError("OpenSSH returned malformed SSH_CONNECTION evidence")
+    return fields[0], fields[2]
+
+
 def resolve_operator_transport(docker_host: str, container: str) -> dict[str, str]:
     endpoint = urlsplit(docker_host)
-    if endpoint.scheme in {"tcp", "http", "https", "ssh"} and endpoint.hostname:
-        default_ports = {"tcp": 2375, "http": 2375, "https": 2376, "ssh": 22}
+    peer: str | None
+    if endpoint.scheme == "ssh":
+        source, ssh_server = _ssh_connection_addresses(endpoint)
+        if ipaddress.ip_address(ssh_server).is_loopback:
+            source = _container_gateway(container)
+        peer = None
+    elif endpoint.scheme in {"tcp", "http", "https"} and endpoint.hostname:
+        default_ports = {"tcp": 2375, "http": 2375, "https": 2376}
         port = endpoint.port or default_ports[endpoint.scheme]
         source, peer = _connected_addresses(endpoint.hostname, port)
         if ipaddress.ip_address(peer).is_loopback:
@@ -46,11 +80,12 @@ def resolve_operator_transport(docker_host: str, container: str) -> dict[str, st
         raise RuntimeError("unsupported Docker endpoint for M3.8 transport")
 
     source_address = ipaddress.ip_address(source)
-    peer_address = ipaddress.ip_address(peer)
-    return {
-        "peerAddress": peer_address.compressed,
+    transport = {
         "sourceCidr": f"{source_address.compressed}/{source_address.max_prefixlen}",
     }
+    if peer is not None:
+        transport["peerAddress"] = ipaddress.ip_address(peer).compressed
+    return transport
 
 
 def main(arguments: Sequence[str] | None = None) -> int:
