@@ -193,57 +193,9 @@
           - /usr/bin/python3
           - -I
           - -B
-          - -c
-          - |
-            import ipaddress
-            import json
-            import socket
-            import subprocess
-            import sys
-            from urllib.parse import urlsplit
-
-            endpoint = urlsplit(sys.argv[1])
-            if endpoint.scheme in {"tcp", "http", "https", "ssh"} and endpoint.hostname:
-                default_ports = {"tcp": 2375, "http": 2375, "https": 2376, "ssh": 22}
-                port = endpoint.port or default_ports[endpoint.scheme]
-                with socket.create_connection((endpoint.hostname, port)) as connection:
-                    source = connection.getsockname()[0]
-                    peer = connection.getpeername()[0]
-            elif not endpoint.scheme or endpoint.scheme == "unix":
-                result = subprocess.run(
-                    ["/usr/bin/docker", "inspect", "lowerduckpond-ubuntu-2604"],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                )
-                inspection = json.loads(result.stdout)
-                networks = inspection[0]["NetworkSettings"]["Networks"]
-                gateways = {
-                    network["Gateway"]
-                    for network in networks.values()
-                    if network.get("Gateway")
-                }
-                if len(gateways) != 1:
-                    raise SystemExit("M3.8 container gateway is ambiguous")
-                source = gateways.pop()
-                peer = "127.0.0.1"
-            else:
-                raise SystemExit("unsupported Docker endpoint for M3.8 transport")
-            source_address = ipaddress.ip_address(source)
-            peer_address = ipaddress.ip_address(peer)
-            print(
-                json.dumps(
-                    {
-                        "peerAddress": peer_address.compressed,
-                        "sourceCidr": (
-                            f"{source_address.compressed}/{source_address.max_prefixlen}"
-                        ),
-                    },
-                    sort_keys=True,
-                    separators=(",", ":"),
-                )
-            )
+          - "{{ playbook_dir }}/resolve_operator_transport.py"
           - "{{ m3_8_docker_host }}"
+          - lowerduckpond-ubuntu-2604
       register: m3_8_operator_transport_source
       changed_when: false
 
