@@ -1,7 +1,7 @@
 # Milestone 3 implementation plan
 
-- Status: implementation in progress; M3.0 through M3.7 complete
-- Updated: 2026-09-02
+- Status: implementation in progress; M3.0 through M3.8 complete
+- Updated: 2026-09-07
 - Outcome: deliver the complete static-tenant lifecycle through the trusted
   workstation without enabling the Milestone 4 public control plane
 
@@ -228,7 +228,7 @@ four DNS records, four Authenticated Origin Pulls associations, six rulesets,
 ACME records, and four uploaded leaves absent. Both temporary Cloudflare tokens
 were revoked and disposable trusted-workstation material was removed. The
 backed-up CA roots remain retained as qualification-only material. M3.1 through
-M3.7 subsequently completed, and M3.8 is the next
+M3.8 subsequently completed, and M3.9 is the next
 implementation phase; the M3.0 result does not enable production or satisfy
 any later Milestone 3 gate.
 
@@ -326,7 +326,7 @@ and an independent version-aware and multipart-aware probe proved the entire
 archive bucket empty. Protected run `33219502391` then passed ordinary
 production policy and reported no changes with the migration flag disabled.
 The archive credential remains in operator custody and off the production host
-until M3.10. M3.2 through M3.7 subsequently completed, and M3.8 is the next
+until M3.10. M3.2 through M3.8 subsequently completed, and M3.9 is the next
 implementation phase; M3.1 does not enable production or satisfy any later
 Milestone 3 gate.
 
@@ -723,8 +723,8 @@ production flag rejected before request intake or state allocation. The
 private operator key and its passphrase are backed up separately, only its
 public half is installed, and the stable audit principal is the non-personal
 role alias `production-static-operator`. Production publication remains
-disabled. M3.7 subsequently completed, and M3.8 is the next implementation
-phase.
+disabled. M3.7 and M3.8 subsequently completed, and M3.9 is the next
+implementation phase.
 
 The first review boundary installed the dedicated,
 password-disabled SSH identity, root-owned key binding and principal,
@@ -851,7 +851,8 @@ state to `enforced`, reported no changes, and passed production policy. The two
 temporary Cloudflare tokens were revoked and the four working leaf-key and CSR
 files were removed after their retained public certificates, certificate IDs,
 CA material, and separate backups were confirmed. Static publication remains
-disabled, and M3.8 is the next implementation phase.
+disabled. M3.8 subsequently completed, and M3.9 is the next implementation
+phase.
 
 Extend the production OpenTofu stack with a second instance of the existing
 Cloudflare DNS module for the `lowerduckpond.com` apex and wildcard, then evolve
@@ -967,6 +968,29 @@ client-certificate-required origin unreachable.
 Never restore the old mutable `Caddyfile` path once tenant-capable code exists.
 
 ### M3.8: implement core tenant lifecycle
+
+Implementation status (2026-09-07): complete. The reviewed M3.8 change series
+through PR `#119` implements replay-safe `create`, `deploy`, `rollback`,
+`suspend`, `resume`, `rename`, and `reconcile` authorization jobs. PR `#121`
+completes the installed-host proof with an actual disposable systemd-host
+restart. Durable tenant, slug, release, deployment, and Caddy-generation
+authority now remains consistent across exact retries, concurrent requests,
+process interruption,
+reload failure, reboot, and startup reconciliation. Immutable release and
+generation retention is bounded, and failed transitions preserve recoverable
+evidence without publishing partial state.
+
+The full Python suite and disposable installed-host qualification passed on the
+exact reviewed PR head. The installed gate covers lifecycle semantics,
+issuance and expected-state defenses, artifact replacement, replay,
+disconnect, lost handoff and result delivery, Caddy/systemd failure recovery,
+and Ansible overlap for deploy, rollback, suspend, resume, rename, and
+reconcile. The reboot gate proves a new PID 1 and cleared volatile state while
+retaining exact durable trees, metadata, selected generation, and routes, then
+runs the complete transport and recovery matrix after startup reconciliation.
+Publication was enabled only inside that disposable environment; production
+remains disabled. Restoration and deletion stay deferred to M3.10, and M3.9 portable
+export and import is the next implementation phase.
 
 Implement `create`, `deploy`, `rollback`, `suspend`, `resume`, `rename`, and
 `reconcile` through authorization jobs. Initialize the namespace record only
