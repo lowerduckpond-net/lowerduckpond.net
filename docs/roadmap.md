@@ -4,7 +4,7 @@ This roadmap turns the architecture in [`architecture.md`](architecture.md) into
 
 ## Progress
 
-Status as of 2026-09-06:
+Status as of 2026-09-07:
 
 | Milestone | Status | Outcome |
 | --- | --- | --- |
