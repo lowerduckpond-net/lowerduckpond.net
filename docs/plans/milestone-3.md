@@ -1,7 +1,7 @@
 # Milestone 3 implementation plan
 
-- Status: implementation in progress; M3.0 through M3.7 complete
-- Updated: 2026-09-02
+- Status: implementation in progress; M3.0 through M3.8 complete
+- Updated: 2026-09-07
 - Outcome: deliver the complete static-tenant lifecycle through the trusted
   workstation without enabling the Milestone 4 public control plane
 
