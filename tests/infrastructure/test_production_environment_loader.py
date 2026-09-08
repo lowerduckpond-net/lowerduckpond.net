@@ -13,6 +13,7 @@ REPOSITORY_ROOT = Path(__file__).parents[2]
 LOADER = (REPOSITORY_ROOT / "scripts/load-production-environment").resolve()
 CONFIGURE = (REPOSITORY_ROOT / "scripts/configure-production").resolve()
 BASH = shutil.which("bash")
+OPENSSL = "/usr/bin/openssl"
 SSH_KEYGEN = shutil.which("ssh-keygen")
 INPUT_ERROR_STATUS = 2
 USAGE_ERROR_STATUS = 64
@@ -58,11 +59,42 @@ def _create_key(tmp_path: Path, name: str) -> tuple[Path, Path]:
     return private_key, private_key.with_suffix(".pub")
 
 
+def _create_ca(tmp_path: Path) -> Path:
+    ca_key = tmp_path / "production-origin-pull-ca.key"
+    ca_path = tmp_path / "production-origin-pull-ca.pem"
+    result = subprocess.run(  # noqa: S603 -- fixed test-only OpenSSL executable.
+        [
+            OPENSSL,
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-days",
+            "1825",
+            "-subj",
+            "/CN=production-loader-test-ca",
+            "-addext",
+            "basicConstraints=critical,CA:TRUE",
+            "-addext",
+            "keyUsage=critical,keyCertSign,cRLSign",
+            "-keyout",
+            os.fspath(ca_key),
+            "-out",
+            os.fspath(ca_path),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    return ca_path
+
+
 def _fixture_environment(tmp_path: Path) -> dict[str, str]:
     admin_key, _ = _create_key(tmp_path, "admin")
     _, operator_public_key_path = _create_key(tmp_path, "operator")
-    ca_path = tmp_path / "production-origin-pull-ca.pem"
-    ca_path.write_text("test-only public CA fixture\n", encoding="ascii")
+    ca_path = _create_ca(tmp_path)
     return {
         "ADMIN_SOURCE_CIDRS_JSON": '["192.0.2.10/32"]',
         "ANSIBLE_PRIVATE_KEY_FILE": os.fspath(admin_key),
@@ -195,6 +227,102 @@ printf 'ca=%s\\n' "$CADDY_ORIGIN_PULL_CA_PATHS_JSON"
     for secret in secrets:
         assert secret not in result.stdout
         assert secret not in result.stderr
+
+
+def test_loader_suspends_xtrace_while_handling_the_contract(tmp_path: Path) -> None:
+    contract = _fixture_environment(tmp_path)
+    environment = {"PATH": os.environ["PATH"], **contract}
+    command = """
+set -x
+source "$1"
+loader_status=$?
+case $- in
+    *x*) xtrace_status=on ;;
+    *) xtrace_status=off ;;
+esac
+set +x
+printf 'status=%s xtrace=%s\n' "$loader_status" "$xtrace_status"
+"""
+
+    result = _source_loader(environment, command=command)
+
+    assert result.returncode == 0, result.stderr
+    assert "status=0 xtrace=on\n" in result.stdout
+    for name in (
+        "ADMIN_SOURCE_CIDRS_JSON",
+        "CADDY_CLOUDFLARE_API_TOKEN",
+        "OPENTOFU_ENCRYPTION_PASSPHRASE",
+        "OPENTOFU_STATE_ACCESS_KEY_ID",
+        "OPENTOFU_STATE_SECRET_ACCESS_KEY",
+        "RESTIC_PASSWORD",
+    ):
+        assert contract[name] not in result.stdout
+        assert contract[name] not in result.stderr
+
+
+@pytest.mark.parametrize(
+    "cidrs",
+    [
+        '["0.0.0.0/0"]',
+        '["::/0"]',
+        '["not-a-cidr"]',
+        '["192.0.2.10/24"]',
+        '["192.0.2.10/32", "192.0.2.10/32"]',
+    ],
+)
+def test_loader_refuses_unsafe_administrative_source_cidrs(
+    tmp_path: Path,
+    cidrs: str,
+) -> None:
+    contract = _fixture_environment(tmp_path)
+    contract["ADMIN_SOURCE_CIDRS_JSON"] = cidrs
+
+    result = _source_loader({"PATH": os.environ["PATH"], **contract})
+
+    assert result.returncode == 0
+    assert result.stdout == "status=2\n"
+    assert "Production environment input validation failed" in result.stderr
+
+
+def test_loader_refuses_a_non_certificate_ca_file(tmp_path: Path) -> None:
+    contract = _fixture_environment(tmp_path)
+    invalid_ca = tmp_path / "not-a-ca.pem"
+    invalid_ca.write_text("not a certificate\n", encoding="ascii")
+    contract["CADDY_ORIGIN_PULL_CA_PATHS_JSON"] = json.dumps([os.fspath(invalid_ca)])
+
+    result = _source_loader({"PATH": os.environ["PATH"], **contract})
+
+    assert result.returncode == 0
+    assert result.stdout == "status=2\n"
+    assert "failed the production certificate policy" in result.stderr
+
+
+def test_loader_refuses_duplicate_ca_certificate_contents(tmp_path: Path) -> None:
+    contract = _fixture_environment(tmp_path)
+    original_ca = Path(json.loads(contract["CADDY_ORIGIN_PULL_CA_PATHS_JSON"])[0])
+    duplicate_ca = tmp_path / "duplicate-ca.pem"
+    shutil.copyfile(original_ca, duplicate_ca)
+    contract["CADDY_ORIGIN_PULL_CA_PATHS_JSON"] = json.dumps(
+        [os.fspath(original_ca), os.fspath(duplicate_ca)]
+    )
+
+    result = _source_loader({"PATH": os.environ["PATH"], **contract})
+
+    assert result.returncode == 0
+    assert result.stdout == "status=2\n"
+    assert "origin-pull CA certificates must be distinct" in result.stderr
+
+
+def test_loader_refuses_an_administrative_public_key_path(tmp_path: Path) -> None:
+    contract = _fixture_environment(tmp_path)
+    _, admin_public_key = _create_key(tmp_path, "wrong-admin-input")
+    contract["ANSIBLE_PRIVATE_KEY_FILE"] = os.fspath(admin_public_key)
+
+    result = _source_loader({"PATH": os.environ["PATH"], **contract})
+
+    assert result.returncode == 0
+    assert result.stdout == "status=2\n"
+    assert "does not contain private-key material" in result.stderr
 
 
 @pytest.mark.parametrize(

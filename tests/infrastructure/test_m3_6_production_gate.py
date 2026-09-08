@@ -82,6 +82,16 @@ def test_operator_identity_gate_refuses_admin_key_reuse(tmp_path: Path) -> None:
     assert "must not reuse" in result.stderr
 
 
+def test_operator_identity_gate_refuses_an_admin_public_key(tmp_path: Path) -> None:
+    admin_key, _ = create_key(tmp_path, "admin")
+    _, operator_public_key = create_key(tmp_path, "operator")
+
+    result = check_identity(admin_key.with_suffix(".pub"), operator_public_key)
+
+    assert result.returncode == INPUT_ERROR_STATUS
+    assert "does not contain private-key material" in result.stderr
+
+
 @pytest.mark.parametrize(
     "principal",
     ["", "contains a space", ".starts-with-punctuation", "x" * 129],

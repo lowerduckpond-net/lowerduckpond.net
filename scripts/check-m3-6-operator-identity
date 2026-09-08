@@ -31,6 +31,16 @@ if [[ ! -f ${admin_private_key} || -L ${admin_private_key} ]]; then
     echo "The administrative SSH identity must be a regular, non-linked file." >&2
     exit 2
 fi
+IFS= read -r admin_private_key_header <"${admin_private_key}" || {
+    echo "The administrative SSH identity could not be read." >&2
+    exit 2
+}
+admin_private_key_prefix='-----BEGIN OPENSSH'
+admin_private_key_suffix='PRIVATE KEY-----'
+if [[ ${admin_private_key_header} != "${admin_private_key_prefix} ${admin_private_key_suffix}" ]]; then
+    echo "The administrative SSH identity does not contain private-key material." >&2
+    exit 2
+fi
 if [[ ${#STATIC_OPERATOR_PUBLIC_KEY} -gt 512 ]] ||
    [[ ${STATIC_OPERATOR_PUBLIC_KEY} == *$'\n'* ]] ||
    [[ ${STATIC_OPERATOR_PUBLIC_KEY} == *$'\r'* ]] ||

@@ -1,5 +1,13 @@
 #!/usr/bin/env bash
 
+_ldp_production_xtrace_enabled=false
+case $- in
+    *x*)
+        _ldp_production_xtrace_enabled=true
+        set +x
+        ;;
+esac
+
 # This file intentionally changes its caller's environment and must be sourced.
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
     printf '%s\n' \
@@ -55,9 +63,10 @@ _ldp_load_production_environment() {
     local operator_public_key_path=""
     local command_name
     local ca_path
+    local validation_payload
     local -a parsed_ca_paths=()
 
-    for command_name in jq ssh-keygen; do
+    for command_name in jq ssh-keygen uv; do
         if ! command -v "${command_name}" >/dev/null 2>&1; then
             printf 'Required command %s is not installed.\n' "${command_name}" >&2
             return 2
@@ -180,6 +189,20 @@ _ldp_load_production_environment() {
             return 2
         fi
     done
+    validation_payload=$(jq --compact-output --null-input \
+        --argjson adminSourceCidrs "${admin_source_cidrs}" \
+        --argjson originPullCaPaths "${origin_pull_ca_paths}" \
+        '{adminSourceCidrs: $adminSourceCidrs, originPullCaPaths: $originPullCaPaths}') || {
+        printf '%s\n' 'Production environment validation input could not be encoded.' >&2
+        return 2
+    }
+    if ! printf '%s\n' "${validation_payload}" |
+        (
+            cd "${repository_root}" || exit 2
+            uv run --quiet --frozen python -m scripts.check_production_environment_inputs
+        ); then
+        return 2
+    fi
     if [[ -z ${state_access_key_id} || -z ${state_secret_access_key} ||
           -z ${state_encryption_passphrase} ]]; then
         printf '%s\n' 'Production-state credentials must not be empty.' >&2
@@ -223,15 +246,27 @@ _ldp_load_production_environment() {
         'Production convergence environment loaded; no secret was displayed or written.'
 }
 
-if _ldp_load_production_environment; then
-    unset -f \
-        _ldp_load_production_environment \
-        _ldp_production_prompt \
-        _ldp_production_prompt_secret
-    return 0
+_ldp_production_loader_status=0
+if ! _ldp_load_production_environment; then
+    _ldp_production_loader_status=2
 fi
 unset -f \
     _ldp_load_production_environment \
     _ldp_production_prompt \
     _ldp_production_prompt_secret
-return 2
+if [[ ${_ldp_production_xtrace_enabled} == true ]]; then
+    unset _ldp_production_xtrace_enabled
+    set -x
+else
+    unset _ldp_production_xtrace_enabled
+fi
+case ${_ldp_production_loader_status} in
+    0)
+        unset _ldp_production_loader_status
+        return 0
+        ;;
+    *)
+        unset _ldp_production_loader_status
+        return 2
+        ;;
+esac

@@ -60,11 +60,14 @@ source scripts/load-production-environment
 Secret prompts disable terminal echo. The loader accepts already exported
 values without prompting, derives `CADDY_ORIGIN_PULL_CA_PATHS_JSON` from one or
 two public CA-certificate paths, and reads `STATIC_OPERATOR_PUBLIC_KEY` from its
-public-key file. It validates every input before exporting any newly entered
-value, writes nothing, and never calls `exit` when sourced. Run it again in a
-fresh shell after a reboot or after clearing the contract. Loading the contract
-does not load the administrative key into `ssh-agent`; do that explicitly with
-`ssh-add "$ANSIBLE_PRIVATE_KEY_FILE"` before the production preflight.
+public-key file. It suspends an inherited Bash xtrace setting while the contract
+is in scope, validates the administrative CIDR boundaries, the production CA
+certificate policy, and private-key inputs before exporting any newly entered
+value, then restores xtrace. It writes nothing and never calls `exit` when
+sourced. Run it again in a fresh shell after a reboot or after clearing the
+contract. Loading the contract does not load the administrative key into
+`ssh-agent`; do that explicitly with `ssh-add "$ANSIBLE_PRIVATE_KEY_FILE"`
+before the production preflight.
 
 ## M3.5 dark-host starting gate
 
