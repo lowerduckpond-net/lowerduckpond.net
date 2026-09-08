@@ -14,6 +14,7 @@ from typing import Final
 from scripts.check_m3_7_production_edge import (
     MAXIMUM_CERTIFICATE_BYTES,
     ProductionEdgePreflightError,
+    certificate_public_key_identity,
     validate_ca_certificate,
 )
 
@@ -59,6 +60,7 @@ def _validate_origin_pull_cas(raw: object) -> None:
         )
     now = datetime.now(UTC)
     seen_certificate_identities: set[bytes] = set()
+    seen_public_key_identities: set[bytes] = set()
     for item in raw:
         path = Path(item)
         if not path.is_absolute() or path.is_symlink() or not path.is_file():
@@ -73,7 +75,11 @@ def _validate_origin_pull_cas(raw: object) -> None:
                 raise ProductionEnvironmentInputError(
                     "origin-pull CA certificates must be distinct"
                 )
+            public_key_identity = certificate_public_key_identity(pem)
+            if public_key_identity in seen_public_key_identities:
+                raise ProductionEnvironmentInputError("origin-pull CA public keys must be distinct")
             seen_certificate_identities.add(identity)
+            seen_public_key_identities.add(public_key_identity)
         except OSError as error:
             raise ProductionEnvironmentInputError("an origin-pull CA is unreadable") from error
         except (ProductionEdgePreflightError, UnicodeError, ValueError) as error:

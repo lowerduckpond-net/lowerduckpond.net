@@ -3,6 +3,8 @@ set -euo pipefail
 umask 077
 export LC_ALL=C
 
+repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+
 if [[ $# -ne 1 ]]; then
     echo "usage: check-m3-6-operator-identity ADMIN_PRIVATE_KEY" >&2
     exit 64
@@ -21,7 +23,7 @@ for variable_name in "${required_environment[@]}"; do
     fi
 done
 
-for command_name in grep ssh-keygen stat; do
+for command_name in grep python3 ssh-keygen stat; do
     if ! command -v "${command_name}" >/dev/null 2>&1; then
         echo "Required command ${command_name} is not installed." >&2
         exit 2
@@ -31,14 +33,7 @@ if [[ ! -f ${admin_private_key} || -L ${admin_private_key} ]]; then
     echo "The administrative SSH identity must be a regular, non-linked file." >&2
     exit 2
 fi
-IFS= read -r admin_private_key_header <"${admin_private_key}" || {
-    echo "The administrative SSH identity could not be read." >&2
-    exit 2
-}
-admin_private_key_prefix='-----BEGIN OPENSSH'
-admin_private_key_suffix='PRIVATE KEY-----'
-if [[ ${admin_private_key_header} != "${admin_private_key_prefix} ${admin_private_key_suffix}" ]]; then
-    echo "The administrative SSH identity does not contain private-key material." >&2
+if ! python3 "${repository_root}/scripts/check_openssh_private_key.py" "${admin_private_key}"; then
     exit 2
 fi
 admin_private_key_mode=$(stat --format='%a' -- "${admin_private_key}") || {
@@ -86,10 +81,6 @@ admin_identity=$(ssh-keygen -E sha256 -l -f "${admin_private_key}") || {
     echo "The administrative SSH identity could not be fingerprinted." >&2
     exit 2
 }
-if ssh-keygen -y -P '' -f "${admin_private_key}" >/dev/null 2>&1; then
-    echo "The administrative SSH identity must be passphrase-protected." >&2
-    exit 2
-fi
 operator_fingerprint=${operator_identity#* }
 operator_fingerprint=${operator_fingerprint%% *}
 admin_fingerprint=${admin_identity#* }

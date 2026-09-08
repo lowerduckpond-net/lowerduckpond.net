@@ -372,6 +372,12 @@ def validate_ca_certificate(path: Path, pem: bytes, *, now: datetime) -> None:
         raise ProductionEdgePreflightError("the production CA validity is outside policy")
 
 
+def certificate_public_key_identity(pem: bytes) -> bytes:
+    """Return the canonical DER SubjectPublicKeyInfo for one certificate."""
+    public_key = _openssl("x509", "-noout", "-pubkey", input_bytes=pem)
+    return _openssl("pkey", "-pubin", "-outform", "DER", input_bytes=public_key)
+
+
 def validate_leaf_certificate(
     certificate: Mapping[str, object],
     *,

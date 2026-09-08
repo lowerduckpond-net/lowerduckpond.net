@@ -96,6 +96,35 @@ def _create_ca(tmp_path: Path) -> Path:
     return ca_path
 
 
+def _create_ca_with_existing_key(tmp_path: Path, name: str) -> Path:
+    ca_key = tmp_path / "production-origin-pull-ca.key"
+    ca_path = tmp_path / f"{name}.pem"
+    result = subprocess.run(  # noqa: S603 -- fixed test-only OpenSSL executable.
+        [
+            OPENSSL,
+            "req",
+            "-x509",
+            "-key",
+            os.fspath(ca_key),
+            "-days",
+            "1825",
+            "-subj",
+            f"/CN={name}",
+            "-addext",
+            "basicConstraints=critical,CA:TRUE",
+            "-addext",
+            "keyUsage=critical,keyCertSign,cRLSign",
+            "-out",
+            os.fspath(ca_path),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    return ca_path
+
+
 def _fixture_environment(tmp_path: Path) -> dict[str, str]:
     admin_key, _ = _create_key(tmp_path, "admin")
     _, operator_public_key_path = _create_key(tmp_path, "operator")
@@ -150,10 +179,13 @@ def test_loader_must_be_sourced() -> None:
 
 def test_loader_contract_matches_production_convergence() -> None:
     configure = CONFIGURE.read_text(encoding="utf-8")
+    loader = LOADER.read_text(encoding="utf-8")
     match = re.search(r"required_environment=\(\n(?P<body>.*?)\n\)", configure, re.DOTALL)
 
     assert match is not None
     assert tuple(match.group("body").split()) == CONTRACT_NAMES
+    assert "uv run" not in loader
+    assert "python3 -B -m scripts.check_production_environment_inputs" in loader
 
 
 def test_loader_reuses_a_complete_valid_environment(tmp_path: Path) -> None:
@@ -265,6 +297,57 @@ printf 'status=%s xtrace=%s\n' "$loader_status" "$xtrace_status"
         assert contract[name] not in result.stderr
 
 
+def test_loader_restores_xtrace_and_interrupt_trap_after_sigint() -> None:
+    command = """
+caller_interrupts=0
+trap 'caller_interrupts=$((caller_interrupts + 1))' INT
+caller_trap_before=$(trap -p INT)
+set -x
+{ sleep 0.1; kill -INT "$$"; } &
+source "$1" < <(sleep 1)
+loader_status=$?
+case $- in
+    *x*) xtrace_status=on ;;
+    *) xtrace_status=off ;;
+esac
+set +x
+if [[ $(trap -p INT) == "$caller_trap_before" ]]; then
+    trap_status=restored
+else
+    trap_status=changed
+fi
+kill -INT "$$"
+if declare -F _ldp_load_production_environment >/dev/null; then
+    function_status=present
+else
+    function_status=absent
+fi
+if declare -p \
+    _ldp_production_interrupted \
+    _ldp_production_previous_interrupt_trap \
+    _ldp_production_xtrace_enabled >/dev/null 2>&1; then
+    variable_status=present
+else
+    variable_status=absent
+fi
+printf 'status=%s xtrace=%s trap=%s handler-runs=%s functions=%s variables=%s\n' \
+    "$loader_status" \
+    "$xtrace_status" \
+    "$trap_status" \
+    "$caller_interrupts" \
+    "$function_status" \
+    "$variable_status"
+"""
+
+    result = _source_loader({"PATH": os.environ["PATH"]}, command=command)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (
+        "status=130 xtrace=on trap=restored handler-runs=1 functions=absent variables=absent\n"
+    )
+    assert "Production environment loading was interrupted." in result.stderr
+
+
 @pytest.mark.parametrize(
     "cidrs",
     [
@@ -318,6 +401,22 @@ def test_loader_refuses_duplicate_ca_certificate_identities(tmp_path: Path) -> N
     assert result.returncode == 0
     assert result.stdout == "status=2\n"
     assert "origin-pull CA certificates must be distinct" in result.stderr
+
+
+def test_loader_refuses_distinct_cas_that_reuse_a_public_key(tmp_path: Path) -> None:
+    contract = _fixture_environment(tmp_path)
+    original_ca = Path(json.loads(contract["CADDY_ORIGIN_PULL_CA_PATHS_JSON"])[0])
+    replacement_ca = _create_ca_with_existing_key(tmp_path, "replacement-ca")
+    assert replacement_ca.read_bytes() != original_ca.read_bytes()
+    contract["CADDY_ORIGIN_PULL_CA_PATHS_JSON"] = json.dumps(
+        [os.fspath(original_ca), os.fspath(replacement_ca)]
+    )
+
+    result = _source_loader({"PATH": os.environ["PATH"], **contract})
+
+    assert result.returncode == 0
+    assert result.stdout == "status=2\n"
+    assert "origin-pull CA public keys must be distinct" in result.stderr
 
 
 def test_loader_refuses_an_administrative_public_key_path(tmp_path: Path) -> None:

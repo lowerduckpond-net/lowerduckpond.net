@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import shutil
 import subprocess
+import textwrap
 from pathlib import Path
 
 import pytest
+
+from scripts.check_openssh_private_key import OPENSSH_MAGIC, UINT32_BYTES
 
 REPOSITORY_ROOT = Path(__file__).parents[2]
 IDENTITY_CHECKER = (REPOSITORY_ROOT / "scripts/check-m3-6-operator-identity").resolve()
@@ -16,6 +20,7 @@ CONFIGURE = (REPOSITORY_ROOT / "scripts/configure-production").resolve()
 INVENTORY_READER = (REPOSITORY_ROOT / "scripts/read_production_ansible_inventory.py").resolve()
 SSH_KEYGEN = shutil.which("ssh-keygen")
 INPUT_ERROR_STATUS = 2
+PEM_LINE_WIDTH = 70
 
 
 def create_key(
@@ -69,6 +74,27 @@ def check_identity(
     )
 
 
+def damage_private_section(private_key: Path) -> None:
+    lines = private_key.read_text(encoding="ascii").splitlines()
+    container = bytearray(base64.b64decode("".join(lines[1:-1]), validate=True))
+    offset = len(OPENSSH_MAGIC)
+    for _field in range(3):
+        field_length = int.from_bytes(container[offset : offset + UINT32_BYTES], byteorder="big")
+        offset += UINT32_BYTES + field_length
+    key_count = int.from_bytes(container[offset : offset + UINT32_BYTES], byteorder="big")
+    offset += UINT32_BYTES
+    for _key in range(key_count):
+        key_length = int.from_bytes(container[offset : offset + UINT32_BYTES], byteorder="big")
+        offset += UINT32_BYTES + key_length
+    private_section_start = offset + UINT32_BYTES
+    container[private_section_start] ^= 1
+    encoded = base64.b64encode(container).decode("ascii")
+    private_key.write_text(
+        "\n".join((lines[0], *textwrap.wrap(encoded, PEM_LINE_WIDTH), lines[-1])) + "\n",
+        encoding="ascii",
+    )
+
+
 def test_operator_identity_gate_accepts_a_distinct_ed25519_key(tmp_path: Path) -> None:
     admin_key, _ = create_key(tmp_path, "admin")
     _, operator_public_key = create_key(tmp_path, "operator")
@@ -104,6 +130,35 @@ def test_operator_identity_gate_refuses_an_unencrypted_admin_key(tmp_path: Path)
 
     result = check_identity(admin_key, operator_public_key)
 
+    assert result.returncode == INPUT_ERROR_STATUS
+    assert "must be passphrase-protected" in result.stderr
+
+
+def test_operator_identity_gate_does_not_mistake_a_damaged_key_for_encryption(
+    tmp_path: Path,
+) -> None:
+    assert SSH_KEYGEN is not None
+    admin_key, _ = create_key(tmp_path, "admin", encrypted=False)
+    _, operator_public_key = create_key(tmp_path, "operator")
+    damage_private_section(admin_key)
+    admin_key.chmod(0o600)
+    fingerprint = subprocess.run(  # noqa: S603 -- fixed test-only key utility.
+        [SSH_KEYGEN, "-l", "-f", os.fspath(admin_key)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    private_probe = subprocess.run(  # noqa: S603 -- fixed test-only key utility.
+        [SSH_KEYGEN, "-y", "-P", "", "-f", os.fspath(admin_key)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    result = check_identity(admin_key, operator_public_key)
+
+    assert fingerprint.returncode == 0
+    assert private_probe.returncode != 0
     assert result.returncode == INPUT_ERROR_STATUS
     assert "must be passphrase-protected" in result.stderr
 

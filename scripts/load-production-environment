@@ -15,12 +15,24 @@ if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
     exit 64
 fi
 
+_ldp_production_previous_interrupt_trap=$(trap -p INT)
+_ldp_production_interrupted=false
+
+_ldp_production_handle_interrupt() {
+    _ldp_production_interrupted=true
+}
+trap '_ldp_production_handle_interrupt' INT
+
 _ldp_production_prompt() {
     local destination=$1
     local prompt=$2
 
     printf '%s: ' "${prompt}" >&2
     if ! IFS= read -r "${destination}"; then
+        if [[ ${_ldp_production_interrupted} == true ]]; then
+            printf '\nProduction environment loading was interrupted.\n' >&2
+            return 130
+        fi
         printf '\nProduction environment input ended before the contract was complete.\n' >&2
         return 1
     fi
@@ -32,6 +44,10 @@ _ldp_production_prompt_secret() {
 
     printf '%s: ' "${prompt}" >&2
     if ! IFS= read -r -s "${destination}"; then
+        if [[ ${_ldp_production_interrupted} == true ]]; then
+            printf '\nProduction environment loading was interrupted.\n' >&2
+            return 130
+        fi
         printf '\nProduction environment input ended before the contract was complete.\n' >&2
         return 1
     fi
@@ -66,7 +82,7 @@ _ldp_load_production_environment() {
     local validation_payload
     local -a parsed_ca_paths=()
 
-    for command_name in jq ssh-keygen uv; do
+    for command_name in jq python3 ssh-keygen; do
         if ! command -v "${command_name}" >/dev/null 2>&1; then
             printf 'Required command %s is not installed.\n' "${command_name}" >&2
             return 2
@@ -198,7 +214,7 @@ _ldp_load_production_environment() {
     if ! printf '%s\n' "${validation_payload}" |
         (
             cd "${repository_root}" || exit 2
-            uv run --quiet --frozen python -m scripts.check_production_environment_inputs
+            python3 -B -m scripts.check_production_environment_inputs
         ); then
         return 2
     fi
@@ -249,24 +265,46 @@ _ldp_load_production_environment() {
         'Production convergence environment loaded; no secret was displayed or written.'
 }
 
+_ldp_production_restore_caller() {
+    local previous_interrupt_trap=${_ldp_production_previous_interrupt_trap}
+    local restore_xtrace=${_ldp_production_xtrace_enabled}
+
+    if [[ -n ${previous_interrupt_trap} ]]; then
+        eval "${previous_interrupt_trap}"
+    else
+        trap - INT
+    fi
+    unset \
+        _ldp_production_interrupted \
+        _ldp_production_previous_interrupt_trap \
+        _ldp_production_xtrace_enabled
+    unset -f \
+        _ldp_load_production_environment \
+        _ldp_production_handle_interrupt \
+        _ldp_production_prompt \
+        _ldp_production_prompt_secret \
+        _ldp_production_restore_caller
+    if [[ ${restore_xtrace} == true ]]; then
+        set -x
+    fi
+}
+
 _ldp_production_loader_status=0
 if ! _ldp_load_production_environment; then
     _ldp_production_loader_status=2
 fi
-unset -f \
-    _ldp_load_production_environment \
-    _ldp_production_prompt \
-    _ldp_production_prompt_secret
-if [[ ${_ldp_production_xtrace_enabled} == true ]]; then
-    unset _ldp_production_xtrace_enabled
-    set -x
-else
-    unset _ldp_production_xtrace_enabled
+if [[ ${_ldp_production_interrupted} == true ]]; then
+    _ldp_production_loader_status=130
 fi
+_ldp_production_restore_caller
 case ${_ldp_production_loader_status} in
     0)
         unset _ldp_production_loader_status
         return 0
+        ;;
+    130)
+        unset _ldp_production_loader_status
+        return 130
         ;;
     *)
         unset _ldp_production_loader_status
