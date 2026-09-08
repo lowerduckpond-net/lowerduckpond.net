@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import ssl
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -57,7 +58,7 @@ def _validate_origin_pull_cas(raw: object) -> None:
             "origin-pull CA paths must be one or two distinct strings"
         )
     now = datetime.now(UTC)
-    seen_certificates: set[bytes] = set()
+    seen_certificate_identities: set[bytes] = set()
     for item in raw:
         path = Path(item)
         if not path.is_absolute() or path.is_symlink() or not path.is_file():
@@ -66,15 +67,16 @@ def _validate_origin_pull_cas(raw: object) -> None:
             if path.stat().st_size > MAXIMUM_CERTIFICATE_BYTES:
                 raise ProductionEnvironmentInputError("an origin-pull CA is oversized")
             pem = path.read_bytes()
-            if pem in seen_certificates:
+            validate_ca_certificate(path, pem, now=now)
+            identity = ssl.PEM_cert_to_DER_cert(pem.decode("ascii", errors="strict"))
+            if identity in seen_certificate_identities:
                 raise ProductionEnvironmentInputError(
                     "origin-pull CA certificates must be distinct"
                 )
-            seen_certificates.add(pem)
-            validate_ca_certificate(path, pem, now=now)
+            seen_certificate_identities.add(identity)
         except OSError as error:
             raise ProductionEnvironmentInputError("an origin-pull CA is unreadable") from error
-        except (ProductionEdgePreflightError, UnicodeError) as error:
+        except (ProductionEdgePreflightError, UnicodeError, ValueError) as error:
             raise ProductionEnvironmentInputError(
                 "an origin-pull CA failed the production certificate policy"
             ) from error

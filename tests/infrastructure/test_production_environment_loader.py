@@ -302,11 +302,13 @@ def test_loader_refuses_a_non_certificate_ca_file(tmp_path: Path) -> None:
     assert "failed the production certificate policy" in result.stderr
 
 
-def test_loader_refuses_duplicate_ca_certificate_contents(tmp_path: Path) -> None:
+def test_loader_refuses_duplicate_ca_certificate_identities(tmp_path: Path) -> None:
     contract = _fixture_environment(tmp_path)
     original_ca = Path(json.loads(contract["CADDY_ORIGIN_PULL_CA_PATHS_JSON"])[0])
     duplicate_ca = tmp_path / "duplicate-ca.pem"
-    shutil.copyfile(original_ca, duplicate_ca)
+    original_pem = original_ca.read_bytes()
+    duplicate_ca.write_bytes(original_pem + b"\n")
+    assert duplicate_ca.read_bytes() != original_pem
     contract["CADDY_ORIGIN_PULL_CA_PATHS_JSON"] = json.dumps(
         [os.fspath(original_ca), os.fspath(duplicate_ca)]
     )
