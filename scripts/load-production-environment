@@ -1,0 +1,237 @@
+#!/usr/bin/env bash
+
+# This file intentionally changes its caller's environment and must be sourced.
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+    printf '%s\n' \
+        'Source this helper: source scripts/load-production-environment' >&2
+    exit 64
+fi
+
+_ldp_production_prompt() {
+    local destination=$1
+    local prompt=$2
+
+    printf '%s: ' "${prompt}" >&2
+    if ! IFS= read -r "${destination}"; then
+        printf '\nProduction environment input ended before the contract was complete.\n' >&2
+        return 1
+    fi
+}
+
+_ldp_production_prompt_secret() {
+    local destination=$1
+    local prompt=$2
+
+    printf '%s: ' "${prompt}" >&2
+    if ! IFS= read -r -s "${destination}"; then
+        printf '\nProduction environment input ended before the contract was complete.\n' >&2
+        return 1
+    fi
+    printf '\n' >&2
+}
+
+_ldp_load_production_environment() {
+    local repository_root
+    repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd) || {
+        printf '%s\n' 'Production environment loader could not resolve the repository.' >&2
+        return 2
+    }
+
+    local admin_private_key=${ANSIBLE_PRIVATE_KEY_FILE-}
+    local admin_source_cidrs=${ADMIN_SOURCE_CIDRS_JSON-}
+    local caddy_token=${CADDY_CLOUDFLARE_API_TOKEN-}
+    local origin_pull_enforcement=${CADDY_ORIGIN_PULL_ENFORCEMENT_ENABLED-}
+    local origin_pull_ca_paths=${CADDY_ORIGIN_PULL_CA_PATHS_JSON-}
+    local state_access_key_id=${OPENTOFU_STATE_ACCESS_KEY_ID-}
+    local state_secret_access_key=${OPENTOFU_STATE_SECRET_ACCESS_KEY-}
+    local state_encryption_passphrase=${OPENTOFU_ENCRYPTION_PASSPHRASE-}
+    local state_bucket=${OPENTOFU_STATE_BUCKET-}
+    local restic_password=${RESTIC_PASSWORD-}
+    local spaces_region=${SPACES_REGION-}
+    local operator_principal=${STATIC_OPERATOR_PRINCIPAL-}
+    local operator_public_key=${STATIC_OPERATOR_PUBLIC_KEY-}
+    local first_ca_path=""
+    local second_ca_path=""
+    local operator_public_key_path=""
+    local command_name
+    local ca_path
+    local -a parsed_ca_paths=()
+
+    for command_name in jq ssh-keygen; do
+        if ! command -v "${command_name}" >/dev/null 2>&1; then
+            printf 'Required command %s is not installed.\n' "${command_name}" >&2
+            return 2
+        fi
+    done
+
+    if [[ -z ${admin_private_key} ]]; then
+        _ldp_production_prompt admin_private_key \
+            'Administrative SSH private-key path' || return 2
+    fi
+    if [[ -z ${admin_source_cidrs} ]]; then
+        _ldp_production_prompt_secret admin_source_cidrs \
+            'Administrative source CIDRs JSON (hidden)' || return 2
+    fi
+    if [[ -z ${caddy_token} ]]; then
+        _ldp_production_prompt_secret caddy_token \
+            'Caddy Cloudflare API token (hidden)' || return 2
+    fi
+    if [[ -z ${origin_pull_enforcement} ]]; then
+        _ldp_production_prompt origin_pull_enforcement \
+            'Origin-pull enforcement [true]' || return 2
+        origin_pull_enforcement=${origin_pull_enforcement:-true}
+    fi
+    if [[ -z ${origin_pull_ca_paths} ]]; then
+        _ldp_production_prompt first_ca_path \
+            'Production origin-pull CA certificate path' || return 2
+        _ldp_production_prompt second_ca_path \
+            'Overlapping replacement CA certificate path (blank for none)' || return 2
+        if [[ -n ${second_ca_path} ]]; then
+            origin_pull_ca_paths=$(jq --compact-output --null-input \
+                --arg first "${first_ca_path}" \
+                --arg second "${second_ca_path}" \
+                '[$first, $second]') || return 2
+        else
+            origin_pull_ca_paths=$(jq --compact-output --null-input \
+                --arg first "${first_ca_path}" \
+                '[$first]') || return 2
+        fi
+    fi
+    if [[ -z ${state_access_key_id} ]]; then
+        _ldp_production_prompt_secret state_access_key_id \
+            'Bucket-scoped production-state access key ID (hidden)' || return 2
+    fi
+    if [[ -z ${state_secret_access_key} ]]; then
+        _ldp_production_prompt_secret state_secret_access_key \
+            'Bucket-scoped production-state secret key (hidden)' || return 2
+    fi
+    if [[ -z ${state_encryption_passphrase} ]]; then
+        _ldp_production_prompt_secret state_encryption_passphrase \
+            'Production OpenTofu state passphrase (hidden)' || return 2
+    fi
+    if [[ -z ${state_bucket} ]]; then
+        _ldp_production_prompt state_bucket 'Production state bucket name' || return 2
+    fi
+    if [[ -z ${restic_password} ]]; then
+        _ldp_production_prompt_secret restic_password \
+            'Production Restic password (hidden)' || return 2
+    fi
+    if [[ -z ${spaces_region} ]]; then
+        _ldp_production_prompt spaces_region 'Spaces region [nyc3]' || return 2
+        spaces_region=${spaces_region:-nyc3}
+    fi
+    if [[ -z ${operator_principal} ]]; then
+        _ldp_production_prompt operator_principal \
+            'Static operator principal [production-static-operator]' || return 2
+        operator_principal=${operator_principal:-production-static-operator}
+    fi
+    if [[ -z ${operator_public_key} ]]; then
+        _ldp_production_prompt operator_public_key_path \
+            'Static operator public-key file' || return 2
+        if [[ ${operator_public_key_path} != /* ||
+              ! -f ${operator_public_key_path} ||
+              -L ${operator_public_key_path} ||
+              ! -r ${operator_public_key_path} ]]; then
+            printf '%s\n' \
+                'The static operator public key must be an absolute, readable, non-linked file.' >&2
+            return 2
+        fi
+        operator_public_key=$(<"${operator_public_key_path}")
+    fi
+
+    if [[ ${admin_private_key} != /* ||
+          ! -f ${admin_private_key} ||
+          -L ${admin_private_key} ||
+          ! -r ${admin_private_key} ]]; then
+        printf '%s\n' \
+            'The administrative SSH key must be an absolute, readable, non-linked file.' >&2
+        return 2
+    fi
+    if ! jq --exit-status \
+        'type == "array" and length > 0 and all(.[]; type == "string" and length > 0)' \
+        <<<"${admin_source_cidrs}" >/dev/null 2>&1; then
+        printf '%s\n' 'Administrative source CIDRs must be one non-empty JSON array.' >&2
+        return 2
+    fi
+    if [[ ${#caddy_token} -lt 20 || ${#caddy_token} -gt 256 ||
+          ! ${caddy_token} =~ ^[A-Za-z0-9_-]+$ ]]; then
+        printf '%s\n' 'The Caddy Cloudflare token has an invalid local shape.' >&2
+        return 2
+    fi
+    if [[ ${origin_pull_enforcement} != true &&
+          ${origin_pull_enforcement} != false ]]; then
+        printf '%s\n' 'Origin-pull enforcement must be exactly true or false.' >&2
+        return 2
+    fi
+    if ! jq --exit-status \
+        'type == "array" and (length == 1 or length == 2) and
+         all(.[]; type == "string" and startswith("/") and length > 1) and
+         (unique | length) == length' \
+        <<<"${origin_pull_ca_paths}" >/dev/null 2>&1; then
+        printf '%s\n' \
+            'Origin-pull CA paths must be one or two distinct absolute paths.' >&2
+        return 2
+    fi
+    mapfile -t parsed_ca_paths < <(jq --raw-output '.[]' <<<"${origin_pull_ca_paths}")
+    for ca_path in "${parsed_ca_paths[@]}"; do
+        if [[ ! -f ${ca_path} || -L ${ca_path} || ! -r ${ca_path} ]]; then
+            printf '%s\n' \
+                'Every origin-pull CA must be a readable, non-linked regular file.' >&2
+            return 2
+        fi
+    done
+    if [[ -z ${state_access_key_id} || -z ${state_secret_access_key} ||
+          -z ${state_encryption_passphrase} ]]; then
+        printf '%s\n' 'Production-state credentials must not be empty.' >&2
+        return 2
+    fi
+    if [[ ! ${state_bucket} =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]]; then
+        printf '%s\n' 'The production state bucket name has an invalid local shape.' >&2
+        return 2
+    fi
+    if [[ ${#restic_password} -lt 32 ]]; then
+        printf '%s\n' 'The production Restic password must contain at least 32 characters.' >&2
+        return 2
+    fi
+    if [[ ${spaces_region} != nyc3 ]]; then
+        printf '%s\n' 'The production Spaces region must be exactly nyc3.' >&2
+        return 2
+    fi
+
+    if ! STATIC_OPERATOR_PRINCIPAL=${operator_principal} \
+        STATIC_OPERATOR_PUBLIC_KEY=${operator_public_key} \
+        "${repository_root}/scripts/check-m3-6-operator-identity" \
+        "${admin_private_key}" >/dev/null; then
+        return 2
+    fi
+
+    export ADMIN_SOURCE_CIDRS_JSON="${admin_source_cidrs}"
+    export ANSIBLE_PRIVATE_KEY_FILE="${admin_private_key}"
+    export CADDY_CLOUDFLARE_API_TOKEN="${caddy_token}"
+    export CADDY_ORIGIN_PULL_CA_PATHS_JSON="${origin_pull_ca_paths}"
+    export CADDY_ORIGIN_PULL_ENFORCEMENT_ENABLED="${origin_pull_enforcement}"
+    export OPENTOFU_ENCRYPTION_PASSPHRASE="${state_encryption_passphrase}"
+    export OPENTOFU_STATE_ACCESS_KEY_ID="${state_access_key_id}"
+    export OPENTOFU_STATE_BUCKET="${state_bucket}"
+    export OPENTOFU_STATE_SECRET_ACCESS_KEY="${state_secret_access_key}"
+    export RESTIC_PASSWORD="${restic_password}"
+    export SPACES_REGION="${spaces_region}"
+    export STATIC_OPERATOR_PRINCIPAL="${operator_principal}"
+    export STATIC_OPERATOR_PUBLIC_KEY="${operator_public_key}"
+
+    printf '%s\n' \
+        'Production convergence environment loaded; no secret was displayed or written.'
+}
+
+if _ldp_load_production_environment; then
+    unset -f \
+        _ldp_load_production_environment \
+        _ldp_production_prompt \
+        _ldp_production_prompt_secret
+    return 0
+fi
+unset -f \
+    _ldp_load_production_environment \
+    _ldp_production_prompt \
+    _ldp_production_prompt_secret
+return 2

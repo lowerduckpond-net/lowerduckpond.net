@@ -49,6 +49,23 @@ is an availability dependency. Rotate it annually by issuing an overlapping
 replacement, rerunning configuration with the replacement, confirming an ACME
 operation, and then revoking the old token.
 
+From the repository root, the source-only loader prompts for each missing value
+and exports the complete production-convergence contract into the current Bash
+shell:
+
+```console
+source scripts/load-production-environment
+```
+
+Secret prompts disable terminal echo. The loader accepts already exported
+values without prompting, derives `CADDY_ORIGIN_PULL_CA_PATHS_JSON` from one or
+two public CA-certificate paths, and reads `STATIC_OPERATOR_PUBLIC_KEY` from its
+public-key file. It validates every input before exporting any newly entered
+value, writes nothing, and never calls `exit` when sourced. Run it again in a
+fresh shell after a reboot or after clearing the contract. Loading the contract
+does not load the administrative key into `ssh-agent`; do that explicitly with
+`ssh-add "$ANSIBLE_PRIVATE_KEY_FILE"` before the production preflight.
+
 ## M3.5 dark-host starting gate
 
 M3.5 changes ownership and backup scope but intentionally cannot publish a

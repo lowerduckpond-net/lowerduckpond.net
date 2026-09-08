@@ -102,6 +102,7 @@ check-ansible: check-ansible-static check-ansible-m3-8
 
 # Lint, syntax-check, and run the baseline Ansible acceptance scenario.
 check-ansible-static: _sync
+    bash -n scripts/load-production-environment
     bash -n scripts/configure-production
     bash -n scripts/preflight-m3-dark-host-production
     bash -n scripts/preflight-m3-6-production
