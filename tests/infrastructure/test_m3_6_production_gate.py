@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import shutil
 import subprocess
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -18,7 +20,13 @@ SSH_KEYGEN = shutil.which("ssh-keygen")
 INPUT_ERROR_STATUS = 2
 
 
-def create_key(tmp_path: Path, name: str, key_type: str = "ed25519") -> tuple[Path, str]:
+def create_key(
+    tmp_path: Path,
+    name: str,
+    key_type: str = "ed25519",
+    *,
+    encrypted: bool = True,
+) -> tuple[Path, str]:
     assert SSH_KEYGEN is not None
     private_key = tmp_path / name
     result = subprocess.run(  # noqa: S603 -- fixed test-only key generator.
@@ -28,7 +36,7 @@ def create_key(tmp_path: Path, name: str, key_type: str = "ed25519") -> tuple[Pa
             "-t",
             key_type,
             "-N",
-            "",
+            f"{name}-test-passphrase" if encrypted else "",
             "-C",
             name,
             "-f",
@@ -40,6 +48,19 @@ def create_key(tmp_path: Path, name: str, key_type: str = "ed25519") -> tuple[Pa
     )
     assert result.returncode == 0, result.stderr
     return private_key, private_key.with_suffix(".pub").read_text(encoding="ascii").strip()
+
+
+def replace_private_key_blob(private_key: Path, old: bytes, new: bytes) -> None:
+    assert len(old) == len(new)
+    lines = private_key.read_text(encoding="ascii").splitlines()
+    payload = base64.b64decode("".join(lines[1:-1]), validate=True)
+    assert payload.count(old) == 1
+    payload = payload.replace(old, new, 1)
+    encoded = base64.b64encode(payload).decode("ascii")
+    private_key.write_text(
+        "\n".join((lines[0], *textwrap.wrap(encoded, 70), lines[-1], "")),
+        encoding="ascii",
+    )
 
 
 def check_identity(
@@ -80,6 +101,38 @@ def test_operator_identity_gate_refuses_admin_key_reuse(tmp_path: Path) -> None:
 
     assert result.returncode == INPUT_ERROR_STATUS
     assert "must not reuse" in result.stderr
+
+
+def test_operator_identity_gate_refuses_unencrypted_admin_key(tmp_path: Path) -> None:
+    admin_key, _ = create_key(tmp_path, "admin", encrypted=False)
+    _, operator_public_key = create_key(tmp_path, "operator")
+
+    result = check_identity(admin_key, operator_public_key)
+
+    assert result.returncode == INPUT_ERROR_STATUS
+    assert "passphrase-protected" in result.stderr
+
+
+def test_operator_identity_gate_refuses_open_admin_key_permissions(tmp_path: Path) -> None:
+    admin_key, _ = create_key(tmp_path, "admin")
+    admin_key.chmod(0o644)
+    _, operator_public_key = create_key(tmp_path, "operator")
+
+    result = check_identity(admin_key, operator_public_key)
+
+    assert result.returncode == INPUT_ERROR_STATUS
+    assert "unsafe metadata" in result.stderr
+
+
+def test_operator_identity_gate_refuses_unsupported_admin_cipher(tmp_path: Path) -> None:
+    admin_key, _ = create_key(tmp_path, "admin")
+    replace_private_key_blob(admin_key, b"aes256-ctr", b"xes256-ctr")
+    _, operator_public_key = create_key(tmp_path, "operator")
+
+    result = check_identity(admin_key, operator_public_key)
+
+    assert result.returncode == INPUT_ERROR_STATUS
+    assert "supported encrypted OpenSSH key" in result.stderr
 
 
 @pytest.mark.parametrize(

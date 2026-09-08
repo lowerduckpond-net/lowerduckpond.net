@@ -132,6 +132,68 @@ def test_production_certificate_policy_accepts_one_year_leaf(tmp_path: Path) -> 
     )
 
 
+def test_production_certificate_policy_rejects_subject_text_spoof(tmp_path: Path) -> None:
+    certificate = tmp_path / "spoofed-ca.pem"
+    private_key = tmp_path / "spoofed-ca.key"
+    _run_openssl(
+        "req",
+        "-x509",
+        "-newkey",
+        "rsa:2048",
+        "-nodes",
+        "-days",
+        "1825",
+        "-subj",
+        "/CN=CA:TRUE Certificate Sign",
+        "-addext",
+        "basicConstraints=critical,CA:FALSE",
+        "-addext",
+        "keyUsage=critical,digitalSignature",
+        "-keyout",
+        os.fspath(private_key),
+        "-out",
+        os.fspath(certificate),
+    )
+
+    with pytest.raises(ProductionEdgePreflightError, match="constraints are unsafe"):
+        check_m3_7_production_edge.validate_ca_certificate(
+            certificate,
+            certificate.read_bytes(),
+            now=datetime.now(UTC),
+        )
+
+
+def test_production_ca_policy_reads_extensions_instead_of_subject_text(tmp_path: Path) -> None:
+    spoofed_ca_key = tmp_path / "spoofed-ca.key"
+    spoofed_ca_certificate = tmp_path / "spoofed-ca.pem"
+    _run_openssl(
+        "req",
+        "-x509",
+        "-newkey",
+        "rsa:2048",
+        "-nodes",
+        "-days",
+        "1825",
+        "-subj",
+        "/CN=CA:TRUE Certificate Sign",
+        "-addext",
+        "basicConstraints=critical,CA:FALSE",
+        "-addext",
+        "keyUsage=critical,digitalSignature",
+        "-keyout",
+        os.fspath(spoofed_ca_key),
+        "-out",
+        os.fspath(spoofed_ca_certificate),
+    )
+
+    with pytest.raises(ProductionEdgePreflightError, match="constraints are unsafe"):
+        check_m3_7_production_edge.validate_ca_certificate(
+            spoofed_ca_certificate,
+            spoofed_ca_certificate.read_bytes(),
+            now=datetime.now(UTC),
+        )
+
+
 def test_production_certificate_policy_rejects_short_remaining_leaf(tmp_path: Path) -> None:
     ca_path, leaf = _certificate_fixture(tmp_path, leaf_days=30)
 
