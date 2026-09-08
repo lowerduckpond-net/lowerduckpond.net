@@ -49,6 +49,32 @@ is an availability dependency. Rotate it annually by issuing an overlapping
 replacement, rerunning configuration with the replacement, confirming an ACME
 operation, and then revoking the old token.
 
+To avoid reconstructing the export sequence from this runbook, open a dedicated
+child shell from the repository root:
+
+```console
+just production-shell
+```
+
+The helper preserves values already exported in the calling shell and prompts
+only for missing contract fields. Secret prompts do not echo. It accepts one or
+two origin-pull CA paths and reads the static operator public key from a bounded
+regular file. The resulting environment exists only in the child shell: type
+`exit` to discard it, and an interrupt while entering values cannot partially
+modify the calling shell. The child disables its history file, but its process
+environment still contains credentials; use it only on the trusted workstation
+and do not start unrelated programs from it.
+
+This helper deliberately collects values rather than deciding whether they are
+valid production credentials. The milestone preflights, OpenTofu, and Ansible
+remain the authoritative consumers and validate the inputs before mutation. A
+single command can run in the same isolated environment without opening an
+interactive shell:
+
+```console
+scripts/production-environment-shell -- just preflight-m3-7-production
+```
+
 ## M3.5 dark-host starting gate
 
 M3.5 changes ownership and backup scope but intentionally cannot publish a
