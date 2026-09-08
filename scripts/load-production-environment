@@ -87,8 +87,7 @@ _ldp_load_production_environment() {
     fi
     if [[ -z ${origin_pull_enforcement} ]]; then
         _ldp_production_prompt origin_pull_enforcement \
-            'Origin-pull enforcement [true]' || return 2
-        origin_pull_enforcement=${origin_pull_enforcement:-true}
+            'Origin-pull enforcement (true or false; required)' || return 2
     fi
     if [[ -z ${origin_pull_ca_paths} ]]; then
         _ldp_production_prompt first_ca_path \
@@ -203,9 +202,13 @@ _ldp_load_production_environment() {
         ); then
         return 2
     fi
-    if [[ -z ${state_access_key_id} || -z ${state_secret_access_key} ||
-          -z ${state_encryption_passphrase} ]]; then
+    if [[ -z ${state_access_key_id} || -z ${state_secret_access_key} ]]; then
         printf '%s\n' 'Production-state credentials must not be empty.' >&2
+        return 2
+    fi
+    if [[ ${#state_encryption_passphrase} -lt 32 ]]; then
+        printf '%s\n' \
+            'The production OpenTofu state passphrase must contain at least 32 characters.' >&2
         return 2
     fi
     if [[ ! ${state_bucket} =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]]; then

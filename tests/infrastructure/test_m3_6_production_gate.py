@@ -18,7 +18,13 @@ SSH_KEYGEN = shutil.which("ssh-keygen")
 INPUT_ERROR_STATUS = 2
 
 
-def create_key(tmp_path: Path, name: str, key_type: str = "ed25519") -> tuple[Path, str]:
+def create_key(
+    tmp_path: Path,
+    name: str,
+    key_type: str = "ed25519",
+    *,
+    encrypted: bool = True,
+) -> tuple[Path, str]:
     assert SSH_KEYGEN is not None
     private_key = tmp_path / name
     result = subprocess.run(  # noqa: S603 -- fixed test-only key generator.
@@ -28,7 +34,7 @@ def create_key(tmp_path: Path, name: str, key_type: str = "ed25519") -> tuple[Pa
             "-t",
             key_type,
             "-N",
-            "",
+            "test-" + "passphrase" if encrypted else "",
             "-C",
             name,
             "-f",
@@ -90,6 +96,27 @@ def test_operator_identity_gate_refuses_an_admin_public_key(tmp_path: Path) -> N
 
     assert result.returncode == INPUT_ERROR_STATUS
     assert "does not contain private-key material" in result.stderr
+
+
+def test_operator_identity_gate_refuses_an_unencrypted_admin_key(tmp_path: Path) -> None:
+    admin_key, _ = create_key(tmp_path, "admin", encrypted=False)
+    _, operator_public_key = create_key(tmp_path, "operator")
+
+    result = check_identity(admin_key, operator_public_key)
+
+    assert result.returncode == INPUT_ERROR_STATUS
+    assert "must be passphrase-protected" in result.stderr
+
+
+def test_operator_identity_gate_refuses_open_admin_key_permissions(tmp_path: Path) -> None:
+    admin_key, _ = create_key(tmp_path, "admin")
+    _, operator_public_key = create_key(tmp_path, "operator")
+    admin_key.chmod(0o644)
+
+    result = check_identity(admin_key, operator_public_key)
+
+    assert result.returncode == INPUT_ERROR_STATUS
+    assert "owner-only read permissions" in result.stderr
 
 
 @pytest.mark.parametrize(

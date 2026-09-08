@@ -21,7 +21,7 @@ for variable_name in "${required_environment[@]}"; do
     fi
 done
 
-for command_name in grep ssh-keygen; do
+for command_name in grep ssh-keygen stat; do
     if ! command -v "${command_name}" >/dev/null 2>&1; then
         echo "Required command ${command_name} is not installed." >&2
         exit 2
@@ -39,6 +39,14 @@ admin_private_key_prefix='-----BEGIN OPENSSH'
 admin_private_key_suffix='PRIVATE KEY-----'
 if [[ ${admin_private_key_header} != "${admin_private_key_prefix} ${admin_private_key_suffix}" ]]; then
     echo "The administrative SSH identity does not contain private-key material." >&2
+    exit 2
+fi
+admin_private_key_mode=$(stat --format='%a' -- "${admin_private_key}") || {
+    echo "The administrative SSH identity metadata could not be read." >&2
+    exit 2
+}
+if [[ ${admin_private_key_mode} != 400 && ${admin_private_key_mode} != 600 ]]; then
+    echo "The administrative SSH identity must have owner-only read permissions." >&2
     exit 2
 fi
 if [[ ${#STATIC_OPERATOR_PUBLIC_KEY} -gt 512 ]] ||
@@ -78,6 +86,10 @@ admin_identity=$(ssh-keygen -E sha256 -l -f "${admin_private_key}") || {
     echo "The administrative SSH identity could not be fingerprinted." >&2
     exit 2
 }
+if ssh-keygen -y -P '' -f "${admin_private_key}" >/dev/null 2>&1; then
+    echo "The administrative SSH identity must be passphrase-protected." >&2
+    exit 2
+fi
 operator_fingerprint=${operator_identity#* }
 operator_fingerprint=${operator_fingerprint%% *}
 admin_fingerprint=${admin_identity#* }

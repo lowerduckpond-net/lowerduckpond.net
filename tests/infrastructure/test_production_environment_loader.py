@@ -35,7 +35,12 @@ CONTRACT_NAMES = (
 )
 
 
-def _create_key(tmp_path: Path, name: str) -> tuple[Path, Path]:
+def _create_key(
+    tmp_path: Path,
+    name: str,
+    *,
+    encrypted: bool = True,
+) -> tuple[Path, Path]:
     assert SSH_KEYGEN is not None
     private_key = tmp_path / name
     result = subprocess.run(  # noqa: S603 -- fixed test-only key generator.
@@ -45,7 +50,7 @@ def _create_key(tmp_path: Path, name: str) -> tuple[Path, Path]:
             "-t",
             "ed25519",
             "-N",
-            "",
+            "test-" + "passphrase" if encrypted else "",
             "-C",
             name,
             "-f",
@@ -101,7 +106,7 @@ def _fixture_environment(tmp_path: Path) -> dict[str, str]:
         "CADDY_CLOUDFLARE_API_TOKEN": "caddy-token-with-valid-shape-0001",
         "CADDY_ORIGIN_PULL_CA_PATHS_JSON": json.dumps([os.fspath(ca_path)]),
         "CADDY_ORIGIN_PULL_ENFORCEMENT_ENABLED": "true",
-        "OPENTOFU_ENCRYPTION_PASSPHRASE": "state-passphrase-test-only",
+        "OPENTOFU_ENCRYPTION_PASSPHRASE": "state-passphrase-test-only-00000000",
         "OPENTOFU_STATE_ACCESS_KEY_ID": "state-access-key-test-only",
         "OPENTOFU_STATE_BUCKET": "production-state-test-bucket",
         "OPENTOFU_STATE_SECRET_ACCESS_KEY": "state-secret-key-test-only",
@@ -188,7 +193,7 @@ def test_loader_prompts_for_missing_values_and_derives_file_inputs(tmp_path: Pat
             admin_key,
             contract["ADMIN_SOURCE_CIDRS_JSON"],
             contract["CADDY_CLOUDFLARE_API_TOKEN"],
-            "",
+            "true",
             ca_path,
             "",
             contract["OPENTOFU_STATE_ACCESS_KEY_ID"],
@@ -325,10 +330,25 @@ def test_loader_refuses_an_administrative_public_key_path(tmp_path: Path) -> Non
     assert "does not contain private-key material" in result.stderr
 
 
+def test_loader_requires_an_explicit_origin_pull_enforcement_choice(tmp_path: Path) -> None:
+    contract = _fixture_environment(tmp_path)
+    contract.pop("CADDY_ORIGIN_PULL_ENFORCEMENT_ENABLED")
+
+    result = _source_loader(
+        {"PATH": os.environ["PATH"], **contract},
+        standard_input="\n",
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == "status=2\n"
+    assert "exactly true or false" in result.stderr
+
+
 @pytest.mark.parametrize(
     ("name", "value", "error"),
     [
         ("CADDY_ORIGIN_PULL_ENFORCEMENT_ENABLED", "yes", "exactly true or false"),
+        ("OPENTOFU_ENCRYPTION_PASSPHRASE", "short", "at least 32"),
         ("SPACES_REGION", "sfo3", "exactly nyc3"),
         ("RESTIC_PASSWORD", "short", "at least 32"),
     ],

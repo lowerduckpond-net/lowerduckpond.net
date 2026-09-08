@@ -62,9 +62,11 @@ values without prompting, derives `CADDY_ORIGIN_PULL_CA_PATHS_JSON` from one or
 two public CA-certificate paths, and reads `STATIC_OPERATOR_PUBLIC_KEY` from its
 public-key file. It suspends an inherited Bash xtrace setting while the contract
 is in scope, validates the administrative CIDR boundaries, the production CA
-certificate policy, and private-key inputs before exporting any newly entered
-value, then restores xtrace. It writes nothing and never calls `exit` when
-sourced. Run it again in a fresh shell after a reboot or after clearing the
+certificate policy, state-passphrase length, and encrypted owner-only
+administrative private-key input before exporting any newly entered value, then
+restores xtrace. Origin-pull enforcement has no default because the safe value
+depends on the rollout phase. The loader writes nothing and never calls `exit`
+when sourced. Run it again in a fresh shell after a reboot or after clearing the
 contract. Loading the contract does not load the administrative key into
 `ssh-agent`; do that explicitly with `ssh-add "$ANSIBLE_PRIVATE_KEY_FILE"`
 before the production preflight.
