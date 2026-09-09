@@ -269,9 +269,13 @@ an exact quiescent `failed`/`failed`/`start-limit-hit` Caddy-recovery unit, and
 no queued systemd job for either service. It then still validates the complete
 dark-host, publication, generation, intent, and lock contracts before the first
 mutation. The standalone M3.5, M3.6, and M3.7 preflight commands continue to
-require active Caddy and a successful local HTTPS fixture. A recovery bootstrap
-resets only the Caddy and Caddy-recovery failed states and start-rate counters
-before attempting the reviewed service.
+require active Caddy. Their local HTTPS probe requires either the fixture
+response used before authenticated origin pulls were enforced or the exact TLS
+client-certificate alert expected afterward; every other connection failure is
+fatal. The M3.6 gate then validates the selected immutable generation and its
+configured origin-pull mode. A recovery bootstrap resets only the Caddy and
+Caddy-recovery failed states and start-rate counters before attempting the
+reviewed service.
 
 Milestone 2 grants the provisioner no sudo capability and no access to Caddy's
 configuration, admin socket, or empty root-owned route import directory. Tenant

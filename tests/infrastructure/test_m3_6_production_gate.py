@@ -233,6 +233,15 @@ def test_production_convergence_repeats_the_m3_6_preflight() -> None:
     assert 'caddy.service" || $2 == "caddy-recovery.service"' in dark_host_preflight
 
 
+def test_dark_host_preflight_accepts_only_a_live_fixture_or_client_auth() -> None:
+    preflight = DARK_HOST_PREFLIGHT.read_text(encoding="utf-8")
+
+    assert "if ! local_https_error=$(curl" in preflight
+    assert "https://lowerduckpond.net/ 2>&1 >/dev/null" in preflight
+    assert "*'alert certificate required'*)" in preflight
+    assert 'remote_fail "the local HTTPS fixture failed"' in preflight
+
+
 def read_inventory(value: object) -> subprocess.CompletedProcess[str]:
     return subprocess.run(  # noqa: S603 -- reviewed repository helper.
         [os.fspath(INVENTORY_READER)],

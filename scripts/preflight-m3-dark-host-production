@@ -160,11 +160,16 @@ done
 [[ -z $(find /etc/caddy/routes.d -mindepth 1 -print -quit) ]] ||
     remote_fail "Caddy has a tenant route input"
 if systemctl is-active --quiet caddy.service; then
-    curl --silent --show-error --fail \
+    local_https_error=""
+    if ! local_https_error=$(curl --silent --show-error --fail \
         --connect-timeout 5 --max-time 15 \
         --resolve lowerduckpond.net:443:127.0.0.1 \
-        https://lowerduckpond.net/ >/dev/null ||
-        remote_fail "the local HTTPS fixture failed"
+        https://lowerduckpond.net/ 2>&1 >/dev/null); then
+        case ${local_https_error} in
+            *'alert certificate required'*) ;;
+            *) remote_fail "the local HTTPS fixture failed" ;;
+        esac
+    fi
 elif [[ ${allow_failed_caddy_recovery} == true ]]; then
     [[ $(systemctl show --value --property=LoadState caddy.service) == loaded ]] ||
         remote_fail "Caddy recovery state is not loaded"
