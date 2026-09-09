@@ -214,8 +214,9 @@ The gate rejects a missing, linked, malformed, non-Ed25519, or reused operator
 identity and an invalid principal. It then repeats the M3.5 reproducible-build,
 installed-artifact, SSH-host-key, Caddy, and local-HTTPS proofs. Its additional
 remote checks require the exact disabled publication configuration and status,
-the selected artifact to be either the recorded M3.6 production identity or the
-exact current reproducible candidate (so an interrupted converge remains repairable),
+the selected artifact to be the recorded live production identity, the recorded
+M3.5 rollback identity, or the exact current reproducible candidate (so an
+interrupted converge remains repairable),
 exact and empty platform, tenant, authorization, intent, intake, export, audit,
 release, and Caddy-generation inventories; the exact authoritative-state and
 authorization parent inventories; zero to four safely materialized protected
@@ -261,6 +262,12 @@ configure-production`. Ansible first repeats the current M3.6 production gate
 and validates a candidate Caddyfile before its
 atomic rename, and systemd validates the live configuration before every
 reload.
+
+When convergence changes the selected host-agent artifact, record that exact
+production digest in the preflight and closeout documentation before the next
+host-agent change. This preserves a pinned forward transition from the live
+artifact to the next reproducible candidate instead of accepting an arbitrary
+installed artifact.
 
 The convergence command's internal preflight can also recover an interrupted
 immutable-Caddy bootstrap. This recovery mode accepts only a loaded service
