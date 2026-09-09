@@ -835,7 +835,9 @@ operator custody. Protected plan/apply runs `33465700316` and `33467680759`
 moved both zones behind the proxied edge from source revision
 `0f897f6648e5e7e6b2425aa9b92db22c32003483`. Guarded host convergence then
 required origin-pull authentication while retaining the disabled publication
-gate. Protected plan/apply runs `33570512670` and `33570902467` narrowed
+gate and selected host-agent artifact SHA-256
+`b48a138fa72aa8559aa288114b2a091d9a206609f944fcbbad3d399209672c33`.
+Protected plan/apply runs `33570512670` and `33570902467` narrowed
 production ingress to the reviewed Cloudflare network union from source
 revision `ee6a60b36db40d5aaab4a6c2dacfb83fa0ef4d7d`.
 

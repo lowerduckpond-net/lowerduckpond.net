@@ -69,7 +69,7 @@ set -euo pipefail
 export LC_ALL=C
 
 candidate_artifact_digest=$1
-previous_artifact_digest=39f28840373363b9f3b4fa446f05d64b2a30d8904bbfbe7e989bd7f5bd9989fb
+production_artifact_digest=b48a138fa72aa8559aa288114b2a091d9a206609f944fcbbad3d399209672c33
 rollback_artifact_digest=3709daa0fd2465a73ae6b0c7dd0d6137cf0ec747e11e5e670df084113265d43b
 
 remote_fail() {
@@ -107,7 +107,7 @@ selected_artifact_digest=${selected_artifact##*/}
 [[ ${selected_artifact} == "${install_root}/${selected_artifact_digest}" ]] ||
     remote_fail "the selected host-agent artifact escaped its install root"
 if [[ ${selected_artifact_digest} != "${rollback_artifact_digest}" &&
-      ${selected_artifact_digest} != "${previous_artifact_digest}" &&
+      ${selected_artifact_digest} != "${production_artifact_digest}" &&
       ${selected_artifact_digest} != "${candidate_artifact_digest}" ]]; then
     remote_fail "the selected host-agent artifact has an unexpected identity"
 fi

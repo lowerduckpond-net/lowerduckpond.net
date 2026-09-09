@@ -47,7 +47,10 @@ def create_key(
         text=True,
     )
     assert result.returncode == 0, result.stderr
-    return private_key, private_key.with_suffix(".pub").read_text(encoding="ascii").strip()
+    return (
+        private_key,
+        private_key.with_suffix(".pub").read_text(encoding="ascii").strip(),
+    )
 
 
 def replace_private_key_blob(private_key: Path, old: bytes, new: bytes) -> None:
@@ -113,7 +116,9 @@ def test_operator_identity_gate_refuses_unencrypted_admin_key(tmp_path: Path) ->
     assert "passphrase-protected" in result.stderr
 
 
-def test_operator_identity_gate_refuses_open_admin_key_permissions(tmp_path: Path) -> None:
+def test_operator_identity_gate_refuses_open_admin_key_permissions(
+    tmp_path: Path,
+) -> None:
     admin_key, _ = create_key(tmp_path, "admin")
     admin_key.chmod(0o644)
     _, operator_public_key = create_key(tmp_path, "operator")
@@ -124,7 +129,9 @@ def test_operator_identity_gate_refuses_open_admin_key_permissions(tmp_path: Pat
     assert "unsafe metadata" in result.stderr
 
 
-def test_operator_identity_gate_refuses_unsupported_admin_cipher(tmp_path: Path) -> None:
+def test_operator_identity_gate_refuses_unsupported_admin_cipher(
+    tmp_path: Path,
+) -> None:
     admin_key, _ = create_key(tmp_path, "admin")
     replace_private_key_blob(admin_key, b"aes256-ctr", b"xes256-ctr")
     _, operator_public_key = create_key(tmp_path, "operator")
@@ -211,7 +218,8 @@ def test_production_convergence_repeats_the_m3_6_preflight() -> None:
     assert "expected_locks=" not in preflight
     assert "generation_root=/etc/caddy/generations" in preflight
     assert 'generation_status=$("${generation_check}")' in preflight
-    assert "39f28840373363b9f3b4fa446f05d64b2a30d8904bbfbe7e989bd7f5bd9989fb" in preflight
+    assert "b48a138fa72aa8559aa288114b2a091d9a206609f944fcbbad3d399209672c33" in preflight
+    assert "39f28840373363b9f3b4fa446f05d64b2a30d8904bbfbe7e989bd7f5bd9989fb" not in (preflight)
     assert "3709daa0fd2465a73ae6b0c7dd0d6137cf0ec747e11e5e670df084113265d43b" in preflight
     assert "pending)" in preflight
     assert "the pending Caddy transaction has no durable intent" in preflight
