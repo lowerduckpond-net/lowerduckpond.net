@@ -5,6 +5,8 @@ on:
   pull_request:
   push:
     branches: [main]
+  schedule:
+    - cron: "23 4 * * 1"
   workflow_dispatch:
 
 permissions:
@@ -191,7 +193,47 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Select installed-host qualification
+        id: selection
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_REVISION: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_REVISION: ${{ github.event.pull_request.head.sha }}
+          PUSH_BASE_REVISION: ${{ github.event.before }}
+          PUSH_HEAD_REVISION: ${{ github.sha }}
+        run: |
+          case "${EVENT_NAME}" in
+            pull_request)
+              base_revision=${PR_BASE_REVISION}
+              head_revision=${PR_HEAD_REVISION}
+              ;;
+            push)
+              base_revision=${PUSH_BASE_REVISION}
+              head_revision=${PUSH_HEAD_REVISION}
+              ;;
+            *)
+              echo "required=true" >> "${GITHUB_OUTPUT}"
+              echo "A scheduled or manual run requires the full installed-host gate."
+              exit 0
+              ;;
+          esac
+          if required=$(scripts/m3-8-ci-required \
+            "${base_revision}" "${head_revision}"); then
+            :
+          else
+            echo "M3.8 CI selection failed; running the full gate." >&2
+            required=true
+          fi
+          echo "required=${required}" >> "${GITHUB_OUTPUT}"
+          if [[ "${required}" == true ]]; then
+            echo "Relevant files changed; the full installed-host gate is required."
+          else
+            echo "Installed-host inputs are unchanged; the full gate is not required."
+          fi
       - name: Install tools
+        if: steps.selection.outputs.required == 'true'
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         env:
           MISE_GITHUB_TOKEN: ${{ github.token }}
@@ -200,7 +242,12 @@ jobs:
           version: 2026.8.8
           install_args: just python uv
       - name: Check installed M3.8 lifecycle behavior
+        if: steps.selection.outputs.required == 'true'
         run: just check-ansible-m3-8
+      - name: Record the selective skip
+        if: steps.selection.outputs.required != 'true'
+        run: >-
+          echo "Ansible M3.8 skipped because its installed-host inputs did not change."
 
   ansible:
     name: Ansible

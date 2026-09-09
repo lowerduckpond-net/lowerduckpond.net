@@ -17,6 +17,12 @@ just check
 Use `just --list` to discover narrower commands. Use `just format` to apply
 formatters, then run `just check` before opening a pull request.
 
+The installed-host M3.8 qualification is deliberately slow. Pull requests and
+`main` pushes run it only when its Ansible, lifecycle, artifact, protocol,
+toolchain, or dependency inputs change. Scheduled and manually dispatched CI
+runs always exercise the full gate; its stable `Ansible` aggregate check remains
+available to branch protection when the expensive lane is selectively skipped.
+
 Create a focused branch, keep each pull request to one coherent change, and
 describe the behavior and validation performed. Architecture changes should add
 or update an ADR in `docs/adr/`.
