@@ -116,6 +116,7 @@ def test_selector_runs_when_a_revision_is_unavailable(repository: tuple[Path, st
 def test_ci_keeps_the_required_check_while_selecting_expensive_steps() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
+    assert "group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}" in workflow
     assert "fetch-depth: 0" in workflow
     assert "required=$(scripts/m3-8-ci-required" in workflow
     assert workflow.count("if: steps.selection.outputs.required == 'true'") == SELECTED_STEP_COUNT
