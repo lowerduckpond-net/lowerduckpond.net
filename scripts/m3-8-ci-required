@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if (( $# != 2 )); then
+    echo "Usage: $0 BASE_REVISION HEAD_REVISION" >&2
+    exit 2
+fi
+
+repository_root=$(git rev-parse --show-toplevel)
+base_revision=$1
+head_revision=$2
+
+for revision in "${base_revision}" "${head_revision}"; do
+    if ! git -C "${repository_root}" cat-file -e "${revision}^{commit}" 2>/dev/null; then
+        printf 'M3.8 CI selection could not resolve %s; running the full gate.\n' \
+            "${revision}" >&2
+        printf 'true\n'
+        exit 0
+    fi
+done
+
+relevant_paths=(
+    .github/workflows/ci.yml
+    .python-version
+    config/ansible
+    justfile
+    mise.lock
+    mise.toml
+    packages
+    platform
+    pyproject.toml
+    schemas/static-publication
+    scripts/build-static-host-agent
+    scripts/m3-8-ci-required
+    tools/static-operator
+    uv.lock
+)
+
+if git -C "${repository_root}" diff --quiet \
+    "${base_revision}" "${head_revision}" -- "${relevant_paths[@]}"; then
+    printf 'false\n'
+else
+    diff_status=$?
+    if (( diff_status != 1 )); then
+        printf 'M3.8 CI selection failed closed; running the full gate.\n' >&2
+    fi
+    printf 'true\n'
+fi
