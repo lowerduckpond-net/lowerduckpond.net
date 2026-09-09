@@ -342,6 +342,95 @@
     quiet: true
   when: caddy_generation_enabled | bool
 
+- name: Verify controller origin-pull CA certificates
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/openssl
+      - verify
+      - -x509_strict
+      - -CAfile
+      - "{{ item }}"
+      - "{{ item }}"
+  changed_when: false
+  loop: "{{ caddy_origin_pull_ca_paths }}"
+  delegate_to: localhost
+  become: false
+  when: caddy_generation_enabled | bool
+
+- name: Read controller origin-pull CA basic constraints
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/openssl
+      - x509
+      - -in
+      - "{{ item }}"
+      - -noout
+      - -ext
+      - basicConstraints
+  changed_when: false
+  loop: "{{ caddy_origin_pull_ca_paths }}"
+  register: caddy_controller_origin_pull_ca_basic_constraints
+  delegate_to: localhost
+  become: false
+  when: caddy_generation_enabled | bool
+
+- name: Require exact controller origin-pull CA basic constraints
+  ansible.builtin.assert:
+    that:
+      - >-
+        item.stdout_lines | map('trim') | list ==
+        ['X509v3 Basic Constraints: critical', 'CA:TRUE']
+    quiet: true
+  loop: "{{ caddy_controller_origin_pull_ca_basic_constraints.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: caddy_generation_enabled | bool
+
+- name: Read controller origin-pull CA key usage
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/openssl
+      - x509
+      - -in
+      - "{{ item }}"
+      - -noout
+      - -ext
+      - keyUsage
+  changed_when: false
+  loop: "{{ caddy_origin_pull_ca_paths }}"
+  register: caddy_controller_origin_pull_ca_key_usage
+  delegate_to: localhost
+  become: false
+  when: caddy_generation_enabled | bool
+
+- name: Require exact controller origin-pull CA key usage
+  ansible.builtin.assert:
+    that:
+      - >-
+        item.stdout_lines | map('trim') | list ==
+        ['X509v3 Key Usage: critical', 'Certificate Sign, CRL Sign']
+    quiet: true
+  loop: "{{ caddy_controller_origin_pull_ca_key_usage.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: caddy_generation_enabled | bool
+
+- name: Require controller origin-pull CA validity for the next week
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/openssl
+      - x509
+      - -in
+      - "{{ item }}"
+      - -noout
+      - -checkend
+      - "604800"
+  changed_when: false
+  loop: "{{ caddy_origin_pull_ca_paths }}"
+  delegate_to: localhost
+  become: false
+  when: caddy_generation_enabled | bool
+
 - name: Stage generation-bound origin-pull CA inputs
   ansible.builtin.copy:
     src: "{{ item }}"
@@ -381,33 +470,6 @@
       - "{{ item }}"
   changed_when: false
   loop: "{{ caddy_installed_origin_pull_ca_paths }}"
-  when: caddy_generation_enabled | bool
-
-- name: Read installed origin-pull CA constraints and expiry
-  ansible.builtin.command:
-    argv:
-      - /usr/bin/openssl
-      - x509
-      - -in
-      - "{{ item }}"
-      - -noout
-      - -checkend
-      - "604800"
-      - -text
-  changed_when: false
-  loop: "{{ caddy_installed_origin_pull_ca_paths }}"
-  register: caddy_origin_pull_ca_constraints
-  when: caddy_generation_enabled | bool
-
-- name: Require CA signing constraints on origin-pull trust
-  ansible.builtin.assert:
-    that:
-      - "'CA:TRUE' in item.stdout"
-      - "'Certificate Sign' in item.stdout"
-    quiet: true
-  loop: "{{ caddy_origin_pull_ca_constraints.results }}"
-  loop_control:
-    label: "{{ item.item }}"
   when: caddy_generation_enabled | bool
 
 - name: Read the trusted Caddy binary identity

@@ -124,6 +124,22 @@ def test_production_unit_executes_only_the_descriptor_pinned_launcher() -> None:
     assert "ExecReload=" not in unit
 
 
+def test_origin_pull_ca_extensions_are_validated_before_installation() -> None:
+    tasks = (_CADDY_ROLE / "tasks/main.yml").read_text(encoding="utf-8")
+    basic_constraints = "Read controller origin-pull CA basic constraints"
+    key_usage = "Read controller origin-pull CA key usage"
+    validity = "Require controller origin-pull CA validity for the next week"
+    installation = "Stage generation-bound origin-pull CA inputs"
+
+    assert "- basicConstraints" in tasks
+    assert "['X509v3 Basic Constraints: critical', 'CA:TRUE']" in tasks
+    assert "- keyUsage" in tasks
+    assert "['X509v3 Key Usage: critical', 'Certificate Sign, CRL Sign']" in tasks
+    for validation in (basic_constraints, key_usage, validity):
+        assert tasks.index(validation) < tasks.index(installation)
+    assert "- -text" not in tasks[tasks.index(basic_constraints) : tasks.index(installation)]
+
+
 def test_generation_migration_is_stopped_masked_and_defaults_on() -> None:
     defaults = (_CADDY_ROLE / "defaults/main.yml").read_text(encoding="utf-8")
     tasks = (_CADDY_ROLE / "tasks/main.yml").read_text(encoding="utf-8")

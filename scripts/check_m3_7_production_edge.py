@@ -30,6 +30,7 @@ AOP_SETTING_RESPONSE_STATUSES: Final = frozenset({HTTPStatus.OK, HTTPStatus.ACCE
 MAXIMUM_CERTIFICATE_BYTES: Final = 20_000
 MINIMUM_TOKEN_LENGTH: Final = 20
 CERTIFICATE_IDENTITY_LINE_COUNT: Final = 2
+MINIMUM_EXTENSION_LINE_COUNT: Final = 2
 CLOUDFLARE_TOKEN_ROLE_COUNT: Final = 3
 IPV4_VERSION: Final = 4
 MAXIMUM_CA_LIFETIME: Final = timedelta(days=1826)
@@ -301,6 +302,30 @@ def _certificate_dates(pem: bytes) -> tuple[datetime, datetime]:
     return not_before, not_after
 
 
+def _certificate_extension_values(pem: bytes, extension: str) -> frozenset[str]:
+    output = _openssl("x509", "-noout", "-ext", extension, input_bytes=pem)
+    try:
+        lines = output.decode("ascii", errors="strict").splitlines()
+    except UnicodeError as error:
+        raise ProductionEdgePreflightError("a certificate extension is malformed") from error
+    expected_header = {
+        "basicConstraints": "X509v3 Basic Constraints: critical",
+        "keyUsage": "X509v3 Key Usage: critical",
+    }.get(extension)
+    if (
+        expected_header is None
+        or len(lines) < MINIMUM_EXTENSION_LINE_COUNT
+        or lines[0] != expected_header
+    ):
+        raise ProductionEdgePreflightError("a certificate extension is malformed")
+    values = frozenset(
+        value.strip() for line in lines[1:] for value in line.strip().split(",") if value.strip()
+    )
+    if not values:
+        raise ProductionEdgePreflightError("a certificate extension is malformed")
+    return values
+
+
 def _read_ca_path() -> tuple[Path, bytes]:
     raw_paths = _required_environment("CADDY_ORIGIN_PULL_CA_PATHS_JSON")
     try:
@@ -354,13 +379,14 @@ def validate_ca_certificate(path: Path, pem: bytes, *, now: datetime) -> None:
         .decode("ascii", errors="strict")
         .splitlines()
     )
-    details = _openssl("x509", "-noout", "-text", input_bytes=pem)
+    basic_constraints = _certificate_extension_values(pem, "basicConstraints")
+    key_usage = _certificate_extension_values(pem, "keyUsage")
     _openssl("verify", "-CAfile", os.fspath(path), os.fspath(path))
     if (
         len(identity) != CERTIFICATE_IDENTITY_LINE_COUNT
         or identity[0].removeprefix("subject=") != identity[1].removeprefix("issuer=")
-        or b"CA:TRUE" not in details
-        or b"Certificate Sign" not in details
+        or basic_constraints != frozenset({"CA:TRUE"})
+        or key_usage != frozenset({"Certificate Sign", "CRL Sign"})
     ):
         raise ProductionEdgePreflightError("the production CA constraints are unsafe")
     not_before, not_after = _certificate_dates(pem)

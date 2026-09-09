@@ -21,7 +21,7 @@ for variable_name in "${required_environment[@]}"; do
     fi
 done
 
-for command_name in grep ssh-keygen; do
+for command_name in grep ssh-keygen stat; do
     if ! command -v "${command_name}" >/dev/null 2>&1; then
         echo "Required command ${command_name} is not installed." >&2
         exit 2
@@ -29,6 +29,26 @@ for command_name in grep ssh-keygen; do
 done
 if [[ ! -f ${admin_private_key} || -L ${admin_private_key} ]]; then
     echo "The administrative SSH identity must be a regular, non-linked file." >&2
+    exit 2
+fi
+admin_private_key_metadata=$(stat --format='%a %s' -- "${admin_private_key}") || {
+    echo "The administrative SSH identity metadata could not be read." >&2
+    exit 2
+}
+read -r admin_private_key_mode admin_private_key_size <<<"${admin_private_key_metadata}"
+if [[ ${admin_private_key_mode} != 400 && ${admin_private_key_mode} != 600 ]] ||
+   [[ ! ${admin_private_key_size} =~ ^[0-9]+$ ]] ||
+   ((admin_private_key_size == 0 || admin_private_key_size > 65536)); then
+    echo "The administrative SSH identity has unsafe metadata." >&2
+    exit 2
+fi
+IFS= read -r admin_private_key_header <"${admin_private_key}" || {
+    echo "The administrative SSH identity could not be read." >&2
+    exit 2
+}
+expected_private_key_header='-----BEGIN OPENSSH PRIVATE'" KEY-----"
+if [[ ${admin_private_key_header} != "${expected_private_key_header}" ]]; then
+    echo "The administrative SSH identity must be an OpenSSH private key." >&2
     exit 2
 fi
 if [[ ${#STATIC_OPERATOR_PUBLIC_KEY} -gt 512 ]] ||
@@ -51,6 +71,19 @@ cleanup() {
     find "${working_directory}" -depth -delete
 }
 trap cleanup EXIT
+
+admin_private_key_probe_error="${working_directory}/admin-private-key.err"
+if ssh-keygen -y -P '' -f "${admin_private_key}" \
+    >/dev/null 2>"${admin_private_key_probe_error}"; then
+    echo "The administrative SSH identity must be passphrase-protected." >&2
+    exit 2
+fi
+if ! grep --fixed-strings --quiet \
+    'incorrect passphrase supplied to decrypt private key' \
+    "${admin_private_key_probe_error}"; then
+    echo "The administrative SSH identity is not a supported encrypted OpenSSH key." >&2
+    exit 2
+fi
 
 operator_public_key_file="${working_directory}/operator.pub"
 printf '%s\n' "${STATIC_OPERATOR_PUBLIC_KEY}" >"${operator_public_key_file}"

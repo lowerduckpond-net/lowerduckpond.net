@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+set -euo pipefail
+set +x
+umask 077
+
+repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+
+prompt() {
+    local destination=$1
+    local message=$2
+
+    printf '%s: ' "${message}" >&2
+    if ! IFS= read -r "${destination}"; then
+        printf '\nProduction environment input was interrupted or incomplete.\n' >&2
+        return 130
+    fi
+}
+
+prompt_secret() {
+    local destination=$1
+    local message=$2
+
+    printf '%s: ' "${message}" >&2
+    if ! IFS= read -r -s "${destination}"; then
+        printf '\nProduction environment input was interrupted or incomplete.\n' >&2
+        return 130
+    fi
+    printf '\n' >&2
+}
+
+main() {
+    local admin_private_key=${ANSIBLE_PRIVATE_KEY_FILE-}
+    local admin_source_cidrs=${ADMIN_SOURCE_CIDRS_JSON-}
+    local caddy_token=${CADDY_CLOUDFLARE_API_TOKEN-}
+    local origin_pull_enforcement=${CADDY_ORIGIN_PULL_ENFORCEMENT_ENABLED-}
+    local origin_pull_ca_paths=${CADDY_ORIGIN_PULL_CA_PATHS_JSON-}
+    local state_access_key_id=${OPENTOFU_STATE_ACCESS_KEY_ID-}
+    local state_secret_access_key=${OPENTOFU_STATE_SECRET_ACCESS_KEY-}
+    local state_encryption_passphrase=${OPENTOFU_ENCRYPTION_PASSPHRASE-}
+    local state_bucket=${OPENTOFU_STATE_BUCKET-}
+    local restic_password=${RESTIC_PASSWORD-}
+    local spaces_region=${SPACES_REGION-}
+    local operator_principal=${STATIC_OPERATOR_PRINCIPAL-}
+    local operator_public_key=${STATIC_OPERATOR_PUBLIC_KEY-}
+    local first_ca_path=""
+    local second_ca_path=""
+    local operator_public_key_path=""
+    local operator_public_key_size=""
+    local command_name
+
+    for command_name in bash jq stat; do
+        if ! command -v "${command_name}" >/dev/null 2>&1; then
+            printf 'Required command %s is not installed.\n' "${command_name}" >&2
+            return 2
+        fi
+    done
+
+    if [[ -z ${admin_private_key} ]]; then
+        prompt admin_private_key 'Administrative SSH private-key path'
+    fi
+    if [[ -z ${admin_source_cidrs} ]]; then
+        prompt_secret admin_source_cidrs 'Administrative source CIDRs JSON (hidden)'
+    fi
+    if [[ -z ${caddy_token} ]]; then
+        prompt_secret caddy_token 'Caddy Cloudflare API token (hidden)'
+    fi
+    if [[ -z ${origin_pull_enforcement} ]]; then
+        prompt origin_pull_enforcement 'Origin-pull enforcement (true or false; required)'
+    fi
+    if [[ -z ${origin_pull_ca_paths} ]]; then
+        prompt first_ca_path 'Production origin-pull CA certificate path'
+        prompt second_ca_path 'Overlapping replacement CA certificate path (blank for none)'
+        if [[ -n ${second_ca_path} ]]; then
+            origin_pull_ca_paths=$(jq --compact-output --null-input \
+                --arg first "${first_ca_path}" \
+                --arg second "${second_ca_path}" \
+                '[$first, $second]')
+        else
+            origin_pull_ca_paths=$(jq --compact-output --null-input \
+                --arg first "${first_ca_path}" \
+                '[$first]')
+        fi
+    fi
+    if [[ -z ${state_access_key_id} ]]; then
+        prompt_secret state_access_key_id 'Bucket-scoped production-state access key ID (hidden)'
+    fi
+    if [[ -z ${state_secret_access_key} ]]; then
+        prompt_secret state_secret_access_key 'Bucket-scoped production-state secret key (hidden)'
+    fi
+    if [[ -z ${state_encryption_passphrase} ]]; then
+        prompt_secret state_encryption_passphrase \
+            'Production OpenTofu state passphrase (hidden)'
+    fi
+    if [[ -z ${state_bucket} ]]; then
+        prompt state_bucket 'Production state bucket name'
+    fi
+    if [[ -z ${restic_password} ]]; then
+        prompt_secret restic_password 'Production Restic password (hidden)'
+    fi
+    if [[ -z ${spaces_region} ]]; then
+        prompt spaces_region 'Spaces region [nyc3]'
+        spaces_region=${spaces_region:-nyc3}
+    fi
+    if [[ -z ${operator_principal} ]]; then
+        prompt operator_principal 'Static operator principal [production-static-operator]'
+        operator_principal=${operator_principal:-production-static-operator}
+    fi
+    if [[ -z ${operator_public_key} ]]; then
+        prompt operator_public_key_path 'Static operator public-key file'
+        if [[ ${operator_public_key_path} != /* ||
+              ! -f ${operator_public_key_path} ||
+              -L ${operator_public_key_path} ]]; then
+            printf '%s\n' \
+                'The static operator public key must be an absolute, non-linked regular file.' >&2
+            return 2
+        fi
+        operator_public_key_size=$(stat --format='%s' -- "${operator_public_key_path}")
+        if [[ ! ${operator_public_key_size} =~ ^[0-9]+$ ]] ||
+           ((operator_public_key_size == 0 || operator_public_key_size > 1024)); then
+            printf '%s\n' 'The static operator public-key file has an unsafe size.' >&2
+            return 2
+        fi
+        operator_public_key=$(<"${operator_public_key_path}")
+    fi
+
+    if [[ -z ${admin_private_key} ||
+          -z ${admin_source_cidrs} ||
+          -z ${caddy_token} ||
+          -z ${origin_pull_ca_paths} ||
+          -z ${state_access_key_id} ||
+          -z ${state_secret_access_key} ||
+          -z ${state_encryption_passphrase} ||
+          -z ${state_bucket} ||
+          -z ${restic_password} ||
+          -z ${operator_public_key} ]]; then
+        printf '%s\n' 'Every production environment input must be nonempty.' >&2
+        return 2
+    fi
+    if [[ ${origin_pull_enforcement} != true && ${origin_pull_enforcement} != false ]]; then
+        printf '%s\n' 'Origin-pull enforcement must be exactly true or false.' >&2
+        return 2
+    fi
+
+    export ADMIN_SOURCE_CIDRS_JSON=${admin_source_cidrs}
+    export ANSIBLE_PRIVATE_KEY_FILE=${admin_private_key}
+    export CADDY_CLOUDFLARE_API_TOKEN=${caddy_token}
+    export CADDY_ORIGIN_PULL_CA_PATHS_JSON=${origin_pull_ca_paths}
+    export CADDY_ORIGIN_PULL_ENFORCEMENT_ENABLED=${origin_pull_enforcement}
+    export OPENTOFU_ENCRYPTION_PASSPHRASE=${state_encryption_passphrase}
+    export OPENTOFU_STATE_ACCESS_KEY_ID=${state_access_key_id}
+    export OPENTOFU_STATE_BUCKET=${state_bucket}
+    export OPENTOFU_STATE_SECRET_ACCESS_KEY=${state_secret_access_key}
+    export RESTIC_PASSWORD=${restic_password}
+    export SPACES_REGION=${spaces_region}
+    export STATIC_OPERATOR_PRINCIPAL=${operator_principal}
+    export STATIC_OPERATOR_PUBLIC_KEY=${operator_public_key}
+
+    cd "${repository_root}"
+    if [[ ${1-} == -- ]]; then
+        shift
+    fi
+    if (($# > 0)); then
+        exec "$@"
+    fi
+
+    export HISTFILE=/dev/null
+    export PS1='(production) \u@\h:\w\$ '
+    printf '%s\n' \
+        'Production contract loaded in an isolated shell; exit to discard it.' >&2
+    exec bash --noprofile --norc -i
+}
+
+main "$@"
