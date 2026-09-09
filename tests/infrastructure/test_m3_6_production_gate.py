@@ -180,6 +180,7 @@ def test_production_convergence_repeats_the_m3_6_preflight() -> None:
     assert '"${repository_root}/scripts/preflight-m3-dark-host-production"' in preflight
     assert '"${repository_root}/scripts/check-m3-6-operator-identity"' in preflight
     assert '"${repository_root}/scripts/preflight-m3-6-production"' in configure
+    assert "-lockfile=readonly" in configure
     assert "--allow-exact-failed-caddy-recovery" in configure
     assert "--allow-exact-failed-caddy-recovery" in preflight
     assert "--allow-exact-failed-caddy-recovery" in dark_host_preflight

@@ -1,8 +1,10 @@
 from pathlib import Path
 
 WORKFLOW_PATH = Path(".github/workflows/infrastructure.yml")
+ARCHIVE_QUALIFICATION_PATH = Path("scripts/m3-archive-qualification")
 ARCHIVE_PREFLIGHT_INVOCATION_COUNT = 2
 HOST_STATE_REFERENCE_COUNT = 8
+READ_ONLY_LOCKFILE_WORKFLOW_COUNT = 3
 
 
 def test_apply_installs_and_directly_invokes_the_locked_archive_preflight() -> None:
@@ -33,3 +35,11 @@ def test_edge_transitions_require_the_exact_reviewed_host_state() -> None:
     assert "direct) expected_host_state=staged" in workflow
     assert "*) expected_host_state=unconfirmed" in workflow
     assert workflow.count("origin_pull_host_state") >= HOST_STATE_REFERENCE_COUNT
+
+
+def test_operational_initialization_keeps_provider_locks_read_only() -> None:
+    workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+    archive_qualification = ARCHIVE_QUALIFICATION_PATH.read_text(encoding="utf-8")
+
+    assert workflow.count("-lockfile=readonly") == READ_ONLY_LOCKFILE_WORKFLOW_COUNT
+    assert "-lockfile=readonly" in archive_qualification

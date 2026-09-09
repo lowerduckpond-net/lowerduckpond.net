@@ -562,6 +562,8 @@ def test_production_gate_is_read_only_and_composes_existing_gate() -> None:
     assert '"${repository_root}/scripts/preflight-m3-6-production"' in preflight
     assert "--allow-exact-failed-caddy-recovery" not in preflight
     assert 'tofu -chdir="${production_root}" state list' in preflight
+    assert "-lockfile=readonly" in preflight
+    assert "init -backend=false -input=false -lockfile=readonly" in justfile
     assert "output -raw reserved_ip_address" in preflight
     assert "output -raw edge_rollout_phase" in preflight
     assert "gh variable list --env production" in preflight
