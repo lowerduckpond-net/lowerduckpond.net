@@ -107,7 +107,7 @@ jobs:
           rm "${SPECULATIVE_ROOT}/backend.tf"
       - name: Initialize providers and modules
         working-directory: ${{ env.SPECULATIVE_ROOT }}
-        run: tofu init -input=false
+        run: tofu init -input=false -lockfile=readonly
       - name: Create no-credential speculative plan
         working-directory: ${{ env.SPECULATIVE_ROOT }}
         run: |
@@ -179,7 +179,7 @@ jobs:
       - name: Initialize the production backend
         working-directory: ${{ env.PRODUCTION_ROOT }}
         run: |
-          tofu init -input=false -reconfigure \
+          tofu init -input=false -reconfigure -lockfile=readonly \
             -backend-config="bucket=${STATE_BUCKET}" \
             -backend-config="key=production/opentofu.tfstate" \
             -backend-config="region=us-east-1" \
@@ -423,7 +423,7 @@ jobs:
       - name: Initialize the production backend
         working-directory: ${{ env.PRODUCTION_ROOT }}
         run: |
-          tofu init -input=false -reconfigure \
+          tofu init -input=false -reconfigure -lockfile=readonly \
             -backend-config="bucket=${STATE_BUCKET}" \
             -backend-config="key=production/opentofu.tfstate" \
             -backend-config="region=us-east-1" \

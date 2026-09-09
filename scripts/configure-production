@@ -74,6 +74,7 @@ export AWS_SECRET_ACCESS_KEY=${OPENTOFU_STATE_SECRET_ACCESS_KEY}
 export TF_VAR_state_encryption_passphrase=${OPENTOFU_ENCRYPTION_PASSPHRASE}
 
 tofu -chdir="${production_root}" init -input=false -reconfigure \
+    -lockfile=readonly \
     -backend-config="bucket=${OPENTOFU_STATE_BUCKET}" \
     -backend-config="key=production/opentofu.tfstate" \
     -backend-config="region=us-east-1" \
