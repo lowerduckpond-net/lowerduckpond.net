@@ -55,6 +55,7 @@ from lowerduckpond_static_host_agent.portable_bundle import (
     build_portable_bundle,
     inspect_portable_bundle,
 )
+from lowerduckpond_static_host_agent.release_tree import ReleaseTreeError
 from lowerduckpond_static_host_agent.repository import (
     IntentRemovalToken,
     StateRecordPath,
@@ -158,6 +159,8 @@ class ExportLifecycleHandler:
             expected = cast(dict[str, object], job.document["expectedSource"])
             if expected["lifecycle"] == "archived":
                 raise LifecycleJobRejectionError("not_implemented")
+            if expected["lifecycle"] not in {"active", "suspended"}:
+                raise LifecycleJobRejectionError("invalid_request")
             if build_expected_source(transaction, request) != expected:
                 raise LifecycleJobRejectionError("state_drift")
             try:
@@ -172,7 +175,13 @@ class ExportLifecycleHandler:
                 )
             except ExportSpoolCapacityError as error:
                 raise LifecycleJobRejectionError("capacity_exceeded") from error
-            except ExportSpoolError as error:
+            except (
+                ExportSpoolError,
+                ReleaseTreeError,
+                FileNotFoundError,
+                NotADirectoryError,
+                PermissionError,
+            ) as error:
                 raise LifecycleJobRejectionError("state_drift") from error
             return snapshot, job
 

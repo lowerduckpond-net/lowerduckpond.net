@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 from collections.abc import Callable
 from datetime import UTC, datetime
 from multiprocessing import get_context
@@ -346,3 +347,68 @@ def test_process_death_without_finally_recovers_export(
         assert transaction.inspect_audit().entry_count == 1
         assert transaction.measure_intent_records().records == ()
     assert [path.name for path in (root / "exports").iterdir()] == [f"{job_id}.zip"]
+
+
+def _assert_terminal_rejection(
+    root: Path, releases: Path, job_id: str, manifest: dict[str, object], error_code: str
+) -> None:
+    outcome = _execute(root, releases, job_id)
+    assert outcome.result["status"] == "failed"
+    assert outcome.result["errorCode"] == error_code
+    retry = _execute(root, releases, job_id)
+    assert retry.result == outcome.result
+    assert not retry.created
+    assert list((root / "exports").iterdir()) == []
+    with (
+        StateRepository(root, expected_owner=_OWNER) as repository,
+        repository.transaction(mode=LockMode.EXCLUSIVE) as transaction,
+    ):
+        assert transaction.read(StateRecordPath.tenant_desired(_TENANT)).document == manifest
+        job = transaction.read(StateRecordPath.authorization_job(job_id)).document
+        assert job["phase"] == "failed"
+        assert job["executionValidated"] is True
+        assert transaction.inspect_audit().entry_count == 1
+        assert transaction.measure_intent_records().records == ()
+
+
+def test_undeployed_export_is_a_terminal_lifecycle_rejection(tmp_path: Path) -> None:
+    root, releases, manifest = _source(tmp_path)
+    spec = manifest["spec"]
+    assert isinstance(spec, dict)
+    spec["desiredState"] = "undeployed"
+    del spec["desiredDeployment"]
+    observed = _fixture("tenant-observed-state.json")
+    observed.update(
+        desiredManifestDigest=manifest_digest(manifest).to_dict(),
+        observedState="undeployed",
+        activeDeploymentId=None,
+        runtimeGenerationId=None,
+    )
+    _write(root, StateRecordPath.tenant_desired(_TENANT), manifest)
+    _write(root, StateRecordPath.tenant_observed(_TENANT), observed)
+    (root / "tenants" / _TENANT / "deployments" / f"{_DEPLOYMENT}.json").unlink()
+    shutil.rmtree(releases / _TENANT / "releases" / _DEPLOYMENT)
+    with StateRepository(root, expected_owner=_OWNER) as repository:
+        job_id = _issue(repository)
+    _assert_terminal_rejection(root, releases, job_id, manifest, "invalid_request")
+
+
+@pytest.mark.parametrize("shape", ["missing", "file", "symlink", "wrong-mode", "fifo"])
+def test_unavailable_release_is_terminal_drift_and_does_not_loop(
+    tmp_path: Path, shape: str
+) -> None:
+    root, releases, manifest = _source(tmp_path)
+    with StateRepository(root, expected_owner=_OWNER) as repository:
+        job_id = _issue(repository)
+    release = releases / _TENANT / "releases" / _DEPLOYMENT
+    if shape in {"missing", "file", "symlink"}:
+        shutil.rmtree(release)
+        if shape == "file":
+            release.write_bytes(b"a directory was required")
+        elif shape == "symlink":
+            release.symlink_to(tmp_path)
+    elif shape == "wrong-mode":
+        release.chmod(0o777)
+    else:
+        os.mkfifo(release / "pipe")
+    _assert_terminal_rejection(root, releases, job_id, manifest, "state_drift")
