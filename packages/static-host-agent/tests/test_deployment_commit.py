@@ -1911,6 +1911,8 @@ def test_import_executor_publishes_only_content_and_preserves_target_policy(  # 
     for name in ("deployments", "archives"):
         _mkdir(root / "tenants" / _tenant_id() / name)
     target, observed, _selected = _source([], state="undeployed")
+    cast(dict[str, object], target["spec"])["quotas"] = {"storageMiB": 1, "entries": 2}
+    observed["desiredManifestDigest"] = manifest_digest(target).to_dict()
     namespace = _fixture("platform-namespace.json")
     _write(root, StateRecordPath.platform_namespace(), namespace)
     _write(root, StateRecordPath.tenant_desired(_tenant_id()), target)
