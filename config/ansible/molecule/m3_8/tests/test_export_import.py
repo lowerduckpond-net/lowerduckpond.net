@@ -222,6 +222,31 @@ def test_installed_unacknowledged_retry_conflict_and_expiry(
         ),
     )
     tenant_id = str(created["tenantId"])
+    undeployed_request = support._request("export", str(uuid.uuid7()), tenantId=tenant_id)
+    undeployed_path = tmp_path / "undeployed.zip"
+    rejected = support._submit(
+        tmp_path,
+        operator_host,
+        identity,
+        ssh,
+        undeployed_request,
+        export_path=undeployed_path,
+    )
+    assert rejected["status"] == "failed"
+    assert rejected["errorCode"] == "invalid_request"
+    assert (
+        support._submit(
+            tmp_path,
+            operator_host,
+            identity,
+            ssh,
+            dict(undeployed_request),
+            export_path=undeployed_path,
+        )
+        == rejected
+    )
+    assert not undeployed_path.exists()
+    _assert_empty_spool(host)
     deployed = support._submit(
         tmp_path,
         operator_host,
