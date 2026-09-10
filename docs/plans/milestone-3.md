@@ -982,6 +982,15 @@ reload failure, reboot, and startup reconciliation. Immutable release and
 generation retention is bounded, and failed transitions preserve recoverable
 evidence without publishing partial state.
 
+Routine production convergence completed on 2026-09-10 from source revision
+`6dd5714fb1b817b1ae7aa1eb55076b5f6d925c01` and selected host-agent artifact
+SHA-256
+`8c004ab6b73b7935f2151940aa522c05652bd196abbcb8604a803ee099aebfa8`.
+Its final acceptance pass reported `ok=20`, `changed=0`, `unreachable=0`, and
+`failed=0`, including encrypted-backup verification and a disposable restore.
+Production publication and authoritative tenant state remained disabled and
+empty.
+
 The full Python suite and disposable installed-host qualification passed on the
 exact reviewed PR head. The installed gate covers lifecycle semantics,
 issuance and expected-state defenses, artifact replacement, replay,
