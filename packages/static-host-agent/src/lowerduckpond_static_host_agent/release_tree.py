@@ -205,6 +205,7 @@ class _ScanContext:
     expected_device: int
     limits: ReleaseTreeLimits
     state: _ScanState
+    read_only: bool = False
 
 
 def _notify(
@@ -357,7 +358,9 @@ def _scan_entry(
     _validate_snapshot(
         snapshot,
         expected_owner=context.expected_owner,
-        expected_mode=0o755 if is_directory else 0o644,
+        expected_mode=(0o555 if is_directory else 0o444)
+        if context.read_only
+        else (0o755 if is_directory else 0o644),
         is_directory=is_directory,
     )
     if snapshot.device != context.expected_device:
@@ -522,6 +525,7 @@ def _measure_release_tree(
     expected_owner: int,
     limits: ReleaseTreeLimits = DEFAULT_RELEASE_TREE_LIMITS,
     measurement_hook: MeasurementHook | None = None,
+    read_only: bool = False,
 ) -> ReleaseTreeMeasurement:
     """Measure one normalized, stable release without following namespace links."""
 
@@ -536,7 +540,7 @@ def _measure_release_tree(
         _validate_snapshot(
             root_snapshot,
             expected_owner=expected_owner,
-            expected_mode=0o755,
+            expected_mode=0o555 if read_only else 0o755,
             is_directory=True,
         )
         try:
@@ -557,7 +561,7 @@ def _measure_release_tree(
             root_fd,
             (),
             (),
-            _ScanContext(expected_owner, root_snapshot.device, limits, state),
+            _ScanContext(expected_owner, root_snapshot.device, limits, state, read_only),
         )
         state.entries.sort(key=lambda entry: entry.path_bytes)
         _notify(measurement_hook, ReleaseTreeBoundary.AFTER_SCAN)
@@ -608,13 +612,14 @@ def measure_release_tree(
     )
 
 
-def measure_release_tree_snapshot(
+def measure_release_tree_snapshot(  # noqa: PLR0913 - explicit snapshot verification inputs
     root: Path,
     *,
     lock_manager: _PublicationLockProof,
     expected_owner: int,
     limits: ReleaseTreeLimits = DEFAULT_RELEASE_TREE_LIMITS,
     measurement_hook: MeasurementHook | None = None,
+    read_only: bool = False,
 ) -> ReleaseTreeMeasurement:
     """Measure a private export snapshot while its exclusive spool lock is held."""
 
@@ -624,4 +629,17 @@ def measure_release_tree_snapshot(
         expected_owner=expected_owner,
         limits=limits,
         measurement_hook=measurement_hook,
+        read_only=read_only,
     )
+
+
+def measure_release_tree_capture(
+    root: Path,
+    *,
+    lock_manager: _PublicationLockProof,
+    expected_owner: int,
+) -> ReleaseTreeMeasurement:
+    """Measure a source protected against lifecycle mutation and release cleanup."""
+
+    lock_manager.require_held(LockName.TENANT_STATE)
+    return _measure_release_tree(root, expected_owner=expected_owner)
