@@ -181,7 +181,7 @@ record.
 | Ordinary backup retention expires rotated audit evidence | Remove a local segment only after a dedicated tagged audit snapshot is restore-verified and durably indexed. Exclude that tag from ordinary `forget`/`prune`, verify every referenced snapshot during maintenance, and reconstruct the chain from tagged descriptors during recovery. |
 | Nested locks deadlock or accumulate waiters | Acquire export, publication, and tenant-state only in that global order; never upgrade; return retryable busy before allocating work; revalidate archive source state after its unlocked construction phase; and never wait for a systemd job that reacquires publication while holding it. |
 | Delayed rollback undoes suspension | Recheck lifecycle state under the publication lock; while suspended, change only the remembered deployment and require explicit resume before publishing. |
-| Repeated suspended deployments or archive/restore cycles evade release retention | Apply the same selected-release-plus-two-predecessors cleanup after active or suspended deploy, rollback, and restore commits and during reconciliation, while preserving export- and intent-pinned releases. |
+| Repeated suspended deployments or archive/restore cycles evade release retention | Apply the same selected-release-plus-two-predecessors cleanup after active or suspended deploy, rollback, and restore commits and during reconciliation, while preserving intent-pinned releases. Ordinary export owns an independent sealed copy and does not pin published releases. |
 | Interrupted archive republishes a suspended tenant | Require reconciled source state before archive, bind the exact preceding lifecycle, observed state, remembered deployment, runtime generation, and route presence in intent, and restore that complete source rather than assuming it was active. |
 | Manifest or audit tampering | Keep desired and observed state and append-only audit operations root-owned; allow the provisioner no direct write, replacement, truncation, or deletion authority. |
 | Crash or power loss between filesystem, route, reload, restart handoff, and state changes | Durably sync generation targets and parents before intent, sync intent before selecting and syncing the active reference, persist every restart phase before releasing its lock, sync desired/observed state and audit before clearing intent, and reconcile from durable evidence. |
@@ -335,8 +335,9 @@ Implementation and review must preserve these invariants:
     full-platform restore owns recovery of an existing identity.
 31. Every successful deploy, rollback, or restore runs the same post-commit
     selected-release-plus-two-predecessors cleanup. Reconciliation repeats
-    interrupted cleanup, and no release pinned by an export or transaction
-    intent is removed.
+    interrupted cleanup, and no release pinned by a transaction intent is
+    removed. Ordinary export owns an independent sealed copy and does not pin
+    a published release.
 32. Every externally requested tenant operation has an immutable root-owned
     authorization job binding its SSH-authenticated operator, exact operation
     and target, correlation and canonical request, artifact or absence, and
@@ -374,6 +375,12 @@ Implementation and review must preserve these invariants:
     blocks unclaimed and case-variant `/cdn-cgi` requests before Caddy, exact
     provider-managed internal endpoints remain isolated from Caddy, and
     archive, import, and restore reject that normalized first component.
+
+## Implementation traceability
+
+[M3.9 export and portable-import evidence](m3-9-evidence.md) maps the changed
+invariants to unit, process, installed-host, and recovery checks, with the
+remaining M3.10 remote-service work identified explicitly.
 
 ## Residual risks
 

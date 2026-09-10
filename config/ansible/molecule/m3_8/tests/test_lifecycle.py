@@ -483,6 +483,7 @@ def _submit(  # noqa: PLR0913
     request: dict[str, object],
     *,
     artifact: bytes | None = None,
+    export_path: Path | None = None,
 ) -> dict[str, object]:
     new_correlation = _pace_new_correlation(request)
     request_path = tmp_path / f"{request['correlationId']}.json"
@@ -503,6 +504,7 @@ def _submit(  # noqa: PLR0913
                     identity_path=identity,
                     request_path=request_path,
                     artifact_path=artifact_path,
+                    export_path=export_path,
                     ssh_executable=ssh,
                 )
             except OperatorClientError as error:

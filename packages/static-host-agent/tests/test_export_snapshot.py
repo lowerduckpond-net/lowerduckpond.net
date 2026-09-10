@@ -4,6 +4,7 @@ import os
 import stat
 from collections.abc import Callable
 from copy import deepcopy
+from multiprocessing import get_context
 from pathlib import Path
 from threading import Event, Thread
 
@@ -41,6 +42,7 @@ _JOB = "0198d17f-6f4a-7000-8000-000000000002"
 _FIXTURES = Path(__file__).parents[3] / "tests/static-publication/fixtures/accepted"
 _READ_ONLY_FILE = 0o444
 _READ_ONLY_DIRECTORY = 0o555
+_KILLED_STATUS = 23
 
 
 def _mkdir(path: Path, mode: int = 0o700) -> None:
@@ -224,6 +226,48 @@ def test_shared_capture_excludes_mutation_and_cleanup_until_verified(tmp_path: P
     finally:
         thread.join(10)
     assert outcomes == ["backup shared lock succeeds"]
+
+
+@pytest.mark.parametrize("boundary", list(ExportCaptureBoundary))
+def test_real_capture_death_recovers_private_work_without_changing_source(
+    tmp_path: Path, boundary: ExportCaptureBoundary
+) -> None:
+    root, releases, manifest, deployment = _fixture(tmp_path)
+
+    def killed_capture() -> None:
+        def interrupt(current: ExportCaptureBoundary) -> None:
+            if current == boundary:
+                os._exit(_KILLED_STATUS)
+
+        with (
+            StateRepository(root, expected_owner=_OWNER) as repository,
+            ExportSpool(root, expected_owner=_OWNER) as spool,
+            spool.construction(),
+        ):
+            _capture(spool, repository, releases, manifest, deployment, interrupt)
+
+    process = get_context("fork").Process(target=killed_capture)
+    process.start()
+    process.join(20)
+    try:
+        assert process.exitcode == _KILLED_STATUS
+    finally:
+        if process.is_alive():
+            process.kill()
+            process.join(10)
+        process.close()
+    assert (root / "exports/.work").is_dir()
+    with (
+        StateRepository(root, expected_owner=_OWNER) as repository,
+        ExportSpool(root, expected_owner=_OWNER) as spool,
+        spool.construction(),
+    ):
+        assert list(spool.workspace.iterdir()) == []
+        snapshot = _capture(spool, repository, releases, manifest, deployment)
+        assert snapshot.manifest == manifest
+        assert snapshot.deployment == deployment
+        assert (snapshot.content / "index.html").read_bytes() == b"source home\n"
+    assert list((root / "exports").iterdir()) == []
 
 
 @pytest.mark.parametrize("drift", ["manifest", "deployment", "content"])
