@@ -1,7 +1,7 @@
 # Milestone 3 implementation plan
 
-- Status: implementation in progress; M3.0 through M3.8 complete
-- Updated: 2026-09-07
+- Status: implementation in progress; M3.0 through M3.9 complete
+- Updated: 2026-09-10
 - Outcome: deliver the complete static-tenant lifecycle through the trusted
   workstation without enabling the Milestone 4 public control plane
 
@@ -232,9 +232,8 @@ four DNS records, four Authenticated Origin Pulls associations, six rulesets,
 ACME records, and four uploaded leaves absent. Both temporary Cloudflare tokens
 were revoked and disposable trusted-workstation material was removed. The
 backed-up CA roots remain retained as qualification-only material. M3.1 through
-M3.8 subsequently completed, and M3.9 is the next
-implementation phase; the M3.0 result does not enable production or satisfy
-any later Milestone 3 gate.
+M3.9 subsequently completed, and M3.10 is the next implementation phase; the
+M3.0 result does not enable production or satisfy any later Milestone 3 gate.
 
 Add executable qualification probes and a sanitized report before depending on
 host behavior that the current Molecule suite does not reproduce.
@@ -330,7 +329,7 @@ and an independent version-aware and multipart-aware probe proved the entire
 archive bucket empty. Protected run `33219502391` then passed ordinary
 production policy and reported no changes with the migration flag disabled.
 The archive credential remains in operator custody and off the production host
-until M3.10. M3.2 through M3.8 subsequently completed, and M3.9 is the next
+until M3.10. M3.2 through M3.9 subsequently completed, and M3.10 is the next
 implementation phase; M3.1 does not enable production or satisfy any later
 Milestone 3 gate.
 
@@ -727,7 +726,7 @@ production flag rejected before request intake or state allocation. The
 private operator key and its passphrase are backed up separately, only its
 public half is installed, and the stable audit principal is the non-personal
 role alias `production-static-operator`. Production publication remains
-disabled. M3.7 and M3.8 subsequently completed, and M3.9 is the next
+disabled. M3.7 through M3.9 subsequently completed, and M3.10 is the next
 implementation phase.
 
 The first review boundary installed the dedicated,
@@ -857,8 +856,8 @@ state to `enforced`, reported no changes, and passed production policy. The two
 temporary Cloudflare tokens were revoked and the four working leaf-key and CSR
 files were removed after their retained public certificates, certificate IDs,
 CA material, and separate backups were confirmed. Static publication remains
-disabled. M3.8 subsequently completed, and M3.9 is the next implementation
-phase.
+disabled. M3.8 and M3.9 subsequently completed, and M3.10 is the next
+implementation phase.
 
 Extend the production OpenTofu stack with a second instance of the existing
 Cloudflare DNS module for the `lowerduckpond.com` apex and wildcard, then evolve
@@ -1004,8 +1003,8 @@ reconcile. The reboot gate proves a new PID 1 and cleared volatile state while
 retaining exact durable trees, metadata, selected generation, and routes, then
 runs the complete transport and recovery matrix after startup reconciliation.
 Publication was enabled only inside that disposable environment; production
-remains disabled. Restoration and deletion stay deferred to M3.10, and M3.9 portable
-export and import is the next implementation phase.
+remains disabled. M3.9 portable export and import subsequently completed;
+remote archive, restoration, and deletion are the next phase in M3.10.
 
 Implement `create`, `deploy`, `rollback`, `suspend`, `resume`, `rename`, and
 `reconcile` through authorization jobs. Initialize the namespace record only
@@ -1035,30 +1034,45 @@ operations keep evidence and never require manual file editing.
 
 ### M3.9: implement export and portable import
 
-Implementation status: in progress. The first increment supplies the exclusive
-global spool workspace, physical byte/inode admission, shared tenant-state
-capture, sealed independent copies, and bounded interrupted-work cleanup.
-Capture verifies active and suspended source manifests, selected deployment
-records, and release content before releasing shared tenant-state. Export
-dispatch now builds a deterministic bundle from that sealed copy and commits
-its spool publication, audit, and immutable result through a recoverable
-state-preserving intent. A source change before commitment aborts the export
-without replacing current tenant state. Authenticated delivery now holds spool
-exclusion, acknowledges only a verified durable local download, and retires
-the slot through a synced job marker before deletion. The fixed 24-hour
-retention deadline starts at job acceptance; interrupted retirement and
-incomplete work recover through root reconciliation. Portable import now uses
-the ordinary deployment transaction to activate an existing undeployed target
-with a new root-generated deployment ID. Independently inspected source
-provenance is retained in the deployment record, while all target settings
-remain rooted in its current manifest. Staged content is independently
-measured against current target byte and entry quotas before intent creation;
-excess is a terminal capacity rejection with no target publication.
-Interrupted imports recover from the
-authorization job and lifecycle intent. The complete race, failure, and
-installed-host qualification gate remains pending. The
-[qualification evidence map](../threat-model/m3-9-evidence.md) names its unit,
-process, installed-host, and recovery checks.
+Implementation status: completed. Active and suspended exports use coherent
+shared-lock snapshots with sealed independent copies, so later release cleanup
+cannot invalidate construction. The exclusive global spool enforces its
+256-MiB and 5,120-inode ceilings and the host reserve. Root builds deterministic
+bundles, independently inspects them, rechecks the authorized source, and
+commits publication, audit, and immutable results through a recoverable
+state-preserving intent. Export completion validates the current complete
+routing configuration while preserving the source tenant's observed state.
+
+Authenticated downloads hold spool exclusion until their source descriptor
+closes. The client acknowledges only a verified, durably published local file;
+root syncs the job retirement marker before removing the bundle. Unacknowledged
+bundles expire 24 hours after job acceptance, and retries never extend that
+deadline. Startup reconciliation and new-export admission recover interrupted
+retirement and remove abandoned work. Retired retries return the original
+result without a payload.
+
+Portable import activates an existing undeployed target through the ordinary
+deployment transaction with a new root-generated deployment ID. Only content
+and independently inspected source provenance cross the portability boundary;
+target identity, origin, slug, runtime, and quotas remain authoritative. Root
+measures staged content against current target quotas before intent creation.
+Recovery reconstructs the same provenance from the authorization job and
+intent. Complete-generation admission uses the existing 2-MiB configuration and
+routing-metadata bounds, including aggregate imported provenance.
+
+The complete disposable-host gate passed convergence, idempotence, core
+lifecycle, full-size M3.9 round trips, reboot, and transport/recovery checks.
+Active and suspended exports and imports covered 104,857,600 content bytes and
+5,000 entries under installed worker limits. Repeated active exports were
+byte-identical even after another tenant advanced the shared routing
+generation. Capture races covered deploy, rollback, suspend, resume, rename,
+reconciliation repair, and removal of the captured source release. Capacity,
+process termination, disconnect, acknowledgement, expiry, and exact-retry
+checks passed; imported tenants retained their exact durable state across
+reboot. The [qualification evidence map](../threat-model/m3-9-evidence.md)
+links the corresponding unit, process, installed-host, and recovery checks.
+Production publication remains disabled. Remote archived export and
+archive/restore/deletion races remain gated on M3.10.
 
 Implement shared-lock snapshots, the global export spool, deterministic bundle
 construction, authenticated download, acknowledgement, and bounded expiry.

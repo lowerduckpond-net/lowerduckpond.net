@@ -379,9 +379,8 @@ they confer no target settings or authority. Before creating an intent, root
 compares the measured candidate bytes and entries with current target quotas.
 Excess returns `capacity_exceeded` and removes private staging without changing
 the target or Caddy. The same staging check applies to ordinary deployment.
-Import accepts active, suspended,
-or archived source manifests and consumes intake only after the terminal
-result is validated.
+Import accepts active, suspended, or archived source manifests and consumes
+intake only after the terminal result is validated.
 
 The disposable `just check-ansible-m3-8` scenario also runs M3.9 full-size
 export/import, acknowledgement and expiry, and capture-versus-mutation

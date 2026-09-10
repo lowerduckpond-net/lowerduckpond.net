@@ -1,7 +1,9 @@
 # M3.9 export and portable-import evidence
 
-Status: qualification in progress. Unit and process checks are executable;
-the complete installed-host run must pass before milestone closeout.
+Status: completed on 2026-09-10. The combined implementation passed 1,982
+Python tests with the expected unconfigured-MinIO skip. The complete disposable
+host scenario passed convergence, idempotence, core lifecycle, M3.9 qualification,
+exact persisted-state comparison after reboot, transport/recovery, and cleanup.
 
 A local 5,000-entry, 100-MiB-content export produced a 106,128,870-byte
 bundle in 6.36 CPU seconds with 104.4 MiB peak resident memory, under a
