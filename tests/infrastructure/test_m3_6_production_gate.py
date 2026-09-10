@@ -218,8 +218,8 @@ def test_production_convergence_repeats_the_m3_6_preflight() -> None:
     assert "expected_locks=" not in preflight
     assert "generation_root=/etc/caddy/generations" in preflight
     assert 'generation_status=$("${generation_check}")' in preflight
-    assert "b48a138fa72aa8559aa288114b2a091d9a206609f944fcbbad3d399209672c33" in preflight
-    assert "39f28840373363b9f3b4fa446f05d64b2a30d8904bbfbe7e989bd7f5bd9989fb" not in (preflight)
+    assert "8c004ab6b73b7935f2151940aa522c05652bd196abbcb8604a803ee099aebfa8" in preflight
+    assert "b48a138fa72aa8559aa288114b2a091d9a206609f944fcbbad3d399209672c33" not in (preflight)
     assert "3709daa0fd2465a73ae6b0c7dd0d6137cf0ec747e11e5e670df084113265d43b" in preflight
     assert "pending)" in preflight
     assert "the pending Caddy transaction has no durable intent" in preflight

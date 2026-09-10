@@ -269,6 +269,10 @@ host-agent change. This preserves a pinned forward transition from the live
 artifact to the next reproducible candidate instead of accepting an arbitrary
 installed artifact.
 
+The current production identity, selected by the 2026-09-10 convergence from
+source revision `6dd5714fb1b817b1ae7aa1eb55076b5f6d925c01`, is
+`8c004ab6b73b7935f2151940aa522c05652bd196abbcb8604a803ee099aebfa8`.
+
 The convergence command's internal preflight can also recover an interrupted
 immutable-Caddy bootstrap. This recovery mode accepts only a loaded service
 with exact `failed`/`failed`/`exit-code` active, substate, and result values,
