@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import stat
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -26,6 +27,8 @@ from lowerduckpond_static_host_agent.release_tree import InodeAllocation
 
 MAX_EXPORT_SPOOL_BYTES: Final = 256 * 1024 * 1024
 MAX_EXPORT_SPOOL_INODES: Final = 5_120
+EXPORT_WORKSPACE_BUNDLE_NAME: Final = "bundle.zip"
+_INTERNAL_BUNDLE_LINKS: Final = 2
 _DIRECTORY_FLAGS: Final = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 _MAX_DEPTH: Final = 34
 _PRIVATE_DIRECTORY_MODE: Final = 0o700
@@ -33,6 +36,7 @@ _PRIVATE_FILE_MODE: Final = 0o600
 _BLOCK_BYTES: Final = 512
 _DIRECTORY_MODES: Final = frozenset({0o700, 0o555})
 _FILE_MODES: Final = frozenset({0o600, 0o400, 0o444})
+_BUNDLE_PARTIAL: Final = re.compile(r"\.m3-portable-[0-9a-f]{32}\.partial", flags=re.ASCII)
 
 
 class ExportSpoolError(RuntimeError):
@@ -155,14 +159,29 @@ class ExportSpool:
         """Require physical spool limits and the host's ordinary free-space reserve."""
 
         usage = self.measure()
+        self._admit(usage.allocated_bytes, usage.unique_inodes, reservation)
+
+    @contextmanager
+    def accounting(self) -> Iterator[ExportSpoolAccounting]:
+        """Track owned mutations from one complete walk under export exclusion."""
+
+        account = ExportSpoolAccounting(self, self.measure())
+        try:
+            yield account
+        finally:
+            account.close()
+
+    def _admit(self, allocated_bytes: int, inodes: int, reservation: CapacityReservation) -> None:
+        self._require_locked()
         if (
-            usage.allocated_bytes + reservation.allocated_bytes
-            > self._limits.maximum_allocated_bytes
-            or usage.unique_inodes + reservation.unique_inodes > self._limits.maximum_inodes
+            allocated_bytes + reservation.allocated_bytes > self._limits.maximum_allocated_bytes
+            or inodes + reservation.unique_inodes > self._limits.maximum_inodes
         ):
             raise ExportSpoolError("export spool allocation exceeds its byte or inode limit")
+        # Existing spool allocations are already reflected in statvfs. The
+        # spool's stricter aggregate ceilings above precede host headroom checks.
         admit_release_capacity(
-            usage,
+            ReleaseCapacityUsage(()),
             reservation,
             measure_filesystem_capacity_descriptor(self._fd),
             limits=self._capacity_limits,
@@ -216,6 +235,47 @@ class ExportSpool:
         self.locks.require_held(LockName.EXPORT, mode=LockMode.EXCLUSIVE)
 
 
+class ExportSpoolAccounting:
+    """Physical allocations updated through descriptors for one owned copy."""
+
+    def __init__(self, spool: ExportSpool, usage: ReleaseCapacityUsage) -> None:
+        self._spool = spool
+        self._allocations = {
+            (item.device, item.inode): item.allocated_bytes for item in usage.allocations
+        }
+        self._allocated_bytes = usage.allocated_bytes
+        self._device = os.fstat(spool._fd).st_dev
+        self._active = True
+
+    def close(self) -> None:
+        self._active = False
+
+    def record(self, descriptor: int) -> None:
+        """Charge a created inode or its changed blocks, including its parent."""
+
+        self._require_active()
+        metadata = os.fstat(descriptor)
+        checked: list[InodeAllocation] = []
+        _record(metadata, self._spool._owner, checked)
+        allocation = checked[0]
+        if allocation.device != self._device:
+            raise ExportSpoolError("export copy crosses a filesystem boundary")
+        identity = (allocation.device, allocation.inode)
+        previous = self._allocations.get(identity, 0)
+        self._allocated_bytes += allocation.allocated_bytes - previous
+        self._allocations[identity] = allocation.allocated_bytes
+        self.reserve(CapacityReservation(0, 0))
+
+    def reserve(self, reservation: CapacityReservation) -> None:
+        self._require_active()
+        self._spool._admit(self._allocated_bytes, len(self._allocations), reservation)
+
+    def _require_active(self) -> None:
+        if not self._active:
+            raise RuntimeError("export copy accounting is closed")
+        self._spool._require_locked()
+
+
 def _names(descriptor: int, *, maximum: int) -> tuple[str, ...]:
     scan = os.open(".", _DIRECTORY_FLAGS, dir_fd=descriptor)
     try:
@@ -236,7 +296,10 @@ def _walk(
     allocations: list[InodeAllocation],
     *,
     depth: int,
+    linked_inodes: set[tuple[int, int]] | None = None,
 ) -> None:
+    if linked_inodes is None:
+        linked_inodes = set()
     metadata = os.fstat(descriptor)
     if depth > _MAX_DEPTH:
         raise ExportSpoolError("export namespace exceeds its depth bound")
@@ -251,19 +314,70 @@ def _walk(
                 opened = os.fstat(child_fd)
                 if (opened.st_dev, opened.st_ino) != (child.st_dev, child.st_ino):
                     raise ExportSpoolError("export namespace changed while opening")
-                _walk(child_fd, owner, allocations, depth=depth + 1)
+                _walk(child_fd, owner, allocations, depth=depth + 1, linked_inodes=linked_inodes)
             finally:
                 os.close(child_fd)
         else:
-            _record(child, owner, allocations)
+            internal_link = (
+                depth == 1
+                and child.st_nlink == _INTERNAL_BUNDLE_LINKS
+                and _internal_bundle_link(descriptor, name, child)
+            )
+            identity = (child.st_dev, child.st_ino)
+            if internal_link and identity in linked_inodes:
+                continue
+            _record(child, owner, allocations, internal_link=internal_link)
+            if internal_link:
+                linked_inodes.add(identity)
 
 
-def _record(metadata: os.stat_result, owner: int, allocations: list[InodeAllocation]) -> None:
+def _internal_bundle_link(descriptor: int, name: str, metadata: os.stat_result) -> bool:
+    """Recognize only the builder's two names wholly inside the private workspace."""
+
+    if not stat.S_ISREG(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) != _PRIVATE_FILE_MODE:
+        return False
+    if name == EXPORT_WORKSPACE_BUNDLE_NAME:
+        candidates = tuple(
+            candidate
+            for candidate in _names(descriptor, maximum=MAX_EXPORT_SPOOL_INODES)
+            if _BUNDLE_PARTIAL.fullmatch(candidate)
+        )
+    elif _BUNDLE_PARTIAL.fullmatch(name):
+        candidates = (EXPORT_WORKSPACE_BUNDLE_NAME,)
+    else:
+        return False
+    for candidate in candidates:
+        try:
+            other = os.stat(candidate, dir_fd=descriptor, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        if (other.st_dev, other.st_ino, other.st_nlink) == (
+            metadata.st_dev,
+            metadata.st_ino,
+            _INTERNAL_BUNDLE_LINKS,
+        ):
+            return True
+    return False
+
+
+def _record(
+    metadata: os.stat_result,
+    owner: int,
+    allocations: list[InodeAllocation],
+    *,
+    internal_link: bool = False,
+) -> None:
     directory = stat.S_ISDIR(metadata.st_mode)
     if (
         metadata.st_uid != owner
         or stat.S_IMODE(metadata.st_mode) not in (_DIRECTORY_MODES if directory else _FILE_MODES)
-        or (not directory and (not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1))
+        or (
+            not directory
+            and (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_nlink != (_INTERNAL_BUNDLE_LINKS if internal_link else 1)
+            )
+        )
     ):
         raise ExportSpoolError("export namespace contains an unsafe inode")
     allocations.append(

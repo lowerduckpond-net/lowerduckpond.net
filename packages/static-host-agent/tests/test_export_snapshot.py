@@ -368,3 +368,94 @@ def test_sealed_snapshot_does_not_weaken_published_release_permissions(tmp_path:
             pytest.raises(ReleaseTreeError, match="mode"),
         ):
             measure_release_tree(snapshot.content, lock_manager=locks, expected_owner=_OWNER)
+
+
+def test_copy_accounting_tracks_blocks_and_parent_growth_and_expires_with_lease(
+    tmp_path: Path,
+) -> None:
+    root, _, _, _ = _fixture(tmp_path)
+    with ExportSpool(root, expected_owner=_OWNER) as spool, spool.construction():
+        with spool.accounting() as account:
+            target = spool.workspace / "partial"
+            descriptor = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            parent = os.open(spool.workspace, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.write(descriptor, b"x" * 8192)
+                os.fsync(descriptor)
+                account.record(parent)
+                account.record(descriptor)
+                usage = spool.measure()
+                # The exact remainder is admitted; a detection byte is refused.
+                remaining_bytes = 256 * 1024 * 1024 - usage.allocated_bytes
+                account.reserve(CapacityReservation(remaining_bytes, 0))
+                with pytest.raises(ExportSpoolError):
+                    account.reserve(CapacityReservation(remaining_bytes + 1, 0))
+                remaining_inodes = 5120 - usage.unique_inodes
+                account.reserve(CapacityReservation(0, remaining_inodes))
+                with pytest.raises(ExportSpoolError):
+                    account.reserve(CapacityReservation(0, remaining_inodes + 1))
+            finally:
+                os.close(parent)
+                os.close(descriptor)
+        with pytest.raises(RuntimeError, match="closed"):
+            account.reserve(CapacityReservation(0, 0))
+
+
+@pytest.mark.parametrize("state", ["active", "suspended"])
+def test_sealed_captures_build_byte_identical_portable_bundles(tmp_path: Path, state: str) -> None:
+    from lowerduckpond_static_host_agent.portable_bundle import (  # noqa: PLC0415
+        build_portable_bundle,
+        inspect_portable_bundle,
+    )
+
+    root, releases, manifest, deployment = _fixture(tmp_path, state)
+    payloads: list[bytes] = []
+    with (
+        StateRepository(root, expected_owner=_OWNER) as repository,
+        ExportSpool(root, expected_owner=_OWNER) as spool,
+    ):
+        for _attempt in range(2):
+            with spool.construction():
+                snapshot = _capture(spool, repository, releases, manifest, deployment)
+                bundle = build_portable_bundle(
+                    snapshot.content,
+                    snapshot.manifest,
+                    output_parent=spool.workspace,
+                    output_name="bundle.zip",
+                    lock_manager=spool.locks,
+                    expected_owner=_OWNER,
+                    read_only_snapshot=True,
+                )
+                output = spool.workspace / bundle.output_name
+                inspection = inspect_portable_bundle(output, expected_owner=_OWNER)
+                assert inspection.provenance_manifest == manifest
+                assert inspection.release_tree_digest == snapshot.measurement.digest
+                payloads.append(output.read_bytes())
+    assert payloads[0] == payloads[1]
+
+
+@pytest.mark.parametrize("outside_link", [False, True])
+def test_recovery_distinguishes_internal_builder_links_from_external_links(
+    tmp_path: Path,
+    outside_link: bool,
+) -> None:
+    root, _, _, _ = _fixture(tmp_path)
+    work = root / "exports" / ".work"
+    _mkdir(work)
+    temporary = work / f".m3-portable-{'a' * 32}.partial"
+    temporary.write_bytes(b"interrupted builder output")
+    temporary.chmod(0o600)
+    os.link(temporary, work / "bundle.zip")
+    if outside_link:
+        os.link(temporary, tmp_path / "outside")
+    with ExportSpool(root, expected_owner=_OWNER) as spool:
+        if outside_link:
+            with pytest.raises(ExportSpoolError):
+                spool.reconcile_incomplete()
+            assert (tmp_path / "outside").read_bytes() == b"interrupted builder output"
+        else:
+            with spool.locks.acquire(LockName.EXPORT):
+                usage = spool.measure()
+                assert usage.unique_inodes == 3  # noqa: PLR2004 - root, workspace, one output inode
+            assert spool.reconcile_incomplete()
+            assert not work.exists()

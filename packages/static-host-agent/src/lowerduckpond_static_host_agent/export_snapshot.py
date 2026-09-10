@@ -21,7 +21,11 @@ from lowerduckpond_static_contracts import (
 )
 
 from lowerduckpond_static_host_agent.capacity import CapacityReservation
-from lowerduckpond_static_host_agent.export_spool import ExportSpool, ExportSpoolError
+from lowerduckpond_static_host_agent.export_spool import (
+    ExportSpool,
+    ExportSpoolAccounting,
+    ExportSpoolError,
+)
 from lowerduckpond_static_host_agent.locks import LockMode, LockName
 from lowerduckpond_static_host_agent.portable_bundle import MAXIMUM_PORTABLE_BUNDLE_BYTES
 from lowerduckpond_static_host_agent.release_tree import (
@@ -204,7 +208,8 @@ def _copy_content(
         try:
             metadata = os.fstat(source_fd)
             budget = _CopyBudget(metadata.st_uid, metadata.st_dev)
-            _copy_directory(source_fd, destination_fd, spool, hook, budget=budget, depth=0)
+            with spool.accounting() as account:
+                _copy_directory(source_fd, destination_fd, account, hook, budget=budget, depth=0)
         finally:
             os.close(destination_fd)
     finally:
@@ -214,7 +219,7 @@ def _copy_content(
 def _copy_directory(  # noqa: PLR0913 - descriptors, limits, and failure boundary
     source: int,
     destination: int,
-    spool: ExportSpool,
+    account: ExportSpoolAccounting,
     hook: Callable[[ExportCaptureBoundary], None] | None,
     *,
     budget: _CopyBudget,
@@ -233,15 +238,18 @@ def _copy_directory(  # noqa: PLR0913 - descriptors, limits, and failure boundar
         metadata = os.stat(name, dir_fd=source, follow_symlinks=False)
         if metadata.st_uid != budget.owner or metadata.st_dev != budget.device:
             raise ExportSpoolError("export source ownership or filesystem changed")
-        fragment = spool.fragment_size()
-        spool.reserve(CapacityReservation(MAXIMUM_PORTABLE_BUNDLE_BYTES + fragment, 2))
+        account.reserve(
+            CapacityReservation(MAXIMUM_PORTABLE_BUNDLE_BYTES + _METADATA_RESERVATION, 4)
+        )
         if stat.S_ISDIR(metadata.st_mode):
             child = os.open(name, _DIRECTORY_FLAGS, dir_fd=source)
             try:
                 os.mkdir(name, mode=0o700, dir_fd=destination)
                 copied = os.open(name, _DIRECTORY_FLAGS, dir_fd=destination)
                 try:
-                    _copy_directory(child, copied, spool, hook, budget=budget, depth=depth + 1)
+                    account.record(destination)
+                    account.record(copied)
+                    _copy_directory(child, copied, account, hook, budget=budget, depth=depth + 1)
                 finally:
                     os.close(copied)
             finally:
@@ -255,16 +263,17 @@ def _copy_directory(  # noqa: PLR0913 - descriptors, limits, and failure boundar
             budget.content_bytes += metadata.st_size
             if budget.content_bytes > MAX_RELEASE_CONTENT_BYTES:
                 raise ExportSpoolError("export copy exceeds its content bound")
-            _copy_file(source, destination, name, spool, hook, expected=metadata)
+            _copy_file(source, destination, name, account, hook, expected=metadata)
     os.fchmod(destination, 0o555)
     os.fsync(destination)
+    account.record(destination)
 
 
 def _copy_file(  # noqa: PLR0913 - explicit measured source binding
     source: int,
     destination: int,
     name: str,
-    spool: ExportSpool,
+    account: ExportSpoolAccounting,
     hook: Callable[[ExportCaptureBoundary], None] | None,
     *,
     expected: os.stat_result,
@@ -276,19 +285,27 @@ def _copy_file(  # noqa: PLR0913 - explicit measured source binding
             raise ExportSpoolError("export copy encountered a non-regular source")
         target = os.open(name, _CREATE_FLAGS, 0o600, dir_fd=destination)
         try:
+            account.record(destination)
+            account.record(target)
             remaining = metadata.st_size
             while remaining:
-                spool.reserve(CapacityReservation(MAXIMUM_PORTABLE_BUNDLE_BYTES + _CHUNK_BYTES, 1))
+                account.reserve(
+                    CapacityReservation(
+                        MAXIMUM_PORTABLE_BUNDLE_BYTES + _METADATA_RESERVATION + _CHUNK_BYTES, 3
+                    )
+                )
                 chunk = os.read(source_fd, min(remaining, _CHUNK_BYTES))
                 if not chunk:
                     raise ExportSpoolError("export source ended before its measured size")
                 _write_all(target, chunk)
+                account.record(target)
                 remaining -= len(chunk)
                 _notify(hook, ExportCaptureBoundary.FILE_CHUNK)
             if os.read(source_fd, 1):
                 raise ExportSpoolError("export source grew during copy")
             os.fchmod(target, 0o444)
             os.fsync(target)
+            account.record(target)
         finally:
             os.close(target)
     finally:

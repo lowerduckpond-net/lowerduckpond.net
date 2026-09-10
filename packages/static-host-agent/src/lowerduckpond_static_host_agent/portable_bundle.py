@@ -193,6 +193,7 @@ def build_portable_bundle(  # noqa: PLR0912,PLR0913,PLR0915 - explicit trust wor
     lock_manager: LockManager,
     expected_owner: int,
     limits: ReleaseTreeLimits = DEFAULT_RELEASE_TREE_LIMITS,
+    read_only_snapshot: bool = False,
 ) -> PortableBundle:
     """Construct one byte-canonical stored ZIP while the export lock remains held."""
 
@@ -206,6 +207,7 @@ def build_portable_bundle(  # noqa: PLR0912,PLR0913,PLR0915 - explicit trust wor
         lock_manager=lock_manager,
         expected_owner=expected_owner,
         limits=limits,
+        read_only=read_only_snapshot,
     )
     root_fd: int | None = None
     parent_fd: int | None = None
@@ -219,12 +221,14 @@ def build_portable_bundle(  # noqa: PLR0912,PLR0913,PLR0915 - explicit trust wor
             release_root,
             root_fd,
             expected_owner=expected_owner,
+            read_only=read_only_snapshot,
         )
         entries = _scan_snapshot(
             root_fd,
             expected_owner=expected_owner,
             expected_device=root_snapshot.device,
             limits=limits,
+            read_only=read_only_snapshot,
         )
         if (
             len(entries) != initial_measurement.entry_count
@@ -308,6 +312,7 @@ def build_portable_bundle(  # noqa: PLR0912,PLR0913,PLR0915 - explicit trust wor
             lock_manager=lock_manager,
             expected_owner=expected_owner,
             limits=limits,
+            read_only=read_only_snapshot,
         )
         if final_measurement != initial_measurement:
             raise PortableBundleError("portable source changed during bundle construction")
@@ -997,12 +1002,14 @@ def _validate_root(
     descriptor: int,
     *,
     expected_owner: int,
+    read_only: bool = False,
 ) -> _Snapshot:
     snapshot = _Snapshot.capture(os.fstat(descriptor))
     if (
         not stat.S_ISDIR(snapshot.mode)
         or snapshot.owner != expected_owner
-        or stat.S_IMODE(snapshot.mode) != _DIRECTORY_MODE
+        or stat.S_IMODE(snapshot.mode)
+        != (_DIRECTORY_MODE & ~0o222 if read_only else _DIRECTORY_MODE)
     ):
         raise PortableBundleError("portable source root has an unsafe inode shape")
     _validate_root_generation(path, descriptor, snapshot)
@@ -1047,6 +1054,7 @@ def _scan_snapshot(
     expected_owner: int,
     expected_device: int,
     limits: ReleaseTreeLimits,
+    read_only: bool = False,
 ) -> tuple[_SourceEntry, ...]:
     entries: list[_SourceEntry] = []
     stack: list[tuple[tuple[str, ...], _Snapshot | None]] = [((), None)]
@@ -1074,6 +1082,7 @@ def _scan_snapshot(
                     is_directory=is_directory,
                     expected_owner=expected_owner,
                     expected_device=expected_device,
+                    read_only=read_only,
                 )
                 if is_directory:
                     directories.append((components, snapshot))
@@ -1133,9 +1142,12 @@ def _validate_source_inode(
     is_directory: bool,
     expected_owner: int,
     expected_device: int,
+    read_only: bool = False,
 ) -> None:
     expected_type = stat.S_ISDIR if is_directory else stat.S_ISREG
     expected_mode = _DIRECTORY_MODE if is_directory else _FILE_MODE
+    if read_only:
+        expected_mode &= ~0o222
     if (
         not expected_type(snapshot.mode)
         or snapshot.owner != expected_owner
