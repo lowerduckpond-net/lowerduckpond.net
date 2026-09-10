@@ -165,6 +165,34 @@ def test_installed_full_size_export_import_round_trip(host: Host, tmp_path: Path
         assert not retired_destination.exists()
         if number == 1:
             continue
+        if number == 0:
+            limited = support._submit(
+                tmp_path,
+                operator_host,
+                identity,
+                ssh,
+                support._request(
+                    "create",
+                    str(uuid.uuid7()),
+                    slug=f"{slug}-limited",
+                    quotas={"storageMiB": 1, "entries": _ENTRY_COUNT},
+                ),
+            )
+            limited_id = str(limited["tenantId"])
+            rejected = support._submit(
+                tmp_path,
+                operator_host,
+                identity,
+                ssh,
+                support._request("import", str(uuid.uuid7()), tenantId=limited_id),
+                artifact=content,
+            )
+            assert rejected["status"] == "failed"
+            assert rejected["errorCode"] == "capacity_exceeded"
+            assert support._read_state(
+                host, f"{support.STATE_ROOT}/tenants/{limited_id}/desired.json"
+            ) == support._manifest(limited)
+            support._assert_route(host, str(limited["canonicalOrigin"]), status=404)
         target = support._submit(
             tmp_path,
             operator_host,
