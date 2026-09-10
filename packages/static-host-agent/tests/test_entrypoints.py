@@ -32,6 +32,7 @@ from lowerduckpond_static_host_agent.create_handler import (
     CreateLifecycleHandler,
 )
 from lowerduckpond_static_host_agent.deployment_handler import DeploymentLifecycleHandler
+from lowerduckpond_static_host_agent.export_handler import ExportLifecycleHandler
 from lowerduckpond_static_host_agent.issuance import PublicationDisabledError
 from lowerduckpond_static_host_agent.release_tree import ReleaseTreeError
 from lowerduckpond_static_host_agent.repository import StateConflictError, StateRecordPath
@@ -52,6 +53,7 @@ def test_executor_entrypoint_registers_the_available_lifecycle_handlers(
     repository = object()
     intake = object()
     release_store = object()
+    export_spool = object()
     runtime = object()
     captured: dict[str, object] = {}
 
@@ -101,6 +103,9 @@ def test_executor_entrypoint_registers_the_available_lifecycle_handlers(
         "_open_caddy_control_runtime",
         lambda: _Context(runtime),
     )
+    monkeypatch.setattr(
+        entrypoints, "ExportSpool", lambda *_args, **_kwargs: _Context(export_spool)
+    )
     monkeypatch.setattr(entrypoints, "AuthorizationExecutor", _Executor)
 
     assert entrypoints.executor_main([job_id]) == 0
@@ -110,6 +115,7 @@ def test_executor_entrypoint_registers_the_available_lifecycle_handlers(
     handlers = arguments["handlers"]
     assert type(handlers) is dict
     assert set(handlers) == {
+        "export",
         "create",
         "deploy",
         "rollback",
@@ -118,6 +124,8 @@ def test_executor_entrypoint_registers_the_available_lifecycle_handlers(
         "rename",
         "reconcile",
     }
+    assert isinstance(handlers["export"], ExportLifecycleHandler)
+    assert handlers["export"]._spool is export_spool
     handler = handlers["create"]
     assert isinstance(handler, CreateLifecycleHandler)
     assert handler._repository is repository

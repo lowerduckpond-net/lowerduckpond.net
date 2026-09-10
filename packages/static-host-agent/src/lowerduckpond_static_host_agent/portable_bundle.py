@@ -9,6 +9,7 @@ import stat
 import struct
 import unicodedata
 import zlib
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Protocol
@@ -180,6 +181,12 @@ class _PortableAdmission:
     content_structure: _zip.ZipStructure
 
 
+@dataclass(frozen=True, slots=True)
+class _BundleOutput:
+    descriptor: int
+    check_capacity: Callable[[int, int], None] | None
+
+
 class _DigestWriter(Protocol):
     def update(self, value: bytes, /) -> None: ...
 
@@ -194,6 +201,7 @@ def build_portable_bundle(  # noqa: PLR0912,PLR0913,PLR0915 - explicit trust wor
     expected_owner: int,
     limits: ReleaseTreeLimits = DEFAULT_RELEASE_TREE_LIMITS,
     read_only_snapshot: bool = False,
+    check_capacity: Callable[[int, int], None] | None = None,
 ) -> PortableBundle:
     """Construct one byte-canonical stored ZIP while the export lock remains held."""
 
@@ -253,6 +261,7 @@ def build_portable_bundle(  # noqa: PLR0912,PLR0913,PLR0915 - explicit trust wor
         output_fd = os.open(temporary_name, _OUTPUT_FLAGS, _OUTPUT_MODE, dir_fd=parent_fd)
         temporary_created = True
         os.fchmod(output_fd, _OUTPUT_MODE)
+        output = _BundleOutput(output_fd, check_capacity)
         digest = hashlib.sha256()
         records: list[_CentralRecord] = []
         offset = 0
@@ -262,7 +271,7 @@ def build_portable_bundle(  # noqa: PLR0912,PLR0913,PLR0915 - explicit trust wor
             (_envelope_name("checksums.sha256"), checksums),
         ):
             offset = _write_bytes_member(
-                output_fd,
+                output,
                 digest,
                 records,
                 offset=offset,
@@ -270,7 +279,7 @@ def build_portable_bundle(  # noqa: PLR0912,PLR0913,PLR0915 - explicit trust wor
                 data=data,
             )
         offset = _write_directory_member(
-            output_fd,
+            output,
             digest,
             records,
             offset=offset,
@@ -280,7 +289,7 @@ def build_portable_bundle(  # noqa: PLR0912,PLR0913,PLR0915 - explicit trust wor
             name = _content_name(entry.path_bytes, is_directory=entry.is_directory)
             if entry.is_directory:
                 offset = _write_directory_member(
-                    output_fd,
+                    output,
                     digest,
                     records,
                     offset=offset,
@@ -289,15 +298,17 @@ def build_portable_bundle(  # noqa: PLR0912,PLR0913,PLR0915 - explicit trust wor
             else:
                 offset = _write_file_member(
                     root_fd,
-                    output_fd,
+                    output,
                     digest,
                     records,
                     entry,
                     offset=offset,
                     name=name,
                 )
-        final_size = _write_central(output_fd, digest, records, offset=offset)
+        final_size = _write_central(output, digest, records, offset=offset)
         os.fsync(output_fd)
+        if check_capacity is not None:
+            check_capacity(output_fd, 0)
         output_metadata = _Snapshot.capture(os.fstat(output_fd))
         if (
             not stat.S_ISREG(output_metadata.mode)
@@ -1266,7 +1277,7 @@ def _content_name(path: bytes, *, is_directory: bool) -> bytes:
 
 
 def _write_bytes_member(  # noqa: PLR0913 - canonical ZIP fields remain explicit
-    output_fd: int,
+    output_fd: _BundleOutput,
     digest: _DigestWriter,
     records: list[_CentralRecord],
     *,
@@ -1283,7 +1294,7 @@ def _write_bytes_member(  # noqa: PLR0913 - canonical ZIP fields remain explicit
 
 
 def _write_directory_member(
-    output_fd: int,
+    output_fd: _BundleOutput,
     digest: _DigestWriter,
     records: list[_CentralRecord],
     *,
@@ -1298,7 +1309,7 @@ def _write_directory_member(
 
 def _write_file_member(  # noqa: PLR0913 - canonical ZIP fields remain explicit
     root_fd: int,
-    output_fd: int,
+    output_fd: _BundleOutput,
     digest: _DigestWriter,
     records: list[_CentralRecord],
     entry: _SourceEntry,
@@ -1335,7 +1346,7 @@ def _write_file_member(  # noqa: PLR0913 - canonical ZIP fields remain explicit
 
 
 def _write_local(
-    output_fd: int,
+    output_fd: _BundleOutput,
     digest: _DigestWriter,
     record: _CentralRecord,
     *,
@@ -1359,7 +1370,7 @@ def _write_local(
 
 
 def _write_central(
-    output_fd: int,
+    output_fd: _BundleOutput,
     digest: _DigestWriter,
     records: list[_CentralRecord],
     *,
@@ -1402,7 +1413,7 @@ def _write_central(
 
 
 def _write_output(
-    output_fd: int,
+    output_fd: _BundleOutput,
     digest: _DigestWriter,
     data: bytes,
     *,
@@ -1411,9 +1422,11 @@ def _write_output(
     projected = offset + len(data)
     if projected > MAXIMUM_PORTABLE_BUNDLE_BYTES:
         raise PortableBundleError("portable bundle crosses its byte boundary")
+    if output_fd.check_capacity is not None:
+        output_fd.check_capacity(output_fd.descriptor, len(data))
     remaining = memoryview(data)
     while remaining:
-        written = os.write(output_fd, remaining)
+        written = os.write(output_fd.descriptor, remaining)
         if written <= 0:
             raise PortableBundleError("portable bundle write made no progress")
         digest.update(bytes(remaining[:written]))

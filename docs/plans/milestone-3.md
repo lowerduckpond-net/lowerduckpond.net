@@ -1035,9 +1035,13 @@ Implementation status: in progress. The first increment supplies the exclusive
 global spool workspace, physical byte/inode admission, shared tenant-state
 capture, sealed independent copies, and bounded interrupted-work cleanup.
 Capture verifies active and suspended source manifests, selected deployment
-records, and release content before releasing shared tenant-state. Handler
-wiring, completed delivery/acknowledgement/expiry, portable-import lifecycle
-integration, and the complete installed-host gate remain pending.
+records, and release content before releasing shared tenant-state. Export
+dispatch now builds a deterministic bundle from that sealed copy and commits
+its spool publication, audit, and immutable result through a recoverable
+state-preserving intent. A source change before commitment aborts the export
+without replacing current tenant state. Completed delivery acknowledgement
+and expiry, portable-import lifecycle integration, and the complete
+installed-host gate remain pending.
 
 Implement shared-lock snapshots, the global export spool, deterministic bundle
 construction, authenticated download, acknowledgement, and bounded expiry.

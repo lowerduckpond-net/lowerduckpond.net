@@ -92,6 +92,7 @@ class LifecycleJobRejectionError(ExecutionError):
             "invalid_artifact",
             "invalid_request",
             "not_found",
+            "not_implemented",
             "publication_disabled",
             "state_drift",
         }:

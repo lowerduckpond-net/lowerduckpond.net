@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import os
 import re
 import stat
@@ -41,6 +42,10 @@ _BUNDLE_PARTIAL: Final = re.compile(r"\.m3-portable-[0-9a-f]{32}\.partial", flag
 
 class ExportSpoolError(RuntimeError):
     """Export construction cannot preserve its bounded private namespace."""
+
+
+class ExportSpoolCapacityError(ExportSpoolError):
+    """A proposed allocation crosses the committed spool ceilings."""
 
 
 class ExportSpoolOccupiedError(ExportSpoolError):
@@ -116,20 +121,65 @@ class ExportSpool:
         """Admit one workspace; remove incomplete work on every terminal path."""
 
         with self.locks.acquire(LockName.EXPORT, mode=LockMode.EXCLUSIVE, blocking=blocking):
-            names = self._names()
-            self.measure()
-            if ".work" in names:
-                self.discard_workspace()
-                names = self._names()
-            if names:
-                raise ExportSpoolOccupiedError("a completed export occupies the global slot")
-            self.reserve(CapacityReservation(self.fragment_size(), 1))
-            os.mkdir(".work", mode=0o700, dir_fd=self._fd)
-            os.fsync(self._fd)
+            self.prepare_workspace()
             try:
                 yield self
             finally:
                 self.discard_workspace()
+
+    def prepare_workspace(self) -> None:
+        """Admit one private construction under an already held export lock."""
+
+        names = self._names()
+        self.measure()
+        if ".work" in names:
+            self.discard_workspace()
+            names = self._names()
+        if names:
+            raise ExportSpoolOccupiedError("a completed export occupies the global slot")
+        self.reserve(CapacityReservation(self.fragment_size(), 1))
+        os.mkdir(".work", mode=0o700, dir_fd=self._fd)
+        os.fsync(self._fd)
+
+    def completed_job_id(self) -> str | None:
+        self._require_locked()
+        self.measure()
+        completed = [name for name in self._names() if name != ".work"]
+        return None if not completed else validate_uuid7(completed[0].removesuffix(".zip"))
+
+    def completed_path(self, job_id: object) -> Path:
+        self._require_locked()
+        return Path(f"/proc/self/fd/{self._fd}/{validate_uuid7(job_id)}.zip")
+
+    def publish_bundle(self, job_id: object) -> None:
+        """Move a verified bundle into the one no-replace authenticated slot."""
+
+        self._require_locked()
+        self.reserve(CapacityReservation(self.fragment_size(), 0))
+        name = f"{validate_uuid7(job_id)}.zip"
+        workspace_fd = os.open(".work", _DIRECTORY_FLAGS, dir_fd=self._fd)
+        try:
+            rename = ctypes.CDLL(None, use_errno=True).renameat2
+            rename.argtypes = [
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_uint,
+            ]
+            rename.restype = ctypes.c_int
+            if (
+                rename(
+                    workspace_fd, EXPORT_WORKSPACE_BUNDLE_NAME.encode(), self._fd, name.encode(), 1
+                )
+                != 0
+            ):
+                number = ctypes.get_errno()
+                raise OSError(number, os.strerror(number), name)
+            os.fsync(self._fd)
+            os.fsync(workspace_fd)
+        finally:
+            os.close(workspace_fd)
 
     def reconcile_incomplete(self, *, blocking: bool = False) -> bool:
         """Remove only abandoned construction; retain the completed download."""
@@ -177,7 +227,9 @@ class ExportSpool:
             allocated_bytes + reservation.allocated_bytes > self._limits.maximum_allocated_bytes
             or inodes + reservation.unique_inodes > self._limits.maximum_inodes
         ):
-            raise ExportSpoolError("export spool allocation exceeds its byte or inode limit")
+            raise ExportSpoolCapacityError(
+                "export spool allocation exceeds its byte or inode limit"
+            )
         # Existing spool allocations are already reflected in statvfs. The
         # spool's stricter aggregate ceilings above precede host headroom checks.
         admit_release_capacity(
