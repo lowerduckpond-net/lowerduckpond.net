@@ -506,8 +506,17 @@ def _race_capture(
         _await_capture_line(process, "unlocked")
         result = recovery._await_result(host, job_id)
         assert result["status"] == "succeeded", result
-        completed = host.run("systemctl start --wait %s", unit)
-        assert completed.rc == 0, completed.stderr
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            state = host.run("systemctl show --property=ActiveState --value %s", unit)
+            assert state.rc == 0, state.stderr
+            if state.stdout.strip() == "inactive":
+                break
+            time.sleep(0.1)
+        else:
+            raise AssertionError("competing mutation did not exit")
+        completed = host.run("systemctl show --property=Result --value %s", unit)
+        assert completed.rc == 0 and completed.stdout.strip() == "success", completed.stderr
         if removes_deployment is not None:
             absent_release = host.run(
                 "test ! -e %s",
@@ -520,6 +529,7 @@ def _race_capture(
         captured = json.loads(output)
         assert captured["manifest"] == original
         assert captured["content"].encode() == expected_content
+        recovery._await_authorization_quiescent(host, job_id)
         return result
     finally:
         if process.poll() is None:
