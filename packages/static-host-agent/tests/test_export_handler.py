@@ -4,7 +4,10 @@ import os
 import shutil
 import time
 from collections.abc import Callable
+from contextlib import nullcontext
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from multiprocessing import get_context
 from multiprocessing.connection import Connection
 from multiprocessing.process import BaseProcess
@@ -17,8 +20,13 @@ from lowerduckpond_static_contracts import (
     decode_contract,
     manifest_digest,
 )
+from lowerduckpond_static_host_agent import entrypoints
 from lowerduckpond_static_host_agent.capacity import FilesystemCapacity
-from lowerduckpond_static_host_agent.execution import AuthorizationExecutor, ExecutionOutcome
+from lowerduckpond_static_host_agent.execution import (
+    AuthorizationExecutor,
+    ExecutionError,
+    ExecutionOutcome,
+)
 from lowerduckpond_static_host_agent.export_delivery import (
     ExportDelivery,
     ExportDeliveryBoundary,
@@ -39,6 +47,10 @@ from lowerduckpond_static_host_agent.locks import LockManager, LockMode, LockNam
 from lowerduckpond_static_host_agent.portable_bundle import inspect_portable_bundle
 from lowerduckpond_static_host_agent.release_tree import measure_release_tree
 from lowerduckpond_static_host_agent.repository import StateRecordPath, StateRepository
+from lowerduckpond_static_host_agent.route_snapshot import (
+    TenantRouteSnapshot,
+    snapshot_tenant_routes,
+)
 
 _OWNER = os.geteuid()
 _KILLED_STATUS = 23
@@ -170,13 +182,14 @@ def _issue(repository: StateRepository, correlation: str = _CORRELATION) -> str:
     )
 
 
-def _execute(
+def _execute(  # noqa: PLR0913 - explicit export execution dependencies
     root: Path,
     releases: Path,
     job_id: str,
     hook: Callable[[ExportCommitBoundary], None] | None = None,
     *,
     spool_limits: ExportSpoolLimits = DEFAULT_EXPORT_SPOOL_LIMITS,
+    runtime_validator: Callable[..., bool] | None = None,
 ) -> ExecutionOutcome:
     with (
         StateRepository(root, expected_owner=_OWNER, tenant_release_root=releases) as repository,
@@ -196,7 +209,7 @@ def _execute(
             repository,
             intake,
             handlers={"export": handler},
-            tenant_runtime_validator=lambda *_args: True,
+            tenant_runtime_validator=runtime_validator or (lambda *_args: True),
         ).execute(job_id)
 
 
@@ -715,3 +728,50 @@ def test_delivery_waits_for_competing_tenant_state(
         parent.close()
     assert result_path.read_bytes() == before
     assert (root / "exports" / f"{job_id}.zip").exists() == (boundary != "acknowledgement")
+
+
+@pytest.mark.parametrize("complete_runtime", [True, False])
+def test_export_validates_the_current_complete_runtime_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, complete_runtime: bool
+) -> None:
+    root, releases, manifest = _source(tmp_path)
+    selected_generation = "0198d17f-6f4a-7000-8000-000000000009"
+    with StateRepository(root, expected_owner=_OWNER) as repository:
+        before = repository.read(StateRecordPath.tenant_observed(_TENANT)).document
+        assert before["runtimeGenerationId"] != selected_generation
+        with repository.publication_transaction() as transaction:
+            snapshot = snapshot_tenant_routes(transaction)
+        if not complete_runtime:
+            snapshot = replace(snapshot, tenants=())
+
+        class Runtime:
+            def __enter__(self) -> Runtime:
+                return self
+
+            def __exit__(self, *_exception: object) -> None:
+                pass
+
+            def using_held_publication_lock(self, _repository: object) -> nullcontext[None]:
+                return nullcontext()
+
+            def read_active(self) -> str:
+                return selected_generation
+
+            def read_generation_route_snapshot(self, requested: str) -> TenantRouteSnapshot:
+                assert requested == selected_generation
+                return snapshot
+
+        monkeypatch.setattr(entrypoints, "_open_caddy_control_runtime", Runtime)
+        validator = partial(entrypoints._selected_tenant_runtime_matches, repository)
+        job_id = _issue(repository)
+        if complete_runtime:
+            result = _execute(root, releases, job_id, runtime_validator=validator).result
+            assert result["status"] == "succeeded"
+            assert _execute(root, releases, job_id, runtime_validator=validator).result == result
+        else:
+            with pytest.raises(ExecutionError, match="authorized routes"):
+                _execute(root, releases, job_id, runtime_validator=validator)
+        job = repository.read(StateRecordPath.authorization_job(job_id)).document
+        assert job["executionValidated"] is complete_runtime
+        assert repository.read(StateRecordPath.tenant_desired(_TENANT)).document == manifest
+        assert repository.read(StateRecordPath.tenant_observed(_TENANT)).document == before

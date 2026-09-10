@@ -4426,7 +4426,7 @@ def test_executor_requires_complete_runtime_after_export(tmp_path: Path) -> None
                 tenant_runtime_validator=reject_runtime,
             ).execute(issued.job_id)
 
-    assert runtime_calls == [(_TENANT_ID, "both", "0198d17f-6f4a-7000-8000-000000000006")]
+    assert runtime_calls == [(_TENANT_ID, "both", None)]
 
 
 def test_executor_requires_export_bundle_after_a_later_tenant_commit(

@@ -963,12 +963,20 @@ class AuthorizationExecutor:
             )
         if authority.candidate_route_set is None:
             return
-        generation_id = authority.candidate_runtime_generation_id
+        # Export preserves the tenant's observed state and creates no Caddy
+        # generation. Another tenant may already have selected a newer complete
+        # generation while this tenant still records its deployment's generation.
+        preserves_runtime = result["operation"] == "export"
+        generation_id = None if preserves_runtime else authority.candidate_runtime_generation_id
         runtime_validator = self._tenant_runtime_validator
         if runtime_validator is None and authority.execution_validation_committed:
             return
         if (
-            (generation_id is None and authority.candidate_route_set == "both")
+            (
+                generation_id is None
+                and authority.candidate_route_set == "both"
+                and not preserves_runtime
+            )
             or runtime_validator is None
             or runtime_validator(
                 tenant_id,
