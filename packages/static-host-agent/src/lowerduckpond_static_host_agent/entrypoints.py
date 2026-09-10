@@ -79,6 +79,7 @@ from lowerduckpond_static_host_agent.execution import (
     AuthorizationExecutor,
     ExecutionError,
 )
+from lowerduckpond_static_host_agent.export_delivery import ExportDelivery
 from lowerduckpond_static_host_agent.export_handler import ExportLifecycleHandler
 from lowerduckpond_static_host_agent.export_spool import ExportSpool, ExportSpoolError
 from lowerduckpond_static_host_agent.intake import ArtifactIntake, IntakeError
@@ -236,6 +237,7 @@ def operator_main(arguments: list[str] | None = None) -> int:
         with (
             StateRepository(_STATE_ROOT, expected_owner=_EXPECTED_OWNER) as repository,
             ArtifactIntake(_STATE_ROOT, expected_owner=_EXPECTED_OWNER) as intake,
+            ExportSpool(_STATE_ROOT, expected_owner=_EXPECTED_OWNER) as export_spool,
         ):
             issuer = AuthorizationIssuer(
                 repository,
@@ -256,6 +258,7 @@ def operator_main(arguments: list[str] | None = None) -> int:
                 state_root=_STATE_ROOT,
                 expected_owner=_EXPECTED_OWNER,
                 writer=DeadlineWriter(sys.stdout.fileno()),
+                export_delivery=ExportDelivery(repository, export_spool),
             ).run(operator_principal=principal)
     except PublicationDisabledError:
         return _fail("publication_disabled", 78)
@@ -355,12 +358,19 @@ def reconcile_main(arguments: list[str] | None = None) -> int:
         with (
             StateRepository(_STATE_ROOT, expected_owner=_EXPECTED_OWNER) as repository,
             ArtifactIntake(_STATE_ROOT, expected_owner=_EXPECTED_OWNER) as intake,
+            ExportSpool(_STATE_ROOT, expected_owner=_EXPECTED_OWNER) as export_spool,
         ):
-            StartupReconciler(repository, intake, SystemdJobHandoff()).reconcile()
+            StartupReconciler(
+                repository,
+                intake,
+                SystemdJobHandoff(),
+                export_delivery=ExportDelivery(repository, export_spool),
+            ).reconcile()
     except (
         CapacityError,
         CorrelationError,
         ExecutionError,
+        ExportSpoolError,
         IntakeError,
         RuntimeBoundaryError,
         StateBusyError,

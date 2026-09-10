@@ -170,7 +170,11 @@ adapter rejects an unknown version or impossible length before parser entry,
 then independently decodes, validates, and canonicalizes the request rather
 than trusting client serialization. The response uses the same versioned
 framing for a bounded canonical result and an optional authenticated export
-payload.
+payload. A distinct acknowledgement frame has exactly 56 binary bytes
+(network-order UUID bytes, SHA-256 bytes, and unsigned 64-bit size), no payload,
+and required EOF. It uses a separate authenticated SSH exchange after the
+client has verified and durably saved the download; it creates no lifecycle
+request or new job.
 
 There is no manifest frame. No operation accepts a caller-supplied desired
 manifest: root derives every candidate manifest from the validated request and
@@ -1039,9 +1043,12 @@ records, and release content before releasing shared tenant-state. Export
 dispatch now builds a deterministic bundle from that sealed copy and commits
 its spool publication, audit, and immutable result through a recoverable
 state-preserving intent. A source change before commitment aborts the export
-without replacing current tenant state. Completed delivery acknowledgement
-and expiry, portable-import lifecycle integration, and the complete
-installed-host gate remain pending.
+without replacing current tenant state. Authenticated delivery now holds spool
+exclusion, acknowledges only a verified durable local download, and retires
+the slot through a synced job marker before deletion. The fixed 24-hour
+retention deadline starts at job acceptance; interrupted retirement and
+incomplete work recover through root reconciliation. Portable-import lifecycle
+integration and the complete installed-host gate remain pending.
 
 Implement shared-lock snapshots, the global export spool, deterministic bundle
 construction, authenticated download, acknowledgement, and bounded expiry.

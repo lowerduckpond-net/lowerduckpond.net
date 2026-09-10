@@ -963,12 +963,20 @@ class AuthorizationExecutor:
             )
         if authority.candidate_route_set is None:
             return
-        generation_id = authority.candidate_runtime_generation_id
+        # Export preserves the tenant's observed state and creates no Caddy
+        # generation. Another tenant may already have selected a newer complete
+        # generation while this tenant still records its deployment's generation.
+        preserves_runtime = result["operation"] == "export"
+        generation_id = None if preserves_runtime else authority.candidate_runtime_generation_id
         runtime_validator = self._tenant_runtime_validator
         if runtime_validator is None and authority.execution_validation_committed:
             return
         if (
-            (generation_id is None and authority.candidate_route_set == "both")
+            (
+                generation_id is None
+                and authority.candidate_route_set == "both"
+                and not preserves_runtime
+            )
             or runtime_validator is None
             or runtime_validator(
                 tenant_id,
@@ -1317,6 +1325,8 @@ def _require_same_authority(
     second.pop("phase", None)
     first.pop("executionValidated", None)
     second.pop("executionValidated", None)
+    first.pop("exportDelivery", None)
+    second.pop("exportDelivery", None)
     first.pop("dispatchArchiveDeploymentIds", None)
     second.pop("dispatchArchiveDeploymentIds", None)
     first.pop("dispatchArtifactReleaseTreeDigest", None)
@@ -3092,6 +3102,10 @@ def _validate_export_bundle(
     binding = result.get("exportBundle")
     if type(binding) is not dict:
         raise ExecutionError("successful export result has no bundle binding")
+    if job.get("exportDelivery") in {"acknowledged", "expired"}:
+        if job.get("executionValidated") is not True or job["phase"] != "completed":
+            raise ExecutionError("retired export has no executor validation")
+        return
     source_manifest = authority.source_manifest
     release_tree_digest = authority.source_release_tree_digest
     if source_manifest is None:

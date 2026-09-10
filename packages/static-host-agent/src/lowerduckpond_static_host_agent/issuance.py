@@ -180,6 +180,10 @@ class AuthorizationIssuer:
             "acceptedAt": accepted_at.isoformat().replace("+00:00", "Z"),
             "phase": "pending",
         }
+        if request["operation"] == "export":
+            # Reserve the longest spelling before acceptance. Retirement only
+            # shrinks this job and never consumes another authorization record.
+            candidate["exportDelivery"] = "unacknowledged"
         resolution = self._admission.resolve(candidate, now=accepted_at, blocking=blocking)
         return _issued(resolution)
 

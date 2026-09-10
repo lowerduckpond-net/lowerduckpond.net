@@ -2,15 +2,36 @@ from __future__ import annotations
 
 import os
 import shutil
+import time
 from collections.abc import Callable
-from datetime import UTC, datetime
+from contextlib import nullcontext
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
+from functools import partial
 from multiprocessing import get_context
+from multiprocessing.connection import Connection
+from multiprocessing.process import BaseProcess
 from pathlib import Path
 
 import pytest
-from lowerduckpond_static_contracts import canonical_json_bytes, decode_contract, manifest_digest
+from lowerduckpond_static_contracts import (
+    ExportAcknowledgement,
+    canonical_json_bytes,
+    decode_contract,
+    manifest_digest,
+)
+from lowerduckpond_static_host_agent import entrypoints
 from lowerduckpond_static_host_agent.capacity import FilesystemCapacity
-from lowerduckpond_static_host_agent.execution import AuthorizationExecutor, ExecutionOutcome
+from lowerduckpond_static_host_agent.execution import (
+    AuthorizationExecutor,
+    ExecutionError,
+    ExecutionOutcome,
+)
+from lowerduckpond_static_host_agent.export_delivery import (
+    ExportDelivery,
+    ExportDeliveryBoundary,
+    ExportDeliveryError,
+)
 from lowerduckpond_static_host_agent.export_handler import (
     ExportCommitBoundary,
     ExportLifecycleHandler,
@@ -22,10 +43,14 @@ from lowerduckpond_static_host_agent.export_spool import (
 )
 from lowerduckpond_static_host_agent.intake import ArtifactIntake
 from lowerduckpond_static_host_agent.issuance import AuthorizationIssuer
-from lowerduckpond_static_host_agent.locks import LockManager, LockMode, LockName
+from lowerduckpond_static_host_agent.locks import LockManager, LockMode, LockName, StateBusyError
 from lowerduckpond_static_host_agent.portable_bundle import inspect_portable_bundle
 from lowerduckpond_static_host_agent.release_tree import measure_release_tree
 from lowerduckpond_static_host_agent.repository import StateRecordPath, StateRepository
+from lowerduckpond_static_host_agent.route_snapshot import (
+    TenantRouteSnapshot,
+    snapshot_tenant_routes,
+)
 
 _OWNER = os.geteuid()
 _KILLED_STATUS = 23
@@ -157,13 +182,14 @@ def _issue(repository: StateRepository, correlation: str = _CORRELATION) -> str:
     )
 
 
-def _execute(
+def _execute(  # noqa: PLR0913 - explicit export execution dependencies
     root: Path,
     releases: Path,
     job_id: str,
     hook: Callable[[ExportCommitBoundary], None] | None = None,
     *,
     spool_limits: ExportSpoolLimits = DEFAULT_EXPORT_SPOOL_LIMITS,
+    runtime_validator: Callable[..., bool] | None = None,
 ) -> ExecutionOutcome:
     with (
         StateRepository(root, expected_owner=_OWNER, tenant_release_root=releases) as repository,
@@ -183,7 +209,7 @@ def _execute(
             repository,
             intake,
             handlers={"export": handler},
-            tenant_runtime_validator=lambda *_args: True,
+            tenant_runtime_validator=runtime_validator or (lambda *_args: True),
         ).execute(job_id)
 
 
@@ -412,3 +438,340 @@ def test_unavailable_release_is_terminal_drift_and_does_not_loop(
     else:
         os.mkfifo(release / "pipe")
     _assert_terminal_rejection(root, releases, job_id, manifest, "state_drift")
+
+
+def _receipt(result: dict[str, object]) -> ExportAcknowledgement:
+    provenance = result["provenance"]
+    bundle = result["exportBundle"]
+    assert isinstance(provenance, dict) and isinstance(bundle, dict)
+    digest = bundle["digest"]
+    assert isinstance(digest, dict) and isinstance(bundle["size"], int)
+    return ExportAcknowledgement(str(provenance["jobId"]), str(digest["value"]), bundle["size"])
+
+
+@pytest.mark.parametrize("state", ["active", "suspended"])
+def test_acknowledgement_retires_only_download_and_preserves_exact_retry(
+    tmp_path: Path, state: str
+) -> None:
+    root, releases, _manifest = _source(tmp_path, state)
+    with StateRepository(root, expected_owner=_OWNER) as repository:
+        job_id = _issue(repository)
+    result = _execute(root, releases, job_id).result
+    before = (root / "authorization/results" / f"{job_id}.json").read_bytes()
+    with (
+        StateRepository(root, expected_owner=_OWNER) as repository,
+        ExportSpool(root, expected_owner=_OWNER) as spool,
+    ):
+        delivery = ExportDelivery(repository, spool, now=lambda: _NOW)
+        with delivery.download(job_id, result) as remaining:
+            assert remaining == 24 * 60 * 60
+        for _attempt in range(2):
+            assert (
+                delivery.acknowledge(_receipt(result), operator_principal="operator@example.test")
+                == result
+            )
+        with delivery.download(job_id, result) as remaining:
+            assert remaining is None
+    assert list((root / "exports").iterdir()) == []
+    assert (root / "authorization/results" / f"{job_id}.json").read_bytes() == before
+    assert _execute(root, releases, job_id).result == result
+    with StateRepository(root, expected_owner=_OWNER) as repository:
+        second = _issue(repository, "0198d17f-6f4a-7000-8000-000000000004")
+    assert _execute(root, releases, second).result["status"] == "succeeded"
+
+
+@pytest.mark.parametrize("mismatch", ["operator", "digest", "size", "job"])
+def test_acknowledgement_rejects_mismatched_authority(tmp_path: Path, mismatch: str) -> None:
+    root, releases, _manifest = _source(tmp_path)
+    with StateRepository(root, expected_owner=_OWNER) as repository:
+        job_id = _issue(repository)
+    result = _execute(root, releases, job_id).result
+    original = _receipt(result)
+    receipt = ExportAcknowledgement(
+        _CORRELATION if mismatch == "job" else original.job_id,
+        "0" * 64 if mismatch == "digest" else original.sha256,
+        original.size + 1 if mismatch == "size" else original.size,
+    )
+    with (
+        StateRepository(root, expected_owner=_OWNER) as repository,
+        ExportSpool(root, expected_owner=_OWNER) as spool,
+    ):
+        delivery = ExportDelivery(repository, spool, now=lambda: _NOW)
+        with pytest.raises((ExportDeliveryError, FileNotFoundError)):
+            delivery.acknowledge(
+                receipt,
+                operator_principal="intruder@example.test"
+                if mismatch == "operator"
+                else "operator@example.test",
+            )
+        assert (
+            repository.read(StateRecordPath.authorization_job(job_id)).document["exportDelivery"]
+            == "unacknowledged"
+        )
+    assert (root / "exports" / f"{job_id}.zip").exists()
+
+
+@pytest.mark.parametrize("boundary", list(ExportDeliveryBoundary))
+@pytest.mark.parametrize("reason", ["acknowledged", "expired"])
+def test_process_death_during_retirement_recovers_without_changing_result(
+    tmp_path: Path, boundary: ExportDeliveryBoundary, reason: str
+) -> None:
+    root, releases, _manifest = _source(tmp_path)
+    with StateRepository(root, expected_owner=_OWNER) as repository:
+        job_id = _issue(repository)
+    result = _execute(root, releases, job_id).result
+    now = _NOW + timedelta(hours=24) if reason == "expired" else _NOW
+
+    def killed() -> None:
+        def interrupt(selected: ExportDeliveryBoundary) -> None:
+            if selected is boundary:
+                os._exit(_KILLED_STATUS)
+
+        with (
+            StateRepository(root, expected_owner=_OWNER) as repository,
+            ExportSpool(root, expected_owner=_OWNER) as spool,
+        ):
+            delivery = ExportDelivery(repository, spool, now=lambda: now, hook=interrupt)
+            if reason == "expired":
+                delivery.reconcile()
+            else:
+                delivery.acknowledge(_receipt(result), operator_principal="operator@example.test")
+
+    child = get_context("fork").Process(target=killed)
+    child.start()
+    child.join(10)
+    assert child.exitcode == _KILLED_STATUS
+    with (
+        StateRepository(root, expected_owner=_OWNER) as repository,
+        ExportSpool(root, expected_owner=_OWNER) as spool,
+    ):
+        delivery = ExportDelivery(repository, spool, now=lambda: now)
+        delivery.reconcile()
+        delivery.reconcile()
+        assert (
+            repository.read(StateRecordPath.authorization_job(job_id)).document["exportDelivery"]
+            == reason
+        )
+    assert list((root / "exports").iterdir()) == []
+    assert _execute(root, releases, job_id).result == result
+
+
+def test_expiry_is_fixed_and_download_excludes_removal(tmp_path: Path) -> None:
+    root, releases, _manifest = _source(tmp_path)
+    with StateRepository(root, expected_owner=_OWNER) as repository:
+        job_id = _issue(repository)
+    result = _execute(root, releases, job_id).result
+    now = _NOW + timedelta(hours=24, seconds=-1)
+    with (
+        StateRepository(root, expected_owner=_OWNER) as repository,
+        ExportSpool(root, expected_owner=_OWNER) as spool,
+    ):
+        delivery = ExportDelivery(repository, spool, now=lambda: now)
+        delivery.reconcile()
+        with delivery.download(job_id, result) as remaining:
+            assert remaining == 1
+            now += timedelta(seconds=1)
+            assert (root / "exports" / f"{job_id}.zip").exists()
+        assert not (root / "exports" / f"{job_id}.zip").exists()
+        assert (
+            delivery.acknowledge(_receipt(result), operator_principal="operator@example.test")
+            == result
+        )
+    assert _execute(root, releases, job_id).result == result
+
+
+def _compete_for_export(root: Path) -> None:
+    with ExportSpool(root, expected_owner=_OWNER) as spool:
+        try:
+            with spool.locks.acquire(LockName.EXPORT, blocking=False):
+                pass
+        except StateBusyError:
+            os._exit(_KILLED_STATUS)
+
+
+def test_download_holds_global_exclusion_until_reader_closes(tmp_path: Path) -> None:
+    root, releases, _manifest = _source(tmp_path)
+    with StateRepository(root, expected_owner=_OWNER) as repository:
+        job_id = _issue(repository)
+    result = _execute(root, releases, job_id).result
+    with (
+        StateRepository(root, expected_owner=_OWNER) as repository,
+        ExportSpool(root, expected_owner=_OWNER) as spool,
+    ):
+        delivery = ExportDelivery(repository, spool, now=lambda: _NOW)
+        with delivery.download(job_id, result):
+            blocked = get_context("spawn").Process(target=_compete_for_export, args=(root,))
+            blocked.start()
+            blocked.join(10)
+            assert blocked.exitcode == _KILLED_STATUS
+        released = get_context("spawn").Process(target=_compete_for_export, args=(root,))
+        released.start()
+        released.join(10)
+        assert released.exitcode == 0
+
+
+def test_retirement_supports_export_jobs_accepted_before_delivery_marker(tmp_path: Path) -> None:
+    root, releases, _manifest = _source(tmp_path)
+    with StateRepository(root, expected_owner=_OWNER) as repository:
+        job_id = _issue(repository)
+    result = _execute(root, releases, job_id).result
+    with StateRepository(root, expected_owner=_OWNER) as repository:
+        path = StateRecordPath.authorization_job(job_id)
+        old_job = repository.read(path).document
+    del old_job["exportDelivery"]
+    _write(root, path, old_job)
+    with (
+        StateRepository(root, expected_owner=_OWNER) as repository,
+        ExportSpool(root, expected_owner=_OWNER) as spool,
+    ):
+        ExportDelivery(repository, spool, now=lambda: _NOW).acknowledge(
+            _receipt(result), operator_principal="operator@example.test"
+        )
+    assert _execute(root, releases, job_id).result == result
+
+
+def _deliver_with_competing_tenant_state(
+    root: Path, job_id: str, result: dict[str, object], boundary: str, channel: Connection
+) -> None:
+    with (
+        pytest.MonkeyPatch.context() as patch,
+        StateRepository(root, expected_owner=_OWNER) as repository,
+        ExportSpool(root, expected_owner=_OWNER) as spool,
+    ):
+        # A spawned process does not inherit the parent capacity fixture.
+        patch.setattr(
+            "lowerduckpond_static_host_agent.repository._StateTransaction.measure_filesystem_capacity",
+            lambda _self: FilesystemCapacity(1, 4096, 8_000_000, 7_000_000, 4_000_000, 3_000_000),
+        )
+        delivery = ExportDelivery(repository, spool, now=lambda: _NOW)
+
+        def ready() -> None:
+            channel.send("ready")
+            assert channel.recv() == "continue"
+
+        if boundary == "download-close":
+            with delivery.download(job_id, result):
+                ready()
+        else:
+            ready()
+            if boundary == "download-open":
+                with delivery.download(job_id, result):
+                    pass
+            elif boundary == "acknowledgement":
+                assert (
+                    delivery.acknowledge(
+                        _receipt(result), operator_principal="operator@example.test"
+                    )
+                    == result
+                )
+            else:
+                delivery.reconcile()
+        channel.send("completed")
+
+
+def _await_queued_tenant_write(root: Path, process: BaseProcess) -> None:
+    inode = (root / "locks/tenant-state.lock").stat().st_ino
+    deadline = time.monotonic() + 10
+    while process.is_alive() and time.monotonic() < deadline:
+        for line in Path("/proc/locks").read_text().splitlines():
+            fields = line.split()
+            if (
+                "->" in fields
+                and f"WRITE {process.pid}" in line
+                and any(field.endswith(f":{inode}") for field in fields)
+            ):
+                return
+        time.sleep(0.01)
+    raise AssertionError("delivery did not wait for the competing tenant-state holder")
+
+
+@pytest.mark.parametrize("mode", [LockMode.SHARED, LockMode.EXCLUSIVE])
+@pytest.mark.parametrize(
+    "boundary", ["download-open", "download-close", "acknowledgement", "reconciliation"]
+)
+def test_delivery_waits_for_competing_tenant_state(
+    tmp_path: Path, boundary: str, mode: LockMode
+) -> None:
+    root, releases, _manifest = _source(tmp_path)
+    with StateRepository(root, expected_owner=_OWNER) as repository:
+        job_id = _issue(repository)
+    result = _execute(root, releases, job_id).result
+    result_path = root / "authorization/results" / f"{job_id}.json"
+    before = result_path.read_bytes()
+    context = get_context("spawn")
+    parent, child = context.Pipe()
+    process = context.Process(
+        target=_deliver_with_competing_tenant_state,
+        args=(root, job_id, result, boundary, child),
+    )
+    process.start()
+    child.close()
+    try:
+        assert parent.poll(10)
+        assert parent.recv() == "ready"
+        with (
+            LockManager(root / "locks", expected_owner=_OWNER) as locks,
+            locks.acquire(LockName.TENANT_STATE, mode=mode),
+        ):
+            parent.send("continue")
+            _await_queued_tenant_write(root, process)
+            assert not parent.poll()
+        assert parent.poll(10)
+        assert parent.recv() == "completed"
+        process.join(10)
+        assert process.exitcode == 0
+    finally:
+        if process.is_alive():
+            process.kill()
+            process.join(10)
+        process.close()
+        parent.close()
+    assert result_path.read_bytes() == before
+    assert (root / "exports" / f"{job_id}.zip").exists() == (boundary != "acknowledgement")
+
+
+@pytest.mark.parametrize("complete_runtime", [True, False])
+def test_export_validates_the_current_complete_runtime_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, complete_runtime: bool
+) -> None:
+    root, releases, manifest = _source(tmp_path)
+    selected_generation = "0198d17f-6f4a-7000-8000-000000000009"
+    with StateRepository(root, expected_owner=_OWNER) as repository:
+        before = repository.read(StateRecordPath.tenant_observed(_TENANT)).document
+        assert before["runtimeGenerationId"] != selected_generation
+        with repository.publication_transaction() as transaction:
+            snapshot = snapshot_tenant_routes(transaction)
+        if not complete_runtime:
+            snapshot = replace(snapshot, tenants=())
+
+        class Runtime:
+            def __enter__(self) -> Runtime:
+                return self
+
+            def __exit__(self, *_exception: object) -> None:
+                pass
+
+            def using_held_publication_lock(self, _repository: object) -> nullcontext[None]:
+                return nullcontext()
+
+            def read_active(self) -> str:
+                return selected_generation
+
+            def read_generation_route_snapshot(self, requested: str) -> TenantRouteSnapshot:
+                assert requested == selected_generation
+                return snapshot
+
+        monkeypatch.setattr(entrypoints, "_open_caddy_control_runtime", Runtime)
+        validator = partial(entrypoints._selected_tenant_runtime_matches, repository)
+        job_id = _issue(repository)
+        if complete_runtime:
+            result = _execute(root, releases, job_id, runtime_validator=validator).result
+            assert result["status"] == "succeeded"
+            assert _execute(root, releases, job_id, runtime_validator=validator).result == result
+        else:
+            with pytest.raises(ExecutionError, match="authorized routes"):
+                _execute(root, releases, job_id, runtime_validator=validator)
+        job = repository.read(StateRecordPath.authorization_job(job_id)).document
+        assert job["executionValidated"] is complete_runtime
+        assert repository.read(StateRecordPath.tenant_desired(_TENANT)).document == manifest
+        assert repository.read(StateRecordPath.tenant_observed(_TENANT)).document == before

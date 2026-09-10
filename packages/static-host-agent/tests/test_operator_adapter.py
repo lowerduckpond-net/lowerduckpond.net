@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 from lowerduckpond_static_contracts import (
     ContractError,
+    ExportAcknowledgement,
     FrameHeader,
     FrameKind,
     canonical_json_bytes,
@@ -25,6 +26,7 @@ from lowerduckpond_static_host_agent import (
     ClosedPublicationGate,
     DeadlineReader,
     FilesystemCapacity,
+    IssuedAuthorization,
     LocalRequestDecoder,
     LockManager,
     OperatorAdapter,
@@ -243,6 +245,7 @@ def test_adapter_issues_nonartifact_job_after_exact_eof(tmp_path: Path) -> None:
         repository.close()
         os.close(read_fd)
 
+    assert isinstance(issued, IssuedAuthorization)
     assert issued.created is True
     assert issued.document["artifact"] is None
 
@@ -291,6 +294,7 @@ def test_adapter_syncs_artifact_before_immutable_job(tmp_path: Path) -> None:
         repository.close()
         os.close(read_fd)
 
+    assert isinstance(issued, IssuedAuthorization)
     assert issued.created is True
     assert timestamp_calls == 1
     assert (root / "intake" / f"{correlation}.artifact").read_bytes() == artifact
@@ -323,7 +327,9 @@ def test_adapter_accepts_an_exact_artifact_retry_without_a_second_slot(
         read_fd, _ = _pipe(_frame(request, artifact))
         adapter, intake, repository = _adapter(root, read_fd, gate=_OpenGate())
         try:
-            issued.append(adapter.receive(operator_principal="operator@example.test"))
+            received = adapter.receive(operator_principal="operator@example.test")
+            assert isinstance(received, IssuedAuthorization)
+            issued.append(received)
         finally:
             intake.close()
             repository.close()
@@ -404,6 +410,7 @@ def test_exact_artifact_retry_preserves_bytes_for_result_bearing_recovery(
         repository.close()
         os.close(retry_fd)
 
+    assert isinstance(retry, IssuedAuthorization)
     assert retry.created is False
     assert retry.job_id == issued.job_id
     assert (root / "intake" / f"{correlation}.artifact").read_bytes() == artifact
@@ -456,6 +463,7 @@ def test_exact_artifact_retry_repairs_a_job_committed_before_lease_commit(
         repository.close()
         os.close(read_fd)
 
+    assert isinstance(retry, IssuedAuthorization)
     assert retry.created is False
     assert retry.job_id == first.job_id
     assert (root / "intake" / f"{correlation}.artifact").read_bytes() == artifact
@@ -505,6 +513,7 @@ def test_exact_terminal_retry_does_not_recreate_consumed_artifact(tmp_path: Path
         repository.close()
         os.close(retry_fd)
 
+    assert isinstance(retry, IssuedAuthorization)
     assert retry.created is False
     assert list((root / "intake").iterdir()) == []
 
@@ -571,6 +580,30 @@ def test_adapter_rejects_standalone_manifest_before_gate(tmp_path: Path) -> None
     try:
         with pytest.raises(ContractError):
             adapter.receive(operator_principal="operator@example.test")
+    finally:
+        intake.close()
+        repository.close()
+        os.close(read_fd)
+
+
+@pytest.mark.parametrize("trailing", [b"", b"x"])
+def test_adapter_accepts_only_one_bounded_eof_terminated_receipt(
+    tmp_path: Path, trailing: bytes
+) -> None:
+    root = _state_root(tmp_path)
+    receipt = ExportAcknowledgement("0198d17f-6f4a-7000-8000-000000000001", "a" * 64, 123)
+    raw = receipt.encode()
+    frame = encode_header(FrameHeader(FrameKind.ACKNOWLEDGEMENT, len(raw), None)) + raw + trailing
+    read_fd, _ = _pipe(frame)
+    adapter, intake, repository = _adapter(root, read_fd, gate=_OpenGate())
+    try:
+        if trailing:
+            with pytest.raises(StreamError):
+                adapter.receive(operator_principal="operator@example.test")
+        else:
+            assert adapter.receive(operator_principal="operator@example.test") == receipt
+        assert repository.measure_authorization_records().record_count == 0
+        assert list((root / "intake").iterdir()) == []
     finally:
         intake.close()
         repository.close()

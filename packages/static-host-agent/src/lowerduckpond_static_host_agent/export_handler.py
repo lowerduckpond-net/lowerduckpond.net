@@ -38,6 +38,7 @@ from lowerduckpond_static_host_agent.execution import (
     LifecycleArtifact,
     LifecycleJobRejectionError,
 )
+from lowerduckpond_static_host_agent.export_delivery import ExportDelivery
 from lowerduckpond_static_host_agent.export_snapshot import ExportSnapshot, capture_export_snapshot
 from lowerduckpond_static_host_agent.export_spool import (
     EXPORT_WORKSPACE_BUNDLE_NAME,
@@ -135,6 +136,7 @@ class ExportLifecycleHandler:
             if recovered is not None:
                 return recovered
             self._gate.require_enabled()
+            ExportDelivery(self._repository, self._spool, now=self._now).reconcile_locked()
             try:
                 self._spool.prepare_workspace()
             except (ExportSpoolCapacityError, CapacityRejectedError) as error:

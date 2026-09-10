@@ -21,6 +21,7 @@ from typing import Final
 from lowerduckpond_static_contracts import (
     HEADER_SIZE,
     MAX_RAW_REQUEST_BYTES,
+    ExportAcknowledgement,
     FrameHeader,
     FrameKind,
     canonical_json_bytes,
@@ -286,33 +287,7 @@ def submit(  # noqa: PLR0912,PLR0913,PLR0915 - explicit trusted-workstation boun
     artifact = _open_artifact(request, artifact_path)
     pending_export: _PendingExport | None = None
     try:
-        process = subprocess.Popen(  # noqa: S603
-            [
-                os.fspath(ssh_executable),
-                "-T",
-                "-o",
-                "BatchMode=yes",
-                "-o",
-                "IdentitiesOnly=yes",
-                "-o",
-                "ClearAllForwardings=yes",
-                "-o",
-                "RequestTTY=no",
-                "-o",
-                "ConnectTimeout=15",
-                "-o",
-                "ServerAliveInterval=15",
-                "-o",
-                "ServerAliveCountMax=2",
-                "-i",
-                os.fspath(identity_path),
-                f"ldp-operator@{host}",
-            ],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            close_fds=True,
-        )
+        process = _start_ssh(host, identity_path, ssh_executable)
         channel = _ProcessChannel(process)
         try:
             channel.write(
@@ -362,6 +337,12 @@ def submit(  # noqa: PLR0912,PLR0913,PLR0915 - explicit trusted-workstation boun
                 )
             if pending_export is not None:
                 pending_export.commit()
+                acknowledge_export(
+                    host=host,
+                    identity_path=identity_path,
+                    result=result,
+                    ssh_executable=ssh_executable,
+                )
             return result
         except BaseException:
             if pending_export is not None:
@@ -374,6 +355,82 @@ def submit(  # noqa: PLR0912,PLR0913,PLR0915 - explicit trusted-workstation boun
     finally:
         if artifact is not None:
             os.close(artifact.file_descriptor)
+
+
+def acknowledge_export(
+    *,
+    host: str,
+    identity_path: Path,
+    result: dict[str, object],
+    ssh_executable: Path = Path("/usr/bin/ssh"),
+) -> None:
+    """Retire a verified local download through a second authenticated exchange."""
+
+    _validate_host(host)
+    _validate_identity(identity_path)
+    binding = result.get("exportBundle")
+    provenance = result.get("provenance")
+    if type(binding) is not dict or type(provenance) is not dict:
+        raise OperatorClientError("export acknowledgement requires a bundle result")
+    digest = binding["digest"]
+    if type(digest) is not dict or type(binding["size"]) is not int:
+        raise OperatorClientError("export acknowledgement has invalid bundle metadata")
+    receipt = ExportAcknowledgement(str(provenance["jobId"]), str(digest["value"]), binding["size"])
+    raw = receipt.encode()
+    process = _start_ssh(host, identity_path, ssh_executable)
+    try:
+        channel = _ProcessChannel(process)
+        channel.write(encode_header(FrameHeader(FrameKind.ACKNOWLEDGEMENT, len(raw), None)))
+        channel.write(raw)
+        channel.close_input()
+        channel.begin_result_wait()
+        header = decode_header(channel.read_exact(HEADER_SIZE), expected_kind=FrameKind.RESPONSE)
+        channel.begin_response_transfer()
+        canonical = channel.read_exact(header.document_length)
+        if header.payload_length is not None or canonical != canonical_json_bytes(result):
+            raise OperatorClientError("export acknowledgement returned a different result")
+        channel.require_output_eof()
+        return_code = channel.wait()
+        if return_code != 0:
+            raise OperatorClientError(channel.error_message(return_code))
+    except Exception as error:
+        raise OperatorClientError(
+            "export saved locally but acknowledgement failed; the host copy will expire"
+        ) from error
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+
+
+def _start_ssh(host: str, identity_path: Path, ssh_executable: Path) -> subprocess.Popen[bytes]:
+    return subprocess.Popen(  # noqa: S603
+        [
+            os.fspath(ssh_executable),
+            "-T",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "IdentitiesOnly=yes",
+            "-o",
+            "ClearAllForwardings=yes",
+            "-o",
+            "RequestTTY=no",
+            "-o",
+            "ConnectTimeout=15",
+            "-o",
+            "ServerAliveInterval=15",
+            "-o",
+            "ServerAliveCountMax=2",
+            "-i",
+            os.fspath(identity_path),
+            f"ldp-operator@{host}",
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        close_fds=True,
+    )
 
 
 def _validate_host(host: object) -> None:
@@ -486,7 +543,9 @@ def _receive_export(
         if byte_count is not None:
             raise OperatorClientError("non-export result contains an export payload")
         return None
-    if byte_count is None or byte_count != bundle["size"]:
+    if byte_count is None:
+        return None
+    if byte_count != bundle["size"]:
         raise OperatorClientError("operator export length does not match its result")
     if destination is None:
         raise OperatorClientError("operation returned an export without a destination")

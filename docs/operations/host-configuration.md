@@ -347,11 +347,25 @@ provides create, deploy, rollback, suspension, resume, rename, and reconciliatio
 handlers in the enabled fixtures. M3.9 adds export for active and suspended
 tenants: the host verifies a shared-lock snapshot, builds the portable bundle
 from its sealed private copy, and binds delivery to the authenticated job.
-An exact retry returns the established result and bundle. A source change
-before export commitment aborts that attempt without changing tenant state.
-The single completed-download slot blocks another export until its delivery
-lifecycle is resolved; acknowledgement and bounded expiry are the next M3.9
-increment. Archived export remains gated on M3.10 remote-version validation.
+An exact retry returns the established immutable result. The bundle remains
+downloadable until acknowledgement or 24 hours after job acceptance; retries
+never reset that deadline. After retirement, the response has no bundle payload
+and the client returns the result without creating a destination file. A source
+change before export commitment aborts that attempt without changing tenant
+state. The single completed-download slot blocks another export while occupied.
+
+After verifying the bundle digest and length, syncing the local file, and
+committing its destination without replacement, the client sends a separate
+authenticated acknowledgement frame. This fixed 56-byte binary receipt binds
+the job UUID, SHA-256, and size; the server requires the original job operator
+and exact EOF. Root first syncs the job retirement marker, then removes the
+spool file. A lost acknowledgement preserves the local download and the host
+copy expires through reconciliation. An interrupted retirement resumes from
+that marker without rewriting the result or rebuilding an export. Delivery
+holds the export lock until its descriptor closes and stops at the fixed
+retention deadline. The existing one-minute reconciliation timer removes
+abandoned snapshots and expired completed exports; a new export also runs
+that cleanup before admission. Archived export remains gated on M3.10 remote-version validation.
 Startup recovery starts at most two committed jobs per pass beneath one
 aggregate 512-MiB/64-task slice. Successful worker completion triggers the next
 pass; failures fall back to a running one-minute timer, which also safely

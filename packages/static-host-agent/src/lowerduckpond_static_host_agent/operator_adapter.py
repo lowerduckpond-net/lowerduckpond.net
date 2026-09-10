@@ -8,6 +8,7 @@ from typing import Final, Protocol
 from lowerduckpond_static_contracts import (
     HEADER_SIZE,
     MAX_DEPLOY_ARTIFACT_BYTES,
+    ExportAcknowledgement,
     FrameKind,
     decode_header,
 )
@@ -69,7 +70,7 @@ class OperatorAdapter:
         self,
         *,
         operator_principal: str,
-    ) -> IssuedAuthorization:
+    ) -> IssuedAuthorization | ExportAcknowledgement:
         """Receive exactly one frame and commit no artifact before the gate."""
 
         document_deadline = ReadDeadline.start(
@@ -79,12 +80,16 @@ class OperatorAdapter:
         )
         header = decode_header(
             self._reader.read_exact(HEADER_SIZE, deadline=document_deadline),
-            expected_kind=FrameKind.REQUEST,
+            expected_kind=(FrameKind.REQUEST, FrameKind.ACKNOWLEDGEMENT),
         )
         raw_request = self._reader.read_exact(
             header.document_length,
             deadline=document_deadline,
         )
+        if header.kind is FrameKind.ACKNOWLEDGEMENT:
+            self._reader.require_eof(deadline=document_deadline)
+            self._issuer.require_enabled()
+            return ExportAcknowledgement.decode(raw_request)
         canonical_request, request = self._decoder.decode(raw_request)
         artifact = _declared_artifact(request, header.payload_length)
         self._issuer.require_enabled()
