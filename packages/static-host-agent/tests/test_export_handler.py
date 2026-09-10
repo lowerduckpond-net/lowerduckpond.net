@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import os
 import shutil
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from multiprocessing import get_context
+from multiprocessing.connection import Connection
+from multiprocessing.process import BaseProcess
 from pathlib import Path
 
 import pytest
@@ -612,3 +615,103 @@ def test_retirement_supports_export_jobs_accepted_before_delivery_marker(tmp_pat
             _receipt(result), operator_principal="operator@example.test"
         )
     assert _execute(root, releases, job_id).result == result
+
+
+def _deliver_with_competing_tenant_state(
+    root: Path, job_id: str, result: dict[str, object], boundary: str, channel: Connection
+) -> None:
+    with (
+        pytest.MonkeyPatch.context() as patch,
+        StateRepository(root, expected_owner=_OWNER) as repository,
+        ExportSpool(root, expected_owner=_OWNER) as spool,
+    ):
+        # A spawned process does not inherit the parent capacity fixture.
+        patch.setattr(
+            "lowerduckpond_static_host_agent.repository._StateTransaction.measure_filesystem_capacity",
+            lambda _self: FilesystemCapacity(1, 4096, 8_000_000, 7_000_000, 4_000_000, 3_000_000),
+        )
+        delivery = ExportDelivery(repository, spool, now=lambda: _NOW)
+
+        def ready() -> None:
+            channel.send("ready")
+            assert channel.recv() == "continue"
+
+        if boundary == "download-close":
+            with delivery.download(job_id, result):
+                ready()
+        else:
+            ready()
+            if boundary == "download-open":
+                with delivery.download(job_id, result):
+                    pass
+            elif boundary == "acknowledgement":
+                assert (
+                    delivery.acknowledge(
+                        _receipt(result), operator_principal="operator@example.test"
+                    )
+                    == result
+                )
+            else:
+                delivery.reconcile()
+        channel.send("completed")
+
+
+def _await_queued_tenant_write(root: Path, process: BaseProcess) -> None:
+    inode = (root / "locks/tenant-state.lock").stat().st_ino
+    deadline = time.monotonic() + 10
+    while process.is_alive() and time.monotonic() < deadline:
+        for line in Path("/proc/locks").read_text().splitlines():
+            fields = line.split()
+            if (
+                "->" in fields
+                and f"WRITE {process.pid}" in line
+                and any(field.endswith(f":{inode}") for field in fields)
+            ):
+                return
+        time.sleep(0.01)
+    raise AssertionError("delivery did not wait for the competing tenant-state holder")
+
+
+@pytest.mark.parametrize("mode", [LockMode.SHARED, LockMode.EXCLUSIVE])
+@pytest.mark.parametrize(
+    "boundary", ["download-open", "download-close", "acknowledgement", "reconciliation"]
+)
+def test_delivery_waits_for_competing_tenant_state(
+    tmp_path: Path, boundary: str, mode: LockMode
+) -> None:
+    root, releases, _manifest = _source(tmp_path)
+    with StateRepository(root, expected_owner=_OWNER) as repository:
+        job_id = _issue(repository)
+    result = _execute(root, releases, job_id).result
+    result_path = root / "authorization/results" / f"{job_id}.json"
+    before = result_path.read_bytes()
+    context = get_context("spawn")
+    parent, child = context.Pipe()
+    process = context.Process(
+        target=_deliver_with_competing_tenant_state,
+        args=(root, job_id, result, boundary, child),
+    )
+    process.start()
+    child.close()
+    try:
+        assert parent.poll(10)
+        assert parent.recv() == "ready"
+        with (
+            LockManager(root / "locks", expected_owner=_OWNER) as locks,
+            locks.acquire(LockName.TENANT_STATE, mode=mode),
+        ):
+            parent.send("continue")
+            _await_queued_tenant_write(root, process)
+            assert not parent.poll()
+        assert parent.poll(10)
+        assert parent.recv() == "completed"
+        process.join(10)
+        assert process.exitcode == 0
+    finally:
+        if process.is_alive():
+            process.kill()
+            process.join(10)
+        process.close()
+        parent.close()
+    assert result_path.read_bytes() == before
+    assert (root / "exports" / f"{job_id}.zip").exists() == (boundary != "acknowledgement")

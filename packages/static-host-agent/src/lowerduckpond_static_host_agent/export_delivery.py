@@ -53,7 +53,9 @@ class ExportDelivery:
         """Keep physical accounting and expiry excluded until the reader closes."""
 
         with self._spool.locks.acquire(LockName.EXPORT, blocking=True):
-            with self._repository.transaction(mode=LockMode.EXCLUSIVE) as transaction:
+            with self._repository.transaction(
+                mode=LockMode.EXCLUSIVE, blocking=True
+            ) as transaction:
                 job, stored_result = self._read(transaction, job_id)
                 if stored_result != result:
                     raise ExportDeliveryError("download result changed before delivery")
@@ -66,7 +68,9 @@ class ExportDelivery:
             finally:
                 # The caller closes its descriptor before leaving this context.
                 # A transfer reaching the deadline can now release physical space.
-                with self._repository.transaction(mode=LockMode.EXCLUSIVE) as transaction:
+                with self._repository.transaction(
+                    mode=LockMode.EXCLUSIVE, blocking=True
+                ) as transaction:
                     current, _result = self._read(transaction, job_id)
                     self._available(transaction, current)
 
@@ -78,7 +82,7 @@ class ExportDelivery:
         receipt.encode()
         with (
             self._spool.locks.acquire(LockName.EXPORT, blocking=True),
-            self._repository.transaction(mode=LockMode.EXCLUSIVE) as transaction,
+            self._repository.transaction(mode=LockMode.EXCLUSIVE, blocking=True) as transaction,
         ):
             job, result = self._read(transaction, receipt.job_id)
             binding = cast(dict[str, object], result["exportBundle"])
@@ -105,7 +109,7 @@ class ExportDelivery:
         job_id = self._spool.completed_job_id()
         if job_id is None:
             return
-        with self._repository.transaction(mode=LockMode.EXCLUSIVE) as transaction:
+        with self._repository.transaction(mode=LockMode.EXCLUSIVE, blocking=True) as transaction:
             job = transaction.read(StateRecordPath.authorization_job(job_id)).document
             # A killed publisher must first finish its ordinary intent and
             # executor validation. The existing recovery queue owns that work.
