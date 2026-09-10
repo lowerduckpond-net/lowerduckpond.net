@@ -9,6 +9,14 @@ bundle in 6.36 CPU seconds with 104.4 MiB peak resident memory, under a
 construction measurement uses fixture-supplied capacity probes; the installed
 suite below verifies the actual filesystem reserve and worker cgroup limits.
 
+[Generation admission tests](../../packages/static-host-agent/tests/test_caddy_generation.py)
+also publish and reopen fresh and derived configuration and routing metadata
+larger than 16 KiB using their existing 2-MiB aggregate bounds. This covers the
+metadata growth from imported provenance without changing individual contract
+limits. A preserved installed import with 17,667-byte routing metadata recovered
+its prepared transaction under the configured worker limits, retaining the
+original target and deployment IDs, provenance, and exact result replay.
+
 The invariant numbers below refer to
 [the static-publication threat model](static-publication.md). This phase adds
 no remote archive operation. Spaces version binding, archived export, and
