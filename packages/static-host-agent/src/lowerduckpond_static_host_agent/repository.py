@@ -105,6 +105,7 @@ _DEFAULT_TENANT_RELEASE_ROOT: Final = Path("/srv/lowerduckpond/sites")
 _DISPATCH_AUTHORITY_FIELDS: Final = (
     "dispatchArchiveDeploymentIds",
     "dispatchArtifactReleaseTreeDigest",
+    "dispatchImportManifest",
     "dispatchSourceObservedState",
     "dispatchSourceReleaseTreeDigest",
     "dispatchSourceRouteSet",

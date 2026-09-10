@@ -761,6 +761,7 @@ class AuthorizationExecutor:
         ) as transaction:
             current = transaction.read(StateRecordPath.authorization_job(job_id))
             _require_same_authority(initial.document, current.document)
+            current = self._bind_import_manifest(transaction, current, prepared.claim)
             current = _bind_dispatch_authority(
                 transaction,
                 current,
@@ -866,6 +867,36 @@ class AuthorizationExecutor:
             blocking=blocking,
         )
         return ExecutionOutcome(result, returned.created)
+
+    def _bind_import_manifest(
+        self,
+        transaction: ExecutionTransaction,
+        current: StoredContract,
+        claim: ArtifactClaim | None,
+    ) -> StoredContract:
+        """Pin independently inspected provenance before entering the import handler."""
+
+        job = current.document
+        request = job["request"]
+        if type(request) is not dict or request["operation"] != "import":
+            return current
+        bound = job.get("dispatchImportManifest")
+        if claim is None:
+            if type(bound) is not dict:
+                raise ExecutionError("import recovery lost its provenance authority")
+            return current
+        manifest = self._intake.inspect_import(claim.artifact).provenance_manifest
+        if bound is not None:
+            if bound != manifest:
+                raise ExecutionError("import provenance changed after dispatch")
+            return current
+        job["dispatchImportManifest"] = manifest
+        return transaction.bind_dispatch_authority(
+            StateRecordPath.authorization_job(job["jobId"]),
+            current.revision,
+            job,
+            capacity_limits=self._capacity_limits,
+        )
 
     def _derive_artifact_release_tree_digest(
         self,
@@ -1331,6 +1362,8 @@ def _require_same_authority(
     second.pop("dispatchArchiveDeploymentIds", None)
     first.pop("dispatchArtifactReleaseTreeDigest", None)
     second.pop("dispatchArtifactReleaseTreeDigest", None)
+    first.pop("dispatchImportManifest", None)
+    second.pop("dispatchImportManifest", None)
     first.pop("dispatchSourceObservedState", None)
     second.pop("dispatchSourceObservedState", None)
     first.pop("dispatchSourceReleaseTreeDigest", None)
@@ -3288,6 +3321,19 @@ def _validate_selected_deployment_state(  # noqa: PLR0912 - explicit operation m
             and deployment["releaseTreeDigest"] == artifact_release_digest
             and deployment["correlationId"] == result["correlationId"]
         )
+        if operation == "import":
+            imported_manifest = job.get("dispatchImportManifest")
+            matches = (
+                matches
+                and type(imported_manifest) is dict
+                and (
+                    deployment.get("importProvenance")
+                    == {
+                        "manifest": imported_manifest,
+                        "manifestDigest": manifest_digest(imported_manifest).to_dict(),
+                    }
+                )
+            )
     elif operation == "restore":
         matches = matches and _restore_deployment_matches(
             transaction,

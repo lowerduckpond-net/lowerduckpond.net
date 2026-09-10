@@ -304,6 +304,7 @@ class _CompletingDeployHandler:
         extra_archive: dict[str, object] | None = None,
         extra_deployment: dict[str, object] | None = None,
         remove_deployment_ids: tuple[str, ...] = (),
+        import_provenance: bool = True,
     ) -> None:
         self._repository = repository
         self._root = root
@@ -315,6 +316,7 @@ class _CompletingDeployHandler:
         self._extra_archive = extra_archive
         self._extra_deployment = extra_deployment
         self._remove_deployment_ids = remove_deployment_ids
+        self._import_provenance = import_provenance
         self.claims: list[LifecycleArtifact | None] = []
 
     def execute(
@@ -387,6 +389,13 @@ class _CompletingDeployHandler:
                     ),
                 }
             )
+            if request["operation"] == "import" and self._import_provenance:
+                imported = job.document["dispatchImportManifest"]
+                assert isinstance(imported, dict)
+                deployment["importProvenance"] = {
+                    "manifest": imported,
+                    "manifestDigest": manifest_digest(imported).to_dict(),
+                }
             _write(
                 self._root,
                 StateRecordPath.tenant_deployment(request["tenantId"], selected["id"]),
@@ -3332,7 +3341,10 @@ def test_executor_rejects_successful_deployment_history_outside_its_delta(
             ).execute(issued.job_id)
 
 
-def test_executor_derives_import_content_from_the_portable_envelope(tmp_path: Path) -> None:
+@pytest.mark.parametrize("import_provenance", [True, False])
+def test_executor_derives_import_content_from_the_portable_envelope(
+    tmp_path: Path, import_provenance: bool
+) -> None:
     root = _state_root(tmp_path)
     _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
     source = _fixture("site.json")
@@ -3352,12 +3364,21 @@ def test_executor_derives_import_content_from_the_portable_envelope(tmp_path: Pa
             payload=payload,
             operation="import",
         )
-        outcome = AuthorizationExecutor(
+        executor = AuthorizationExecutor(
             repository,
             intake,
-            handlers={"import": _CompletingDeployHandler(repository, root)},
+            handlers={
+                "import": _CompletingDeployHandler(
+                    repository, root, import_provenance=import_provenance
+                )
+            },
             tenant_runtime_validator=lambda *_arguments: True,
-        ).execute(issued.job_id)
+        )
+        if not import_provenance:
+            with pytest.raises(ExecutionError, match="deployment record"):
+                executor.execute(issued.job_id)
+            return
+        outcome = executor.execute(issued.job_id)
         job = repository.read(StateRecordPath.authorization_job(issued.job_id)).document
 
     assert outcome.result["status"] == "succeeded"

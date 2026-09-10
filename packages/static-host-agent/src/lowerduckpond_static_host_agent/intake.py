@@ -36,6 +36,9 @@ from lowerduckpond_static_host_agent.issuance import VerifiedArtifact
 from lowerduckpond_static_host_agent.locks import LockManager, LockMode, LockName
 from lowerduckpond_static_host_agent.portable_bundle import (
     PortableBundleError,
+    PortableBundleImport,
+    PortableBundleInspection,
+    import_portable_bundle,
     inspect_portable_bundle,
 )
 from lowerduckpond_static_host_agent.zip_structure import (
@@ -315,6 +318,11 @@ class ArtifactIntake:
     def import_release_tree_digest(self, artifact: AdmittedArtifact) -> Digest:
         """Derive exact normalized content from one claimed portable bundle."""
 
+        return self.inspect_import(artifact).release_tree_digest
+
+    def inspect_import(self, artifact: AdmittedArtifact) -> PortableBundleInspection:
+        """Independently bind content and provenance to the root-owned intake slot."""
+
         self._require_open()
         self._locks.require_held(LockName.INTAKE, mode=LockMode.EXCLUSIVE)
         if not _ADMITTED.fullmatch(artifact.filename):
@@ -322,12 +330,50 @@ class ArtifactIntake:
         self._validate_entry(artifact.filename)
         self._verify_existing(artifact.filename, declared=artifact.verified)
         try:
-            return inspect_portable_bundle(
+            inspection = inspect_portable_bundle(
                 self._intake_path / artifact.filename,
                 expected_owner=self._expected_owner,
-            ).release_tree_digest
+            )
+            spec = inspection.provenance_manifest["spec"]
+            if type(spec) is not dict or spec["desiredState"] not in {
+                "active",
+                "suspended",
+                "archived",
+            }:
+                raise PortableBundleError("import source has no deployed content")
+            return inspection
         except (OSError, ValueError, PortableBundleError) as error:
             raise IntakeError("claimed import artifact cannot be derived safely") from error
+
+    def extract_import_release(  # noqa: PLR0913 - capacity authorities stay explicit
+        self,
+        artifact: AdmittedArtifact,
+        *,
+        staging_parent: Path,
+        staging_name: str,
+        retained_usage: ReleaseCapacityUsage,
+        publication_reservation: CapacityReservation = NO_CAPACITY_RESERVATION,
+        limits: HostCapacityLimits = DEFAULT_HOST_CAPACITY_LIMITS,
+    ) -> PortableBundleImport:
+        self._require_open()
+        self._locks.require_held(LockName.INTAKE, mode=LockMode.EXCLUSIVE)
+        if not _ADMITTED.fullmatch(artifact.filename):
+            raise IntakeError("claimed artifact filename is not canonical")
+        self._validate_entry(artifact.filename)
+        self._verify_existing(artifact.filename, declared=artifact.verified)
+        try:
+            return import_portable_bundle(
+                self._intake_path / artifact.filename,
+                staging_parent=staging_parent,
+                staging_name=staging_name,
+                expected_owner=self._expected_owner,
+                retained_usage=retained_usage,
+                publication_reservation=publication_reservation,
+                lock_manager=self._locks,
+                capacity_limits=limits,
+            )
+        except (OSError, ValueError, PortableBundleError) as error:
+            raise IntakeError("claimed import artifact cannot be extracted safely") from error
 
     def reconcile(
         self,

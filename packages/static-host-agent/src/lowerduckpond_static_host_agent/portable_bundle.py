@@ -27,7 +27,9 @@ from lowerduckpond_static_contracts import (
 from lowerduckpond_static_host_agent import zip_structure as _zip
 from lowerduckpond_static_host_agent.capacity import (
     DEFAULT_HOST_CAPACITY_LIMITS,
+    NO_CAPACITY_RESERVATION,
     CapacityProjection,
+    CapacityReservation,
     HostCapacityLimits,
     ReleaseCapacityUsage,
     admit_release_capacity,
@@ -462,6 +464,7 @@ def import_portable_bundle(  # noqa: PLR0913,PLR0915 - explicit import trust wor
     staging_name: str,
     expected_owner: int,
     retained_usage: ReleaseCapacityUsage,
+    publication_reservation: CapacityReservation = NO_CAPACITY_RESERVATION,
     lock_manager: LockManager,
     expected_mode: int = _OUTPUT_MODE,
     limits: _zip.ZipLimits = _zip.DEFAULT_ZIP_LIMITS,
@@ -500,7 +503,11 @@ def import_portable_bundle(  # noqa: PLR0913,PLR0915 - explicit import trust wor
             parent_metadata,
             "portable staging parent changed while it was opened",
         )
-        reservation = _zip._extraction_reservation(structure, parent_fd)
+        extraction_reservation = _zip._extraction_reservation(structure, parent_fd)
+        reservation = CapacityReservation(
+            extraction_reservation.allocated_bytes + publication_reservation.allocated_bytes,
+            extraction_reservation.unique_inodes + publication_reservation.unique_inodes,
+        )
         projection = admit_release_capacity(
             retained_usage,
             reservation,
@@ -522,7 +529,7 @@ def import_portable_bundle(  # noqa: PLR0913,PLR0915 - explicit import trust wor
             root_fd,
             structure,
             expected_owner=expected_owner,
-            reservation=reservation,
+            reservation=extraction_reservation,
         )
         os.fsync(root_fd)
         os.fsync(parent_fd)

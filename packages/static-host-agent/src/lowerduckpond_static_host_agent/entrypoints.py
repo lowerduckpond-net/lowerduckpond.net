@@ -310,6 +310,7 @@ def executor_main(arguments: list[str] | None = None) -> int:
                         expected_owner=_EXPECTED_OWNER,
                     ),
                     "deploy": deployment_handler,
+                    "import": deployment_handler,
                     "rollback": deployment_handler,
                     "suspend": route_handler,
                     "resume": route_handler,

@@ -209,6 +209,13 @@ def _validate_job(document: dict[str, object]) -> None:
         )
     ):
         raise ContractError(ErrorCode.SCHEMA_INVALID, "export delivery has no validated job")
+    imported = document.get("dispatchImportManifest")
+    if type(imported) is dict:
+        if request["operation"] != "import":
+            raise ContractError(
+                ErrorCode.SCHEMA_INVALID, "non-import job retains import provenance"
+            )
+        _validate_import_manifest(imported)
     expected_request_digest = digest_bytes(
         canonical_json_bytes(request),
         format_identifier=REQUEST_DIGEST_FORMAT,
@@ -961,7 +968,24 @@ def _validate_audit_entry(document: dict[str, object]) -> None:
         validate_slug(slug)
 
 
+def _validate_import_manifest(manifest: dict[str, object]) -> None:
+    _validate_site(manifest)
+    spec = cast(dict[str, object], manifest["spec"])
+    if spec["desiredState"] not in {"active", "suspended", "archived"}:
+        raise ContractError(ErrorCode.SCHEMA_INVALID, "import source has no deployed content")
+
+
+def _validate_deployment_record(document: dict[str, object]) -> None:
+    provenance = document.get("importProvenance")
+    if type(provenance) is dict:
+        manifest = cast(dict[str, object], provenance["manifest"])
+        _validate_import_manifest(manifest)
+        if provenance["manifestDigest"] != _manifest_digest(manifest):
+            raise ContractError(ErrorCode.SCHEMA_INVALID, "import provenance digest disagrees")
+
+
 _SEMANTIC_VALIDATORS: Final[dict[ContractKind, Callable[[dict[str, object]], None]]] = {
+    ContractKind.DEPLOYMENT_RECORD: _validate_deployment_record,
     ContractKind.PLATFORM_NAMESPACE: _validate_namespace,
     ContractKind.SITE: _validate_site,
     ContractKind.OPERATION_REQUEST: _validate_request,

@@ -26,6 +26,22 @@
     },
     "tenantId": {
       "$ref": "common.schema.json#/$defs/uuidv7"
+    },
+    "importProvenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "manifest": {
+          "$ref": "site.schema.json"
+        },
+        "manifestDigest": {
+          "$ref": "common.schema.json#/$defs/manifestDigest"
+        }
+      },
+      "required": [
+        "manifest",
+        "manifestDigest"
+      ]
     }
   },
   "required": [
