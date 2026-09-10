@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 from collections.abc import Callable, Iterator
@@ -7,9 +8,11 @@ from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from multiprocessing import get_context
 from pathlib import Path
 from typing import cast
 
+import lowerduckpond_static_host_agent.deployment_prepare as deployment_prepare_module
 import pytest
 from lowerduckpond_static_contracts import (
     Digest,
@@ -24,6 +27,8 @@ from lowerduckpond_static_host_agent import (
     ArtifactIntake,
     AuditCapacityError,
     AuditState,
+    AuthorizationExecutor,
+    AuthorizationIssuer,
     CaddyGenerationManifest,
     CaddyRuntime,
     CapacityRejectedError,
@@ -37,6 +42,7 @@ from lowerduckpond_static_host_agent import (
     LifecycleJobRejectionError,
     LockManager,
     LockMode,
+    LockName,
     PinnedCaddyGeneration,
     PublicationGate,
     ReleaseStoreError,
@@ -46,6 +52,7 @@ from lowerduckpond_static_host_agent import (
     TenantRouteInput,
     TenantRouteOverlay,
     VerifiedArtifact,
+    build_portable_bundle,
 )
 from lowerduckpond_static_host_agent.capacity import (
     DEFAULT_HOST_CAPACITY_LIMITS,
@@ -81,6 +88,7 @@ from lowerduckpond_static_host_agent.route_snapshot import (
 )
 
 _FIXTURE_ROOT = Path(__file__).parents[3] / "tests/static-publication/fixtures/accepted"
+_INTERRUPTED_STATUS = 23
 _NOW = datetime(2026, 9, 4, 12, 30, tzinfo=UTC)
 _SOURCE_GENERATION = "0198d17f-6f4a-7000-8000-000000000020"
 _CANDIDATE_GENERATION = "0198d17f-6f4a-7000-8000-000000000021"
@@ -101,12 +109,15 @@ class _Entropy:
 class _Measurement:
     digest: Digest
     allocations: tuple[InodeAllocation, ...] = ()
+    entry_count: int = 1
+    logical_content_bytes: int = 12
 
 
 @dataclass(frozen=True, slots=True)
 class _Staged:
     deployment_id: str
     digest: dict[str, object]
+    measurement: _Measurement
 
 
 class _ReleaseStore:
@@ -137,6 +148,7 @@ class _ReleaseStore:
         retained_usage: object,
         publication_lock: object,
         capacity_limits: object,
+        expected_import_manifest_digest: object = None,
     ) -> _Staged:
         assert tenant_id == _tenant_id()
         assert type(deployment_id) is str
@@ -144,7 +156,20 @@ class _ReleaseStore:
         assert retained_usage is not None
         assert publication_lock is not None
         assert capacity_limits is not None
-        return _Staged(deployment_id, deepcopy(expected_release_tree_digest))
+        assert (
+            expected_import_manifest_digest is None or type(expected_import_manifest_digest) is dict
+        )
+        return _Staged(
+            deployment_id,
+            deepcopy(expected_release_tree_digest),
+            _Measurement(
+                Digest(
+                    str(expected_release_tree_digest["format"]),
+                    str(expected_release_tree_digest["algorithm"]),
+                    str(expected_release_tree_digest["value"]),
+                )
+            ),
+        )
 
     def publish(self, staged: _Staged, *, publication_lock: object) -> None:
         assert publication_lock is not None
@@ -476,7 +501,7 @@ def _job(  # noqa: PLR0913 - fixture authority tuple
         "correlationId": _CORRELATION_ID,
         "tenantId": metadata["id"],
     }
-    if operation == "deploy":
+    if operation in {"deploy", "import"}:
         request["artifact"] = {"size": 32, "sha256": "e" * 64}
     else:
         assert rollback is not None
@@ -517,6 +542,15 @@ def _job(  # noqa: PLR0913 - fixture authority tuple
         "phase": "claimed",
         "executionValidated": False,
     }
+    if operation == "import":
+        imported = _fixture("site.json")
+        imported_metadata = cast(dict[str, object], imported["metadata"])
+        source_id = "0198d17f-6f4a-7000-8000-000000000099"
+        imported_metadata["id"] = source_id
+        imported_metadata["slug"] = "source-slug"
+        imported_metadata["canonicalOrigin"] = f"t-{source_id.replace('-', '')}.lowerduckpond.com"
+        cast(dict[str, object], imported["spec"])["desiredState"] = "suspended"
+        job["dispatchImportManifest"] = imported
     return job
 
 
@@ -562,7 +596,7 @@ def _prepared(  # noqa: PLR0913 - fixture authority tuple
             "algorithm": "sha256",
             "value": "e" * 64,
         }
-        if operation == "deploy"
+        if operation in {"deploy", "import"}
         else None
     )
     job = _job(
@@ -743,6 +777,7 @@ def _recovery_runtime(
     ("operation", "deployment_count", "state"),
     [
         ("deploy", 0, "undeployed"),
+        ("import", 0, "undeployed"),
         ("deploy", 1, "active"),
         ("deploy", 1, "suspended"),
         ("rollback", 2, "active"),
@@ -1695,7 +1730,7 @@ def test_deployment_handler_completes_and_replays_a_fresh_claimed_job(
     )
     claim = (
         LifecycleArtifact(AdmittedArtifact("deploy.artifact", VerifiedArtifact(32, "e" * 64)))
-        if operation == "deploy"
+        if operation in {"deploy", "import"}
         else None
     )
     try:
@@ -1799,3 +1834,277 @@ def test_deployment_handler_rejects_fresh_artifact_presence_mismatch(
         assert repository.measure_intent_records().records == ()
     finally:
         repository.close()
+
+
+@pytest.mark.parametrize(
+    "interruption",
+    [boundary for boundary in DeploymentCommitBoundary if not boundary.name.startswith("RETIRED_")],
+)
+def test_import_recovers_every_terminal_boundary_without_borrowing_source_state(
+    tmp_path: Path, interruption: DeploymentCommitBoundary
+) -> None:
+    repository, job, plan, releases = _prepared(
+        tmp_path, operation="import", deployment_count=0, state="undeployed"
+    )
+    runtime = _recovery_runtime(repository, job, plan)
+    prepared = _prepared_activation(repository, job["jobId"], plan)
+
+    def interrupt(boundary: DeploymentCommitBoundary) -> None:
+        if boundary is interruption:
+            raise RuntimeError("interrupted import terminal commit")
+
+    try:
+        with pytest.raises(RuntimeError, match="interrupted import terminal commit"):
+            _activate(repository, runtime, releases, prepared, failure_hook=interrupt)
+        handler = DeploymentLifecycleHandler(
+            repository,
+            cast(CaddyRuntime, runtime),
+            cast(ArtifactIntake, object()),
+            cast(DeploymentReleaseStore, releases),
+            _Gate(),
+            reloader=runtime.reload,
+            restorer=runtime.restore,
+            verifier=runtime.verify,
+        )
+        first = handler.execute(str(job["jobId"]), claim=None, blocking=False)
+        second = handler.execute(str(job["jobId"]), claim=None, blocking=False)
+        assert first.result == second.result == plan.result
+        source = cast(dict[str, object], job["sourceAuthority"])["manifest"]
+        assert isinstance(source, dict)
+        expected = deepcopy(source)
+        expected_spec = cast(dict[str, object], expected["spec"])
+        expected_spec["desiredState"] = "active"
+        expected_spec["desiredDeployment"] = cast(dict[str, object], plan.manifest["spec"])[
+            "desiredDeployment"
+        ]
+        assert plan.manifest == expected
+        imported = job["dispatchImportManifest"]
+        assert isinstance(imported, dict)
+        provenance = plan.deployment["importProvenance"]
+        assert provenance == {
+            "manifest": imported,
+            "manifestDigest": manifest_digest(imported).to_dict(),
+        }
+        assert cast(dict[str, object], imported["spec"])["desiredState"] == "suspended"
+        assert (
+            plan.deployment["id"]
+            != cast(
+                dict[str, object], cast(dict[str, object], imported["spec"])["desiredDeployment"]
+            )["id"]
+        )
+        assert (
+            repository.read(
+                StateRecordPath.tenant_deployment(plan.tenant_id, plan.deployment["id"])
+            ).document
+            == plan.deployment
+        )
+        assert repository.measure_intent_records().records == ()
+    finally:
+        repository.close()
+
+
+@pytest.mark.parametrize("source_state", ["active", "suspended", "archived"])
+@pytest.mark.parametrize(
+    ("interrupt_preparation", "quota_violation"),
+    [(False, None), (True, None), (False, "entries"), (False, "bytes")],
+)
+def test_import_executor_enforces_target_policy_and_recovers(  # noqa: PLR0915
+    tmp_path: Path,
+    source_state: str,
+    interrupt_preparation: bool,
+    quota_violation: str | None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for module in ("intake", "portable_bundle", "zip_structure"):
+        monkeypatch.setattr(
+            f"lowerduckpond_static_host_agent.{module}.measure_filesystem_capacity_descriptor",
+            lambda descriptor: FilesystemCapacity(
+                os.fstat(descriptor).st_dev, 4096, 10_000_000, 9_000_000, 1_000_000, 900_000
+            ),
+        )
+    root = _state_root(tmp_path)
+    for path in (root / "intake", root / "exports", root / "tenants" / _tenant_id()):
+        _mkdir(path)
+    for name in ("deployments", "archives"):
+        _mkdir(root / "tenants" / _tenant_id() / name)
+    target, observed, _selected = _source([], state="undeployed")
+    cast(dict[str, object], target["spec"])["quotas"] = {
+        "storageMiB": 1,
+        "entries": 1 if quota_violation == "entries" else 2,
+    }
+    observed["desiredManifestDigest"] = manifest_digest(target).to_dict()
+    namespace = _fixture("platform-namespace.json")
+    _write(root, StateRecordPath.platform_namespace(), namespace)
+    _write(root, StateRecordPath.tenant_desired(_tenant_id()), target)
+    _write(root, StateRecordPath.tenant_observed(_tenant_id()), observed)
+    releases = tmp_path / "releases"
+    staging = releases / ".staging"
+    _mkdir(releases)
+    releases.chmod(0o710)
+    _mkdir(staging)
+    source_content = tmp_path / "source-content"
+    _mkdir(source_content)
+    source_content.chmod(0o755)
+    (source_content / "index.html").write_bytes(
+        bytes(1024 * 1024 + 1) if quota_violation == "bytes" else b"portable import content\n"
+    )
+    (source_content / "index.html").chmod(0o644)
+    (source_content / "empty").mkdir(mode=0o755)
+    source_manifest = _fixture("site.json")
+    metadata = cast(dict[str, object], source_manifest["metadata"])
+    source_id = "0198d17f-6f4a-7000-8000-000000000099"
+    metadata.update(
+        id=source_id,
+        slug="source-only",
+        canonicalOrigin=f"t-{source_id.replace('-', '')}.lowerduckpond.com",
+    )
+    cast(dict[str, object], source_manifest["spec"])["desiredState"] = source_state
+    output = tmp_path / "output"
+    _mkdir(output)
+    with (
+        LockManager(root / "locks", expected_owner=os.geteuid()) as locks,
+        locks.acquire(LockName.EXPORT),
+    ):
+        bundle = build_portable_bundle(
+            source_content,
+            source_manifest,
+            output_parent=output,
+            output_name="portable.zip",
+            lock_manager=locks,
+            expected_owner=os.geteuid(),
+        )
+    content = (output / "portable.zip").read_bytes()
+    artifact = VerifiedArtifact(len(content), bundle.bundle_digest.value)
+    request: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "import",
+        "tenantId": _tenant_id(),
+        "correlationId": _CORRELATION_ID,
+        "artifact": {"size": artifact.size, "sha256": artifact.sha256},
+    }
+    with (
+        StateRepository(
+            root, expected_owner=os.geteuid(), tenant_release_root=releases
+        ) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+        DeploymentReleaseStore(
+            releases,
+            staging,
+            expected_owner=os.geteuid(),
+            expected_release_group=os.getegid(),
+            expected_staging_group=os.getegid(),
+        ) as store,
+    ):
+        with intake.admit(
+            operation="import",
+            correlation_id=_CORRELATION_ID,
+            declared=artifact,
+            read=io.BytesIO(content).read,
+        ) as lease:
+            issued = AuthorizationIssuer(repository, gate=_Gate(), entropy=_Entropy()).issue(
+                canonical_json_bytes(request),
+                operator_principal="operator@example.test",
+                now=_NOW,
+                artifact=artifact,
+            )
+            lease.commit()
+        runtime = _Runtime()
+        with repository.publication_transaction() as transaction:
+            runtime.snapshots[_SOURCE_GENERATION] = snapshot_tenant_routes(transaction)
+        handler = DeploymentLifecycleHandler(
+            repository,
+            cast(CaddyRuntime, runtime),
+            intake,
+            store,
+            _Gate(),
+            now=lambda: _NOW,
+            clock=lambda: 1_777_000_000_000,
+            entropy=_Entropy(),
+            reloader=runtime.reload,
+            restorer=runtime.restore,
+            verifier=runtime.verify,
+        )
+        executor = AuthorizationExecutor(
+            repository,
+            intake,
+            handlers={"import": handler},
+            tenant_runtime_validator=lambda *_args: True,
+        )
+        if quota_violation is not None:
+            rejected = executor.execute(issued.job_id)
+            assert rejected.result["status"] == "failed"
+            assert rejected.result["errorCode"] == "capacity_exceeded"
+            assert executor.execute(issued.job_id).result == rejected.result
+            assert repository.read(StateRecordPath.tenant_desired(_tenant_id())).document == target
+            assert (
+                repository.read(StateRecordPath.tenant_observed(_tenant_id())).document == observed
+            )
+            assert not list(staging.iterdir())
+            assert not list((root / "tenants" / _tenant_id() / "deployments").iterdir())
+            assert not list((root / "intake").iterdir())
+            assert repository.measure_intent_records().records == ()
+            assert runtime.active == runtime.running == _SOURCE_GENERATION
+            with repository.transaction(mode=LockMode.EXCLUSIVE) as transaction:
+                terminal = transaction.read(StateRecordPath.authorization_job(issued.job_id))
+                assert terminal.document["executionValidated"] is True
+                assert transaction.inspect_audit().entry_count == 1
+            return
+        if interrupt_preparation:
+            original = deployment_prepare_module._admit_and_create_intent
+
+            def kill_after_intent(*args: object, **kwargs: object) -> None:
+                original(*args, **kwargs)  # type: ignore[arg-type]
+                os._exit(_INTERRUPTED_STATUS)
+
+            with monkeypatch.context() as interrupted:
+                interrupted.setattr(
+                    deployment_prepare_module, "_admit_and_create_intent", kill_after_intent
+                )
+                child = get_context("fork").Process(target=executor.execute, args=(issued.job_id,))
+                child.start()
+                child.join(10)
+                assert child.exitcode == _INTERRUPTED_STATUS
+            intents = repository.measure_intent_records().records
+            assert intents
+            intent = repository.read(StateRecordPath.transaction_intent(intents[0].intent_id))
+            recovery = cast(dict[str, object], intent.document["lifecycleRecovery"])
+            runtime.missing_generations.add(str(recovery["candidateRuntimeGenerationId"]))
+            assert repository.read(StateRecordPath.tenant_desired(_tenant_id())).document == target
+        first = executor.execute(issued.job_id)
+        assert first.result["status"] == "succeeded"
+        assert executor.execute(issued.job_id).result == first.result
+        manifest = cast(dict[str, object], first.result["manifest"])
+        expected = deepcopy(target)
+        expected_spec = cast(dict[str, object], expected["spec"])
+        selected = cast(
+            dict[str, object], cast(dict[str, object], manifest["spec"])["desiredDeployment"]
+        )
+        expected_spec.update(desiredState="active", desiredDeployment=selected)
+        assert manifest == expected
+        assert (
+            selected["id"]
+            != cast(
+                dict[str, object],
+                cast(dict[str, object], source_manifest["spec"])["desiredDeployment"],
+            )["id"]
+        )
+        deployed = repository.read(
+            StateRecordPath.tenant_deployment(_tenant_id(), selected["id"])
+        ).document
+        assert deployed["importProvenance"] == {
+            "manifest": source_manifest,
+            "manifestDigest": manifest_digest(source_manifest).to_dict(),
+        }
+        release_path = releases / _tenant_id() / "releases" / str(selected["id"])
+        assert sorted(path.name for path in release_path.iterdir()) == ["empty", "index.html"]
+        assert (release_path / "index.html").read_bytes() == b"portable import content\n"
+        assert (release_path / "empty").is_dir()
+        assert list((root / "intake").iterdir()) == []
+        assert repository.measure_intent_records().records == ()
+        assert (
+            repository.read(StateRecordPath.authorization_job(issued.job_id)).document[
+                "executionValidated"
+            ]
+            is True
+        )

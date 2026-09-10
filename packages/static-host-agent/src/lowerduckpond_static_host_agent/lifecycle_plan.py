@@ -465,7 +465,7 @@ def plan_deployment_transition(  # noqa: PLR0913,PLR0915,PLR0917 - authority tup
         operation = Operation(cast(str, request["operation"]))
     except ValueError as error:
         raise LifecyclePlanError("deployment planning received an unsupported operation") from error
-    if operation not in {Operation.DEPLOY, Operation.ROLLBACK}:
+    if operation not in {Operation.DEPLOY, Operation.IMPORT, Operation.ROLLBACK}:
         raise LifecyclePlanError("deployment planning received an unsupported operation")
 
     metadata = cast(dict[str, object], source["metadata"])
@@ -641,7 +641,7 @@ def _validate_deployment_source(  # noqa: PLR0913 - exact source tuple
     return deployment_digest
 
 
-def _select_deployment(  # noqa: PLR0913 - exact selection inputs stay explicit
+def _select_deployment(  # noqa: PLR0912,PLR0913 - exact selection inputs stay explicit
     job: dict[str, object],
     request: dict[str, object],
     source: dict[str, object] | None,
@@ -678,7 +678,7 @@ def _select_deployment(  # noqa: PLR0913 - exact selection inputs stay explicit
         ):
             raise LifecyclePlanError("rollback target is outside retained history")
         return rollback, False
-    if operation != "deploy" or rollback is not None:
+    if operation not in {"deploy", "import"} or rollback is not None:
         raise LifecyclePlanError("deploy selection authority is malformed")
     bound_digest = job.get("dispatchArtifactReleaseTreeDigest")
     if release_tree_digest is None or bound_digest != release_tree_digest:
@@ -697,8 +697,20 @@ def _select_deployment(  # noqa: PLR0913 - exact selection inputs stay explicit
         "createdAt": timestamp,
         "correlationId": request["correlationId"],
     }
+    if operation == "import":
+        deployment["importProvenance"] = deployment_import_provenance(job)
     validate_contract(deployment, expected_kind=ContractKind.DEPLOYMENT_RECORD)
     return deployment, True
+
+
+def deployment_import_provenance(job: dict[str, object]) -> dict[str, object]:
+    """Keep the imported source manifest solely as independently bound provenance."""
+
+    manifest = job.get("dispatchImportManifest")
+    if type(manifest) is not dict:
+        raise LifecyclePlanError("import provenance authority is unavailable")
+    validate_contract(manifest, expected_kind=ContractKind.SITE)
+    return {"manifest": deepcopy(manifest), "manifestDigest": manifest_digest(manifest).to_dict()}
 
 
 def _validate_route_source_observed(

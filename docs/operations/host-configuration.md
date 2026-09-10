@@ -366,6 +366,21 @@ holds the export lock until its descriptor closes and stops at the fixed
 retention deadline. The existing one-minute reconciliation timer removes
 abandoned snapshots and expired completed exports; a new export also runs
 that cleanup before admission. Archived export remains gated on M3.10 remote-version validation.
+
+Portable import accepts one caller-held bundle for an existing undeployed
+target. Root independently validates its content and source manifest, binds
+that provenance before dispatch, and creates a new deployment through the
+ordinary prepare, publish, activate, and recovery transaction. Only the content
+subtree becomes a release. The target keeps its ID, canonical origin, slug,
+runtime, and quotas, and root changes its lifecycle to active. The source
+manifest and checksum are retained as provenance in the deployment record;
+they confer no target settings or authority. Before creating an intent, root
+compares the measured candidate bytes and entries with current target quotas.
+Excess returns `capacity_exceeded` and removes private staging without changing
+the target or Caddy. The same staging check applies to ordinary deployment.
+Import accepts active, suspended,
+or archived source manifests and consumes intake only after the terminal
+result is validated.
 Startup recovery starts at most two committed jobs per pass beneath one
 aggregate 512-MiB/64-task slice. Successful worker completion triggers the next
 pass; failures fall back to a running one-minute timer, which also safely

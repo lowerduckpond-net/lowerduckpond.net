@@ -599,6 +599,58 @@ def test_candidate_admission_enforces_the_aggregate_allocation_ceiling(
         store.admit_candidate(payload, ())
 
 
+@pytest.mark.parametrize("large_field", ["configuration", "route_metadata"])
+def test_candidate_admission_uses_aggregate_json_limits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    large_field: str,
+) -> None:
+    root = _make_root(tmp_path)
+    original = _payload(tmp_path)
+    configuration = dict(original.configuration)
+    routes = _route_metadata(publication_enabled=True)
+    large_value = "x" * (32 * 1024)
+    if large_field == "configuration":
+        configuration["largeConfiguration"] = large_value
+    else:
+        route_state = {"tenantProvenance": large_value}
+        routes["routeState"] = route_state
+        routes["routeStateDigest"] = caddy_route_state_digest(route_state).to_dict()
+    payload = replace(original, configuration=configuration, route_metadata=routes)
+    device = root.stat().st_dev
+    monkeypatch.setattr(
+        caddy_generation_module,
+        "measure_filesystem_capacity_descriptor",
+        lambda _descriptor: FilesystemCapacity(
+            device=device,
+            fragment_size=4096,
+            total_blocks=10_000_000,
+            available_blocks=9_000_000,
+            total_inodes=1_000_000,
+            available_inodes=900_000,
+        ),
+    )
+
+    with _open_store(root) as store:
+        store.admit_candidate(payload, ())
+        store.publish(_GENERATION_ID, payload)
+        with store.open_verified(_GENERATION_ID) as source:
+            derived = CaddyDerivedGenerationPayload(source, configuration, routes)
+            store.admit_candidate(derived, (_GENERATION_ID,))
+            store.publish(_SECOND_GENERATION_ID, derived)
+        with store.open_verified(_SECOND_GENERATION_ID) as published:
+            descriptor = published.duplicate_payload_descriptor(
+                CADDY_CONFIGURATION_NAME
+                if large_field == "configuration"
+                else CADDY_ROUTE_METADATA_NAME
+            )
+            try:
+                actual = json.loads(os.read(descriptor, 64 * 1024))
+            finally:
+                os.close(descriptor)
+            assert actual == (configuration if large_field == "configuration" else routes)
+
+
 def test_tampered_payload_fails_manifest_verification(tmp_path: Path) -> None:
     root = _make_root(tmp_path)
     payload = _payload(tmp_path)

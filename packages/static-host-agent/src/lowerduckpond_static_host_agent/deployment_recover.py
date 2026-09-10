@@ -44,7 +44,10 @@ from lowerduckpond_static_host_agent.deployment_prepare import (
     PreparedDeploymentTransition,
 )
 from lowerduckpond_static_host_agent.issuance import PublicationGate
-from lowerduckpond_static_host_agent.lifecycle_plan import DeploymentTransitionPlan
+from lowerduckpond_static_host_agent.lifecycle_plan import (
+    DeploymentTransitionPlan,
+    deployment_import_provenance,
+)
 from lowerduckpond_static_host_agent.release_store import (
     DeploymentReleaseStore,
     PublicationLockProof,
@@ -66,7 +69,7 @@ from lowerduckpond_static_host_agent.state_inventory import (
     StateInventory,
 )
 
-_DEPLOYMENT_OPERATIONS = frozenset({"deploy", "rollback"})
+_DEPLOYMENT_OPERATIONS = frozenset({"deploy", "import", "rollback"})
 
 
 class DeploymentRecoveryError(RuntimeError):
@@ -228,7 +231,7 @@ def _reconstruct_deployment(  # noqa: PLR0913 - recovery authority stays explici
         manifest=candidate_manifest,
         observed_state=candidate_observed,
         deployment=deployment,
-        creates_deployment=intent.document["operation"] == "deploy",
+        creates_deployment=intent.document["operation"] in {"deploy", "import"},
         intent=intent.document,
         result=result,
         audit_entry=audit_entry,
@@ -320,6 +323,7 @@ def _require_bound_job(
         "executionValidated",
         "dispatchArchiveDeploymentIds",
         "dispatchArtifactReleaseTreeDigest",
+        "dispatchImportManifest",
         "dispatchSourceReleaseTreeDigest",
         "dispatchDeploymentIds",
         "dispatchTenantIds",
@@ -494,6 +498,8 @@ def _candidate_deployment(
             "createdAt": intent["createdAt"],
             "correlationId": intent["correlationId"],
         }
+        if intent["operation"] == "import":
+            deployment["importProvenance"] = deployment_import_provenance(job)
     validate_contract(deployment, expected_kind=ContractKind.DEPLOYMENT_RECORD)
     return deployment
 

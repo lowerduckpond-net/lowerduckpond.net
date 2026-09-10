@@ -441,9 +441,18 @@ def _validate_document_relationships(
     history = documents.history
     target_id = cast(str, documents.deployment["id"])
     artifact = request.get("artifact")
+    imported = job.get("dispatchImportManifest")
+    provenance_matches = (
+        type(imported) is dict
+        and documents.deployment.get("importProvenance")
+        == {"manifest": imported, "manifestDigest": manifest_digest(imported).to_dict()}
+        if operation is Operation.IMPORT
+        else documents.deployment.get("importProvenance") is None
+    )
     deploy_binding_valid = (
-        operation is Operation.DEPLOY
+        operation in {Operation.DEPLOY, Operation.IMPORT}
         and documents.creates_deployment
+        and provenance_matches
         and type(artifact) is dict
         and job.get("artifact") == artifact
         and documents.deployment.get("archiveSha256") == artifact.get("sha256")
@@ -548,7 +557,7 @@ def _deployment_operation(value: object) -> Operation:
         operation = Operation(cast(str, value))
     except (TypeError, ValueError) as error:
         raise DeploymentCommitError("deployment operation is malformed") from error
-    if operation not in {Operation.DEPLOY, Operation.ROLLBACK}:
+    if operation not in {Operation.DEPLOY, Operation.IMPORT, Operation.ROLLBACK}:
         raise DeploymentCommitError("deployment finalization received another operation")
     return operation
 

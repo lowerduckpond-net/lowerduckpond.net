@@ -1400,8 +1400,10 @@ def _candidate_reservation(
     payload_sizes = (
         binary_size,
         environment_size,
-        len(canonical_json_bytes(payload.configuration)),
-        len(canonical_json_bytes(payload.route_metadata)),
+        len(_canonical_object(payload.configuration, maximum_bytes=MAX_CADDY_CONFIGURATION_BYTES)),
+        len(
+            _canonical_object(payload.route_metadata, maximum_bytes=MAX_CADDY_ROUTE_METADATA_BYTES)
+        ),
         MAX_CADDY_MANIFEST_BYTES,
     )
 

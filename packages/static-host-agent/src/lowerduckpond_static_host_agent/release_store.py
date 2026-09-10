@@ -22,6 +22,7 @@ from lowerduckpond_static_host_agent.capacity import (
 )
 from lowerduckpond_static_host_agent.intake import AdmittedArtifact, ArtifactIntake
 from lowerduckpond_static_host_agent.locks import LockMode, LockName
+from lowerduckpond_static_host_agent.portable_bundle import PortableBundleImport
 from lowerduckpond_static_host_agent.release_tree import (
     RELEASE_TREE_FORMAT,
     InodeAllocation,
@@ -163,6 +164,7 @@ class DeploymentReleaseStore:
         retained_usage: ReleaseCapacityUsage,
         publication_lock: PublicationLockProof,
         capacity_limits: HostCapacityLimits = DEFAULT_HOST_CAPACITY_LIMITS,
+        expected_import_manifest_digest: Mapping[str, object] | None = None,
     ) -> StagedDeploymentRelease:
         """Extract and independently verify one private deployment candidate."""
 
@@ -172,7 +174,12 @@ class DeploymentReleaseStore:
         staging_name = _staging_name(canonical_tenant, canonical_deployment)
         owns_staging = False
         try:
-            intake.extract_deployment_release(
+            extractor = (
+                intake.extract_import_release
+                if expected_import_manifest_digest is not None
+                else intake.extract_deployment_release
+            )
+            extracted = extractor(
                 artifact,
                 staging_parent=self._staging_root,
                 staging_name=staging_name,
@@ -181,6 +188,12 @@ class DeploymentReleaseStore:
                 limits=capacity_limits,
             )
             owns_staging = True
+            if expected_import_manifest_digest is not None and (
+                not isinstance(extracted, PortableBundleImport)
+                or extracted.inspection.provenance_manifest_digest.to_dict()
+                != dict(expected_import_manifest_digest)
+            ):
+                raise ReleaseStoreError("import provenance disagrees with dispatch authority")
             measurement = measure_release_tree(
                 self._staging_root / staging_name,
                 lock_manager=publication_lock,

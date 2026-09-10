@@ -205,8 +205,9 @@ class _ReleaseStore:
         retained_usage: ReleaseCapacityUsage,
         publication_lock: object,
         capacity_limits: object,
+        expected_import_manifest_digest: object = None,
     ) -> StagedDeploymentRelease:
-        del intake, capacity_limits
+        del intake, capacity_limits, expected_import_manifest_digest
         assert artifact.verified.sha256 == "e" * 64
         assert publication_lock.measure_intent_records().records == ()  # type: ignore[attr-defined]
         release_inodes = len(

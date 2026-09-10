@@ -1047,8 +1047,16 @@ without replacing current tenant state. Authenticated delivery now holds spool
 exclusion, acknowledges only a verified durable local download, and retires
 the slot through a synced job marker before deletion. The fixed 24-hour
 retention deadline starts at job acceptance; interrupted retirement and
-incomplete work recover through root reconciliation. Portable-import lifecycle
-integration and the complete installed-host gate remain pending.
+incomplete work recover through root reconciliation. Portable import now uses
+the ordinary deployment transaction to activate an existing undeployed target
+with a new root-generated deployment ID. Independently inspected source
+provenance is retained in the deployment record, while all target settings
+remain rooted in its current manifest. Staged content is independently
+measured against current target byte and entry quotas before intent creation;
+excess is a terminal capacity rejection with no target publication.
+Interrupted imports recover from the
+authorization job and lifecycle intent. The complete race, failure, and
+installed-host qualification gate remains pending.
 
 Implement shared-lock snapshots, the global export spool, deterministic bundle
 construction, authenticated download, acknowledgement, and bounded expiry.

@@ -1,4 +1,4 @@
-"""Replay-safe dispatch of one claimed deploy or rollback lifecycle job."""
+"""Replay-safe dispatch of one claimed deploy, import, or rollback lifecycle job."""
 
 from __future__ import annotations
 
@@ -33,6 +33,7 @@ from lowerduckpond_static_host_agent.deployment_commit import DeploymentCommitEr
 from lowerduckpond_static_host_agent.deployment_prepare import (
     DeploymentAuthorityDriftError,
     DeploymentPreparationError,
+    DeploymentQuotaExceededError,
     prepare_deployment_transition,
 )
 from lowerduckpond_static_host_agent.deployment_recover import (
@@ -55,7 +56,7 @@ from lowerduckpond_static_host_agent.repository import (
 )
 from lowerduckpond_static_host_agent.state_inventory import IntentRecordInventory
 
-_DEPLOYMENT_OPERATIONS = frozenset({"deploy", "rollback"})
+_DEPLOYMENT_OPERATIONS = frozenset({"deploy", "import", "rollback"})
 
 
 class DeploymentLifecycleError(RuntimeError):
@@ -94,7 +95,7 @@ def _entropy(length: int) -> bytes:
 
 
 class DeploymentLifecycleHandler:
-    """Prepare, recover, or replay one exact deploy or rollback job."""
+    """Prepare, recover, or replay one exact deploy, import, or rollback job."""
 
     def __init__(  # noqa: PLR0913 - trusted lifecycle dependencies explicit
         self,
@@ -190,7 +191,7 @@ class DeploymentLifecycleHandler:
                 ),
             )
         artifact = None if claim is None else claim.artifact
-        if (replay.operation == "deploy") != (artifact is not None):
+        if (replay.operation in {"deploy", "import"}) != (artifact is not None):
             raise LifecycleJobRejectionError("invalid_artifact")
         try:
             prepared = prepare_deployment_transition(
@@ -209,6 +210,8 @@ class DeploymentLifecycleHandler:
             )
         except DeploymentAuthorityDriftError as error:
             raise LifecycleJobRejectionError("state_drift") from error
+        except DeploymentQuotaExceededError as error:
+            raise LifecycleJobRejectionError("capacity_exceeded") from error
         except LifecyclePlanError as error:
             raise LifecycleJobRejectionError("invalid_request") from error
         except DeploymentPreparationError:

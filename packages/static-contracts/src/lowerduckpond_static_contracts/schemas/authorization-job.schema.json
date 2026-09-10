@@ -349,6 +349,16 @@
         "expired"
       ],
       "type": "string"
+    },
+    "dispatchImportManifest": {
+      "oneOf": [
+        {
+          "$ref": "site.schema.json"
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "required": [

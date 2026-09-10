@@ -1,4 +1,4 @@
-"""Locked preparation of one deploy or rollback transition."""
+"""Locked preparation of one deploy, import, or rollback transition."""
 
 from __future__ import annotations
 
@@ -62,8 +62,9 @@ from lowerduckpond_static_host_agent.state_inventory import (
     StateInventory,
 )
 
-_DEPLOYMENT_OPERATIONS = frozenset({"deploy", "rollback"})
+_DEPLOYMENT_OPERATIONS = frozenset({"deploy", "import", "rollback"})
 _TENANT_HISTORY_FIELDS = 3
+_MIB_BYTES = 1024 * 1024
 
 
 class DeploymentPreparationError(RuntimeError):
@@ -72,6 +73,10 @@ class DeploymentPreparationError(RuntimeError):
 
 class DeploymentAuthorityDriftError(DeploymentPreparationError):
     """A claimed deployment operation no longer matches authoritative state."""
+
+
+class DeploymentQuotaExceededError(DeploymentPreparationError):
+    """Verified candidate content exceeds the current root-owned target quotas."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -318,9 +323,9 @@ def _require_current_deployment_authority(
     operation = request.get("operation")
     if document["phase"] != "claimed" or operation not in _DEPLOYMENT_OPERATIONS:
         raise DeploymentPreparationError(
-            "deployment preparation requires one claimed deploy or rollback job"
+            "deployment preparation requires one claimed deploy, import, or rollback job"
         )
-    if (operation == "deploy") != (artifact is not None):
+    if (operation in {"deploy", "import"}) != (artifact is not None):
         raise DeploymentPreparationError(
             "deployment artifact presence disagrees with the authorized operation"
         )
@@ -633,7 +638,7 @@ def _stage_candidate_release(  # noqa: PLR0913 - extraction authorities stay exp
         return None
     if artifact is None:
         raise DeploymentPreparationError("deploy artifact disappeared before staging")
-    return release_store.stage(
+    staged = release_store.stage(
         intake,
         artifact,
         tenant_id=plan.tenant_id,
@@ -642,7 +647,24 @@ def _stage_candidate_release(  # noqa: PLR0913 - extraction authorities stay exp
         retained_usage=retained_usage,
         publication_lock=transaction,
         capacity_limits=capacity_limits,
+        expected_import_manifest_digest=(
+            cast(
+                dict[str, object],
+                cast(dict[str, object], plan.deployment["importProvenance"])["manifestDigest"],
+            )
+            if plan.result["operation"] == "import"
+            else None
+        ),
     )
+    spec = cast(dict[str, object], plan.manifest["spec"])
+    quotas = cast(dict[str, int], spec["quotas"])
+    if (
+        staged.measurement.logical_content_bytes > quotas["storageMiB"] * _MIB_BYTES
+        or staged.measurement.entry_count > quotas["entries"]
+    ):
+        release_store.discard_staged(staged, publication_lock=transaction)
+        raise DeploymentQuotaExceededError("candidate content exceeds current target quotas")
+    return staged
 
 
 def _admit_and_create_intent(

@@ -116,6 +116,7 @@ def test_executor_entrypoint_registers_the_available_lifecycle_handlers(
     assert type(handlers) is dict
     assert set(handlers) == {
         "export",
+        "import",
         "create",
         "deploy",
         "rollback",
