@@ -342,9 +342,16 @@ The final M3.6 implementation replaces the initial denial adapter with a fixed
 root entry point, but production continues to reject independently of request
 bytes while `static_publication_enabled` is false. The separately authorized
 M3.6 convergence installed that implementation while retaining the disabled
-flag. The client cannot allocate a job while the flag remains false; hermetic
-enabled-path fixtures return only mutation-free terminal
-`not_implemented` results until the lifecycle handlers arrive in M3.8.
+flag. The client cannot allocate a job while the flag remains false. M3.8
+provides create, deploy, rollback, suspension, resume, rename, and reconciliation
+handlers in the enabled fixtures. M3.9 adds export for active and suspended
+tenants: the host verifies a shared-lock snapshot, builds the portable bundle
+from its sealed private copy, and binds delivery to the authenticated job.
+An exact retry returns the established result and bundle. A source change
+before export commitment aborts that attempt without changing tenant state.
+The single completed-download slot blocks another export until its delivery
+lifecycle is resolved; acknowledgement and bounded expiry are the next M3.9
+increment. Archived export remains gated on M3.10 remote-version validation.
 Startup recovery starts at most two committed jobs per pass beneath one
 aggregate 512-MiB/64-task slice. Successful worker completion triggers the next
 pass; failures fall back to a running one-minute timer, which also safely

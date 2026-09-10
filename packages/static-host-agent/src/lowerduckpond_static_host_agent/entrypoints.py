@@ -79,6 +79,8 @@ from lowerduckpond_static_host_agent.execution import (
     AuthorizationExecutor,
     ExecutionError,
 )
+from lowerduckpond_static_host_agent.export_handler import ExportLifecycleHandler
+from lowerduckpond_static_host_agent.export_spool import ExportSpool, ExportSpoolError
 from lowerduckpond_static_host_agent.intake import ArtifactIntake, IntakeError
 from lowerduckpond_static_host_agent.issuance import (
     AuthorizationIssuer,
@@ -199,6 +201,7 @@ _SAFE_ERRORS: Final = (
     ProtocolError,
     CorrelationError,
     ExecutionError,
+    ExportSpoolError,
     IntakeError,
     IssuanceError,
     OperatorAdapterError,
@@ -275,6 +278,7 @@ def executor_main(arguments: list[str] | None = None) -> int:
             StateRepository(_STATE_ROOT, expected_owner=_EXPECTED_OWNER) as repository,
             ArtifactIntake(_STATE_ROOT, expected_owner=_EXPECTED_OWNER) as intake,
             _open_deployment_release_store() as release_store,
+            ExportSpool(_STATE_ROOT, expected_owner=_EXPECTED_OWNER) as export_spool,
             _open_caddy_control_runtime() as runtime,
         ):
             publication_gate = CommandPublicationGate(_PUBLICATION_GATE)
@@ -294,6 +298,13 @@ def executor_main(arguments: list[str] | None = None) -> int:
                         repository,
                         runtime,
                         publication_gate,
+                    ),
+                    "export": ExportLifecycleHandler(
+                        repository,
+                        export_spool,
+                        publication_gate,
+                        release_root=Path(TENANT_RELEASE_ROOT),
+                        expected_owner=_EXPECTED_OWNER,
                     ),
                     "deploy": deployment_handler,
                     "rollback": deployment_handler,
