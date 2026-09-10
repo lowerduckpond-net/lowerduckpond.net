@@ -20,7 +20,7 @@ from lowerduckpond_static_host_agent.portable_bundle import inspect_portable_bun
 from lowerduckpond_static_operator import client
 from testinfra.host import Host
 
-_CONTENT_BYTES = 102_318_100
+_CONTENT_BYTES = 100 * 1024 * 1024
 _ENTRY_COUNT = 5_000
 _FILE_BYTES = 4 * 1024 * 1024
 _INDEX = b"full-size installed M3.9 content\n"
@@ -36,8 +36,15 @@ def _full_size_deployment() -> bytes:
             member = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
             member.create_system = 3
             member.external_attr = (stat.S_IFREG | 0o644) << 16
-            member.compress_type = zipfile.ZIP_STORED
-            content = _INDEX if index == 0 else b"x" * min(remaining, _FILE_BYTES)
+            member.compress_type = zipfile.ZIP_DEFLATED
+            if index == 0:
+                content = _INDEX
+            else:
+                size = min(remaining, _FILE_BYTES)
+                # Moderate compression fills the complete content quota while
+                # leaving room for ZIP metadata in the bounded upload envelope.
+                random_bytes = size // 2
+                content = os.urandom(random_bytes) + bytes(size - random_bytes)
             archive.writestr(member, content)
             if index != 0:
                 remaining -= len(content)
