@@ -1051,7 +1051,10 @@ incomplete work recover through root reconciliation. Portable import now uses
 the ordinary deployment transaction to activate an existing undeployed target
 with a new root-generated deployment ID. Independently inspected source
 provenance is retained in the deployment record, while all target settings
-remain rooted in its current manifest. Interrupted imports recover from the
+remain rooted in its current manifest. Staged content is independently
+measured against current target byte and entry quotas before intent creation;
+excess is a terminal capacity rejection with no target publication.
+Interrupted imports recover from the
 authorization job and lifecycle intent. The complete race, failure, and
 installed-host qualification gate remains pending.
 

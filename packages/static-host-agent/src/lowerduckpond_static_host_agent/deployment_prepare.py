@@ -64,6 +64,7 @@ from lowerduckpond_static_host_agent.state_inventory import (
 
 _DEPLOYMENT_OPERATIONS = frozenset({"deploy", "import", "rollback"})
 _TENANT_HISTORY_FIELDS = 3
+_MIB_BYTES = 1024 * 1024
 
 
 class DeploymentPreparationError(RuntimeError):
@@ -72,6 +73,10 @@ class DeploymentPreparationError(RuntimeError):
 
 class DeploymentAuthorityDriftError(DeploymentPreparationError):
     """A claimed deployment operation no longer matches authoritative state."""
+
+
+class DeploymentQuotaExceededError(DeploymentPreparationError):
+    """Verified candidate content exceeds the current root-owned target quotas."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -633,7 +638,7 @@ def _stage_candidate_release(  # noqa: PLR0913 - extraction authorities stay exp
         return None
     if artifact is None:
         raise DeploymentPreparationError("deploy artifact disappeared before staging")
-    return release_store.stage(
+    staged = release_store.stage(
         intake,
         artifact,
         tenant_id=plan.tenant_id,
@@ -651,6 +656,15 @@ def _stage_candidate_release(  # noqa: PLR0913 - extraction authorities stay exp
             else None
         ),
     )
+    spec = cast(dict[str, object], plan.manifest["spec"])
+    quotas = cast(dict[str, int], spec["quotas"])
+    if (
+        staged.measurement.logical_content_bytes > quotas["storageMiB"] * _MIB_BYTES
+        or staged.measurement.entry_count > quotas["entries"]
+    ):
+        release_store.discard_staged(staged, publication_lock=transaction)
+        raise DeploymentQuotaExceededError("candidate content exceeds current target quotas")
+    return staged
 
 
 def _admit_and_create_intent(

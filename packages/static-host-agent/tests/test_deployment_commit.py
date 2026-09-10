@@ -109,12 +109,15 @@ class _Entropy:
 class _Measurement:
     digest: Digest
     allocations: tuple[InodeAllocation, ...] = ()
+    entry_count: int = 1
+    logical_content_bytes: int = 12
 
 
 @dataclass(frozen=True, slots=True)
 class _Staged:
     deployment_id: str
     digest: dict[str, object]
+    measurement: _Measurement
 
 
 class _ReleaseStore:
@@ -156,7 +159,17 @@ class _ReleaseStore:
         assert (
             expected_import_manifest_digest is None or type(expected_import_manifest_digest) is dict
         )
-        return _Staged(deployment_id, deepcopy(expected_release_tree_digest))
+        return _Staged(
+            deployment_id,
+            deepcopy(expected_release_tree_digest),
+            _Measurement(
+                Digest(
+                    str(expected_release_tree_digest["format"]),
+                    str(expected_release_tree_digest["algorithm"]),
+                    str(expected_release_tree_digest["value"]),
+                )
+            ),
+        )
 
     def publish(self, staged: _Staged, *, publication_lock: object) -> None:
         assert publication_lock is not None
@@ -1891,11 +1904,15 @@ def test_import_recovers_every_terminal_boundary_without_borrowing_source_state(
 
 
 @pytest.mark.parametrize("source_state", ["active", "suspended", "archived"])
-@pytest.mark.parametrize("interrupt_preparation", [False, True])
-def test_import_executor_publishes_only_content_and_preserves_target_policy(  # noqa: PLR0915
+@pytest.mark.parametrize(
+    ("interrupt_preparation", "quota_violation"),
+    [(False, None), (True, None), (False, "entries"), (False, "bytes")],
+)
+def test_import_executor_enforces_target_policy_and_recovers(  # noqa: PLR0915
     tmp_path: Path,
     source_state: str,
     interrupt_preparation: bool,
+    quota_violation: str | None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     for module in ("intake", "portable_bundle", "zip_structure"):
@@ -1911,7 +1928,10 @@ def test_import_executor_publishes_only_content_and_preserves_target_policy(  # 
     for name in ("deployments", "archives"):
         _mkdir(root / "tenants" / _tenant_id() / name)
     target, observed, _selected = _source([], state="undeployed")
-    cast(dict[str, object], target["spec"])["quotas"] = {"storageMiB": 1, "entries": 2}
+    cast(dict[str, object], target["spec"])["quotas"] = {
+        "storageMiB": 1,
+        "entries": 1 if quota_violation == "entries" else 2,
+    }
     observed["desiredManifestDigest"] = manifest_digest(target).to_dict()
     namespace = _fixture("platform-namespace.json")
     _write(root, StateRecordPath.platform_namespace(), namespace)
@@ -1925,7 +1945,9 @@ def test_import_executor_publishes_only_content_and_preserves_target_policy(  # 
     source_content = tmp_path / "source-content"
     _mkdir(source_content)
     source_content.chmod(0o755)
-    (source_content / "index.html").write_bytes(b"portable import content\n")
+    (source_content / "index.html").write_bytes(
+        bytes(1024 * 1024 + 1) if quota_violation == "bytes" else b"portable import content\n"
+    )
     (source_content / "index.html").chmod(0o644)
     (source_content / "empty").mkdir(mode=0o755)
     source_manifest = _fixture("site.json")
@@ -2009,6 +2031,25 @@ def test_import_executor_publishes_only_content_and_preserves_target_policy(  # 
             handlers={"import": handler},
             tenant_runtime_validator=lambda *_args: True,
         )
+        if quota_violation is not None:
+            rejected = executor.execute(issued.job_id)
+            assert rejected.result["status"] == "failed"
+            assert rejected.result["errorCode"] == "capacity_exceeded"
+            assert executor.execute(issued.job_id).result == rejected.result
+            assert repository.read(StateRecordPath.tenant_desired(_tenant_id())).document == target
+            assert (
+                repository.read(StateRecordPath.tenant_observed(_tenant_id())).document == observed
+            )
+            assert not list(staging.iterdir())
+            assert not list((root / "tenants" / _tenant_id() / "deployments").iterdir())
+            assert not list((root / "intake").iterdir())
+            assert repository.measure_intent_records().records == ()
+            assert runtime.active == runtime.running == _SOURCE_GENERATION
+            with repository.transaction(mode=LockMode.EXCLUSIVE) as transaction:
+                terminal = transaction.read(StateRecordPath.authorization_job(issued.job_id))
+                assert terminal.document["executionValidated"] is True
+                assert transaction.inspect_audit().entry_count == 1
+            return
         if interrupt_preparation:
             original = deployment_prepare_module._admit_and_create_intent
 

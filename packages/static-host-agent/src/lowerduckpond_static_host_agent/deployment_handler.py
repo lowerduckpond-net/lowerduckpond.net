@@ -33,6 +33,7 @@ from lowerduckpond_static_host_agent.deployment_commit import DeploymentCommitEr
 from lowerduckpond_static_host_agent.deployment_prepare import (
     DeploymentAuthorityDriftError,
     DeploymentPreparationError,
+    DeploymentQuotaExceededError,
     prepare_deployment_transition,
 )
 from lowerduckpond_static_host_agent.deployment_recover import (
@@ -209,6 +210,8 @@ class DeploymentLifecycleHandler:
             )
         except DeploymentAuthorityDriftError as error:
             raise LifecycleJobRejectionError("state_drift") from error
+        except DeploymentQuotaExceededError as error:
+            raise LifecycleJobRejectionError("capacity_exceeded") from error
         except LifecyclePlanError as error:
             raise LifecycleJobRejectionError("invalid_request") from error
         except DeploymentPreparationError:

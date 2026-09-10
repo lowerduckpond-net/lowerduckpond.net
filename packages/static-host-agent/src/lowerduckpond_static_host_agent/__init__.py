@@ -168,6 +168,7 @@ from lowerduckpond_static_host_agent.deployment_handler import (
 from lowerduckpond_static_host_agent.deployment_prepare import (
     DeploymentAuthorityDriftError,
     DeploymentPreparationError,
+    DeploymentQuotaExceededError,
     PreparedDeploymentTransition,
     prepare_deployment_transition,
 )
@@ -479,6 +480,7 @@ __all__ = [
     "DeploymentLifecycleError",
     "DeploymentLifecycleHandler",
     "DeploymentPreparationError",
+    "DeploymentQuotaExceededError",
     "DeploymentRecoveryError",
     "DeploymentReleaseStore",
     "DeploymentRemovalToken",
