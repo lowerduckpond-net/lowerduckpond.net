@@ -1056,7 +1056,9 @@ measured against current target byte and entry quotas before intent creation;
 excess is a terminal capacity rejection with no target publication.
 Interrupted imports recover from the
 authorization job and lifecycle intent. The complete race, failure, and
-installed-host qualification gate remains pending.
+installed-host qualification gate remains pending. The
+[qualification evidence map](../threat-model/m3-9-evidence.md) names its unit,
+process, installed-host, and recovery checks.
 
 Implement shared-lock snapshots, the global export spool, deterministic bundle
 construction, authenticated download, acknowledgement, and bounded expiry.

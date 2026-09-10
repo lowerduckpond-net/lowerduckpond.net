@@ -12,7 +12,9 @@ from multiprocessing import get_context
 from multiprocessing.connection import Connection
 from multiprocessing.process import BaseProcess
 from pathlib import Path
+from types import SimpleNamespace
 
+import lowerduckpond_static_host_agent.job_runtime as runtime
 import pytest
 from lowerduckpond_static_contracts import (
     ExportAcknowledgement,
@@ -42,14 +44,30 @@ from lowerduckpond_static_host_agent.export_spool import (
     ExportSpoolLimits,
 )
 from lowerduckpond_static_host_agent.intake import ArtifactIntake
-from lowerduckpond_static_host_agent.issuance import AuthorizationIssuer
+from lowerduckpond_static_host_agent.issuance import AuthorizationIssuer, IssuedAuthorization
+from lowerduckpond_static_host_agent.job_runtime import (
+    DeadlineWriter,
+    OperatorSession,
+    ResultWaiter,
+    RuntimeBoundaryError,
+)
 from lowerduckpond_static_host_agent.locks import LockManager, LockMode, LockName, StateBusyError
 from lowerduckpond_static_host_agent.portable_bundle import inspect_portable_bundle
 from lowerduckpond_static_host_agent.release_tree import measure_release_tree
-from lowerduckpond_static_host_agent.repository import StateRecordPath, StateRepository
+from lowerduckpond_static_host_agent.repository import (
+    StateRecordPath,
+    StateRepository,
+    _StateTransaction,
+)
 from lowerduckpond_static_host_agent.route_snapshot import (
     TenantRouteSnapshot,
     snapshot_tenant_routes,
+)
+from lowerduckpond_static_host_agent.state_inventory import (
+    StateAdmissionRejectedError,
+    StateInventoryLimits,
+    StateInventoryProjection,
+    StateInventoryReservation,
 )
 
 _OWNER = os.geteuid()
@@ -775,3 +793,134 @@ def test_export_validates_the_current_complete_runtime_generation(
         assert job["executionValidated"] is complete_runtime
         assert repository.read(StateRecordPath.tenant_desired(_TENANT)).document == manifest
         assert repository.read(StateRecordPath.tenant_observed(_TENANT)).document == before
+
+
+@pytest.mark.parametrize("resource", ["records", "bytes"])
+def test_result_capacity_exhaustion_precedes_intent_or_bundle_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, resource: str
+) -> None:
+    root, releases, manifest = _source(tmp_path)
+    with StateRepository(root, expected_owner=_OWNER) as repository:
+        job_id = _issue(repository)
+
+    def stop_after_claim(boundary: ExportCommitBoundary) -> None:
+        if boundary == ExportCommitBoundary.SNAPSHOT_CAPTURED:
+            raise RuntimeError("leave the executor-claimed job for retry")
+
+    with pytest.raises(RuntimeError, match="executor-claimed"):
+        _execute(root, releases, job_id, stop_after_claim)
+    with (
+        StateRepository(root, expected_owner=_OWNER) as repository,
+        repository.transaction(mode=LockMode.EXCLUSIVE) as transaction,
+    ):
+        inventory = transaction.measure_inventory()
+    limits = (
+        StateInventoryLimits(maximum_authorization_records=inventory.authorization_record_count)
+        if resource == "records"
+        else StateInventoryLimits(
+            maximum_authorization_allocated_bytes=inventory.authorization_allocated_bytes
+        )
+    )
+    original_admit = _StateTransaction.admit_inventory
+
+    def admit_full(
+        transaction: _StateTransaction, reservation: StateInventoryReservation
+    ) -> StateInventoryProjection:
+        return original_admit(transaction, reservation, limits=limits)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(_StateTransaction, "admit_inventory", admit_full)
+        with (
+            StateRepository(root, expected_owner=_OWNER) as repository,
+            ExportSpool(root, expected_owner=_OWNER) as spool,
+        ):
+            handler = ExportLifecycleHandler(
+                repository,
+                spool,
+                _OpenGate(),
+                release_root=releases,
+                expected_owner=_OWNER,
+                now=lambda: _NOW,
+            )
+            with pytest.raises(StateAdmissionRejectedError):
+                handler.execute(job_id, claim=None, blocking=False)
+    assert list((root / "exports").iterdir()) == []
+    assert list((root / "intents").iterdir()) == []
+    assert list((root / "authorization/results").iterdir()) == []
+    with StateRepository(root, expected_owner=_OWNER) as repository:
+        assert repository.read(StateRecordPath.tenant_desired(_TENANT)).document == manifest
+    assert _execute(root, releases, job_id).result["status"] == "succeeded"
+
+
+@pytest.mark.parametrize("disconnected_write", [1, 2, 3], ids=["header", "result", "payload"])
+def test_disconnect_closes_source_before_releasing_slot_and_preserves_exact_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, disconnected_write: int
+) -> None:
+    root, releases, _manifest = _source(tmp_path)
+    with StateRepository(root, expected_owner=_OWNER) as repository:
+        job_id = _issue(repository)
+    result = _execute(root, releases, job_id).result
+    original_bundle = (root / "exports" / f"{job_id}.zip").read_bytes()
+    reader, writer = os.pipe()
+    original_write = DeadlineWriter.write
+    original_close = runtime._ExportSource.close
+    writes = 0
+    closed: list[int] = []
+
+    def disconnect(channel: DeadlineWriter, data: bytes | memoryview) -> None:
+        nonlocal writes, reader
+        writes += 1
+        if writes == disconnected_write:
+            os.close(reader)
+            reader = -1
+        original_write(channel, data)
+
+    def close(source: runtime._ExportSource) -> None:
+        spool.locks.require_held(LockName.EXPORT, mode=LockMode.EXCLUSIVE)
+        closed.append(source.file_descriptor)
+        original_close(source)
+
+    try:
+        with (
+            StateRepository(root, expected_owner=_OWNER) as repository,
+            ExportSpool(root, expected_owner=_OWNER) as spool,
+        ):
+            job = repository.read(StateRecordPath.authorization_job(job_id)).document
+            issued = IssuedAuthorization(job_id, False, 0, job)
+            delivery = ExportDelivery(repository, spool, now=lambda: _NOW)
+            with monkeypatch.context() as patch:
+                patch.setattr(DeadlineWriter, "write", disconnect)
+                patch.setattr(runtime._ExportSource, "close", close)
+                session = OperatorSession(
+                    SimpleNamespace(receive=lambda **_kwargs: issued),
+                    ResultWaiter(
+                        repository,
+                        SimpleNamespace(await_completion=lambda *_args, **_kwargs: None),
+                    ),
+                    state_root=root,
+                    expected_owner=_OWNER,
+                    writer=DeadlineWriter(writer),
+                    export_delivery=delivery,
+                )
+                with pytest.raises(RuntimeBoundaryError, match="disconnected"):
+                    session.run(operator_principal="operator@example.test")
+            assert len(closed) == 1
+            with pytest.raises(OSError):
+                os.fstat(closed[0])
+            with (
+                LockManager(root / "locks", expected_owner=_OWNER) as competitor,
+                competitor.acquire(LockName.EXPORT),
+            ):
+                assert (root / "exports" / f"{job_id}.zip").read_bytes() == original_bundle
+            with delivery.download(job_id, result) as remaining:
+                assert remaining is not None and remaining > 0
+            assert (
+                delivery.acknowledge(_receipt(result), operator_principal="operator@example.test")
+                == result
+            )
+    finally:
+        if reader >= 0:
+            os.close(reader)
+        os.close(writer)
+    assert list((root / "exports").iterdir()) == []
+    assert _execute(root, releases, job_id).result == result

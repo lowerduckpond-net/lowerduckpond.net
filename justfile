@@ -118,7 +118,7 @@ check-ansible-static: _sync
     M3_QUALIFICATION_EXPECTED_IPV4=192.0.2.1 M3_QUALIFICATION_EXPECTED_DROPLET_ID=123456789 M3_QUALIFICATION_EXPECTED_RUN_ID=0198d17f-6f4a-7000-8000-000000000001 M3_QUALIFICATION_EXPECTED_SOURCE_REVISION=0000000000000000000000000000000000000000 M3_QUALIFICATION_EXPECTED_ADMIN_SOURCE_CIDRS_JSON='["192.0.2.1/32"]' M3_QUALIFICATION_CLOUDFLARE_API_TOKEN=syntax-only-placeholder-token M3_QUALIFICATION_ORIGIN_PULL_TRUST=dual M3_QUALIFICATION_PRIMARY_CA_PATH=/tmp/primary-ca.pem M3_QUALIFICATION_REPLACEMENT_CA_PATH=/tmp/replacement-ca.pem ANSIBLE_CONFIG=config/ansible/ansible.cfg uv run ansible-playbook --inventory config/ansible/inventories/qualification/hosts.yml --syntax-check config/ansible/playbooks/m3-qualification.yml
     cd config/ansible && ANSIBLE_CONFIG="$(pwd)/ansible.cfg" uv run molecule test --scenario-name default
 
-# Run the deliberately paced installed M3.8 lifecycle qualification independently.
+# Run the paced installed M3.8 lifecycle and M3.9 export/import qualification.
 check-ansible-m3-8: _sync
     uv run ansible-galaxy collection install --no-deps --requirements-file config/ansible/requirements.yml
     cd config/ansible && ANSIBLE_CONFIG="$(pwd)/ansible.cfg" uv run molecule test --scenario-name m3_8

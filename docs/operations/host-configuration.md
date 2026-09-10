@@ -365,7 +365,8 @@ that marker without rewriting the result or rebuilding an export. Delivery
 holds the export lock until its descriptor closes and stops at the fixed
 retention deadline. The existing one-minute reconciliation timer removes
 abandoned snapshots and expired completed exports; a new export also runs
-that cleanup before admission. Archived export remains gated on M3.10 remote-version validation.
+that cleanup before admission. Archived export remains gated on M3.10
+remote-version validation.
 
 Portable import accepts one caller-held bundle for an existing undeployed
 target. Root independently validates its content and source manifest, binds
@@ -381,6 +382,12 @@ the target or Caddy. The same staging check applies to ordinary deployment.
 Import accepts active, suspended,
 or archived source manifests and consumes intake only after the terminal
 result is validated.
+
+The disposable `just check-ansible-m3-8` scenario also runs M3.9 full-size
+export/import, acknowledgement and expiry, and capture-versus-mutation
+qualification before reboot. Its [evidence map](../threat-model/m3-9-evidence.md)
+identifies the corresponding capacity, interruption, and recovery checks.
+
 Startup recovery starts at most two committed jobs per pass beneath one
 aggregate 512-MiB/64-task slice. Successful worker completion triggers the next
 pass; failures fall back to a running one-minute timer, which also safely
