@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 import test_lifecycle as support
 import test_transport_recovery as recovery
-from lowerduckpond_static_contracts import MAX_DEPLOY_ARTIFACT_BYTES
+from lowerduckpond_static_contracts import MAX_DEPLOY_ARTIFACT_BYTES, manifest_digest
 from lowerduckpond_static_host_agent.portable_bundle import inspect_portable_bundle
 from lowerduckpond_static_operator import client
 from testinfra.host import Host
@@ -570,10 +570,16 @@ def test_installed_capture_races_core_mutations_and_release_cleanup(
             host, tenant_id=tenant_id, job_id=job, expected_content=first_content
         )
         second_deployment = support._desired_deployment(second)
+        observed_path = f"{support.STATE_ROOT}/tenants/{tenant_id}/observed.json"
+        before_rename: dict[str, object] | None = None
         for operation in ("suspend", "resume", "rename", "reconcile", "rollback"):
             fields: dict[str, object] = {"tenantId": tenant_id}
             if operation == "rename":
                 fields["slug"] = f"{slug}-renamed"
+                before_rename = support._read_state(host, observed_path)
+            if operation == "reconcile":
+                assert before_rename is not None
+                support._replace_state(host, observed_path, before_rename)
             if operation == "rollback":
                 fields["deploymentId"] = first_deployment
             request = support._request(operation, str(uuid.uuid7()), **fields)
@@ -588,6 +594,12 @@ def test_installed_capture_races_core_mutations_and_release_cleanup(
             assert support._lifecycle(result) == (
                 "suspended" if operation == "suspend" else "active"
             )
+            if operation == "reconcile":
+                repaired = support._read_state(host, observed_path)
+                assert (
+                    repaired["desiredManifestDigest"]
+                    == manifest_digest(support._manifest(result)).to_dict()
+                )
         _assert_empty_spool(host)
     finally:
         recovery._start_reconcile_timer(host)
