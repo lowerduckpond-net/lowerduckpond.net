@@ -200,6 +200,15 @@ def _validate_request(document: dict[str, object]) -> None:
 def _validate_job(document: dict[str, object]) -> None:
     request = cast(dict[str, object], document["request"])
     _validate_request(request)
+    if "exportDelivery" in document and (
+        request["operation"] != "export"
+        or document["compatibilityVersion"] != "static-job-v2"
+        or (
+            document["exportDelivery"] != "unacknowledged"
+            and (document["phase"] != "completed" or document["executionValidated"] is not True)
+        )
+    ):
+        raise ContractError(ErrorCode.SCHEMA_INVALID, "export delivery has no validated job")
     expected_request_digest = digest_bytes(
         canonical_json_bytes(request),
         format_identifier=REQUEST_DIGEST_FORMAT,

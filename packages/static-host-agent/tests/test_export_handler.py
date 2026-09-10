@@ -3,14 +3,24 @@ from __future__ import annotations
 import os
 import shutil
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from multiprocessing import get_context
 from pathlib import Path
 
 import pytest
-from lowerduckpond_static_contracts import canonical_json_bytes, decode_contract, manifest_digest
+from lowerduckpond_static_contracts import (
+    ExportAcknowledgement,
+    canonical_json_bytes,
+    decode_contract,
+    manifest_digest,
+)
 from lowerduckpond_static_host_agent.capacity import FilesystemCapacity
 from lowerduckpond_static_host_agent.execution import AuthorizationExecutor, ExecutionOutcome
+from lowerduckpond_static_host_agent.export_delivery import (
+    ExportDelivery,
+    ExportDeliveryBoundary,
+    ExportDeliveryError,
+)
 from lowerduckpond_static_host_agent.export_handler import (
     ExportCommitBoundary,
     ExportLifecycleHandler,
@@ -22,7 +32,7 @@ from lowerduckpond_static_host_agent.export_spool import (
 )
 from lowerduckpond_static_host_agent.intake import ArtifactIntake
 from lowerduckpond_static_host_agent.issuance import AuthorizationIssuer
-from lowerduckpond_static_host_agent.locks import LockManager, LockMode, LockName
+from lowerduckpond_static_host_agent.locks import LockManager, LockMode, LockName, StateBusyError
 from lowerduckpond_static_host_agent.portable_bundle import inspect_portable_bundle
 from lowerduckpond_static_host_agent.release_tree import measure_release_tree
 from lowerduckpond_static_host_agent.repository import StateRecordPath, StateRepository
@@ -412,3 +422,193 @@ def test_unavailable_release_is_terminal_drift_and_does_not_loop(
     else:
         os.mkfifo(release / "pipe")
     _assert_terminal_rejection(root, releases, job_id, manifest, "state_drift")
+
+
+def _receipt(result: dict[str, object]) -> ExportAcknowledgement:
+    provenance = result["provenance"]
+    bundle = result["exportBundle"]
+    assert isinstance(provenance, dict) and isinstance(bundle, dict)
+    digest = bundle["digest"]
+    assert isinstance(digest, dict) and isinstance(bundle["size"], int)
+    return ExportAcknowledgement(str(provenance["jobId"]), str(digest["value"]), bundle["size"])
+
+
+@pytest.mark.parametrize("state", ["active", "suspended"])
+def test_acknowledgement_retires_only_download_and_preserves_exact_retry(
+    tmp_path: Path, state: str
+) -> None:
+    root, releases, _manifest = _source(tmp_path, state)
+    with StateRepository(root, expected_owner=_OWNER) as repository:
+        job_id = _issue(repository)
+    result = _execute(root, releases, job_id).result
+    before = (root / "authorization/results" / f"{job_id}.json").read_bytes()
+    with (
+        StateRepository(root, expected_owner=_OWNER) as repository,
+        ExportSpool(root, expected_owner=_OWNER) as spool,
+    ):
+        delivery = ExportDelivery(repository, spool, now=lambda: _NOW)
+        with delivery.download(job_id, result) as remaining:
+            assert remaining == 24 * 60 * 60
+        for _attempt in range(2):
+            assert (
+                delivery.acknowledge(_receipt(result), operator_principal="operator@example.test")
+                == result
+            )
+        with delivery.download(job_id, result) as remaining:
+            assert remaining is None
+    assert list((root / "exports").iterdir()) == []
+    assert (root / "authorization/results" / f"{job_id}.json").read_bytes() == before
+    assert _execute(root, releases, job_id).result == result
+    with StateRepository(root, expected_owner=_OWNER) as repository:
+        second = _issue(repository, "0198d17f-6f4a-7000-8000-000000000004")
+    assert _execute(root, releases, second).result["status"] == "succeeded"
+
+
+@pytest.mark.parametrize("mismatch", ["operator", "digest", "size", "job"])
+def test_acknowledgement_rejects_mismatched_authority(tmp_path: Path, mismatch: str) -> None:
+    root, releases, _manifest = _source(tmp_path)
+    with StateRepository(root, expected_owner=_OWNER) as repository:
+        job_id = _issue(repository)
+    result = _execute(root, releases, job_id).result
+    original = _receipt(result)
+    receipt = ExportAcknowledgement(
+        _CORRELATION if mismatch == "job" else original.job_id,
+        "0" * 64 if mismatch == "digest" else original.sha256,
+        original.size + 1 if mismatch == "size" else original.size,
+    )
+    with (
+        StateRepository(root, expected_owner=_OWNER) as repository,
+        ExportSpool(root, expected_owner=_OWNER) as spool,
+    ):
+        delivery = ExportDelivery(repository, spool, now=lambda: _NOW)
+        with pytest.raises((ExportDeliveryError, FileNotFoundError)):
+            delivery.acknowledge(
+                receipt,
+                operator_principal="intruder@example.test"
+                if mismatch == "operator"
+                else "operator@example.test",
+            )
+        assert (
+            repository.read(StateRecordPath.authorization_job(job_id)).document["exportDelivery"]
+            == "unacknowledged"
+        )
+    assert (root / "exports" / f"{job_id}.zip").exists()
+
+
+@pytest.mark.parametrize("boundary", list(ExportDeliveryBoundary))
+@pytest.mark.parametrize("reason", ["acknowledged", "expired"])
+def test_process_death_during_retirement_recovers_without_changing_result(
+    tmp_path: Path, boundary: ExportDeliveryBoundary, reason: str
+) -> None:
+    root, releases, _manifest = _source(tmp_path)
+    with StateRepository(root, expected_owner=_OWNER) as repository:
+        job_id = _issue(repository)
+    result = _execute(root, releases, job_id).result
+    now = _NOW + timedelta(hours=24) if reason == "expired" else _NOW
+
+    def killed() -> None:
+        def interrupt(selected: ExportDeliveryBoundary) -> None:
+            if selected is boundary:
+                os._exit(_KILLED_STATUS)
+
+        with (
+            StateRepository(root, expected_owner=_OWNER) as repository,
+            ExportSpool(root, expected_owner=_OWNER) as spool,
+        ):
+            delivery = ExportDelivery(repository, spool, now=lambda: now, hook=interrupt)
+            if reason == "expired":
+                delivery.reconcile()
+            else:
+                delivery.acknowledge(_receipt(result), operator_principal="operator@example.test")
+
+    child = get_context("fork").Process(target=killed)
+    child.start()
+    child.join(10)
+    assert child.exitcode == _KILLED_STATUS
+    with (
+        StateRepository(root, expected_owner=_OWNER) as repository,
+        ExportSpool(root, expected_owner=_OWNER) as spool,
+    ):
+        delivery = ExportDelivery(repository, spool, now=lambda: now)
+        delivery.reconcile()
+        delivery.reconcile()
+        assert (
+            repository.read(StateRecordPath.authorization_job(job_id)).document["exportDelivery"]
+            == reason
+        )
+    assert list((root / "exports").iterdir()) == []
+    assert _execute(root, releases, job_id).result == result
+
+
+def test_expiry_is_fixed_and_download_excludes_removal(tmp_path: Path) -> None:
+    root, releases, _manifest = _source(tmp_path)
+    with StateRepository(root, expected_owner=_OWNER) as repository:
+        job_id = _issue(repository)
+    result = _execute(root, releases, job_id).result
+    now = _NOW + timedelta(hours=24, seconds=-1)
+    with (
+        StateRepository(root, expected_owner=_OWNER) as repository,
+        ExportSpool(root, expected_owner=_OWNER) as spool,
+    ):
+        delivery = ExportDelivery(repository, spool, now=lambda: now)
+        delivery.reconcile()
+        with delivery.download(job_id, result) as remaining:
+            assert remaining == 1
+            now += timedelta(seconds=1)
+            assert (root / "exports" / f"{job_id}.zip").exists()
+        assert not (root / "exports" / f"{job_id}.zip").exists()
+        assert (
+            delivery.acknowledge(_receipt(result), operator_principal="operator@example.test")
+            == result
+        )
+    assert _execute(root, releases, job_id).result == result
+
+
+def _compete_for_export(root: Path) -> None:
+    with ExportSpool(root, expected_owner=_OWNER) as spool:
+        try:
+            with spool.locks.acquire(LockName.EXPORT, blocking=False):
+                pass
+        except StateBusyError:
+            os._exit(_KILLED_STATUS)
+
+
+def test_download_holds_global_exclusion_until_reader_closes(tmp_path: Path) -> None:
+    root, releases, _manifest = _source(tmp_path)
+    with StateRepository(root, expected_owner=_OWNER) as repository:
+        job_id = _issue(repository)
+    result = _execute(root, releases, job_id).result
+    with (
+        StateRepository(root, expected_owner=_OWNER) as repository,
+        ExportSpool(root, expected_owner=_OWNER) as spool,
+    ):
+        delivery = ExportDelivery(repository, spool, now=lambda: _NOW)
+        with delivery.download(job_id, result):
+            blocked = get_context("spawn").Process(target=_compete_for_export, args=(root,))
+            blocked.start()
+            blocked.join(10)
+            assert blocked.exitcode == _KILLED_STATUS
+        released = get_context("spawn").Process(target=_compete_for_export, args=(root,))
+        released.start()
+        released.join(10)
+        assert released.exitcode == 0
+
+
+def test_retirement_supports_export_jobs_accepted_before_delivery_marker(tmp_path: Path) -> None:
+    root, releases, _manifest = _source(tmp_path)
+    with StateRepository(root, expected_owner=_OWNER) as repository:
+        job_id = _issue(repository)
+    result = _execute(root, releases, job_id).result
+    with StateRepository(root, expected_owner=_OWNER) as repository:
+        path = StateRecordPath.authorization_job(job_id)
+        old_job = repository.read(path).document
+    del old_job["exportDelivery"]
+    _write(root, path, old_job)
+    with (
+        StateRepository(root, expected_owner=_OWNER) as repository,
+        ExportSpool(root, expected_owner=_OWNER) as spool,
+    ):
+        ExportDelivery(repository, spool, now=lambda: _NOW).acknowledge(
+            _receipt(result), operator_principal="operator@example.test"
+        )
+    assert _execute(root, releases, job_id).result == result

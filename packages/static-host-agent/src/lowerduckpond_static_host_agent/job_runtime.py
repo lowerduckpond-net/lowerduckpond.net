@@ -8,12 +8,14 @@ import select
 import stat
 import subprocess
 import time
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Protocol
 
 from lowerduckpond_static_contracts import (
     MAX_EXPORT_BYTES,
+    ExportAcknowledgement,
     FrameHeader,
     FrameKind,
     canonical_json_bytes,
@@ -27,6 +29,7 @@ from lowerduckpond_static_host_agent.execution import (
     JobHandoff,
     validate_result_lifecycle_authority,
 )
+from lowerduckpond_static_host_agent.export_delivery import ExportDelivery
 from lowerduckpond_static_host_agent.intake import ArtifactIntake
 from lowerduckpond_static_host_agent.issuance import IssuedAuthorization, VerifiedArtifact
 from lowerduckpond_static_host_agent.locks import LockMode, StateBusyError
@@ -68,7 +71,7 @@ class _AuthorizationReceiver(Protocol):
         self,
         *,
         operator_principal: str,
-    ) -> IssuedAuthorization: ...
+    ) -> IssuedAuthorization | ExportAcknowledgement: ...
 
 
 class _ResultHandoff(Protocol):
@@ -255,11 +258,20 @@ class DeadlineWriter:
         self._idle_deadline: float | None = None
         self._idle_seconds = idle_seconds
 
+    def limit_total_seconds(self, seconds: float) -> None:
+        """Bound even a progressing transfer by its fixed spool expiry."""
+
+        deadline = self._clock() + seconds
+        self._total_deadline = min(self._total_deadline or deadline, deadline)
+
     def write(self, data: bytes | memoryview) -> None:
-        if self._total_deadline is None or self._idle_deadline is None:
+        if self._idle_deadline is None:
             started = self._clock()
-            self._total_deadline = started + self._total_seconds
+            deadline = started + self._total_seconds
+            self._total_deadline = min(self._total_deadline or deadline, deadline)
             self._idle_deadline = started + self._idle_seconds
+        if self._total_deadline is None:  # pragma: no cover - initialized above
+            raise RuntimeBoundaryError("response writer has no deadline")
         remaining = memoryview(data)
         while remaining:
             now = self._clock()
@@ -297,10 +309,13 @@ class StartupReconciler:
         repository: StateRepository,
         intake: ArtifactIntake,
         handoff: JobHandoff,
+        *,
+        export_delivery: ExportDelivery | None = None,
     ) -> None:
         self._repository = repository
         self._intake = intake
         self._handoff = handoff
+        self._export_delivery = export_delivery
 
     def reconcile(self) -> ReconciliationOutcome:
         repaired_pairs: int | None = None
@@ -359,6 +374,8 @@ class StartupReconciler:
             authority=load_authority,
             blocking=True,
         )
+        if self._export_delivery is not None:
+            self._export_delivery.reconcile(blocking=True)
         if repaired_pairs is None:  # pragma: no cover - intake always invokes authority
             raise RuntimeBoundaryError("authorization reconciliation did not load authority")
         if batch is None:  # pragma: no cover - intake always invokes authority
@@ -413,7 +430,7 @@ class StartupReconciler:
 class OperatorSession:
     """Issue, hand off, and return one authenticated terminal response frame."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - explicit authenticated delivery dependencies
         self,
         adapter: _AuthorizationReceiver,
         waiter: ResultWaiter,
@@ -421,22 +438,45 @@ class OperatorSession:
         state_root: Path,
         expected_owner: int,
         writer: DeadlineWriter,
+        export_delivery: ExportDelivery | None = None,
     ) -> None:
         self._adapter = adapter
         self._waiter = waiter
         self._state_root = state_root
         self._expected_owner = expected_owner
         self._writer = writer
+        self._export_delivery = export_delivery
 
     def run(self, *, operator_principal: str) -> dict[str, object]:
         issued = self._adapter.receive(operator_principal=operator_principal)
+        if isinstance(issued, ExportAcknowledgement):
+            if self._export_delivery is None:
+                raise RuntimeBoundaryError("export delivery is unavailable")
+            result = self._export_delivery.acknowledge(
+                issued, operator_principal=operator_principal
+            )
+            self._write_result(result, job_id=issued.job_id, available=False)
+            return result
         result = self._waiter.retrieve(issued)
+        delivery: AbstractContextManager[float | None] = nullcontext(None)
+        if result.get("exportBundle") is not None:
+            if self._export_delivery is None:
+                raise RuntimeBoundaryError("export delivery is unavailable")
+            delivery = self._export_delivery.download(issued.job_id, result)
+        with delivery as remaining:
+            if remaining is not None:
+                self._writer.limit_total_seconds(remaining)
+            self._write_result(result, job_id=issued.job_id, available=remaining is not None)
+        return result
+
+    def _write_result(self, result: dict[str, object], *, job_id: str, available: bool) -> None:
         canonical = canonical_json_bytes(result)
-        export = _ExportSource.open(
-            self._state_root,
-            issued.job_id,
-            result,
-            expected_owner=self._expected_owner,
+        export = (
+            _ExportSource.open(
+                self._state_root, job_id, result, expected_owner=self._expected_owner
+            )
+            if available
+            else None
         )
         try:
             self._writer.write(
@@ -454,7 +494,6 @@ class OperatorSession:
         finally:
             if export is not None:
                 export.close()
-        return result
 
 
 @dataclass(slots=True)

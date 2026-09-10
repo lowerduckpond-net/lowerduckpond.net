@@ -181,6 +181,17 @@ class ExportSpool:
         finally:
             os.close(workspace_fd)
 
+    def remove_completed(self, job_id: str) -> None:
+        """Remove the exact slot only after its caller commits retirement authority."""
+
+        self._require_locked()
+        current = self.completed_job_id()
+        if current is not None and current != validate_uuid7(job_id):
+            raise ExportSpoolError("export cleanup does not own the occupied slot")
+        if current is not None:
+            os.unlink(f"{current}.zip", dir_fd=self._fd)
+        os.fsync(self._fd)
+
     def reconcile_incomplete(self, *, blocking: bool = False) -> bool:
         """Remove only abandoned construction; retain the completed download."""
 

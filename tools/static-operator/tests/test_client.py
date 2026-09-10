@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 from lowerduckpond_static_contracts import (
     HEADER_SIZE,
+    ExportAcknowledgement,
     FrameHeader,
     FrameKind,
     canonical_json_bytes,
@@ -54,10 +55,18 @@ def _fake_ssh(
     encoded_trailing = base64.b64encode(trailing).decode("ascii")
     executable.write_text(
         f"#!{sys.executable}\n"
-        "import base64, pathlib, sys, time\n"
-        f"pathlib.Path({str(capture)!r}).write_bytes(sys.stdin.buffer.read())\n"
+        "import base64, pathlib, struct, sys, time\n"
+        "request = sys.stdin.buffer.read()\n"
+        f"capture = pathlib.Path({str(capture)!r})\n"
+        "is_ack = len(request) >= 24 and request[9] == 3\n"
+        "(capture.with_suffix('.ack') if is_ack else capture).write_bytes(request)\n"
         f"time.sleep({response_delay_seconds!r})\n"
-        f"sys.stdout.buffer.write(base64.b64decode({encoded!r}))\n"
+        f"response = base64.b64decode({encoded!r})\n"
+        "if is_ack:\n"
+        "    length = struct.unpack('!I', response[12:16])[0]\n"
+        "    response = (response[:10] + bytes(2) + response[12:16] + bytes(8)\n"
+        "                + response[24:24+length])\n"
+        "sys.stdout.buffer.write(response)\n"
         f"sys.stdout.buffer.write(base64.b64decode({encoded_trailing!r}))\n"
         f"raise SystemExit({return_code})\n",
         encoding="utf-8",
@@ -187,8 +196,8 @@ def test_client_streams_only_the_exact_bound_artifact(tmp_path: Path) -> None:
 
 def test_client_writes_export_exclusively(tmp_path: Path) -> None:
     export = b"portable export"
-    response, _ = _response(export)
-    ssh, _ = _fake_ssh(tmp_path, response)
+    response, expected = _response(export)
+    ssh, capture = _fake_ssh(tmp_path, response)
     identity = _regular(tmp_path / "identity", b"private")
     request = {
         "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
@@ -210,6 +219,16 @@ def test_client_writes_export_exclusively(tmp_path: Path) -> None:
 
     assert export_path.read_bytes() == export
     assert export_path.stat().st_mode & 0o777 == _PRIVATE_MODE
+
+    acknowledgement = capture.with_suffix(".ack").read_bytes()
+    header = decode_header(acknowledgement[:HEADER_SIZE], expected_kind=FrameKind.ACKNOWLEDGEMENT)
+    assert header.payload_length is None
+    receipt = ExportAcknowledgement.decode(acknowledgement[HEADER_SIZE:])
+    provenance = expected["provenance"]
+    assert isinstance(provenance, dict)
+    assert receipt.job_id == provenance["jobId"]
+    assert receipt.sha256 == hashlib.sha256(export).hexdigest()
+    assert receipt.size == len(export)
 
 
 def test_failed_result_does_not_reject_or_create_requested_export(tmp_path: Path) -> None:
@@ -434,3 +453,54 @@ def test_client_rejects_unframed_remote_failure_without_result(tmp_path: Path) -
             request_path=request_path,
             ssh_executable=ssh,
         )
+
+
+@pytest.mark.parametrize("retired", [False, True])
+def test_retired_result_and_lost_acknowledgement_preserve_local_delivery(
+    tmp_path: Path, retired: bool
+) -> None:
+    export = b"portable export"
+    response, expected = _response(export)
+    if retired:
+        canonical = canonical_json_bytes(expected)
+        response = encode_header(FrameHeader(FrameKind.RESPONSE, len(canonical), None)) + canonical
+    ssh, capture = _fake_ssh(tmp_path, response)
+    if not retired:
+        ssh.write_text(
+            ssh.read_text().replace("raise SystemExit(0)", "raise SystemExit(5 if is_ack else 0)")
+        )
+    identity = _regular(tmp_path / "identity", b"private")
+    request = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "export",
+        "correlationId": "0198d17f-6f4a-7000-8000-000000000001",
+        "tenantId": "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100",
+    }
+    request_path = _regular(tmp_path / "request.json", canonical_json_bytes(request))
+    destination = tmp_path / "export.zip"
+    if retired:
+        assert (
+            submit(
+                host="hosting.lowerduckpond.net",
+                identity_path=identity,
+                request_path=request_path,
+                export_path=destination,
+                ssh_executable=ssh,
+            )
+            == expected
+        )
+        assert not destination.exists()
+        assert not capture.with_suffix(".ack").exists()
+    else:
+        with pytest.raises(OperatorClientError, match="saved locally but acknowledgement failed"):
+            submit(
+                host="hosting.lowerduckpond.net",
+                identity_path=identity,
+                request_path=request_path,
+                export_path=destination,
+                ssh_executable=ssh,
+            )
+        assert destination.read_bytes() == export
+        assert capture.with_suffix(".ack").exists()
+    assert list(tmp_path.glob(".ldp-export-*")) == []

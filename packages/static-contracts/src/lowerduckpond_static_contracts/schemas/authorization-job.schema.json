@@ -341,6 +341,14 @@
           "type": "null"
         }
       ]
+    },
+    "exportDelivery": {
+      "enum": [
+        "unacknowledged",
+        "acknowledged",
+        "expired"
+      ],
+      "type": "string"
     }
   },
   "required": [

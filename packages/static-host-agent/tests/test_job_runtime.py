@@ -1179,3 +1179,17 @@ def test_systemd_handoff_uses_one_fixed_template_instance(
             f"lowerduckpond-static-worker@{job_id}.service",
         ],
     ]
+
+
+def test_response_writer_stops_at_fixed_export_expiry() -> None:
+    now = 0.0
+    read_fd, write_fd = os.pipe()
+    try:
+        writer = DeadlineWriter(write_fd, clock=lambda: now)
+        writer.limit_total_seconds(1.0)
+        now = 2.0
+        with pytest.raises(RuntimeBoundaryError, match="timed out"):
+            writer.write(b"expired content")
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)

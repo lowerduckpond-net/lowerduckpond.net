@@ -30,6 +30,7 @@ from lowerduckpond_static_contracts.lifecycle import (
     TransactionPhase,
 )
 from lowerduckpond_static_contracts.operator_protocol import (
+    ACKNOWLEDGEMENT_SIZE,
     HEADER_SIZE,
     MAGIC,
     MAX_DEPLOY_ARTIFACT_BYTES,
@@ -37,6 +38,7 @@ from lowerduckpond_static_contracts.operator_protocol import (
     MAX_IMPORT_ARTIFACT_BYTES,
     MAX_RESPONSE_BYTES,
     VERSION,
+    ExportAcknowledgement,
     FrameHeader,
     FrameKind,
     ProtocolError,
@@ -58,6 +60,7 @@ from lowerduckpond_static_contracts.values import (
 )
 
 __all__ = [
+    "ACKNOWLEDGEMENT_SIZE",
     "HEADER_SIZE",
     "LIFECYCLE_MATRIX",
     "MAGIC",
@@ -74,6 +77,7 @@ __all__ = [
     "ContractKind",
     "Digest",
     "ErrorCode",
+    "ExportAcknowledgement",
     "FrameHeader",
     "FrameKind",
     "LifecycleState",

@@ -8,11 +8,13 @@ from pathlib import Path
 
 import pytest
 from lowerduckpond_static_contracts import (
+    ACKNOWLEDGEMENT_SIZE,
     HEADER_SIZE,
     MAX_IMPORT_ARTIFACT_BYTES,
     MAX_RAW_REQUEST_BYTES,
     ContractError,
     Digest,
+    ExportAcknowledgement,
     FrameHeader,
     FrameKind,
     ProtocolError,
@@ -34,7 +36,7 @@ def _fixture(name: str) -> dict[str, object]:
     return value
 
 
-@pytest.mark.parametrize("kind", list(FrameKind))
+@pytest.mark.parametrize("kind", [FrameKind.REQUEST, FrameKind.RESPONSE])
 @pytest.mark.parametrize("payload_length", [None, 1, MAX_IMPORT_ARTIFACT_BYTES])
 def test_frame_header_round_trips(kind: FrameKind, payload_length: int | None) -> None:
     header = FrameHeader(kind=kind, document_length=123, payload_length=payload_length)
@@ -123,3 +125,26 @@ def test_expected_source_digest_helpers_pin_schema_and_domain(
     invalid["kind"] = "OperationRequest"
     with pytest.raises(ContractError):
         function(invalid)
+
+
+def test_acknowledgement_frame_is_fixed_binary_and_has_no_payload() -> None:
+    receipt = ExportAcknowledgement("0198d17f-6f4a-7000-8000-000000000001", "a" * 64, 123)
+    raw = receipt.encode()
+    assert len(raw) == ACKNOWLEDGEMENT_SIZE
+    assert ExportAcknowledgement.decode(raw) == receipt
+    header = FrameHeader(FrameKind.ACKNOWLEDGEMENT, ACKNOWLEDGEMENT_SIZE, None)
+    assert (
+        decode_header(
+            encode_header(header), expected_kind=(FrameKind.REQUEST, FrameKind.ACKNOWLEDGEMENT)
+        )
+        == header
+    )
+    for invalid in (
+        FrameHeader(FrameKind.ACKNOWLEDGEMENT, ACKNOWLEDGEMENT_SIZE + 1, None),
+        FrameHeader(FrameKind.ACKNOWLEDGEMENT, ACKNOWLEDGEMENT_SIZE, 1),
+    ):
+        with pytest.raises(ProtocolError, match="acknowledgement"):
+            encode_header(invalid)
+    for invalid_raw in (raw + b"x", raw[:-1], bytes(ACKNOWLEDGEMENT_SIZE)):
+        with pytest.raises(ValueError):
+            ExportAcknowledgement.decode(invalid_raw)

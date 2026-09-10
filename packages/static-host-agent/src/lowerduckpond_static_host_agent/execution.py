@@ -1317,6 +1317,8 @@ def _require_same_authority(
     second.pop("phase", None)
     first.pop("executionValidated", None)
     second.pop("executionValidated", None)
+    first.pop("exportDelivery", None)
+    second.pop("exportDelivery", None)
     first.pop("dispatchArchiveDeploymentIds", None)
     second.pop("dispatchArchiveDeploymentIds", None)
     first.pop("dispatchArtifactReleaseTreeDigest", None)
@@ -3092,6 +3094,10 @@ def _validate_export_bundle(
     binding = result.get("exportBundle")
     if type(binding) is not dict:
         raise ExecutionError("successful export result has no bundle binding")
+    if job.get("exportDelivery") in {"acknowledged", "expired"}:
+        if job.get("executionValidated") is not True or job["phase"] != "completed":
+            raise ExecutionError("retired export has no executor validation")
+        return
     source_manifest = authority.source_manifest
     release_tree_digest = authority.source_release_tree_digest
     if source_manifest is None:

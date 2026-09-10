@@ -1747,6 +1747,36 @@ class _StateTransaction:
             limits=capacity_limits,
         )
 
+    def commit_export_retirement(self, job_id: str, *, reason: str) -> StoredContract:
+        """Retire only a validated export; synced authority precedes spool removal."""
+
+        self._require_exclusive()
+        path = StateRecordPath.authorization_job(job_id)
+        current = self.read(path)
+        document = current.document
+        request = document["request"]
+        if (
+            reason not in {"acknowledged", "expired"}
+            or type(request) is not dict
+            or request["operation"] != "export"
+            or document["phase"] != "completed"
+            or document.get("executionValidated") is not True
+            or document.get("exportDelivery") not in {None, "unacknowledged"}
+        ):
+            raise StateRecordError("export retirement requires a validated available export")
+        result = self.read(StateRecordPath.authorization_result(job_id)).document
+        if result["status"] != "succeeded" or type(result.get("exportBundle")) is not dict:
+            raise StateRecordError("export retirement has no successful bundle result")
+        document["exportDelivery"] = reason
+        candidate = self._repository._encode(path, document)
+        self._admit_atomic_authorization_replacement(
+            path, candidate, capacity_limits=DEFAULT_HOST_CAPACITY_LIMITS
+        )
+        self._repository._durable.replace(
+            path.components, candidate, mode=self._repository._expected_record_mode
+        )
+        return self.read(path)
+
     def commit_execution_validation(
         self,
         path: StateRecordPath,
