@@ -51,3 +51,10 @@ archived deletion's actual free-inode refusal after retirement creation and a
 failed remote verification during recovery. Both paths preserve the archived
 source and release the unstarted journal; retry succeeds when the refusal is
 removed. Formatting, lint, and strict typing passed.
+
+Failed restore/deletion result validation also rechecks later audited state
+when retained-object verification returns false or raises. The executor and
+entrypoint suite passed 214 tests, including both raced and still-current
+failed-source checks. The installed entrypoint's unreturned-object callback
+was exercised with its job argument and correctly passed `(job, None,
+mode="accounted")` to the private client; no callback binding change was needed.
