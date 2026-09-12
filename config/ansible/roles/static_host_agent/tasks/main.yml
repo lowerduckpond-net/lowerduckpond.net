@@ -67,6 +67,7 @@
       - lowerduckpond-static-worker@*.service
       - lowerduckpond-archive-export@*.service
       - lowerduckpond-archive-construction@*.service
+      - lowerduckpond-archive-cleanup@*.service
   register: static_host_agent_disabled_active_processes
   changed_when: false
   until: static_host_agent_disabled_active_processes.stdout | trim | length == 0
@@ -207,6 +208,7 @@
     - reconcile-authorized-jobs
     - archive-export-service
     - archive-construction-service
+    - archive-cleanup-service
     - check-current-caddy-generation
   when: static_publication_enabled | bool
 
@@ -293,6 +295,7 @@
     - reconcile-authorized-jobs
     - archive-export-service
     - archive-construction-service
+    - archive-cleanup-service
     - check-current-caddy-generation
   when: not static_publication_enabled | bool
 
@@ -308,6 +311,7 @@
       - lowerduckpond-static-worker@*.service
       - lowerduckpond-archive-export@*.service
       - lowerduckpond-archive-construction@*.service
+      - lowerduckpond-archive-cleanup@*.service
   register: static_host_agent_active_legacy_processes
   changed_when: false
   until: static_host_agent_active_legacy_processes.stdout | trim | length == 0
@@ -633,7 +637,9 @@
     - lowerduckpond-archive-export.socket
     - lowerduckpond-archive-export@.service
     - lowerduckpond-archive-construction.socket
+    - lowerduckpond-archive-cleanup.socket
     - lowerduckpond-archive-construction@.service
+    - lowerduckpond-archive-cleanup@.service
   notify: Reload systemd for the static host agent
 
 - name: Install the inert static worker boundary
@@ -700,6 +706,7 @@
   loop:
     - lowerduckpond-archive-export.socket
     - lowerduckpond-archive-construction.socket
+    - lowerduckpond-archive-cleanup.socket
 
 - name: Start bounded static authorization reconciliation
   ansible.builtin.systemd_service:

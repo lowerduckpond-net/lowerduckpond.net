@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 from typing import Final
 
+from lowerduckpond_static_host_agent.archive_cleanup_service import serve_archive_cleanup
 from lowerduckpond_static_host_agent.archive_configuration import load_archive_configuration
 from lowerduckpond_static_host_agent.archive_construction_service import serve_archive_construction
 from lowerduckpond_static_host_agent.archive_quarantine import ArchiveQuarantine
@@ -21,16 +22,21 @@ _STATE_ROOT: Final = Path("/var/lib/lowerduckpond/static")
 def archive_export_main(arguments: list[str] | None = None) -> int:
     """Accept only systemd's connected socket on stdin, with no caller options."""
 
-    return _archive_main(arguments, construction=False)
+    return _archive_main(arguments, operation="export")
 
 
 def archive_construction_main(arguments: list[str] | None = None) -> int:
     """Run the separately mounted one-shot construction service."""
 
-    return _archive_main(arguments, construction=True)
+    return _archive_main(arguments, operation="construction")
 
 
-def _archive_main(arguments: list[str] | None, *, construction: bool) -> int:
+def archive_cleanup_main(arguments: list[str] | None = None) -> int:
+    """Verify or retire only the exact archive authorized by one durable job."""
+    return _archive_main(arguments, operation="cleanup")
+
+
+def _archive_main(arguments: list[str] | None, *, operation: str) -> int:
 
     values = sys.argv[1:] if arguments is None else arguments
     if values or os.geteuid() != 0:
@@ -44,8 +50,13 @@ def _archive_main(arguments: list[str] | None, *, construction: bool) -> int:
         ):
             configuration = load_archive_configuration()
             remote = configuration.remote_store()
-            if construction:
-                serve_archive_construction(
+            if operation in {"construction", "cleanup"}:
+                service = (
+                    serve_archive_construction
+                    if operation == "construction"
+                    else serve_archive_cleanup
+                )
+                service(
                     stream,
                     repository,
                     spool,
@@ -63,10 +74,5 @@ def _archive_main(arguments: list[str] | None, *, construction: bool) -> int:
     except Exception:
         # Provider exceptions can contain sensitive request details. This is
         # the process boundary, so diagnostics deliberately use one fixed code.
-        failure = (
-            "archive_construction_service_failed"
-            if construction
-            else "archive_export_service_failed"
-        )
-        print(failure, file=sys.stderr)
+        print(f"archive_{operation}_service_failed", file=sys.stderr)
         return 1

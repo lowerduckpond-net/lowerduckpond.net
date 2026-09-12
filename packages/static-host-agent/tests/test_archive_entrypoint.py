@@ -9,10 +9,12 @@ import pytest
 from lowerduckpond_static_host_agent import archive_entrypoint
 
 
-@pytest.fixture(params=["export", "construction"])
+@pytest.fixture(params=["export", "construction", "cleanup"])
 def entrypoint(request: pytest.FixtureRequest) -> Callable[[list[str]], int]:
     if request.param == "export":
         return archive_entrypoint.archive_export_main
+    if request.param == "cleanup":
+        return archive_entrypoint.archive_cleanup_main
     return archive_entrypoint.archive_construction_main
 
 
@@ -65,7 +67,5 @@ def test_archive_entrypoint_never_logs_provider_or_credential_exception_details(
 
     monkeypatch.setattr(archive_entrypoint, "load_archive_configuration", unavailable)
     assert entrypoint([]) == 1
-    operation = (
-        "construction" if entrypoint == archive_entrypoint.archive_construction_main else "export"
-    )
+    operation = entrypoint.__name__.removeprefix("archive_").removesuffix("_main")
     assert capsys.readouterr().err == f"archive_{operation}_service_failed\n"

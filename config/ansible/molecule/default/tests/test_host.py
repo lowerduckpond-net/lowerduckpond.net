@@ -264,6 +264,7 @@ def assert_static_worker_caddy_runtime_access(host: Host) -> None:
         "assert not os.path.exists('/etc/lowerduckpond/backup.env');"
         "assert os.path.exists('/run/lowerduckpond-archive/export.sock');"
         "assert os.path.exists('/run/lowerduckpond-archive/construction.sock');"
+        "assert os.path.exists('/run/lowerduckpond-archive/cleanup.sock');"
         "assert os.statvfs('/').f_flag & os.ST_RDONLY;"
         f"sys.path.insert(0,{(selected.stdout.strip() + '/site-packages')!r});"
         "import lowerduckpond_static_host_agent.caddy_admin as admin;"
@@ -1522,7 +1523,7 @@ def test_static_worker_boundary_is_opaque_and_hardened(host: Host) -> None:
     assert host.run(f"find {STATIC_HOST_AGENT_ROOT} -name __pycache__ -print -quit").stdout == ""
 
 
-@pytest.mark.parametrize("operation", ["export", "construction"])
+@pytest.mark.parametrize("operation", ["export", "construction", "cleanup"])
 def test_archive_socket_and_credentials_are_private(host: Host, operation: str) -> None:
     directory = host.file("/etc/lowerduckpond/archive")
     credential = host.file("/etc/lowerduckpond/archive/credentials.json")
@@ -1596,7 +1597,9 @@ def test_archive_socket_and_credentials_are_private(host: Host, operation: str) 
         f"assert bool(os.statvfs('{STATIC_STATE_ROOT}/platform').f_flag & os.ST_RDONLY)"
         f"=={operation == 'export'};"
         f"assert bool(os.statvfs('{STATIC_STATE_ROOT}/exports').f_flag & os.ST_RDONLY)"
-        f"=={operation == 'construction'};"
+        f"=={operation != 'export'};"
+        f"assert bool(os.statvfs('{STATIC_STATE_ROOT}/intents').f_flag & os.ST_RDONLY)"
+        f"=={operation != 'cleanup'};"
         "assert configuration.bucket=='molecule-tenant-archives';"
         "assert configuration.access_key_id=='molecule-dedicated-archive-key';"
         "remote=configuration.remote_store();"
