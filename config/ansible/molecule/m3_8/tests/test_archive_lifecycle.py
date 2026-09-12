@@ -143,7 +143,6 @@ def test_installed_archive_export_restore_rearchive_and_delete(host: Host, tmp_p
                     host, f"{support.STATE_ROOT}/tenants/{target_id}/observed.json"
                 ),
                 404,
-                b"",
             )
             result = recovery._exercise_caddy_failure_recovery(
                 host,
