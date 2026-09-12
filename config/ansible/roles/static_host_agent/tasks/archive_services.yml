@@ -14,7 +14,9 @@
 - name: Stop and disable installed M3.10 units before legacy artifact selection
   ansible.builtin.systemd_service:
     name: "{{ item.item }}"
-    enabled: false
+    # The emergency oneshot is static; only its timer has enablement links.
+    enabled: >-
+      {{ omit if item.item == 'lowerduckpond-static-emergency-reconcile.service' else false }}
     state: stopped
   loop: "{{ static_host_agent_m3_10_rollback_units.results | default([]) }}"
   loop_control:
