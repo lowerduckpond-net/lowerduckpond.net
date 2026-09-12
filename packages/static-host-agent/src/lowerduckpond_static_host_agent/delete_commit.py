@@ -169,6 +169,7 @@ def admit_delete_records(  # noqa: PLR0913 - exact remaining writes
     capacity_limits: HostCapacityLimits,
     audit_missing: bool = True,
     result_missing: bool = True,
+    intent_missing: bool = False,
 ) -> None:
     if audit_missing:
         transaction.admit_audit_append(plan.audit_entry)
@@ -184,6 +185,8 @@ def admit_delete_records(  # noqa: PLR0913 - exact remaining writes
     writes = ([] if not result_missing else [plan.result]) + (
         [] if job.document["phase"] == "completed" else [{**job.document, "phase": "completed"}]
     )
+    if intent_missing:
+        writes.append(plan.intent)
     allocated = sum(
         transaction.allocation_upper_bound(len(canonical_json_bytes(value))) for value in writes
     )
