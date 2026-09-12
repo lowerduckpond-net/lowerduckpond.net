@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 from lowerduckpond_static_host_agent import entrypoints
+from lowerduckpond_static_host_agent.archive_cleanup_service import ArchiveCleanupClient
 from lowerduckpond_static_host_agent.archive_handler import ArchiveLifecycleHandler
 from lowerduckpond_static_host_agent.audit import AuditError
 from lowerduckpond_static_host_agent.caddy_admin import CaddyAdminError
@@ -55,7 +56,7 @@ _DISABLED_STATUS = 78
 _USAGE_STATUS = 64
 
 
-def test_executor_entrypoint_registers_the_available_lifecycle_handlers(
+def test_executor_entrypoint_registers_the_available_lifecycle_handlers(  # noqa: PLR0915 - complete installed executor wiring
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     job_id = "0198d17f-6f4a-7000-8000-000000000001"
@@ -65,6 +66,13 @@ def test_executor_entrypoint_registers_the_available_lifecycle_handlers(
     export_spool = object()
     runtime = object()
     captured: dict[str, object] = {}
+    terminal_checks: list[tuple[str, object, str]] = []
+
+    def verify_terminal(_self: object, selected_job: str, record: object, *, mode: str) -> bool:
+        terminal_checks.append((selected_job, record, mode))
+        return True
+
+    monkeypatch.setattr(ArchiveCleanupClient, "verify_terminal", verify_terminal)
 
     class _Context:
         def __init__(self, value: object) -> None:
@@ -121,6 +129,10 @@ def test_executor_entrypoint_registers_the_available_lifecycle_handlers(
 
     arguments = captured["arguments"]
     assert type(arguments) is dict
+    unreturned = arguments["unreturned_archive_validator"]
+    assert callable(unreturned)
+    assert unreturned(job_id) is True
+    assert terminal_checks == [(job_id, None, "accounted")]
     handlers = arguments["handlers"]
     assert type(handlers) is dict
     assert set(handlers) == {
