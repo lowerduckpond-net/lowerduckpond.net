@@ -203,6 +203,8 @@ class ArchiveRemoteStore:
         response = self.client.get_object(Bucket=self.bucket, Key=key, VersionId=version_id)
         body = response.get("Body")
         if not callable(getattr(body, "read", None)) or not callable(getattr(body, "close", None)):
+            if callable(getattr(body, "close", None)):
+                cast(BinaryIO, body).close()
             raise ArchiveRemoteError("archive response has no bounded readable body")
         stream = cast(BinaryIO, body)
         try:
@@ -240,11 +242,12 @@ class ArchiveRemoteStore:
 
     def _list_multipart(self) -> tuple[tuple[str, str], ...]:
         uploads: set[tuple[str, str]] = set()
-        for response in self._pages(prefix="archives/", multipart=True):
+        # The bucket is dedicated. Enumerating its entire multipart namespace
+        # also detects out-of-prefix uploads and supports MinIO's exact/empty
+        # multipart-prefix behavior in local qualification.
+        for response in self._pages(prefix="", multipart=True):
             for item in _items(response, "Uploads"):
                 key = _string(item, "Key")
-                if not key.startswith("archives/"):
-                    raise ArchiveRemoteError("multipart listing escaped its prefix")
                 identity = (key, _string(item, "UploadId"))
                 if identity in uploads:
                     raise ArchiveRemoteError("multipart listing repeated an upload")
@@ -307,8 +310,9 @@ def _copy_verified(
     digest = hashlib.sha256()
     remaining = size
     while remaining:
-        chunk = source.read(min(remaining, _CHUNK_SIZE))
-        if type(chunk) is not bytes or not chunk or len(chunk) > remaining:
+        requested = min(remaining, _CHUNK_SIZE)
+        chunk = source.read(requested)
+        if type(chunk) is not bytes or not chunk or len(chunk) > requested:
             raise ArchiveRemoteError("archive body length differs from its binding")
         digest.update(chunk)
         remaining -= len(chunk)

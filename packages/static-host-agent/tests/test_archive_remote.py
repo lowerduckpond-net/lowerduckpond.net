@@ -213,6 +213,19 @@ def test_unknown_versions_missing_bound_versions_and_multipart_close_admission()
         RemoteInventory((), ((KEY, "upload"),)).require_reservation(frozenset())
 
 
+def test_multipart_inventory_preserves_out_of_prefix_identity_for_quarantine() -> None:
+    client = FakeArchiveClient()
+    client.multipart = {
+        "IsTruncated": False,
+        "Uploads": [{"Key": "unexpected/outside-prefix", "UploadId": "known-upload"}],
+    }
+    inventory = store(client).inventory()
+    assert inventory.multipart_uploads == (("unexpected/outside-prefix", "known-upload"),)
+    assert client.calls[-1][1]["Prefix"] == ""
+    with pytest.raises(ArchiveRemoteError):
+        inventory.require_reservation(frozenset())
+
+
 def test_full_reservation_and_all_version_sizes_are_charged() -> None:
     entries = tuple(
         RemoteVersion(f"archives/{number}", str(number), MAX_BUNDLE_BYTES, False)
