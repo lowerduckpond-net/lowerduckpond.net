@@ -32,11 +32,19 @@ from lowerduckpond_static_host_agent.create_handler import (
     CreateLifecycleError,
     CreateLifecycleHandler,
 )
+from lowerduckpond_static_host_agent.delete_handler import (
+    DeleteLifecycleError,
+    DeleteLifecycleHandler,
+)
 from lowerduckpond_static_host_agent.deployment_handler import DeploymentLifecycleHandler
 from lowerduckpond_static_host_agent.export_handler import ExportLifecycleHandler
 from lowerduckpond_static_host_agent.issuance import PublicationDisabledError
 from lowerduckpond_static_host_agent.release_tree import ReleaseTreeError
 from lowerduckpond_static_host_agent.repository import StateConflictError, StateRecordPath
+from lowerduckpond_static_host_agent.restore_handler import (
+    RestoreLifecycleError,
+    RestoreLifecycleHandler,
+)
 from lowerduckpond_static_host_agent.route_handler import RouteLifecycleHandler
 from lowerduckpond_static_host_agent.route_snapshot import (
     RouteSnapshotError,
@@ -117,6 +125,8 @@ def test_executor_entrypoint_registers_the_available_lifecycle_handlers(
     assert type(handlers) is dict
     assert set(handlers) == {
         "archive",
+        "restore",
+        "delete",
         "export",
         "import",
         "create",
@@ -129,6 +139,10 @@ def test_executor_entrypoint_registers_the_available_lifecycle_handlers(
     }
     assert isinstance(handlers["archive"], ArchiveLifecycleHandler)
     assert handlers["archive"]._spool is export_spool
+    assert isinstance(handlers["restore"], RestoreLifecycleHandler)
+    assert handlers["restore"]._spool is export_spool
+    assert isinstance(handlers["delete"], DeleteLifecycleHandler)
+    assert handlers["delete"]._spool is export_spool
     assert isinstance(handlers["export"], ExportLifecycleHandler)
     assert handlers["export"]._spool is export_spool
     handler = handlers["create"]
@@ -160,6 +174,8 @@ def test_executor_entrypoint_registers_the_available_lifecycle_handlers(
     "failure",
     [
         CreateLifecycleError,
+        DeleteLifecycleError,
+        RestoreLifecycleError,
         CaddyAdminError,
         CaddyGenerationError,
         CaddyRuntimeError,

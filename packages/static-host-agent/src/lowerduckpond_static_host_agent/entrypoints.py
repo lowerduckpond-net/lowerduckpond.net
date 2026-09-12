@@ -82,6 +82,13 @@ from lowerduckpond_static_host_agent.create_handler import (
 )
 from lowerduckpond_static_host_agent.create_prepare import CreatePreparationError
 from lowerduckpond_static_host_agent.create_recover import CreateRecoveryError
+from lowerduckpond_static_host_agent.delete_commit import DeleteCommitError
+from lowerduckpond_static_host_agent.delete_handler import (
+    DeleteLifecycleError,
+    DeleteLifecycleHandler,
+)
+from lowerduckpond_static_host_agent.delete_publication import DeletePreparationError
+from lowerduckpond_static_host_agent.delete_state import DeleteStateError
 from lowerduckpond_static_host_agent.deployment_activate import DeploymentActivationError
 from lowerduckpond_static_host_agent.deployment_commit import DeploymentCommitError
 from lowerduckpond_static_host_agent.deployment_handler import (
@@ -137,6 +144,12 @@ from lowerduckpond_static_host_agent.request_decoder import (
     RequestDecodeError,
     SubprocessRequestDecoder,
 )
+from lowerduckpond_static_host_agent.restore_commit import RestoreCommitError
+from lowerduckpond_static_host_agent.restore_handler import (
+    RestoreLifecycleError,
+    RestoreLifecycleHandler,
+)
+from lowerduckpond_static_host_agent.restore_prepare import RestorePreparationError
 from lowerduckpond_static_host_agent.route_activate import RouteActivationError
 from lowerduckpond_static_host_agent.route_commit import RouteCommitError
 from lowerduckpond_static_host_agent.route_handler import (
@@ -212,11 +225,18 @@ _SAFE_ERRORS: Final = (
     CreateLifecycleError,
     CreatePreparationError,
     CreateRecoveryError,
+    DeleteCommitError,
+    DeleteLifecycleError,
+    DeletePreparationError,
+    DeleteStateError,
     DeploymentActivationError,
     DeploymentCommitError,
     DeploymentLifecycleError,
     DeploymentPreparationError,
     DeploymentRecoveryError,
+    RestoreCommitError,
+    RestoreLifecycleError,
+    RestorePreparationError,
     RouteActivationError,
     RouteCommitError,
     RouteLifecycleError,
@@ -338,6 +358,24 @@ def executor_main(arguments: list[str] | None = None) -> int:
                         repository,
                         runtime,
                         publication_gate,
+                    ),
+                    "restore": RestoreLifecycleHandler(
+                        repository,
+                        export_spool,
+                        runtime,
+                        release_store,
+                        publication_gate,
+                        expected_owner=_EXPECTED_OWNER,
+                        archive_source=ArchiveExportClient(export_spool),
+                        cleanup_client=archive_cleanup,
+                    ),
+                    "delete": DeleteLifecycleHandler(
+                        repository,
+                        export_spool,
+                        runtime,
+                        release_store,
+                        publication_gate,
+                        cleanup_client=archive_cleanup,
                     ),
                     "export": ExportLifecycleHandler(
                         repository,
