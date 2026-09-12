@@ -105,7 +105,7 @@ def test_restore_cannot_cancel_retirement_after_its_local_intent_exists(
         retirement = ArchiveRetirementJournal(
             journal.repository, journal.spool, bucket=journal.remote.bucket
         )
-        assert not retirement.cancel_unstarted_restore(
+        assert not retirement.cancel_unstarted_retirement(
             str(prepared.job.document["jobId"]), prepared.retirement
         )
         assert journal.repository.measure_intent_records().records == before

@@ -304,7 +304,7 @@ class ArchiveRetirementJournal:
         self._notify(ArchiveJournalBoundary.RETIREMENT_SYNC)
         return stored
 
-    def cancel_unstarted_restore(self, job_id: str, retirement: StoredContract) -> bool:
+    def cancel_unstarted_retirement(self, job_id: str, retirement: StoredContract) -> bool:
         """Release a read-only preparation barrier while its archived source is intact."""
         self._require_lock()
         with self.repository.transaction(mode=LockMode.EXCLUSIVE) as transaction:
@@ -315,15 +315,17 @@ class ArchiveRetirementJournal:
                 # Its transaction must retain the retirement and recover forward.
                 return False
             if len(documents) != 1 or documents[0].revision != retirement.revision:
-                raise ArchiveJournalError("restore cancellation has ambiguous retirement authority")
+                raise ArchiveJournalError(
+                    "retirement cancellation has ambiguous retirement authority"
+                )
             job = transaction.read(StateRecordPath.authorization_job(job_id)).document
             request = cast(dict[str, object], job["request"])
             document = documents[0].document
             if (
                 job["phase"] != "claimed"
-                or request["operation"] != "restore"
+                or request["operation"] not in {"restore", "delete"}
                 or document["kind"] != "ArchiveRetirementIntent"
-                or document["transition"] != "restore"
+                or document["transition"] != request["operation"]
                 or document["provenance"] != {"kind": "authorization-job", "jobId": job_id}
                 or document["correlationId"] != request["correlationId"]
                 or document["tenantId"] != request["tenantId"]
@@ -333,13 +335,15 @@ class ArchiveRetirementJournal:
                 != document["archiveRecord"]
                 or transaction.inspect_audit_correlation(request["correlationId"]).entry is not None
             ):
-                raise ArchiveJournalError("restore cancellation lost its unchanged archived source")
+                raise ArchiveJournalError(
+                    "retirement cancellation lost its unchanged archived source"
+                )
             try:
                 transaction.read(StateRecordPath.authorization_result(job_id))
             except FileNotFoundError:
                 pass
             else:
-                raise ArchiveJournalError("restore cancellation follows a terminal result")
+                raise ArchiveJournalError("retirement cancellation follows a terminal result")
             transaction.remove_reconciled_intent(
                 StateRecordPath.archive_retirement_intent(document["intentId"]),
                 IntentRemovalToken(retirement.revision, records[0].metadata_generation),
