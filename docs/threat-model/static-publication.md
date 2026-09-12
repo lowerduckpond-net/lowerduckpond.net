@@ -381,6 +381,9 @@ Implementation and review must preserve these invariants:
 [M3.9 export and portable-import evidence](m3-9-evidence.md) maps the changed
 invariants to unit, process, installed-host, and recovery checks, with the
 remaining M3.10 remote-service work identified explicitly.
+[M3.10 archive, restore, and deletion evidence](m3-10-evidence.md) extends that
+map through private remote services, durable lifecycle and administrator
+recovery, effective installed isolation, and outstanding live convergence gates.
 
 ## Residual risks
 

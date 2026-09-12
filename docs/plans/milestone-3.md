@@ -1,7 +1,7 @@
 # Milestone 3 implementation plan
 
 - Status: implementation in progress; M3.0 through M3.9 complete
-- Updated: 2026-09-10
+- Updated: 2026-09-12
 - Outcome: deliver the complete static-tenant lifecycle through the trusted
   workstation without enabling the Milestone 4 public control plane
 
@@ -1106,6 +1106,16 @@ Rollback: expire unacknowledged spool artifacts through root reconciliation;
 authoritative tenants and releases remain unchanged.
 
 ### M3.10: implement remote archive, restore, and deletion
+
+Implementation status (2026-09-12): implemented on
+`feat/m3.10-archive-restore-deletion`; final qualification is in progress.
+The [M3.10 plan](milestone-3.10.md),
+[evidence map](../threat-model/m3-10-evidence.md), and
+[convergence preparation](../operations/m3-10-convergence-preparation.md)
+track integrated archive/restore/deletion and root emergency recovery, effective
+service isolation, remaining installed race coverage, and live Spaces inputs.
+The convergence starting gate has not passed; production publication remains
+disabled.
 
 Wire the low-level S3 client only to the dedicated archive credential. Implement
 the construction intent, remote capacity reservation, one known-length
