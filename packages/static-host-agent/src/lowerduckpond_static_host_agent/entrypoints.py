@@ -24,6 +24,8 @@ from lowerduckpond_static_contracts import (
 )
 from lowerduckpond_static_domain import generate_uuid7
 
+from lowerduckpond_static_host_agent.archive_remote import ArchiveRemoteError
+from lowerduckpond_static_host_agent.archive_service import ArchiveExportClient
 from lowerduckpond_static_host_agent.audit import AuditError
 from lowerduckpond_static_host_agent.caddy_admin import (
     CaddyAdminError,
@@ -177,6 +179,7 @@ class _ReleaseAuthorityTransaction(RouteSnapshotTransaction, _ReleaseStateTransa
 
 
 _SAFE_ERRORS: Final = (
+    ArchiveRemoteError,
     AuditError,
     ContractError,
     CapacityError,
@@ -308,6 +311,7 @@ def executor_main(arguments: list[str] | None = None) -> int:
                         publication_gate,
                         release_root=Path(TENANT_RELEASE_ROOT),
                         expected_owner=_EXPECTED_OWNER,
+                        archive_source=ArchiveExportClient(export_spool),
                     ),
                     "deploy": deployment_handler,
                     "import": deployment_handler,

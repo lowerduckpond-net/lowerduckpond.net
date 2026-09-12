@@ -65,6 +65,7 @@
       - --no-legend
       - lowerduckpond-static-reconcile.service
       - lowerduckpond-static-worker@*.service
+      - lowerduckpond-archive-export@*.service
   register: static_host_agent_disabled_active_processes
   changed_when: false
   until: static_host_agent_disabled_active_processes.stdout | trim | length == 0
@@ -203,6 +204,7 @@
     - verify-static-host-agent-artifact
     - execute-authorized-job
     - reconcile-authorized-jobs
+    - archive-export-service
     - check-current-caddy-generation
   when: static_publication_enabled | bool
 
@@ -287,6 +289,7 @@
     - verify-static-host-agent-artifact
     - execute-authorized-job
     - reconcile-authorized-jobs
+    - archive-export-service
     - check-current-caddy-generation
   when: not static_publication_enabled | bool
 
@@ -300,6 +303,7 @@
       - --no-legend
       - lowerduckpond-static-reconcile.service
       - lowerduckpond-static-worker@*.service
+      - lowerduckpond-archive-export@*.service
   register: static_host_agent_active_legacy_processes
   changed_when: false
   until: static_host_agent_active_legacy_processes.stdout | trim | length == 0
@@ -579,6 +583,53 @@
     static_publication_gate_enabled: false
   when: not static_host_agent_publication_configuration.stat.exists
 
+- name: Create the private archive credential directory
+  ansible.builtin.file:
+    path: /etc/lowerduckpond/archive
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Validate supplied dedicated archive configuration
+  ansible.builtin.assert:
+    that:
+      - static_host_agent_archive_configuration is mapping
+      - >-
+        static_host_agent_archive_configuration.keys() | sort ==
+        ['accessKeyId', 'bucket', 'format', 'region', 'secretAccessKey']
+      - static_host_agent_archive_configuration.format == 'lowerduckpond-archive-configuration-v1'
+      - static_host_agent_archive_configuration.accessKeyId | length > 0
+      - static_host_agent_archive_configuration.secretAccessKey | length > 0
+      - static_host_agent_archive_configuration.region is match('^[a-z]{3}[1-9][0-9]?$')
+      - static_host_agent_archive_configuration.bucket is match('^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$')
+    quiet: true
+  when: static_host_agent_archive_configuration | length > 0
+  no_log: true
+
+- name: Install only the dedicated archive credential in its private boundary
+  ansible.builtin.copy:
+    content: "{{ static_host_agent_archive_configuration | to_json }}\n"
+    dest: /etc/lowerduckpond/archive/credentials.json
+    owner: root
+    group: root
+    mode: "0600"
+  when: static_host_agent_archive_configuration | length > 0
+  no_log: true
+  diff: false
+
+- name: Install the private archived export service and socket
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - lowerduckpond-archive-export.socket
+    - lowerduckpond-archive-export@.service
+  notify: Reload systemd for the static host agent
+
 - name: Install the inert static worker boundary
   ansible.builtin.template:
     src: lowerduckpond-static-worker@.service.j2
@@ -634,6 +685,12 @@
   loop:
     - lowerduckpond-static-reconcile.service
     - lowerduckpond-static-reconcile.timer
+
+- name: Start the root-only archived export socket
+  ansible.builtin.systemd_service:
+    name: lowerduckpond-archive-export.socket
+    enabled: true
+    state: started
 
 - name: Start bounded static authorization reconciliation
   ansible.builtin.systemd_service:

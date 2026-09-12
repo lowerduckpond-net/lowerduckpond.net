@@ -108,6 +108,8 @@ STATIC_STATE_DIRECTORY_MODE = 0o700
 STATIC_STATE_LOCK_MODE = 0o600
 STATIC_SELECTION_LOCK_MODE = 0o600
 STATIC_CONFIGURATION_MODE = 0o400
+ARCHIVE_PRIVATE_DIRECTORY_MODE = 0o700
+ARCHIVE_PRIVATE_FILE_MODE = 0o600
 STATIC_PUBLICATION_DISABLED_STATUS = 78
 STATIC_OPERATOR_DISABLED_STATUS = 78
 STATIC_OPERATOR_INVALID_REQUEST_STATUS = 65
@@ -257,7 +259,11 @@ def assert_static_worker_caddy_runtime_access(host: Host) -> None:
     selected = host.run(f"readlink --canonicalize {STATIC_HOST_AGENT_ROOT}/current")
     assert selected.rc == 0
     probe = (
-        "import os,pwd,shutil,sys;"
+        "import os,pwd,shutil,socket,sys;"
+        "assert not os.path.exists('/etc/lowerduckpond/archive/credentials.json');"
+        "assert not os.path.exists('/etc/lowerduckpond/backup.env');"
+        "assert os.path.exists('/run/lowerduckpond-archive/export.sock');"
+        "assert os.statvfs('/').f_flag & os.ST_RDONLY;"
         f"sys.path.insert(0,{(selected.stdout.strip() + '/site-packages')!r});"
         "import lowerduckpond_static_host_agent.caddy_admin as admin;"
         "import lowerduckpond_static_host_agent.caddy_runtime as runtime;"
@@ -281,44 +287,56 @@ def assert_static_worker_caddy_runtime_access(host: Host) -> None:
         "assert validation.returncode==0;"
         "fd=os.open('/workspace/chown-probe',os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600);"
         "os.fchown(fd,0,pwd.getpwnam('caddy').pw_gid);"
-        "os.close(fd)"
+        "os.close(fd);"
+        "\ntry: socket.socket(socket.AF_INET,socket.SOCK_STREAM)\n"
+        "except OSError: pass\nelse: raise AssertionError('worker IP networking is exposed')\n"
     )
-    command = shlex.join(
-        (
-            "systemd-run",
-            "--quiet",
-            "--wait",
-            "--pipe",
-            "--collect",
-            "--unit=lowerduckpond-static-worker-access-probe",
-            "--property=User=root",
-            "--property=Group=caddy",
-            "--property=TemporaryFileSystem=/:ro",
-            "--property=TemporaryFileSystem=/workspace:rw,size=64M,nr_inodes=4096,mode=0700",
-            "--property=BindReadOnlyPaths=/usr",
-            "--property=BindReadOnlyPaths=/lib",
-            "--property=BindReadOnlyPaths=/lib64",
-            "--property=BindReadOnlyPaths=/etc/group",
-            "--property=BindReadOnlyPaths=/etc/nsswitch.conf",
-            "--property=BindReadOnlyPaths=/etc/passwd",
-            f"--property=BindReadOnlyPaths={STATIC_HOST_AGENT_ROOT}",
-            "--property=BindPaths=/run/caddy",
-            "--property=BindReadOnlyPaths=/run/systemd",
-            "--property=ProtectProc=invisible",
-            "--property=ProcSubset=pid",
-            "--property=CapabilityBoundingSet=CAP_CHOWN CAP_SETGID CAP_SETUID",
-            "--property=NoNewPrivileges=no",
-            "--property=PrivateNetwork=yes",
-            "--property=RestrictAddressFamilies=AF_UNIX",
-            "/usr/bin/python3",
-            "-I",
-            "-B",
-            "-c",
-            probe,
-        )
+    _run_installed_boundary_probe(
+        host,
+        "lowerduckpond-static-worker@.service",
+        probe,
+        replacements={"User=ldp-provisioner": "User=root", "Group=ldp-provisioner": "Group=caddy"},
     )
-    result = host.run(command)
-    assert result.rc == 0, result.stderr
+
+
+def _run_installed_boundary_probe(
+    host: Host,
+    template: str,
+    probe: str,
+    *,
+    replacements: dict[str, str] | None = None,
+) -> None:
+    """Keep the installed security policy while replacing its entry point and test I/O."""
+    probe_unit = "lowerduckpond-installed-boundary-probe.service"
+    probe_path = f"/run/systemd/system/{probe_unit}"
+    edits = {
+        "Type=exec": "Type=oneshot",
+        "StandardInput=socket": "StandardInput=null",
+        "StandardError=null": "StandardError=journal",
+        **(replacements or {}),
+    }
+    install_probe = (
+        "from pathlib import Path;"
+        f"source=Path({('/etc/systemd/system/' + template)!r}).read_text();"
+        f"edits={edits!r};"
+        "source='\\n'.join(edits.get(line,line) for line in source.splitlines());"
+        f"command={('ExecStart=/usr/bin/python3 -I -B -c ' + json.dumps(probe))!r};"
+        "source='\\n'.join(command if line.startswith('ExecStart=') else line "
+        "for line in source.splitlines())+'\\n';"
+        f"Path({probe_path!r}).write_text(source)"
+    )
+    try:
+        host.run_expect([0], "/usr/bin/python3 -I -c %s", install_probe)
+        host.run_expect([0], "systemctl daemon-reload")
+        outcome = host.run("systemctl start %s", probe_unit)
+        if outcome.rc != 0:
+            journal = host.run("journalctl --unit=%s --output=cat --no-pager -n 60", probe_unit)
+            pytest.fail(f"installed sandbox probe failed: {journal.stdout}{journal.stderr}")
+    finally:
+        host.run("systemctl stop %s", probe_unit)
+        host.run("systemctl reset-failed %s", probe_unit)
+        host.run("rm -f -- %s", probe_path)
+        host.run("systemctl daemon-reload")
 
 
 def read_status_scope(host: Host, variable_name: str) -> str:
@@ -1468,6 +1486,7 @@ def test_static_worker_boundary_is_opaque_and_hardened(host: Host) -> None:
         "/usr",
         "/lib",
         "/lib64",
+        "/etc/alternatives",
         "/etc/passwd",
         "/etc/sudoers",
         "/etc/sudoers.d",
@@ -1483,7 +1502,7 @@ def test_static_worker_boundary_is_opaque_and_hardened(host: Host) -> None:
         "NoNewPrivileges=false",
         "CapabilityBoundingSet=CAP_CHOWN CAP_SETGID CAP_SETUID",
         "CapabilityBoundingSet=",
-        "ProtectSystem=strict",
+        "ProtectSystem=false",
         "ProtectHome=true",
         "DevicePolicy=closed",
         "IPAddressDeny=any",
@@ -1500,6 +1519,109 @@ def test_static_worker_boundary_is_opaque_and_hardened(host: Host) -> None:
     for property_line in ("MemoryMax=512M", "MemorySwapMax=0", "TasksMax=64"):
         assert worker_slice.contains(property_line)
     assert host.run(f"find {STATIC_HOST_AGENT_ROOT} -name __pycache__ -print -quit").stdout == ""
+
+
+def test_archived_export_socket_and_credentials_are_private(host: Host) -> None:
+    directory = host.file("/etc/lowerduckpond/archive")
+    credential = host.file("/etc/lowerduckpond/archive/credentials.json")
+    assert (
+        directory.is_directory
+        and directory.user == "root"
+        and directory.mode == ARCHIVE_PRIVATE_DIRECTORY_MODE
+    )
+    assert (
+        credential.is_file
+        and credential.user == "root"
+        and credential.mode == ARCHIVE_PRIVATE_FILE_MODE
+    )
+    assert (
+        host.run("systemctl is-active lowerduckpond-archive-export.socket").stdout.strip()
+        == "active"
+    )
+    socket_file = host.file("/run/lowerduckpond-archive/export.sock")
+    assert (
+        socket_file.is_socket
+        and socket_file.user == "root"
+        and socket_file.mode == ARCHIVE_PRIVATE_FILE_MODE
+    )
+    for account in ("ldp-provisioner", "caddy", "ldp-runtime", "ldp-operator"):
+        assert host.run("runuser -u %s -- test -r %s", account, credential.path).rc != 0
+        denied = host.run(
+            "runuser -u %s -- /usr/bin/python3 -I -c %s",
+            account,
+            "import socket; s=socket.socket(socket.AF_UNIX); "
+            "s.connect('/run/lowerduckpond-archive/export.sock')",
+        )
+        assert denied.rc != 0 and "PermissionError" in denied.stderr
+    unit = host.file("/etc/systemd/system/lowerduckpond-archive-export@.service")
+    for line in (
+        "User=root",
+        "StandardInput=socket",
+        "NoNewPrivileges=true",
+        "CapabilityBoundingSet=",
+        "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6",
+        f"BindReadOnlyPaths={STATIC_STATE_ROOT}",
+        "TemporaryFileSystem=/:ro",
+        "BindReadOnlyPaths=/etc/lowerduckpond/archive",
+    ):
+        assert unit.contains(line)
+    assert not unit.contains("BindPaths=/etc/caddy")
+    assert host.file("/etc/systemd/system/lowerduckpond-static-reconcile.service").contains(
+        "InaccessiblePaths=/etc/lowerduckpond/archive"
+    )
+    for name in ("lowerduckpond-backup.service", "lowerduckpond-backup-maintenance.service"):
+        backup = host.file(f"/etc/systemd/system/{name}")
+        for path in ("/etc/lowerduckpond/archive", "/run/lowerduckpond-archive"):
+            assert backup.contains(f"InaccessiblePaths=-{path}")
+    restic_denial = host.run(
+        "systemd-run --quiet --wait --pipe --collect "
+        "--unit=lowerduckpond-archive-backup-denial --property=User=root "
+        "--property=InaccessiblePaths=/etc/lowerduckpond/archive "
+        "--property=InaccessiblePaths=/run/lowerduckpond-archive "
+        "/usr/bin/python3 -I -c %s",
+        "import os; assert not os.path.exists('/etc/lowerduckpond/archive/credentials.json'); "
+        "assert not os.path.exists('/run/lowerduckpond-archive/export.sock')",
+    )
+    assert restic_denial.rc == 0, restic_denial.stderr
+    selected = host.run(f"readlink --canonicalize {STATIC_HOST_AGENT_ROOT}/current").stdout.strip()
+    boundary_probe = (
+        "import os,socket,sys;"
+        f"sys.path.insert(0,{(selected + '/site-packages')!r});"
+        "from lowerduckpond_static_host_agent.archive_configuration "
+        "import load_archive_configuration;"
+        "configuration=load_archive_configuration();"
+        "assert os.statvfs('/').f_flag & os.ST_RDONLY;"
+        "assert configuration.bucket=='molecule-tenant-archives';"
+        "assert configuration.access_key_id=='molecule-dedicated-archive-key';"
+        "remote=configuration.remote_store();"
+        "assert remote.bucket==configuration.bucket;"
+        "assert not os.path.exists('/etc/lowerduckpond/backup.env');"
+        "assert not os.path.exists('/etc/caddy/Caddyfile');"
+        "assert not os.path.exists('/srv/lowerduckpond/sites');"
+        "socket.socket(socket.AF_INET,socket.SOCK_STREAM).close()"
+    )
+    _run_installed_boundary_probe(host, "lowerduckpond-archive-export@.service", boundary_probe)
+    probe = (
+        "import socket,sys;"
+        f"sys.path.insert(0,{(selected + '/site-packages')!r});"
+        "from lowerduckpond_static_host_agent.archive_transport import ArchiveChannel;"
+        "s=socket.socket(socket.AF_UNIX);s.connect('/run/lowerduckpond-archive/export.sock');"
+        "c=ArchiveChannel(s,expected_peer_uid=0,maximum_receive_bytes=16384,timeout=10);"
+        "c.send({'operation':'ungranted'});"
+        "\ntry: c.receive()\nexcept (RuntimeError,OSError): pass\n"
+        "else: raise AssertionError('unexpected authority')\n"
+    )
+    assert host.run("/usr/bin/python3 -I -B -c %s", probe).rc == 0
+    logged = host.run(
+        "timeout 10s bash -c %s",
+        "until journalctl --unit='lowerduckpond-archive-export@*' --output=cat --no-pager | "
+        "grep --fixed-strings --quiet archive_export_service_failed; do sleep 0.1; done",
+    )
+    assert logged.rc == 0
+    journal = host.run(
+        "journalctl --unit='lowerduckpond-archive-export@*' --output=cat --no-pager"
+    ).stdout
+    assert "molecule-dedicated-archive" not in journal
 
 
 def test_caddy_has_no_tenant_routes_while_publication_is_dark(host: Host) -> None:

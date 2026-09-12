@@ -105,6 +105,16 @@ SPACES_BACKUP_SECRET_ACCESS_KEY=$(tofu -chdir="${production_root}" \
 backup_bucket_name=$(tofu -chdir="${production_root}" output -raw backup_bucket_name)
 export BACKUP_REPOSITORY="s3:https://${SPACES_REGION}.digitaloceanspaces.com/${backup_bucket_name}/backups/lowerduckpond-production-01"
 
+# The archive service receives its own bucket-only key, separately from Restic.
+export SPACES_ARCHIVE_ACCESS_KEY_ID
+SPACES_ARCHIVE_ACCESS_KEY_ID=$(tofu -chdir="${production_root}" \
+    output -raw archive_runtime_access_key_id)
+export SPACES_ARCHIVE_SECRET_ACCESS_KEY
+SPACES_ARCHIVE_SECRET_ACCESS_KEY=$(tofu -chdir="${production_root}" \
+    output -raw archive_runtime_secret_access_key)
+export SPACES_ARCHIVE_BUCKET
+SPACES_ARCHIVE_BUCKET=$(tofu -chdir="${production_root}" output -raw archive_bucket_name)
+
 temporary_directory=$(mktemp -d)
 cleanup() {
     find "${temporary_directory}" -depth -delete
