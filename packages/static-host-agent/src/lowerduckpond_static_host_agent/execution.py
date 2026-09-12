@@ -1204,12 +1204,17 @@ class AuthorizationExecutor:
         source_deployment = (
             source_spec.get("desiredDeployment") if type(source_spec) is dict else None
         )
+        archived_manifest = deepcopy(source_manifest)
+        archived_spec = archived_manifest.get("spec")
+        if type(archived_spec) is not dict:
+            raise ExecutionError("failed archive candidate authority is malformed")
+        archived_spec["desiredState"] = "archived"
         if (
             type(source_deployment) is not dict
             or candidate.get("tenantId") != result["tenantId"]
             or candidate.get("correlationId") != result["correlationId"]
             or candidate.get("deploymentId") != source_deployment.get("id")
-            or candidate.get("manifestDigest") != manifest_digest(source_manifest).to_dict()
+            or candidate.get("manifestDigest") != manifest_digest(archived_manifest).to_dict()
         ):
             raise ExecutionError("failed archive candidate authority is malformed")
         validator = self._retired_archive_validator
