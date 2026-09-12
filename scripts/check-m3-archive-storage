@@ -5,7 +5,7 @@ umask 077
 repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 container_name="ldp-m3-archive-minio-${RANDOM}-${RANDOM}"
 test_image="ldp-m3-archive-tests:${RANDOM}${RANDOM}"
-minio_image='minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e'
+minio_image='quay.io/minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e'
 minio_access_key="m3archive${RANDOM}${RANDOM}"
 minio_secret_key=$(openssl rand -hex 24)
 

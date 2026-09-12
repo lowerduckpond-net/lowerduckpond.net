@@ -284,7 +284,11 @@ require active Caddy. Their local HTTPS probe requires either the fixture
 response used before authenticated origin pulls were enforced or the exact TLS
 client-certificate alert expected afterward; every other connection failure is
 fatal. The M3.6 gate then validates the selected immutable generation and its
-configured origin-pull mode. A recovery bootstrap resets only the Caddy and
+configured origin-pull mode. It accepts the authoritative checker's `current`
+success response and the older platform-only checker's `unchanged` response;
+both require an empty startup-intent inventory. A `pending` response still
+requires the durable startup intent, and changed, unknown, or failed checks
+remain fatal. A recovery bootstrap resets only the Caddy and
 Caddy-recovery failed states and start-rate counters before attempting the
 reviewed service.
 

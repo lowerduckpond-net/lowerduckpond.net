@@ -210,7 +210,7 @@ if [[ -n $(find "${generation_root}" -mindepth 1 -print -quit) ]]; then
     generation_status=$("${generation_check}") ||
         remote_fail "the immutable Caddy generation check failed"
     case ${generation_status} in
-        unchanged)
+        current | unchanged)
             [[ -z ${caddy_intent_inventory} ]] ||
                 remote_fail "a current Caddy generation retains a startup intent"
             ;;

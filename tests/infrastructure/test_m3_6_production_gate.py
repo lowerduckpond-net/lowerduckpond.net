@@ -250,6 +250,70 @@ def test_dark_host_preflight_accepts_only_a_live_fixture_or_client_auth() -> Non
     assert 'remote_fail "the local HTTPS fixture failed"' in preflight
 
 
+@pytest.mark.parametrize(
+    ("status", "checker_returncode", "intent", "expected_error"),
+    [
+        ("current", 0, "", None),
+        ("unchanged", 0, "", None),
+        ("pending", 0, "start.json", None),
+        ("current", 0, "start.json", "a current Caddy generation retains a startup intent"),
+        ("unchanged", 0, "start.json", "a current Caddy generation retains a startup intent"),
+        ("pending", 0, "", "the pending Caddy transaction has no durable intent"),
+        ("changed", 0, "", "the selected immutable Caddy generation is not current"),
+        ("changed", 0, "start.json", "the selected immutable Caddy generation is not current"),
+        ("unknown", 0, "", "the selected immutable Caddy generation is not current"),
+        ("", 0, "", "the selected immutable Caddy generation is not current"),
+        ("current\nunchanged", 0, "", "the selected immutable Caddy generation is not current"),
+        ("current ", 0, "", "the selected immutable Caddy generation is not current"),
+        ("current", 1, "", "the immutable Caddy generation check failed"),
+        ("pending", 1, "start.json", "the immutable Caddy generation check failed"),
+    ],
+)
+def test_production_preflight_interprets_generation_checker_results(
+    status: str,
+    checker_returncode: int,
+    intent: str,
+    expected_error: str | None,
+) -> None:
+    preflight = PREFLIGHT.read_text(encoding="utf-8")
+    # Execute the actual remote gate's checker invocation and response handling.
+    start = preflight.index('    generation_status=$("${generation_check}")')
+    end = preflight.index("\nelif", start)
+    harness = textwrap.dedent(
+        """\
+        set -euo pipefail
+        fixture_status=$1
+        fixture_returncode=$2
+        caddy_intent_inventory=$3
+        generation_check=fixture_check
+        fixture_check() {
+            printf '%s\\n' "${fixture_status}"
+            return "${fixture_returncode}"
+        }
+        remote_fail() {
+            printf '%s\\n' "$1" >&2
+            exit 1
+        }
+        """
+    )
+
+    result = subprocess.run(  # noqa: S603 -- repository gate with test-only checker output.
+        ["/bin/bash", "-s", "--", status, str(checker_returncode), intent],
+        input=harness + textwrap.dedent(preflight[start:end]),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.stdout == ""
+    if expected_error is None:
+        assert result.returncode == 0, result.stderr
+        assert result.stderr == ""
+    else:
+        assert result.returncode == 1
+        assert result.stderr == f"{expected_error}\n"
+
+
 def read_inventory(value: object) -> subprocess.CompletedProcess[str]:
     return subprocess.run(  # noqa: S603 -- reviewed repository helper.
         [os.fspath(INVENTORY_READER)],
