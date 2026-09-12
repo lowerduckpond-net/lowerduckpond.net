@@ -8,49 +8,122 @@ complete; live provider, production preflight, and reviewed-release evidence
 remain outstanding.
 Publication remains `static_publication_enabled: false`.
 
-## Workstation inputs
+## Secure-workstation workflow
 
-Use the existing trusted-workstation production environment. The
-[archive qualification wrapper](../../scripts/m3-archive-qualification)
-retrieves the separate archive and backup credentials from encrypted production
-OpenTofu state into its process environment. It requires these initial inputs:
+Production credentials remain on the operator's secure workstation. They are
+not supplied to the coder workspace. The coder task implements the tooling,
+completes local qualification, opens the dependent PRs, and iterates review.
+The operator runs the live steps below and returns sanitized evidence.
+
+After the dependent reviews are accepted and merged, synchronize a clean `main`
+on the supported x86-64 Linux secure workstation. Use a local Unix-socket Docker
+daemon for the disposable installed-host qualification. The live wrapper refuses
+a remote Docker daemon and existing qualification containers before reading
+production state or installing a credential.
+
+Open the existing production environment with the additional read-only gate
+inputs enabled:
+
+```bash
+scripts/production-environment-shell --m3-10
+```
+
+Existing exported values are retained; missing secret inputs use hidden prompts.
+The ordinary host inputs remain documented in
+[host configuration](host-configuration.md#credential-boundaries). M3.10 also
+uses these existing infrastructure inputs:
 
 | Input | Purpose |
 | --- | --- |
-| `OPENTOFU_STATE_ACCESS_KEY_ID`, `OPENTOFU_STATE_SECRET_ACCESS_KEY` | Access the production state bucket. |
-| `OPENTOFU_STATE_BUCKET`, `SPACES_REGION` | Identify that bucket and regional endpoint. |
-| `OPENTOFU_ENCRYPTION_PASSPHRASE` | Decrypt the existing production state. |
+| `OPENTOFU_STATE_ACCESS_KEY_ID`, `OPENTOFU_STATE_SECRET_ACCESS_KEY`, `OPENTOFU_STATE_BUCKET`, `SPACES_REGION`, `OPENTOFU_ENCRYPTION_PASSPHRASE` | Read and decrypt existing production state. |
+| `SPACES_ACCESS_KEY_ID`, `SPACES_SECRET_ACCESS_KEY` | Existing workstation Spaces operator key for read-only bucket ACL, policy, and lifecycle inspection. |
+| `CLOUDFLARE_API_TOKEN` | Existing infrastructure token for read-only current edge policy checks. |
+| `CLOUDFLARE_ZONE_ID`, `CLOUDFLARE_TENANT_ZONE_ID` | Exact production zone identities. |
+| `CLOUDFLARE_ORIGIN_PULL_CERTIFICATE_ID`, `CLOUDFLARE_TENANT_ORIGIN_PULL_CERTIFICATE_ID` | Exact accepted active origin-pull leaves. |
 
-Use the existing passphrase and credentials. Creating a replacement passphrase
-does not grant access to the state. No new credential file or storage convention
-is needed. Keep secret values out of repository files, inventory, artifacts,
-command arguments, reports, and chat.
+The separate archive and backup runtime keys are derived from encrypted state
+inside the wrapper process; do not copy them into inventory or artifact files.
+Use the existing state passphrase. No new passphrase or credential storage
+convention is needed. Bucket-configuration reads use the existing operator key:
+[DigitalOcean distinguishes those permissions from limited object access](https://docs.digitalocean.com/reference/api/spaces/).
+An access-denied response never proves that a policy is absent.
 
-The [production environment shell](../../scripts/production-environment-shell)
-can populate this environment with hidden secret prompts. It also requests the
-broader production host inputs documented in
-[host configuration](host-configuration.md#credential-boundaries).
-If the environment is already populated, the existing qualification command is:
+Run these commands in that secure shell:
 
 ```bash
-just m3-archive-qualification
+just preflight-m3-10-production
+just m3-10-spaces-qualification
+just preflight-m3-10-production
 ```
 
-Run it from a clean revision. This is an expendable-prefix storage test: it
-creates and removes qualification objects and markers in the dedicated Spaces.
-It requires an entirely empty archive bucket before starting, matching this
-pre-publication gate. Do not empty a populated bucket to satisfy that guard;
-qualification after tenant archival needs a separately reviewed workflow.
-It is not a read-only production preflight. The wrapper verifies its sanitized
-report and stores the report plus checksum under
-`${XDG_DATA_HOME:-$HOME/.local/share}/lowerduckpond.net/m3-archive-qualification`,
-unless `M3_ARCHIVE_QUALIFICATION_EVIDENCE_ROOT` selects another private location.
-Record the reported revision, run ID, report digest, and cleanup outcome.
+The read-only preflight retains the existing verified-host, operator-identity,
+reproducible-build, artifact-manifest, disabled-publication, and empty-history
+checks. It additionally requires the exact preceding M3.9 artifact, no partial
+M3.10 installation or pending Caddy work, enforced origin pulls, the complete
+active host firewall, both current Cloudflare edge policies, and a private,
+versioned archive bucket with no bucket policy, lifecycle configuration,
+objects, historical versions, delete markers, or multipart uploads. Unknown
+inventory fails the gate and grants no cleanup authority.
 
-The existing wrapper qualifies the M3.1 storage contract and mutual credential
-denial. It does not execute the new packaged M3.10 lifecycle or qualify its
-installed credential boundary. Those additional live checks remain to be
-implemented and recorded before this gate can pass.
+The live qualification first checks the entire empty archive bucket, then runs
+mutual archive/backup denial and exact-version storage acceptance. It installs
+the candidate on a disposable local systemd host and runs the existing full
+M3.8–M3.10 lifecycle, races, emergency recovery, reboot, and quarantine matrix
+against real Spaces using the packaged private services. New installed probes
+exercise the complete service policy: only the archive network boundary can
+read its credential, while ordinary accounts, the worker, the reconciler, and
+backup units cannot. Production host state and publication are unchanged.
+
+The live run is deliberately paced by the production admission limit and can
+take several hours. It creates and retires its own archive objects and storage
+qualification prefixes. It requires an entirely empty archive bucket before
+starting; never empty a populated bucket to satisfy that guard. A separately
+reviewed workflow is required after production tenant archival begins.
+
+Evidence is retained beneath
+`${XDG_DATA_HOME:-$HOME/.local/share}/lowerduckpond.net/m3-10`, or the private
+`M3_10_EVIDENCE_ROOT` override. Only a successful installed run, independent final
+whole-bucket absence check, artifact match, and completed container destruction
+produce `qualification.json` and `qualification.sha256`. Return those two
+sanitized files and the final preflight success lines. Phase logs, state,
+credentials, and diagnostic inventories stay on the secure workstation.
+
+If a phase fails, no passing report is created and the disposable host is
+preserved. Its intents and tenant records may still own remote bytes. Diagnose
+and resume the exact failed lifecycle group in that retained Molecule
+environment, using the same source and ordinary recovery authority. Do not run
+a fresh-baseline qualification or destroy the host until recovery proves the
+archive bucket empty. Never remove journals, quarantine, or provider objects
+to force a successful run. Record the failed stage and sanitized error for
+review; private phase logs support workstation-side diagnosis.
+
+## Closing the starting gate
+
+Record the accepted PRs and required CI, merged source, reproducible artifact,
+live report checksum, final read-only preflight, and confirmation that the
+dedicated archive credential is retained in the established independent
+workstation backup. The report's source and artifact must exactly match the
+candidate, with completion within the preceding 24 hours. Repeat qualification
+if the source/artifact changes or evidence expires.
+
+Stop here for the requested convergence starting gate. When production
+convergence is separately requested, retain these non-secret gate inputs in the
+secure shell and use the existing guarded runner:
+
+```bash
+export M3_10_QUALIFICATION_REPORT=/absolute/private/run/qualification.json
+# Set only after confirming the established credential backup is complete.
+export M3_10_ARCHIVE_CREDENTIAL_BACKUP_CONFIRMED=true
+just configure-production
+```
+
+For an artifact upgrade, that runner validates the report against the actual
+built artifact and clean current source, and repeats the M3.10 preflight before
+its first host mutation. An unchanged selected artifact permits ordinary
+idempotent reconfiguration. The explicit reviewed rollback workflow retains
+its existing checks. After an actual convergence, record the new production
+identity and update the preflight pins through review before another upgrade;
+do not add broad candidate allowances to the first-convergence gate.
 
 ## Installed credential boundary
 

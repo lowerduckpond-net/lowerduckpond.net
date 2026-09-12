@@ -1118,8 +1118,8 @@ The [M3.10 plan](milestone-3.10.md),
 [convergence preparation](../operations/m3-10-convergence-preparation.md)
 record exact checkpoints, artifact identity, and recovery instructions.
 The convergence starting gate remains pending live Spaces qualification,
-production preflight, and reviewed merged-release evidence. Existing encrypted
-production-state access inputs are unavailable in this session. Production
+production preflight, and reviewed merged-release evidence. Live commands run on the secure workstation; only sanitized evidence returns
+to this task. Production
 publication remains disabled.
 
 Wire the low-level S3 client only to the dedicated archive credential. Implement

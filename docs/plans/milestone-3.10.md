@@ -89,8 +89,9 @@ replace the live Spaces gate.
 For live checks, use the existing
 [qualification wrapper](../../scripts/m3-archive-qualification), which retrieves
 separate archive and backup credentials from encrypted production state.
-The current session lacks the state access and encryption inputs. This blocks
-the dependent live gate; no new credential storage convention is needed.
+Production credentials intentionally remain on the secure workstation. The
+M3.10 wrapper now runs the installed lifecycle against live Spaces there and
+produces sanitized evidence for the coder task; no credentials are transferred.
 
 ## Accepted boundaries
 

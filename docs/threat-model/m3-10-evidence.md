@@ -177,22 +177,66 @@ passed through the actual private service at `36aa88e`, including unknown-object
 preservation, independently resolved inventory, retained-byte verification,
 quarantine removal, ordinary restore, and final remote absence.
 
+## Review and secure-workstation preparation
+
+Delivery is split into the [archive boundary PR](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/137),
+[lifecycle PR](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/138), and
+its dependent convergence tooling review. Each slice requires reviewer acceptance
+and passing required CI before release. The original integration branch retains
+the plan-only first commit. No production credentials are present in the coder
+workspace; live checks run on the operator's secure workstation.
+
+Review found and corrected three recovery defects. An ambiguous construction
+response now preserves its journal until a subsequent invocation acquires a fresh
+export lease, after the private service finishes its in-flight upload. Restore
+replay reserves only remaining durable writes and permits journal-only completion
+without a new capacity reservation. Root emergency recovery also resolves a
+remaining quarantine after its retirement intent has already disappeared, using
+independent full inventory and retained-byte verification without remote deletion
+authority. Regressions cover the actual service disconnect race, six restore
+commit boundaries, and both interruption and inventory failure after emergency
+retirement. All 82 focused lifecycle tests and strict typing passed.
+
+The build now pins dependency launcher interpreters to `/usr/bin/python3`, removing
+checkout paths from the host artifact. Before the review recovery changes, two
+independent checkout builds produced the same SHA-256
+`3d34b4425aaf5336d92a1d37a5ef2191943d4413b0277b082b46d3e155daf082`;
+the build/install regression passed. That historical digest is not a release pin:
+the secure workstation must build and qualify the actual merged source.
+
+The guarded read-only preflight checks the exact preceding M3.9 artifact,
+quiescent disabled-publication host, enforced edge state, active host firewall,
+Cloudflare DNS/TLS/origin-pull/WAF configuration, and private versioned empty
+archive storage with no lifecycle expiration or multipart uploads. The installed
+Spaces wrapper uses separate state-derived archive and backup credentials, first
+proves mutual denial, then runs the complete installed M3.8/M3.10 scenario with
+publication disabled. It accepts only a local Docker daemon, preserves failed
+hosts and private diagnostics, and produces a sanitized exact-source/artifact
+report only after all phases and independent final accounting pass. Production
+configuration verifies that report and repeats preflight before its first host
+mutation. Reports expire after 24 hours.
+
+New complete-unit credential-boundary and completion/accounting checks passed
+against the disposable MinIO host (8 tests). A fresh fixture installation exposed
+an automatically allocated subordinate-ID range for `ldp-admin` overlapping the
+runtime range. The disposable fixture now removes only that unused administrator
+allocation; fresh preparation, convergence, and idempotence passed. Production
+allocation rules remain strict.
+
 ## Outstanding convergence gates
 
-1. Run live expendable-prefix Spaces qualification and mutual archive/backup
-   credential denial. The existing M3.1 wrapper was invoked and exited 2 at its
-   missing `OPENTOFU_ENCRYPTION_PASSPHRASE` guard before provider requests. It uses
-   the established encrypted production state; the necessary state access and
-   decryption inputs are absent in this session. It does not itself execute the
-   new installed M3.10 lifecycle.
-2. Complete a guarded read-only production preflight covering dark host identity,
-   exact preceding artifact, disabled publication, empty tenant history, unchanged
-   edge controls, private/versioned/no-expiration archive policy, accounted
-   contents, and no multipart uploads. Unknown objects are never permission to
-   purge the bucket.
-3. Record reviewed merged source and a reproducible release artifact on clean,
-   current `main`, then assemble the convergence gate record. Stop before host
+1. Finish acceptance and required CI for every dependent PR, merge the reviewed
+   source, and build its reproducible artifact from clean, current `main`.
+2. On the secure workstation, use the
+   [M3.10 preparation runbook](../operations/m3-10-convergence-preparation.md)
+   to run read-only production preflight and the complete installed live Spaces
+   qualification. Return only the sanitized qualification report and digest.
+   Component tests and MinIO evidence do not substitute for this provider gate.
+3. Repeat production preflight and record independent recoverability of the
+   archive credential with the existing backup evidence. Assemble the exact
+   source/artifact/report convergence gate record, then stop before host
    convergence and publication enablement.
 
-An unavailable live input blocks its dependent gate. Component and disposable
-provider results do not make the production convergence starting gate pass.
+Secure-workstation checks remain operator work. Their absence does not prevent
+code, local qualification, or review preparation, but the production convergence
+starting gate is not passed until their evidence is recorded.
