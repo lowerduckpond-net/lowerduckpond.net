@@ -3014,7 +3014,10 @@ def _later_audited_results(
     expected_correlations = {transition.correlation_id for transition in transitions}
     matched: dict[str, dict[str, object]] = {}
     for job_id in inventory.result_ids:
-        candidate = transaction.read(StateRecordPath.authorization_result(job_id)).document
+        try:
+            candidate = transaction.read(StateRecordPath.authorization_result(job_id)).document
+        except StateRecordError:
+            candidate = transaction.read(StateRecordPath.emergency_result(job_id)).document
         correlation_id = validate_uuid7(candidate["correlationId"])
         if correlation_id not in expected_correlations:
             continue
@@ -3022,8 +3025,17 @@ def _later_audited_results(
         if (
             correlation_id in matched
             or type(provenance) is not dict
-            or provenance.get("kind") != "authorization-job"
-            or provenance.get("jobId") != job_id
+            or not (
+                (
+                    provenance.get("kind") == "authorization-job"
+                    and provenance.get("jobId") == job_id
+                )
+                or (
+                    provenance.get("kind") == "emergency-administrator"
+                    and correlation_id == job_id
+                    and candidate["operation"] == "delete"
+                )
+            )
         ):
             raise ExecutionError("later audited lifecycle result identity is invalid")
         matched[correlation_id] = candidate
@@ -3039,6 +3051,20 @@ def _later_audited_results(
             or result_digest(candidate).to_dict() != transition.result_digest
         ):
             raise ExecutionError("later lifecycle result disagrees with durable audit authority")
+        provenance = cast(dict[str, object], candidate["provenance"])
+        if provenance["kind"] == "emergency-administrator":
+            emergency_audit = transaction.inspect_audit_correlation(
+                candidate["correlationId"]
+            ).entry
+            evidence = None if emergency_audit is None else emergency_audit.get("deletionEvidence")
+            if (
+                emergency_audit is None
+                or emergency_audit["operatorPrincipal"] != provenance["operatorPrincipal"]
+                or type(evidence) is not dict
+                or evidence["mode"] not in {"emergency", "emergency-archived"}
+                or evidence["emergencyReason"] != provenance["reason"]
+            ):
+                raise ExecutionError("later emergency deletion lost its administrator evidence")
         restore_archive_id: str | None = None
         if candidate["operation"] == "restore":
             provenance = candidate["provenance"]
