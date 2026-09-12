@@ -29,3 +29,19 @@ combined capacity leaves no transaction intent, while an exactly sufficient
 allowance completes after the intent consumes its inode. The deletion suite
 passed 38 tests with the same inapplicable archive-directory skip; lint,
 formatting, and strict typing passed.
+
+Further review covered archive and restore capacity and recovery. Construction
+now checks terminal audit headroom before upload; local archive and restore
+preparation admit the intent together with all terminal records after writing
+the unselected runtime candidate. A refused archive preparation can discard
+that candidate and audit/retire its upload. Restore cancels a read-only
+retirement on download or preparation failure only while its archived source
+is unchanged and no local transaction exists. Retained-object validation also
+rechecks later audited transitions when the private validator raises.
+
+The resulting full host-agent suite passed 1,755 tests with the same two
+documented skips. Seven focused admission regressions passed, covering joint
+capacity, pre-upload audit space, safe upload retirement, and preservation of
+retirement after local intent publication. Formatting, lint, and strict typing
+passed across 235 source files. Installed qualification and required CI remain
+separate release evidence.

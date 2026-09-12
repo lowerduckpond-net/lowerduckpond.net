@@ -6,19 +6,17 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import NoReturn, cast
 
-from lowerduckpond_static_contracts import canonical_json_bytes, validate_uuid7
+from lowerduckpond_static_contracts import validate_uuid7
 from lowerduckpond_static_domain import EntropySource, MillisecondClock, generate_uuid7
 
+from lowerduckpond_static_host_agent.archive_commit import admit_archive_records
 from lowerduckpond_static_host_agent.archive_journal import _archive_record
 from lowerduckpond_static_host_agent.caddy_generation import CaddyGenerationManifest
 from lowerduckpond_static_host_agent.caddy_routes import TenantRouteInput
 from lowerduckpond_static_host_agent.caddy_runtime import CaddyRuntime
 from lowerduckpond_static_host_agent.capacity import (
     DEFAULT_HOST_CAPACITY_LIMITS,
-    CapacityReservation,
     HostCapacityLimits,
-    ReleaseCapacityUsage,
-    admit_release_capacity,
 )
 from lowerduckpond_static_host_agent.export_spool import ExportSpool
 from lowerduckpond_static_host_agent.issuance import PublicationGate, build_expected_source
@@ -162,7 +160,7 @@ def prepare_archive_transition(  # noqa: PLR0913, PLR0917 - explicit root-owned 
             candidate_id, transaction=transaction, overlay=overlay, gate=gate
         )
         try:
-            _publish_intent(transaction, plan, capacity_limits=capacity_limits)
+            _publish_intent(transaction, job, plan, capacity_limits=capacity_limits)
         except BaseException as error:
             _recover_intent_publication(transaction, runtime, plan, candidate, error)
         return PreparedArchiveTransition(job, plan, candidate, capacity_limits)
@@ -170,16 +168,13 @@ def prepare_archive_transition(  # noqa: PLR0913, PLR0917 - explicit root-owned 
 
 def _publish_intent(
     transaction: _StateTransaction,
+    job: StoredContract,
     plan: ArchiveTransitionPlan,
     *,
     capacity_limits: HostCapacityLimits,
 ) -> None:
-    allocation = transaction.allocation_upper_bound(len(canonical_json_bytes(plan.intent)))
-    admit_release_capacity(
-        ReleaseCapacityUsage(()),
-        CapacityReservation(allocation + transaction.namespace_allocation_upper_bound(1), 1),
-        transaction.measure_filesystem_capacity(),
-        limits=capacity_limits,
+    admit_archive_records(
+        transaction, job, plan, capacity_limits=capacity_limits, intent_missing=True
     )
     transaction.create_immutable(StateRecordPath.transaction_intent(plan.intent_id), plan.intent)
 

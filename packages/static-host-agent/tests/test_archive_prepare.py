@@ -13,7 +13,11 @@ from lowerduckpond_static_host_agent.archive_prepare import (
 from lowerduckpond_static_host_agent.caddy_runtime import CaddyRuntime
 from lowerduckpond_static_host_agent.capacity import HostCapacityLimits
 from lowerduckpond_static_host_agent.lifecycle_plan import ArchiveTransitionPlan
-from lowerduckpond_static_host_agent.repository import StateRecordPath, _StateTransaction
+from lowerduckpond_static_host_agent.repository import (
+    StateRecordPath,
+    StoredContract,
+    _StateTransaction,
+)
 from lowerduckpond_static_host_agent.route_snapshot import (
     TenantRouteSnapshot,
     snapshot_tenant_routes,
@@ -140,12 +144,13 @@ def test_archive_preparation_retains_only_candidates_bound_by_durable_intent(
 
     def fail(
         transaction: _StateTransaction,
+        job: StoredContract,
         plan: ArchiveTransitionPlan,
         *,
         capacity_limits: HostCapacityLimits,
     ) -> None:
         if after_write:
-            original(transaction, plan, capacity_limits=capacity_limits)
+            original(transaction, job, plan, capacity_limits=capacity_limits)
         raise SimulatedWriteError
 
     with prepared_source(tmp_path, MemoryRemote()) as (journal, job_id, _snapshot, _quarantine):

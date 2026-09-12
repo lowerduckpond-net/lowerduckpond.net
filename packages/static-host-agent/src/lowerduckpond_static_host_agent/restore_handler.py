@@ -153,6 +153,10 @@ class RestoreLifecycleHandler:
             self._cleanup.verify_source(job_id, archive)
         ExportDelivery(self._repository, self._spool, now=self._now).reconcile_locked()
         self._spool.prepare_workspace()
+        retirement = state.retirement
+        journal = ArchiveRetirementJournal(
+            self._repository, self._spool, bucket=str(archive["bucket"])
+        )
         try:
             fetch_archive_bundle(
                 self._source,
@@ -162,9 +166,7 @@ class RestoreLifecycleHandler:
                 job_id=job_id,
                 expected_owner=self._owner,
             )
-            retirement = state.retirement or ArchiveRetirementJournal(
-                self._repository, self._spool, bucket=str(archive["bucket"])
-            ).prepare(job_id, now=self._now())
+            retirement = retirement or journal.prepare(job_id, now=self._now())
             return prepare_restore_transition(
                 self._repository,
                 self._spool,
@@ -179,6 +181,10 @@ class RestoreLifecycleHandler:
                 capacity_limits=self._limits,
                 blocking=blocking,
             )
+        except Exception:
+            if retirement is not None:
+                journal.cancel_unstarted_restore(job_id, retirement)
+            raise
         finally:
             self._spool.discard_workspace()
 

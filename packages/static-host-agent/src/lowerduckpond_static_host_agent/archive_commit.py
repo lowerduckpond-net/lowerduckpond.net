@@ -244,6 +244,35 @@ def _prepare_commit(  # noqa: PLR0913 - explicit authority versus capacity admis
         return current, _Progress(
             desired, observed, archive_missing, result_missing, removal, deployments
         )
+    admit_archive_records(
+        transaction,
+        current,
+        plan,
+        capacity_limits=capacity_limits,
+        archive_missing=archive_missing,
+        desired_missing=desired.document != plan.manifest,
+        observed_missing=observed.document != plan.observed_state,
+        result_missing=result_missing,
+        audit_missing=audit_missing,
+    )
+    return current, _Progress(
+        desired, observed, archive_missing, result_missing, removal, deployments
+    )
+
+
+def admit_archive_records(  # noqa: PLR0913 - exact remaining durable writes
+    transaction: _StateTransaction,
+    job: StoredContract,
+    plan: ArchiveTransitionPlan,
+    *,
+    capacity_limits: HostCapacityLimits,
+    archive_missing: bool = True,
+    desired_missing: bool = True,
+    observed_missing: bool = True,
+    result_missing: bool = True,
+    audit_missing: bool = True,
+    intent_missing: bool = False,
+) -> None:
     if audit_missing:
         transaction.admit_audit_append(plan.audit_entry)
     if result_missing:
@@ -259,13 +288,15 @@ def _prepare_commit(  # noqa: PLR0913 - explicit authority versus capacity admis
         document
         for missing, document in (
             (archive_missing, plan.archive_record),
-            (desired.document != plan.manifest, plan.manifest),
-            (observed.document != plan.observed_state, plan.observed_state),
+            (desired_missing, plan.manifest),
+            (observed_missing, plan.observed_state),
             (result_missing, plan.result),
-            (current.document["phase"] != "completed", {**current.document, "phase": "completed"}),
+            (job.document["phase"] != "completed", {**job.document, "phase": "completed"}),
         )
         if missing
     ]
+    if intent_missing:
+        writes.append(plan.intent)
     if writes or audit_missing:
         entries = len(writes) + int(audit_missing)
         allocated = sum(
@@ -284,9 +315,6 @@ def _prepare_commit(  # noqa: PLR0913 - explicit authority versus capacity admis
             transaction.measure_filesystem_capacity(),
             limits=capacity_limits,
         )
-    return current, _Progress(
-        desired, observed, archive_missing, result_missing, removal, deployments
-    )
 
 
 def _validate_plan(

@@ -19,7 +19,6 @@ from lowerduckpond_static_host_agent.capacity import (
 )
 from lowerduckpond_static_host_agent.deployment_prepare import (
     DeploymentQuotaExceededError,
-    _admit_and_create_intent,
     _measure_retained_releases,
     _recover_failed_intent_creation,
 )
@@ -34,7 +33,10 @@ from lowerduckpond_static_host_agent.repository import (
     StoredContract,
     _StateTransaction,
 )
-from lowerduckpond_static_host_agent.restore_commit import validate_restore_transition
+from lowerduckpond_static_host_agent.restore_commit import (
+    admit_restore_records,
+    validate_restore_transition,
+)
 from lowerduckpond_static_host_agent.restore_plan import plan_restore_transition
 from lowerduckpond_static_host_agent.route_prepare import _bind_source_runtime_authority
 from lowerduckpond_static_host_agent.route_snapshot import (
@@ -149,15 +151,26 @@ def prepare_restore_transition(  # noqa: PLR0913,PLR0917 - complete trust inputs
         ):
             store.discard_staged(staged, publication_lock=transaction)
             raise DeploymentQuotaExceededError("restored content exceeds current tenant quotas")
+        candidate = None
         try:
-            _admit_and_create_intent(transaction, plan, capacity_limits=capacity_limits)
+            candidate = _publish_candidate(transaction, runtime, gate, plan, previous)
+            admit_restore_records(
+                transaction, job, plan, capacity_limits=capacity_limits, intent_missing=True
+            )
+            transaction.create_immutable(
+                StateRecordPath.transaction_intent(plan.intent_id), plan.intent
+            )
         except BaseException as error:
+            try:
+                transaction.read(StateRecordPath.transaction_intent(plan.intent_id))
+            except FileNotFoundError:
+                if candidate is not None:
+                    runtime.discard_unselected_candidate(candidate.generation_id, candidate)
             _recover_failed_intent_creation(transaction, store, plan, staged, error)
         validate_restore_transition(
             transaction, spool, job, plan, retirement, capacity_limits=capacity_limits
         )
         store.publish(staged, publication_lock=transaction)
-        candidate = _publish_candidate(transaction, runtime, gate, plan, previous)
         return PreparedRestoreTransition(job, plan, retirement, candidate, capacity_limits)
 
 

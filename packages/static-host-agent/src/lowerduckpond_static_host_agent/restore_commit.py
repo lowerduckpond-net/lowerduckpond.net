@@ -159,14 +159,14 @@ def validate_restore_transition(  # noqa: PLR0913 - explicit replay evidence
         if value not in terminal
     )
     if admit:
-        _admit(
+        admit_restore_records(
             transaction,
             current,
             plan,
-            deployment_missing,
-            result_missing,
-            audit_missing,
-            capacity_limits,
+            deployment_missing=deployment_missing,
+            result_missing=result_missing,
+            audit_missing=audit_missing,
+            capacity_limits=capacity_limits,
             desired_missing=desired.document != plan.manifest,
             observed_missing=observed.document != plan.observed_state,
         )
@@ -290,17 +290,18 @@ def _validate_plan(
         raise RestoreCommitError("restore plan exceeds its independently reconstructed authority")
 
 
-def _admit(  # noqa: PLR0913,PLR0917 - explicit bounded writes
+def admit_restore_records(  # noqa: PLR0913 - exact remaining durable writes
     transaction: _StateTransaction,
     job: StoredContract,
     plan: DeploymentTransitionPlan,
-    deployment_missing: bool,
-    result_missing: bool,
-    audit_missing: bool,
-    limits: HostCapacityLimits,
     *,
-    desired_missing: bool,
-    observed_missing: bool,
+    capacity_limits: HostCapacityLimits,
+    deployment_missing: bool = True,
+    result_missing: bool = True,
+    audit_missing: bool = True,
+    desired_missing: bool = True,
+    observed_missing: bool = True,
+    intent_missing: bool = False,
 ) -> None:
     if audit_missing:
         transaction.admit_audit_append(plan.audit_entry)
@@ -313,7 +314,7 @@ def _admit(  # noqa: PLR0913,PLR0917 - explicit bounded writes
                 ),
             )
         )
-    writes = []
+    writes = [plan.intent] if intent_missing else []
     if desired_missing:
         writes.append(plan.manifest)
     if observed_missing:
@@ -338,5 +339,5 @@ def _admit(  # noqa: PLR0913,PLR0917 - explicit bounded writes
         ReleaseCapacityUsage(()),
         CapacityReservation(allocated + transaction.namespace_allocation_upper_bound(count), count),
         transaction.measure_filesystem_capacity(),
-        limits=limits,
+        limits=capacity_limits,
     )

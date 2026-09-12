@@ -93,8 +93,9 @@ def test_restore_dispatch_recovers_partial_commit_without_another_download(
             future.result(timeout=5)
 
 
+@pytest.mark.parametrize("failed_download", [False, True])
 def test_restore_retries_download_after_retirement_sync_and_before_local_intent(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failed_download: bool
 ) -> None:
     with _host(tmp_path, restore=True) as (executor, job_id, repository, remote, _runtime, futures):
 
@@ -106,8 +107,46 @@ def test_restore_retries_download_after_retirement_sync_and_before_local_intent(
             with pytest.raises(InterruptedRestoreError):
                 executor.execute(job_id)
         assert len(repository.measure_intent_records().records) == 1
+        if failed_download:
+            source = repository.read(StateRecordPath.tenant_desired(_TENANT))
+            versions = list(remote.versions)
+
+            def unavailable(*_args: object, **_kwargs: object) -> None:
+                raise ArchiveRemoteError("recovery download is unavailable")
+
+            with monkeypatch.context() as patch:
+                patch.setattr(handler_module, "fetch_archive_bundle", unavailable)
+                with pytest.raises(ArchiveRemoteError, match="recovery download"):
+                    executor.execute(job_id)
+            assert not repository.measure_intent_records().records
+            assert (
+                repository.read(StateRecordPath.tenant_desired(_TENANT)).revision == source.revision
+            )
+            assert remote.versions == versions
         assert executor.execute(job_id).result["status"] == "succeeded"
         assert not remote.versions
+        for future in futures:
+            future.result(timeout=5)
+
+
+def test_restore_cancels_read_only_retirement_when_preparation_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with _host(tmp_path, restore=True) as (executor, job_id, repository, remote, _runtime, futures):
+        source = repository.read(StateRecordPath.tenant_desired(_TENANT))
+        versions = list(remote.versions)
+
+        def unavailable(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("local restore preparation failed")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(handler_module, "prepare_restore_transition", unavailable)
+            with pytest.raises(RuntimeError, match="local restore preparation"):
+                executor.execute(job_id)
+        assert not repository.measure_intent_records().records
+        assert repository.read(StateRecordPath.tenant_desired(_TENANT)).revision == source.revision
+        assert remote.versions == versions
+        assert executor.execute(job_id).result["status"] == "succeeded"
         for future in futures:
             future.result(timeout=5)
 
