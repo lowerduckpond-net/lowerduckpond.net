@@ -968,7 +968,13 @@ class AuthorizationExecutor:
         if result["operation"] == "archive":
             archive = result.get("archiveRecord")
             validator = self._retained_archive_validator
-            if type(archive) is not dict or validator is None or validator(archive) is not True:
+            try:
+                retained = type(archive) is dict and validator is not None and validator(archive)
+            except Exception:
+                if self._result_was_superseded(job, result, blocking=blocking):
+                    return
+                raise
+            if retained is not True:
                 if self._result_was_superseded(job, result, blocking=blocking):
                     return
                 raise ExecutionError(

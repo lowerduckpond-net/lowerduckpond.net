@@ -6474,8 +6474,10 @@ def test_executor_revalidates_archive_after_handler_cleared_intents(
     assert stored["executionValidated"] is True
 
 
+@pytest.mark.parametrize("verification_error", [False, True])
 def test_executor_accepts_archive_superseded_during_remote_validation(
     tmp_path: Path,
+    verification_error: bool,
 ) -> None:
     root = _state_root(tmp_path)
     job, construction, result = _write_committed_archive_replay(root)
@@ -6551,6 +6553,8 @@ def test_executor_accepts_archive_superseded_during_remote_validation(
             )
             _write_observed_for_manifest(root, later_manifest)
             _append_result_audit(repository, job, later)
+            if verification_error:
+                raise RuntimeError("the later restore removed the retained archive binding")
             return False
 
         outcome = AuthorizationExecutor(
