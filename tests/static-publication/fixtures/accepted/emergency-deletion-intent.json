@@ -1,0 +1,89 @@
+{
+  "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+  "archiveRecord": null,
+  "auditEntry": {
+    "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+    "correlationId": "0198d17f-6f4a-7000-8000-000000000001",
+    "deletionEvidence": {
+      "archiveRecordDigest": null,
+      "bucket": null,
+      "emergencyReason": "verified administrator recovery",
+      "key": null,
+      "mode": "emergency",
+      "releasedSlugs": [
+        "duck-repair"
+      ],
+      "versionId": null
+    },
+    "kind": "AuditEntry",
+    "operation": "delete",
+    "operatorPrincipal": "operator@example.test",
+    "previousEntryDigest": null,
+    "resultDigest": {
+      "algorithm": "sha256",
+      "format": "lowerduckpond-result-v1",
+      "value": "40b1ca2e483f9e6f5b4d73fa2d834b21b80b134e76d3c84dc8097d486d433b97"
+    },
+    "resultStatus": "succeeded",
+    "sequence": 0,
+    "tenantId": "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100",
+    "timestamp": "2026-08-29T12:00:02Z"
+  },
+  "candidateRuntimeGenerationId": "0198d17f-6f4a-7000-8000-000000000005",
+  "compatibilityVersion": "static-emergency-deletion-v1",
+  "correlationId": "0198d17f-6f4a-7000-8000-000000000001",
+  "createdAt": "2026-08-29T12:00:02Z",
+  "deploymentRecords": [],
+  "intentId": "0198d17f-6f4a-7000-8000-000000000001",
+  "kind": "EmergencyDeletionIntent",
+  "operatorPrincipal": "operator@example.test",
+  "reason": "verified administrator recovery",
+  "result": {
+    "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+    "canonicalOrigin": "t-0191e2c48f7a7c3b8d1e5f62047a2100.lowerduckpond.com",
+    "correlationId": "0198d17f-6f4a-7000-8000-000000000001",
+    "kind": "OperationResult",
+    "operation": "delete",
+    "provenance": {
+      "kind": "emergency-administrator",
+      "operatorPrincipal": "operator@example.test",
+      "reason": "verified administrator recovery"
+    },
+    "status": "succeeded",
+    "tenantId": "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100"
+  },
+  "retirementIntent": null,
+  "sourceManifest": {
+    "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+    "kind": "Site",
+    "metadata": {
+      "canonicalOrigin": "t-0191e2c48f7a7c3b8d1e5f62047a2100.lowerduckpond.com",
+      "id": "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100",
+      "slug": "duck-repair"
+    },
+    "spec": {
+      "desiredState": "undeployed",
+      "quotas": {
+        "entries": 5000,
+        "storageMiB": 100
+      },
+      "runtime": "static"
+    }
+  },
+  "sourceObservedState": {
+    "activeDeploymentId": null,
+    "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+    "desiredManifestDigest": {
+      "algorithm": "sha256",
+      "format": "lowerduckpond-manifest-v1",
+      "value": "c474fbe0a553277ab472f08d4ecffef268f7cba54f801e153f0fbdc82e124847"
+    },
+    "kind": "TenantObservedState",
+    "observedState": "undeployed",
+    "reconciledAt": "2026-08-29T12:01:00Z",
+    "runtimeGenerationId": null,
+    "tenantId": "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100"
+  },
+  "sourceRuntimeGenerationId": "0198d17f-6f4a-7000-8000-000000000004",
+  "tenantId": "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100"
+}

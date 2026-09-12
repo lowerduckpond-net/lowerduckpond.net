@@ -8,12 +8,21 @@ test_image="ldp-m3-archive-tests:${RANDOM}${RANDOM}"
 minio_image='quay.io/minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e'
 minio_access_key="m3archive${RANDOM}${RANDOM}"
 minio_secret_key=$(openssl rand -hex 24)
+artifact_directory=$(mktemp -d)
 
 cleanup() {
     docker rm --force "${container_name}" >/dev/null 2>&1 || true
     docker image rm "${test_image}" >/dev/null 2>&1 || true
+    chmod --recursive u+w "${artifact_directory}" 2>/dev/null || true
+    find "${artifact_directory}" -depth -delete
 }
 trap cleanup EXIT
+
+"${repository_root}/scripts/build-static-host-agent" "${artifact_directory}/host-agent.tar" >/dev/null
+tar --extract --file "${artifact_directory}/host-agent.tar" --directory "${artifact_directory}" --no-same-owner
+cp --archive "${repository_root}/tools/m3-archive-qualification" "${artifact_directory}/tool"
+cp -- "${repository_root}/packages/static-host-agent/tests/test_archive_remote_minio.py" \
+    "${artifact_directory}/test_archive_remote_minio.py"
 
 docker run --detach --rm \
     --name "${container_name}" \
@@ -40,11 +49,13 @@ fi
 docker build --quiet \
     --file "${repository_root}/tools/m3-archive-qualification/Dockerfile.minio-tests" \
     --tag "${test_image}" \
-    "${repository_root}/tools/m3-archive-qualification" >/dev/null
+    "${artifact_directory}" >/dev/null
 
 docker run --rm \
     --network "container:${container_name}" \
     --env "M3_ARCHIVE_MINIO_ACCESS_KEY=${minio_access_key}" \
     --env 'M3_ARCHIVE_MINIO_ENDPOINT=http://127.0.0.1:9000' \
     --env "M3_ARCHIVE_MINIO_SECRET_KEY=${minio_secret_key}" \
-    "${test_image}"
+    "${test_image}" python -m pytest -m minio \
+    /workspace/tool/tests/test_minio.py \
+    /workspace/test_archive_remote_minio.py

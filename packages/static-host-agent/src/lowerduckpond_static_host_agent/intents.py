@@ -97,6 +97,20 @@ def _recovery_plan(intents: tuple[DiscoveredIntent, ...]) -> IntentRecoveryPlan:
     if len(remote) > 1:
         raise IntentDiscoveryError("construction and retirement intents cannot coexist")
     transaction = by_kind.get(ContractKind.TRANSACTION_INTENT)
+    emergency = by_kind.get(ContractKind.EMERGENCY_DELETION_INTENT)
+    if emergency is not None:
+        if transaction is not None:
+            raise IntentDiscoveryError("ordinary and emergency transactions cannot coexist")
+        expected = emergency.record.document["retirementIntent"]
+        if remote and (
+            remote[0].kind is not ContractKind.ARCHIVE_RETIREMENT_INTENT
+            or remote[0].record.document != expected
+        ):
+            raise IntentDiscoveryError("emergency deletion has unrelated remote authority")
+        return IntentRecoveryPlan(
+            intents=intents,
+            recovery_order=(emergency.path, *(value.path for value in remote)),
+        )
     order: tuple[StateRecordPath, ...]
     if transaction is not None and remote:
         _validate_relationship(transaction, remote[0])

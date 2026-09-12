@@ -36,6 +36,7 @@ WORKER_UNIT_TEMPLATE = (
     / "config/ansible/roles/static_host_agent/templates/lowerduckpond-static-worker@.service.j2"
 )
 SELECTION_LOCK_NAME = "selection.lock"
+ARTIFACT_STAGING_TIMEOUT_SECONDS = 60
 
 
 def run(*arguments: str | os.PathLike[str]) -> subprocess.CompletedProcess[str]:
@@ -349,7 +350,10 @@ def test_installer_holds_selection_exclusion_across_intent_scan_and_switch(
         text=True,
     )
     try:
-        deadline = time.monotonic() + 10
+        # The locked S3 SDK adds many files to stage and sync before selection.
+        # Setup may take longer on a shared filesystem; lock behavior below is
+        # still asserted only after the complete candidate becomes available.
+        deadline = time.monotonic() + ARTIFACT_STAGING_TIMEOUT_SECONDS
         while not (install_root / digest).exists() and time.monotonic() < deadline:
             assert process.poll() is None
             time.sleep(0.01)

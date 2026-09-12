@@ -296,6 +296,40 @@ def deployment_audit_history_tenant_ids(  # noqa: PLR0913
     return frozenset(matches)
 
 
+def tenant_has_creation_audit_history(  # noqa: PLR0913 - complete trusted audit storage
+    root: DurableDirectory,
+    tenant_id: object,
+    *,
+    expected_owner: int,
+    expected_directory_mode: int,
+    expected_record_mode: int,
+    limits: AuditLimits = DEFAULT_AUDIT_LIMITS,
+) -> bool:
+    """Require one successful creation and no prior deletion in the complete chain."""
+    canonical = validate_uuid7(tenant_id)
+    directory = root.open_descendant(("audit",))
+    try:
+        segments = _read_segments(
+            directory,
+            expected_owner=expected_owner,
+            expected_directory_mode=expected_directory_mode,
+            expected_record_mode=expected_record_mode,
+            limits=limits,
+        )
+    finally:
+        directory.close()
+    _validate_chain(segments, limits=limits)
+    creations = 0
+    deleted = False
+    for segment in segments:
+        for line in segment.data.splitlines(keepends=True):
+            document = decode_contract(line, expected_kind=ContractKind.AUDIT_ENTRY)
+            if document["tenantId"] == canonical and document["resultStatus"] == "succeeded":
+                creations += int(document["operation"] == "create")
+                deleted = deleted or document["operation"] == "delete"
+    return creations == 1 and not deleted
+
+
 def tenant_has_identity_audit_history(  # noqa: PLR0913 - storage contract is explicit
     root: DurableDirectory,
     tenant_id: object,
