@@ -21,3 +21,11 @@ inapplicable archive-directory fault for a never-deployed tenant. Formatting,
 lint, and strict typing passed. Required CI independently qualifies the slice's
 existing installed behavior. This evidence does not claim live Spaces or
 production convergence readiness.
+
+Review follow-up: deletion now admits its intent and all remaining terminal
+records in one capacity projection, after creating the runtime candidate.
+Four boundary regressions cover archived and never-deployed tenants: insufficient
+combined capacity leaves no transaction intent, while an exactly sufficient
+allowance completes after the intent consumes its inode. The deletion suite
+passed 38 tests with the same inapplicable archive-directory skip; lint,
+formatting, and strict typing passed.
