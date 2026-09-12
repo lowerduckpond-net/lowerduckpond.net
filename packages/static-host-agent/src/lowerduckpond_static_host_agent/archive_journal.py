@@ -47,10 +47,14 @@ from lowerduckpond_static_host_agent.export_spool import EXPORT_WORKSPACE_BUNDLE
 from lowerduckpond_static_host_agent.intents import DiscoveredIntent, IntentDiscovery
 from lowerduckpond_static_host_agent.issuance import build_expected_source
 from lowerduckpond_static_host_agent.locks import LockMode, LockName
-from lowerduckpond_static_host_agent.portable_bundle import inspect_portable_bundle
+from lowerduckpond_static_host_agent.portable_bundle import (
+    PortableBundleInspection,
+    inspect_portable_bundle,
+)
 from lowerduckpond_static_host_agent.repository import (
     StateRecordPath,
     StateRepository,
+    StateRevision,
     StoredContract,
     _StateTransaction,
 )
@@ -75,6 +79,148 @@ class ArchiveJournalBoundary(StrEnum):
 class UploadedArchive:
     construction: StoredContract
     record: dict[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedArchive:
+    """Locally verified construction evidence, with no remote upload authority."""
+
+    construction: StoredContract
+    snapshot: ExportSnapshot
+    inspection: PortableBundleInspection
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedArchiveUpload:
+    """Bind a trusted uploader's exact-version proof to the whole prepared intent."""
+
+    construction_revision: StateRevision
+    version_id: str
+
+
+class ArchiveConstructionJournal:
+    """Prepare and confirm durable construction without loading a storage key.
+
+    Installed callers must open a fresh authorized network session before
+    prepare(). An existing prepared intent never grants a new upload attempt.
+    Confirmation accepts only a version independently verified by that session.
+    """
+
+    def __init__(  # noqa: PLR0913 - explicit local state and admission dependencies
+        self,
+        repository: StateRepository,
+        spool: ExportSpool,
+        *,
+        expected_owner: int,
+        bucket: str,
+        require_quarantine_empty: Callable[[], None],
+        hook: Callable[[ArchiveJournalBoundary], None] | None = None,
+    ) -> None:
+        self.repository = repository
+        self.spool = spool
+        self.owner = expected_owner
+        self.bucket = bucket
+        self.require_quarantine_empty = require_quarantine_empty
+        self.hook = hook
+
+    def prepare(self, job_id: str, snapshot: ExportSnapshot, *, now: datetime) -> PreparedArchive:
+        """Validate the complete local bundle and sync a unique prepared intent."""
+        self._require_lock()
+        self.require_quarantine_empty()
+        bundle = self.spool.workspace / EXPORT_WORKSPACE_BUNDLE_NAME
+        inspection = inspect_portable_bundle(bundle, expected_owner=self.owner)
+        if (
+            snapshot.source_manifest is None
+            or inspection.provenance_manifest != snapshot.manifest
+            or inspection.release_tree_digest != snapshot.measurement.digest
+            or inspection.release_tree_digest.to_dict() != snapshot.deployment["releaseTreeDigest"]
+        ):
+            raise ArchiveJournalError("archive bundle did not bind its separate source snapshot")
+        candidate = deepcopy(snapshot.source_manifest)
+        cast(dict[str, object], candidate["spec"])["desiredState"] = "archived"
+        if candidate != snapshot.manifest:
+            raise ArchiveJournalError(
+                "archive candidate changed fields outside lifecycle authority"
+            )
+        with self.repository.transaction(mode=LockMode.EXCLUSIVE) as transaction:
+            job = transaction.read(StateRecordPath.authorization_job(job_id))
+            request = cast(dict[str, object], job.document["request"])
+            expected = cast(dict[str, object], job.document["expectedSource"])
+            if (
+                job.document["phase"] != "claimed"
+                or job.document["compatibilityVersion"] != "static-job-v2"
+                or job.document["artifact"] is not None
+                or request["operation"] != "archive"
+                or expected["lifecycle"] not in {"active", "suspended"}
+                or build_expected_source(transaction, request) != expected
+                or expected["manifestDigest"] != manifest_digest(snapshot.source_manifest).to_dict()
+                or expected["deploymentDigest"]
+                != deployment_record_digest(snapshot.deployment).to_dict()
+            ):
+                raise ArchiveJournalError("archive construction source is not job-authorized")
+            if transaction.measure_intent_records().records:
+                raise ArchiveJournalError("archive construction requires reconciled intents")
+            intent: dict[str, object] = {
+                "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+                "kind": "ArchiveConstructionIntent",
+                "intentId": _identity(),
+                "uploadAttemptId": _identity(),
+                "jobId": job_id,
+                "operatorPrincipal": job.document["operatorPrincipal"],
+                "tenantId": request["tenantId"],
+                "correlationId": request["correlationId"],
+                "sourceManifestDigest": expected["manifestDigest"],
+                "candidateManifestDigest": inspection.provenance_manifest_digest.to_dict(),
+                "deploymentRecordDigest": expected["deploymentDigest"],
+                "releaseTreeDigest": inspection.release_tree_digest.to_dict(),
+                "bundleDigest": inspection.bundle_digest.to_dict(),
+                "bundleSize": inspection.bundle_size,
+                "bucket": self.bucket,
+                "key": "",
+                "versionId": None,
+                "phase": "prepared",
+                "createdAt": _timestamp(now),
+            }
+            intent["key"] = archive_key(intent["uploadAttemptId"])
+            path = StateRecordPath.archive_construction_intent(intent["intentId"])
+            _reserve_journal(transaction.measure_filesystem_capacity)
+            stored = transaction.create_immutable(path, intent)
+        self._notify(ArchiveJournalBoundary.CONSTRUCTION_SYNC)
+        return PreparedArchive(stored, snapshot, inspection)
+
+    def confirm(
+        self, prepared: PreparedArchive, verified: VerifiedArchiveUpload
+    ) -> UploadedArchive:
+        """Bind the session's verified version without making another remote call."""
+        self._require_lock()
+        if verified.construction_revision != prepared.construction.revision:
+            raise ArchiveJournalError("verified upload belongs to another prepared construction")
+        if verified.version_id == "null":
+            raise ArchiveJournalError("archive confirmation requires a versioned object")
+        intent = deepcopy(prepared.construction.document)
+        if intent["phase"] != "prepared" or intent["versionId"] is not None:
+            raise ArchiveJournalError("construction confirmation requires prepared evidence")
+        intent.update(versionId=verified.version_id, phase="uploaded")
+        record = _archive_record(intent, prepared.snapshot.deployment)
+        require_archive_inspection(prepared.inspection, record, prepared.snapshot.manifest)
+        with self.repository.transaction(mode=LockMode.EXCLUSIVE) as transaction:
+            job = transaction.read(StateRecordPath.authorization_job(intent["jobId"])).document
+            if job["phase"] != "claimed":
+                raise ArchiveJournalError("construction authorization is no longer claimed")
+            stored = transaction.compare_and_swap(
+                StateRecordPath.archive_construction_intent(intent["intentId"]),
+                prepared.construction.revision,
+                intent,
+            )
+        self._notify(ArchiveJournalBoundary.UPLOADED_SYNC)
+        return UploadedArchive(stored, record)
+
+    def _require_lock(self) -> None:
+        self.spool.locks.require_held(LockName.EXPORT, mode=LockMode.EXCLUSIVE)
+
+    def _notify(self, boundary: ArchiveJournalBoundary) -> None:
+        if self.hook is not None:
+            self.hook(boundary)
 
 
 class ArchiveJournal:
@@ -104,74 +250,24 @@ class ArchiveJournal:
         self.require_quarantine_empty = require_quarantine_empty
         self.hook = hook
 
-    def construct(  # noqa: PLR0915 - durable and remote barriers remain visible
-        self, job_id: str, snapshot: ExportSnapshot, *, now: datetime
-    ) -> UploadedArchive:
+    def construct(self, job_id: str, snapshot: ExportSnapshot, *, now: datetime) -> UploadedArchive:
         """Create one fresh intent and send exactly one complete portable bundle.
 
         An existing intent always rejects this fresh path, including prepared
         intents whose PutObject response was lost. Recovery discovers that key;
         it never retries its PutObject.
         """
-        self._require_lock()
-        self.require_quarantine_empty()
-        bundle = self.spool.workspace / EXPORT_WORKSPACE_BUNDLE_NAME
-        inspection = inspect_portable_bundle(bundle, expected_owner=self.owner)
-        if (
-            snapshot.source_manifest is None
-            or inspection.provenance_manifest != snapshot.manifest
-            or inspection.release_tree_digest != snapshot.measurement.digest
-            or inspection.release_tree_digest.to_dict() != snapshot.deployment["releaseTreeDigest"]
-        ):
-            raise ArchiveJournalError("archive bundle did not bind its separate source snapshot")
-        candidate = deepcopy(snapshot.source_manifest)
-        cast(dict[str, object], candidate["spec"])["desiredState"] = "archived"
-        if candidate != snapshot.manifest:
-            raise ArchiveJournalError(
-                "archive candidate changed fields outside lifecycle authority"
-            )
-        with self.repository.transaction(mode=LockMode.EXCLUSIVE) as transaction:
-            job = transaction.read(StateRecordPath.authorization_job(job_id))
-            request = cast(dict[str, object], job.document["request"])
-            expected = cast(dict[str, object], job.document["expectedSource"])
-            if (
-                job.document["phase"] != "claimed"
-                or request["operation"] != "archive"
-                or expected["lifecycle"] not in {"active", "suspended"}
-                or build_expected_source(transaction, request) != expected
-                or expected["manifestDigest"] != manifest_digest(snapshot.source_manifest).to_dict()
-                or expected["deploymentDigest"]
-                != deployment_record_digest(snapshot.deployment).to_dict()
-            ):
-                raise ArchiveJournalError("archive construction source is not job-authorized")
-            if transaction.measure_intent_records().records:
-                raise ArchiveJournalError("archive construction requires reconciled intents")
-            intent: dict[str, object] = {
-                "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
-                "kind": "ArchiveConstructionIntent",
-                "intentId": _identity(),
-                "uploadAttemptId": _identity(),
-                "jobId": job_id,
-                "operatorPrincipal": job.document["operatorPrincipal"],
-                "tenantId": request["tenantId"],
-                "correlationId": request["correlationId"],
-                "sourceManifestDigest": expected["manifestDigest"],
-                "candidateManifestDigest": inspection.provenance_manifest_digest.to_dict(),
-                "deploymentRecordDigest": expected["deploymentDigest"],
-                "releaseTreeDigest": inspection.release_tree_digest.to_dict(),
-                "bundleDigest": inspection.bundle_digest.to_dict(),
-                "bundleSize": inspection.bundle_size,
-                "bucket": self.remote.bucket,
-                "key": "",
-                "versionId": None,
-                "phase": "prepared",
-                "createdAt": _timestamp(now),
-            }
-            intent["key"] = archive_key(intent["uploadAttemptId"])
-            path = StateRecordPath.archive_construction_intent(intent["intentId"])
-            _reserve_journal(transaction.measure_filesystem_capacity)
-            stored = transaction.create_immutable(path, intent)
-        self._notify(ArchiveJournalBoundary.CONSTRUCTION_SYNC)
+        journal = ArchiveConstructionJournal(
+            self.repository,
+            self.spool,
+            expected_owner=self.owner,
+            bucket=self.remote.bucket,
+            require_quarantine_empty=self.require_quarantine_empty,
+            hook=self.hook,
+        )
+        prepared = journal.prepare(job_id, snapshot, now=now)
+        intent = prepared.construction.document
+        inspection = prepared.inspection
         inventory: RemoteInventory | None = None
         try:
             inventory = self.remote.inventory()
@@ -221,12 +317,9 @@ class ArchiveJournal:
                 )
             )
             raise
-        intent.update(versionId=version, phase="uploaded")
-        stored = self.repository.compare_and_swap(path, stored.revision, intent)
-        self._notify(ArchiveJournalBoundary.UPLOADED_SYNC)
-        record = _archive_record(intent, snapshot.deployment)
-        require_archive_inspection(inspection, record, snapshot.manifest)
-        return UploadedArchive(stored, record)
+        return journal.confirm(
+            prepared, VerifiedArchiveUpload(prepared.construction.revision, version)
+        )
 
     def prepare_retirement(self, job_id: str, *, now: datetime) -> StoredContract:
         """Bind the complete current archive before restore or ordinary deletion."""

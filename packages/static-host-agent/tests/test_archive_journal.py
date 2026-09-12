@@ -10,6 +10,7 @@ from typing import BinaryIO, cast
 
 import pytest
 from lowerduckpond_static_contracts import (
+    ContractError,
     canonical_json_bytes,
     decode_contract,
     deployment_record_digest,
@@ -17,9 +18,11 @@ from lowerduckpond_static_contracts import (
     result_digest,
 )
 from lowerduckpond_static_host_agent.archive_journal import (
+    ArchiveConstructionJournal,
     ArchiveJournal,
     ArchiveJournalBoundary,
     ArchiveJournalError,
+    VerifiedArchiveUpload,
 )
 from lowerduckpond_static_host_agent.archive_quarantine import ArchiveQuarantine
 from lowerduckpond_static_host_agent.archive_remote import (
@@ -35,7 +38,12 @@ from lowerduckpond_static_host_agent.issuance import AuthorizationIssuer
 from lowerduckpond_static_host_agent.locks import LockManager, LockMode
 from lowerduckpond_static_host_agent.portable_bundle import build_portable_bundle
 from lowerduckpond_static_host_agent.release_tree import measure_release_tree
-from lowerduckpond_static_host_agent.repository import StateRecordPath, StateRepository
+from lowerduckpond_static_host_agent.repository import (
+    StateConflictError,
+    StateRecordPath,
+    StateRepository,
+    StateRevision,
+)
 
 _OWNER = os.geteuid()
 _TENANT = "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100"
@@ -285,6 +293,80 @@ def test_construction_syncs_before_remote_calls_and_binds_exact_verified_version
             journal.repository.read(StateRecordPath.tenant_desired(_TENANT)).document
             == snapshot.source_manifest
         )
+
+
+def test_local_construction_journal_confirms_only_its_matching_receipt(tmp_path: Path) -> None:
+    client = MemoryRemote()
+    with prepared_source(tmp_path, client) as (remote_journal, job_id, snapshot, quarantine):
+        journal = ArchiveConstructionJournal(
+            remote_journal.repository,
+            remote_journal.spool,
+            expected_owner=_OWNER,
+            bucket=_BUCKET,
+            require_quarantine_empty=quarantine.require_empty,
+        )
+        prepared = journal.prepare(job_id, snapshot, now=_NOW)
+        revision = prepared.construction.revision
+        wrong_revision = StateRevision(revision.contract_kind, revision.byte_count, "a" * 64)
+        with pytest.raises(ArchiveJournalError, match="another prepared"):
+            journal.confirm(prepared, VerifiedArchiveUpload(wrong_revision, "verified-version"))
+        with pytest.raises(ArchiveJournalError, match="reconciled intents"):
+            journal.prepare(job_id, snapshot, now=_NOW)
+        receipt = VerifiedArchiveUpload(revision, "verified-version")
+        uploaded = journal.confirm(prepared, receipt)
+        assert uploaded.record["versionId"] == "verified-version"
+        assert uploaded.construction.document["phase"] == "uploaded"
+        with pytest.raises(StateConflictError):
+            journal.confirm(prepared, receipt)
+        assert client.calls == []
+
+
+@pytest.mark.parametrize("version", ["", "null", "x" * 1025])
+def test_local_construction_rejects_invalid_version_without_advancing_intent(
+    tmp_path: Path, version: str
+) -> None:
+    client = MemoryRemote()
+    with prepared_source(tmp_path, client) as (remote_journal, job_id, snapshot, quarantine):
+        journal = ArchiveConstructionJournal(
+            remote_journal.repository,
+            remote_journal.spool,
+            expected_owner=_OWNER,
+            bucket=_BUCKET,
+            require_quarantine_empty=quarantine.require_empty,
+        )
+        prepared = journal.prepare(job_id, snapshot, now=_NOW)
+        with pytest.raises((ContractError, ArchiveJournalError)):
+            journal.confirm(
+                prepared, VerifiedArchiveUpload(prepared.construction.revision, version)
+            )
+        current = journal.repository.read(
+            StateRecordPath.archive_construction_intent(prepared.construction.document["intentId"])
+        )
+        assert current.revision == prepared.construction.revision
+        assert client.calls == []
+
+
+def test_local_construction_cannot_advance_a_failed_authorization(tmp_path: Path) -> None:
+    client = MemoryRemote()
+    with prepared_source(tmp_path, client) as (remote_journal, job_id, snapshot, quarantine):
+        journal = ArchiveConstructionJournal(
+            remote_journal.repository,
+            remote_journal.spool,
+            expected_owner=_OWNER,
+            bucket=_BUCKET,
+            require_quarantine_empty=quarantine.require_empty,
+        )
+        prepared = journal.prepare(job_id, snapshot, now=_NOW)
+        path = StateRecordPath.authorization_job(job_id)
+        job = journal.repository.read(path)
+        failed = job.document
+        failed["phase"] = "failed"
+        journal.repository.compare_and_swap(path, job.revision, failed)
+        with pytest.raises(ArchiveJournalError, match="no longer claimed"):
+            journal.confirm(
+                prepared, VerifiedArchiveUpload(prepared.construction.revision, "verified-version")
+            )
+        assert client.calls == []
 
 
 @pytest.mark.parametrize(
