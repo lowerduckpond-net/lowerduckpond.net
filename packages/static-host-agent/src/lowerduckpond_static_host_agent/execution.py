@@ -2036,9 +2036,12 @@ def _bind_dispatch_authority(  # noqa: PLR0912,PLR0915 - dispatch authority matr
         raise ExecutionError("authorization request authority is malformed")
     artifact_operation = request["operation"] in {"deploy", "import"}
     expected_source = job.get("expectedSource")
-    source_release_operation = request["operation"] in {"deploy", "rollback", "export"} and (
-        type(expected_source) is dict and type(expected_source.get("deploymentDigest")) is dict
-    )
+    source_release_operation = request["operation"] in {
+        "deploy",
+        "rollback",
+        "export",
+        "restore",
+    } and (type(expected_source) is dict and type(expected_source.get("deploymentDigest")) is dict)
     if not artifact_operation and existing_release_digest is not None:
         raise ExecutionError("non-artifact dispatch carries artifact release authority")
     if not source_release_operation and existing_source_release_digest is not None:

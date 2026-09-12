@@ -131,7 +131,13 @@ def serve_archive_export(
                     or destination.descriptor is None
                 ):
                     raise ArchiveRemoteError("archive service requires one spool destination")
-                record = _read_authority(repository, job_id, bucket=remote.bucket)
+                record = _read_authority(
+                    repository,
+                    job_id,
+                    bucket=remote.bucket,
+                    operations=frozenset({"export", "restore"}),
+                    allow_restore_retirement=True,
+                )
                 _download(
                     spool,
                     remote,
@@ -149,6 +155,7 @@ def _read_authority(
     *,
     bucket: str,
     operations: frozenset[str] = frozenset({"export"}),
+    allow_restore_retirement: bool = False,
 ) -> dict[str, object]:
     with repository.transaction(mode=LockMode.EXCLUSIVE) as transaction:
         job = transaction.read(StateRecordPath.authorization_job(job_id)).document
@@ -161,7 +168,6 @@ def _read_authority(
             or job["artifact"] is not None
             or request["operation"] not in operations
             or expected["lifecycle"] != "archived"
-            or transaction.measure_intent_records().records
             or build_expected_source(transaction, request) != expected
         ):
             raise ArchiveRemoteError("archive download has no current claimed export authority")
@@ -189,6 +195,32 @@ def _read_authority(
             or record["releaseTreeDigest"] != deployment["releaseTreeDigest"]
         ):
             raise ArchiveRemoteError("archive download record bindings disagree")
+        intents = transaction.measure_intent_records().records
+        if intents:
+            if (
+                not allow_restore_retirement
+                or request["operation"] != "restore"
+                or len(intents) != 1
+            ):
+                raise ArchiveRemoteError(
+                    "archive download is blocked by active lifecycle authority"
+                )
+            path, retirement = transaction.read_intent(intents[0].intent_id)
+            document = retirement.document
+            if (
+                path != StateRecordPath.archive_retirement_intent(intents[0].intent_id)
+                or document["compatibilityVersion"] != "static-retirement-v2"
+                or document["provenance"] != {"kind": "authorization-job", "jobId": job_id}
+                or document["transition"] != "restore"
+                or document["phase"] != "prepared"
+                or document["archiveRecord"] != record
+                or document["tenantId"] != request["tenantId"]
+                or document["correlationId"] != request["correlationId"]
+                or document["operatorPrincipal"] != job["operatorPrincipal"]
+                or document["sourceManifestDigest"] != expected["manifestDigest"]
+                or document["archiveRecordDigest"] != expected["archiveRecordDigest"]
+            ):
+                raise ArchiveRemoteError("archive download retirement authority disagrees")
         return record
 
 

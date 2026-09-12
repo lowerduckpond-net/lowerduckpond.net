@@ -23,6 +23,7 @@ from lowerduckpond_static_host_agent.archive_handler import ArchiveLifecycleHand
 from lowerduckpond_static_host_agent.archive_quarantine import ArchiveQuarantine
 from lowerduckpond_static_host_agent.archive_remote import ArchiveRemoteError, ArchiveRemoteStore
 from lowerduckpond_static_host_agent.archive_revalidate import revalidate_archive
+from lowerduckpond_static_host_agent.archive_service import ArchiveExportClient
 from lowerduckpond_static_host_agent.caddy_runtime import CaddyRuntime
 from lowerduckpond_static_host_agent.execution import AuthorizationExecutor
 from lowerduckpond_static_host_agent.export_spool import ExportSpool
@@ -30,6 +31,7 @@ from lowerduckpond_static_host_agent.intake import ArtifactIntake
 from lowerduckpond_static_host_agent.issuance import AuthorizationIssuer
 from lowerduckpond_static_host_agent.release_store import DeploymentReleaseStore
 from lowerduckpond_static_host_agent.repository import StateRecordPath, StateRepository
+from lowerduckpond_static_host_agent.restore_handler import RestoreLifecycleHandler
 from lowerduckpond_static_host_agent.route_snapshot import snapshot_tenant_routes
 from test_archive_activate import SimulatedCrashError
 from test_archive_cleanup_service import _serve as _serve_cleanup
@@ -44,6 +46,7 @@ from test_archive_journal import (
     capacity,  # noqa: F401 - shared autouse capacity fixture
     setup_root,
 )
+from test_archive_service import _serve as _serve_export
 from test_route_commit import _Entropy, _Runtime
 
 
@@ -66,7 +69,11 @@ def _serve_construction(stream: socket.socket, root: Path, remote: ArchiveRemote
 
 @contextmanager
 def _host(
-    tmp_path: Path, *, lost_response: bool = False, revalidation: bool = False
+    tmp_path: Path,
+    *,
+    lost_response: bool = False,
+    revalidation: bool = False,
+    restore: bool = False,
 ) -> Iterator[
     tuple[AuthorizationExecutor, str, StateRepository, MemoryRemote, _Runtime, list[Future[None]]]
 ]:
@@ -148,11 +155,35 @@ def _host(
             verifier=runtime.verify,
         )
 
+        def connect_read() -> socket.socket:
+            sender, receiver = socket.socketpair()
+            futures.append(pool.submit(_serve_export, receiver, root, remote))
+            return sender
+
+        restore_handler = RestoreLifecycleHandler(
+            repository,
+            spool,
+            cast(CaddyRuntime, runtime),
+            store,
+            OpenGate(),
+            expected_owner=_OWNER,
+            archive_source=ArchiveExportClient(
+                spool, connector=connect_read, expected_peer_uid=_OWNER
+            ),
+            cleanup_client=cleanup,
+            now=lambda: _NOW,
+            clock=lambda: 1_789_000_001_000,
+            entropy=_Entropy(),
+            reloader=runtime.reload,
+            restorer=runtime.restore,
+            verifier=runtime.verify,
+        )
+
         def executor_for(canonical_job: str) -> AuthorizationExecutor:
             return AuthorizationExecutor(
                 repository,
                 intake,
-                handlers={"archive": handler},
+                handlers={"archive": handler, "restore": restore_handler},
                 retained_archive_validator=partial(
                     cleanup.verify_terminal, canonical_job, mode="retained"
                 ),
@@ -166,14 +197,14 @@ def _host(
             )
 
         executor = executor_for(issued.job_id)
-        if revalidation:
+        if revalidation or restore:
             assert executor.execute(issued.job_id).result["status"] == "succeeded"
             issued = issuer.issue(
                 canonical_json_bytes(
                     {
                         "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
                         "kind": "OperationRequest",
-                        "operation": "archive",
+                        "operation": "restore" if restore else "archive",
                         "tenantId": _TENANT,
                         "correlationId": "0198d17f-6f4a-7000-8000-000000000999",
                     }
