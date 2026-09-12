@@ -1648,3 +1648,46 @@ def test_caddy_has_no_tenant_routes_while_publication_is_dark(host: Host) -> Non
     )
     assert unknown.rc == 0
     assert unknown.stdout == "404"
+
+
+def test_emergency_administration_is_separate_from_provisioner_authority(host: Host) -> None:
+    helper = host.file("/usr/local/libexec/lowerduckpond/emergency-delete-tenant")
+    assert helper.is_file and helper.user == "root" and helper.group == "root"
+    assert helper.mode == ARCHIVE_PRIVATE_DIRECTORY_MODE
+    sudoers = host.file("/etc/sudoers.d/lowerduckpond-static-jobs")
+    assert not sudoers.contains("emergency-delete")
+    for account in ("ldp-provisioner", "ldp-operator", "ldp-runtime", "caddy"):
+        assert host.run("runuser -u %s -- test -x %s", account, helper.path).rc != 0
+        assert host.run("runuser -u %s -- sudo -n %s --recover", account, helper.path).rc != 0
+    assert (
+        host.run("systemctl is-active --quiet lowerduckpond-static-emergency-reconcile.timer").rc
+        == 0
+    )
+    assert host.run("%s --recover", helper.path).rc == 0
+    unit = "lowerduckpond-static-emergency-reconcile.service"
+    installed = host.file(f"/etc/systemd/system/{unit}")
+    for expected in (
+        "User=root",
+        "Group=caddy",
+        "NoNewPrivileges=true",
+        "TemporaryFileSystem=/:ro",
+        "CapabilityBoundingSet=CAP_CHOWN CAP_SETUID",
+    ):
+        assert installed.contains(expected)
+    selected = host.run(f"readlink --canonicalize {STATIC_HOST_AGENT_ROOT}/current").stdout.strip()
+    probe = (
+        "import os,pwd,socket,sys;"
+        f"sys.path.insert(0,{(selected + '/site-packages')!r});"
+        "from lowerduckpond_static_host_agent.archive_configuration "
+        "import load_archive_configuration;"
+        "assert load_archive_configuration().bucket=='molecule-tenant-archives';"
+        "assert os.statvfs('/').f_flag & os.ST_RDONLY;"
+        "assert not os.statvfs('/etc/caddy').f_flag & os.ST_RDONLY;"
+        f"assert not os.statvfs('{STATIC_STATE_ROOT}').f_flag & os.ST_RDONLY;"
+        f"assert not os.statvfs('{STATIC_RELEASE_ROOT}').f_flag & os.ST_RDONLY;"
+        "assert not os.path.exists('/etc/lowerduckpond/backup.env');"
+        "assert not os.path.exists('/root/.ssh');"
+        "os.seteuid(pwd.getpwnam('caddy').pw_uid);os.seteuid(0);"
+        "socket.socket(socket.AF_INET,socket.SOCK_STREAM).close()"
+    )
+    _run_installed_boundary_probe(host, unit, probe)

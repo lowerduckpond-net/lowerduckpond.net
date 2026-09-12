@@ -64,6 +64,7 @@
       - --plain
       - --no-legend
       - lowerduckpond-static-reconcile.service
+      - lowerduckpond-static-emergency-reconcile.service
       - lowerduckpond-static-worker@*.service
       - lowerduckpond-archive-export@*.service
       - lowerduckpond-archive-construction@*.service
@@ -299,6 +300,23 @@
     - check-current-caddy-generation
   when: not static_publication_enabled | bool
 
+- name: Install or inspect the root-only emergency deletion command
+  ansible.builtin.copy:
+    src: emergency-delete-tenant
+    dest: /usr/local/libexec/lowerduckpond/emergency-delete-tenant
+    owner: root
+    group: root
+    mode: "0700"
+  check_mode: "{{ static_publication_enabled | bool }}"
+  register: static_host_agent_emergency_command_probe
+
+- name: Refuse emergency command drift while tenant publication is enabled
+  ansible.builtin.assert:
+    that:
+      - not static_host_agent_emergency_command_probe.changed
+    quiet: true
+  when: static_publication_enabled | bool
+
 - name: Wait for pre-lock static host-agent processes to finish
   ansible.builtin.command:
     argv:
@@ -308,6 +326,7 @@
       - --plain
       - --no-legend
       - lowerduckpond-static-reconcile.service
+      - lowerduckpond-static-emergency-reconcile.service
       - lowerduckpond-static-worker@*.service
       - lowerduckpond-archive-export@*.service
       - lowerduckpond-archive-construction@*.service
@@ -642,6 +661,18 @@
     - lowerduckpond-archive-cleanup@.service
   notify: Reload systemd for the static host agent
 
+- name: Install separately privileged emergency recovery units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - lowerduckpond-static-emergency-reconcile.service
+    - lowerduckpond-static-emergency-reconcile.timer
+  notify: Reload systemd for the static host agent
+
 - name: Install the inert static worker boundary
   ansible.builtin.template:
     src: lowerduckpond-static-worker@.service.j2
@@ -711,6 +742,12 @@
 - name: Start bounded static authorization reconciliation
   ansible.builtin.systemd_service:
     name: lowerduckpond-static-reconcile.timer
+    state: started
+
+- name: Enable bounded recovery of already recorded emergency authority
+  ansible.builtin.systemd_service:
+    name: lowerduckpond-static-emergency-reconcile.timer
+    enabled: true
     state: started
 
 - name: Prove an empty Caddy candidate passes the publication boundary

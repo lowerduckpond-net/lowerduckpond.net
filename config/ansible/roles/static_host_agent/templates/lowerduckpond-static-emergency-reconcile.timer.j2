@@ -1,0 +1,11 @@
+[Unit]
+Description=Recover only recorded Lower Duck Pond emergency administrator authority
+
+[Timer]
+OnBootSec=30s
+OnUnitInactiveSec=1min
+AccuracySec=5s
+Unit=lowerduckpond-static-emergency-reconcile.service
+
+[Install]
+WantedBy=timers.target
