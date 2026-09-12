@@ -181,22 +181,26 @@ quarantine removal, ordinary restore, and final remote absence.
 
 Delivery is split into the [archive boundary PR](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/137),
 [lifecycle PR](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/138), and
-its dependent convergence tooling review. Each slice requires reviewer acceptance
+[convergence PR](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/139). Each slice requires reviewer acceptance
 and passing required CI before release. The original integration branch retains
 the plan-only first commit. No production credentials are present in the coder
 workspace; live checks run on the operator's secure workstation.
 
-Review found and corrected three recovery defects. An ambiguous construction
+Review found and corrected five recovery defects. An ambiguous construction
 response now preserves its journal until a subsequent invocation acquires a fresh
 export lease, after the private service finishes its in-flight upload. Restore
 replay reserves only remaining durable writes and permits journal-only completion
-without a new capacity reservation. Root emergency recovery also resolves a
+without a new capacity reservation. The same correction also applies to archive
+revalidation and failed-construction replay. Root emergency recovery also resolves a
 remaining quarantine after its retirement intent has already disappeared, using
 independent full inventory and retained-byte verification without remote deletion
 authority. Regressions cover the actual service disconnect race, six restore
 commit boundaries, and both interruption and inventory failure after emergency
 retirement. All 82 focused lifecycle tests passed, followed by the full revised host-agent
-suite: 1,741 passed and two documented skips. Strict typing also passed.
+suite: 1,741 passed and two documented skips. The follow-up capacity corrections
+passed 93 related lifecycle tests with one documented skip, including exact
+remaining-write assertions at every revalidation and failed-construction durable
+boundary. Strict typing also passed.
 
 The build now pins dependency launcher interpreters to `/usr/bin/python3`, removing
 checkout paths from the host artifact. Before the review recovery changes, two
@@ -229,7 +233,10 @@ validation passed. A fresh fixture installation exposed
 an automatically allocated subordinate-ID range for `ldp-admin` overlapping the
 runtime range. The disposable fixture now removes only that unused administrator
 allocation; fresh preparation, convergence, and idempotence passed. Production
-allocation rules remain strict.
+allocation rules remain strict. The live-configuration Ansible path also passed
+convergence with the existing disposable MinIO credential supplied through the
+private environment handoff. This checks the handoff mechanism and is not live
+Spaces provider evidence.
 
 ## Outstanding convergence gates
 
