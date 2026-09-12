@@ -143,7 +143,13 @@ def serve_archive_export(
             channel.send({"status": "downloaded", "archiveRecord": record})
 
 
-def _read_authority(repository: StateRepository, job_id: str, *, bucket: str) -> dict[str, object]:
+def _read_authority(
+    repository: StateRepository,
+    job_id: str,
+    *,
+    bucket: str,
+    operations: frozenset[str] = frozenset({"export"}),
+) -> dict[str, object]:
     with repository.transaction(mode=LockMode.EXCLUSIVE) as transaction:
         job = transaction.read(StateRecordPath.authorization_job(job_id)).document
         request = cast(dict[str, object], job["request"])
@@ -153,7 +159,7 @@ def _read_authority(repository: StateRepository, job_id: str, *, bucket: str) ->
             or job["compatibilityVersion"] != "static-job-v2"
             or job["phase"] != "claimed"
             or job["artifact"] is not None
-            or request["operation"] != "export"
+            or request["operation"] not in operations
             or expected["lifecycle"] != "archived"
             or transaction.measure_intent_records().records
             or build_expected_source(transaction, request) != expected

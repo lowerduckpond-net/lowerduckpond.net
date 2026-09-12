@@ -19,9 +19,13 @@ from lowerduckpond_static_host_agent.archive_transport import (
     ArchiveChannel,
     ArchiveTransportError,
 )
+from lowerduckpond_static_host_agent.archive_verification import (
+    verify_archive_source,
+    verify_archive_terminal,
+)
 from lowerduckpond_static_host_agent.export_spool import ExportSpool
 from lowerduckpond_static_host_agent.issuance import build_expected_source
-from lowerduckpond_static_host_agent.locks import LockMode
+from lowerduckpond_static_host_agent.locks import LockMode, LockName
 from lowerduckpond_static_host_agent.repository import StateRecordPath, StateRepository
 
 ARCHIVE_CLEANUP_SOCKET_PATH: Final = Path("/run/lowerduckpond-archive/cleanup.sock")
@@ -61,9 +65,34 @@ class ArchiveCleanupClient:
         """Remove a journal only after independent terminal-state and remote proof."""
         self._request(job_id, intent_id, operation="finish")
 
+    def verify_source(self, job_id: str, record: dict[str, object]) -> None:
+        """Verify one current archived source while the caller retains export exclusion."""
+        if self._exchange(job_id, operation="verify-source") != {
+            "status": "verified",
+            "mode": "retained",
+            "archiveRecord": record,
+        }:
+            raise ArchiveRemoteError("source verification did not confirm its archive")
+
+    def verify_terminal(self, job_id: str, record: dict[str, object] | None, *, mode: str) -> bool:
+        """Acquire exclusion for the executor's independent terminal revalidation."""
+        if mode not in {"retained", "retired", "accounted"}:
+            raise ArchiveRemoteError("invalid terminal verification mode")
+        with self._spool.locks.acquire(LockName.EXPORT, blocking=True):
+            response = self._exchange(job_id, operation="verify-terminal")
+        return response == {"status": "verified", "mode": mode, "archiveRecord": record}
+
     def _request(self, job_id: str, intent_id: str, *, operation: str) -> None:
-        canonical_job = validate_uuid7(job_id)
         canonical_intent = validate_uuid7(intent_id)
+        if self._exchange(job_id, operation=operation) != {
+            "status": "cleaned",
+            "operation": operation,
+            "intentId": canonical_intent,
+        }:
+            raise ArchiveRemoteError("archive cleanup did not confirm its journal")
+
+    def _exchange(self, job_id: str, *, operation: str) -> dict[str, object]:
+        canonical_job = validate_uuid7(job_id)
         lease = self._spool.locks.duplicate_export_descriptor()
         try:
             with ArchiveChannel(
@@ -76,12 +105,11 @@ class ArchiveCleanupClient:
                     descriptor=lease,
                 )
                 with channel.receive() as response:
-                    if response.descriptor is not None or response.payload != {
-                        "status": "cleaned",
-                        "operation": operation,
-                        "intentId": canonical_intent,
-                    }:
-                        raise ArchiveRemoteError("archive cleanup did not confirm its journal")
+                    if response.descriptor is not None:
+                        raise ArchiveRemoteError(
+                            "archive cleanup returned an unsolicited descriptor"
+                        )
+                    return response.payload
         except (OSError, ContractError, ArchiveTransportError) as error:
             raise ArchiveRemoteError("archive cleanup did not complete") from error
         finally:
@@ -110,14 +138,14 @@ def serve_archive_cleanup(  # noqa: PLR0913 - explicit privileged boundaries
         if (
             set(payload) != {"protocol", "operation", "jobId"}
             or payload["protocol"] != _PROTOCOL
-            or payload["operation"] not in {"purge-construction", "finish"}
+            or payload["operation"]
+            not in {"purge-construction", "finish", "verify-source", "verify-terminal"}
             or request.descriptor is None
         ):
             raise ArchiveRemoteError("archive cleanup requires one job-bound request and lease")
         job_id = validate_uuid7(payload["jobId"])
         operation = payload["operation"]
         with spool.locks.borrow_export_descriptor(request.descriptor):
-            intent_id = _cleanup_authority(repository, job_id, operation=operation)
             journal = ArchiveJournal(
                 repository,
                 spool,
@@ -126,6 +154,15 @@ def serve_archive_cleanup(  # noqa: PLR0913 - explicit privileged boundaries
                 quarantine=quarantine.record,
                 require_quarantine_empty=quarantine.require_empty,
             )
+            if operation in {"verify-source", "verify-terminal"}:
+                proof = (
+                    verify_archive_source(journal, job_id)
+                    if operation == "verify-source"
+                    else verify_archive_terminal(journal, job_id)
+                )
+                channel.send(proof)
+                return
+            intent_id = _cleanup_authority(repository, job_id, operation=operation)
             if operation == "purge-construction":
                 journal.purge_unbound_construction(intent_id)
             else:
