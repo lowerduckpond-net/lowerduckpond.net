@@ -195,8 +195,11 @@ def test_emergency_deletion_recovers_with_distinct_administrator_authority(
             )
 
 
-def test_emergency_tombstone_remains_visible_to_ordinary_result_history(tmp_path: Path) -> None:
-    with _emergency(tmp_path, "undeployed") as (handler, tenant, _memory):
+@pytest.mark.parametrize("lifecycle", ["undeployed", "archived"])
+def test_emergency_tombstone_remains_visible_to_ordinary_result_history(
+    tmp_path: Path, lifecycle: str
+) -> None:
+    with _emergency(tmp_path, lifecycle) as (handler, tenant, _memory):
         with handler.repository.publication_transaction() as transaction:
             earlier = transaction.read(
                 StateRecordPath.authorization_result(
