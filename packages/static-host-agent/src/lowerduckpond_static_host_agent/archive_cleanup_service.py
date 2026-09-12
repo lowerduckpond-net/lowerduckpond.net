@@ -167,6 +167,10 @@ def serve_archive_cleanup(  # noqa: PLR0913 - explicit privileged boundaries
                 journal.purge_unbound_construction(intent_id)
             else:
                 journal.finish(intent_id)
+                # The journal has already supplied deletion authority. Whole-bucket
+                # verification may now clear an admission closure left by that upload;
+                # it grants no permission to delete any unknown object.
+                quarantine.resolve(repository, remote)
             channel.send({"status": "cleaned", "operation": operation, "intentId": intent_id})
 
 

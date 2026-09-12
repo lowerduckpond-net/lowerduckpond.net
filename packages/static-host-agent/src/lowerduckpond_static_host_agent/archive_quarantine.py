@@ -106,11 +106,6 @@ class ArchiveQuarantine:
                 return False
             if transaction.measure_intent_records().records:
                 raise ArchiveRemoteError("resolve all intents before reopening archive admission")
-            for value in cast(list[dict[str, object]], previous["versions"]):
-                if not cast(str, value["key"]).startswith("archives/"):
-                    raise ArchiveRemoteError(
-                        "quarantine includes versions outside managed inventory"
-                    )
             records = [
                 transaction.read(StateRecordPath.tenant_archive(tenant_id, deployment_id)).document
                 for tenant_id in transaction.measure_inventory().tenant_ids

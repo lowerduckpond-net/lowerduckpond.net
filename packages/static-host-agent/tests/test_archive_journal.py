@@ -491,6 +491,26 @@ def test_quarantine_survives_reopen_and_preserves_all_observed_versions(tmp_path
             reopened.require_empty()
 
 
+@pytest.mark.parametrize("key", ["archives/unknown", "outside/archive-prefix"])
+def test_quarantine_requires_unknown_keys_to_be_independently_resolved_before_reopening(
+    tmp_path: Path, key: str
+) -> None:
+    client = MemoryRemote()
+    client.require_intent = False
+    with prepared_source(tmp_path, client) as (journal, _job_id, _snapshot, quarantine):
+        client.versions = [{"Key": key, "VersionId": "unknown", "Size": 10}]
+        quarantine.record(journal.remote.inventory())
+        with pytest.raises(ArchiveRemoteError):
+            quarantine.resolve(journal.repository, journal.remote)
+        assert quarantine.read() is not None
+        # Independent administrative resolution is simulated only in the provider;
+        # quarantine resolution itself never grants a DeleteObject operation.
+        client.versions.clear()
+        assert quarantine.resolve(journal.repository, journal.remote)
+        assert quarantine.read() is None
+        assert "delete" not in client.calls
+
+
 def terminal_result(
     journal: ArchiveJournal,
     job_id: str,
