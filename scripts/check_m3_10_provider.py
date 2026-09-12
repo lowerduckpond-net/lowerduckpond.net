@@ -138,8 +138,12 @@ def check_edge(  # noqa: PLR0912 - each independent enforced-edge proof must pas
         raise GateError("edge identity is malformed")
     zone = f"/zones/{zone_id}"
     details = client.get(zone)
-    if not isinstance(details, dict) or details.get("name") != domain:
-        raise GateError("edge zone identity drifted")
+    if (
+        not isinstance(details, dict)
+        or details.get("name") != domain
+        or details.get("status") != "active"
+    ):
+        raise GateError("edge zone identity or active status drifted")
     records = client.get_collection(f"{zone}/dns_records")
     routing = [
         item

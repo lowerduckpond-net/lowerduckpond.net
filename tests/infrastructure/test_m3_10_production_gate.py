@@ -113,7 +113,7 @@ def test_storage_gate_rejects_public_and_foreign_grants(grantee: dict[str, str])
 class Edge:
     def __init__(self) -> None:
         self.responses: dict[str, object] = {
-            "": {"name": "lowerduckpond.net"},
+            "": {"name": "lowerduckpond.net", "status": "active"},
             "/dns_records": [
                 {"name": name, "type": "A", "content": "192.0.2.1", "proxied": True, "ttl": 1}
                 for name in ("lowerduckpond.net", "*.lowerduckpond.net")
@@ -159,6 +159,14 @@ def edge_gate(edge: Edge) -> None:
 
 def test_enforced_edge_passes_unchanged() -> None:
     edge_gate(Edge())
+
+
+@pytest.mark.parametrize("status", [None, "pending", "moved", "deactivated"])
+def test_edge_gate_requires_an_active_zone(status: str | None) -> None:
+    edge = Edge()
+    edge.responses[""] = {"name": "lowerduckpond.net", "status": status}
+    with pytest.raises(GateError, match="active status"):
+        edge_gate(edge)
 
 
 @pytest.mark.parametrize(
