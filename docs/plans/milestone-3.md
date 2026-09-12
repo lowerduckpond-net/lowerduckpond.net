@@ -1074,6 +1074,15 @@ links the corresponding unit, process, installed-host, and recovery checks.
 Production publication remains disabled. Remote archived export and
 archive/restore/deletion races remain gated on M3.10.
 
+Routine production convergence completed on 2026-09-12 from source revision
+`90b0353bd89328730e49c57babd8dc9d17d849aa` and selected host-agent artifact
+SHA-256
+`4e32c4a88d729b371b8cd5da96e5fedbc9f30266acb0984599c1d645939bef85`.
+The guarded runner passed its preflight and zero-change second pass before
+final acceptance reported `ok=20`, `changed=0`, `unreachable=0`, and `failed=0`,
+including encrypted-backup verification and a disposable restore. A read-only
+check confirmed the installed artifact identity. Publication remained disabled.
+
 Implement shared-lock snapshots, the global export spool, deterministic bundle
 construction, authenticated download, acknowledgement, and bounded expiry.
 Export active and suspended tenants without changing lifecycle. Reuse the same
