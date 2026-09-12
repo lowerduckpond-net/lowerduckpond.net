@@ -162,6 +162,7 @@ class _StateRecordName(StrEnum):
     EMERGENCY_RESULT = "emergency-result"
     AUTHORIZATION_CORRELATION = "authorization-correlation"
     TRANSACTION_INTENT = "transaction-intent"
+    EMERGENCY_DELETION_INTENT = "emergency-deletion-intent"
     ARCHIVE_CONSTRUCTION_INTENT = "archive-construction-intent"
     ARCHIVE_RETIREMENT_INTENT = "archive-retirement-intent"
 
@@ -242,6 +243,13 @@ class StateRecordPath:
         )
 
     @classmethod
+    def emergency_deletion_intent(cls, correlation_id: object) -> Self:
+        return cls._new(
+            _StateRecordName.EMERGENCY_DELETION_INTENT,
+            record_id=validate_uuid7(correlation_id),
+        )
+
+    @classmethod
     def transaction_intent(cls, intent_id: object) -> Self:
         return cls._new(
             _StateRecordName.TRANSACTION_INTENT,
@@ -292,6 +300,7 @@ class StateRecordPath:
             _StateRecordName.EMERGENCY_RESULT: ContractKind.OPERATION_RESULT,
             _StateRecordName.AUTHORIZATION_CORRELATION: ContractKind.AUTHORIZATION_JOB,
             _StateRecordName.TRANSACTION_INTENT: ContractKind.TRANSACTION_INTENT,
+            _StateRecordName.EMERGENCY_DELETION_INTENT: ContractKind.EMERGENCY_DELETION_INTENT,
             _StateRecordName.ARCHIVE_CONSTRUCTION_INTENT: (
                 ContractKind.ARCHIVE_CONSTRUCTION_INTENT
             ),
@@ -319,6 +328,7 @@ class StateRecordPath:
                 f"{self._require_record_id()}.json",
             )
         elif self.name in {
+            _StateRecordName.EMERGENCY_DELETION_INTENT,
             _StateRecordName.TRANSACTION_INTENT,
             _StateRecordName.ARCHIVE_CONSTRUCTION_INTENT,
             _StateRecordName.ARCHIVE_RETIREMENT_INTENT,
@@ -386,6 +396,7 @@ class StateRecordPath:
         elif (
             self.name
             in {
+                _StateRecordName.EMERGENCY_DELETION_INTENT,
                 _StateRecordName.TRANSACTION_INTENT,
                 _StateRecordName.ARCHIVE_CONSTRUCTION_INTENT,
                 _StateRecordName.ARCHIVE_RETIREMENT_INTENT,
@@ -412,6 +423,7 @@ class StateRecordPath:
     @property
     def is_intent(self) -> bool:
         return self.name in {
+            _StateRecordName.EMERGENCY_DELETION_INTENT,
             _StateRecordName.TRANSACTION_INTENT,
             _StateRecordName.ARCHIVE_CONSTRUCTION_INTENT,
             _StateRecordName.ARCHIVE_RETIREMENT_INTENT,
@@ -851,6 +863,7 @@ class StateRepository:
         document = decode_contract(raw, maximum_raw_bytes=MAX_CANONICAL_BYTES)
         factories = {
             ContractKind.TRANSACTION_INTENT: StateRecordPath.transaction_intent,
+            ContractKind.EMERGENCY_DELETION_INTENT: StateRecordPath.emergency_deletion_intent,
             ContractKind.ARCHIVE_CONSTRUCTION_INTENT: (StateRecordPath.archive_construction_intent),
             ContractKind.ARCHIVE_RETIREMENT_INTENT: StateRecordPath.archive_retirement_intent,
         }
