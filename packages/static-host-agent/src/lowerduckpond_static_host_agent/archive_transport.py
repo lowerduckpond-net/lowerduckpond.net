@@ -8,15 +8,18 @@ the service must independently derive that authority from durable state.
 from __future__ import annotations
 
 import array
-import json
 import math
 import os
 import socket
 import struct
 from dataclasses import dataclass, field
-from typing import Final, Self, cast
+from typing import Final, Self
 
-from lowerduckpond_static_contracts import ContractError, canonical_json_bytes
+from lowerduckpond_static_contracts import (
+    ContractError,
+    canonical_json_bytes,
+    decode_json_object,
+)
 
 MAX_ARCHIVE_REQUEST_BYTES: Final = 16 * 1024
 MAX_ARCHIVE_RESPONSE_BYTES: Final = 1024 * 1024
@@ -192,21 +195,9 @@ def _collect_descriptors(ancillary: list[tuple[int, int, bytes]], descriptors: l
 
 def _decode_payload(encoded: bytes, *, maximum_bytes: int) -> dict[str, object]:
     try:
-        payload = json.loads(encoded.decode("utf-8"), object_pairs_hook=_unique_object)
-        if (
-            type(payload) is not dict
-            or canonical_json_bytes(payload, maximum_bytes=maximum_bytes) != encoded
-        ):
+        payload = decode_json_object(encoded, maximum_bytes=maximum_bytes)
+        if canonical_json_bytes(payload, maximum_bytes=maximum_bytes) != encoded:
             raise ArchiveTransportError("archive metadata is not a canonical object")
     except (ContractError, UnicodeError, ValueError, RecursionError) as error:
         raise ArchiveTransportError("archive metadata is malformed") from error
-    return cast(dict[str, object], payload)
-
-
-def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    result: dict[str, object] = {}
-    for key, value in pairs:
-        if key in result:
-            raise ArchiveTransportError("archive metadata repeats a field")
-        result[key] = value
-    return result
+    return payload

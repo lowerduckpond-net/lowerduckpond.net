@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from typing import cast
+from typing import BinaryIO, Protocol, cast
 
 from lowerduckpond_static_contracts import ContractKind, manifest_digest, validate_contract
 
@@ -18,18 +18,46 @@ from lowerduckpond_static_host_agent.portable_bundle import (
 )
 
 
-def fetch_archive_bundle(
-    remote: ArchiveRemoteStore,
+class ArchiveBundleSource(Protocol):
+    """An exact archived read, bound to a root-issued opaque export job."""
+
+    def read_archive(
+        self, job_id: str, record: dict[str, object], destination: BinaryIO
+    ) -> None: ...
+
+
+class RemoteArchiveBundleSource:
+    """Direct storage adapter for trusted in-process qualification."""
+
+    def __init__(self, remote: ArchiveRemoteStore) -> None:
+        self._remote = remote
+
+    def read_archive(self, job_id: str, record: dict[str, object], destination: BinaryIO) -> None:
+        if record["bucket"] != self._remote.bucket:
+            raise ArchiveRemoteError("archive record belongs to another bucket")
+        self._remote.read_verified(
+            cast(str, record["key"]),
+            cast(str, record["versionId"]),
+            size=cast(int, record["bundleSize"]),
+            sha256=cast(str, cast(dict[str, object], record["bundleDigest"])["value"]),
+            destination=destination,
+        )
+
+
+def fetch_archive_bundle(  # noqa: PLR0913 - exact authority and spool inputs
+    source: ArchiveBundleSource,
     spool: ExportSpool,
     record: dict[str, object],
     manifest: dict[str, object],
     *,
+    job_id: str,
     expected_owner: int,
 ) -> PortableBundleInspection:
     """Download only a bound version; leave publication to its transaction.
 
-    The caller holds shared tenant-state while capturing these records and
-    export exclusion until publication or retirement. A failed download remains
+    The caller captures these records under shared tenant-state, releases that
+    inner lock, and retains export exclusion until publication or retirement.
+    The source independently binds the read to the job. A failed download remains
     private incomplete work, removed by the ordinary spool cleanup path.
     """
     spool.locks.require_held(LockName.EXPORT, mode=LockMode.EXCLUSIVE)
@@ -39,8 +67,7 @@ def fetch_archive_bundle(
     metadata = cast(dict[str, object], manifest["metadata"])
     desired = spec.get("desiredDeployment")
     if (
-        record["bucket"] != remote.bucket
-        or record["manifestDigest"] != manifest_digest(manifest).to_dict()
+        record["manifestDigest"] != manifest_digest(manifest).to_dict()
         or record["tenantId"] != metadata["id"]
         or spec["desiredState"] != "archived"
         or type(desired) is not dict
@@ -58,13 +85,7 @@ def fetch_archive_bundle(
         )
         with os.fdopen(descriptor, "wb", buffering=0) as destination:
             os.fchmod(destination.fileno(), 0o600)
-            remote.read_verified(
-                cast(str, record["key"]),
-                cast(str, record["versionId"]),
-                size=cast(int, record["bundleSize"]),
-                sha256=cast(str, cast(dict[str, object], record["bundleDigest"])["value"]),
-                destination=destination,
-            )
+            source.read_archive(job_id, record, destination)
             os.fsync(destination.fileno())
         os.fsync(parent)
     finally:

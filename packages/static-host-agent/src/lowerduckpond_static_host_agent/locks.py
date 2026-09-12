@@ -222,7 +222,7 @@ class LockManager:
         caller. This method grants no job, spool, or remote-object authority.
         """
 
-        self.require_held(LockName.EXPORT, mode=LockMode.EXCLUSIVE)
+        self.require_held(LockName.EXPORT, mode=LockMode.EXCLUSIVE, innermost=True)
         held = next(
             lock
             for lock in self._held()
@@ -325,6 +325,7 @@ class LockManager:
         *,
         mode: LockMode | None = None,
         descriptor: int | None = None,
+        innermost: bool = False,
     ) -> None:
         """Require this manager's named lock in the current execution context."""
 
@@ -341,6 +342,8 @@ class LockManager:
         if matching is None:
             requirement = "" if mode is None else f" in {mode.value} mode"
             raise LockOrderError(f"{name.filename} must already be held{requirement}")
+        if innermost and self._held()[-1] is not matching:
+            raise LockOrderError("a remote lease cannot be lent while an inner host lock is held")
         if descriptor is not None:
             metadata = os.fstat(descriptor)
             if matching.inode != (metadata.st_dev, metadata.st_ino):

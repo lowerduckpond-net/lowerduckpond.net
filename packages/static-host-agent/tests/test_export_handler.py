@@ -25,6 +25,7 @@ from lowerduckpond_static_contracts import (
     manifest_digest,
 )
 from lowerduckpond_static_host_agent import entrypoints
+from lowerduckpond_static_host_agent.archive_bundle import RemoteArchiveBundleSource
 from lowerduckpond_static_host_agent.archive_remote import (
     ArchiveClient,
     ArchiveRemoteError,
@@ -331,7 +332,7 @@ def _execute(  # noqa: PLR0913 - explicit export execution dependencies
             expected_owner=_OWNER,
             now=lambda: _NOW,
             hook=hook,
-            remote=remote,
+            archive_source=RemoteArchiveBundleSource(remote) if remote is not None else None,
         )
         return AuthorizationExecutor(
             repository,

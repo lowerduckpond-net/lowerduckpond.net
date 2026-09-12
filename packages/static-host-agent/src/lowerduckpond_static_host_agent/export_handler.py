@@ -24,10 +24,10 @@ from lowerduckpond_static_contracts import (
 from lowerduckpond_static_domain import generate_uuid7
 
 from lowerduckpond_static_host_agent.archive_bundle import (
+    ArchiveBundleSource,
     fetch_archive_bundle,
     require_archive_inspection,
 )
-from lowerduckpond_static_host_agent.archive_remote import ArchiveRemoteStore
 from lowerduckpond_static_host_agent.audit import DEFAULT_AUDIT_LIMITS
 from lowerduckpond_static_host_agent.capacity import (
     DEFAULT_HOST_CAPACITY_LIMITS,
@@ -113,7 +113,7 @@ class ExportLifecycleHandler:
         *,
         release_root: Path,
         expected_owner: int,
-        remote: ArchiveRemoteStore | None = None,
+        archive_source: ArchiveBundleSource | None = None,
         capacity_limits: HostCapacityLimits = DEFAULT_HOST_CAPACITY_LIMITS,
         now: Callable[[], datetime] = _utc_now,
         hook: Callable[[ExportCommitBoundary], None] | None = None,
@@ -123,7 +123,7 @@ class ExportLifecycleHandler:
         self._gate = gate
         self._releases = release_root
         self._owner = expected_owner
-        self._remote = remote
+        self._archive_source = archive_source
         self._capacity_limits = capacity_limits
         self._now = now
         self._hook = hook
@@ -174,7 +174,7 @@ class ExportLifecycleHandler:
             expected = cast(dict[str, object], job.document["expectedSource"])
             if expected["lifecycle"] != "archived":
                 return None
-            if self._remote is None:
+            if self._archive_source is None:
                 raise LifecycleJobRejectionError("not_implemented")
             request = cast(dict[str, object], job.document["request"])
             if build_expected_source(transaction, request) != expected:
@@ -188,10 +188,15 @@ class ExportLifecycleHandler:
             record = transaction.read(
                 StateRecordPath.tenant_archive(request["tenantId"], desired["id"])
             ).document
-            inspection = fetch_archive_bundle(
-                self._remote, self._spool, record, manifest, expected_owner=self._owner
-            )
-            return inspection, job
+        inspection = fetch_archive_bundle(
+            self._archive_source,
+            self._spool,
+            record,
+            manifest,
+            job_id=job_id,
+            expected_owner=self._owner,
+        )
+        return inspection, job
 
     def _capture(self, job_id: str, *, blocking: bool) -> tuple[ExportSnapshot, StoredContract]:
         with self._repository.transaction(mode=LockMode.SHARED, blocking=blocking) as transaction:
