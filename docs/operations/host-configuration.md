@@ -269,9 +269,14 @@ host-agent change. This preserves a pinned forward transition from the live
 artifact to the next reproducible candidate instead of accepting an arbitrary
 installed artifact.
 
-The current production identity, selected by the 2026-09-10 convergence from
-source revision `6dd5714fb1b817b1ae7aa1eb55076b5f6d925c01`, is
-`8c004ab6b73b7935f2151940aa522c05652bd196abbcb8604a803ee099aebfa8`.
+The current production identity, selected by the 2026-09-12 M3.9 convergence
+from source revision `90b0353bd89328730e49c57babd8dc9d17d849aa`, is
+`4e32c4a88d729b371b8cd5da96e5fedbc9f30266acb0984599c1d645939bef85`.
+The guarded runner passed its repeated preflight, idempotent second converge,
+host acceptance, encrypted-backup verification, and disposable restore. The
+operator reported the final acceptance recap as `ok=20`, `changed=0`,
+`unreachable=0`, and `failed=0`, and a subsequent read-only check confirmed
+the selected artifact path. Publication remained disabled.
 
 The convergence command's internal preflight can also recover an interrupted
 immutable-Caddy bootstrap. This recovery mode accepts only a loaded service

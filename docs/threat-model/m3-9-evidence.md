@@ -25,6 +25,18 @@ no remote archive operation. Spaces version binding, archived export, and
 archive/restore/deletion races remain in M3.10. Production publication remains
 disabled.
 
+Routine production convergence completed on 2026-09-12 from source revision
+`90b0353bd89328730e49c57babd8dc9d17d849aa`, selecting host-agent artifact
+SHA-256
+`4e32c4a88d729b371b8cd5da96e5fedbc9f30266acb0984599c1d645939bef85`.
+The operator reported final acceptance with `ok=20`, `changed=0`,
+`unreachable=0`, and `failed=0`, after the guarded runner required its preflight
+and zero-change second convergence. Acceptance verified the selected artifact,
+disabled publication gate, encrypted backup, and disposable restore. A
+subsequent read-only check confirmed the selected artifact path. The
+[host configuration runbook](../operations/host-configuration.md) records this
+production checkpoint; export/import qualification uses the disposable host.
+
 | Changed invariant | Unit and process evidence | Installed-host evidence | Recovery evidence |
 | --- | --- | --- | --- |
 | Coherent independent capture; ordered locks (12, 16, 20) | [Snapshot tests](../../packages/static-host-agent/tests/test_export_snapshot.py) verify exact active/suspended manifests and deployment records, independent inodes, sealed modes, shared-lock exclusion, source drift, and unsafe files. | [Export/import qualification](../../config/ansible/molecule/m3_8/tests/test_export_import.py) overlaps installed capture with real deploy, rollback, suspend, resume, rename, and reconcile workers. Rollback removes the captured source release before bundle construction. | Real process death at every capture hook leaves only bounded private work; a new capture cleans it and reconstructs the same authority. |
