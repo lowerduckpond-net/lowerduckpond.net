@@ -22,6 +22,7 @@ from lowerduckpond_static_host_agent.archive_journal import (
     ArchiveJournal,
     ArchiveJournalBoundary,
     ArchiveJournalError,
+    ArchiveRetirementJournal,
     VerifiedArchiveUpload,
 )
 from lowerduckpond_static_host_agent.archive_quarantine import ArchiveQuarantine
@@ -626,8 +627,9 @@ def test_failed_construction_cleanup_requires_audited_result_and_independent_abs
 
 
 @pytest.mark.parametrize("operation", ["restore", "delete"])
+@pytest.mark.parametrize("local_only", [False, True])
 def test_retirement_requires_new_job_and_preserves_bound_bytes_on_failed_transition(
-    tmp_path: Path, operation: str
+    tmp_path: Path, operation: str, local_only: bool
 ) -> None:
     client = MemoryRemote()
     with prepared_source(tmp_path, client) as (journal, job_id, snapshot, _quarantine):
@@ -656,7 +658,15 @@ def test_retirement_requires_new_job_and_preserves_bound_bytes_on_failed_transit
         claimed = job.document
         claimed["phase"] = "claimed"
         journal.repository.compare_and_swap(path, job.revision, claimed)
-        retirement = journal.prepare_retirement(issued.job_id, now=_NOW)
+        before = tuple(client.calls)
+        retirement = (
+            ArchiveRetirementJournal(journal.repository, journal.spool, bucket=_BUCKET).prepare(
+                issued.job_id, now=_NOW
+            )
+            if local_only
+            else journal.prepare_retirement(issued.job_id, now=_NOW)
+        )
+        assert tuple(client.calls) == before
         assert retirement.document["archiveRecord"] == uploaded.record
         assert retirement.document["provenance"] == {
             "kind": "authorization-job",

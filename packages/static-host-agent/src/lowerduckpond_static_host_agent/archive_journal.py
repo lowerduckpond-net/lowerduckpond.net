@@ -223,6 +223,89 @@ class ArchiveConstructionJournal:
             self.hook(boundary)
 
 
+class ArchiveRetirementJournal:
+    """Bind a current archive before local unbinding without loading storage credentials."""
+
+    def __init__(
+        self,
+        repository: StateRepository,
+        spool: ExportSpool,
+        *,
+        bucket: str,
+        hook: Callable[[ArchiveJournalBoundary], None] | None = None,
+    ) -> None:
+        self.repository = repository
+        self.spool = spool
+        self.bucket = bucket
+        self.hook = hook
+
+    def prepare(self, job_id: str, *, now: datetime) -> StoredContract:
+        """Bind the complete current archive before restore or ordinary deletion."""
+        self._require_lock()
+        with self.repository.transaction(mode=LockMode.EXCLUSIVE) as transaction:
+            job = transaction.read(StateRecordPath.authorization_job(job_id)).document
+            request = cast(dict[str, object], job["request"])
+            expected = cast(dict[str, object], job["expectedSource"])
+            if (
+                job["phase"] != "claimed"
+                or job["compatibilityVersion"] != "static-job-v2"
+                or job["artifact"] is not None
+                or request["operation"] not in {"restore", "delete"}
+                or expected["lifecycle"] != "archived"
+                or build_expected_source(transaction, request) != expected
+                or transaction.measure_intent_records().records
+            ):
+                raise ArchiveJournalError("retirement requires current distinct archived authority")
+            manifest = transaction.read(
+                StateRecordPath.tenant_desired(request["tenantId"])
+            ).document
+            desired = cast(
+                dict[str, object], cast(dict[str, object], manifest["spec"])["desiredDeployment"]
+            )
+            archive = transaction.read(
+                StateRecordPath.tenant_archive(request["tenantId"], desired["id"])
+            ).document
+            if (
+                archive["bucket"] != self.bucket
+                or job["sourceAuthority"] != {"manifest": manifest, "archiveRecord": archive}
+                or archive["manifestDigest"] != manifest_digest(manifest).to_dict()
+            ):
+                raise ArchiveJournalError("retirement archive belongs to another configured bucket")
+            intent: dict[str, object] = {
+                "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+                "kind": "ArchiveRetirementIntent",
+                "compatibilityVersion": "static-retirement-v2",
+                "intentId": _identity(),
+                "provenance": {"kind": "authorization-job", "jobId": job_id},
+                "operatorPrincipal": job["operatorPrincipal"],
+                "tenantId": request["tenantId"],
+                "correlationId": request["correlationId"],
+                "transition": request["operation"],
+                "sourceManifestDigest": expected["manifestDigest"],
+                "archiveRecord": archive,
+                "archiveRecordDigest": archive_record_digest(archive).to_dict(),
+                "phase": "prepared",
+                "createdAt": _timestamp(now),
+                **{
+                    key: archive[key]
+                    for key in ("bucket", "key", "versionId", "bundleDigest", "bundleSize")
+                },
+            }
+            _reserve_journal(transaction.measure_filesystem_capacity)
+            stored = transaction.create_immutable(
+                StateRecordPath.archive_retirement_intent(intent["intentId"]), intent
+            )
+        self._notify(ArchiveJournalBoundary.RETIREMENT_SYNC)
+        return stored
+
+    def _require_lock(self) -> None:
+        self.spool.locks.require_held(LockName.EXPORT, mode=LockMode.EXCLUSIVE)
+
+    def _notify(self, boundary: ArchiveJournalBoundary) -> None:
+        if self.hook is not None:
+            self.hook(boundary)
+
+
 class ArchiveJournal:
     """Persist authority before upload and retain it through exact remote cleanup.
 
@@ -322,57 +405,9 @@ class ArchiveJournal:
         )
 
     def prepare_retirement(self, job_id: str, *, now: datetime) -> StoredContract:
-        """Bind the complete current archive before restore or ordinary deletion."""
-        self._require_lock()
-        with self.repository.transaction(mode=LockMode.EXCLUSIVE) as transaction:
-            job = transaction.read(StateRecordPath.authorization_job(job_id)).document
-            request = cast(dict[str, object], job["request"])
-            expected = cast(dict[str, object], job["expectedSource"])
-            if (
-                job["phase"] != "claimed"
-                or request["operation"] not in {"restore", "delete"}
-                or expected["lifecycle"] != "archived"
-                or build_expected_source(transaction, request) != expected
-                or transaction.measure_intent_records().records
-            ):
-                raise ArchiveJournalError("retirement requires current distinct archived authority")
-            manifest = transaction.read(
-                StateRecordPath.tenant_desired(request["tenantId"])
-            ).document
-            desired = cast(
-                dict[str, object], cast(dict[str, object], manifest["spec"])["desiredDeployment"]
-            )
-            archive = transaction.read(
-                StateRecordPath.tenant_archive(request["tenantId"], desired["id"])
-            ).document
-            if archive["bucket"] != self.remote.bucket:
-                raise ArchiveJournalError("retirement archive belongs to another configured bucket")
-            intent: dict[str, object] = {
-                "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
-                "kind": "ArchiveRetirementIntent",
-                "compatibilityVersion": "static-retirement-v2",
-                "intentId": _identity(),
-                "provenance": {"kind": "authorization-job", "jobId": job_id},
-                "operatorPrincipal": job["operatorPrincipal"],
-                "tenantId": request["tenantId"],
-                "correlationId": request["correlationId"],
-                "transition": request["operation"],
-                "sourceManifestDigest": expected["manifestDigest"],
-                "archiveRecord": archive,
-                "archiveRecordDigest": archive_record_digest(archive).to_dict(),
-                "phase": "prepared",
-                "createdAt": _timestamp(now),
-                **{
-                    key: archive[key]
-                    for key in ("bucket", "key", "versionId", "bundleDigest", "bundleSize")
-                },
-            }
-            _reserve_journal(transaction.measure_filesystem_capacity)
-            stored = transaction.create_immutable(
-                StateRecordPath.archive_retirement_intent(intent["intentId"]), intent
-            )
-        self._notify(ArchiveJournalBoundary.RETIREMENT_SYNC)
-        return stored
+        return ArchiveRetirementJournal(
+            self.repository, self.spool, bucket=self.remote.bucket, hook=self.hook
+        ).prepare(job_id, now=now)
 
     def bound_versions(self) -> frozenset[RemoteVersion]:
         """Charge every authoritative record, including incomplete local retirement."""
