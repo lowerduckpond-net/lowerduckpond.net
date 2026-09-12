@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from lowerduckpond_static_host_agent.archive_abort import (
@@ -9,6 +10,7 @@ from lowerduckpond_static_host_agent.archive_abort import (
     finalize_failed_construction,
 )
 from lowerduckpond_static_host_agent.archive_journal import ArchiveConstructionJournal
+from lowerduckpond_static_host_agent.capacity import admit_release_capacity
 from lowerduckpond_static_host_agent.repository import StateRecordPath
 from test_archive_activate import SimulatedCrashError, _prepared
 from test_archive_journal import (
@@ -57,7 +59,21 @@ def test_unpublished_failure_replays_each_boundary_before_independent_remote_cle
             finalize_failed_construction(
                 journal.repository, journal.spool, job_id, failure_hook=interrupt
             )
-        result = finalize_failed_construction(journal.repository, journal.spool, job_id).result
+        with patch(
+            "lowerduckpond_static_host_agent.archive_abort.admit_release_capacity",
+            wraps=admit_release_capacity,
+        ) as admission:
+            result = finalize_failed_construction(journal.repository, journal.spool, job_id).result
+        remaining = {
+            ArchiveAbortBoundary.AUDIT_SYNC: 2,
+            ArchiveAbortBoundary.RESULT_SYNC: 1,
+            ArchiveAbortBoundary.JOB_SYNC: 0,
+        }[boundary]
+        if remaining:
+            admission.assert_called_once()
+            assert admission.call_args.args[1].unique_inodes == remaining
+        else:
+            admission.assert_not_called()
         assert result["status"] == "failed"
         assert (result["archiveRecord"] is not None) == uploaded
         assert (
