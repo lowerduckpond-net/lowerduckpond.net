@@ -99,7 +99,7 @@ export PRODUCTION_ORIGIN_IPV4=${production_origin_ipv4}
     --allow-exact-failed-caddy-recovery
 
 # The first M3.10 upgrade needs its live gate in addition to the general host
-# checks. Later idempotent reconfiguration uses the already-selected candidate.
+# checks. Artifact selection alone does not prove a completed installation.
 selected_production_artifact=$(ssh \
     -o BatchMode=yes -o HostKeyAlias=lowerduckpond.net -o IdentitiesOnly=yes \
     -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
@@ -163,8 +163,22 @@ fi
 export ANSIBLE_CONFIG="${repository_root}/config/ansible/ansible.cfg"
 export ANSIBLE_PRIVATE_KEY_FILE
 
+[[ ${STATIC_HOST_AGENT_ARTIFACT_SHA256} =~ ^[0-9a-f]{64}$ ]] || exit 2
+convergence_state() {
+    ssh -o BatchMode=yes -o HostKeyAlias=lowerduckpond.net -o IdentitiesOnly=yes \
+        -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
+        -i "${ANSIBLE_PRIVATE_KEY_FILE}" "ldp-admin@${PRODUCTION_ORIGIN_IPV4}" \
+        "sudo --non-interactive /bin/bash -s -- $1 ${STATIC_HOST_AGENT_ARTIFACT_SHA256}" \
+        <"${repository_root}/scripts/m3-10-convergence-state"
+}
+
+completed_candidate=false
 if [[ -z ${rollback_artifact_path} &&
-      ${selected_production_artifact} != "/opt/lowerduckpond/static-host-agent/${STATIC_HOST_AGENT_ARTIFACT_SHA256}" ]]; then
+      ${selected_production_artifact} == "/opt/lowerduckpond/static-host-agent/${STATIC_HOST_AGENT_ARTIFACT_SHA256}" ]] &&
+   convergence_state check; then
+    completed_candidate=true
+fi
+if [[ -z ${rollback_artifact_path} && ${completed_candidate} != true ]]; then
     if [[ -z ${M3_10_QUALIFICATION_REPORT:-} ||
           ${M3_10_ARCHIVE_CREDENTIAL_BACKUP_CONFIRMED:-} != true ]]; then
         echo "First M3.10 convergence requires its live qualification report and confirmed secure-workstation credential backup." >&2
@@ -177,6 +191,10 @@ if [[ -z ${rollback_artifact_path} &&
     "${repository_root}/scripts/preflight-m3-10-production"
 fi
 
+# Any interrupted attempt, including rollback, invalidates prior completion.
+# A partial installation remains subject to the full gate and its strict host
+# inventory; it needs investigation rather than automatic retry authorization.
+convergence_state clear
 echo "Converging the production hosting node."
 uv run ansible-playbook --inventory "${inventory}" "${site_playbook}"
 
@@ -193,3 +211,7 @@ fi
 
 echo "Running production host acceptance checks, including a disposable restore."
 uv run ansible-playbook --inventory "${inventory}" "${acceptance_playbook}"
+
+if [[ -z ${rollback_artifact_path} ]]; then
+    convergence_state record
+fi

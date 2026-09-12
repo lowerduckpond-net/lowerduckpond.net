@@ -24,6 +24,9 @@ def runner(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     wrapper = scripts / "configure-production"
     wrapper.write_bytes((ROOT / "scripts/configure-production").read_bytes())
     wrapper.chmod(0o755)
+    (scripts / "m3-10-convergence-state").write_bytes(
+        (ROOT / "scripts/m3-10-convergence-state").read_bytes()
+    )
     commands = tmp_path / "commands"
     executable(
         commands / "git",
@@ -34,7 +37,13 @@ def runner(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     )
     executable(commands / "ssh-keygen", "exit 0")
     executable(
-        commands / "ssh", 'printf "/opt/lowerduckpond/static-host-agent/%s\\n" "$TEST_SELECTED"'
+        commands / "ssh",
+        """case "$*" in
+        *"-- check "*) echo completion-check >>"$TEST_LOG"; exit "$TEST_COMPLETED_STATUS";;
+        *"-- clear "*) echo completion-clear >>"$TEST_LOG";;
+        *"-- record "*) echo completion-record >>"$TEST_LOG";;
+        *) printf "/opt/lowerduckpond/static-host-agent/%s\\n" "$TEST_SELECTED";;
+    esac""",
     )
     executable(
         commands / "tofu",
@@ -51,6 +60,7 @@ def runner(tmp_path: Path) -> tuple[Path, dict[str, str]]:
             exit "$TEST_VERIFY_STATUS";;
         *ansible-playbook*)
             echo ansible >>"$TEST_LOG"
+            [[ "$TEST_ANSIBLE_STATUS" == 0 ]] || exit "$TEST_ANSIBLE_STATUS"
             echo 'host: ok=1 changed=0 unreachable=0 failed=0';;
         *) exit 99;;
     esac""",
@@ -70,6 +80,8 @@ def runner(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         "TEST_SELECTED": PRECEDING,
         "TEST_VERIFY_STATUS": "0",
         "TEST_PREFLIGHT_STATUS": "0",
+        "TEST_COMPLETED_STATUS": "1",
+        "TEST_ANSIBLE_STATUS": "0",
         "ANSIBLE_PRIVATE_KEY_FILE": str(key),
         "ADMIN_SOURCE_CIDRS_JSON": '["192.0.2.1/32"]',
         "CADDY_ORIGIN_PULL_ENFORCEMENT_ENABLED": "true",
@@ -136,9 +148,11 @@ def test_verified_upgrade_checks_report_and_preflight_before_any_convergence(
         "general-preflight",
         "verify-report",
         "m3-10-preflight",
+        "completion-clear",
         "ansible",
         "ansible",
         "ansible",
+        "completion-record",
     ]
 
 
@@ -146,7 +160,45 @@ def test_unchanged_artifact_reconfiguration_retains_the_general_gate(
     runner: tuple[Path, dict[str, str]],
 ) -> None:
     runner[1]["TEST_SELECTED"] = CANDIDATE
+    runner[1]["TEST_COMPLETED_STATUS"] = "0"
     runner[1].pop("M3_10_QUALIFICATION_REPORT")
     status, calls = run(runner)
     assert status == 0
-    assert calls == ["general-preflight", "ansible", "ansible", "ansible"]
+    assert calls == [
+        "general-preflight",
+        "completion-check",
+        "completion-clear",
+        "ansible",
+        "ansible",
+        "ansible",
+        "completion-record",
+    ]
+
+
+@pytest.mark.parametrize("failure", ["missing-report", "expired-report", "partial-host"])
+def test_selected_but_incomplete_candidate_retains_the_full_gate(
+    runner: tuple[Path, dict[str, str]], failure: str
+) -> None:
+    runner[1]["TEST_SELECTED"] = CANDIDATE
+    if failure == "missing-report":
+        runner[1].pop("M3_10_QUALIFICATION_REPORT")
+    elif failure == "expired-report":
+        runner[1]["TEST_VERIFY_STATUS"] = "1"
+    else:
+        runner[1]["TEST_PREFLIGHT_STATUS"] = "1"
+    status, calls = run(runner)
+    assert status != 0
+    assert "completion-check" in calls
+    assert "ansible" not in calls
+    assert "completion-clear" not in calls
+    assert "completion-record" not in calls
+
+
+def test_interrupted_convergence_never_records_completion(
+    runner: tuple[Path, dict[str, str]],
+) -> None:
+    runner[1]["TEST_ANSIBLE_STATUS"] = "1"
+    status, calls = run(runner)
+    assert status != 0
+    assert "completion-clear" in calls
+    assert "completion-record" not in calls

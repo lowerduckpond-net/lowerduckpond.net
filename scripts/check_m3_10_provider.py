@@ -16,7 +16,6 @@ from typing import Protocol, cast
 from botocore.exceptions import BotoCoreError, ClientError  # type: ignore[import-untyped]
 from lowerduckpond_m3_archive.storage import S3Client, assert_storage_empty
 from lowerduckpond_static_host_agent.archive_configuration import ArchiveConfiguration
-from lowerduckpond_static_host_agent.archive_remote import make_archive_client
 
 from scripts.check_m3_7_production_edge import (
     CloudflareClient,
@@ -25,6 +24,7 @@ from scripts.check_m3_7_production_edge import (
     validate_ca_certificate,
     validate_leaf_certificate,
 )
+from scripts.m3_10_policy_client import make_policy_client
 
 
 class GateError(RuntimeError):
@@ -259,14 +259,7 @@ def main() -> int:
             required(os.environ, "SPACES_ACCESS_KEY_ID"),
             required(os.environ, "SPACES_SECRET_ACCESS_KEY"),
         )
-        client = cast(
-            PolicyClient,
-            make_archive_client(
-                region=configuration.region,
-                access_key_id=configuration.access_key_id,
-                secret_access_key=configuration.secret_access_key,
-            ),
-        )
+        client = cast(PolicyClient, make_policy_client(configuration))
         check_storage(client, bucket=configuration.bucket)
         if arguments.storage_only:
             print("M3.10 private/versioned/no-lifecycle storage and whole-bucket absence passed.")

@@ -238,6 +238,16 @@ convergence with the existing disposable MinIO credential supplied through the
 private environment handoff. This checks the handoff mechanism and is not live
 Spaces provider evidence.
 
+The final provider-client and interrupted-convergence review fixes passed all
+129 M3.10 infrastructure tests and strict typing across 239 source files. Real
+SDK request construction now proves that every policy/accounting read can reach
+the transport while writes, object reads, other buckets, and redirects are
+refused. Completion is recorded only after successful host acceptance and is
+invalidated before each new convergence attempt. The completion helper also
+passed record, exact-artifact check, and invalidation against the disposable
+host's actual root-owned directory policy. These are local checks, not live
+Spaces or production evidence.
+
 ## Outstanding convergence gates
 
 1. Finish acceptance and required CI for every dependent PR, merge the reviewed
