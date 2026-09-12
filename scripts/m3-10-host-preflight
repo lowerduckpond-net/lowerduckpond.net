@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Fixed stdin program for the verified administrative SSH connection.
+set +x
+set -euo pipefail
+export LC_ALL=C
+
+fail() {
+    printf 'M3.10 host preflight failed: %s\n' "$1" >&2
+    exit 1
+}
+
+expected=4e32c4a88d729b371b8cd5da96e5fedbc9f30266acb0984599c1d645939bef85
+install_root=/opt/lowerduckpond/static-host-agent
+[[ -L ${install_root}/current ]] || fail 'artifact selection is not a symbolic link'
+[[ $(readlink --canonicalize-existing -- "${install_root}/current") == "${install_root}/${expected}" ]] ||
+    fail 'selected artifact differs from the recorded M3.9 production identity'
+/usr/local/libexec/lowerduckpond/verify-static-host-agent-artifact \
+    "${install_root}/${expected}" >/dev/null || fail 'complete artifact verification failed'
+
+# The general gate permits resumable Caddy startup; this starting gate requires
+# an entirely quiescent host and the already-enforced origin-pull mode.
+for directory in /etc/caddy/intents /etc/caddy/routes.d; do
+    [[ -d ${directory} && ! -L ${directory} ]] || fail 'Caddy input directory type drifted'
+    [[ -z $(find "${directory}" -mindepth 1 -print -quit) ]] || fail 'Caddy has pending inputs'
+done
+checker=/usr/local/libexec/lowerduckpond/check-caddy-generation
+[[ -f ${checker} && ! -L ${checker} ]] || fail 'immutable Caddy checker is unavailable'
+grep --extended-regexp --quiet -- '^[[:space:]]+--origin-pull-required[[:space:]]+\\$' "${checker}" ||
+    fail 'Caddy no longer requires origin-pull client authentication'
+if grep --fixed-strings --quiet -- '--origin-pull-staged' "${checker}"; then
+    fail 'Caddy retains staged origin-pull mode'
+fi
+case $("${checker}") in
+    current | unchanged) ;;
+    *) fail 'immutable Caddy generation is not current' ;;
+esac
+systemctl is-active --quiet caddy.service || fail 'Caddy is not active'
+
+# A first M3.10 installation has no existing archive credentials, sockets,
+# construction/retirement journals, quarantine, or emergency authority. Any
+# partial installation needs investigation, not a broader accepted inventory.
+for path in /etc/lowerduckpond/archive /run/lowerduckpond-archive \
+    /var/lib/lowerduckpond/static/platform/archive-quarantine.json \
+    /var/lib/lowerduckpond/static/emergency; do
+    [[ ! -e ${path} && ! -L ${path} ]] || fail 'unexpected existing archive or emergency state'
+done
+archive_units=$(systemctl list-unit-files --no-legend --no-pager \
+    'lowerduckpond-archive-*' 'lowerduckpond-static-emergency-*')
+[[ -z ${archive_units} ]] || fail 'M3.10 units already exist before first convergence'
+queued=$(systemctl list-jobs --no-legend --plain | awk \
+    '$2 ~ /^(caddy|lowerduckpond-static|lowerduckpond-archive)/ { print; exit }')
+[[ -z ${queued} ]] || fail 'publication or lifecycle work is queued'
+printf 'Exact preceding artifact and quiescent M3.10 host starting conditions passed.\n'

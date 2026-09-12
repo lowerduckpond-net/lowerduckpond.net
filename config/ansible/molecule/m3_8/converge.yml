@@ -5,6 +5,8 @@
   become: false
   gather_facts: false
   vars:
+    m3_10_archive_backend: >-
+      {{ lookup('ansible.builtin.env', 'M3_10_ARCHIVE_BACKEND') | default('minio', true) }}
     static_host_agent_molecule_artifact: >-
       /tmp/lowerduckpond-static-host-agent-m3-8.tar
     m3_8_origin_pull_ca_key: >-
@@ -43,6 +45,11 @@
       {{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY')
          }}/operator-transport.json
   tasks:
+    - name: Require an explicitly supported archive qualification backend
+      ansible.builtin.assert:
+        that:
+          - m3_10_archive_backend in ['minio', 'spaces']
+
     - name: Build the locked static host-agent artifact
       ansible.builtin.command:
         argv:
@@ -216,13 +223,14 @@
           - "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/archive-tls"
       register: m3_10_archive_storage
       changed_when: false
+      when: m3_10_archive_backend == 'minio'
 
     - name: Attach the pinned artifact to the installed host
       ansible.builtin.add_host:
         name: "{{ item }}"
         caddy_origin_pull_ca_paths:
           - "{{ m3_8_origin_pull_ca_certificate }}"
-        m3_10_archive_storage: "{{ m3_10_archive_storage.stdout | from_json }}"
+        m3_10_archive_storage: "{{ m3_10_archive_storage.stdout | default('{}') | from_json }}"
         static_host_agent_artifact_path: >-
           {{ static_host_agent_molecule_artifact }}
         static_host_agent_artifact_sha256: >-
@@ -244,6 +252,20 @@
           {{ m3_8_https_server_certificate }}
       loop: "{{ groups['hosting_nodes'] }}"
       changed_when: false
+
+    - name: Attach only the dedicated live archive credential to the disposable host
+      ansible.builtin.add_host:
+        name: "{{ item }}"
+        static_host_agent_archive_configuration:
+          format: lowerduckpond-archive-configuration-v1
+          region: "{{ lookup('ansible.builtin.env', 'SPACES_REGION') }}"
+          bucket: "{{ lookup('ansible.builtin.env', 'SPACES_ARCHIVE_BUCKET') }}"
+          accessKeyId: "{{ lookup('ansible.builtin.env', 'SPACES_ARCHIVE_ACCESS_KEY_ID') }}"
+          secretAccessKey: "{{ lookup('ansible.builtin.env', 'SPACES_ARCHIVE_SECRET_ACCESS_KEY') }}"
+      loop: "{{ groups['hosting_nodes'] }}"
+      changed_when: false
+      no_log: true
+      when: m3_10_archive_backend == 'spaces'
 
 - name: Prepare disposable M3.8 host inputs
   hosts: hosting_nodes
@@ -382,6 +404,7 @@
         group: root
         mode: "0644"
       notify: Refresh disposable archive TLS trust
+      when: lookup('ansible.builtin.env', 'M3_10_ARCHIVE_BACKEND') != 'spaces'
 
     - name: Resolve the fixed archive endpoint to the disposable TLS service
       ansible.builtin.lineinfile:
@@ -389,6 +412,7 @@
         regexp: '^.* ams3\.digitaloceanspaces\.com$'
         line: "{{ m3_10_archive_storage.address }} ams3.digitaloceanspaces.com"
         unsafe_writes: true
+      when: lookup('ansible.builtin.env', 'M3_10_ARCHIVE_BACKEND') != 'spaces'
 
   handlers:
     - name: Refresh disposable archive TLS trust

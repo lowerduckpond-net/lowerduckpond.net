@@ -128,3 +128,12 @@
         group: root
         mode: "0440"
         validate: /usr/sbin/visudo -cf %s
+
+    - name: Remove automatic subordinate IDs from the sudo-only disposable administrator
+      ansible.builtin.lineinfile:
+        path: "{{ item }}"
+        regexp: '^ldp-admin:[0-9]+:[0-9]+$'
+        state: absent
+      loop:
+        - /etc/subuid
+        - /etc/subgid

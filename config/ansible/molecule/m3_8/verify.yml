@@ -13,6 +13,18 @@
         chdir: >-
           {{ lookup('ansible.builtin.env', 'MOLECULE_SCENARIO_DIRECTORY') }}
       changed_when: false
+      when: lookup('ansible.builtin.env', 'M3_10_ARCHIVE_BACKEND') != 'spaces'
+
+    - name: Prove the installed archive credential boundary before lifecycle mutations
+      ansible.builtin.command:
+        cmd: >-
+          python -m pytest --verbose
+          --hosts=docker://lowerduckpond-ubuntu-2604
+          tests/test_archive_credentials.py
+      args:
+        chdir: >-
+          {{ lookup('ansible.builtin.env', 'MOLECULE_SCENARIO_DIRECTORY') }}
+      changed_when: false
 
     - name: Execute the installed core lifecycle before reboot
       ansible.builtin.command:
@@ -153,6 +165,17 @@
           python -m pytest --verbose
           --hosts=docker://lowerduckpond-ubuntu-2604
           tests/test_quarantine_recovery.py
+      args:
+        chdir: >-
+          {{ lookup('ansible.builtin.env', 'MOLECULE_SCENARIO_DIRECTORY') }}
+      changed_when: false
+
+    - name: Record the artifact and exact final lifecycle accounting
+      ansible.builtin.command:
+        cmd: >-
+          python -m pytest --verbose
+          --hosts=docker://lowerduckpond-ubuntu-2604
+          tests/test_archive_completion.py
       args:
         chdir: >-
           {{ lookup('ansible.builtin.env', 'MOLECULE_SCENARIO_DIRECTORY') }}

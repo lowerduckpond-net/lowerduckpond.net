@@ -27,6 +27,15 @@ CONTRACT_NAMES = (
 INPUT_ERROR_STATUS = 2
 INTERRUPTED_STATUS = 130
 BASH = "/usr/bin/bash"
+M3_10_NAMES = (
+    "SPACES_ACCESS_KEY_ID",
+    "SPACES_SECRET_ACCESS_KEY",
+    "CLOUDFLARE_API_TOKEN",
+    "CLOUDFLARE_ZONE_ID",
+    "CLOUDFLARE_TENANT_ZONE_ID",
+    "CLOUDFLARE_ORIGIN_PULL_CERTIFICATE_ID",
+    "CLOUDFLARE_TENANT_ORIGIN_PULL_CERTIFICATE_ID",
+)
 
 
 def complete_environment() -> dict[str, str]:
@@ -78,6 +87,40 @@ def test_complete_contract_is_available_only_to_the_child_command() -> None:
     assert result.returncode == 0, result.stderr
     assert '"CADDY_CLOUDFLARE_API_TOKEN": "caddy-secret-value"' in result.stdout
     assert result.stdout.rstrip().endswith(os.fspath(REPOSITORY_ROOT))
+
+
+@pytest.mark.parametrize("already_loaded", [False, True])
+def test_m3_10_inputs_are_preserved_or_prompted_without_secret_echo(already_loaded: bool) -> None:
+    environment = complete_environment()
+    for name in M3_10_NAMES:
+        environment.pop(name, None)
+        if already_loaded:
+            environment[name] = "private-gate-fixture"
+    assertion = (
+        "import os; assert all(os.environ.get(name)=='private-gate-fixture' for name in "
+        + repr(M3_10_NAMES)
+        + "); print('gate-inputs: PASS')"
+    )
+    result = subprocess.run(  # noqa: S603 -- fixed helper and explicit fixture values
+        [
+            BASH,
+            "-x",
+            os.fspath(ENVIRONMENT_SHELL),
+            "--m3-10",
+            "--",
+            sys.executable,
+            "-c",
+            assertion,
+        ],
+        input="" if already_loaded else "private-gate-fixture\n" * len(M3_10_NAMES),
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "gate-inputs: PASS\n"
+    assert "private-gate-fixture" not in result.stderr
 
 
 def test_missing_values_are_prompted_without_echoing_secrets(tmp_path: Path) -> None:

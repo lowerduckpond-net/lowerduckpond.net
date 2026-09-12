@@ -98,6 +98,14 @@ export PRODUCTION_ORIGIN_IPV4=${production_origin_ipv4}
 "${repository_root}/scripts/preflight-m3-6-production" \
     --allow-exact-failed-caddy-recovery
 
+# The first M3.10 upgrade needs its live gate in addition to the general host
+# checks. Later idempotent reconfiguration uses the already-selected candidate.
+selected_production_artifact=$(ssh \
+    -o BatchMode=yes -o HostKeyAlias=lowerduckpond.net -o IdentitiesOnly=yes \
+    -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
+    -i "${ANSIBLE_PRIVATE_KEY_FILE}" "ldp-admin@${PRODUCTION_ORIGIN_IPV4}" \
+    'readlink --canonicalize-existing /opt/lowerduckpond/static-host-agent/current')
+
 export SPACES_BACKUP_ACCESS_KEY_ID
 SPACES_BACKUP_ACCESS_KEY_ID=$(tofu -chdir="${production_root}" \
     output -raw backup_runtime_access_key_id)
@@ -154,6 +162,20 @@ fi
 
 export ANSIBLE_CONFIG="${repository_root}/config/ansible/ansible.cfg"
 export ANSIBLE_PRIVATE_KEY_FILE
+
+if [[ -z ${rollback_artifact_path} &&
+      ${selected_production_artifact} != "/opt/lowerduckpond/static-host-agent/${STATIC_HOST_AGENT_ARTIFACT_SHA256}" ]]; then
+    if [[ -z ${M3_10_QUALIFICATION_REPORT:-} ||
+          ${M3_10_ARCHIVE_CREDENTIAL_BACKUP_CONFIRMED:-} != true ]]; then
+        echo "First M3.10 convergence requires its live qualification report and confirmed secure-workstation credential backup." >&2
+        exit 2
+    fi
+    uv run --quiet --frozen python -m scripts.m3_10_qualification_report \
+        "${M3_10_QUALIFICATION_REPORT}" --verify \
+        --source "$(git -C "${repository_root}" rev-parse HEAD)" \
+        --artifact "${STATIC_HOST_AGENT_ARTIFACT_SHA256}"
+    "${repository_root}/scripts/preflight-m3-10-production"
+fi
 
 echo "Converging the production hosting node."
 uv run ansible-playbook --inventory "${inventory}" "${site_playbook}"
