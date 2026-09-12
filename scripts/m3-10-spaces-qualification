@@ -27,11 +27,18 @@ if [[ -n $(git status --porcelain) ]]; then
     exit 2
 fi
 # A remote daemon would copy the live archive credential off the workstation.
-docker_endpoint=${DOCKER_HOST:-$(docker context inspect --format '{{.Endpoints.docker.Host}}')}
+if [[ -n ${DOCKER_CONTEXT:-} ]]; then
+    docker_endpoint=$(docker context inspect "${DOCKER_CONTEXT}" --format '{{.Endpoints.docker.Host}}')
+else
+    docker_endpoint=${DOCKER_HOST:-$(docker context inspect --format '{{.Endpoints.docker.Host}}')}
+fi
 if [[ ${docker_endpoint} != unix:///* ]]; then
     echo "Live M3.10 qualification requires a local Unix-socket Docker daemon." >&2
     exit 2
 fi
+# Pin both the CLI and Python Docker clients to the checked endpoint.
+unset DOCKER_CONTEXT
+export DOCKER_HOST="${docker_endpoint}"
 docker info >/dev/null
 for container in lowerduckpond-ubuntu-2604 lowerduckpond-m3-10-minio; do
     if docker inspect "${container}" >/dev/null 2>&1; then
