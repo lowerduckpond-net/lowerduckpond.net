@@ -24,6 +24,21 @@ from lowerduckpond_static_contracts import (
 )
 from lowerduckpond_static_domain import generate_uuid7
 
+from lowerduckpond_static_host_agent.archive_abort import ArchiveAbortError
+from lowerduckpond_static_host_agent.archive_activate import ArchiveActivationError
+from lowerduckpond_static_host_agent.archive_cleanup_service import ArchiveCleanupClient
+from lowerduckpond_static_host_agent.archive_commit import ArchiveCommitError
+from lowerduckpond_static_host_agent.archive_construction_service import ArchiveConstructionClient
+from lowerduckpond_static_host_agent.archive_handler import (
+    ArchiveLifecycleError,
+    ArchiveLifecycleHandler,
+)
+from lowerduckpond_static_host_agent.archive_journal import ArchiveJournalError
+from lowerduckpond_static_host_agent.archive_prepare import ArchivePreparationError
+from lowerduckpond_static_host_agent.archive_recover import ArchiveRecoveryError
+from lowerduckpond_static_host_agent.archive_remote import ArchiveRemoteError
+from lowerduckpond_static_host_agent.archive_revalidate import ArchiveRevalidationError
+from lowerduckpond_static_host_agent.archive_service import ArchiveExportClient
 from lowerduckpond_static_host_agent.audit import AuditError
 from lowerduckpond_static_host_agent.caddy_admin import (
     CaddyAdminError,
@@ -67,6 +82,13 @@ from lowerduckpond_static_host_agent.create_handler import (
 )
 from lowerduckpond_static_host_agent.create_prepare import CreatePreparationError
 from lowerduckpond_static_host_agent.create_recover import CreateRecoveryError
+from lowerduckpond_static_host_agent.delete_commit import DeleteCommitError
+from lowerduckpond_static_host_agent.delete_handler import (
+    DeleteLifecycleError,
+    DeleteLifecycleHandler,
+)
+from lowerduckpond_static_host_agent.delete_publication import DeletePreparationError
+from lowerduckpond_static_host_agent.delete_state import DeleteStateError
 from lowerduckpond_static_host_agent.deployment_activate import DeploymentActivationError
 from lowerduckpond_static_host_agent.deployment_commit import DeploymentCommitError
 from lowerduckpond_static_host_agent.deployment_handler import (
@@ -122,6 +144,12 @@ from lowerduckpond_static_host_agent.request_decoder import (
     RequestDecodeError,
     SubprocessRequestDecoder,
 )
+from lowerduckpond_static_host_agent.restore_commit import RestoreCommitError
+from lowerduckpond_static_host_agent.restore_handler import (
+    RestoreLifecycleError,
+    RestoreLifecycleHandler,
+)
+from lowerduckpond_static_host_agent.restore_prepare import RestorePreparationError
 from lowerduckpond_static_host_agent.route_activate import RouteActivationError
 from lowerduckpond_static_host_agent.route_commit import RouteCommitError
 from lowerduckpond_static_host_agent.route_handler import (
@@ -177,6 +205,15 @@ class _ReleaseAuthorityTransaction(RouteSnapshotTransaction, _ReleaseStateTransa
 
 
 _SAFE_ERRORS: Final = (
+    ArchiveRemoteError,
+    ArchiveAbortError,
+    ArchiveActivationError,
+    ArchiveCommitError,
+    ArchiveLifecycleError,
+    ArchiveJournalError,
+    ArchivePreparationError,
+    ArchiveRecoveryError,
+    ArchiveRevalidationError,
     AuditError,
     ContractError,
     CapacityError,
@@ -188,11 +225,18 @@ _SAFE_ERRORS: Final = (
     CreateLifecycleError,
     CreatePreparationError,
     CreateRecoveryError,
+    DeleteCommitError,
+    DeleteLifecycleError,
+    DeletePreparationError,
+    DeleteStateError,
     DeploymentActivationError,
     DeploymentCommitError,
     DeploymentLifecycleError,
     DeploymentPreparationError,
     DeploymentRecoveryError,
+    RestoreCommitError,
+    RestoreLifecycleError,
+    RestorePreparationError,
     RouteActivationError,
     RouteCommitError,
     RouteLifecycleError,
@@ -293,14 +337,45 @@ def executor_main(arguments: list[str] | None = None) -> int:
                 release_store,
                 publication_gate,
             )
+            archive_cleanup = ArchiveCleanupClient(export_spool)
             AuthorizationExecutor(
                 repository,
                 intake,
                 handlers={
+                    "archive": ArchiveLifecycleHandler(
+                        repository,
+                        export_spool,
+                        runtime,
+                        release_store,
+                        publication_gate,
+                        state_root=_STATE_ROOT,
+                        release_root=Path(TENANT_RELEASE_ROOT),
+                        expected_owner=_EXPECTED_OWNER,
+                        construction_client=ArchiveConstructionClient(export_spool),
+                        cleanup_client=archive_cleanup,
+                    ),
                     "create": CreateLifecycleHandler(
                         repository,
                         runtime,
                         publication_gate,
+                    ),
+                    "restore": RestoreLifecycleHandler(
+                        repository,
+                        export_spool,
+                        runtime,
+                        release_store,
+                        publication_gate,
+                        expected_owner=_EXPECTED_OWNER,
+                        archive_source=ArchiveExportClient(export_spool),
+                        cleanup_client=archive_cleanup,
+                    ),
+                    "delete": DeleteLifecycleHandler(
+                        repository,
+                        export_spool,
+                        runtime,
+                        release_store,
+                        publication_gate,
+                        cleanup_client=archive_cleanup,
                     ),
                     "export": ExportLifecycleHandler(
                         repository,
@@ -308,6 +383,7 @@ def executor_main(arguments: list[str] | None = None) -> int:
                         publication_gate,
                         release_root=Path(TENANT_RELEASE_ROOT),
                         expected_owner=_EXPECTED_OWNER,
+                        archive_source=ArchiveExportClient(export_spool),
                     ),
                     "deploy": deployment_handler,
                     "import": deployment_handler,
@@ -317,6 +393,15 @@ def executor_main(arguments: list[str] | None = None) -> int:
                     "rename": route_handler,
                     "reconcile": route_handler,
                 },
+                retained_archive_validator=partial(
+                    archive_cleanup.verify_terminal, job_id, mode="retained"
+                ),
+                retired_archive_validator=partial(
+                    archive_cleanup.verify_terminal, job_id, mode="retired"
+                ),
+                unreturned_archive_validator=partial(
+                    archive_cleanup.verify_terminal, record=None, mode="accounted"
+                ),
                 deleted_tenant_release_validator=partial(
                     _deleted_tenant_publication_absent,
                     repository,
