@@ -3,6 +3,17 @@
   hosts: localhost
   gather_facts: false
   tasks:
+    - name: Verify isolated storage credentials before the paced lifecycle groups
+      ansible.builtin.command:
+        cmd: >-
+          python -m pytest --verbose
+          --hosts=docker://lowerduckpond-ubuntu-2604
+          tests/test_archive_lifecycle.py::test_installed_tls_storage_credentials_are_mutually_denied
+      args:
+        chdir: >-
+          {{ lookup('ansible.builtin.env', 'MOLECULE_SCENARIO_DIRECTORY') }}
+      changed_when: false
+
     - name: Execute the installed core lifecycle before reboot
       ansible.builtin.command:
         cmd: >-
@@ -25,12 +36,12 @@
           {{ lookup('ansible.builtin.env', 'MOLECULE_SCENARIO_DIRECTORY') }}
       changed_when: false
 
-    - name: Qualify installed TLS archive storage and complete remote lifecycle
+    - name: Qualify the complete installed remote archive lifecycle
       ansible.builtin.command:
         cmd: >-
           python -m pytest --verbose
           --hosts=docker://lowerduckpond-ubuntu-2604
-          tests/test_archive_lifecycle.py
+          tests/test_archive_lifecycle.py::test_installed_archive_export_restore_rearchive_and_delete
       args:
         chdir: >-
           {{ lookup('ansible.builtin.env', 'MOLECULE_SCENARIO_DIRECTORY') }}
