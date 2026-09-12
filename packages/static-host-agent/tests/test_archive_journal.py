@@ -56,12 +56,15 @@ class MemoryRemote:
         self.digest = ""
         self.lose_response = False
         self.fail_purge = False
+        self.require_intent = True
+        self.uploads: list[dict[str, object]] = []
         self.expected_intent: Path | None = None
 
     def _call(self, name: str) -> None:
         self.calls.append(name)
         assert self.expected_intent is not None
-        assert tuple(self.expected_intent.glob("*.json")), "remote I/O preceded durable intent"
+        if self.require_intent:
+            assert tuple(self.expected_intent.glob("*.json")), "remote I/O preceded durable intent"
 
     def get_bucket_versioning(self, **kwargs: object) -> dict[str, object]:
         self._call("versioning")
@@ -80,7 +83,7 @@ class MemoryRemote:
 
     def list_multipart_uploads(self, **kwargs: object) -> dict[str, object]:
         self._call("multipart")
-        return {"IsTruncated": False}
+        return {"IsTruncated": False, "Uploads": self.uploads}
 
     def put_object(self, **kwargs: object) -> dict[str, object]:
         self._call("put")
@@ -253,7 +256,9 @@ def prepared_source(
             expected_owner=_OWNER,
             read_only_snapshot=True,
         )
-        quarantine = ArchiveQuarantine(root, expected_owner=_OWNER, locks=spool.locks)
+        quarantine = ArchiveQuarantine(
+            root, bucket=_BUCKET, expected_owner=_OWNER, locks=spool.locks
+        )
         journal = ArchiveJournal(
             repository,
             spool,
@@ -346,7 +351,13 @@ def test_failed_purge_keeps_journal_quarantine_and_remote_charge(tmp_path: Path)
         with pytest.raises(TimeoutError):
             journal.purge_unbound_construction(str(uploaded.construction.document["intentId"]))
         assert client.versions
-        assert quarantine.read() is not None
+        ledger = quarantine.read()
+        assert ledger is not None
+        assert ledger["discoveryIncomplete"] is True
+        assert any(
+            entry["version_id"] == "version-one"
+            for entry in cast(list[dict[str, object]], ledger["versions"])
+        )
         assert journal.repository.measure_intent_records().records
 
 
@@ -371,7 +382,9 @@ def test_quarantine_survives_reopen_and_preserves_all_observed_versions(tmp_path
         quarantine.record(RemoteInventory((first,), ()))
         quarantine.record(None)
         quarantine.record(RemoteInventory((second,), (("archives/upload", "multipart-id"),)))
-        reopened = ArchiveQuarantine(quarantine.root, expected_owner=_OWNER, locks=quarantine.locks)
+        reopened = ArchiveQuarantine(
+            quarantine.root, bucket=_BUCKET, expected_owner=_OWNER, locks=quarantine.locks
+        )
         document = reopened.read()
         assert document is not None
         assert document["discoveryIncomplete"] is True
@@ -550,3 +563,143 @@ def test_retirement_requires_new_job_and_preserves_bound_bytes_on_failed_transit
         assert client.versions
         assert "delete" not in client.calls
         assert not journal.repository.measure_intent_records().records
+
+
+def test_quarantine_resolution_waits_for_every_intent_before_remote_io(tmp_path: Path) -> None:
+    client = MemoryRemote()
+    with prepared_source(tmp_path, client) as (journal, job_id, snapshot, quarantine):
+        journal.construct(job_id, snapshot, now=_NOW)
+        quarantine.record(None)
+        previous = quarantine.read()
+        calls = tuple(client.calls)
+        with pytest.raises(ArchiveRemoteError, match="resolve all intents"):
+            quarantine.resolve(journal.repository, journal.remote)
+        assert tuple(client.calls) == calls
+        assert quarantine.read() == previous
+
+
+def test_quarantine_resolution_verifies_retained_bytes_and_both_inventories(tmp_path: Path) -> None:
+    client = MemoryRemote()
+    with prepared_source(tmp_path, client) as (journal, job_id, snapshot, quarantine):
+        uploaded = journal.construct(job_id, snapshot, now=_NOW)
+        commit_archived_fixture(journal, job_id, snapshot, uploaded.record)
+        quarantine.record(None)
+        journal.finish(str(uploaded.construction.document["intentId"]))
+        client.require_intent = False
+        client.calls.clear()
+        assert quarantine.resolve(journal.repository, journal.remote)
+        assert client.calls == [
+            "versioning",
+            "list",
+            "multipart",
+            "get",
+            "versioning",
+            "list",
+            "multipart",
+        ]
+        quarantine.require_empty()
+        assert client.versions
+        assert not quarantine.resolve(journal.repository, journal.remote)
+
+
+@pytest.mark.parametrize("drift", ["missing", "unknown", "marker", "multipart", "bytes"])
+def test_quarantine_resolution_keeps_admission_closed_on_unresolved_evidence(
+    tmp_path: Path, drift: str
+) -> None:
+    client = MemoryRemote()
+    with prepared_source(tmp_path, client) as (journal, job_id, snapshot, quarantine):
+        uploaded = journal.construct(job_id, snapshot, now=_NOW)
+        commit_archived_fixture(journal, job_id, snapshot, uploaded.record)
+        journal.finish(str(uploaded.construction.document["intentId"]))
+        client.require_intent = False
+        quarantine.record(None)
+        key = uploaded.record["key"]
+        if drift == "missing":
+            client.versions.clear()
+        elif drift == "unknown":
+            client.versions.append({"Key": key, "VersionId": "unexpected", "Size": 10})
+        elif drift == "marker":
+            client.markers.append({"Key": key, "VersionId": "hidden"})
+        elif drift == "multipart":
+            client.uploads.append({"Key": key, "UploadId": "unexpected-upload"})
+        else:
+            client.body = b"x" * len(client.body)
+        with pytest.raises(ArchiveRemoteError):
+            quarantine.resolve(journal.repository, journal.remote)
+        ledger = quarantine.read()
+        assert ledger is not None
+        assert ledger["discoveryIncomplete"] is True
+        with pytest.raises(ArchiveRemoteError, match="quarantine"):
+            quarantine.require_empty()
+        assert "delete" not in client.calls
+
+
+def test_quarantine_resolution_rechecks_inventory_after_retained_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = MemoryRemote()
+    with prepared_source(tmp_path, client) as (journal, job_id, snapshot, quarantine):
+        uploaded = journal.construct(job_id, snapshot, now=_NOW)
+        commit_archived_fixture(journal, job_id, snapshot, uploaded.record)
+        journal.finish(str(uploaded.construction.document["intentId"]))
+        client.require_intent = False
+        quarantine.record(None)
+        original = client.get_object
+
+        def mutate_inventory(**kwargs: object) -> dict[str, object]:
+            response = original(**kwargs)
+            client.markers.append({"Key": uploaded.record["key"], "VersionId": "late-marker"})
+            return response
+
+        monkeypatch.setattr(client, "get_object", mutate_inventory)
+        with pytest.raises(ArchiveRemoteError, match="unresolved remote inventory"):
+            quarantine.resolve(journal.repository, journal.remote)
+        ledger = quarantine.read()
+        assert ledger is not None
+        assert any(
+            value["version_id"] == "late-marker"
+            for value in cast(list[dict[str, object]], ledger["versions"])
+        )
+        assert "delete" not in client.calls
+
+
+def test_quarantine_resolution_confirms_disappeared_unknown_objects_without_deletion(
+    tmp_path: Path,
+) -> None:
+    client = MemoryRemote()
+    with prepared_source(tmp_path, client) as (journal, _job_id, _snapshot, quarantine):
+        client.require_intent = False
+        quarantine.record(
+            RemoteInventory((RemoteVersion("archives/unknown", "old", 1, False),), ())
+        )
+        quarantine.record(None)
+        assert quarantine.resolve(journal.repository, journal.remote)
+        quarantine.require_empty()
+        assert client.calls == [
+            "versioning",
+            "list",
+            "multipart",
+            "versioning",
+            "list",
+            "multipart",
+        ]
+
+
+def test_quarantine_cannot_reopen_against_a_different_bucket(tmp_path: Path) -> None:
+    client = MemoryRemote()
+    with prepared_source(tmp_path, client) as (journal, _job_id, _snapshot, quarantine):
+        quarantine.record(None)
+        previous = quarantine.read()
+        replacement = ArchiveRemoteStore(client, bucket="different-archive-bucket")
+        with pytest.raises(ArchiveRemoteError, match="another bucket"):
+            quarantine.resolve(journal.repository, replacement)
+        reopened = ArchiveQuarantine(
+            quarantine.root,
+            bucket=replacement.bucket,
+            expected_owner=_OWNER,
+            locks=quarantine.locks,
+        )
+        with pytest.raises(ArchiveRemoteError, match="metadata is inconsistent"):
+            reopened.require_empty()
+        assert quarantine.read() == previous
+        assert not client.calls

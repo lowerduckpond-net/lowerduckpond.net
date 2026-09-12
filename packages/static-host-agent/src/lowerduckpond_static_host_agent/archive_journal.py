@@ -431,10 +431,15 @@ class ArchiveJournal:
             if any(version.key == key for version in self.bound_versions()):
                 raise ArchiveJournalError("remote key remains bound by authoritative state")
 
+        known: tuple[RemoteVersion, ...] = ()
         try:
+            require_unbound(cast(str, document["key"]))
+            known = self.remote.list_versions(exact_key=cast(str, document["key"]))
             self.remote.purge_unbound(cast(str, document["key"]), require_unbound=require_unbound)
             self.remote.require_absent(cast(str, document["key"]))
         except Exception:
+            if known:
+                self.quarantine(RemoteInventory(known, ()))
             self.quarantine(None)
             raise
         self._notify(ArchiveJournalBoundary.ABSENCE_VERIFIED)

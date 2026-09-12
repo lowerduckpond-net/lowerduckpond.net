@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import asdict
 from pathlib import Path
 from typing import Final, cast
 
 from lowerduckpond_static_contracts import canonical_json_bytes, decode_json_object
 
-from lowerduckpond_static_host_agent.archive_remote import ArchiveRemoteError, RemoteInventory
+from lowerduckpond_static_host_agent.archive_remote import (
+    ArchiveRemoteError,
+    ArchiveRemoteStore,
+    RemoteInventory,
+    RemoteVersion,
+)
 from lowerduckpond_static_host_agent.capacity import (
     CapacityReservation,
     ReleaseCapacityUsage,
@@ -18,11 +24,12 @@ from lowerduckpond_static_host_agent.capacity import (
 )
 from lowerduckpond_static_host_agent.durable import DurableDirectory
 from lowerduckpond_static_host_agent.locks import LockManager, LockMode, LockName
+from lowerduckpond_static_host_agent.repository import StateRecordPath, StateRepository
 
 _PATH: Final = ("platform", "archive-quarantine.json")
 _MAXIMUM_BYTES: Final = 32 * 1024 * 1024
 _MAXIMUM_ENTRIES: Final = 10_000
-_FORMAT: Final = "lowerduckpond-archive-quarantine-v1"
+_FORMAT: Final = "lowerduckpond-archive-quarantine-v2"
 _IDENTITY_FIELDS: Final = 2
 _MAXIMUM_STRING_BYTES: Final = 1024
 
@@ -30,13 +37,18 @@ _MAXIMUM_STRING_BYTES: Final = 1024
 class ArchiveQuarantine:
     """Preserve observations on every error; presence always closes admission.
 
-    Root recovery owns resolution. This sink deliberately has no clear method:
-    neither an empty current-key view nor process exit is an absence proof for
-    every version, marker, upload, and outstanding intent retained here.
+    Root recovery owns resolution. Reopening requires a complete inventory and
+    exact retained bytes after every lifecycle and remote journal is resolved.
+    This boundary never grants authority to delete an unknown object.
     """
 
-    def __init__(self, state_root: Path, *, expected_owner: int, locks: LockManager) -> None:
+    def __init__(
+        self, state_root: Path, *, bucket: str, expected_owner: int, locks: LockManager
+    ) -> None:
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,61}[a-z0-9]", bucket):
+            raise ArchiveRemoteError("archive quarantine bucket is invalid")
         self.root = state_root
+        self.bucket = bucket
         self.owner = expected_owner
         self.locks = locks
 
@@ -60,8 +72,10 @@ class ArchiveQuarantine:
                 return None
         document = decode_json_object(raw, maximum_bytes=_MAXIMUM_BYTES)
         if (
-            set(document) != {"format", "discoveryIncomplete", "versions", "multipartUploads"}
+            set(document)
+            != {"format", "bucket", "discoveryIncomplete", "versions", "multipartUploads"}
             or document["format"] != _FORMAT
+            or document["bucket"] != self.bucket
             or type(document["discoveryIncomplete"]) is not bool
             or canonical_json_bytes(document, maximum_bytes=_MAXIMUM_BYTES) != raw
         ):
@@ -74,10 +88,80 @@ class ArchiveQuarantine:
         with self.locks.acquire(LockName.TENANT_STATE, mode=LockMode.EXCLUSIVE):
             self._record_locked(inventory)
 
+    def resolve(self, repository: StateRepository, remote: ArchiveRemoteStore) -> bool:
+        """Remove only quarantine proven resolved against locked current authority.
+
+        Reconcile all journals and authorized cleanup first. A full version and
+        multipart inventory must then exactly match every authoritative archive
+        record, both before and after independent verification of retained bytes.
+        Capacity admission remains a separate check, so a full but consistent
+        bucket does not prevent recovery from completing.
+        """
+        self.locks.require_held(LockName.EXPORT, mode=LockMode.EXCLUSIVE)
+        if remote.bucket != self.bucket:
+            raise ArchiveRemoteError("quarantine resolution selected another bucket")
+        with repository.transaction(mode=LockMode.EXCLUSIVE) as transaction:
+            previous = self.read()
+            if previous is None:
+                return False
+            if transaction.measure_intent_records().records:
+                raise ArchiveRemoteError("resolve all intents before reopening archive admission")
+            for value in cast(list[dict[str, object]], previous["versions"]):
+                if not cast(str, value["key"]).startswith("archives/"):
+                    raise ArchiveRemoteError(
+                        "quarantine includes versions outside managed inventory"
+                    )
+            records = [
+                transaction.read(StateRecordPath.tenant_archive(tenant_id, deployment_id)).document
+                for tenant_id in transaction.measure_inventory().tenant_ids
+                for deployment_id in transaction.tenant_archive_ids(tenant_id)
+            ]
+            known: set[RemoteVersion] = set()
+            for record in records:
+                if record["bucket"] != remote.bucket or any(
+                    entry.key == record["key"] for entry in known
+                ):
+                    raise ArchiveRemoteError("archive bindings disagree with configured inventory")
+                known.add(
+                    RemoteVersion(
+                        cast(str, record["key"]),
+                        cast(str, record["versionId"]),
+                        cast(int, record["bundleSize"]),
+                        False,
+                    )
+                )
+            inventory: RemoteInventory | None = None
+            try:
+                inventory = remote.inventory()
+                _require_exact_inventory(inventory, known)
+                for record in records:
+                    remote.read_verified(
+                        cast(str, record["key"]),
+                        cast(str, record["versionId"]),
+                        size=cast(int, record["bundleSize"]),
+                        sha256=cast(str, cast(dict[str, object], record["bundleDigest"])["value"]),
+                    )
+                inventory = remote.inventory()
+                _require_exact_inventory(inventory, known)
+            except Exception:
+                if inventory is not None:
+                    self._record_locked(inventory)
+                self._record_locked(None)
+                raise
+            # Tenant-state and export exclusion still cover the authority used
+            # above and the final durable removal. No writer can reopen a race
+            # between that proof and removing the admission closure.
+            with DurableDirectory.open(
+                self.root, expected_owner=self.owner, expected_directory_mode=0o700
+            ) as root:
+                root.remove(_PATH)
+            return True
+
     def _record_locked(self, inventory: RemoteInventory | None) -> None:
         previous = self.read()
         document = previous or {
             "format": _FORMAT,
+            "bucket": self.bucket,
             "discoveryIncomplete": False,
             "versions": [],
             "multipartUploads": [],
@@ -147,3 +231,8 @@ def _validate_entries(document: dict[str, object]) -> None:
 
 def _text(value: object) -> bool:
     return isinstance(value, str) and 0 < len(value.encode("utf-8")) <= _MAXIMUM_STRING_BYTES
+
+
+def _require_exact_inventory(inventory: RemoteInventory, known: set[RemoteVersion]) -> None:
+    if inventory.multipart_uploads or frozenset(inventory.versions) != known:
+        raise ArchiveRemoteError("archive quarantine still has unresolved remote inventory")
