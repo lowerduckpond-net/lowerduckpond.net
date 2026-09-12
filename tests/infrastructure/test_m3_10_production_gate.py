@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import os
 import subprocess
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
@@ -10,7 +11,7 @@ import pytest
 from botocore.exceptions import ClientError  # type: ignore[import-untyped]
 from lowerduckpond_m3_archive.storage import ArchiveQualificationError
 
-from scripts.check_m3_7_production_edge import CloudflareClient
+from scripts.check_m3_7_production_edge import CloudflareClient, ProductionEdgePreflightError
 from scripts.check_m3_10_provider import (
     GateError,
     PolicyClient,
@@ -18,6 +19,8 @@ from scripts.check_m3_10_provider import (
     check_storage,
     expected_rules,
 )
+
+from .test_m3_7_production_gate import _certificate_fixture
 
 ROOT = Path(__file__).parents[2]
 EXPECTED = "4e32c4a88d729b371b8cd5da96e5fedbc9f30266acb0984599c1d645939bef85"
@@ -111,9 +114,11 @@ def test_storage_gate_rejects_public_and_foreign_grants(grantee: dict[str, str])
 
 
 class Edge:
-    def __init__(self) -> None:
+    def __init__(self, ca_path: Path, leaf: dict[str, str]) -> None:
+        self.ca_path = ca_path
+        self.now = datetime.now(UTC)
         self.responses: dict[str, object] = {
-            "": {"name": "lowerduckpond.net", "status": "active"},
+            "": {"name": "lowerduckpond.net", "status": "active", "paused": False},
             "/dns_records": [
                 {"name": name, "type": "A", "content": "192.0.2.1", "proxied": True, "ttl": 1}
                 for name in ("lowerduckpond.net", "*.lowerduckpond.net")
@@ -123,7 +128,7 @@ class Edge:
             "/settings/always_use_https": {"value": "off"},
             "/origin_tls_client_auth/settings": {"enabled": True},
             "/origin_tls_client_auth/hostnames": [],
-            "/origin_tls_client_auth": [{"id": "b" * 32, "status": "active"}],
+            "/origin_tls_client_auth": [{**leaf, "id": "b" * 32}],
             "/rulesets": [
                 {"kind": "zone", "phase": phase} for phase in expected_rules("lowerduckpond.net")
             ],
@@ -147,6 +152,16 @@ class Edge:
         return self.get(f"/zones/{zone}/origin_tls_client_auth/settings")
 
 
+@pytest.fixture(scope="module")
+def edge_certificate(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, dict[str, str]]:
+    return _certificate_fixture(tmp_path_factory.mktemp("m3-10-edge"))
+
+
+@pytest.fixture
+def edge(edge_certificate: tuple[Path, dict[str, str]]) -> Edge:
+    return Edge(*edge_certificate)
+
+
 def edge_gate(edge: Edge) -> None:
     check_edge(
         cast(CloudflareClient, edge),
@@ -154,17 +169,39 @@ def edge_gate(edge: Edge) -> None:
         certificate_id="b" * 32,
         domain="lowerduckpond.net",
         origin="192.0.2.1",
+        ca_path=edge.ca_path,
+        now=edge.now,
     )
 
 
-def test_enforced_edge_passes_unchanged() -> None:
-    edge_gate(Edge())
+def test_enforced_edge_passes_unchanged(edge: Edge) -> None:
+    edge_gate(edge)
+
+
+@pytest.mark.parametrize("paused", [True, None, "false", 0])
+def test_edge_gate_requires_the_proxy_to_be_unpaused(edge: Edge, paused: object) -> None:
+    zone = cast(dict[str, object], edge.responses[""])
+    zone["paused"] = paused
+    with pytest.raises(GateError, match="pause state"):
+        edge_gate(edge)
+
+
+@pytest.mark.parametrize("drift", ["near-expiry", "api-expiration", "certificate"])
+def test_edge_gate_revalidates_the_actual_origin_pull_certificate(edge: Edge, drift: str) -> None:
+    leaf = cast(list[dict[str, object]], edge.responses["/origin_tls_client_auth"])[0]
+    if drift == "near-expiry":
+        edge.now += timedelta(days=306)
+    elif drift == "api-expiration":
+        leaf["expires_on"] = "2000-01-01T00:00:00Z"
+    else:
+        leaf["certificate"] = "invalid certificate"
+    with pytest.raises(ProductionEdgePreflightError):
+        edge_gate(edge)
 
 
 @pytest.mark.parametrize("status", [None, "pending", "moved", "deactivated"])
-def test_edge_gate_requires_an_active_zone(status: str | None) -> None:
-    edge = Edge()
-    edge.responses[""] = {"name": "lowerduckpond.net", "status": status}
+def test_edge_gate_requires_an_active_zone(edge: Edge, status: str | None) -> None:
+    edge.responses[""] = {"name": "lowerduckpond.net", "status": status, "paused": False}
     with pytest.raises(GateError, match="active status"):
         edge_gate(edge)
 
@@ -182,16 +219,14 @@ def test_edge_gate_requires_an_active_zone(status: str | None) -> None:
         ("/rulesets/phases/http_request_cache_settings/entrypoint", {"rules": []}),
     ],
 )
-def test_edge_gate_refuses_policy_drift(path: str, response: object) -> None:
-    edge = Edge()
+def test_edge_gate_refuses_policy_drift(edge: Edge, path: str, response: object) -> None:
     edge.responses[path] = response
     with pytest.raises(GateError):
         edge_gate(edge)
 
 
 @pytest.mark.parametrize("phase", list(expected_rules("lowerduckpond.net")))
-def test_edge_gate_refuses_extra_rules_and_changed_actions(phase: str) -> None:
-    edge = Edge()
+def test_edge_gate_refuses_extra_rules_and_changed_actions(edge: Edge, phase: str) -> None:
     rule = copy.deepcopy(expected_rules("lowerduckpond.net")[phase])
     edge.responses[f"/rulesets/phases/{phase}/entrypoint"] = {"rules": [rule, rule]}
     with pytest.raises(GateError):
@@ -248,6 +283,33 @@ def test_host_gate_accepts_only_the_preceding_empty_host(host_tree: Path) -> Non
     assert outcome.returncode == 0, outcome.stderr
 
 
+@pytest.mark.parametrize("inventory", ["preceding", "archive", "query-error"])
+def test_host_gate_queries_all_unit_files_and_distinguishes_absence_from_errors(
+    host_tree: Path, inventory: str
+) -> None:
+    systemctl = host_tree / "bin/systemctl"
+    output = {
+        "preceding": "printf 'caddy.service enabled enabled\\n'",
+        "archive": "printf 'lowerduckpond-archive-export.socket enabled enabled\\n'",
+        "query-error": "exit 1",
+    }[inventory]
+    systemctl.write_text(
+        "#!/bin/bash\n"
+        "if [[ $1 == list-unit-files ]]; then\n"
+        # A patterned no-match query really returns 1 on the installed systemd.
+        '    for arg in "$@"; do [[ $arg != lowerduckpond-* ]] || exit 1; done\n'
+        f"    {output}\n"
+        "fi\n"
+    )
+    outcome = host_gate(host_tree)
+    if inventory == "preceding":
+        assert outcome.returncode == 0, outcome.stderr
+    else:
+        assert outcome.returncode != 0
+        expected = "could not query" if inventory == "query-error" else "units already exist"
+        assert expected in outcome.stderr
+
+
 @pytest.mark.parametrize(
     "path",
     [
@@ -290,24 +352,23 @@ def test_host_gate_refuses_comment_only_or_staged_origin_pull(host_tree: Path, m
 @pytest.mark.parametrize(
     "phase", ["http_request_redirect", "http_request_origin", "http_response_headers_transform"]
 )
-def test_edge_gate_rejects_unexpected_zone_ruleset_phases(phase: str) -> None:
-    edge = Edge()
+def test_edge_gate_rejects_unexpected_zone_ruleset_phases(edge: Edge, phase: str) -> None:
     inventory = cast(list[dict[str, object]], edge.responses["/rulesets"])
     inventory.append({"kind": "zone", "phase": phase})
     with pytest.raises(GateError, match="phases"):
         edge_gate(edge)
 
 
-def test_edge_gate_distinguishes_available_managed_rulesets_from_zone_entrypoints() -> None:
-    edge = Edge()
+def test_edge_gate_distinguishes_available_managed_rulesets_from_zone_entrypoints(
+    edge: Edge,
+) -> None:
     inventory = cast(list[dict[str, object]], edge.responses["/rulesets"])
     inventory.append({"kind": "managed", "phase": "http_request_firewall_managed"})
     edge_gate(edge)
 
 
 @pytest.mark.parametrize("malformed", ["missing", "duplicate", "unknown-kind"])
-def test_edge_gate_requires_an_exact_zone_phase_inventory(malformed: str) -> None:
-    edge = Edge()
+def test_edge_gate_requires_an_exact_zone_phase_inventory(edge: Edge, malformed: str) -> None:
     inventory = cast(list[dict[str, object]], edge.responses["/rulesets"])
     if malformed == "missing":
         inventory.pop()

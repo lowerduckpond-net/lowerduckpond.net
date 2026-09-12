@@ -44,8 +44,11 @@ for path in /etc/lowerduckpond/archive /run/lowerduckpond-archive \
     /var/lib/lowerduckpond/static/emergency; do
     [[ ! -e ${path} && ! -L ${path} ]] || fail 'unexpected existing archive or emergency state'
 done
-archive_units=$(systemctl list-unit-files --no-legend --no-pager \
-    'lowerduckpond-archive-*' 'lowerduckpond-static-emergency-*')
+# Patterned queries return status 1 for no matches, as well as some errors.
+# Query the complete inventory so any query failure remains a gate failure.
+unit_files=$(systemctl list-unit-files --no-legend --no-pager) || fail 'could not query installed systemd units'
+archive_units=$(printf '%s\n' "${unit_files}" | awk \
+    '$1 ~ /^(lowerduckpond-archive-|lowerduckpond-static-emergency-)/ { print }')
 [[ -z ${archive_units} ]] || fail 'M3.10 units already exist before first convergence'
 queued=$(systemctl list-jobs --no-legend --plain | awk \
     '$2 ~ /^(caddy|lowerduckpond-static|lowerduckpond-archive)/ { print; exit }')
