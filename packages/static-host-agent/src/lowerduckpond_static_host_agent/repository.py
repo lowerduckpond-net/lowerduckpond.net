@@ -36,6 +36,7 @@ from lowerduckpond_static_host_agent.audit import (
     AuditState,
     AuditTransition,
     deployment_audit_history_tenant_ids,
+    tenant_has_creation_audit_history,
     tenant_has_deployment_audit_history,
     tenant_has_identity_audit_history,
 )
@@ -657,6 +658,10 @@ class StateRepository:
         with self.transaction(mode=LockMode.EXCLUSIVE, blocking=blocking) as transaction:
             return transaction.tenant_has_deployment_history(tenant_id)
 
+    def tenant_has_creation_history(self, tenant_id: object) -> bool:
+        with self.transaction(mode=LockMode.EXCLUSIVE) as transaction:
+            return transaction.tenant_has_creation_history(tenant_id)
+
     def tenant_has_identity_history(
         self,
         tenant_id: object,
@@ -969,6 +974,17 @@ class _StateTransaction:
                 )
             )
         return frozenset(matches)
+
+    def tenant_has_creation_history(self, tenant_id: object) -> bool:
+        """Require the complete audit chain to establish this still-live tenant's creation."""
+        self._require_exclusive()
+        return tenant_has_creation_audit_history(
+            self._repository._durable,
+            tenant_id,
+            expected_owner=self._repository._expected_owner,
+            expected_directory_mode=self._repository._expected_directory_mode,
+            expected_record_mode=self._repository._expected_record_mode,
+        )
 
     def tenant_has_identity_history(self, tenant_id: object) -> bool:
         """Inspect current and audited identity history while state is serialized."""

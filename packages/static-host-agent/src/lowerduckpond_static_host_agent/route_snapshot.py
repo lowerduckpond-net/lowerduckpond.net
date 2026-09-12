@@ -31,6 +31,7 @@ class RouteOverlayMode(StrEnum):
 
     ADD = "add"
     REPLACE = "replace"
+    REMOVE = "remove"
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,11 +52,13 @@ class TenantRouteOverlay:
             raise TypeError("route overlay source must be one immutable route input")
         if self.mode is RouteOverlayMode.ADD and self.source is not None:
             raise ValueError("add route overlay cannot have a source tenant")
-        if self.mode is RouteOverlayMode.REPLACE:
+        if self.mode in {RouteOverlayMode.REPLACE, RouteOverlayMode.REMOVE}:
             if self.source is None:
                 raise ValueError("replace route overlay requires a source tenant")
             if _tenant_id(self.source) != _tenant_id(self.tenant):
                 raise ValueError("route overlay source and candidate tenants differ")
+        if self.mode is RouteOverlayMode.REMOVE and self.tenant != self.source:
+            raise ValueError("remove route overlay must name its exact existing source")
         if self.archive_record is not None:
             if self.mode is not RouteOverlayMode.REPLACE or self.source is None:
                 raise ValueError("archive projection requires an exact live source replacement")
@@ -206,6 +209,9 @@ def _snapshot_tenants(  # noqa: PLR0912, PLR0913 - explicit projection and recov
                 raise RouteSnapshotError(
                     "replace route overlay source changed before the locked snapshot"
                 )
+            if overlay is not None and overlay.mode is RouteOverlayMode.REMOVE:
+                _is_archived(transaction, source, allow_observed_drift=False)
+                continue
             if overlay is not None and overlay.archive_record is not None:
                 _reject_live_archive_binding(transaction, source)
             tenants.append(
