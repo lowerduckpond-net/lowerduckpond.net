@@ -31,7 +31,7 @@ from lowerduckpond_static_host_agent.locks import LockMode
 with (StateRepository(Path({support.STATE_ROOT!r}), expected_owner=0) as repository,
       ExportSpool(Path({support.STATE_ROOT!r}), expected_owner=0) as spool):
     with spool.construction(blocking=True):
-        with repository.transaction(mode=LockMode.SHARED, blocking=True) as transaction:
+        with repository.transaction(mode=LockMode.EXCLUSIVE, blocking=True) as transaction:
             manifest = transaction.read(StateRecordPath.tenant_desired({tenant!r})).document
             identifiers = transaction.tenant_archive_ids({tenant!r})
             assert len(identifiers) == 1
