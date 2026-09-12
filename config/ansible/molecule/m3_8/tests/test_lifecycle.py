@@ -261,6 +261,7 @@ def _issue_without_handoff(host: Host, request: dict[str, object]) -> str:
 import os
 import pathlib
 import sys
+import time
 from datetime import UTC, datetime
 
 sys.path.insert(0, {(selected.stdout.strip() + "/site-packages")!r})
@@ -269,18 +270,29 @@ from lowerduckpond_static_host_agent import (
     CommandPublicationGate,
     StateRepository,
 )
+from lowerduckpond_static_host_agent.locks import StateBusyError
 
 with StateRepository(pathlib.Path({STATE_ROOT!r}), expected_owner=0) as repository:
-    issued = AuthorizationIssuer(
+    issuer = AuthorizationIssuer(
         repository,
         gate=CommandPublicationGate(pathlib.Path({PUBLICATION_GATE!r})),
         entropy=os.getrandom,
-    ).issue(
-        bytes.fromhex({request_hex!r}),
-        operator_principal="molecule-m3-8-operator-v1",
-        now=datetime.now(UTC),
-        artifact=None,
     )
+    # OnSuccess reconciliation may briefly own tenant-state after deployment.
+    # Repeat only contention, with exactly the same correlation and request.
+    for attempt in range({_BUSY_RETRY_ATTEMPTS}):
+        try:
+            issued = issuer.issue(
+                bytes.fromhex({request_hex!r}),
+                operator_principal="molecule-m3-8-operator-v1",
+                now=datetime.now(UTC),
+                artifact=None,
+            )
+            break
+        except StateBusyError:
+            if attempt == {_BUSY_RETRY_ATTEMPTS - 1}:
+                raise
+            time.sleep({_BUSY_RETRY_SECONDS})
     print(issued.job_id)
 """
     try:
