@@ -1,6 +1,6 @@
 ---
 - name: Prepare reboot-persistent ext4 qualification filesystems
-  hosts: all
+  hosts: hosting_nodes
   become: true
   gather_facts: false
   vars:

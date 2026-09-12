@@ -205,11 +205,24 @@
         dest: "{{ m3_8_operator_transport_path }}"
         mode: "0600"
 
+    - name: Prepare the pinned private TLS archive fixture without removing objects
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - -I
+          - -B
+          - "{{ playbook_dir }}/prepare_archive_storage.py"
+          - lowerduckpond-m3-10-minio
+          - "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/archive-tls"
+      register: m3_10_archive_storage
+      changed_when: false
+
     - name: Attach the pinned artifact to the installed host
       ansible.builtin.add_host:
         name: "{{ item }}"
         caddy_origin_pull_ca_paths:
           - "{{ m3_8_origin_pull_ca_certificate }}"
+        m3_10_archive_storage: "{{ m3_10_archive_storage.stdout | from_json }}"
         static_host_agent_artifact_path: >-
           {{ static_host_agent_molecule_artifact }}
         static_host_agent_artifact_sha256: >-
@@ -355,6 +368,34 @@
 
 - name: Import the hosting-node playbook
   ansible.builtin.import_playbook: ../../playbooks/site.yml
+
+- name: Trust and resolve only the disposable archive endpoint
+  hosts: hosting_nodes
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Install the disposable archive CA in the ordinary system trust store
+      ansible.builtin.copy:
+        src: "{{ m3_10_archive_storage.caCertificate }}"
+        dest: /usr/local/share/ca-certificates/m3-10-disposable-archive.crt
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Refresh disposable archive TLS trust
+
+    - name: Resolve the fixed archive endpoint to the disposable TLS service
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        regexp: '^.* ams3\.digitaloceanspaces\.com$'
+        line: "{{ m3_10_archive_storage.address }} ams3.digitaloceanspaces.com"
+        unsafe_writes: true
+
+  handlers:
+    - name: Refresh disposable archive TLS trust
+      ansible.builtin.command:
+        argv:
+          - /usr/sbin/update-ca-certificates
+      changed_when: true
 
 - name: Run the standalone host acceptance playbook
   ansible.builtin.import_playbook: ../../playbooks/acceptance.yml

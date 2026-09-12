@@ -20,6 +20,17 @@ platforms:
       - /run
       - /run/lock
       - /tmp
+  - name: lowerduckpond-m3-10-minio
+    image: quay.io/minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    groups:
+      - archive_fixture
+    pre_build_image: true
+    command: server /data --address :443 --certs-dir /certs
+    keep_volumes: false
+    env:
+      MINIO_ROOT_USER: molecule-m3-10-root
+      MINIO_ROOT_PASSWORD: molecule-m3-10-disposable-root-secret # gitleaks:allow - disposable fixture
+      MINIO_REGION_NAME: ams3
 provisioner:
   name: ansible
   config_options:
@@ -46,6 +57,12 @@ provisioner:
         backup_spaces_secret_access_key: molecule-spaces-secret-key
         backup_spaces_region: us-east-1
         backup_node_name: molecule
+        static_host_agent_archive_configuration:
+          format: lowerduckpond-archive-configuration-v1
+          region: ams3
+          bucket: molecule-tenant-archives
+          accessKeyId: molecule-m3-10-archive
+          secretAccessKey: molecule-m3-10-disposable-archive-secret
 verifier:
   name: ansible
 scenario:
