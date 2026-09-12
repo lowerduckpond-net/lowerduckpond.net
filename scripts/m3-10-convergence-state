@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Fixed stdin program: only the production runner records completed acceptance.
+set +x
+set -euo pipefail
+umask 077
+
+[[ $# == 2 && $2 =~ ^[0-9a-f]{64}$ ]] || exit 2
+action=$1
+artifact=$2
+directory=/var/lib/lowerduckpond/convergence
+marker=${directory}/m3-10
+install_root=/opt/lowerduckpond/static-host-agent
+
+private_directory() {
+    [[ -d ${directory} && ! -L ${directory} &&
+       $(stat --format='%u:%a' -- "${directory}") == 0:700 ]]
+}
+
+case ${action} in
+    check)
+        private_directory || exit 1
+        [[ -f ${marker} && ! -L ${marker} &&
+           $(stat --format='%u:%a:%h:%s' -- "${marker}") == 0:400:1:65 &&
+           $(cat -- "${marker}") == "${artifact}" ]] || exit 1
+        ;;
+    clear | record)
+        parent=${directory%/*}
+        [[ -d ${parent} && ! -L ${parent} &&
+           $(stat --format='%u:%a' -- "${parent}") == 0:711 ]] || exit 1
+        if [[ ! -e ${directory} && ! -L ${directory} ]]; then
+            mkdir --mode=0700 -- "${directory}"
+        fi
+        private_directory || exit 1
+        if [[ ${action} == clear ]]; then
+            [[ ! -d ${marker} ]] || exit 1
+            rm --force -- "${marker}"
+            sync --file-system "${directory}"
+            exit 0
+        fi
+        [[ $(readlink --canonicalize-existing -- "${install_root}/current") == "${install_root}/${artifact}" ]] || exit 1
+        temporary=$(mktemp "${directory}/.m3-10.XXXXXXXX")
+        trap 'rm --force -- "${temporary}"' EXIT
+        printf '%s\n' "${artifact}" >"${temporary}"
+        chmod 0400 -- "${temporary}"
+        sync --file-system "${temporary}"
+        mv --no-target-directory -- "${temporary}" "${marker}"
+        sync --file-system "${directory}"
+        ;;
+    *) exit 2 ;;
+esac

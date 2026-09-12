@@ -119,9 +119,14 @@ just configure-production
 
 For an artifact upgrade, that runner validates the report against the actual
 built artifact and clean current source, and repeats the M3.10 preflight before
-its first host mutation. An unchanged selected artifact permits ordinary
-idempotent reconfiguration. The explicit reviewed rollback workflow retains
-its existing checks. After an actual convergence, record the new production
+its first host mutation. Ordinary reconfiguration requires both the unchanged
+artifact and its root-owned completion record, written only after convergence,
+idempotence, and host acceptance pass. Selection alone is insufficient. Each
+attempt clears prior completion before Ansible; interrupted attempts must pass
+the full gate again. Its strict preceding-host inventory refuses partial M3.10
+installations, which require investigation and a reviewed recovery rather than
+automatic authorization to retry. The explicit reviewed rollback workflow
+clears completion and retains its existing checks. After an actual convergence, record the new production
 identity and update the preflight pins through review before another upgrade;
 do not add broad candidate allowances to the first-convergence gate.
 
