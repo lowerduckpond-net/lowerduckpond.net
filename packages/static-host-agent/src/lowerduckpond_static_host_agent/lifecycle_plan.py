@@ -108,6 +108,7 @@ def plan_archive_transition(  # noqa: PLR0913, PLR0917 - complete authority tupl
     now: datetime,
     clock: MillisecondClock,
     entropy: EntropySource,
+    intent_id: object | None = None,
 ) -> ArchiveTransitionPlan:
     """Preserve the exact active or suspended rollback source before route removal."""
     job = deepcopy(authorization_job)
@@ -175,7 +176,11 @@ def plan_archive_transition(  # noqa: PLR0913, PLR0917 - complete authority tupl
     source_generation = validate_uuid7(source_runtime_generation_id)
     candidate_generation = validate_uuid7(candidate_runtime_generation_id)
     timestamp = _canonical_timestamp(now)
-    intent_id = generate_uuid7(clock=clock, entropy=entropy)
+    intent_id = (
+        generate_uuid7(clock=clock, entropy=entropy)
+        if intent_id is None
+        else validate_uuid7(intent_id)
+    )
     if len({intent_id, construction["intentId"], tenant_id}) != 3:  # noqa: PLR2004 - identities
         raise LifecyclePlanError("archive transaction identities collided")
     candidate_observed: dict[str, object] = {

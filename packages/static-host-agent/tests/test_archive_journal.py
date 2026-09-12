@@ -212,9 +212,24 @@ def capacity(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @contextmanager
 def prepared_source(
-    tmp_path: Path, client: MemoryRemote
+    tmp_path: Path, client: MemoryRemote, *, lifecycle: str = "active"
 ) -> Iterator[tuple[ArchiveJournal, str, ExportSnapshot, ArchiveQuarantine]]:
     root, releases = setup_root(tmp_path)
+    if lifecycle == "suspended":
+        source_path = StateRecordPath.tenant_desired(_TENANT)
+        source = decode_contract(root.joinpath(*source_path.components).read_bytes())
+        cast(dict[str, object], source["spec"])["desiredState"] = lifecycle
+        write(root, source_path, source)
+        observed_path = StateRecordPath.tenant_observed(_TENANT)
+        observed = decode_contract(root.joinpath(*observed_path.components).read_bytes())
+        observed.update(
+            observedState=lifecycle,
+            runtimeGenerationId=None,
+            desiredManifestDigest=manifest_digest(source).to_dict(),
+        )
+        write(root, observed_path, observed)
+    else:
+        assert lifecycle == "active"
     client.expected_intent = root / "intents"
     with (
         StateRepository(root, expected_owner=_OWNER, tenant_release_root=releases) as repository,
