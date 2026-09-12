@@ -106,6 +106,20 @@ class _ProcessChannel:
             self._wait(write=True)
             try:
                 written = os.write(self.stdin_fd, remaining)
+            except BrokenPipeError as error:
+                # A busy host may reject before consuming a large payload. Read
+                # EOF while draining bounded stderr so callers receive the same
+                # rejection as a request without an artifact. An early response
+                # cannot make an incomplete request succeed.
+                self.close_input()
+                if self.read_exact(1):
+                    raise OperatorClientError(
+                        "operator transport closed input before the request completed"
+                    ) from error
+                return_code = self.wait()
+                raise OperatorClientError(
+                    f"operator transport failed: {self.error_message(return_code)}"
+                ) from error
             except BlockingIOError:
                 continue
             if written <= 0:
