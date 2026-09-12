@@ -167,6 +167,8 @@ def validate_restore_transition(  # noqa: PLR0913 - explicit replay evidence
             result_missing,
             audit_missing,
             capacity_limits,
+            desired_missing=desired.document != plan.manifest,
+            observed_missing=observed.document != plan.observed_state,
         )
     return RestoreProgress(
         current, retirement, desired, observed, deployment_missing, result_missing, removal, retired
@@ -296,6 +298,9 @@ def _admit(  # noqa: PLR0913,PLR0917 - explicit bounded writes
     result_missing: bool,
     audit_missing: bool,
     limits: HostCapacityLimits,
+    *,
+    desired_missing: bool,
+    observed_missing: bool,
 ) -> None:
     if audit_missing:
         transaction.admit_audit_append(plan.audit_entry)
@@ -308,7 +313,13 @@ def _admit(  # noqa: PLR0913,PLR0917 - explicit bounded writes
                 ),
             )
         )
-    writes = [plan.manifest, plan.observed_state, {**job.document, "phase": "completed"}]
+    writes = []
+    if desired_missing:
+        writes.append(plan.manifest)
+    if observed_missing:
+        writes.append(plan.observed_state)
+    if job.document["phase"] != "completed":
+        writes.append({**job.document, "phase": "completed"})
     if deployment_missing:
         writes.append(plan.deployment)
     if result_missing:
@@ -319,6 +330,10 @@ def _admit(  # noqa: PLR0913,PLR0917 - explicit bounded writes
     if audit_missing:
         allocated += transaction.allocation_upper_bound(DEFAULT_AUDIT_LIMITS.maximum_segment_bytes)
     count = len(writes) + int(audit_missing)
+    if count == 0:
+        # Fully committed replay only removes journals; a low reserve must not
+        # prevent that recovery from releasing its remaining remote obligation.
+        return
     admit_release_capacity(
         ReleaseCapacityUsage(()),
         CapacityReservation(allocated + transaction.namespace_allocation_upper_bound(count), count),
