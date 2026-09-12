@@ -263,6 +263,7 @@ def assert_static_worker_caddy_runtime_access(host: Host) -> None:
         "assert not os.path.exists('/etc/lowerduckpond/archive/credentials.json');"
         "assert not os.path.exists('/etc/lowerduckpond/backup.env');"
         "assert os.path.exists('/run/lowerduckpond-archive/export.sock');"
+        "assert os.path.exists('/run/lowerduckpond-archive/construction.sock');"
         "assert os.statvfs('/').f_flag & os.ST_RDONLY;"
         f"sys.path.insert(0,{(selected.stdout.strip() + '/site-packages')!r});"
         "import lowerduckpond_static_host_agent.caddy_admin as admin;"
@@ -1521,7 +1522,8 @@ def test_static_worker_boundary_is_opaque_and_hardened(host: Host) -> None:
     assert host.run(f"find {STATIC_HOST_AGENT_ROOT} -name __pycache__ -print -quit").stdout == ""
 
 
-def test_archived_export_socket_and_credentials_are_private(host: Host) -> None:
+@pytest.mark.parametrize("operation", ["export", "construction"])
+def test_archive_socket_and_credentials_are_private(host: Host, operation: str) -> None:
     directory = host.file("/etc/lowerduckpond/archive")
     credential = host.file("/etc/lowerduckpond/archive/credentials.json")
     assert (
@@ -1535,10 +1537,10 @@ def test_archived_export_socket_and_credentials_are_private(host: Host) -> None:
         and credential.mode == ARCHIVE_PRIVATE_FILE_MODE
     )
     assert (
-        host.run("systemctl is-active lowerduckpond-archive-export.socket").stdout.strip()
+        host.run(f"systemctl is-active lowerduckpond-archive-{operation}.socket").stdout.strip()
         == "active"
     )
-    socket_file = host.file("/run/lowerduckpond-archive/export.sock")
+    socket_file = host.file(f"/run/lowerduckpond-archive/{operation}.sock")
     assert (
         socket_file.is_socket
         and socket_file.user == "root"
@@ -1550,10 +1552,10 @@ def test_archived_export_socket_and_credentials_are_private(host: Host) -> None:
             "runuser -u %s -- /usr/bin/python3 -I -c %s",
             account,
             "import socket; s=socket.socket(socket.AF_UNIX); "
-            "s.connect('/run/lowerduckpond-archive/export.sock')",
+            f"s.connect('/run/lowerduckpond-archive/{operation}.sock')",
         )
         assert denied.rc != 0 and "PermissionError" in denied.stderr
-    unit = host.file("/etc/systemd/system/lowerduckpond-archive-export@.service")
+    unit = host.file(f"/etc/systemd/system/lowerduckpond-archive-{operation}@.service")
     for line in (
         "User=root",
         "StandardInput=socket",
@@ -1580,7 +1582,7 @@ def test_archived_export_socket_and_credentials_are_private(host: Host) -> None:
         "--property=InaccessiblePaths=/run/lowerduckpond-archive "
         "/usr/bin/python3 -I -c %s",
         "import os; assert not os.path.exists('/etc/lowerduckpond/archive/credentials.json'); "
-        "assert not os.path.exists('/run/lowerduckpond-archive/export.sock')",
+        f"assert not os.path.exists('/run/lowerduckpond-archive/{operation}.sock')",
     )
     assert restic_denial.rc == 0, restic_denial.stderr
     selected = host.run(f"readlink --canonicalize {STATIC_HOST_AGENT_ROOT}/current").stdout.strip()
@@ -1591,6 +1593,10 @@ def test_archived_export_socket_and_credentials_are_private(host: Host) -> None:
         "import load_archive_configuration;"
         "configuration=load_archive_configuration();"
         "assert os.statvfs('/').f_flag & os.ST_RDONLY;"
+        f"assert bool(os.statvfs('{STATIC_STATE_ROOT}/platform').f_flag & os.ST_RDONLY)"
+        f"=={operation == 'export'};"
+        f"assert bool(os.statvfs('{STATIC_STATE_ROOT}/exports').f_flag & os.ST_RDONLY)"
+        f"=={operation == 'construction'};"
         "assert configuration.bucket=='molecule-tenant-archives';"
         "assert configuration.access_key_id=='molecule-dedicated-archive-key';"
         "remote=configuration.remote_store();"
@@ -1600,12 +1606,14 @@ def test_archived_export_socket_and_credentials_are_private(host: Host) -> None:
         "assert not os.path.exists('/srv/lowerduckpond/sites');"
         "socket.socket(socket.AF_INET,socket.SOCK_STREAM).close()"
     )
-    _run_installed_boundary_probe(host, "lowerduckpond-archive-export@.service", boundary_probe)
+    _run_installed_boundary_probe(
+        host, f"lowerduckpond-archive-{operation}@.service", boundary_probe
+    )
     probe = (
         "import socket,sys;"
         f"sys.path.insert(0,{(selected + '/site-packages')!r});"
         "from lowerduckpond_static_host_agent.archive_transport import ArchiveChannel;"
-        "s=socket.socket(socket.AF_UNIX);s.connect('/run/lowerduckpond-archive/export.sock');"
+        f"s=socket.socket(socket.AF_UNIX);s.connect('/run/lowerduckpond-archive/{operation}.sock');"
         "c=ArchiveChannel(s,expected_peer_uid=0,maximum_receive_bytes=16384,timeout=10);"
         "c.send({'operation':'ungranted'});"
         "\ntry: c.receive()\nexcept (RuntimeError,OSError): pass\n"
@@ -1614,12 +1622,12 @@ def test_archived_export_socket_and_credentials_are_private(host: Host) -> None:
     assert host.run("/usr/bin/python3 -I -B -c %s", probe).rc == 0
     logged = host.run(
         "timeout 10s bash -c %s",
-        "until journalctl --unit='lowerduckpond-archive-export@*' --output=cat --no-pager | "
-        "grep --fixed-strings --quiet archive_export_service_failed; do sleep 0.1; done",
+        f"until journalctl --unit='lowerduckpond-archive-{operation}@*' --output=cat --no-pager | "
+        f"grep --fixed-strings --quiet archive_{operation}_service_failed; do sleep 0.1; done",
     )
     assert logged.rc == 0
     journal = host.run(
-        "journalctl --unit='lowerduckpond-archive-export@*' --output=cat --no-pager"
+        f"journalctl --unit='lowerduckpond-archive-{operation}@*' --output=cat --no-pager"
     ).stdout
     assert "molecule-dedicated-archive" not in journal
 

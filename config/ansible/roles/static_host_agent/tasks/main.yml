@@ -66,6 +66,7 @@
       - lowerduckpond-static-reconcile.service
       - lowerduckpond-static-worker@*.service
       - lowerduckpond-archive-export@*.service
+      - lowerduckpond-archive-construction@*.service
   register: static_host_agent_disabled_active_processes
   changed_when: false
   until: static_host_agent_disabled_active_processes.stdout | trim | length == 0
@@ -205,6 +206,7 @@
     - execute-authorized-job
     - reconcile-authorized-jobs
     - archive-export-service
+    - archive-construction-service
     - check-current-caddy-generation
   when: static_publication_enabled | bool
 
@@ -290,6 +292,7 @@
     - execute-authorized-job
     - reconcile-authorized-jobs
     - archive-export-service
+    - archive-construction-service
     - check-current-caddy-generation
   when: not static_publication_enabled | bool
 
@@ -304,6 +307,7 @@
       - lowerduckpond-static-reconcile.service
       - lowerduckpond-static-worker@*.service
       - lowerduckpond-archive-export@*.service
+      - lowerduckpond-archive-construction@*.service
   register: static_host_agent_active_legacy_processes
   changed_when: false
   until: static_host_agent_active_legacy_processes.stdout | trim | length == 0
@@ -628,6 +632,8 @@
   loop:
     - lowerduckpond-archive-export.socket
     - lowerduckpond-archive-export@.service
+    - lowerduckpond-archive-construction.socket
+    - lowerduckpond-archive-construction@.service
   notify: Reload systemd for the static host agent
 
 - name: Install the inert static worker boundary
@@ -686,11 +692,14 @@
     - lowerduckpond-static-reconcile.service
     - lowerduckpond-static-reconcile.timer
 
-- name: Start the root-only archived export socket
+- name: Start the root-only archive sockets
   ansible.builtin.systemd_service:
-    name: lowerduckpond-archive-export.socket
+    name: "{{ item }}"
     enabled: true
     state: started
+  loop:
+    - lowerduckpond-archive-export.socket
+    - lowerduckpond-archive-construction.socket
 
 - name: Start bounded static authorization reconciliation
   ansible.builtin.systemd_service:
