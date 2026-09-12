@@ -204,6 +204,25 @@ def test_repeated_continuation_fails_closed() -> None:
         store(client).list_versions()
 
 
+def test_inventory_includes_unknown_keys_outside_the_managed_archive_prefix() -> None:
+    client = FakeArchiveClient()
+    client.pages = [
+        {
+            "IsTruncated": False,
+            "Versions": [{"Key": "outside/archive-prefix", "VersionId": "unknown", "Size": 10}],
+            "DeleteMarkers": [{"Key": "outside/marker", "VersionId": "marker"}],
+        }
+    ]
+    inventory = store(client).inventory()
+    assert inventory.versions == (
+        RemoteVersion("outside/archive-prefix", "unknown", 10, False),
+        RemoteVersion("outside/marker", "marker", 0, True),
+    )
+    assert client.calls[1][1]["Prefix"] == ""
+    with pytest.raises(ArchiveRemoteError, match="reconciliation"):
+        inventory.require_reservation(frozenset())
+
+
 def test_unknown_versions_missing_bound_versions_and_multipart_close_admission() -> None:
     version = RemoteVersion(KEY, "bound", 20, False)
     with pytest.raises(ArchiveRemoteError):

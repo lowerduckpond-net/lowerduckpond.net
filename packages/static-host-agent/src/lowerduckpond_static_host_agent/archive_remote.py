@@ -177,7 +177,9 @@ class ArchiveRemoteStore:
 
     def list_versions(self, *, exact_key: str | None = None) -> tuple[RemoteVersion, ...]:
         """List all versions/markers, filtering exact-key queries after pagination."""
-        prefix = "archives/" if exact_key is None else _managed_key(exact_key)
+        # The entire bucket is dedicated. Unknown keys outside archives/ must
+        # still retain their capacity charge and close new admission.
+        prefix = "" if exact_key is None else _managed_key(exact_key)
         versions: list[RemoteVersion] = []
         seen: set[tuple[str, str]] = set()
         for response in self._pages(prefix=prefix, multipart=False):
