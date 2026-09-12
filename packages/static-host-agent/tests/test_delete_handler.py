@@ -5,7 +5,9 @@ from pathlib import Path
 
 import pytest
 from lowerduckpond_static_host_agent import delete_handler as handler_module
+from lowerduckpond_static_host_agent.archive_cleanup_service import ArchiveCleanupClient
 from lowerduckpond_static_host_agent.archive_remote import ArchiveRemoteError
+from lowerduckpond_static_host_agent.capacity import CapacityRejectedError, FilesystemCapacity
 from lowerduckpond_static_host_agent.delete_commit import DeleteCommitBoundary
 from lowerduckpond_static_host_agent.delete_publication import activate_delete_transition
 from lowerduckpond_static_host_agent.repository import StateRecordPath
@@ -15,6 +17,74 @@ from test_archive_journal import _TENANT, capacity  # noqa: F401 - capacity fixt
 
 class InterruptedDeleteError(BaseException):
     pass
+
+
+def test_delete_releases_unstarted_retirement_after_combined_capacity_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with _host(tmp_path, deletion=True) as (executor, job_id, repository, remote, runtime, futures):
+        source = repository.read(StateRecordPath.tenant_desired(_TENANT))
+        versions = list(remote.versions)
+        selected = runtime.active
+
+        def remaining_capacity(_transaction: object) -> FilesystemCapacity:
+            journal_count = len(list((tmp_path / "state/intents").glob("*.json")))
+            return FilesystemCapacity(
+                1, 4096, 8_000_000, 7_000_000, 1_000_000, 100_004 - journal_count
+            )
+
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                "lowerduckpond_static_host_agent.repository._StateTransaction.measure_filesystem_capacity",
+                remaining_capacity,
+            )
+            with pytest.raises(CapacityRejectedError, match="free-inode floor"):
+                executor.execute(job_id)
+        assert not repository.measure_intent_records().records
+        assert repository.read(StateRecordPath.tenant_desired(_TENANT)).revision == source.revision
+        assert remote.versions == versions
+        assert runtime.active == runtime.running == selected
+        assert executor.execute(job_id).result["status"] == "succeeded"
+        for future in futures:
+            future.result(timeout=5)
+
+
+def test_delete_releases_unstarted_retirement_when_recovery_verification_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with _host(tmp_path, deletion=True) as (
+        executor,
+        job_id,
+        repository,
+        remote,
+        _runtime,
+        futures,
+    ):
+        source = repository.read(StateRecordPath.tenant_desired(_TENANT))
+        versions = list(remote.versions)
+
+        def interrupt(*_args: object, **_kwargs: object) -> None:
+            raise InterruptedDeleteError
+
+        with monkeypatch.context() as patch:
+            patch.setattr(handler_module, "prepare_delete_transition", interrupt)
+            with pytest.raises(InterruptedDeleteError):
+                executor.execute(job_id)
+        assert len(repository.measure_intent_records().records) == 1
+
+        def unavailable(*_args: object, **_kwargs: object) -> None:
+            raise ArchiveRemoteError("recovery verification is unavailable")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(ArchiveCleanupClient, "verify_source", unavailable)
+            with pytest.raises(ArchiveRemoteError, match="recovery verification"):
+                executor.execute(job_id)
+        assert not repository.measure_intent_records().records
+        assert repository.read(StateRecordPath.tenant_desired(_TENANT)).revision == source.revision
+        assert remote.versions == versions
+        assert executor.execute(job_id).result["status"] == "succeeded"
+        for future in futures:
+            future.result(timeout=5)
 
 
 @pytest.mark.parametrize(

@@ -34,8 +34,8 @@ Further review covered archive and restore capacity and recovery. Construction
 now checks terminal audit headroom before upload; local archive and restore
 preparation admit the intent together with all terminal records after writing
 the unselected runtime candidate. A refused archive preparation can discard
-that candidate and audit/retire its upload. Restore cancels a read-only
-retirement on download or preparation failure only while its archived source
+that candidate and audit/retire its upload. Restore and archived deletion cancel
+a read-only retirement on verification, download, or preparation failure only while their archived source
 is unchanged and no local transaction exists. Retained-object validation also
 rechecks later audited transitions when the private validator raises.
 
@@ -45,3 +45,9 @@ capacity, pre-upload audit space, safe upload retirement, and preservation of
 retirement after local intent publication. Formatting, lint, and strict typing
 passed across 235 source files. Installed qualification and required CI remain
 separate release evidence.
+
+The shared retirement-cancellation follow-up passed 56 related tests, including
+archived deletion's actual free-inode refusal after retirement creation and a
+failed remote verification during recovery. Both paths preserve the archived
+source and release the unstarted journal; retry succeeds when the refusal is
+removed. Formatting, lint, and strict typing passed.

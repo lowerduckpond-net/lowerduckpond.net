@@ -183,7 +183,7 @@ class RestoreLifecycleHandler:
             )
         except Exception:
             if retirement is not None:
-                journal.cancel_unstarted_restore(job_id, retirement)
+                journal.cancel_unstarted_retirement(job_id, retirement)
             raise
         finally:
             self._spool.discard_workspace()
