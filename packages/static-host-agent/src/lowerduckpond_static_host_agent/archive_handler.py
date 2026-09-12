@@ -20,7 +20,6 @@ from lowerduckpond_static_host_agent.archive_journal import ArchiveConstructionJ
 from lowerduckpond_static_host_agent.archive_prepare import prepare_archive_transition
 from lowerduckpond_static_host_agent.archive_quarantine import ArchiveQuarantine
 from lowerduckpond_static_host_agent.archive_recover import reconstruct_archive_transition
-from lowerduckpond_static_host_agent.archive_remote import ArchiveRemoteError
 from lowerduckpond_static_host_agent.archive_revalidate import revalidate_archive
 from lowerduckpond_static_host_agent.caddy_admin import (
     reload_caddy_generation,
@@ -114,7 +113,7 @@ class ArchiveLifecycleHandler:
         self._restorer = restorer
         self._verifier = verifier
 
-    def execute(  # noqa: PLR0911 - explicit durable recovery cases
+    def execute(
         self, job_id: str, *, claim: LifecycleArtifact | None, blocking: bool
     ) -> ExecutionOutcome:
         canonical = validate_uuid7(job_id)
@@ -191,13 +190,12 @@ class ArchiveLifecycleHandler:
             self._gate.require_enabled()
             ExportDelivery(self._repository, self._spool, now=self._now).reconcile_locked()
             self._spool.prepare_workspace()
+            # An ambiguous response can leave the service uploading under a
+            # borrowed copy of this EXPORT lease. Preserve the journal and
+            # propagate the error: recovery must acquire a new lease, which
+            # cannot succeed until that service has finished using its copy.
             try:
                 construction = self._construct(canonical, blocking=blocking)
-            except ArchiveRemoteError, OSError:
-                interrupted = self._classify(canonical, blocking=blocking)
-                if interrupted.construction is None:
-                    raise
-                return self._abort(canonical, interrupted.construction, blocking=blocking)
             finally:
                 self._spool.discard_workspace()
             return self._publish(canonical, construction, blocking=blocking)

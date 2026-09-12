@@ -8,7 +8,8 @@ from contextlib import contextmanager
 from datetime import datetime
 from functools import partial
 from pathlib import Path
-from typing import cast
+from threading import Event
+from typing import BinaryIO, cast
 
 import pytest
 from lowerduckpond_static_contracts import canonical_json_bytes
@@ -18,9 +19,11 @@ from lowerduckpond_static_host_agent.archive_cleanup_service import ArchiveClean
 from lowerduckpond_static_host_agent.archive_commit import ArchiveCommitBoundary
 from lowerduckpond_static_host_agent.archive_construction_service import (
     ArchiveConstructionClient,
+    ArchiveConstructionSession,
     serve_archive_construction,
 )
 from lowerduckpond_static_host_agent.archive_handler import ArchiveLifecycleHandler
+from lowerduckpond_static_host_agent.archive_journal import PreparedArchive, VerifiedArchiveUpload
 from lowerduckpond_static_host_agent.archive_quarantine import ArchiveQuarantine
 from lowerduckpond_static_host_agent.archive_remote import ArchiveRemoteError, ArchiveRemoteStore
 from lowerduckpond_static_host_agent.archive_revalidate import revalidate_archive
@@ -31,6 +34,7 @@ from lowerduckpond_static_host_agent.execution import AuthorizationExecutor
 from lowerduckpond_static_host_agent.export_spool import ExportSpool
 from lowerduckpond_static_host_agent.intake import ArtifactIntake
 from lowerduckpond_static_host_agent.issuance import AuthorizationIssuer
+from lowerduckpond_static_host_agent.locks import StateBusyError
 from lowerduckpond_static_host_agent.release_store import DeploymentReleaseStore
 from lowerduckpond_static_host_agent.repository import StateRecordPath, StateRepository
 from lowerduckpond_static_host_agent.restore_handler import RestoreLifecycleHandler
@@ -372,6 +376,11 @@ def test_archive_handler_resolves_lost_upload_response_without_repeating_put(
         futures,
     ):
         before = runtime.active
+        with pytest.raises(ArchiveRemoteError):
+            executor.execute(job_id)
+        assert repository.measure_intent_records().records
+        with pytest.raises(TimeoutError):
+            futures[0].result(timeout=5)
         result = executor.execute(job_id).result
         assert result["status"] == "failed"
         assert result["archiveRecord"] is None
@@ -449,3 +458,50 @@ def test_archive_handler_replays_a_lost_cleanup_receipt_without_losing_remote_ev
         for future in futures:
             future.result(timeout=5)
         assert remote.calls.count("put") == 1
+
+
+def test_archive_recovery_waits_for_upload_after_client_disconnect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started, release = Event(), Event()
+    original_upload = ArchiveConstructionSession.upload
+
+    def disconnected_upload(
+        self: ArchiveConstructionSession, prepared: PreparedArchive, source: BinaryIO
+    ) -> VerifiedArchiveUpload:
+        self._channel._stream.settimeout(0.2)
+        return original_upload(self, prepared, source)
+
+    monkeypatch.setattr(ArchiveConstructionSession, "upload", disconnected_upload)
+    with _host(tmp_path) as (executor, job_id, repository, remote, runtime, futures):
+        original_put = remote.put_object
+
+        def slow_put(**kwargs: object) -> dict[str, object]:
+            started.set()
+            assert release.wait(10), "test did not release the in-flight upload"
+            return original_put(**kwargs)
+
+        monkeypatch.setattr(remote, "put_object", slow_put)
+        before = runtime.active
+        try:
+            with pytest.raises(ArchiveRemoteError):
+                executor.execute(job_id)
+            assert started.is_set()
+            assert len(repository.measure_intent_records().records) == 1
+            assert not remote.versions
+            assert len(futures) == 1  # no cleanup session while the PUT is in flight
+            with pytest.raises(StateBusyError):
+                executor.execute(job_id)
+        finally:
+            release.set()
+        with pytest.raises((BrokenPipeError, ArchiveRemoteError)):
+            futures[0].result(timeout=5)
+        assert remote.versions
+        result = executor.execute(job_id).result
+        assert result["status"] == "failed"
+        assert runtime.active == before
+        assert remote.calls.count("put") == 1
+        assert not remote.versions
+        assert not repository.measure_intent_records().records
+        for future in futures[1:]:
+            future.result(timeout=5)
