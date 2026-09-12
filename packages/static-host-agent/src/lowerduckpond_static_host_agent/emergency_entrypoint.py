@@ -21,6 +21,7 @@ from lowerduckpond_static_host_agent.emergency_remote import (
 )
 from lowerduckpond_static_host_agent.export_spool import ExportSpool
 from lowerduckpond_static_host_agent.intents import IntentDiscovery
+from lowerduckpond_static_host_agent.locks import LockName
 from lowerduckpond_static_host_agent.repository import StateRepository
 
 _ADMINISTRATOR = "ldp-admin"
@@ -49,15 +50,27 @@ def emergency_delete_main(arguments: list[str] | None = None) -> int:
             repository = resources.enter_context(
                 StateRepository(entrypoints._STATE_ROOT, expected_owner=0)
             )
+            spool = resources.enter_context(ExportSpool(entrypoints._STATE_ROOT, expected_owner=0))
             if recovering:
                 pending = _pending_administration(repository)
                 if pending is None:
+                    # Retirement removal can precede a failed quarantine proof.
+                    # A fresh lease waits for every old remote session; resolution
+                    # independently verifies all bindings and never deletes remote
+                    # objects or grants new emergency-deletion authority.
+                    with spool.locks.acquire(LockName.EXPORT, blocking=True):
+                        remote = load_archive_configuration().remote_store()
+                        ArchiveQuarantine(
+                            entrypoints._STATE_ROOT,
+                            bucket=remote.bucket,
+                            expected_owner=0,
+                            locks=spool.locks,
+                        ).resolve(repository, remote)
                     return 0
                 tenant, correlation, principal, reason = pending
             else:
                 tenant, correlation = validate_uuid7(values[1]), validate_uuid7(values[3])
                 principal, reason = _ADMINISTRATOR, values[5]
-            spool = resources.enter_context(ExportSpool(entrypoints._STATE_ROOT, expected_owner=0))
             store = resources.enter_context(entrypoints._open_deployment_release_store())
             runtime = resources.enter_context(entrypoints._open_caddy_control_runtime())
 
