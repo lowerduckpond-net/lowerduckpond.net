@@ -32,6 +32,7 @@ def verify_archive_source(journal: ArchiveJournal, job_id: str) -> dict[str, obj
         validate_uuid7(job_id),
         bucket=journal.remote.bucket,
         operations=frozenset({"archive", "restore", "delete"}),
+        allow_retirement=True,
     )
     journal.verify_retained(record)
     return {"status": "verified", "mode": "retained", "archiveRecord": record}

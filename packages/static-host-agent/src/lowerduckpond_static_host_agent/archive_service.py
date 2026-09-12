@@ -33,7 +33,11 @@ from lowerduckpond_static_host_agent.export_spool import EXPORT_WORKSPACE_BUNDLE
 from lowerduckpond_static_host_agent.issuance import build_expected_source
 from lowerduckpond_static_host_agent.locks import LockMode, LockName
 from lowerduckpond_static_host_agent.portable_bundle import MAXIMUM_PORTABLE_BUNDLE_BYTES
-from lowerduckpond_static_host_agent.repository import StateRecordPath, StateRepository
+from lowerduckpond_static_host_agent.repository import (
+    StateRecordPath,
+    StateRepository,
+    _StateTransaction,
+)
 
 ARCHIVE_SOCKET_PATH: Final = Path("/run/lowerduckpond-archive/export.sock")
 _PROTOCOL: Final = "lowerduckpond-archive-export-v1"
@@ -136,7 +140,7 @@ def serve_archive_export(
                     job_id,
                     bucket=remote.bucket,
                     operations=frozenset({"export", "restore"}),
-                    allow_restore_retirement=True,
+                    allow_retirement=True,
                 )
                 _download(
                     spool,
@@ -155,7 +159,7 @@ def _read_authority(
     *,
     bucket: str,
     operations: frozenset[str] = frozenset({"export"}),
-    allow_restore_retirement: bool = False,
+    allow_retirement: bool = False,
 ) -> dict[str, object]:
     with repository.transaction(mode=LockMode.EXCLUSIVE) as transaction:
         job = transaction.read(StateRecordPath.authorization_job(job_id)).document
@@ -195,33 +199,74 @@ def _read_authority(
             or record["releaseTreeDigest"] != deployment["releaseTreeDigest"]
         ):
             raise ArchiveRemoteError("archive download record bindings disagree")
-        intents = transaction.measure_intent_records().records
-        if intents:
-            if (
-                not allow_restore_retirement
-                or request["operation"] != "restore"
-                or len(intents) != 1
-            ):
-                raise ArchiveRemoteError(
-                    "archive download is blocked by active lifecycle authority"
-                )
-            path, retirement = transaction.read_intent(intents[0].intent_id)
-            document = retirement.document
-            if (
-                path != StateRecordPath.archive_retirement_intent(intents[0].intent_id)
-                or document["compatibilityVersion"] != "static-retirement-v2"
-                or document["provenance"] != {"kind": "authorization-job", "jobId": job_id}
-                or document["transition"] != "restore"
-                or document["phase"] != "prepared"
-                or document["archiveRecord"] != record
-                or document["tenantId"] != request["tenantId"]
-                or document["correlationId"] != request["correlationId"]
-                or document["operatorPrincipal"] != job["operatorPrincipal"]
-                or document["sourceManifestDigest"] != expected["manifestDigest"]
-                or document["archiveRecordDigest"] != expected["archiveRecordDigest"]
-            ):
-                raise ArchiveRemoteError("archive download retirement authority disagrees")
+        _require_read_journals(transaction, job, record, allow_retirement=allow_retirement)
         return record
+
+
+def _require_read_journals(
+    transaction: _StateTransaction,
+    job: dict[str, object],
+    archive: dict[str, object],
+    *,
+    allow_retirement: bool,
+) -> None:
+    intents = [
+        transaction.read_intent(value.intent_id)
+        for value in transaction.measure_intent_records().records
+    ]
+    if not intents:
+        return
+    request = cast(dict[str, object], job["request"])
+    expected = cast(dict[str, object], job["expectedSource"])
+    if not allow_retirement or request["operation"] not in {"restore", "delete"}:
+        raise ArchiveRemoteError("archive read is blocked by active lifecycle authority")
+    retirements = [
+        (path, record.document)
+        for path, record in intents
+        if record.document["kind"] == "ArchiveRetirementIntent"
+    ]
+    transactions = [
+        (path, record.document)
+        for path, record in intents
+        if record.document["kind"] == "TransactionIntent"
+    ]
+    if (
+        len(retirements) != 1
+        or len(transactions) > 1
+        or len(intents) != len(retirements) + len(transactions)
+    ):
+        raise ArchiveRemoteError("archive read has ambiguous retirement authority")
+    path, document = retirements[0]
+    if (
+        path != StateRecordPath.archive_retirement_intent(document["intentId"])
+        or document["compatibilityVersion"] != "static-retirement-v2"
+        or document["provenance"] != {"kind": "authorization-job", "jobId": job["jobId"]}
+        or document["transition"] != request["operation"]
+        or document["phase"] != "prepared"
+        or document["archiveRecord"] != archive
+        or document["tenantId"] != request["tenantId"]
+        or document["correlationId"] != request["correlationId"]
+        or document["operatorPrincipal"] != job["operatorPrincipal"]
+        or document["sourceManifestDigest"] != expected["manifestDigest"]
+        or document["archiveRecordDigest"] != expected["archiveRecordDigest"]
+    ):
+        raise ArchiveRemoteError("archive read retirement authority disagrees")
+    if transactions:
+        path, document = transactions[0]
+        if (
+            request["operation"] != "delete"
+            or document["operation"] != "delete"
+            or path != StateRecordPath.transaction_intent(document["intentId"])
+            or document["compatibilityVersion"] != "static-intent-v2"
+            or document["tenantId"] != request["tenantId"]
+            or document["correlationId"] != request["correlationId"]
+            or document["sourceManifest"]
+            != cast(dict[str, object], job["sourceAuthority"])["manifest"]
+            or document["sourceManifestDigest"] != expected["manifestDigest"]
+            or document["candidateManifest"] is not None
+            or document["phase"] != "prepared"
+        ):
+            raise ArchiveRemoteError("archive read transaction is not an unchanged delete source")
 
 
 def _download(  # noqa: PLR0913 - explicit descriptor and root-owned dependencies

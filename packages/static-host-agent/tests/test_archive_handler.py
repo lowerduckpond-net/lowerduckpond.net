@@ -25,6 +25,7 @@ from lowerduckpond_static_host_agent.archive_remote import ArchiveRemoteError, A
 from lowerduckpond_static_host_agent.archive_revalidate import revalidate_archive
 from lowerduckpond_static_host_agent.archive_service import ArchiveExportClient
 from lowerduckpond_static_host_agent.caddy_runtime import CaddyRuntime
+from lowerduckpond_static_host_agent.delete_handler import DeleteLifecycleHandler
 from lowerduckpond_static_host_agent.execution import AuthorizationExecutor
 from lowerduckpond_static_host_agent.export_spool import ExportSpool
 from lowerduckpond_static_host_agent.intake import ArtifactIntake
@@ -74,6 +75,7 @@ def _host(
     lost_response: bool = False,
     revalidation: bool = False,
     restore: bool = False,
+    deletion: bool = False,
 ) -> Iterator[
     tuple[AuthorizationExecutor, str, StateRepository, MemoryRemote, _Runtime, list[Future[None]]]
 ]:
@@ -179,11 +181,31 @@ def _host(
             verifier=runtime.verify,
         )
 
+        delete_handler = DeleteLifecycleHandler(
+            repository,
+            spool,
+            cast(CaddyRuntime, runtime),
+            store,
+            OpenGate(),
+            cleanup_client=cleanup,
+            now=lambda: _NOW,
+            clock=lambda: 1_789_000_002_000,
+            entropy=_Entropy(),
+            reloader=runtime.reload,
+            restorer=runtime.restore,
+            verifier=runtime.verify,
+        )
+
         def executor_for(canonical_job: str) -> AuthorizationExecutor:
             return AuthorizationExecutor(
                 repository,
                 intake,
-                handlers={"archive": handler, "restore": restore_handler},
+                handlers={"archive": handler, "restore": restore_handler, "delete": delete_handler},
+                deleted_tenant_release_validator=lambda tenant: not (releases / tenant).exists(),
+                deleted_tenant_route_validator=lambda tenant: all(
+                    cast(dict[str, object], value.manifest["metadata"])["id"] != tenant
+                    for value in runtime.snapshots[runtime.active].tenants
+                ),
                 retained_archive_validator=partial(
                     cleanup.verify_terminal, canonical_job, mode="retained"
                 ),
@@ -197,14 +219,14 @@ def _host(
             )
 
         executor = executor_for(issued.job_id)
-        if revalidation or restore:
+        if revalidation or restore or deletion:
             assert executor.execute(issued.job_id).result["status"] == "succeeded"
             issued = issuer.issue(
                 canonical_json_bytes(
                     {
                         "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
                         "kind": "OperationRequest",
-                        "operation": "restore" if restore else "archive",
+                        "operation": "delete" if deletion else "restore" if restore else "archive",
                         "tenantId": _TENANT,
                         "correlationId": "0198d17f-6f4a-7000-8000-000000000999",
                     }
