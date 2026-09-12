@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 from lowerduckpond_static_host_agent import entrypoints
+from lowerduckpond_static_host_agent.archive_handler import ArchiveLifecycleHandler
 from lowerduckpond_static_host_agent.audit import AuditError
 from lowerduckpond_static_host_agent.caddy_admin import CaddyAdminError
 from lowerduckpond_static_host_agent.caddy_bootstrap import PlatformGenerationState
@@ -115,6 +116,7 @@ def test_executor_entrypoint_registers_the_available_lifecycle_handlers(
     handlers = arguments["handlers"]
     assert type(handlers) is dict
     assert set(handlers) == {
+        "archive",
         "export",
         "import",
         "create",
@@ -125,6 +127,8 @@ def test_executor_entrypoint_registers_the_available_lifecycle_handlers(
         "rename",
         "reconcile",
     }
+    assert isinstance(handlers["archive"], ArchiveLifecycleHandler)
+    assert handlers["archive"]._spool is export_spool
     assert isinstance(handlers["export"], ExportLifecycleHandler)
     assert handlers["export"]._spool is export_spool
     handler = handlers["create"]
