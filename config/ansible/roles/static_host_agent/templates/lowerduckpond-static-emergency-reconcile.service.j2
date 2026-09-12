@@ -54,9 +54,10 @@ ProtectControlGroups=true
 ProtectProc=invisible
 ProcSubset=pid
 NoNewPrivileges=true
-CapabilityBoundingSet=CAP_CHOWN CAP_SETUID
-# Retain the required identity switch through sandbox setup with NoNewPrivileges.
-AmbientCapabilities=CAP_SETUID
+CapabilityBoundingSet=CAP_CHOWN CAP_SETGID CAP_SETUID
+# Caddy validation must drop user, group, and supplementary-group identities.
+# Retain both switches through sandbox setup with NoNewPrivileges.
+AmbientCapabilities=CAP_SETGID CAP_SETUID
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 RestrictNamespaces=true
 RestrictRealtime=true

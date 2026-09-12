@@ -1671,13 +1671,13 @@ def test_emergency_administration_is_separate_from_provisioner_authority(host: H
         "Group=caddy",
         "NoNewPrivileges=true",
         "TemporaryFileSystem=/:ro",
-        "CapabilityBoundingSet=CAP_CHOWN CAP_SETUID",
-        "AmbientCapabilities=CAP_SETUID",
+        "CapabilityBoundingSet=CAP_CHOWN CAP_SETGID CAP_SETUID",
+        "AmbientCapabilities=CAP_SETGID CAP_SETUID",
     ):
         assert installed.contains(expected)
     selected = host.run(f"readlink --canonicalize {STATIC_HOST_AGENT_ROOT}/current").stdout.strip()
     probe = (
-        "import os,pwd,socket,sys;"
+        "import os,pwd,socket,subprocess,sys;"
         f"sys.path.insert(0,{(selected + '/site-packages')!r});"
         "from lowerduckpond_static_host_agent.archive_configuration "
         "import load_archive_configuration;"
@@ -1688,6 +1688,11 @@ def test_emergency_administration_is_separate_from_provisioner_authority(host: H
         f"assert not os.statvfs('{STATIC_RELEASE_ROOT}').f_flag & os.ST_RDONLY;"
         "assert not os.path.exists('/etc/lowerduckpond/backup.env');"
         "assert not os.path.exists('/root/.ssh');"
+        "caddy=pwd.getpwnam('caddy');"
+        "subprocess.run(['/usr/bin/setpriv',f'--reuid={caddy.pw_uid}',"
+        "f'--regid={caddy.pw_gid}','--clear-groups','--inh-caps=-all',"
+        "'--ambient-caps=-all','--no-new-privs','--','/usr/bin/id'],"
+        "check=True,stdout=subprocess.DEVNULL);"
         "os.seteuid(pwd.getpwnam('caddy').pw_uid);os.seteuid(0);"
         "socket.socket(socket.AF_INET,socket.SOCK_STREAM).close()"
     )
