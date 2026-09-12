@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Disable inherited tracing before reading any production credential inputs.
+set +x
 set -euo pipefail
 umask 077
 
