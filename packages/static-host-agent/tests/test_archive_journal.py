@@ -501,7 +501,7 @@ def terminal_result(
         )
         transaction.create_immutable(StateRecordPath.authorization_result(job_id), result)
         document = job.document
-        document["phase"] = "completed"
+        document["phase"] = "completed" if result["status"] == "succeeded" else "failed"
         transaction.compare_and_swap(
             StateRecordPath.authorization_job(job_id), job.revision, document
         )

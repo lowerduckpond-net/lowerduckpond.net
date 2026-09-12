@@ -496,7 +496,7 @@ class ArchiveJournal:
             audit = transaction.inspect_audit_correlation(intent["correlationId"])
             expected = cast(dict[str, object], job["expectedSource"])
             if (
-                job["phase"] != "completed"
+                job["phase"] != ("completed" if result["status"] == "succeeded" else "failed")
                 or job["operatorPrincipal"] != intent["operatorPrincipal"]
                 or request["correlationId"] != intent["correlationId"]
                 or request["tenantId"] != intent["tenantId"]
