@@ -10,6 +10,7 @@ from functools import partial
 from pathlib import Path
 from threading import Event
 from typing import BinaryIO, cast
+from unittest.mock import patch as mock_patch
 
 import pytest
 from lowerduckpond_static_contracts import canonical_json_bytes
@@ -29,6 +30,7 @@ from lowerduckpond_static_host_agent.archive_remote import ArchiveRemoteError, A
 from lowerduckpond_static_host_agent.archive_revalidate import revalidate_archive
 from lowerduckpond_static_host_agent.archive_service import ArchiveExportClient
 from lowerduckpond_static_host_agent.caddy_runtime import CaddyRuntime
+from lowerduckpond_static_host_agent.capacity import admit_release_capacity
 from lowerduckpond_static_host_agent.delete_handler import DeleteLifecycleHandler
 from lowerduckpond_static_host_agent.execution import AuthorizationExecutor
 from lowerduckpond_static_host_agent.export_spool import ExportSpool
@@ -305,7 +307,17 @@ def test_archived_revalidation_recovers_each_durable_boundary_without_reupload(
             with pytest.raises(SimulatedCrashError):
                 executor.execute(job_id)
         assert repository.measure_intent_records().records
-        assert executor.execute(job_id).result["status"] == "succeeded"
+        with mock_patch(
+            "lowerduckpond_static_host_agent.archive_revalidate.admit_release_capacity",
+            wraps=admit_release_capacity,
+        ) as admission:
+            assert executor.execute(job_id).result["status"] == "succeeded"
+        remaining = {"intent-sync": 3, "audit-sync": 2, "result-sync": 1, "job-sync": 0}[boundary]
+        if remaining:
+            admission.assert_called_once()
+            assert admission.call_args.args[1].unique_inodes == remaining
+        else:
+            admission.assert_not_called()
         assert not repository.measure_intent_records().records
         assert runtime.active == selected
         assert remote.calls.count("put") == 1

@@ -161,7 +161,9 @@ def finalize_failed_construction(  # noqa: PLR0912, PLR0913, PLR0915 - explicit 
             )
         failed = deepcopy(job.document)
         failed["phase"] = "failed"
-        writes = [result, failed]
+        writes = ([result] if result_missing else []) + (
+            [failed] if job.document["phase"] != "failed" else []
+        )
         allocation = sum(
             transaction.allocation_upper_bound(len(canonical_json_bytes(value))) for value in writes
         )
@@ -169,12 +171,16 @@ def finalize_failed_construction(  # noqa: PLR0912, PLR0913, PLR0915 - explicit 
             allocation += transaction.allocation_upper_bound(
                 DEFAULT_AUDIT_LIMITS.maximum_segment_bytes
             )
-        admit_release_capacity(
-            ReleaseCapacityUsage(()),
-            CapacityReservation(allocation + transaction.namespace_allocation_upper_bound(3), 3),
-            transaction.measure_filesystem_capacity(),
-            limits=capacity_limits,
-        )
+        count = len(writes) + int(audit.entry is None)
+        if count:
+            admit_release_capacity(
+                ReleaseCapacityUsage(()),
+                CapacityReservation(
+                    allocation + transaction.namespace_allocation_upper_bound(count), count
+                ),
+                transaction.measure_filesystem_capacity(),
+                limits=capacity_limits,
+            )
         _ensure_audit(transaction, entry)
         if failure_hook is not None:
             failure_hook(ArchiveAbortBoundary.AUDIT_SYNC)
