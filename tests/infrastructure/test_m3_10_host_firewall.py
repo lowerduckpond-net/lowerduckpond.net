@@ -61,3 +61,11 @@ def test_active_firewall_drift_closes_the_gate(mutation: str) -> None:
         document["nftables"].append({"chain": {"name": "bypass"}})
     with pytest.raises(ValueError):
         check_firewall(document, admin=["192.0.2.1/32"], web=web_networks())
+
+
+@pytest.mark.parametrize("family", ["inet", "ip", "ip6", "bridge", "netdev"])
+def test_firewall_gate_rejects_tables_outside_the_managed_policy(family: str) -> None:
+    document = json.loads(FIXTURE.read_text())
+    document["nftables"].append({"table": {"family": family, "name": "unexpected"}})
+    with pytest.raises(ValueError):
+        check_firewall(document, admin=["192.0.2.1/32"], web=web_networks())

@@ -188,7 +188,26 @@ def check_edge(  # noqa: PLR0912 - each independent enforced-edge proof must pas
         or active[0].get("id") != certificate_id
     ):
         raise GateError("edge active origin-pull certificate inventory drifted")
-    for phase, expected_rule in expected_rules(domain).items():
+    phase_rules = expected_rules(domain)
+    inventory = client.get_cursor_collection(f"{zone}/rulesets")
+    if any(
+        not isinstance(item, dict) or item.get("kind") not in {"managed", "custom", "zone"}
+        for item in inventory
+    ):
+        raise GateError("edge ruleset inventory is malformed")
+    # Cloudflare also lists available account/managed rulesets. Only kind=zone
+    # denotes this zone's configured phase entrypoint; every such phase must
+    # match the reviewed inventory before any individual rule is accepted.
+    phases = [
+        item.get("phase") for item in inventory if isinstance(item, dict) and item["kind"] == "zone"
+    ]
+    if len(phases) != len(phase_rules) or any(
+        not isinstance(phase, str) or phase not in phase_rules for phase in phases
+    ):
+        raise GateError("edge has unexpected or missing ruleset phases")
+    if len(set(phases)) != len(phase_rules):
+        raise GateError("edge ruleset phases are duplicated")
+    for phase, expected_rule in phase_rules.items():
         entrypoint = client.get(f"{zone}/rulesets/phases/{phase}/entrypoint")
         rules = entrypoint.get("rules") if isinstance(entrypoint, dict) else None
         if not isinstance(rules, list) or len(rules) != 1 or not isinstance(rules[0], dict):
