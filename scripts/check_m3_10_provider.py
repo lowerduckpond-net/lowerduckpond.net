@@ -8,7 +8,9 @@ import os
 import re
 import sys
 from collections.abc import Callable, Mapping
+from datetime import UTC, datetime
 from http import HTTPStatus
+from pathlib import Path
 from typing import Protocol, cast
 
 from botocore.exceptions import BotoCoreError, ClientError  # type: ignore[import-untyped]
@@ -19,6 +21,9 @@ from lowerduckpond_static_host_agent.archive_remote import make_archive_client
 from scripts.check_m3_7_production_edge import (
     CloudflareClient,
     ProductionEdgePreflightError,
+    _read_ca_path,
+    validate_ca_certificate,
+    validate_leaf_certificate,
 )
 
 
@@ -125,8 +130,15 @@ def expected_rules(domain: str) -> dict[str, dict[str, object]]:
     }
 
 
-def check_edge(  # noqa: PLR0912 - each independent enforced-edge proof must pass
-    client: CloudflareClient, *, zone_id: str, certificate_id: str, domain: str, origin: str
+def check_edge(  # noqa: PLR0912, PLR0913 - explicit enforced-edge identity and trust
+    client: CloudflareClient,
+    *,
+    zone_id: str,
+    certificate_id: str,
+    domain: str,
+    origin: str,
+    ca_path: Path,
+    now: datetime,
 ) -> None:
     if (
         re.fullmatch(r"[0-9a-f]{32}", zone_id) is None
@@ -142,8 +154,9 @@ def check_edge(  # noqa: PLR0912 - each independent enforced-edge proof must pas
         not isinstance(details, dict)
         or details.get("name") != domain
         or details.get("status") != "active"
+        or details.get("paused") is not False
     ):
-        raise GateError("edge zone identity or active status drifted")
+        raise GateError("edge zone identity, active status, or proxy pause state drifted")
     records = client.get_collection(f"{zone}/dns_records")
     routing = [
         item
@@ -192,6 +205,9 @@ def check_edge(  # noqa: PLR0912 - each independent enforced-edge proof must pas
         or active[0].get("id") != certificate_id
     ):
         raise GateError("edge active origin-pull certificate inventory drifted")
+    validate_leaf_certificate(
+        active[0], ca_path=ca_path, expected_zone=domain, expected_id=certificate_id, now=now
+    )
     phase_rules = expected_rules(domain)
     inventory = client.get_cursor_collection(f"{zone}/rulesets")
     if any(
@@ -256,6 +272,9 @@ def main() -> int:
             print("M3.10 private/versioned/no-lifecycle storage and whole-bucket absence passed.")
             return 0
         edge = CloudflareClient(required(os.environ, "CLOUDFLARE_API_TOKEN"))
+        ca_path, ca_pem = _read_ca_path()
+        now = datetime.now(UTC)
+        validate_ca_certificate(ca_path, ca_pem, now=now)
         for domain, prefix in (
             ("lowerduckpond.net", "CLOUDFLARE"),
             ("lowerduckpond.com", "CLOUDFLARE_TENANT"),
@@ -266,6 +285,8 @@ def main() -> int:
                 certificate_id=required(os.environ, f"{prefix}_ORIGIN_PULL_CERTIFICATE_ID"),
                 domain=domain,
                 origin=required(os.environ, "PRODUCTION_ORIGIN_IPV4"),
+                ca_path=ca_path,
+                now=now,
             )
     except (BotoCoreError, ClientError, RuntimeError, ValueError, OSError) as error:
         # Provider exceptions can include request URLs, headers, and credentials.
