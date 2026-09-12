@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import fcntl
 import os
 import stat
 from concurrent.futures import ThreadPoolExecutor
 from multiprocessing import get_context
 from multiprocessing.connection import Connection
+from multiprocessing.reduction import recv_handle, send_handle
 from pathlib import Path
 from threading import Event
 
@@ -326,3 +328,201 @@ def test_close_refuses_to_invalidate_a_held_lock(tmp_path: Path) -> None:
     with manager.acquire(LockName.EXPORT), pytest.raises(RuntimeError, match="held"):
         manager.close()
     manager.close()
+
+
+def _attempt_export_lock(lock_root: str, connection: Connection) -> None:
+    try:
+        with _manager(Path(lock_root)) as manager, manager.acquire(LockName.EXPORT):
+            connection.send("acquired")
+    except StateBusyError:
+        connection.send("busy")
+    finally:
+        connection.close()
+
+
+def _assert_export_availability(lock_root: Path, expected: str) -> None:
+    context = get_context("spawn")
+    receiving, sending = context.Pipe(duplex=False)
+    process = context.Process(target=_attempt_export_lock, args=(str(lock_root), sending))
+    try:
+        process.start()
+        sending.close()
+        assert receiving.poll(_PROCESS_TIMEOUT_SECONDS)
+        assert receiving.recv() == expected
+        process.join(_PROCESS_TIMEOUT_SECONDS)
+        assert process.exitcode == 0
+    finally:
+        receiving.close()
+        if process.is_alive():
+            process.kill()
+            process.join(_PROCESS_TIMEOUT_SECONDS)
+
+
+def _lend_export_lock(lock_root: str, peer_pid: int, connection: Connection) -> None:
+    with _manager(Path(lock_root)) as manager, manager.acquire(LockName.EXPORT):
+        lease = manager.duplicate_export_descriptor()
+        try:
+            send_handle(connection, lease, peer_pid)
+        finally:
+            os.close(lease)
+        connection.send("lent")
+        connection.recv()
+
+
+def _borrow_export_lock(lock_root: str, connection: Connection) -> None:
+    descriptor = recv_handle(connection)
+    try:
+        with _manager(Path(lock_root)) as manager, manager.borrow_export_descriptor(descriptor):
+            connection.send("borrowed")
+            connection.recv()
+    finally:
+        os.close(descriptor)
+        connection.close()
+
+
+def test_export_lease_survives_normal_owner_context_exit(tmp_path: Path) -> None:
+    with (
+        LockManager.initialize(tmp_path, expected_owner=os.geteuid()) as owner,
+        owner.acquire(LockName.EXPORT),
+    ):
+        lease = owner.duplicate_export_descriptor()
+        assert not os.get_inheritable(lease)
+    try:
+        _assert_export_availability(tmp_path, "busy")
+        with _manager(tmp_path) as borrower, borrower.borrow_export_descriptor(lease):
+            borrower.require_held(LockName.EXPORT, mode=LockMode.EXCLUSIVE, descriptor=lease)
+            with borrower.acquire(LockName.PUBLICATION), borrower.acquire(LockName.TENANT_STATE):
+                pass
+        # Returning from a borrowed context does not unlock the caller's lease.
+        _assert_export_availability(tmp_path, "busy")
+    finally:
+        os.close(lease)
+    _assert_export_availability(tmp_path, "acquired")
+
+
+@pytest.mark.parametrize("owner_exits_first", [False, True])
+def test_export_lease_survives_original_worker_death(
+    tmp_path: Path, owner_exits_first: bool
+) -> None:
+    with LockManager.initialize(tmp_path, expected_owner=os.geteuid()):
+        pass
+    context = get_context("spawn")
+    parent, child = context.Pipe()
+    process = context.Process(target=_lend_export_lock, args=(str(tmp_path), os.getpid(), child))
+    descriptor: int | None = None
+    try:
+        process.start()
+        child.close()
+        assert parent.poll(_PROCESS_TIMEOUT_SECONDS)
+        descriptor = recv_handle(parent)
+        assert parent.poll(_PROCESS_TIMEOUT_SECONDS)
+        assert parent.recv() == "lent"
+        if owner_exits_first:
+            process.kill()
+            process.join(_PROCESS_TIMEOUT_SECONDS)
+        with _manager(tmp_path) as guardian, guardian.borrow_export_descriptor(descriptor):
+            os.close(descriptor)
+            descriptor = None
+            if not owner_exits_first:
+                process.kill()
+                process.join(_PROCESS_TIMEOUT_SECONDS)
+            assert process.exitcode is not None and process.exitcode < 0
+            _assert_export_availability(tmp_path, "busy")
+        _assert_export_availability(tmp_path, "acquired")
+    finally:
+        parent.close()
+        if descriptor is not None:
+            os.close(descriptor)
+        if process.is_alive():
+            process.kill()
+            process.join(_PROCESS_TIMEOUT_SECONDS)
+
+
+def test_export_owner_survives_borrower_death(tmp_path: Path) -> None:
+    context = get_context("spawn")
+    parent, child = context.Pipe()
+    process = context.Process(target=_borrow_export_lock, args=(str(tmp_path), child))
+    try:
+        with (
+            LockManager.initialize(tmp_path, expected_owner=os.geteuid()) as owner,
+            owner.acquire(LockName.EXPORT),
+        ):
+            process.start()
+            child.close()
+            lease = owner.duplicate_export_descriptor()
+            try:
+                assert process.pid is not None
+                send_handle(parent, lease, process.pid)
+            finally:
+                os.close(lease)
+            assert parent.poll(_PROCESS_TIMEOUT_SECONDS)
+            assert parent.recv() == "borrowed"
+            process.kill()
+            process.join(_PROCESS_TIMEOUT_SECONDS)
+            assert process.exitcode is not None and process.exitcode < 0
+            _assert_export_availability(tmp_path, "busy")
+        _assert_export_availability(tmp_path, "acquired")
+    finally:
+        parent.close()
+        if process.is_alive():
+            process.kill()
+            process.join(_PROCESS_TIMEOUT_SECONDS)
+
+
+@pytest.mark.parametrize("mode", [None, fcntl.LOCK_SH])
+def test_borrowing_rejects_unlocked_or_shared_export_without_upgrading(
+    tmp_path: Path, mode: int | None
+) -> None:
+    with LockManager.initialize(tmp_path, expected_owner=os.geteuid()) as manager:
+        descriptor = os.open(tmp_path / "export.lock", os.O_RDWR | os.O_CLOEXEC)
+        observer = os.open(tmp_path / "export.lock", os.O_RDWR | os.O_CLOEXEC)
+        try:
+            if mode is not None:
+                fcntl.flock(descriptor, mode)
+            with (
+                pytest.raises(LockOrderError, match="exclusive"),
+                manager.borrow_export_descriptor(descriptor),
+            ):
+                pass
+            fcntl.flock(observer, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        finally:
+            os.close(observer)
+            os.close(descriptor)
+
+
+def test_borrowing_rejects_another_lock_inode(tmp_path: Path) -> None:
+    with LockManager.initialize(tmp_path, expected_owner=os.geteuid()) as manager:
+        descriptor = os.open(tmp_path / "publication.lock", os.O_RDWR | os.O_CLOEXEC)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            with (
+                pytest.raises(StatePathError, match="current lock inode"),
+                manager.borrow_export_descriptor(descriptor),
+            ):
+                pass
+        finally:
+            os.close(descriptor)
+
+
+def test_export_lending_requires_exclusive_ownership_and_preserves_lock_order(
+    tmp_path: Path,
+) -> None:
+    with LockManager.initialize(tmp_path, expected_owner=os.geteuid()) as manager:
+        with pytest.raises(LockOrderError):
+            manager.duplicate_export_descriptor()
+        with (
+            manager.acquire(LockName.EXPORT, mode=LockMode.SHARED),
+            pytest.raises(LockOrderError),
+        ):
+            manager.duplicate_export_descriptor()
+        with manager.acquire(LockName.EXPORT):
+            lease = manager.duplicate_export_descriptor()
+        try:
+            with (
+                manager.acquire(LockName.TENANT_STATE),
+                pytest.raises(LockOrderError),
+                manager.borrow_export_descriptor(lease),
+            ):
+                pass
+        finally:
+            os.close(lease)
