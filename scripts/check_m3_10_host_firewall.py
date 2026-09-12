@@ -1,4 +1,4 @@
-"""Read the active host firewall and compare its complete table with reviewed policy."""
+"""Read the active host firewall and compare its complete ruleset with reviewed policy."""
 
 from __future__ import annotations
 
@@ -170,7 +170,7 @@ def main() -> int:
                 "-i",
                 os.environ["ANSIBLE_PRIVATE_KEY_FILE"],
                 f"ldp-admin@{origin}",
-                "sudo --non-interactive /usr/sbin/nft --json list table inet lowerduckpond",
+                "sudo --non-interactive /usr/sbin/nft --json list ruleset",
             ],
             capture_output=True,
             check=True,

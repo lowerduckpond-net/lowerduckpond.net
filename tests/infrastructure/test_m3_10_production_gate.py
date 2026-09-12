@@ -124,6 +124,9 @@ class Edge:
             "/origin_tls_client_auth/settings": {"enabled": True},
             "/origin_tls_client_auth/hostnames": [],
             "/origin_tls_client_auth": [{"id": "b" * 32, "status": "active"}],
+            "/rulesets": [
+                {"kind": "zone", "phase": phase} for phase in expected_rules("lowerduckpond.net")
+            ],
             **{
                 f"/rulesets/phases/{phase}/entrypoint": {"rules": [rule]}
                 for phase, rule in expected_rules("lowerduckpond.net").items()
@@ -135,6 +138,9 @@ class Edge:
         return self.responses[path.removeprefix("/zones/" + "a" * 32)]
 
     def get_collection(self, path: str) -> object:
+        return self.get(path)
+
+    def get_cursor_collection(self, path: str) -> object:
         return self.get(path)
 
     def get_aop_setting(self, zone: str) -> object:
@@ -271,3 +277,35 @@ def test_host_gate_refuses_comment_only_or_staged_origin_pull(host_tree: Path, m
         body += "# --origin-pull-staged\n"
     checker.write_text(body)
     assert host_gate(host_tree).returncode != 0
+
+
+@pytest.mark.parametrize(
+    "phase", ["http_request_redirect", "http_request_origin", "http_response_headers_transform"]
+)
+def test_edge_gate_rejects_unexpected_zone_ruleset_phases(phase: str) -> None:
+    edge = Edge()
+    inventory = cast(list[dict[str, object]], edge.responses["/rulesets"])
+    inventory.append({"kind": "zone", "phase": phase})
+    with pytest.raises(GateError, match="phases"):
+        edge_gate(edge)
+
+
+def test_edge_gate_distinguishes_available_managed_rulesets_from_zone_entrypoints() -> None:
+    edge = Edge()
+    inventory = cast(list[dict[str, object]], edge.responses["/rulesets"])
+    inventory.append({"kind": "managed", "phase": "http_request_firewall_managed"})
+    edge_gate(edge)
+
+
+@pytest.mark.parametrize("malformed", ["missing", "duplicate", "unknown-kind"])
+def test_edge_gate_requires_an_exact_zone_phase_inventory(malformed: str) -> None:
+    edge = Edge()
+    inventory = cast(list[dict[str, object]], edge.responses["/rulesets"])
+    if malformed == "missing":
+        inventory.pop()
+    elif malformed == "duplicate":
+        inventory[-1] = inventory[0]
+    else:
+        inventory.append({"kind": "unrecognized", "phase": "http_request_origin"})
+    with pytest.raises(GateError):
+        edge_gate(edge)
