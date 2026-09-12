@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
@@ -12,6 +12,7 @@ from lowerduckpond_static_host_agent.archive_journal import ArchiveJournal
 from lowerduckpond_static_host_agent.archive_quarantine import ArchiveQuarantine
 from lowerduckpond_static_host_agent.archive_remote import ArchiveRemoteStore
 from lowerduckpond_static_host_agent.caddy_runtime import CaddyRuntime
+from lowerduckpond_static_host_agent.capacity import CapacityRejectedError, FilesystemCapacity
 from lowerduckpond_static_host_agent.create_commit import finalize_create_transition
 from lowerduckpond_static_host_agent.delete_commit import DeleteCommitBoundary
 from lowerduckpond_static_host_agent.delete_publication import (
@@ -49,7 +50,7 @@ class InterruptedDeleteError(BaseException):
 
 @contextmanager
 def _deleting(
-    tmp_path: Path, *, archived: bool
+    tmp_path: Path, *, archived: bool, before_prepare: Callable[[], None] | None = None
 ) -> Iterator[tuple[ArchiveJournal, DeploymentReleaseStore, PreparedDeleteTransition, _Runtime]]:
     if archived:
         with _prepared(tmp_path, "active") as (archive_journal, store, archive_prepared, runtime):
@@ -123,6 +124,8 @@ def _deleting(
             transaction.bind_dispatch_authority(path, current.revision, claimed)
             runtime.snapshots[runtime.active] = snapshot_tenant_routes(transaction)
         retirement = journal.prepare_retirement(issued.job_id, now=_NOW) if archived else None
+        if before_prepare is not None:
+            before_prepare()
         prepared = prepare_delete_transition(
             repository,
             spool,
@@ -135,6 +138,49 @@ def _deleting(
             entropy=_Entropy(),
         )
         yield journal, store, prepared, runtime
+
+
+@pytest.mark.parametrize("archived", [False, True])
+@pytest.mark.parametrize("spare_inodes,accepted", [(3, False), (4, True)])
+def test_delete_admits_intent_and_terminal_records_together(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    archived: bool,
+    spare_inodes: int,
+    accepted: bool,
+) -> None:
+    def set_capacity(spare: int) -> None:
+        filesystem = FilesystemCapacity(1, 4096, 8_000_000, 7_000_000, 1_000_000, 100_000 + spare)
+        monkeypatch.setattr(
+            "lowerduckpond_static_host_agent.repository._StateTransaction.measure_filesystem_capacity",
+            lambda _self: filesystem,
+        )
+
+    deleting = _deleting(
+        tmp_path, archived=archived, before_prepare=lambda: set_capacity(spare_inodes)
+    )
+    if not accepted:
+        # Either the intent alone or all terminal records would fit; their sum cannot.
+        with pytest.raises(CapacityRejectedError, match="free-inode floor"), deleting:
+            pytest.fail("deletion published its intent without enough room to finish")
+        with (
+            StateRepository(tmp_path / "state", expected_owner=_OWNER) as repository,
+            repository.publication_transaction() as transaction,
+        ):
+            records = transaction.measure_intent_records().records
+            assert all(
+                transaction.read_intent(value.intent_id)[1].document["kind"] != "TransactionIntent"
+                for value in records
+            )
+            assert transaction.measure_inventory().tenant_ids
+    else:
+        with deleting as (journal, store, prepared, runtime):
+            # The newly durable intent consumed one inode; only final records remain.
+            set_capacity(spare_inodes - 1)
+            _delete(journal, store, prepared, runtime)
+            if prepared.retirement is not None:
+                journal.finish(str(prepared.retirement.document["intentId"]))
+            assert not journal.repository.measure_intent_records().records
 
 
 def _delete(
