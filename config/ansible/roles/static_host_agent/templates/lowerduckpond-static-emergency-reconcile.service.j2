@@ -55,7 +55,8 @@ ProtectProc=invisible
 ProcSubset=pid
 NoNewPrivileges=true
 CapabilityBoundingSet=CAP_CHOWN CAP_SETUID
-AmbientCapabilities=
+# Retain the required identity switch through sandbox setup with NoNewPrivileges.
+AmbientCapabilities=CAP_SETUID
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 RestrictNamespaces=true
 RestrictRealtime=true

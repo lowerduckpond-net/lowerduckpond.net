@@ -1672,6 +1672,7 @@ def test_emergency_administration_is_separate_from_provisioner_authority(host: H
         "NoNewPrivileges=true",
         "TemporaryFileSystem=/:ro",
         "CapabilityBoundingSet=CAP_CHOWN CAP_SETUID",
+        "AmbientCapabilities=CAP_SETUID",
     ):
         assert installed.contains(expected)
     selected = host.run(f"readlink --canonicalize {STATIC_HOST_AGENT_ROOT}/current").stdout.strip()
