@@ -13,7 +13,7 @@ from lowerduckpond_static_contracts import canonical_json_bytes, validate_uuid7
 from lowerduckpond_static_host_agent import entrypoints
 from lowerduckpond_static_host_agent.archive_configuration import load_archive_configuration
 from lowerduckpond_static_host_agent.archive_journal import ArchiveJournal
-from lowerduckpond_static_host_agent.archive_quarantine import ArchiveQuarantine
+from lowerduckpond_static_host_agent.archive_quarantine import ArchiveQuarantine, quarantine_present
 from lowerduckpond_static_host_agent.emergency_delete import EmergencyDeletion
 from lowerduckpond_static_host_agent.emergency_remote import (
     finish_emergency_retirement,
@@ -59,6 +59,10 @@ def emergency_delete_main(arguments: list[str] | None = None) -> int:
                     # independently verifies all bindings and never deletes remote
                     # objects or grants new emergency-deletion authority.
                     with spool.locks.acquire(LockName.EXPORT, blocking=True):
+                        if not quarantine_present(
+                            entrypoints._STATE_ROOT, expected_owner=0, locks=spool.locks
+                        ):
+                            return 0
                         remote = load_archive_configuration().remote_store()
                         ArchiveQuarantine(
                             entrypoints._STATE_ROOT,

@@ -85,3 +85,19 @@ assert not (root / 'platform/archive-quarantine.json').exists()
 """,
     )
     _run_installed_boundary_probe(host, "lowerduckpond-static-emergency-reconcile.service", probe)
+
+
+def test_installed_idle_emergency_recovery_needs_no_archive_credentials(host: Host) -> None:
+    probe = exports._selected_python(
+        host,
+        "import os; "
+        "from lowerduckpond_static_host_agent.emergency_entrypoint import emergency_delete_main; "
+        "assert not os.path.exists('/etc/lowerduckpond/archive/credentials.json'); "
+        "assert emergency_delete_main(['--recover']) == 0",
+    )
+    _run_installed_boundary_probe(
+        host,
+        "lowerduckpond-static-emergency-reconcile.service",
+        probe,
+        replacements={"BindReadOnlyPaths=/etc/lowerduckpond/archive": ""},
+    )
