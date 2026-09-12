@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import io
-from collections.abc import Mapping
-from typing import BinaryIO, cast
+from collections.abc import Iterator, Mapping
+from typing import BinaryIO, Protocol, cast
 
 import pytest
+from botocore.awsrequest import AWSResponse  # type: ignore[import-untyped]
 from botocore.stub import ANY, Stubber  # type: ignore[import-untyped]
 from lowerduckpond_static_host_agent.archive_remote import (
     MAX_BUNDLE_BYTES,
@@ -297,3 +298,131 @@ def test_real_sdk_configuration_and_service_model_prohibit_implicit_upload_retri
         remote = ArchiveRemoteStore(client, bucket=BUCKET)
         assert remote.put_once(KEY, io.BytesIO(BODY), size=len(BODY), sha256=DIGEST) == "version"
         stub.assert_no_pending_responses()
+
+
+class _ResponseBody(io.BytesIO):
+    def stream(self) -> Iterator[bytes]:
+        yield self.read()
+
+
+class _PreparedRequest(Protocol):
+    url: str
+
+
+@pytest.mark.parametrize(
+    ("status", "headers", "body", "error"),
+    [
+        (
+            301,
+            {"x-amz-bucket-region": "us-west-2"},
+            b"<Error><Code>PermanentRedirect</Code></Error>",
+            "automatic retry",
+        ),
+        (307, {"x-amz-bucket-region": "us-west-2"}, b"", "automatic retry"),
+        (
+            400,
+            {},
+            b"<Error><Code>AuthorizationHeaderMalformed</Code><Region>us-west-2</Region></Error>",
+            "automatic retry",
+        ),
+        (301, {}, b"<Error><Code>PermanentRedirect</Code></Error>", "not permitted"),
+    ],
+)
+def test_sdk_redirects_cannot_repeat_upload_or_discover_a_bucket_region(
+    status: int, headers: dict[str, str], body: bytes, error: str
+) -> None:
+    client = make_archive_client(
+        region="nyc3",
+        access_key_id="fixture",
+        secret_access_key="fixture",  # noqa: S106
+    )
+    attempts: list[str] = []
+
+    def respond(request: object, **_kwargs: object) -> object:
+        url = cast(_PreparedRequest, request).url
+        attempts.append(url)
+        if len(attempts) == 1:
+            return AWSResponse(url, status, headers, _ResponseBody(body))
+        return AWSResponse(url, 200, {"x-amz-version-id": "extra-version"}, _ResponseBody())
+
+    client.meta.events.register("before-send.s3", respond)  # type: ignore[attr-defined]
+    with pytest.raises(ArchiveRemoteError, match=error):
+        ArchiveRemoteStore(client, bucket=BUCKET).put_once(
+            KEY, io.BytesIO(BODY), size=len(BODY), sha256=DIGEST
+        )
+    assert attempts == [f"https://nyc3.digitaloceanspaces.com/{BUCKET}/{KEY}"]
+
+
+@pytest.mark.parametrize(
+    ("operation", "parameters"),
+    [
+        ("head_bucket", {"Bucket": BUCKET}),
+        ("create_multipart_upload", {"Bucket": BUCKET, "Key": KEY}),
+    ],
+)
+def test_sdk_implicit_and_multipart_operations_are_blocked_before_transmission(
+    operation: str, parameters: dict[str, object]
+) -> None:
+    client = make_archive_client(
+        region="nyc3",
+        access_key_id="fixture",
+        secret_access_key="fixture",  # noqa: S106
+    )
+    attempts: list[object] = []
+
+    def respond(request: object, **_kwargs: object) -> object:
+        attempts.append(request)
+        return AWSResponse(cast(_PreparedRequest, request).url, 200, {}, _ResponseBody())
+
+    client.meta.events.register("before-send.s3", respond)  # type: ignore[attr-defined]
+    with pytest.raises(ArchiveRemoteError, match="not permitted"):
+        getattr(client, operation)(**parameters)
+    assert not attempts
+
+
+def test_sdk_requests_cannot_escape_the_initial_regional_endpoint() -> None:
+    client = make_archive_client(
+        region="nyc3",
+        access_key_id="fixture",
+        secret_access_key="fixture",  # noqa: S106
+    )
+    attempts: list[object] = []
+
+    def substitute(params: dict[str, object], **_kwargs: object) -> None:
+        params["url"] = "https://unexpected.invalid/archive"
+
+    def respond(request: object, **_kwargs: object) -> object:
+        attempts.append(request)
+        return AWSResponse(cast(_PreparedRequest, request).url, 200, {}, _ResponseBody())
+
+    events = client.meta.events  # type: ignore[attr-defined]
+    events.register("before-call.s3.PutObject", substitute)
+    events.register("before-send.s3", respond)
+    with pytest.raises(ArchiveRemoteError, match="endpoint"):
+        client.put_object(Bucket=BUCKET, Key=KEY, Body=BODY, ContentLength=len(BODY))
+    assert not attempts
+
+
+def test_sdk_attempt_budget_is_per_explicit_call() -> None:
+    client = make_archive_client(
+        region="nyc3",
+        access_key_id="fixture",
+        secret_access_key="fixture",  # noqa: S106
+    )
+    attempts: list[str] = []
+
+    def respond(request: object, **_kwargs: object) -> object:
+        attempts.append(cast(_PreparedRequest, request).url)
+        return AWSResponse(
+            cast(_PreparedRequest, request).url,
+            200,
+            {},
+            _ResponseBody(
+                b"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"
+            ),
+        )
+
+    client.meta.events.register("before-send.s3", respond)  # type: ignore[attr-defined]
+    for _ in range(2):
+        assert client.get_bucket_versioning(Bucket=BUCKET)["Status"] == "Enabled"
+    assert attempts == [f"https://nyc3.digitaloceanspaces.com/{BUCKET}?versioning"] * 2

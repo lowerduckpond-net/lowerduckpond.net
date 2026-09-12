@@ -11,6 +11,7 @@ import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import BinaryIO, Final, Protocol, cast
+from urllib.parse import urlsplit
 
 from botocore.config import Config  # type: ignore[import-untyped]
 from botocore.session import Session  # type: ignore[import-untyped]
@@ -24,6 +25,17 @@ _PAGE_SIZE: Final = 100
 _MAX_PAGES: Final = 100
 _CHUNK_SIZE: Final = 1024 * 1024
 _MAX_STRING_BYTES: Final = 1024
+_ATTEMPT_CONTEXT_KEY: Final = "lowerduckpond_archive_request_created"
+_PERMITTED_OPERATIONS: Final = frozenset(
+    {
+        "GetBucketVersioning",
+        "ListObjectVersions",
+        "ListMultipartUploads",
+        "PutObject",
+        "GetObject",
+        "DeleteObject",
+    }
+)
 
 
 class ArchiveRemoteError(RuntimeError):
@@ -48,6 +60,11 @@ class ArchiveClient(Protocol):
     def get_object(self, **kwargs: object) -> Mapping[str, object]: ...
 
     def delete_object(self, **kwargs: object) -> Mapping[str, object]: ...
+
+
+class _SDKRequest(Protocol):
+    context: dict[str, object]
+    url: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +136,27 @@ def make_archive_client(
             response_checksum_validation="when_required",
         ),
     )
+    endpoint = urlsplit(client.meta.endpoint_url)
+
+    def guard_request(request: object, operation_name: str, **_kwargs: object) -> None:
+        """Fence SDK redirects and auxiliary requests before another transmission.
+
+        Botocore's S3 region redirector can retry outside the configured retry
+        budget, and can issue HeadBucket to discover a region. Every actual
+        attempt creates a request with the original call's shared context.
+        """
+
+        prepared = cast(_SDKRequest, request)
+        if operation_name not in _PERMITTED_OPERATIONS:
+            raise ArchiveRemoteError("archive SDK operation is not permitted")
+        if prepared.context.get(_ATTEMPT_CONTEXT_KEY) is not None:
+            raise ArchiveRemoteError("archive SDK attempted an automatic retry")
+        prepared.context[_ATTEMPT_CONTEXT_KEY] = True
+        target = urlsplit(prepared.url)
+        if target.scheme != endpoint.scheme or target.netloc != endpoint.netloc or target.fragment:
+            raise ArchiveRemoteError("archive SDK request escaped its configured endpoint")
+
+    client.meta.events.register_first("request-created.s3", guard_request)
     return cast(ArchiveClient, client)
 
 

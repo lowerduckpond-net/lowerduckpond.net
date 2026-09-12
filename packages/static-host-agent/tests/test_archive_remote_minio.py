@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from typing import Protocol, cast
 
 import pytest
+from botocore.config import Config  # type: ignore[import-untyped]
 from botocore.session import Session  # type: ignore[import-untyped]
 from lowerduckpond_static_host_agent import archive_remote
 from lowerduckpond_static_host_agent.archive_remote import (
@@ -35,7 +36,7 @@ class MinioAdmin(ArchiveClient, Protocol):
     def abort_multipart_upload(self, **kwargs: object) -> Mapping[str, object]: ...
 
 
-def _client(monkeypatch: pytest.MonkeyPatch) -> MinioAdmin:
+def _clients(monkeypatch: pytest.MonkeyPatch) -> tuple[ArchiveClient, MinioAdmin]:
     endpoint = os.environ.get("M3_ARCHIVE_MINIO_ENDPOINT")
     access = os.environ.get("M3_ARCHIVE_MINIO_ACCESS_KEY")
     secret = os.environ.get("M3_ARCHIVE_MINIO_SECRET_KEY")
@@ -43,6 +44,14 @@ def _client(monkeypatch: pytest.MonkeyPatch) -> MinioAdmin:
         pytest.skip("pinned MinIO endpoint is not configured")
     session = Session()
     create = session.create_client
+    administrator = create(
+        "s3",
+        region_name="us-east-1",
+        endpoint_url=endpoint,
+        aws_access_key_id=access,
+        aws_secret_access_key=secret,
+        config=Config(signature_version="s3v4", s3={"addressing_style": "path"}, proxies={}),
+    )
 
     def local_client(service: str, **kwargs: object) -> object:
         assert kwargs["endpoint_url"] == "https://nyc3.digitaloceanspaces.com"
@@ -54,19 +63,21 @@ def _client(monkeypatch: pytest.MonkeyPatch) -> MinioAdmin:
     monkeypatch.setattr(session, "create_client", local_client)
     monkeypatch.setattr(archive_remote, "Session", lambda: session)
     client = make_archive_client(region="nyc3", access_key_id=access, secret_access_key=secret)
-    return cast(MinioAdmin, client)
+    return client, cast(MinioAdmin, administrator)
 
 
 def test_installed_remote_boundary_versions_markers_pagination_and_cleanup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    client = _client(monkeypatch)
+    client, administrator = _clients(monkeypatch)
     bucket = f"m3-10-archive-ci-{uuid.uuid4().hex}"
     key = archive_key(str(uuid.uuid7()))
     body = b"exact remote bundle bytes\n" * 5000
     digest = hashlib.sha256(body).hexdigest()
-    client.create_bucket(Bucket=bucket)
-    client.put_bucket_versioning(Bucket=bucket, VersioningConfiguration={"Status": "Enabled"})
+    administrator.create_bucket(Bucket=bucket)
+    administrator.put_bucket_versioning(
+        Bucket=bucket, VersioningConfiguration={"Status": "Enabled"}
+    )
     remote = ArchiveRemoteStore(client, bucket=bucket)
     upload_id: str | None = None
     try:
@@ -79,7 +90,7 @@ def test_installed_remote_boundary_versions_markers_pagination_and_cleanup(
         assert len(remote.inventory().versions) == 1
         # Deliberately create a marker using the test administrator, never the
         # managed writer. The bound version must remain readable beneath it.
-        marker = client.delete_object(Bucket=bucket, Key=key)
+        marker = administrator.delete_object(Bucket=bucket, Key=key)
         assert marker["DeleteMarker"] is True
         monkeypatch.setattr(archive_remote, "_PAGE_SIZE", 1)
         inventory = remote.inventory()
@@ -98,13 +109,16 @@ def test_installed_remote_boundary_versions_markers_pagination_and_cleanup(
         remote.purge_unbound(key, require_unbound=lambda _key: None)
         remote.require_absent(key)
         assert not remote.inventory().versions
-        upload_id = str(client.create_multipart_upload(Bucket=bucket, Key=key)["UploadId"])
+        with pytest.raises(ArchiveRemoteError, match="not permitted"):
+            cast(MinioAdmin, client).create_multipart_upload(Bucket=bucket, Key=key)
+        assert not remote.inventory().multipart_uploads
+        upload_id = str(administrator.create_multipart_upload(Bucket=bucket, Key=key)["UploadId"])
         with pytest.raises(ArchiveRemoteError):
             remote.inventory().require_reservation(frozenset())
     finally:
         if upload_id is not None:
-            client.abort_multipart_upload(Bucket=bucket, Key=key, UploadId=upload_id)
+            administrator.abort_multipart_upload(Bucket=bucket, Key=key, UploadId=upload_id)
         for entry in remote.list_versions():
-            client.delete_object(Bucket=bucket, Key=entry.key, VersionId=entry.version_id)
+            administrator.delete_object(Bucket=bucket, Key=entry.key, VersionId=entry.version_id)
         remote.inventory().require_reservation(frozenset())
-        client.delete_bucket(Bucket=bucket)
+        administrator.delete_bucket(Bucket=bucket)
