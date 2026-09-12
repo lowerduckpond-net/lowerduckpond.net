@@ -149,7 +149,15 @@ def prepare(container: str, root: Path) -> dict[str, str]:
             },
             {
                 "Effect": "Allow",
-                "Action": ["s3:GetObjectVersion", "s3:PutObject", "s3:DeleteObjectVersion"],
+                # This pinned MinIO authorizes version deletion through DeleteObject
+                # as well (cmd/auth-handler.go:authorizeRequest). This fixture-only
+                # permission does not change the production Spaces credential policy.
+                "Action": [
+                    "s3:GetObjectVersion",
+                    "s3:PutObject",
+                    "s3:DeleteObject",
+                    "s3:DeleteObjectVersion",
+                ],
                 "Resource": [f"arn:aws:s3:::{_ARCHIVE_BUCKET}/archives/*"],
             },
         ],
