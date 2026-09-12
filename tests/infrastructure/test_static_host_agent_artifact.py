@@ -101,6 +101,11 @@ def test_host_agent_artifact_is_locked_reproducible_and_installable(
             member.mode == (ARCHIVE_ROOT_MODE if member.isdir() else ARCHIVE_FILE_MODE)
             for member in members
         )
+        for launcher in ("jp.py", "jsonschema"):
+            stream = archive.extractfile(f"artifact/site-packages/bin/{launcher}")
+            assert stream is not None
+            with stream:
+                assert stream.readline() == b"#!/usr/bin/python3\n"
 
     install_root = tmp_path / "install"
     install_root.mkdir()
