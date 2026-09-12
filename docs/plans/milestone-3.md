@@ -1108,14 +1108,19 @@ authoritative tenants and releases remain unchanged.
 ### M3.10: implement remote archive, restore, and deletion
 
 Implementation status (2026-09-12): implemented on
-`feat/m3.10-archive-restore-deletion`; final qualification is in progress.
+`feat/m3.10-archive-restore-deletion`; local and disposable installed
+qualification are complete. The component suite passed 2,441 tests with three
+explicit skips, and the separately scheduled MinIO checks passed. Installed
+archive/export/restore/deletion, administrator recovery, deferred snapshot and
+Caddy/Ansible races, reboot, transport recovery, and quarantine checks passed.
 The [M3.10 plan](milestone-3.10.md),
 [evidence map](../threat-model/m3-10-evidence.md), and
 [convergence preparation](../operations/m3-10-convergence-preparation.md)
-track integrated archive/restore/deletion and root emergency recovery, effective
-service isolation, remaining installed race coverage, and live Spaces inputs.
-The convergence starting gate has not passed; production publication remains
-disabled.
+record exact checkpoints, artifact identity, and recovery instructions.
+The convergence starting gate remains pending live Spaces qualification,
+production preflight, and reviewed merged-release evidence. Existing encrypted
+production-state access inputs are unavailable in this session. Production
+publication remains disabled.
 
 Wire the low-level S3 client only to the dedicated archive credential. Implement
 the construction intent, remote capacity reservation, one known-length

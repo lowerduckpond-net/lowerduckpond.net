@@ -1,6 +1,6 @@
 # Milestone 3.10 implementation plan
 
-- Status: implementation in progress; convergence starting gate not reached
+- Status: implemented; local and disposable qualification complete; live starting gate pending
 - Date: 2026-09-12
 - Base: `8d9adc1` on current `main`
 - Branch: `feat/m3.10-archive-restore-deletion`
@@ -39,13 +39,20 @@ carry distinct administrator provenance, without inventing an ordinary job.
 A dedicated bounded service and timer recover interrupted emergency deletion.
 Ordinary transport and provisioner sudo cannot invoke this command.
 
-The full component suite at `f084475` passed 2,435 tests, with two separately
+The final component suite at `bd47ac8` passed 2,441 tests, with two separately
 scheduled MinIO skips and one inapplicable filesystem-fault parameter skip.
-Four repeated private archive/restore cycles and final deletion subsequently
-passed, including historical result replay and bounded release retention.
-The final installed qualification is in progress. The earlier full installed
-M3.8/M3.9 regression passed at `57f0a81`; it does not qualify later lifecycle
-changes. Live Spaces checks and the production starting gate remain outstanding.
+Four repeated private archive/restore cycles and final deletion passed,
+including historical result replay and bounded release retention.
+The complete installed archive group also passed at `00f3f1a`, including
+full-size suspended archive/restore and deferred snapshot/Caddy/Ansible races.
+Both installed emergency deletion tests passed after fixture and service-policy
+corrections. Exact persisted state and served routes survived reboot with
+automatic recovery. The complete transport/recovery group passed, including
+all six idempotent configuration overlaps and competing requests. Installed
+quarantine recovery passed at `36aa88e`. The final inventory has no pending
+intents, intake, exports, staging, quarantine, remote versions/markers, or
+multipart uploads. Live Spaces checks and the production starting gate remain
+outstanding.
 No production convergence or publication enablement has occurred.
 
 ## Installed execution boundary
@@ -68,9 +75,10 @@ The qualified systemd filesystem policy uses a read-only empty tmpfs root plus
 explicit mounts. `ProtectSystem=false` is intentional: on the tested Ubuntu
 26.04 systemd, `ProtectSystem=strict` overlays that empty root with the host root
 and defeats path isolation. Complete installed-unit probes verify the effective
-policy. The emergency service preserves its required `CAP_SETUID` through
-sandbox setup with `AmbientCapabilities=CAP_SETUID`, while retaining
-`NoNewPrivileges=true` and the bounded `CAP_CHOWN CAP_SETUID` capability set.
+policy. The emergency service preserves the user/group switches needed by Caddy
+validation through sandbox setup with
+`AmbientCapabilities=CAP_SETGID CAP_SETUID`, while retaining
+`NoNewPrivileges=true` and the bounded `CAP_CHOWN CAP_SETGID CAP_SETUID` set.
 
 The SDK uses the fixed regional HTTPS endpoint and root-administered system CA
 bundle; ambient endpoint, proxy, credential, and CA settings cannot replace
@@ -181,7 +189,8 @@ the completeness of their proof obligation; keep all work on this branch.
 
 The [preparation runbook](../operations/m3-10-convergence-preparation.md)
 records the existing workstation input workflow and the evidence needed to
-reach this gate. It does not declare the unfinished implementation ready.
+reach this gate. Local and disposable acceptance are complete; live provider,
+production preflight, and reviewed-release evidence remain required.
 
 The requested stopping point is readiness for convergence, with no production
 tenant creation or publication enablement. Before declaring the gate passed:

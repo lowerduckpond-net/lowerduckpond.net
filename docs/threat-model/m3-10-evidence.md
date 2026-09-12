@@ -1,9 +1,9 @@
 # M3.10 implementation evidence and remaining gates
 
 Archive, restore, ordinary deletion, and separate root emergency deletion are
-implemented. Final installed qualification is in progress. The convergence
-starting gate has not passed. Production publication remains disabled and no
-production convergence has occurred. The
+implemented. Local and disposable installed qualification are complete through
+`36aa88e`. The convergence starting gate has not passed. Production publication
+remains disabled and no production convergence has occurred. The
 [plan](../plans/milestone-3.10.md) and
 [preparation runbook](../operations/m3-10-convergence-preparation.md) define the
 remaining evidence and the established encrypted-state credential workflow.
@@ -26,7 +26,7 @@ remaining evidence and the established encrypted-state credential workflow.
 | Archived export delivers exact bytes and import preserves target identity/policy | [Export tests](../../packages/static-host-agent/tests/test_export_handler.py), [installed lifecycle](../../config/ansible/molecule/m3_8/tests/test_archive_lifecycle.py) | Private exact-version delivery and commit/retry faults are covered locally. Installed TLS archived-export/import qualification is tracked separately below. |
 | Actual SDK/XML behavior from the packaged artifact | [MinIO test](../../packages/static-host-agent/tests/test_archive_remote_minio.py), [runner](../../scripts/check-m3-archive-storage) | Exact upload/read, marker-hidden reads, forced pagination, bound-object denial, permanent purge, and multipart detection against pinned MinIO. Local storage does not substitute for Spaces. |
 | Effective installed sandbox and recovery command | [Default host tests](../../config/ansible/molecule/default/tests/test_host.py) | Clone complete installed unit policy to verify path/credential denial and positive operation. Emergency helper permission/sudo denial and actual recovery-service invocation are included. |
-| Deferred archive/restore/delete snapshot and activation races | [Installed capture support](../../config/ansible/molecule/m3_8/tests/archive_capture_support.py), [installed lifecycle](../../config/ansible/molecule/m3_8/tests/test_archive_lifecycle.py) | Actual worker waits on verified export-lock inode; source remains unchanged until capture completes. Restore/delete Caddy-fault recovery and Ansible overlap are implemented as installed checks; passing results remain required. |
+| Deferred archive/restore/delete snapshot and activation races | [Installed capture support](../../config/ansible/molecule/m3_8/tests/archive_capture_support.py), [installed lifecycle](../../config/ansible/molecule/m3_8/tests/test_archive_lifecycle.py) | Actual worker waits on verified export-lock inode; source remains unchanged until capture completes. Restore/delete Caddy-fault recovery and Ansible overlap passed in the installed archive group at `00f3f1a`. |
 
 ## Recorded qualification
 
@@ -36,12 +36,22 @@ All identities below are development checkpoints on
 
 | Revision | Check and result |
 | --- | --- |
-| `57f0a81` | Full installed M3.8/M3.9 core lifecycle, large export/import, snapshot races, exact reboot-state, transport/recovery, and Caddy/systemd/Ansible overlap passed. Disposable host was destroyed. This predates M3.10 lifecycle integration. |
-| `470c575` | Complete Python suite: 2,280 passed, two dedicated MinIO skips. Default convergence/idempotence and all 44 installed tests passed. Packaged local storage: two passed. |
-| `f084475` | Complete Python suite: 2,435 passed, three skips in 570.05 seconds. Skips are two separately scheduled MinIO checks and one inapplicable never-deployed archives-directory fsync parameter. Includes integrated ordinary/emergency lifecycle, strict contracts, recovery, and historical replay. |
+| `36aa88e` | Final installed quarantine recovery passed in 315.44 seconds. Final disposable inventory confirmed terminal jobs, empty pending directories, absent quarantine, and empty version/marker/multipart inventory. |
+| `ea4d44a` | Ordinary/active/never-deployed emergency test passed in 294.70 seconds. Exact reboot-state and complete installed transport/recovery checks passed, including all six idempotent Ansible overlaps. |
+| `4849b70` | Corrected emergency unit converged; its strengthened complete-policy check passed in 3.44 seconds. All 33 artifact/CI-selection tests passed in 216.18 seconds, and actual archived emergency recovery passed. |
+| `00f3f1a` | Complete installed archive lifecycle passed in 1,293.90 seconds: four restore/rearchive cycles, exact archived export/import, capture exclusion, Caddy failure/recovery, Ansible overlap, ordinary deletion, full-size suspended archive/restore, resource limits, bounded retention, remote retirement, and historical replay. |
+| `bd47ac8` | Final complete Python lane: 2,441 passed, three explicit skips in 540.82 seconds; formatting, lint, and strict typing passed. Includes both tracing regressions and archived-result history after emergency deletion. |
+| `f88614e` | Both operational wrappers disable inherited tracing before credential-input checks. Fake canaries reproduced the convergence-wrapper leak; all 39 focused wrapper/production-gate tests, formatting, lint, and shell syntax checks passed after correction. |
+| `6df7ec0` | Complete Python lane: 2,439 passed, three explicit skips in 569.22 seconds; formatting, lint, and strict type checking passed. |
+| `1267afb` | Quarantine retry regression first reproduced both failures; the fix passed 42 focused lifecycle tests, then the full Python lane with 2,438 passed and three explicit skips in 576.22 seconds. |
+| `e348706` | Packaged MinIO lane: two tests passed, including real committed-upload/deletion response loss and the 25-key capacity ceiling; strict type checking passed. |
+| `050d715` | Python checkpoint: 2,436 passed, the same three explicit skips, 615.88 seconds; formatting, lint, and strict type checking passed. |
+| `0f4e804` | Fixed system trust bundle: 41 remote tests passed; strict type checking passed for 226 files. |
 | `fb69cd8` | Default convergence and idempotence passed; all 45 installed checks passed in 90.53 seconds, including complete emergency unit policy. Disposable host destruction passed. |
 | `434331e` | Four repeated private archive/restore cycles, retention, final deletion, and every historical result replay passed. |
-| `0f4e804` | Fixed system trust bundle: 41 remote tests passed; strict type checking passed for 226 files. |
+| `f084475` | Complete Python suite: 2,435 passed, three skips in 570.05 seconds. Skips are two separately scheduled MinIO checks and one inapplicable never-deployed archives-directory fsync parameter. Includes integrated ordinary/emergency lifecycle, strict contracts, recovery, and historical replay. |
+| `470c575` | Complete Python suite: 2,280 passed, two dedicated MinIO skips. Default convergence/idempotence and all 44 installed tests passed. Packaged local storage: two passed. |
+| `57f0a81` | Full installed M3.8/M3.9 core lifecycle, large export/import, snapshot races, exact reboot-state, transport/recovery, and Caddy/systemd/Ansible overlap passed. Disposable host was destroyed. This predates M3.10 lifecycle integration. |
 
 Artifact at the `470c575` installed checkpoint:
 `a079e9fde6f5cf9f8ae1bdbb464870168f6848e880690b845610369d0eb67e1d`.
@@ -49,14 +59,58 @@ It does not qualify later restore/delete/emergency code.
 
 The `fb69cd8` installed artifact has SHA-256
 `e74efe5ddcc3cea83314452a0fcf9ef6f3741ba8dc9d96c998f8408c675f6eb4`.
-The final Python run is in progress. All three wheel checks, local qualification
-and browser-boundary checks, both packaged MinIO checks, 222 infrastructure
-checks, Ansible lint (136 files), workflow lint, and secret scans passed. The full installed
-M3.8–M3.10 lane now includes pinned private TLS MinIO, genuinely distinct test
-bucket credentials, four restore/rearchive cycles, exact archived export/import,
-final deletion, deferred races, and administrator recovery. These tests must
-actually pass before they are counted as evidence. The disposable credentials
-are public fixture values; production credentials are never used in that lane.
+All three wheel checks, local qualification and browser-boundary checks, both
+packaged MinIO checks, 222 infrastructure
+checks, Ansible lint (137 files), workflow lint, and secret scans passed.
+OpenTofu validation/tests/security scanning, Cloudflare range verification,
+repository-wide pre-commit checks, and documentation links also passed. The full
+installed M3.8–M3.10 lane includes pinned private TLS MinIO, distinct test bucket
+credentials, four restore/rearchive cycles, exact archived export/import,
+final deletion, deferred races, full-size suspended archive/restore, and
+administrator recovery. The scenario passed convergence, idempotence, the
+installed core lifecycle, and the M3.9 large export/import, delivery recovery,
+and snapshot-race group
+against artifact
+`5b2cee9128f156e22699fd73e3d78bee5443cb901ecaa79c297d97fb05463899`.
+After the final quarantine fix, a fresh installation passed convergence,
+idempotence, mutual bucket-credential denial with complete fixture cleanup,
+the installed core lifecycle, and the complete M3.9 export/import, delivery,
+and snapshot-race group against artifact
+`e68d9ca026f636d51bf5b67fecddf791c8dc4ef9d8c65f66f152a9aa1041ac9d`.
+The complete installed archive lifecycle subsequently passed at `00f3f1a`.
+Both installed deletion tests passed after the fixture and unit corrections
+below. Active and never-deployed emergency deletion, exact archived emergency
+retirement, durable interruption recovery, and historical result replay are
+qualified. Exact reboot-state capture/restart/verification also passed at
+`ea4d44a`, including automatic Caddy/startup reconciliation and identical served
+routes. The complete installed transport/recovery group passed, including
+lost handoff, replaced payloads, disconnection, killed workers, the Caddy fault
+matrix, all six idempotent Ansible overlaps, and competing requests. Installed
+quarantine recovery passed at `36aa88e` in 315.44 seconds, preserving the unknown
+object until its fixture owner removed that exact version and verifying the
+retained archive before reopening admission and restoring the tenant.
+
+The completed matrix combines a fresh installation with resumed groups after
+fixture and emergency-unit corrections. The runtime artifact remained
+`e68d9ca0…`; the corrected emergency unit was reapplied through the role and its
+complete policy was tested. All six subsequent configuration overlaps reported
+zero changes. Disposable credentials are public fixture values; production
+credentials are never used in this lane.
+
+The final 2026-09-12 disposable inventory confirmed 119 terminal ordinary jobs
+(110 completed and nine intentional failure cases) and four permanent emergency
+results. Lifecycle/Caddy intents, intake, exports, and release staging were
+empty. Quarantine was absent; whole-bucket inventory contained no versions,
+delete markers, or incomplete multipart uploads. The owned disposable host and
+pinned storage container were destroyed after recording this inventory.
+
+A fresh build at `00f3f1a` from the original checkout reproduced the installed
+`e68d9ca0…` artifact exactly. A build from the separate development worktree
+had identical runtime files and dependency lock, but a different digest because
+`uv` embeds the local interpreter path in two dependency launchers and their
+package records. This proves repeatability at the recorded build location, not
+independence from workstation paths. Build and record the actual reviewed
+release artifact before production preparation.
 
 ## Installed defects found and corrected
 
@@ -74,23 +128,69 @@ are public fixture values; production credentials are never used in that lane.
   `AmbientCapabilities=CAP_SETUID`, preserving `NoNewPrivileges=true` and the
   bounded capability set. A full-policy disposable probe verified identity
   switch and restoration; the fresh complete installed rerun passed all 45 checks.
+- The pinned MinIO fixture requires `s3:DeleteObject` in addition to the
+  version action for exact-version deletion, as its
+  [authorization implementation](https://github.com/minio/minio/blob/RELEASE.2025-09-07T16-13-09Z/cmd/auth-handler.go#L430-L457)
+  demonstrates. `6df7ec0` adds that permission only to the disposable archive
+  policy. The initial failure retained the known credential-proof objects and
+  closed archive admission; those exact fixture versions were verified and
+  removed using their fixture owners. Production Spaces policy and its live
+  credential-denial gate remain separate.
+- The first archived-capture race requested an exclusive-only inventory API
+  while holding shared tenant-state. The helper was corrected at `00f3f1a` to
+  hold exclusive tenant-state while capturing the record, then release it before
+  remote I/O. The interrupted test's authorized restore completed through the
+  ordinary reconciler. This test-only correction leaves the installed artifact
+  unchanged. The complete archive lifecycle rerun passed on the retained
+  disposable host.
+- The emergency lifecycle fixture initially omitted the `ldp-admin` account
+  created by production cloud-init. `530ac62` adds the locked disposable account
+  and equivalent administrator sudo rule, with a check before paced tests.
+- Actual archived emergency recovery then exposed a missing `CAP_SETGID` during
+  Caddy candidate validation. The prior UID-only probe did not exercise clearing
+  supplementary groups. `4849b70` retains both identity switches through sandbox
+  setup; the complete-policy probe recovered the preserved archived deletion
+  and retired its exact remote key. The installed unit regression now invokes
+  the same user/group/supplementary-group drop used by Caddy validation.
+  Configuration reapply passed with the two expected unit/timer changes. The
+  strengthened installed policy check passed, 33 artifact/CI-selection tests
+  passed, and the actual archived emergency recovery test passed at `4849b70`.
+- The shared namespace fixture used a nonblocking read and could collide with
+  periodic reconciliation before a test began. `ea4d44a` makes fixture setup
+  wait for tenant-state ownership; ordinary operator admission remains unchanged.
+  The complete ordinary/active/never-deployed emergency test subsequently passed
+  in 294.70 seconds.
+- Quarantine fixture creation also met normal tenant-state contention immediately
+  after archive completion. `36aa88e` retries that setup within a fixed attempt
+  limit, waits for the export lease during fixture reads, and bounds retries of
+  post-resolution terminal verification. The failed attempt removed only its
+  independently created unknown version; its bound archive was subsequently
+  restored through an ordinary authorized job before the isolated rerun.
+
+A terminal retry now completes quarantine resolution even when the preceding
+cleanup already removed its journal. Unknown objects keep the result retryable;
+resolution requires exact whole-bucket inventory and verification of every
+retained version. The component regression covers both persistent unknown
+inventory and independently resolved data, without granting deletion authority.
+The [installed quarantine check](../../config/ansible/molecule/m3_8/tests/test_quarantine_recovery.py)
+passed through the actual private service at `36aa88e`, including unknown-object
+preservation, independently resolved inventory, retained-byte verification,
+quarantine removal, ordinary restore, and final remote absence.
 
 ## Outstanding convergence gates
 
-1. Finish and record the final complete local and installed qualification,
-   including deferred races, actual service recovery, and artifact identity.
-2. Run live expendable-prefix Spaces qualification and mutual archive/backup
+1. Run live expendable-prefix Spaces qualification and mutual archive/backup
    credential denial. The existing M3.1 wrapper was invoked and exited 2 at its
    missing `OPENTOFU_ENCRYPTION_PASSPHRASE` guard before provider requests. It uses
    the established encrypted production state; the necessary state access and
    decryption inputs are absent in this session. It does not itself execute the
    new installed M3.10 lifecycle.
-3. Complete a guarded read-only production preflight covering dark host identity,
+2. Complete a guarded read-only production preflight covering dark host identity,
    exact preceding artifact, disabled publication, empty tenant history, unchanged
    edge controls, private/versioned/no-expiration archive policy, accounted
    contents, and no multipart uploads. Unknown objects are never permission to
    purge the bucket.
-4. Record reviewed merged source and a reproducible release artifact on clean,
+3. Record reviewed merged source and a reproducible release artifact on clean,
    current `main`, then assemble the convergence gate record. Stop before host
    convergence and publication enablement.
 

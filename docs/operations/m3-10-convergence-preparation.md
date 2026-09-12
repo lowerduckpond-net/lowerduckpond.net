@@ -3,7 +3,9 @@
 Status: preparation only; the convergence starting gate has not passed.
 The [implementation plan](../plans/milestone-3.10.md) and
 [component evidence](../threat-model/m3-10-evidence.md) identify the implemented
-lifecycle and recovery paths and the remaining qualification work.
+lifecycle and recovery paths. Local and disposable installed qualification are
+complete; live provider, production preflight, and reviewed-release evidence
+remain outstanding.
 Publication remains `static_publication_enabled: false`.
 
 ## Workstation inputs
@@ -101,6 +103,14 @@ Do not run production convergence merely to supply credentials for development
 checks. The implementation and evidence gates below must be complete first.
 
 ## Evidence required before convergence
+
+The recorded preceding production artifact, selected by the 2026-09-12 M3.9
+convergence, has SHA-256
+`4e32c4a88d729b371b8cd5da96e5fedbc9f30266acb0984599c1d645939bef85`.
+Verify that exact selection and its complete artifact manifest during the
+read-only preflight. This recorded identity is not a fresh observation of the
+production host. Reconcile any later reviewed production change before using
+the starting gate; do not widen the accepted identities to bypass drift.
 
 1. Complete the implementation and its local and disposable installed-host
    acceptance matrix. Cover active and suspended archival, exact archived
