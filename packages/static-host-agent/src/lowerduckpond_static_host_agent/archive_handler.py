@@ -21,6 +21,7 @@ from lowerduckpond_static_host_agent.archive_prepare import prepare_archive_tran
 from lowerduckpond_static_host_agent.archive_quarantine import ArchiveQuarantine
 from lowerduckpond_static_host_agent.archive_recover import reconstruct_archive_transition
 from lowerduckpond_static_host_agent.archive_remote import ArchiveRemoteError
+from lowerduckpond_static_host_agent.archive_revalidate import revalidate_archive
 from lowerduckpond_static_host_agent.caddy_admin import (
     reload_caddy_generation,
     restore_caddy_generation,
@@ -113,7 +114,7 @@ class ArchiveLifecycleHandler:
         self._restorer = restorer
         self._verifier = verifier
 
-    def execute(
+    def execute(  # noqa: PLR0911 - explicit durable recovery cases
         self, job_id: str, *, claim: LifecycleArtifact | None, blocking: bool
     ) -> ExecutionOutcome:
         canonical = validate_uuid7(job_id)
@@ -121,6 +122,24 @@ class ArchiveLifecycleHandler:
             raise LifecycleJobRejectionError("invalid_artifact")
         with self._spool.locks.acquire(LockName.EXPORT, blocking=blocking):
             state = self._classify(canonical, blocking=blocking)
+            expected = cast(dict[str, object], state.job.document["expectedSource"])
+            if expected["lifecycle"] == "archived" and (
+                state.result is None or state.transaction_id is not None
+            ):
+                return revalidate_archive(
+                    self._repository,
+                    self._spool,
+                    self._runtime,
+                    self._gate,
+                    self._cleanup_client,
+                    canonical,
+                    now=self._now(),
+                    clock=self._clock,
+                    entropy=self._entropy,
+                    verifier=self._verifier,
+                    capacity_limits=self._limits,
+                    blocking=blocking,
+                )
             if state.transaction_id is not None:
                 prepared = reconstruct_archive_transition(
                     self._repository,
@@ -169,9 +188,6 @@ class ArchiveLifecycleHandler:
                 if state.construction.document["phase"] == "prepared" or state.failed_audit:
                     return self._abort(canonical, state.construction, blocking=blocking)
                 return self._publish(canonical, state.construction, blocking=blocking)
-            expected = cast(dict[str, object], state.job.document["expectedSource"])
-            if expected["lifecycle"] == "archived":
-                raise LifecycleJobRejectionError("not_implemented")
             self._gate.require_enabled()
             ExportDelivery(self._repository, self._spool, now=self._now).reconcile_locked()
             self._spool.prepare_workspace()
@@ -306,7 +322,12 @@ class ArchiveLifecycleHandler:
                     raise ArchiveLifecycleError(
                         "archive journals exceed one construction and transaction"
                     )
-            if transaction_id is not None and construction is None:
+            if (
+                transaction_id is not None
+                and construction is None
+                and cast(dict[str, object], job.document["expectedSource"])["lifecycle"]
+                != "archived"
+            ):
                 raise ArchiveLifecycleError("archive transaction lost its construction")
             audit = transaction.inspect_audit_correlation(request["correlationId"])
             return _ArchiveState(

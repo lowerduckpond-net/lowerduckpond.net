@@ -21,7 +21,8 @@ from lowerduckpond_static_host_agent.archive_construction_service import (
 )
 from lowerduckpond_static_host_agent.archive_handler import ArchiveLifecycleHandler
 from lowerduckpond_static_host_agent.archive_quarantine import ArchiveQuarantine
-from lowerduckpond_static_host_agent.archive_remote import ArchiveRemoteStore
+from lowerduckpond_static_host_agent.archive_remote import ArchiveRemoteError, ArchiveRemoteStore
+from lowerduckpond_static_host_agent.archive_revalidate import revalidate_archive
 from lowerduckpond_static_host_agent.caddy_runtime import CaddyRuntime
 from lowerduckpond_static_host_agent.execution import AuthorizationExecutor
 from lowerduckpond_static_host_agent.export_spool import ExportSpool
@@ -65,7 +66,7 @@ def _serve_construction(stream: socket.socket, root: Path, remote: ArchiveRemote
 
 @contextmanager
 def _host(
-    tmp_path: Path, *, lost_response: bool = False
+    tmp_path: Path, *, lost_response: bool = False, revalidation: bool = False
 ) -> Iterator[
     tuple[AuthorizationExecutor, str, StateRepository, MemoryRemote, _Runtime, list[Future[None]]]
 ]:
@@ -108,7 +109,8 @@ def _host(
             runtime.active = cast(str, observed["runtimeGenerationId"])
             runtime.running = runtime.active
             runtime.snapshots[runtime.active] = snapshot_tenant_routes(transaction)
-        issued = AuthorizationIssuer(repository, gate=OpenGate(), entropy=_Entropy()).issue(
+        issuer = AuthorizationIssuer(repository, gate=OpenGate(), entropy=_Entropy())
+        issued = issuer.issue(
             canonical_json_bytes(
                 {
                     "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
@@ -145,22 +147,135 @@ def _host(
             restorer=runtime.restore,
             verifier=runtime.verify,
         )
-        executor = AuthorizationExecutor(
-            repository,
-            intake,
-            handlers={"archive": handler},
-            retained_archive_validator=partial(
-                cleanup.verify_terminal, issued.job_id, mode="retained"
-            ),
-            retired_archive_validator=partial(
-                cleanup.verify_terminal, issued.job_id, mode="retired"
-            ),
-            unreturned_archive_validator=lambda job_id: cleanup.verify_terminal(
-                job_id, None, mode="accounted"
-            ),
-            tenant_runtime_validator=lambda *_args: True,
-        )
+
+        def executor_for(canonical_job: str) -> AuthorizationExecutor:
+            return AuthorizationExecutor(
+                repository,
+                intake,
+                handlers={"archive": handler},
+                retained_archive_validator=partial(
+                    cleanup.verify_terminal, canonical_job, mode="retained"
+                ),
+                retired_archive_validator=partial(
+                    cleanup.verify_terminal, canonical_job, mode="retired"
+                ),
+                unreturned_archive_validator=lambda job_id: cleanup.verify_terminal(
+                    job_id, None, mode="accounted"
+                ),
+                tenant_runtime_validator=lambda *_args: True,
+            )
+
+        executor = executor_for(issued.job_id)
+        if revalidation:
+            assert executor.execute(issued.job_id).result["status"] == "succeeded"
+            issued = issuer.issue(
+                canonical_json_bytes(
+                    {
+                        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+                        "kind": "OperationRequest",
+                        "operation": "archive",
+                        "tenantId": _TENANT,
+                        "correlationId": "0198d17f-6f4a-7000-8000-000000000999",
+                    }
+                ),
+                operator_principal="operator@example.test",
+                now=_NOW,
+                artifact=None,
+            )
+            executor = executor_for(issued.job_id)
         yield executor, issued.job_id, repository, memory, runtime, futures
+
+
+def test_new_archive_authorization_revalidates_the_unchanged_archived_object(
+    tmp_path: Path,
+) -> None:
+    with _host(tmp_path, revalidation=True) as (
+        executor,
+        job_id,
+        repository,
+        remote,
+        runtime,
+        futures,
+    ):
+        source = repository.read(StateRecordPath.tenant_desired(_TENANT))
+        observed = repository.read(StateRecordPath.tenant_observed(_TENANT))
+        selected = runtime.active
+        outcome = executor.execute(job_id)
+        result = outcome.result
+        assert result["status"] == "succeeded"
+        record = cast(dict[str, object], result["archiveRecord"])
+        assert record["correlationId"] != result["correlationId"]
+        assert repository.read(StateRecordPath.tenant_desired(_TENANT)).revision == source.revision
+        assert (
+            repository.read(StateRecordPath.tenant_observed(_TENANT)).revision == observed.revision
+        )
+        assert runtime.active == selected
+        assert not repository.measure_intent_records().records
+        assert executor.execute(job_id).result == result
+        for future in futures:
+            future.result(timeout=5)
+        assert remote.calls.count("put") == 1
+
+
+@pytest.mark.parametrize("boundary", ["intent-sync", "audit-sync", "result-sync", "job-sync"])
+def test_archived_revalidation_recovers_each_durable_boundary_without_reupload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, boundary: str
+) -> None:
+    def interrupt(event: str) -> None:
+        if event == boundary:
+            raise SimulatedCrashError
+
+    with _host(tmp_path, revalidation=True) as (
+        executor,
+        job_id,
+        repository,
+        remote,
+        runtime,
+        futures,
+    ):
+        selected = runtime.active
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                handler_module,
+                "revalidate_archive",
+                partial(revalidate_archive, failure_hook=interrupt),
+            )
+            with pytest.raises(SimulatedCrashError):
+                executor.execute(job_id)
+        assert repository.measure_intent_records().records
+        assert executor.execute(job_id).result["status"] == "succeeded"
+        assert not repository.measure_intent_records().records
+        assert runtime.active == selected
+        assert remote.calls.count("put") == 1
+        for future in futures:
+            future.result(timeout=5)
+
+
+def test_archived_revalidation_refuses_changed_remote_bytes_before_result_publication(
+    tmp_path: Path,
+) -> None:
+    with _host(tmp_path, revalidation=True) as (
+        executor,
+        job_id,
+        repository,
+        remote,
+        runtime,
+        futures,
+    ):
+        selected = runtime.active
+        remote.body = b"x" * len(remote.body)
+        with pytest.raises(ArchiveRemoteError):
+            executor.execute(job_id)
+        with pytest.raises(FileNotFoundError):
+            repository.read(StateRecordPath.authorization_result(job_id))
+        assert not repository.measure_intent_records().records
+        assert runtime.active == selected
+        assert remote.versions
+        assert (tmp_path / "state" / "platform" / "archive-quarantine.json").exists()
+        for future in futures[:-1]:
+            future.result(timeout=5)
+        with pytest.raises(ArchiveRemoteError):
+            futures[-1].result(timeout=5)
 
 
 def test_archive_handler_constructs_publishes_and_revalidates_through_private_services(

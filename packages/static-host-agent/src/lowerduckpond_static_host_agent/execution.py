@@ -1554,6 +1554,13 @@ def _capture_authorized_lifecycle_authority(  # noqa: PLR0912,PLR0915 - authorit
         )
     if transaction_intent is None:
         source = transaction.read(StateRecordPath.tenant_desired(request["tenantId"])).document
+        if request["operation"] == "archive" and expected["lifecycle"] == "archived":
+            desired = cast(
+                dict[str, object], cast(dict[str, object], source["spec"])["desiredDeployment"]
+            )
+            archive_record = transaction.read(
+                StateRecordPath.tenant_archive(request["tenantId"], desired["id"])
+            ).document
         if construction_intent is not None:
             archive_record = _archive_record_for_construction_authority(
                 transaction,
@@ -1666,7 +1673,11 @@ def _validate_durable_source_authority(
         return
     durable_source, durable_archive = _job_source_authority(job)
     if source != durable_source or (
-        request["operation"] == "restore" and archive_record != durable_archive
+        (
+            request["operation"] == "restore"
+            or (request["operation"] == "archive" and durable_archive is not None)
+        )
+        and archive_record != durable_archive
     ):
         raise ExecutionError("lifecycle source exceeds durable job authority")
 
@@ -3377,12 +3388,24 @@ def _validate_selected_deployment_state(  # noqa: PLR0912 - explicit operation m
     except FileNotFoundError as error:
         raise ExecutionError("successful archive result has no archive record") from error
     validate_contract(archive, expected_kind=ContractKind.ARCHIVE_RECORD)
+    revalidation = (
+        operation == "archive"
+        and cast(dict[str, object], job["expectedSource"])["lifecycle"] == "archived"
+    )
     archive_matches = (
         archive["tenantId"] == tenant_id
         and archive["deploymentId"] == deployment_id
         and archive["manifestDigest"] == manifest_digest(manifest).to_dict()
         and archive["releaseTreeDigest"] == deployment["releaseTreeDigest"]
-        and (operation != "archive" or archive["correlationId"] == result["correlationId"])
+        and (
+            operation != "archive"
+            or revalidation
+            or archive["correlationId"] == result["correlationId"]
+        )
+        and (
+            not revalidation
+            or archive == cast(dict[str, object], job["sourceAuthority"])["archiveRecord"]
+        )
     )
     if not archive_matches:
         raise ExecutionError("successful lifecycle result has an unbound archive record")

@@ -452,16 +452,34 @@ class ArchiveJournal:
         self._notify(ArchiveJournalBoundary.INTENT_REMOVED)
 
     def verify_retained(self, archive: dict[str, object]) -> bool:
+        self._require_lock()
         validate_contract(archive, expected_kind=ContractKind.ARCHIVE_RECORD)
         if archive["bucket"] != self.remote.bucket:
             raise ArchiveJournalError("archive verification selected another bucket")
         digest = cast(dict[str, object], archive["bundleDigest"])
-        self.remote.read_verified(
-            cast(str, archive["key"]),
-            cast(str, archive["versionId"]),
-            size=cast(int, archive["bundleSize"]),
-            sha256=cast(str, digest["value"]),
-        )
+        try:
+            self.remote.read_verified(
+                cast(str, archive["key"]),
+                cast(str, archive["versionId"]),
+                size=cast(int, archive["bundleSize"]),
+                sha256=cast(str, digest["value"]),
+            )
+        except Exception:
+            self.quarantine(
+                RemoteInventory(
+                    (
+                        RemoteVersion(
+                            cast(str, archive["key"]),
+                            cast(str, archive["versionId"]),
+                            cast(int, archive["bundleSize"]),
+                            False,
+                        ),
+                    ),
+                    (),
+                )
+            )
+            self.quarantine(None)
+            raise
         return True
 
     def _remote_intent(self, intent_id: str) -> DiscoveredIntent:

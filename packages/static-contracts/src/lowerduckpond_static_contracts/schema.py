@@ -438,9 +438,14 @@ def _validate_result(document: dict[str, object]) -> None:
     if document["operation"] != "archive":
         return
     archive = document.get("archiveRecord")
+    # Revalidating an already archived tenant preserves the original record's
+    # correlation. The executor binds that full record to the new job's exact
+    # archived source; a fresh construction separately binds its new correlation.
     if type(archive) is dict and (
         archive["tenantId"] != document["tenantId"]
-        or archive["correlationId"] != document["correlationId"]
+        or (
+            document["status"] == "failed" and archive["correlationId"] != document["correlationId"]
+        )
     ):
         raise ContractError(
             ErrorCode.SCHEMA_INVALID,
@@ -647,7 +652,11 @@ def _validate_transaction_intent(document: dict[str, object]) -> None:
     source_state = source_spec["desiredState"]
     expected_candidate_spec = deepcopy(source_spec)
     expected_candidate_spec["desiredState"] = "archived"
-    if source_state not in {"active", "suspended"} or candidate_spec != expected_candidate_spec:
+    revalidation = source_state == "archived"
+    if (
+        source_state not in {"active", "suspended", "archived"}
+        or candidate_spec != expected_candidate_spec
+    ):
         raise ContractError(ErrorCode.SCHEMA_INVALID, "archive candidate state is invalid")
 
     source_deployment = cast(dict[str, object], source_spec["desiredDeployment"])
@@ -655,7 +664,7 @@ def _validate_transaction_intent(document: dict[str, object]) -> None:
         observed["tenantId"] != tenant_id
         or observed["desiredManifestDigest"] != document["sourceManifestDigest"]
         or observed["observedState"] != source_state
-        or observed["activeDeploymentId"] != source_deployment["id"]
+        or observed["activeDeploymentId"] != (None if revalidation else source_deployment["id"])
     ):
         raise ContractError(ErrorCode.SCHEMA_INVALID, "archive observed-state binding is invalid")
     expected_routes = "both" if source_state == "active" else "absent"
@@ -668,12 +677,14 @@ def _validate_transaction_intent(document: dict[str, object]) -> None:
         archive["tenantId"] != tenant_id
         or archive["deploymentId"] != source_deployment["id"]
         or archive["manifestDigest"] != document["candidateManifestDigest"]
-        or archive["correlationId"] != document["correlationId"]
+        or (not revalidation and archive["correlationId"] != document["correlationId"])
     ):
         raise ContractError(ErrorCode.SCHEMA_INVALID, "archive record binding is invalid")
-    if recovery["candidateRuntimeGenerationId"] == recovery["sourceRuntimeGenerationId"]:
+    if (
+        recovery["candidateRuntimeGenerationId"] == recovery["sourceRuntimeGenerationId"]
+    ) != revalidation:
         raise ContractError(
-            ErrorCode.SCHEMA_INVALID, "archive runtime generations are not distinct"
+            ErrorCode.SCHEMA_INVALID, "archive runtime generations exceed lifecycle authority"
         )
 
 
