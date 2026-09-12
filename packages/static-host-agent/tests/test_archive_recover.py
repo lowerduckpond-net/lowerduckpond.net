@@ -11,6 +11,7 @@ from lowerduckpond_static_host_agent.archive_recover import (
     ArchiveRecoveryError,
     reconstruct_archive_transition,
 )
+from lowerduckpond_static_host_agent.caddy_generation import PinnedCaddyGeneration
 from lowerduckpond_static_host_agent.caddy_runtime import CaddyRuntime
 from lowerduckpond_static_host_agent.lifecycle_plan import LifecyclePlanError
 from lowerduckpond_static_host_agent.repository import StateRecordPath
@@ -100,3 +101,45 @@ def test_archive_recovery_rejects_changed_generation_or_construction_evidence(
             )
         assert runtime.active == selected
         assert not any(event.startswith("selected:") for event in runtime.events)
+
+
+def test_archive_recovery_preserves_observed_source_and_newer_complete_host_generation(
+    tmp_path: Path,
+) -> None:
+    selected = "0198d17f-6f4a-7000-8000-000000000999"
+    with _prepared(tmp_path, "active", selected_generation=selected) as (
+        journal,
+        store,
+        prepared,
+        runtime,
+    ):
+        recovery = cast(dict[str, object], prepared.plan.intent["archiveRecovery"])
+        observed = cast(dict[str, object], recovery["sourceObservedState"])
+        assert observed["runtimeGenerationId"] != selected
+        assert recovery["sourceRuntimeGenerationId"] == selected
+        reconstructed = reconstruct_archive_transition(
+            journal.repository,
+            journal.spool,
+            cast(CaddyRuntime, runtime),
+            OpenGate(),
+            prepared.job.document["jobId"],
+        )
+        assert reconstructed.plan == prepared.plan
+
+        def reload(source: PinnedCaddyGeneration, candidate: PinnedCaddyGeneration) -> None:
+            assert source.manifest.generation_id == selected
+            assert runtime.active == candidate.manifest.generation_id
+            runtime.running = candidate.manifest.generation_id
+
+        activate_archive_transition(
+            journal.repository,
+            journal.spool,
+            cast(CaddyRuntime, runtime),
+            store,
+            OpenGate(),
+            reconstructed,
+            reloader=reload,
+            restorer=runtime.restore,
+            verifier=runtime.verify,
+        )
+        journal.finish(prepared.plan.construction_intent_id)

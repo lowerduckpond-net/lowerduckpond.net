@@ -40,7 +40,7 @@ class SimulatedCrashError(RuntimeError):
 
 @contextmanager
 def _prepared(
-    tmp_path: Path, lifecycle: str
+    tmp_path: Path, lifecycle: str, *, selected_generation: str | None = None
 ) -> Iterator[tuple[ArchiveJournal, DeploymentReleaseStore, PreparedArchiveTransition, _Runtime]]:
     with prepared_source(tmp_path, MemoryRemote(), lifecycle=lifecycle) as (
         journal,
@@ -52,7 +52,9 @@ def _prepared(
         runtime = _Runtime()
         with journal.repository.publication_transaction() as transaction:
             observed = transaction.read(StateRecordPath.tenant_observed(_TENANT)).document
-            runtime.active = cast(str, observed["runtimeGenerationId"] or runtime.active)
+            runtime.active = selected_generation or cast(
+                str, observed["runtimeGenerationId"] or runtime.active
+            )
             runtime.running = runtime.active
             runtime.snapshots[runtime.active] = snapshot_tenant_routes(transaction)
             path = StateRecordPath.authorization_job(job_id)

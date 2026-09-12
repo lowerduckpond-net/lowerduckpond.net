@@ -2229,6 +2229,17 @@ def test_archive_transaction_intent_binds_both_recovery_outcomes() -> None:
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
 
 
+def test_archive_source_observation_can_precede_the_selected_complete_host_generation() -> None:
+    intent = _archive_transaction_intent()
+    recovery = intent["archiveRecovery"]
+    assert type(recovery) is dict
+    observed = recovery["sourceObservedState"]
+    assert type(observed) is dict
+    recovery["sourceRuntimeGenerationId"] = "0198d17f-6f4a-7000-8000-000000000999"
+    assert observed["runtimeGenerationId"] != recovery["sourceRuntimeGenerationId"]
+    assert validate_contract(intent) is ContractKind.TRANSACTION_INTENT
+
+
 def test_archive_transaction_intent_rejects_drift_between_candidate_copies() -> None:
     intent = _archive_transaction_intent()
     recovery = intent["archiveRecovery"]

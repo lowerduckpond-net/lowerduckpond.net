@@ -661,10 +661,9 @@ def _validate_transaction_intent(document: dict[str, object]) -> None:
     expected_routes = "both" if source_state == "active" else "absent"
     if recovery["sourceRouteSet"] != expected_routes:
         raise ContractError(ErrorCode.SCHEMA_INVALID, "archive source route binding is invalid")
-    if source_state == "active" and (
-        observed["runtimeGenerationId"] != recovery["sourceRuntimeGenerationId"]
-    ):
-        raise ContractError(ErrorCode.SCHEMA_INVALID, "archive source runtime binding is invalid")
+    # The observed ID records this tenant's last transition. Another tenant
+    # can subsequently select a newer complete host generation. Preserve both
+    # identities; the host agent proves the complete selected source snapshot.
     if (
         archive["tenantId"] != tenant_id
         or archive["deploymentId"] != source_deployment["id"]

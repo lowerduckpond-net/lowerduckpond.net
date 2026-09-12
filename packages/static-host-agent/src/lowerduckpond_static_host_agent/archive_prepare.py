@@ -125,11 +125,6 @@ def prepare_archive_transition(  # noqa: PLR0913, PLR0917 - explicit root-owned 
                 "archive source routes do not match the selected generation"
             )
         source_routes = "both" if expected["lifecycle"] == "active" else "absent"
-        if (
-            expected["lifecycle"] == "active"
-            and observed["runtimeGenerationId"] != source_generation
-        ):
-            raise ArchiveAuthorityDriftError("archive source must be reconciled before preparation")
         job = _bind_source_runtime_authority(
             transaction,
             job,

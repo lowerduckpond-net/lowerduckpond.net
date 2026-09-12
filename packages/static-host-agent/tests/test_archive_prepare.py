@@ -89,7 +89,7 @@ def test_archive_preparation_retains_live_source_until_complete_candidate_is_dur
         )
 
 
-@pytest.mark.parametrize("defect", ["source-drift", "selected-routes", "unreconciled-source"])
+@pytest.mark.parametrize("defect", ["source-drift", "selected-routes"])
 def test_archive_preparation_rejects_state_or_runtime_drift_before_publishing_candidate(
     tmp_path: Path,
     defect: str,
@@ -100,9 +100,6 @@ def test_archive_preparation_rejects_state_or_runtime_drift_before_publishing_ca
         with journal.repository.publication_transaction() as transaction:
             observed = transaction.read(StateRecordPath.tenant_observed(_TENANT)).document
             runtime.active = cast(str, observed["runtimeGenerationId"])
-            if defect == "unreconciled-source":
-                runtime.active = "0198d17f-6f4a-7000-8000-000000000999"
-                assert runtime.active != observed["runtimeGenerationId"]
             runtime.snapshots[runtime.active] = snapshot_tenant_routes(transaction)
             if defect == "selected-routes":
                 runtime.snapshots[runtime.active] = TenantRouteSnapshot(
