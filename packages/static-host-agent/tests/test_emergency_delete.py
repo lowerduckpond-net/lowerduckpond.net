@@ -5,10 +5,12 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from functools import partial
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
 from lowerduckpond_static_contracts import manifest_digest
+from lowerduckpond_static_host_agent import emergency_entrypoint, entrypoints
 from lowerduckpond_static_host_agent.archive_journal import ArchiveJournal
 from lowerduckpond_static_host_agent.archive_quarantine import ArchiveQuarantine
 from lowerduckpond_static_host_agent.archive_remote import ArchiveRemoteStore
@@ -212,3 +214,70 @@ def test_emergency_tombstone_remains_visible_to_ordinary_result_history(
         with handler.repository.publication_transaction() as transaction:
             later = _later_audited_results(transaction, earlier)
         assert tuple(value.result for value in later) == (result,)
+
+
+@pytest.mark.parametrize("inventory_failure", [False, True])
+def test_root_recovery_resolves_quarantine_after_emergency_retirement_disappears(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, inventory_failure: bool
+) -> None:
+    with _emergency(tmp_path, "archived") as (handler, tenant, _memory):
+        cleanup = cast(partial[None], handler.cleanup)
+
+        def fail_after_retirement(
+            retirement: dict[str, object] | None, audit: dict[str, object]
+        ) -> None:
+            cleanup(retirement, audit)
+            journal = cast(ArchiveJournal, cleanup.args[0])
+            quarantine = ArchiveQuarantine(
+                tmp_path / "state",
+                bucket=journal.remote.bucket,
+                expected_owner=_OWNER,
+                locks=journal.spool.locks,
+            )
+            quarantine.record(None)
+            if inventory_failure:
+                with monkeypatch.context() as patch:
+
+                    def unavailable() -> None:
+                        raise TimeoutError("inventory unavailable")
+
+                    patch.setattr(journal.remote, "inventory", unavailable)
+                    quarantine.resolve(journal.repository, journal.remote)
+            raise OSError("exit after retirement, before quarantine resolution")
+
+        handler.cleanup = fail_after_retirement
+        with pytest.raises((OSError, TimeoutError)):
+            handler.execute(tenant, _CORRELATION, operator_principal=_PRINCIPAL, reason=_REASON)
+        journal = cast(ArchiveJournal, cleanup.args[0])
+        assert not journal.repository.measure_intent_records().records
+        assert (tmp_path / "state/platform/archive-quarantine.json").exists()
+        remote = journal.remote
+        calls = tuple(cast(MemoryRemote, remote.client).calls)
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.delenv("SUDO_USER", raising=False)
+    monkeypatch.setattr(entrypoints, "_STATE_ROOT", tmp_path / "state")
+    monkeypatch.setattr(
+        emergency_entrypoint,
+        "StateRepository",
+        lambda path, expected_owner: StateRepository(path, expected_owner=_OWNER),
+    )
+    monkeypatch.setattr(
+        emergency_entrypoint,
+        "ExportSpool",
+        lambda path, expected_owner: ExportSpool(path, expected_owner=_OWNER),
+    )
+    monkeypatch.setattr(
+        emergency_entrypoint,
+        "ArchiveQuarantine",
+        lambda path, bucket, expected_owner, locks: ArchiveQuarantine(
+            path, bucket=bucket, expected_owner=_OWNER, locks=locks
+        ),
+    )
+    monkeypatch.setattr(
+        emergency_entrypoint,
+        "load_archive_configuration",
+        lambda: SimpleNamespace(remote_store=lambda: remote),
+    )
+    assert emergency_entrypoint.emergency_delete_main(["--recover"]) == 0
+    assert not (tmp_path / "state/platform/archive-quarantine.json").exists()
+    assert cast(MemoryRemote, remote.client).calls[len(calls) :].count("delete") == 0
