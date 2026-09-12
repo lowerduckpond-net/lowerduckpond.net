@@ -1129,7 +1129,7 @@ class AuthorizationExecutor:
                 return
             raise ExecutionError("successful delete retained an active tenant route")
 
-    def _validate_failed_external_terminal_state(
+    def _validate_failed_external_terminal_state(  # noqa: PLR0911 - distinct failed-source and supersession boundaries
         self,
         job: dict[str, object],
         result: dict[str, object],
@@ -1143,7 +1143,15 @@ class AuthorizationExecutor:
         self._validate_failed_archive_absence(result, authority=authority)
         if result["operation"] in {"delete", "restore"} and archive is not None:
             validator = self._retained_archive_validator
-            if validator is None or validator(archive) is not True:
+            try:
+                retained = validator is not None and validator(archive)
+            except Exception:
+                if self._result_was_superseded(job, result, blocking=blocking):
+                    return
+                raise
+            if retained is not True:
+                if self._result_was_superseded(job, result, blocking=blocking):
+                    return
                 raise ExecutionError("failed lifecycle result lost its retained archive object")
         if source_manifest is None:
             return
