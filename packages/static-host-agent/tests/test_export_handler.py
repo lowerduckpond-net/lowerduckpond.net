@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import os
 import shutil
 import time
@@ -13,6 +14,7 @@ from multiprocessing.connection import Connection
 from multiprocessing.process import BaseProcess
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import lowerduckpond_static_host_agent.job_runtime as runtime
 import pytest
@@ -23,6 +25,12 @@ from lowerduckpond_static_contracts import (
     manifest_digest,
 )
 from lowerduckpond_static_host_agent import entrypoints
+from lowerduckpond_static_host_agent.archive_bundle import RemoteArchiveBundleSource
+from lowerduckpond_static_host_agent.archive_remote import (
+    ArchiveClient,
+    ArchiveRemoteError,
+    ArchiveRemoteStore,
+)
 from lowerduckpond_static_host_agent.capacity import FilesystemCapacity
 from lowerduckpond_static_host_agent.execution import (
     AuthorizationExecutor,
@@ -52,7 +60,10 @@ from lowerduckpond_static_host_agent.job_runtime import (
     RuntimeBoundaryError,
 )
 from lowerduckpond_static_host_agent.locks import LockManager, LockMode, LockName, StateBusyError
-from lowerduckpond_static_host_agent.portable_bundle import inspect_portable_bundle
+from lowerduckpond_static_host_agent.portable_bundle import (
+    build_portable_bundle,
+    inspect_portable_bundle,
+)
 from lowerduckpond_static_host_agent.release_tree import measure_release_tree
 from lowerduckpond_static_host_agent.repository import (
     StateRecordPath,
@@ -166,7 +177,7 @@ def _source(tmp_path: Path, state: str = "active") -> tuple[Path, Path, dict[str
     observed.update(
         desiredManifestDigest=manifest_digest(manifest).to_dict(),
         observedState=state,
-        activeDeploymentId=_DEPLOYMENT,
+        activeDeploymentId=None if state == "archived" else _DEPLOYMENT,
         runtimeGenerationId=_GENERATION if state == "active" else None,
     )
     _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
@@ -178,6 +189,104 @@ def _source(tmp_path: Path, state: str = "active") -> tuple[Path, Path, dict[str
 
 def _entropy(length: int) -> bytes:
     return os.urandom(length)
+
+
+def _archived_source(tmp_path: Path) -> tuple[Path, Path, bytes, dict[str, object]]:
+    root, releases, manifest = _source(tmp_path, "archived")
+    output = tmp_path / "remote-fixture"
+    _mkdir(output)
+    with ExportSpool(root, expected_owner=_OWNER) as spool, spool.locks.acquire(LockName.EXPORT):
+        bundle = build_portable_bundle(
+            releases / _TENANT / "releases" / _DEPLOYMENT,
+            manifest,
+            output_parent=output,
+            output_name="remote.zip",
+            lock_manager=spool.locks,
+            expected_owner=_OWNER,
+        )
+    record = _fixture("archive-record.json")
+    inspection = inspect_portable_bundle(output / "remote.zip", expected_owner=_OWNER)
+    record.update(
+        manifestDigest=manifest_digest(manifest).to_dict(),
+        releaseTreeDigest=inspection.release_tree_digest.to_dict(),
+        bundleDigest=bundle.bundle_digest.to_dict(),
+        bundleSize=bundle.bundle_size,
+    )
+    _write(root, StateRecordPath.tenant_archive(_TENANT, _DEPLOYMENT), record)
+    return root, releases, (output / "remote.zip").read_bytes(), record
+
+
+@pytest.mark.parametrize("boundary", [None, *ExportCommitBoundary])
+def test_archived_export_delivers_exact_remote_bytes_and_recovers(
+    tmp_path: Path, boundary: ExportCommitBoundary | None
+) -> None:
+    root, releases, body, record = _archived_source(tmp_path)
+    calls: list[dict[str, object]] = []
+    digest = record["bundleDigest"]
+    assert isinstance(digest, dict)
+
+    def get_object(**kwargs: object) -> dict[str, object]:
+        calls.append(kwargs)
+        return {
+            "Body": io.BytesIO(body),
+            "VersionId": record["versionId"],
+            "ContentLength": len(body),
+            "Metadata": {"sha256": digest["value"]},
+        }
+
+    remote = ArchiveRemoteStore(
+        cast(ArchiveClient, SimpleNamespace(get_object=get_object)), bucket=str(record["bucket"])
+    )
+    with StateRepository(root, expected_owner=_OWNER) as repository:
+        job_id = _issue(repository)
+
+    class Interrupted(BaseException):
+        pass
+
+    def interrupt(current: ExportCommitBoundary) -> None:
+        if current == boundary:
+            raise Interrupted
+
+    if boundary is not None:
+        with pytest.raises(Interrupted):
+            _execute(root, releases, job_id, hook=interrupt, remote=remote)
+    outcome = _execute(root, releases, job_id, remote=remote)
+    assert outcome.result["status"] == "succeeded"
+    assert (root / "exports" / f"{job_id}.zip").read_bytes() == body
+    assert calls
+    assert all(
+        call == {"Bucket": record["bucket"], "Key": record["key"], "VersionId": record["versionId"]}
+        for call in calls
+    )
+    before_replay = len(calls)
+    assert _execute(root, releases, job_id, remote=remote).result == outcome.result
+    assert len(calls) == before_replay
+
+
+def test_archived_export_refuses_wrong_remote_bytes_without_publishing(tmp_path: Path) -> None:
+    root, releases, body, record = _archived_source(tmp_path)
+    digest = record["bundleDigest"]
+    assert isinstance(digest, dict)
+    remote = ArchiveRemoteStore(
+        cast(
+            ArchiveClient,
+            SimpleNamespace(
+                get_object=lambda **kwargs: {
+                    "Body": io.BytesIO(b"x" * len(body)),
+                    "VersionId": record["versionId"],
+                    "ContentLength": len(body),
+                    "Metadata": {"sha256": digest["value"]},
+                }
+            ),
+        ),
+        bucket=str(record["bucket"]),
+    )
+    with StateRepository(root, expected_owner=_OWNER) as repository:
+        job_id = _issue(repository)
+    with pytest.raises(ArchiveRemoteError):
+        _execute(root, releases, job_id, remote=remote)
+    assert tuple((root / "exports").iterdir()) == ()
+    assert tuple((root / "authorization/results").iterdir()) == ()
 
 
 def _issue(repository: StateRepository, correlation: str = _CORRELATION) -> str:
@@ -208,6 +317,7 @@ def _execute(  # noqa: PLR0913 - explicit export execution dependencies
     *,
     spool_limits: ExportSpoolLimits = DEFAULT_EXPORT_SPOOL_LIMITS,
     runtime_validator: Callable[..., bool] | None = None,
+    remote: ArchiveRemoteStore | None = None,
 ) -> ExecutionOutcome:
     with (
         StateRepository(root, expected_owner=_OWNER, tenant_release_root=releases) as repository,
@@ -222,6 +332,7 @@ def _execute(  # noqa: PLR0913 - explicit export execution dependencies
             expected_owner=_OWNER,
             now=lambda: _NOW,
             hook=hook,
+            archive_source=RemoteArchiveBundleSource(remote) if remote is not None else None,
         )
         return AuthorizationExecutor(
             repository,

@@ -41,6 +41,7 @@ _DEPLOYMENT = "0191e2ca-49f2-7608-8cf3-f80ab2cab151"
 _JOB = "0198d17f-6f4a-7000-8000-000000000002"
 _FIXTURES = Path(__file__).parents[3] / "tests/static-publication/fixtures/accepted"
 _READ_ONLY_FILE = 0o444
+_PRIVATE_METADATA_MODE = 0o400
 _READ_ONLY_DIRECTORY = 0o555
 _KILLED_STATUS = 23
 
@@ -120,6 +121,8 @@ def _capture(  # noqa: PLR0913,PLR0917 - explicit capture fixture inputs
     manifest: dict[str, object],
     deployment: dict[str, object],
     hook: Callable[[ExportCaptureBoundary], None] | None = None,
+    *,
+    archive: bool = False,
 ) -> ExportSnapshot:
     with repository.transaction(mode=LockMode.SHARED) as transaction:
         return capture_export_snapshot(
@@ -131,6 +134,35 @@ def _capture(  # noqa: PLR0913,PLR0917 - explicit capture fixture inputs
             expected_deployment_digest=deployment_record_digest(deployment),
             expected_owner=_OWNER,
             hook=hook,
+            archive=archive,
+        )
+
+
+@pytest.mark.parametrize("state", ["active", "suspended"])
+def test_archive_snapshot_separates_source_from_proposed_bundle_manifest(
+    tmp_path: Path, state: str
+) -> None:
+    root, releases, source, deployment = _fixture(tmp_path, state)
+    with (
+        StateRepository(root, expected_owner=_OWNER) as repository,
+        ExportSpool(root, expected_owner=_OWNER) as spool,
+        spool.construction(),
+    ):
+        snapshot = _capture(spool, repository, releases, source, deployment, archive=True)
+        candidate = deepcopy(source)
+        assert isinstance(candidate["spec"], dict)
+        candidate["spec"]["desiredState"] = "archived"
+        assert snapshot.manifest == candidate
+        assert snapshot.source_manifest == source
+        assert snapshot.source_manifest != snapshot.manifest
+        assert repository.read(StateRecordPath.tenant_desired(_TENANT)).document == source
+        assert (spool.workspace / "manifest.json").read_bytes() == canonical_json_bytes(candidate)
+        assert (spool.workspace / "source-manifest.json").read_bytes() == canonical_json_bytes(
+            source
+        )
+        assert (
+            stat.S_IMODE((spool.workspace / "source-manifest.json").stat().st_mode)
+            == _PRIVATE_METADATA_MODE
         )
 
 

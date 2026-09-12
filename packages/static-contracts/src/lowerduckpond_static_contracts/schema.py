@@ -18,6 +18,7 @@ from lowerduckpond_static_contracts._digest import (
     ARCHIVE_RECORD_DIGEST_FORMAT,
     MANIFEST_DIGEST_FORMAT,
     REQUEST_DIGEST_FORMAT,
+    RESULT_DIGEST_FORMAT,
     digest_bytes,
 )
 from lowerduckpond_static_contracts.canonical import (
@@ -71,6 +72,7 @@ class ContractKind(StrEnum):
     OPERATION_REQUEST = "OperationRequest"
     AUTHORIZATION_JOB = "AuthorizationJob"
     TRANSACTION_INTENT = "TransactionIntent"
+    EMERGENCY_DELETION_INTENT = "EmergencyDeletionIntent"
     AUDIT_ENTRY = "AuditEntry"
     OPERATION_RESULT = "OperationResult"
 
@@ -87,6 +89,7 @@ SCHEMA_FILE_BY_KIND: Final = {
     ContractKind.OPERATION_REQUEST: "operation-request.schema.json",
     ContractKind.AUTHORIZATION_JOB: "authorization-job.schema.json",
     ContractKind.TRANSACTION_INTENT: "transaction-intent.schema.json",
+    ContractKind.EMERGENCY_DELETION_INTENT: "emergency-deletion-intent.schema.json",
     ContractKind.AUDIT_ENTRY: "audit-entry.schema.json",
     ContractKind.OPERATION_RESULT: "operation-result.schema.json",
 }
@@ -438,9 +441,14 @@ def _validate_result(document: dict[str, object]) -> None:
     if document["operation"] != "archive":
         return
     archive = document.get("archiveRecord")
+    # Revalidating an already archived tenant preserves the original record's
+    # correlation. The executor binds that full record to the new job's exact
+    # archived source; a fresh construction separately binds its new correlation.
     if type(archive) is dict and (
         archive["tenantId"] != document["tenantId"]
-        or archive["correlationId"] != document["correlationId"]
+        or (
+            document["status"] == "failed" and archive["correlationId"] != document["correlationId"]
+        )
     ):
         raise ContractError(
             ErrorCode.SCHEMA_INVALID,
@@ -647,7 +655,11 @@ def _validate_transaction_intent(document: dict[str, object]) -> None:
     source_state = source_spec["desiredState"]
     expected_candidate_spec = deepcopy(source_spec)
     expected_candidate_spec["desiredState"] = "archived"
-    if source_state not in {"active", "suspended"} or candidate_spec != expected_candidate_spec:
+    revalidation = source_state == "archived"
+    if (
+        source_state not in {"active", "suspended", "archived"}
+        or candidate_spec != expected_candidate_spec
+    ):
         raise ContractError(ErrorCode.SCHEMA_INVALID, "archive candidate state is invalid")
 
     source_deployment = cast(dict[str, object], source_spec["desiredDeployment"])
@@ -655,26 +667,27 @@ def _validate_transaction_intent(document: dict[str, object]) -> None:
         observed["tenantId"] != tenant_id
         or observed["desiredManifestDigest"] != document["sourceManifestDigest"]
         or observed["observedState"] != source_state
-        or observed["activeDeploymentId"] != source_deployment["id"]
+        or observed["activeDeploymentId"] != (None if revalidation else source_deployment["id"])
     ):
         raise ContractError(ErrorCode.SCHEMA_INVALID, "archive observed-state binding is invalid")
     expected_routes = "both" if source_state == "active" else "absent"
     if recovery["sourceRouteSet"] != expected_routes:
         raise ContractError(ErrorCode.SCHEMA_INVALID, "archive source route binding is invalid")
-    if source_state == "active" and (
-        observed["runtimeGenerationId"] != recovery["sourceRuntimeGenerationId"]
-    ):
-        raise ContractError(ErrorCode.SCHEMA_INVALID, "archive source runtime binding is invalid")
+    # The observed ID records this tenant's last transition. Another tenant
+    # can subsequently select a newer complete host generation. Preserve both
+    # identities; the host agent proves the complete selected source snapshot.
     if (
         archive["tenantId"] != tenant_id
         or archive["deploymentId"] != source_deployment["id"]
         or archive["manifestDigest"] != document["candidateManifestDigest"]
-        or archive["correlationId"] != document["correlationId"]
+        or (not revalidation and archive["correlationId"] != document["correlationId"])
     ):
         raise ContractError(ErrorCode.SCHEMA_INVALID, "archive record binding is invalid")
-    if recovery["candidateRuntimeGenerationId"] == recovery["sourceRuntimeGenerationId"]:
+    if (
+        recovery["candidateRuntimeGenerationId"] == recovery["sourceRuntimeGenerationId"]
+    ) != revalidation:
         raise ContractError(
-            ErrorCode.SCHEMA_INVALID, "archive runtime generations are not distinct"
+            ErrorCode.SCHEMA_INVALID, "archive runtime generations exceed lifecycle authority"
         )
 
 
@@ -984,6 +997,109 @@ def _validate_deployment_record(document: dict[str, object]) -> None:
             raise ContractError(ErrorCode.SCHEMA_INVALID, "import provenance digest disagrees")
 
 
+def _validate_emergency_deletion_intent(document: dict[str, object]) -> None:
+    source = cast(dict[str, object], document["sourceManifest"])
+    observed = cast(dict[str, object], document["sourceObservedState"])
+    result = cast(dict[str, object], document["result"])
+    audit = cast(dict[str, object], document["auditEntry"])
+    for value in (source, observed, result, audit):
+        validate_contract(value)
+    metadata = cast(dict[str, object], source["metadata"])
+    spec = cast(dict[str, object], source["spec"])
+    records = cast(list[dict[str, object]], document["deploymentRecords"])
+    for record in records:
+        validate_contract(record, expected_kind=ContractKind.DEPLOYMENT_RECORD)
+    archive = cast(dict[str, object] | None, document["archiveRecord"])
+    retirement = cast(dict[str, object] | None, document["retirementIntent"])
+    if type(archive) is dict:
+        validate_contract(archive, expected_kind=ContractKind.ARCHIVE_RECORD)
+    if type(retirement) is dict:
+        validate_contract(retirement, expected_kind=ContractKind.ARCHIVE_RETIREMENT_INTENT)
+    principal, reason = document["operatorPrincipal"], document["reason"]
+    provenance = {
+        "kind": "emergency-administrator",
+        "operatorPrincipal": principal,
+        "reason": reason,
+    }
+    identity = document["tenantId"]
+    correlation = document["correlationId"]
+    evidence = {
+        "mode": "emergency" if archive is None else "emergency-archived",
+        "releasedSlugs": [metadata["slug"]],
+        "archiveRecordDigest": None
+        if archive is None
+        else digest_bytes(
+            canonical_json_bytes(archive), format_identifier=ARCHIVE_RECORD_DIGEST_FORMAT
+        ).to_dict(),
+        "bucket": None if archive is None else archive["bucket"],
+        "key": None if archive is None else archive["key"],
+        "versionId": None if archive is None else archive["versionId"],
+        "emergencyReason": reason,
+    }
+    desired = spec.get("desiredDeployment")
+    ids = [record["id"] for record in records]
+    if (
+        not cast(str, reason).strip()
+        or document["intentId"] != correlation
+        or metadata["id"] != identity
+        or observed["tenantId"] != identity
+        or observed["desiredManifestDigest"] != _manifest_digest(source)
+        or observed["observedState"] != spec["desiredState"]
+        or ids != sorted(set(cast(list[str], ids)))
+        or any(record["tenantId"] != identity for record in records)
+        or (desired is None and records != [])
+        or (type(desired) is dict and desired["id"] not in ids)
+        or document["sourceRuntimeGenerationId"] == document["candidateRuntimeGenerationId"]
+        or result
+        != {
+            "apiVersion": API_VERSION,
+            "kind": "OperationResult",
+            "provenance": provenance,
+            "operation": "delete",
+            "status": "succeeded",
+            "tenantId": identity,
+            "correlationId": correlation,
+            "canonicalOrigin": metadata["canonicalOrigin"],
+        }
+        or audit["operation"] != "delete"
+        or audit["resultStatus"] != "succeeded"
+        or audit["tenantId"] != identity
+        or audit["correlationId"] != correlation
+        or audit["operatorPrincipal"] != principal
+        or audit["timestamp"] != document["createdAt"]
+        or audit["resultDigest"]
+        != digest_bytes(
+            canonical_json_bytes(result), format_identifier=RESULT_DIGEST_FORMAT
+        ).to_dict()
+        or audit["deletionEvidence"] != evidence
+        or (spec["desiredState"] == "archived") != (archive is not None)
+        or (archive is None) != (retirement is None)
+    ):
+        raise ContractError(ErrorCode.SCHEMA_INVALID, "emergency deletion authority disagrees")
+    if (
+        type(archive) is dict
+        and type(retirement) is dict
+        and (
+            archive["tenantId"] != identity
+            or archive["manifestDigest"] != _manifest_digest(source)
+            or type(desired) is not dict
+            or archive["deploymentId"] != desired["id"]
+            or retirement["archiveRecord"] != archive
+            or retirement["transition"] != "delete"
+            or retirement["compatibilityVersion"] != "static-retirement-v2"
+            or retirement["phase"] != "prepared"
+            or retirement["operatorPrincipal"] != principal
+            or retirement["tenantId"] != identity
+            or retirement["correlationId"] != correlation
+            or retirement["intentId"] == document["intentId"]
+            or retirement["createdAt"] != document["createdAt"]
+            or retirement["sourceManifestDigest"] != _manifest_digest(source)
+            or retirement["provenance"] != {"kind": "emergency-administrator", "reason": reason}
+        )
+    ):
+        raise ContractError(ErrorCode.SCHEMA_INVALID, "emergency retirement authority disagrees")
+
+
 _SEMANTIC_VALIDATORS: Final[dict[ContractKind, Callable[[dict[str, object]], None]]] = {
     ContractKind.DEPLOYMENT_RECORD: _validate_deployment_record,
     ContractKind.PLATFORM_NAMESPACE: _validate_namespace,
@@ -994,6 +1110,7 @@ _SEMANTIC_VALIDATORS: Final[dict[ContractKind, Callable[[dict[str, object]], Non
     ContractKind.ARCHIVE_CONSTRUCTION_INTENT: _validate_archive_construction_intent,
     ContractKind.ARCHIVE_RETIREMENT_INTENT: _validate_archive_retirement_intent,
     ContractKind.TRANSACTION_INTENT: _validate_transaction_intent,
+    ContractKind.EMERGENCY_DELETION_INTENT: _validate_emergency_deletion_intent,
     ContractKind.AUDIT_ENTRY: _validate_audit_entry,
 }
 

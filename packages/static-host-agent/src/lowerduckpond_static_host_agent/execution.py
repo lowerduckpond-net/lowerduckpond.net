@@ -286,6 +286,7 @@ class AuthorizationExecutor:
         deleted_tenant_route_validator: Callable[[str], bool] | None = None,
         retained_archive_validator: Callable[[dict[str, object]], bool] | None = None,
         retired_archive_validator: Callable[[dict[str, object]], bool] | None = None,
+        unreturned_archive_validator: Callable[[str], bool] | None = None,
         tenant_runtime_validator: Callable[
             [str, str, str | None, dict[str, object], dict[str, object] | None, bool],
             bool,
@@ -307,6 +308,7 @@ class AuthorizationExecutor:
         self._deleted_tenant_route_validator = deleted_tenant_route_validator
         self._retained_archive_validator = retained_archive_validator
         self._retired_archive_validator = retired_archive_validator
+        self._unreturned_archive_validator = unreturned_archive_validator
         self._tenant_runtime_validator = tenant_runtime_validator
         self._tenant_release_validator = tenant_release_validator
         self._tenant_release_inventory_validator = tenant_release_inventory_validator
@@ -1196,6 +1198,13 @@ class AuthorizationExecutor:
             return
         candidate = result.get("archiveRecord")
         if candidate is None:
+            unreturned_validator = self._unreturned_archive_validator
+            provenance = cast(dict[str, object], result["provenance"])
+            if (
+                unreturned_validator is not None
+                and unreturned_validator(validate_uuid7(provenance["jobId"])) is not True
+            ):
+                raise ExecutionError("failed archive retains unaccounted remote evidence")
             return
         source_manifest = authority.source_manifest
         if type(candidate) is not dict or type(source_manifest) is not dict:
@@ -1204,12 +1213,17 @@ class AuthorizationExecutor:
         source_deployment = (
             source_spec.get("desiredDeployment") if type(source_spec) is dict else None
         )
+        archived_manifest = deepcopy(source_manifest)
+        archived_spec = archived_manifest.get("spec")
+        if type(archived_spec) is not dict:
+            raise ExecutionError("failed archive candidate authority is malformed")
+        archived_spec["desiredState"] = "archived"
         if (
             type(source_deployment) is not dict
             or candidate.get("tenantId") != result["tenantId"]
             or candidate.get("correlationId") != result["correlationId"]
             or candidate.get("deploymentId") != source_deployment.get("id")
-            or candidate.get("manifestDigest") != manifest_digest(source_manifest).to_dict()
+            or candidate.get("manifestDigest") != manifest_digest(archived_manifest).to_dict()
         ):
             raise ExecutionError("failed archive candidate authority is malformed")
         validator = self._retired_archive_validator
@@ -1540,6 +1554,13 @@ def _capture_authorized_lifecycle_authority(  # noqa: PLR0912,PLR0915 - authorit
         )
     if transaction_intent is None:
         source = transaction.read(StateRecordPath.tenant_desired(request["tenantId"])).document
+        if request["operation"] == "archive" and expected["lifecycle"] == "archived":
+            desired = cast(
+                dict[str, object], cast(dict[str, object], source["spec"])["desiredDeployment"]
+            )
+            archive_record = transaction.read(
+                StateRecordPath.tenant_archive(request["tenantId"], desired["id"])
+            ).document
         if construction_intent is not None:
             archive_record = _archive_record_for_construction_authority(
                 transaction,
@@ -1652,7 +1673,11 @@ def _validate_durable_source_authority(
         return
     durable_source, durable_archive = _job_source_authority(job)
     if source != durable_source or (
-        request["operation"] == "restore" and archive_record != durable_archive
+        (
+            request["operation"] == "restore"
+            or (request["operation"] == "archive" and durable_archive is not None)
+        )
+        and archive_record != durable_archive
     ):
         raise ExecutionError("lifecycle source exceeds durable job authority")
 
@@ -2011,9 +2036,12 @@ def _bind_dispatch_authority(  # noqa: PLR0912,PLR0915 - dispatch authority matr
         raise ExecutionError("authorization request authority is malformed")
     artifact_operation = request["operation"] in {"deploy", "import"}
     expected_source = job.get("expectedSource")
-    source_release_operation = request["operation"] in {"deploy", "rollback", "export"} and (
-        type(expected_source) is dict and type(expected_source.get("deploymentDigest")) is dict
-    )
+    source_release_operation = request["operation"] in {
+        "deploy",
+        "rollback",
+        "export",
+        "restore",
+    } and (type(expected_source) is dict and type(expected_source.get("deploymentDigest")) is dict)
     if not artifact_operation and existing_release_digest is not None:
         raise ExecutionError("non-artifact dispatch carries artifact release authority")
     if not source_release_operation and existing_source_release_digest is not None:
@@ -2986,7 +3014,10 @@ def _later_audited_results(
     expected_correlations = {transition.correlation_id for transition in transitions}
     matched: dict[str, dict[str, object]] = {}
     for job_id in inventory.result_ids:
-        candidate = transaction.read(StateRecordPath.authorization_result(job_id)).document
+        try:
+            candidate = transaction.read(StateRecordPath.authorization_result(job_id)).document
+        except StateRecordError:
+            candidate = transaction.read(StateRecordPath.emergency_result(job_id)).document
         correlation_id = validate_uuid7(candidate["correlationId"])
         if correlation_id not in expected_correlations:
             continue
@@ -2994,8 +3025,17 @@ def _later_audited_results(
         if (
             correlation_id in matched
             or type(provenance) is not dict
-            or provenance.get("kind") != "authorization-job"
-            or provenance.get("jobId") != job_id
+            or not (
+                (
+                    provenance.get("kind") == "authorization-job"
+                    and provenance.get("jobId") == job_id
+                )
+                or (
+                    provenance.get("kind") == "emergency-administrator"
+                    and correlation_id == job_id
+                    and candidate["operation"] == "delete"
+                )
+            )
         ):
             raise ExecutionError("later audited lifecycle result identity is invalid")
         matched[correlation_id] = candidate
@@ -3011,6 +3051,20 @@ def _later_audited_results(
             or result_digest(candidate).to_dict() != transition.result_digest
         ):
             raise ExecutionError("later lifecycle result disagrees with durable audit authority")
+        provenance = cast(dict[str, object], candidate["provenance"])
+        if provenance["kind"] == "emergency-administrator":
+            emergency_audit = transaction.inspect_audit_correlation(
+                candidate["correlationId"]
+            ).entry
+            evidence = None if emergency_audit is None else emergency_audit.get("deletionEvidence")
+            if (
+                emergency_audit is None
+                or emergency_audit["operatorPrincipal"] != provenance["operatorPrincipal"]
+                or type(evidence) is not dict
+                or evidence["mode"] not in {"emergency", "emergency-archived"}
+                or evidence["emergencyReason"] != provenance["reason"]
+            ):
+                raise ExecutionError("later emergency deletion lost its administrator evidence")
         restore_archive_id: str | None = None
         if candidate["operation"] == "restore":
             provenance = candidate["provenance"]
@@ -3135,6 +3189,14 @@ def _validate_export_bundle(
     binding = result.get("exportBundle")
     if type(binding) is not dict:
         raise ExecutionError("successful export result has no bundle binding")
+    expected = cast(dict[str, object], job["expectedSource"])
+    if expected["lifecycle"] == "archived":
+        _, archive = _job_source_authority(job)
+        if archive is None or binding != {
+            "digest": archive["bundleDigest"],
+            "size": archive["bundleSize"],
+        }:
+            raise ExecutionError("archived export did not deliver the exact bound bundle")
     if job.get("exportDelivery") in {"acknowledged", "expired"}:
         if job.get("executionValidated") is not True or job["phase"] != "completed":
             raise ExecutionError("retired export has no executor validation")
@@ -3355,12 +3417,24 @@ def _validate_selected_deployment_state(  # noqa: PLR0912 - explicit operation m
     except FileNotFoundError as error:
         raise ExecutionError("successful archive result has no archive record") from error
     validate_contract(archive, expected_kind=ContractKind.ARCHIVE_RECORD)
+    revalidation = (
+        operation == "archive"
+        and cast(dict[str, object], job["expectedSource"])["lifecycle"] == "archived"
+    )
     archive_matches = (
         archive["tenantId"] == tenant_id
         and archive["deploymentId"] == deployment_id
         and archive["manifestDigest"] == manifest_digest(manifest).to_dict()
         and archive["releaseTreeDigest"] == deployment["releaseTreeDigest"]
-        and (operation != "archive" or archive["correlationId"] == result["correlationId"])
+        and (
+            operation != "archive"
+            or revalidation
+            or archive["correlationId"] == result["correlationId"]
+        )
+        and (
+            not revalidation
+            or archive == cast(dict[str, object], job["sourceAuthority"])["archiveRecord"]
+        )
     )
     if not archive_matches:
         raise ExecutionError("successful lifecycle result has an unbound archive record")
