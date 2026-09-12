@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 import test_archive_lifecycle as archives
 import test_lifecycle as support
 from testinfra.host import Host
@@ -10,6 +11,13 @@ from testinfra.host import Host
 _HELPER = "/usr/local/libexec/lowerduckpond/emergency-delete-tenant"
 _REASON = "disposable installed M3.10 emergency qualification"
 _INTERRUPTED_STATUS = 42
+
+
+@pytest.fixture(autouse=True)
+def require_administrator_fixture(host: Host) -> None:
+    administrator = host.user("ldp-admin")
+    assert administrator.exists, "Molecule must prepare the cloud-init administrator fixture"
+    assert administrator.uid != 0
 
 
 def _emergency(host: Host, tenant: str, correlation: str) -> dict[str, object]:

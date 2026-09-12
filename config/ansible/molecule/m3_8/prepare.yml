@@ -103,3 +103,28 @@
 
 - name: Import the shared installed-host preparation onto durable storage
   ansible.builtin.import_playbook: ../default/prepare.yml
+
+- name: Reproduce the cloud-init administrator for emergency qualification
+  hosts: hosting_nodes
+  become: true
+  gather_facts: false
+  tags:
+    - m3_10_administrator_fixture
+  tasks:
+    - name: Create the locked disposable administrator account
+      ansible.builtin.user:
+        name: ldp-admin
+        groups: sudo
+        append: true
+        password_lock: true
+        shell: /bin/bash
+        create_home: true
+
+    - name: Install the production-equivalent administrator sudo rule
+      ansible.builtin.copy:
+        content: "ldp-admin ALL=(ALL) NOPASSWD:ALL\n"
+        dest: /etc/sudoers.d/99-m3-10-admin-fixture
+        owner: root
+        group: root
+        mode: "0440"
+        validate: /usr/sbin/visudo -cf %s
