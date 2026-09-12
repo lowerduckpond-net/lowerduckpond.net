@@ -124,7 +124,9 @@ def make_archive_client(
         aws_session_token=None,
         region_name=region,
         endpoint_url=f"https://{region}.digitaloceanspaces.com",
-        verify=True,
+        # Use the host-administered trust store mounted read-only in each service.
+        # An explicit path prevents ambient SDK CA-bundle configuration from overriding it.
+        verify="/etc/ssl/certs/ca-certificates.crt",
         config=Config(
             signature_version="s3v4",
             retries={"total_max_attempts": 1, "mode": "standard"},

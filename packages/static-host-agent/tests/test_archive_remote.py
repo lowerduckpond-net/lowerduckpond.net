@@ -301,6 +301,7 @@ def test_real_sdk_configuration_and_service_model_prohibit_implicit_upload_retri
     assert meta.endpoint_url == "https://nyc3.digitaloceanspaces.com"
     assert meta.config.retries == {"total_max_attempts": 1, "mode": "standard"}
     assert meta.config.proxies == {}
+    assert client._endpoint.http_session._verify == "/etc/ssl/certs/ca-certificates.crt"  # type: ignore[attr-defined]
     with Stubber(client) as stub:
         stub.add_response(
             "put_object",
