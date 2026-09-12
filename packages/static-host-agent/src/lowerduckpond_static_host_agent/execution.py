@@ -286,6 +286,7 @@ class AuthorizationExecutor:
         deleted_tenant_route_validator: Callable[[str], bool] | None = None,
         retained_archive_validator: Callable[[dict[str, object]], bool] | None = None,
         retired_archive_validator: Callable[[dict[str, object]], bool] | None = None,
+        unreturned_archive_validator: Callable[[str], bool] | None = None,
         tenant_runtime_validator: Callable[
             [str, str, str | None, dict[str, object], dict[str, object] | None, bool],
             bool,
@@ -307,6 +308,7 @@ class AuthorizationExecutor:
         self._deleted_tenant_route_validator = deleted_tenant_route_validator
         self._retained_archive_validator = retained_archive_validator
         self._retired_archive_validator = retired_archive_validator
+        self._unreturned_archive_validator = unreturned_archive_validator
         self._tenant_runtime_validator = tenant_runtime_validator
         self._tenant_release_validator = tenant_release_validator
         self._tenant_release_inventory_validator = tenant_release_inventory_validator
@@ -1196,6 +1198,13 @@ class AuthorizationExecutor:
             return
         candidate = result.get("archiveRecord")
         if candidate is None:
+            unreturned_validator = self._unreturned_archive_validator
+            provenance = cast(dict[str, object], result["provenance"])
+            if (
+                unreturned_validator is not None
+                and unreturned_validator(validate_uuid7(provenance["jobId"])) is not True
+            ):
+                raise ExecutionError("failed archive retains unaccounted remote evidence")
             return
         source_manifest = authority.source_manifest
         if type(candidate) is not dict or type(source_manifest) is not dict:
