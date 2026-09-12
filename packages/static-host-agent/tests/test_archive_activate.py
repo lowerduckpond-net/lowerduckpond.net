@@ -114,7 +114,7 @@ def test_archive_activates_complete_candidate_before_local_commit(
         _activate(journal, store, prepared, runtime)
         assert runtime.active == runtime.running == prepared.candidate_manifest.generation_id
         assert runtime.snapshots[runtime.active].tenants == ()
-        assert not (tmp_path / "sites" / _TENANT).exists()
+        assert (tmp_path / "sites" / _TENANT / "releases").is_dir()
         assert "restored" not in runtime.events
         journal.finish(prepared.plan.construction_intent_id)
 
@@ -160,7 +160,7 @@ def test_archive_reload_failure_preserves_exact_source_routes_and_releases(
     "boundary",
     [
         ArchiveCommitBoundary.ARCHIVE_RECORD_SYNC,
-        ArchiveCommitBoundary.RELEASE_REMOVED,
+        ArchiveCommitBoundary.RELEASE_VERIFIED,
         ArchiveCommitBoundary.RESULT_SYNC,
     ],
 )
@@ -205,7 +205,7 @@ def test_archive_capacity_failure_during_recovery_keeps_no_route_candidate_selec
         source = runtime.active
 
         def interrupt(boundary: ArchiveCommitBoundary) -> None:
-            if boundary is ArchiveCommitBoundary.RELEASE_REMOVED:
+            if boundary is ArchiveCommitBoundary.RELEASE_VERIFIED:
                 raise SimulatedCrashError
 
         with pytest.raises(SimulatedCrashError):

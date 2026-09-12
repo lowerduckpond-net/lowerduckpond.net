@@ -59,7 +59,7 @@ class ArchiveCommitBoundary(StrEnum):
     ARCHIVE_RECORD_SYNC = "archive-record-sync"
     DESIRED_STATE_SYNC = "desired-state-sync"
     OBSERVED_STATE_SYNC = "observed-state-sync"
-    RELEASE_REMOVED = "release-removed"
+    RELEASE_VERIFIED = "release-verified"
     AUDIT_SYNC = "audit-sync"
     RESULT_SYNC = "result-sync"
     JOB_SYNC = "job-sync"
@@ -121,7 +121,7 @@ def finalize_archive_transition(  # noqa: PLR0913 - root-owned state and release
     capacity_limits: HostCapacityLimits = DEFAULT_HOST_CAPACITY_LIMITS,
     failure_hook: Callable[[ArchiveCommitBoundary], None] | None = None,
 ) -> ArchiveCommitOutcome:
-    """Commit exact archived state and remove local releases, retaining remote evidence."""
+    """Commit archived state while preserving the bounded immutable release history."""
     frozen = deepcopy(plan)
     current, progress = _prepare_commit(
         transaction, spool, job, frozen, capacity_limits=capacity_limits
@@ -152,20 +152,17 @@ def finalize_archive_transition(  # noqa: PLR0913 - root-owned state and release
         )
     notify(ArchiveCommitBoundary.OBSERVED_STATE_SYNC)
     for deployment in progress.deployments:
-        release_store.remove_release(
+        measured = release_store.measure(
             frozen.tenant_id,
             deployment["id"],
-            expected_release_tree_digest=cast(dict[str, object], deployment["releaseTreeDigest"]),
             publication_lock=transaction,
         )
-        notify(ArchiveCommitBoundary.RELEASE_REMOVED)
-    if any(
-        tenant_id == frozen.tenant_id
-        for tenant_id, _ids in release_store.published_inventory(
-            publication_lock=transaction
-        ).tenant_releases
-    ):
-        raise ArchiveCommitError("archive retained releases outside its deployment authority")
+        if measured.digest.to_dict() != deployment["releaseTreeDigest"]:
+            raise ArchiveCommitError("archive retained release disagrees with its deployment")
+        notify(ArchiveCommitBoundary.RELEASE_VERIFIED)
+    history = dict(release_store.published_inventory(publication_lock=transaction).tenant_releases)
+    if history.get(frozen.tenant_id) != tuple(str(value["id"]) for value in progress.deployments):
+        raise ArchiveCommitError("archive local releases exceed retained deployment authority")
     _ensure_audit(transaction, frozen.audit_entry)
     notify(ArchiveCommitBoundary.AUDIT_SYNC)
     _ensure_result(transaction, current, frozen.result, result_missing=progress.result_missing)

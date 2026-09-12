@@ -62,8 +62,8 @@ def activate_archive_transition(  # noqa: PLR0913, PLR0917 - independent root bo
 ) -> ArchiveCommitOutcome:
     """Rollback before local commitment; recover forward after archive state is bound.
 
-    Local release cleanup can be irreversible after the first archived-state
-    write. Once commitment begins, no error may reactivate the preceding routes.
+    Once the archive record is bound, recovery preserves the committed direction
+    and does not reactivate the preceding routes.
     Remote construction evidence survives this function for independent cleanup.
     """
     if type(prepared) is not PreparedArchiveTransition:

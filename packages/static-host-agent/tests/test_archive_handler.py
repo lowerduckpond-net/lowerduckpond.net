@@ -286,7 +286,7 @@ def test_archive_handler_constructs_publishes_and_revalidates_through_private_se
         assert result["status"] == "succeeded"
         manifest = cast(dict[str, object], result["manifest"])
         assert cast(dict[str, object], manifest["spec"])["desiredState"] == "archived"
-        assert not (tmp_path / "sites" / _TENANT).exists()
+        assert (tmp_path / "sites" / _TENANT / "releases").is_dir()
         assert not runtime.snapshots[runtime.active].tenants
         assert (
             repository.read(StateRecordPath.authorization_job(job_id)).document[
@@ -332,7 +332,7 @@ def test_archive_handler_resolves_lost_upload_response_without_repeating_put(
 
 
 @pytest.mark.parametrize(
-    "boundary", [ArchiveCommitBoundary.RELEASE_REMOVED, ArchiveCommitBoundary.RESULT_SYNC]
+    "boundary", [ArchiveCommitBoundary.RELEASE_VERIFIED, ArchiveCommitBoundary.RESULT_SYNC]
 )
 def test_archive_handler_recovers_partial_local_commit_without_uploading_again(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, boundary: ArchiveCommitBoundary

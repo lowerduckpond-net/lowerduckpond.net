@@ -115,13 +115,13 @@ def _finish(
 
 
 @pytest.mark.parametrize("lifecycle", ["active", "suspended"])
-def test_archive_commit_removes_local_releases_and_retains_remote_journal_for_verification(
+def test_archive_commit_preserves_release_history_and_remote_journal_for_verification(
     tmp_path: Path,
     lifecycle: str,
 ) -> None:
     with _prepared(tmp_path, lifecycle) as (journal, store, job, plan):
         _finish(journal, store, job, plan)
-        assert not (tmp_path / "sites" / _TENANT).exists()
+        assert (tmp_path / "sites" / _TENANT / "releases").is_dir()
         assert (
             journal.repository.read(StateRecordPath.tenant_desired(_TENANT)).document
             == plan.manifest
@@ -179,7 +179,7 @@ def test_archive_commit_recovers_each_durable_boundary_without_repeating_audit(
 
 
 @pytest.mark.parametrize("defect", ["record", "history", "observed-first", "missing-construction"])
-def test_archive_commit_rejects_drift_before_removing_source_releases(
+def test_archive_commit_rejects_drift_while_preserving_source_releases(
     tmp_path: Path,
     defect: str,
 ) -> None:
