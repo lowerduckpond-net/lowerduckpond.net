@@ -195,7 +195,8 @@ remaining quarantine after its retirement intent has already disappeared, using
 independent full inventory and retained-byte verification without remote deletion
 authority. Regressions cover the actual service disconnect race, six restore
 commit boundaries, and both interruption and inventory failure after emergency
-retirement. All 82 focused lifecycle tests and strict typing passed.
+retirement. All 82 focused lifecycle tests passed, followed by the full revised host-agent
+suite: 1,741 passed and two documented skips. Strict typing also passed.
 
 The build now pins dependency launcher interpreters to `/usr/bin/python3`, removing
 checkout paths from the host artifact. Before the review recovery changes, two
@@ -216,8 +217,15 @@ report only after all phases and independent final accounting pass. Production
 configuration verifies that report and repeats preflight before its first host
 mutation. Reports expire after 24 hours.
 
-New complete-unit credential-boundary and completion/accounting checks passed
-against the disposable MinIO host (8 tests). A fresh fixture installation exposed
+New complete-unit credential-boundary, post-retirement emergency recovery, and
+completion/accounting checks passed against the disposable MinIO host (9 tests).
+The reinstalled artifact including all three review fixes was
+`0c79e838713b706cd9ee43937032595cfd8ff5ac0cd2246bb4652ffea71a698f`.
+The infrastructure suite passed 292 tests on its first run; four Ansible tests
+failed because the invocation omitted the project tool path, then all four
+passed through the repository workflow. The strengthened host preflight passed
+all 34 focused checks. Documentation links, lint, format, typing, and Ansible
+validation passed. A fresh fixture installation exposed
 an automatically allocated subordinate-ID range for `ldp-admin` overlapping the
 runtime range. The disposable fixture now removes only that unused administrator
 allocation; fresh preparation, convergence, and idempotence passed. Production

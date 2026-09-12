@@ -52,3 +52,36 @@ def test_installed_archive_credentials_stay_inside_the_network_boundary(
 def test_installed_ordinary_units_cannot_see_archive_credentials(host: Host, unit: str) -> None:
     probe = "import os; assert not os.path.exists('/etc/lowerduckpond/archive/credentials.json')"
     _run_installed_boundary_probe(host, unit, probe)
+
+
+def test_installed_emergency_recovery_clears_quarantine_without_a_remaining_intent(
+    host: Host,
+) -> None:
+    probe = exports._selected_python(
+        host,
+        """from pathlib import Path
+from lowerduckpond_static_host_agent.archive_configuration import load_archive_configuration
+from lowerduckpond_static_host_agent.archive_quarantine import ArchiveQuarantine
+from lowerduckpond_static_host_agent.emergency_entrypoint import emergency_delete_main
+from lowerduckpond_static_host_agent.export_spool import ExportSpool
+from lowerduckpond_static_host_agent.locks import LockName
+from lowerduckpond_static_host_agent.repository import StateRepository
+root = Path('/var/lib/lowerduckpond/static')
+remote = load_archive_configuration().remote_store()
+with (
+    StateRepository(root, expected_owner=0) as repository,
+    ExportSpool(root, expected_owner=0) as spool,
+):
+    with spool.locks.acquire(LockName.EXPORT, blocking=True):
+        assert not repository.measure_intent_records().records
+        inventory = remote.inventory()
+        assert not inventory.versions and not inventory.multipart_uploads
+        quarantine = ArchiveQuarantine(
+            root, bucket=remote.bucket, expected_owner=0, locks=spool.locks
+        )
+        quarantine.record(None)
+assert emergency_delete_main(['--recover']) == 0
+assert not (root / 'platform/archive-quarantine.json').exists()
+""",
+    )
+    _run_installed_boundary_probe(host, "lowerduckpond-static-emergency-reconcile.service", probe)
