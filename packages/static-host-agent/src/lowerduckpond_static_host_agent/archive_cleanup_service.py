@@ -160,6 +160,11 @@ def serve_archive_cleanup(  # noqa: PLR0913 - explicit privileged boundaries
                     if operation == "verify-source"
                     else verify_archive_terminal(journal, job_id)
                 )
+                if operation == "verify-terminal":
+                    # A previous finish may have removed its journal before the
+                    # final quarantine proof completed. Keep terminal validation
+                    # retryable until whole-bucket evidence safely reopens admission.
+                    quarantine.resolve(repository, remote)
                 channel.send(proof)
                 return
             intent_id = _cleanup_authority(repository, job_id, operation=operation)

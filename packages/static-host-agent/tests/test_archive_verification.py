@@ -8,9 +8,11 @@ from typing import cast
 import pytest
 from lowerduckpond_static_contracts import canonical_json_bytes
 from lowerduckpond_static_host_agent.archive_cleanup_service import ArchiveCleanupClient
+from lowerduckpond_static_host_agent.archive_quarantine import ArchiveQuarantine
 from lowerduckpond_static_host_agent.archive_remote import ArchiveRemoteError
 from lowerduckpond_static_host_agent.archive_verification import verify_archive_terminal
 from lowerduckpond_static_host_agent.export_spool import ExportSpool
+from lowerduckpond_static_host_agent.locks import LockName
 from lowerduckpond_static_host_agent.repository import StateRecordPath
 from test_archive_activate import _activate, _prepared
 from test_archive_cleanup_service import _serve
@@ -119,3 +121,57 @@ def test_failed_unreturned_version_requires_a_complete_accounted_inventory(
                 "mode": "accounted",
                 "archiveRecord": None,
             }
+
+
+@pytest.mark.parametrize("unknown_remains", [False, True])
+def test_terminal_retry_resolves_quarantine_after_the_journal_is_already_removed(
+    tmp_path: Path, unknown_remains: bool
+) -> None:
+
+    with _prepared(tmp_path, "active") as (journal, store, prepared, runtime):
+        _activate(journal, store, prepared, runtime)
+        remote = journal.remote
+        client = cast(MemoryRemote, remote.client)
+        quarantine = ArchiveQuarantine(
+            tmp_path / "state",
+            bucket=remote.bucket,
+            expected_owner=_OWNER,
+            locks=journal.spool.locks,
+        )
+        unknown = dict(client.versions[0], Key="unknown/object", VersionId="unowned-version")
+        client.versions.append(unknown)
+        quarantine.record(remote.inventory())
+        # Model interruption after the authorized journal removal, before the
+        # final whole-bucket quarantine proof can finish.
+        journal.finish(prepared.plan.construction_intent_id)
+        client.require_intent = False
+        assert quarantine.read() is not None
+        job_id = str(prepared.job.document["jobId"])
+        record = prepared.plan.archive_record
+        if not unknown_remains:
+            # Independent resolution of unowned data; the service never deletes it.
+            client.versions.remove(unknown)
+    sender, receiver = socket.socketpair()
+    with (
+        ThreadPoolExecutor() as pool,
+        ExportSpool(tmp_path / "state", expected_owner=_OWNER) as spool,
+    ):
+        future = pool.submit(_serve, receiver, tmp_path / "state", remote)
+        cleanup = ArchiveCleanupClient(spool, connector=lambda: sender, expected_peer_uid=_OWNER)
+        if unknown_remains:
+            with pytest.raises(ArchiveRemoteError):
+                cleanup.verify_terminal(job_id, record, mode="retained")
+            with pytest.raises(ArchiveRemoteError):
+                future.result(timeout=5)
+        else:
+            assert cleanup.verify_terminal(job_id, record, mode="retained")
+            future.result(timeout=5)
+        with spool.locks.acquire(LockName.EXPORT):
+            remaining = ArchiveQuarantine(
+                tmp_path / "state",
+                bucket=remote.bucket,
+                expected_owner=_OWNER,
+                locks=spool.locks,
+            ).read()
+            assert (remaining is not None) == unknown_remains
+        assert "delete" not in client.calls
