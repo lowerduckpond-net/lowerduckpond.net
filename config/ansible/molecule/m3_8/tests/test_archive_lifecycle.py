@@ -93,6 +93,32 @@ print(json.dumps([{'key': item['Key'], 'versionId': item['VersionId']}
     )
 
 
+def _full_size_source(host: Host) -> dict[str, object]:
+    return json.loads(
+        _installed_python(
+            host,
+            f"""
+import json
+import re
+from pathlib import Path
+matches = []
+for path in Path({support.STATE_ROOT + "/tenants"!r}).glob('*/desired.json'):
+    manifest = json.loads(path.read_text())
+    if re.fullmatch(r'm3-nine-[0-9a-f]{{12}}', manifest['metadata']['slug']):
+        assert manifest['spec']['desiredState'] == 'suspended'
+        deployment = manifest['spec']['desiredDeployment']['id']
+        release = Path({support.RELEASE_ROOT!r}) / path.parent.name / 'releases' / deployment
+        files = [item for item in release.rglob('*') if item.is_file()]
+        assert len(files) == {exports._ENTRY_COUNT}
+        assert sum(item.stat().st_size for item in files) == {exports._CONTENT_BYTES}
+        matches.append(manifest)
+assert len(matches) == 1, 'expected the completed full-size M3.9 source fixture'
+print(json.dumps(matches[0]))
+""",
+        )
+    )
+
+
 @pytest.fixture
 def controlled_recovery_timer(host: Host) -> Iterator[None]:
     try:
@@ -227,6 +253,21 @@ def test_installed_archive_export_restore_rearchive_and_delete(host: Host, tmp_p
     submit("delete", tenantId=target["tenantId"], mode="capture-ansible")
     assert not _remote_versions(host)
     assert not host.file(f"{support.STATE_ROOT}/tenants/{target['tenantId']}").exists
+    large_source = _full_size_source(host)
+    large_tenant = str(large_source["metadata"]["id"])
+    large_origin = str(large_source["metadata"]["canonicalOrigin"])
+    large_archive = submit("archive", tenantId=large_tenant)
+    exports._assert_worker_budget(host, large_archive)
+    assert support._lifecycle(large_archive) == "archived"
+    support._assert_route(host, large_origin, status=404)
+    large_restore = submit("restore", tenantId=large_tenant)
+    assert (
+        support._desired_deployment(large_restore)
+        != large_source["spec"]["desiredDeployment"]["id"]
+    )
+    exports._assert_worker_budget(host, large_restore)
+    support._assert_route(host, large_origin, status=200, body=exports._INDEX)
+    assert not _remote_versions(host)
     for request, result in history:
         # Export delivery is already acknowledged; historical requests return only results.
         if request["operation"] in {"deploy", "import"}:
