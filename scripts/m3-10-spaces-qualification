@@ -45,6 +45,7 @@ evidence_root=${M3_10_EVIDENCE_ROOT:-${XDG_DATA_HOME:-${HOME}/.local/share}/lowe
 mkdir -p -- "${evidence_root}"
 chmod 0700 "${evidence_root}"
 run_directory=$(mktemp -d "${evidence_root}/spaces-${source_revision:0:7}.XXXXXX")
+run_directory=$(cd -- "${run_directory}" && pwd -P)
 printf 'Private M3.10 qualification run: %s\n' "${run_directory}"
 printf '%s\n' "${source_revision}" >"${run_directory}/source-revision"
 failed() {
