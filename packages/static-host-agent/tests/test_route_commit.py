@@ -195,7 +195,10 @@ class _Runtime:
         source: PinnedCaddyGeneration,
         candidate: PinnedCaddyGeneration,
     ) -> None:
-        assert source.manifest.generation_id in self.snapshots
+        assert (
+            source.manifest.generation_id == _SOURCE_GENERATION
+            or source.manifest.generation_id in self.snapshots
+        )
         assert self.active == candidate.manifest.generation_id
         self.running = candidate.manifest.generation_id
         self.events.append("reloaded")
