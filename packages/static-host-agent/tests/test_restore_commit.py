@@ -9,6 +9,7 @@ from typing import cast
 import pytest
 import test_archive_journal as journal_fixtures
 from lowerduckpond_static_contracts import canonical_json_bytes
+from lowerduckpond_static_host_agent import restore_commit
 from lowerduckpond_static_host_agent.archive_bundle import (
     RemoteArchiveBundleSource,
     fetch_archive_bundle,
@@ -17,7 +18,13 @@ from lowerduckpond_static_host_agent.archive_journal import ArchiveJournal
 from lowerduckpond_static_host_agent.archive_quarantine import ArchiveQuarantine
 from lowerduckpond_static_host_agent.caddy_generation import PinnedCaddyGeneration
 from lowerduckpond_static_host_agent.caddy_runtime import CaddyRuntime
-from lowerduckpond_static_host_agent.capacity import FilesystemCapacity
+from lowerduckpond_static_host_agent.capacity import (
+    CapacityReservation,
+    FilesystemCapacity,
+    HostCapacityLimits,
+    ReleaseCapacityUsage,
+    admit_release_capacity,
+)
 from lowerduckpond_static_host_agent.export_spool import ExportSpool
 from lowerduckpond_static_host_agent.issuance import AuthorizationIssuer
 from lowerduckpond_static_host_agent.locks import LockName
@@ -306,3 +313,53 @@ def test_restore_retention_cleanup_recovers_each_removal_with_source_still_pinne
             )
         journal.finish(str(prepared.retirement.document["intentId"]))
         assert not journal.repository.measure_intent_records().records
+
+
+@pytest.mark.parametrize(
+    "boundary,remaining",
+    [
+        (RestoreCommitBoundary.DEPLOYMENT_SYNC, 5),
+        (RestoreCommitBoundary.DESIRED_STATE_SYNC, 4),
+        (RestoreCommitBoundary.OBSERVED_STATE_SYNC, 3),
+        (RestoreCommitBoundary.AUDIT_SYNC, 2),
+        (RestoreCommitBoundary.RESULT_SYNC, 1),
+        (RestoreCommitBoundary.JOB_SYNC, 0),
+    ],
+)
+def test_restore_replay_reserves_only_remaining_writes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    boundary: RestoreCommitBoundary,
+    remaining: int,
+) -> None:
+    original = admit_release_capacity
+    reservations = []
+
+    def admit(
+        usage: ReleaseCapacityUsage,
+        reservation: CapacityReservation,
+        filesystem: FilesystemCapacity,
+        *,
+        limits: HostCapacityLimits,
+    ) -> None:
+        assert reservation.unique_inodes == remaining
+        reservations.append(reservation)
+        original(usage, reservation, filesystem, limits=limits)
+
+    with _restoring(tmp_path, monkeypatch) as (journal, store, prepared, runtime):
+        with pytest.raises(InterruptedRestoreError):
+            _restore(journal, store, prepared, runtime, boundary=boundary)
+        monkeypatch.setattr(restore_commit, "admit_release_capacity", admit)
+        recovered = reconstruct_restore_transition(
+            journal.repository,
+            journal.spool,
+            cast(CaddyRuntime, runtime),
+            store,
+            OpenGate(),
+            str(prepared.job.document["jobId"]),
+        )
+        _restore(journal, store, recovered, runtime)
+        assert bool(reservations) == bool(remaining)
+        journal.finish(str(prepared.retirement.document["intentId"]))
+        assert not journal.repository.measure_intent_records().records
+        assert not cast(MemoryRemote, journal.remote.client).versions
