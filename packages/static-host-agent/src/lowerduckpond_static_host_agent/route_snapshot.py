@@ -40,6 +40,7 @@ class TenantRouteOverlay:
     mode: RouteOverlayMode
     tenant: TenantRouteInput
     source: TenantRouteInput | None = None
+    archive_record: dict[str, object] | None = None
 
     def __post_init__(self) -> None:
         if type(self.mode) is not RouteOverlayMode:
@@ -55,6 +56,20 @@ class TenantRouteOverlay:
                 raise ValueError("replace route overlay requires a source tenant")
             if _tenant_id(self.source) != _tenant_id(self.tenant):
                 raise ValueError("route overlay source and candidate tenants differ")
+        if self.archive_record is not None:
+            if self.mode is not RouteOverlayMode.REPLACE or self.source is None:
+                raise ValueError("archive projection requires an exact live source replacement")
+            candidate = deepcopy(self.source.manifest)
+            spec = cast(dict[str, object], candidate["spec"])
+            if spec["desiredState"] not in {"active", "suspended"}:
+                raise ValueError("archive projection requires an active or suspended source")
+            spec["desiredState"] = "archived"
+            if (
+                candidate != self.tenant.manifest
+                or self.source.deployment != self.tenant.deployment
+            ):
+                raise ValueError("archive projection changed fields outside its transition")
+            validate_contract(self.archive_record, expected_kind=ContractKind.ARCHIVE_RECORD)
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,6 +179,8 @@ def _snapshot_tenants(
                 raise RouteSnapshotError(
                     "replace route overlay source changed before the locked snapshot"
                 )
+            if overlay is not None and overlay.archive_record is not None:
+                _reject_live_archive_binding(transaction, source)
             tenants.append(
                 (
                     candidate,
@@ -171,6 +188,7 @@ def _snapshot_tenants(
                         transaction,
                         candidate,
                         allow_observed_drift=(tenant_id == observed_drift_tenant_id),
+                        archive_record=None if overlay is None else overlay.archive_record,
                     ),
                 )
             )
@@ -284,6 +302,7 @@ def _is_archived(
     tenant: TenantRouteInput,
     *,
     allow_observed_drift: bool,
+    archive_record: dict[str, object] | None = None,
 ) -> bool:
     spec = tenant.manifest.get("spec")
     if type(spec) is not dict:  # pragma: no cover - copied route input was validated
@@ -296,6 +315,7 @@ def _is_archived(
         tenant,
         spec,
         allow_observed_drift=allow_observed_drift,
+        archive_record=archive_record,
     )
     return True
 
@@ -322,6 +342,7 @@ def _validate_archived_bindings(
     spec: dict[str, object],
     *,
     allow_observed_drift: bool,
+    archive_record: dict[str, object] | None = None,
 ) -> None:
     tenant_id = _tenant_id(tenant)
     observed = tenant.observed_state
@@ -345,12 +366,18 @@ def _validate_archived_bindings(
     ):
         raise RouteSnapshotError("archived tenant deployment binding drifted")
     deployment_id = validate_uuid7(deployment["id"])
-    try:
-        archive = transaction.read(
-            StateRecordPath.tenant_archive(tenant_id, deployment_id)
-        ).document
-    except FileNotFoundError as error:
-        raise RouteSnapshotError("archived tenant omitted its archive record") from error
+    if archive_record is None:
+        try:
+            archive = transaction.read(
+                StateRecordPath.tenant_archive(tenant_id, deployment_id)
+            ).document
+        except FileNotFoundError as error:
+            raise RouteSnapshotError("archived tenant omitted its archive record") from error
+    else:
+        # This is an unselected candidate projection. The lifecycle preparer
+        # independently binds it to a verified construction before activation;
+        # supplying projected state never creates an authoritative archive record.
+        archive = deepcopy(archive_record)
     validate_contract(archive, expected_kind=ContractKind.ARCHIVE_RECORD)
     if (
         archive["tenantId"] != tenant_id
