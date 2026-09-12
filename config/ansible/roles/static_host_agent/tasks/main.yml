@@ -628,32 +628,8 @@
     group: root
     mode: "0700"
 
-- name: Validate supplied dedicated archive configuration
-  ansible.builtin.assert:
-    that:
-      - static_host_agent_archive_configuration is mapping
-      - >-
-        static_host_agent_archive_configuration.keys() | sort ==
-        ['accessKeyId', 'bucket', 'format', 'region', 'secretAccessKey']
-      - static_host_agent_archive_configuration.format == 'lowerduckpond-archive-configuration-v1'
-      - static_host_agent_archive_configuration.accessKeyId | length > 0
-      - static_host_agent_archive_configuration.secretAccessKey | length > 0
-      - static_host_agent_archive_configuration.region is match('^[a-z]{3}[1-9][0-9]?$')
-      - static_host_agent_archive_configuration.bucket is match('^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$')
-    quiet: true
-  when: static_host_agent_archive_configuration | length > 0
-  no_log: true
-
-- name: Install only the dedicated archive credential in its private boundary
-  ansible.builtin.copy:
-    content: "{{ static_host_agent_archive_configuration | to_json }}\n"
-    dest: /etc/lowerduckpond/archive/credentials.json
-    owner: root
-    group: root
-    mode: "0600"
-  when: static_host_agent_archive_configuration | length > 0
-  no_log: true
-  diff: false
+- name: Reconcile the dedicated archive credential
+  ansible.builtin.include_tasks: archive_credentials.yml
 
 - name: Install the private archived export service and socket
   ansible.builtin.template:

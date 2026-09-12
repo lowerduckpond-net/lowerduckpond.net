@@ -108,6 +108,103 @@ def test_installed_idle_emergency_recovery_needs_no_archive_credentials(host: Ho
     )
 
 
+def test_installed_empty_configuration_withdraws_existing_archive_credentials(
+    host: Host, tmp_path: Path
+) -> None:
+    credential = "/etc/lowerduckpond/archive/credentials.json"
+    assert host.file(credential).exists
+    task_file = Path(__file__).parents[3] / "roles/static_host_agent/tasks/archive_credentials.yml"
+    inventory = tmp_path / "withdrawal-inventory.json"
+    inventory.write_text(
+        json.dumps(
+            {
+                "all": {
+                    "hosts": {
+                        "lowerduckpond-ubuntu-2604": {
+                            "ansible_connection": "community.docker.docker",
+                            "ansible_python_interpreter": "/usr/bin/python3",
+                        }
+                    }
+                }
+            }
+        )
+    )
+    withdraw = {
+        "name": "Withdraw the configured archive authority",
+        "ansible.builtin.include_tasks": str(task_file),
+        "vars": {"static_host_agent_archive_configuration": {}},
+    }
+    playbook = tmp_path / "withdrawal.json"
+    playbook.write_text(
+        json.dumps(
+            [
+                {
+                    "name": "Qualify archive credential withdrawal on the disposable host",
+                    "hosts": "all",
+                    "gather_facts": False,
+                    "tasks": [
+                        {
+                            "name": "Retain the private configuration only for restoration",
+                            "ansible.builtin.slurp": {"src": credential},
+                            "register": "saved_archive_configuration",
+                            "no_log": True,
+                        },
+                        {
+                            "name": "Verify withdrawal and restore the fixture",
+                            "block": [
+                                withdraw,
+                                {
+                                    "name": "Inspect the withdrawn credential path",
+                                    "ansible.builtin.stat": {"path": credential},
+                                    "register": "withdrawn_credential",
+                                },
+                                {
+                                    "name": "Require credential withdrawal",
+                                    "ansible.builtin.assert": {
+                                        "that": "not withdrawn_credential.stat.exists"
+                                    },
+                                },
+                                withdraw,
+                                {
+                                    "name": "Require idempotent withdrawal",
+                                    "ansible.builtin.assert": {
+                                        "that": (
+                                            "not "
+                                            "static_host_agent_archive_credential_withdrawal.changed"
+                                        )
+                                    },
+                                },
+                            ],
+                            "always": [
+                                {
+                                    "name": "Restore the private disposable archive configuration",
+                                    "ansible.builtin.include_tasks": str(task_file),
+                                    "vars": {
+                                        "static_host_agent_archive_configuration": (
+                                            "{{ saved_archive_configuration.content | "
+                                            "b64decode | from_json }}"
+                                        )
+                                    },
+                                    "no_log": True,
+                                }
+                            ],
+                        },
+                    ],
+                }
+            ]
+        )
+    )
+    result = subprocess.run(  # noqa: S603 - fixed task-owned disposable inventory and task file
+        [sys.executable, "-m", "ansible.cli.playbook", "-i", str(inventory), str(playbook)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert host.file(credential).exists
+    assert host.file(credential).mode == 0o600  # noqa: PLR2004
+
+
 def test_installed_legacy_selection_disables_only_the_new_service_family(
     host: Host, tmp_path: Path
 ) -> None:
