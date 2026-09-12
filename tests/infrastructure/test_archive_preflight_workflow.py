@@ -1,3 +1,5 @@
+import os
+import subprocess
 from pathlib import Path
 
 WORKFLOW_PATH = Path(".github/workflows/infrastructure.yml")
@@ -43,3 +45,30 @@ def test_operational_initialization_keeps_provider_locks_read_only() -> None:
 
     assert workflow.count("-lockfile=readonly") == READ_ONLY_LOCKFILE_WORKFLOW_COUNT
     assert "-lockfile=readonly" in archive_qualification
+
+
+def test_qualification_disables_tracing_before_reading_initial_secret_inputs() -> None:
+    canary = "qualification-trace-fixture"
+    environment = {
+        "PATH": os.environ["PATH"],
+        "M3_ARCHIVE_QUALIFICATION_EVIDENCE_ROOT": "/unused-qualification-evidence",
+    }
+    for name in (
+        "OPENTOFU_ENCRYPTION_PASSPHRASE",
+        "OPENTOFU_STATE_ACCESS_KEY_ID",
+        "OPENTOFU_STATE_SECRET_ACCESS_KEY",
+        "OPENTOFU_STATE_BUCKET",
+    ):
+        environment[name] = canary
+    # Deliberately omit SPACES_REGION: stop at the input guard before tool or
+    # provider access, even when tracing was requested by the calling shell.
+    outcome = subprocess.run(  # noqa: S603 - fixed wrapper with non-secret fixture input
+        ["/usr/bin/bash", "-x", str(ARCHIVE_QUALIFICATION_PATH.resolve())],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert outcome.returncode == 2  # noqa: PLR2004 - documented input-guard exit status
+    assert "Required environment variable SPACES_REGION is not set." in outcome.stderr
+    assert canary not in outcome.stdout + outcome.stderr
