@@ -18,9 +18,21 @@ def executable(path: Path, body: str) -> None:
 
 
 @pytest.mark.parametrize("relative", [False, True])
+@pytest.mark.parametrize(
+    "docker_selection",
+    [
+        ("unix:///disposable/docker.sock", "", "", True),
+        ("tcp://remote.invalid:2375", "local", "unix:///disposable/docker.sock", True),
+        ("unix:///disposable/docker.sock", "remote", "tcp://remote.invalid:2375", False),
+        ("", "", "ssh://remote.invalid", False),
+        ("", "", "unix:///disposable/docker.sock", True),
+        ("", "broken", "", False),
+    ],
+)
 def test_spaces_workflow_keeps_evidence_paths_stable_across_phase_directories(
-    tmp_path: Path, relative: bool
+    tmp_path: Path, relative: bool, docker_selection: tuple[str, str, str, bool]
 ) -> None:
+    docker_host, docker_context, context_endpoint, accepted = docker_selection
     checkout = tmp_path / "checkout"
     (checkout / "config/ansible").mkdir(parents=True)
     artifact = tmp_path / "artifact.tar"
@@ -37,13 +49,24 @@ def test_spaces_workflow_keeps_evidence_paths_stable_across_phase_directories(
     )
     loader = checkout / "scripts/lib/m3-10-production-state"
     loader.parent.mkdir()
-    loader.write_text("# State loading is replaced by disposable environment inputs.\n")
+    loader.write_text('printf loaded >"${TEST_LOADER_MARKER}"\n')
     commands = tmp_path / "commands"
     executable(
         commands / "git",
         "#!/bin/bash\nif [[ $1 == rev-parse ]]; then printf '%040d\\n' 0; fi\n",
     )
-    executable(commands / "docker", "#!/bin/bash\nif [[ $1 == inspect ]]; then exit 1; fi\n")
+    executable(
+        commands / "docker",
+        """#!/bin/bash
+if [[ $1 == context && $2 == inspect ]]; then
+    printf '%s\\n' "${TEST_CONTEXT_ENDPOINT}"
+elif [[ $1 == info ]]; then
+    [[ -z ${DOCKER_CONTEXT:-} && $DOCKER_HOST == unix:///disposable/docker.sock ]] || exit 3
+elif [[ $1 == inspect ]]; then
+    exit 1
+fi
+""",
+    )
     executable(commands / "tofu", "#!/bin/bash\nexit 0\n")
     executable(
         commands / "uv",
@@ -51,6 +74,8 @@ def test_spaces_workflow_keeps_evidence_paths_stable_across_phase_directories(
 import json, os, sys
 from pathlib import Path
 if 'molecule' in sys.argv:
+    assert 'DOCKER_CONTEXT' not in os.environ
+    assert os.environ['DOCKER_HOST'] == 'unix:///disposable/docker.sock'
     phase = sys.argv[sys.argv.index('molecule') + 1]
     destination = Path(os.environ['M3_10_INSTALLED_REPORT'])
     assert destination.is_absolute(), 'installed report path changed meaning after chdir'
@@ -71,7 +96,10 @@ if 'scripts.m3_10_qualification_report' in sys.argv:
         env={
             **os.environ,
             "PATH": str(commands) + ":" + os.environ["PATH"],
-            "DOCKER_HOST": "unix:///disposable/docker.sock",
+            "DOCKER_HOST": docker_host,
+            "DOCKER_CONTEXT": docker_context,
+            "TEST_CONTEXT_ENDPOINT": context_endpoint,
+            "TEST_LOADER_MARKER": str(tmp_path / "loaded"),
             "SPACES_ACCESS_KEY_ID": "disposable-operator",
             "SPACES_SECRET_ACCESS_KEY": "disposable-secret",
             "SPACES_REGION": "nyc3",
@@ -84,8 +112,15 @@ if 'scripts.m3_10_qualification_report' in sys.argv:
         text=True,
         check=False,
     )
-    assert result.returncode == 0, result.stdout + result.stderr
     expected = checkout / evidence if relative else Path(evidence)
+    if not accepted:
+        assert result.returncode != 0
+        assert "requires a local Unix-socket Docker daemon" in result.stderr
+        assert not (tmp_path / "loaded").exists()
+        assert not expected.exists()
+        return
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (tmp_path / "loaded").exists()
     directories = list(expected.glob("spaces-*"))
     assert len(directories) == 1
     for phase in PHASES:
