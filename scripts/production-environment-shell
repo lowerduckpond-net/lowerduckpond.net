@@ -29,6 +29,11 @@ prompt_secret() {
 }
 
 main() {
+    local m3_10_inputs=false
+    if [[ ${1-} == --m3-10 ]]; then
+        m3_10_inputs=true
+        shift
+    fi
     local admin_private_key=${ANSIBLE_PRIVATE_KEY_FILE-}
     local admin_source_cidrs=${ADMIN_SOURCE_CIDRS_JSON-}
     local caddy_token=${CADDY_CLOUDFLARE_API_TOKEN-}
@@ -154,6 +159,29 @@ main() {
     export SPACES_REGION=${spaces_region}
     export STATIC_OPERATOR_PRINCIPAL=${operator_principal}
     export STATIC_OPERATOR_PUBLIC_KEY=${operator_public_key}
+
+    if [[ ${m3_10_inputs} == true ]]; then
+        # These are existing operator/provider credentials. Bucket-only runtime
+        # credentials are still obtained exclusively from encrypted state.
+        local gate_name gate_value
+        for gate_name in SPACES_ACCESS_KEY_ID SPACES_SECRET_ACCESS_KEY CLOUDFLARE_API_TOKEN; do
+            gate_value=${!gate_name:-}
+            if [[ -z ${gate_value} ]]; then
+                prompt_secret gate_value "Existing operator ${gate_name} (hidden)"
+            fi
+            [[ -n ${gate_value} ]] || return 2
+            export "${gate_name}=${gate_value}"
+        done
+        for gate_name in CLOUDFLARE_ZONE_ID CLOUDFLARE_TENANT_ZONE_ID \
+            CLOUDFLARE_ORIGIN_PULL_CERTIFICATE_ID CLOUDFLARE_TENANT_ORIGIN_PULL_CERTIFICATE_ID; do
+            gate_value=${!gate_name:-}
+            if [[ -z ${gate_value} ]]; then
+                prompt gate_value "Existing production ${gate_name}"
+            fi
+            [[ -n ${gate_value} ]] || return 2
+            export "${gate_name}=${gate_value}"
+        done
+    fi
 
     cd "${repository_root}"
     if [[ ${1-} == -- ]]; then

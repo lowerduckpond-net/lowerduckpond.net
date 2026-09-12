@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Disable inherited tracing before even testing whether secret inputs are present.
+set +x
 set -euo pipefail
 umask 077
 
@@ -34,8 +36,6 @@ if [[ -n $(git -C "${repository_root}" status --porcelain) ]]; then
     exit 2
 fi
 
-# Never allow an inherited tracing option to disclose sensitive tofu outputs.
-set +x
 export AWS_ACCESS_KEY_ID=${OPENTOFU_STATE_ACCESS_KEY_ID}
 export AWS_SECRET_ACCESS_KEY=${OPENTOFU_STATE_SECRET_ACCESS_KEY}
 export TF_VAR_state_encryption_passphrase=${OPENTOFU_ENCRYPTION_PASSPHRASE}

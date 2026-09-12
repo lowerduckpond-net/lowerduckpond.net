@@ -1,0 +1,17 @@
+[Unit]
+Description=Private Lower Duck Pond archive construction socket
+After=local-fs.target
+
+[Socket]
+ListenStream=/run/lowerduckpond-archive/construction.sock
+SocketUser=root
+SocketGroup=root
+SocketMode=0600
+DirectoryMode=0700
+Accept=yes
+MaxConnections=1
+Backlog=1
+RemoveOnStop=true
+
+[Install]
+WantedBy=sockets.target

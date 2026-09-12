@@ -31,7 +31,7 @@
         fail_msg: The Ubuntu acceptance container exited during systemd startup.
 
 - name: Prepare the Ubuntu acceptance container
-  hosts: all
+  hosts: hosting_nodes
   become: true
   gather_facts: false
   tasks:

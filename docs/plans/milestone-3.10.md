@@ -1,6 +1,6 @@
 # Milestone 3.10 implementation plan
 
-- Status: planned; implementation and qualification pending
+- Status: implemented; local and disposable qualification complete; live starting gate pending
 - Date: 2026-09-12
 - Base: `8d9adc1` on current `main`
 - Branch: `feat/m3.10-archive-restore-deletion`
@@ -8,6 +8,90 @@
 - Outcome: complete remote archive, restore, deletion, and archived export;
   prepare the reviewed production convergence starting gate while publication
   remains disabled
+
+## Current implementation checkpoint
+
+The plan is the first branch commit (`a70f107`). Coherent subsequent commits
+implement the remote boundary, private services, durable journals, archive,
+restore, ordinary deletion, and a separate root administrator emergency path.
+The [evidence map](../threat-model/m3-10-evidence.md) records the tested revisions
+and distinguishes component, installed-host, and live-provider qualification.
+
+Archive preserves the complete active or suspended rollback source, binds one
+verified remote version, and removes both route classes transactionally. It
+retains the bounded local release history. Restore validates the exact bound
+bundle, creates a fresh deployment, and applies selected-plus-two-predecessors
+retention. Ordinary deletion requires a separate post-archive job, except when
+complete verified history proves the tenant was never deployed. Tombstones
+precede namespace and release removal; historical results remain replayable.
+
+Construction and retirement journals preserve durable authority across remote
+failures. A prepared upload is never repeated after interruption. Remote cleanup
+independently verifies audited terminal state, preserves every bound version,
+and confirms exact-key absence before removing retirement evidence. Whole-bucket
+inventory includes unknown keys, versions, markers, and multipart uploads.
+Quarantine resolution verifies all remaining bound bytes and inventories before
+and after verification; it grants no deletion authority.
+
+The installed root-only emergency command requires the administrator identity,
+a correlation ID, and a reason. Its strict durable intent and permanent result
+carry distinct administrator provenance, without inventing an ordinary job.
+A dedicated bounded service and timer recover interrupted emergency deletion.
+Ordinary transport and provisioner sudo cannot invoke this command.
+
+The final component suite at `bd47ac8` passed 2,441 tests, with two separately
+scheduled MinIO skips and one inapplicable filesystem-fault parameter skip.
+Four repeated private archive/restore cycles and final deletion passed,
+including historical result replay and bounded release retention.
+The complete installed archive group also passed at `00f3f1a`, including
+full-size suspended archive/restore and deferred snapshot/Caddy/Ansible races.
+Both installed emergency deletion tests passed after fixture and service-policy
+corrections. Exact persisted state and served routes survived reboot with
+automatic recovery. The complete transport/recovery group passed, including
+all six idempotent configuration overlaps and competing requests. Installed
+quarantine recovery passed at `36aa88e`. The final inventory has no pending
+intents, intake, exports, staging, quarantine, remote versions/markers, or
+multipart uploads. Live Spaces checks and the production starting gate remain
+outstanding.
+No production convergence or publication enablement has occurred.
+
+## Installed execution boundary
+
+The parser worker and ordinary reconciler remain network-isolated. Three
+root-only private services provide job-bound archived export, fresh-session
+construction, and cleanup with independent source/terminal proof. Requests
+carry opaque durable authority and verified descriptors; they cannot choose
+URLs, credentials, object names, or arbitrary filesystem paths. Only the root
+network boundary receives `/etc/lowerduckpond/archive/credentials.json`.
+
+Export exclusion survives descriptor transfer, worker death, queued descriptors,
+and provider stream closure. Lending while an inner publication/state lock is
+held is rejected. Construction requires a session established before intent
+creation, independently derives the exact source/proposed manifest and unique
+key, uploads once, and verifies the exact returned version. Cleanup derives its
+authority from permanent audit/result evidence and current bindings.
+
+The qualified systemd filesystem policy uses a read-only empty tmpfs root plus
+explicit mounts. `ProtectSystem=false` is intentional: on the tested Ubuntu
+26.04 systemd, `ProtectSystem=strict` overlays that empty root with the host root
+and defeats path isolation. Complete installed-unit probes verify the effective
+policy. The emergency service preserves the user/group switches needed by Caddy
+validation through sandbox setup with
+`AmbientCapabilities=CAP_SETGID CAP_SETUID`, while retaining
+`NoNewPrivileges=true` and the bounded `CAP_CHOWN CAP_SETGID CAP_SETUID` set.
+
+The SDK uses the fixed regional HTTPS endpoint and root-administered system CA
+bundle; ambient endpoint, proxy, credential, and CA settings cannot replace
+those inputs. Disposable installed storage qualification uses a private CA and
+pinned MinIO container with separate archive and backup identities. It does not
+replace the live Spaces gate.
+
+For live checks, use the existing
+[qualification wrapper](../../scripts/m3-archive-qualification), which retrieves
+separate archive and backup credentials from encrypted production state.
+Production credentials intentionally remain on the secure workstation. The
+M3.10 wrapper now runs the installed lifecycle against live Spaces there and
+produces sanitized evidence for the coder task; no credentials are transferred.
 
 ## Accepted boundaries
 
@@ -103,6 +187,11 @@ the completeness of their proof obligation; keep all work on this branch.
   backup credential denial. Local substitutes do not satisfy that live gate.
 
 ## Production convergence starting gate
+
+The [preparation runbook](../operations/m3-10-convergence-preparation.md)
+records the existing workstation input workflow and the evidence needed to
+reach this gate. Local and disposable acceptance are complete; live provider,
+production preflight, and reviewed-release evidence remain required.
 
 The requested stopping point is readiness for convergence, with no production
 tenant creation or publication enablement. Before declaring the gate passed:
