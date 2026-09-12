@@ -135,3 +135,14 @@
         chdir: >-
           {{ lookup('ansible.builtin.env', 'MOLECULE_SCENARIO_DIRECTORY') }}
       changed_when: false
+
+    - name: Qualify installed quarantine recovery after journal removal
+      ansible.builtin.command:
+        cmd: >-
+          python -m pytest --verbose
+          --hosts=docker://lowerduckpond-ubuntu-2604
+          tests/test_quarantine_recovery.py
+      args:
+        chdir: >-
+          {{ lookup('ansible.builtin.env', 'MOLECULE_SCENARIO_DIRECTORY') }}
+      changed_when: false
