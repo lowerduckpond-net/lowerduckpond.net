@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
 
-from scripts.check_m3_10_host_firewall import check_firewall
+from scripts.check_m3_10_host_firewall import check_firewall, main
 
 ROOT = Path(__file__).parents[2]
 FIXTURE = Path(__file__).parent / "fixtures/m3-10-host-firewall.json"
@@ -69,3 +70,22 @@ def test_firewall_gate_rejects_tables_outside_the_managed_policy(family: str) ->
     document["nftables"].append({"table": {"family": family, "name": "unexpected"}})
     with pytest.raises(ValueError):
         check_firewall(document, admin=["192.0.2.1/32"], web=web_networks())
+
+
+@pytest.mark.parametrize("unexpected", [False, True])
+def test_firewall_probe_requests_the_full_remote_ruleset(
+    monkeypatch: pytest.MonkeyPatch, unexpected: bool
+) -> None:
+    document = json.loads(FIXTURE.read_text())
+    if unexpected:
+        document["nftables"].append({"table": {"family": "ip", "name": "unexpected"}})
+
+    def remote(arguments: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        assert arguments[-1] == "sudo --non-interactive /usr/sbin/nft --json list ruleset"
+        return subprocess.CompletedProcess(arguments, 0, stdout=json.dumps(document).encode())
+
+    monkeypatch.setenv("PRODUCTION_ORIGIN_IPV4", "192.0.2.1")
+    monkeypatch.setenv("ADMIN_SOURCE_CIDRS_JSON", '["192.0.2.1/32"]')
+    monkeypatch.setenv("ANSIBLE_PRIVATE_KEY_FILE", "/private/fixture-key")
+    monkeypatch.setattr("scripts.check_m3_10_host_firewall.subprocess.run", remote)
+    assert main() == int(unexpected)
