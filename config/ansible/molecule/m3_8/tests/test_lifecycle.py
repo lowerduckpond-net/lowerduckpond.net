@@ -87,9 +87,9 @@ repository = StateRepository(pathlib.Path({STATE_ROOT!r}), expected_owner=0)
 path = StateRecordPath.platform_namespace()
 expected = json.loads({document!r})
 try:
-    existing = repository.read(path).document
+    existing = repository.read(path, blocking=True).document
 except FileNotFoundError:
-    repository.create_immutable(path, expected)
+    repository.create_immutable(path, expected, blocking=True)
     print("created")
 else:
     if existing != expected:
