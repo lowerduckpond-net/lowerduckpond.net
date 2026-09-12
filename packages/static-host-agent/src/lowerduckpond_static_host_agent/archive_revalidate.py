@@ -215,20 +215,30 @@ def revalidate_archive(  # noqa: PLR0912, PLR0913, PLR0915, PLR0917 - explicit n
                     ),
                 )
             )
+        writes = []
+        if job.document["phase"] != "completed":
+            writes.append({**job.document, "phase": "completed"})
+        if prior is None:
+            writes.append(intent)
+        if missing:
+            writes.append(result)
         allocation = sum(
-            transaction.allocation_upper_bound(len(canonical_json_bytes(value)))
-            for value in (job.document, intent, result)
+            transaction.allocation_upper_bound(len(canonical_json_bytes(value))) for value in writes
         )
         if audit.entry is None:
             allocation += transaction.allocation_upper_bound(
                 DEFAULT_AUDIT_LIMITS.maximum_segment_bytes
             )
-        admit_release_capacity(
-            ReleaseCapacityUsage(()),
-            CapacityReservation(allocation + transaction.namespace_allocation_upper_bound(4), 4),
-            transaction.measure_filesystem_capacity(),
-            limits=capacity_limits,
-        )
+        count = len(writes) + int(audit.entry is None)
+        if count:
+            admit_release_capacity(
+                ReleaseCapacityUsage(()),
+                CapacityReservation(
+                    allocation + transaction.namespace_allocation_upper_bound(count), count
+                ),
+                transaction.measure_filesystem_capacity(),
+                limits=capacity_limits,
+            )
         if prior is None:
             prior = transaction.create_immutable(
                 StateRecordPath.transaction_intent(intent_id), intent
