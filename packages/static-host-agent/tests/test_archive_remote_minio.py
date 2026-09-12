@@ -14,6 +14,7 @@ from botocore.config import Config  # type: ignore[import-untyped]
 from botocore.session import Session  # type: ignore[import-untyped]
 from lowerduckpond_static_host_agent import archive_remote
 from lowerduckpond_static_host_agent.archive_remote import (
+    ArchiveCapacityError,
     ArchiveClient,
     ArchiveRemoteError,
     ArchiveRemoteStore,
@@ -66,6 +67,67 @@ def _clients(monkeypatch: pytest.MonkeyPatch) -> tuple[ArchiveClient, MinioAdmin
     return client, cast(MinioAdmin, administrator)
 
 
+def _lost_commit_responses(
+    remote: ArchiveRemoteStore, monkeypatch: pytest.MonkeyPatch, body: bytes, digest: str
+) -> None:
+    key = archive_key(str(uuid.uuid7()))
+    put = remote.client.put_object
+    calls = 0
+
+    def committed_put(**arguments: object) -> Mapping[str, object]:
+        nonlocal calls
+        calls += 1
+        put(**arguments)
+        raise OSError("lost successful provider upload response")
+
+    with monkeypatch.context() as fault:
+        fault.setattr(remote.client, "put_object", committed_put)
+        with pytest.raises(OSError, match="lost successful"):
+            remote.put_once(key, io.BytesIO(body), size=len(body), sha256=digest)
+    assert calls == 1
+    discovered = remote.list_versions(exact_key=key)
+    assert len(discovered) == 1
+    remote.read_verified(key, discovered[0].version_id, size=len(body), sha256=digest)
+    with pytest.raises(ArchiveRemoteError):
+        remote.inventory().require_reservation(frozenset())
+
+    delete = remote.client.delete_object
+    deleted: list[object] = []
+
+    def committed_delete(**arguments: object) -> Mapping[str, object]:
+        deleted.append(arguments["VersionId"])
+        delete(**arguments)
+        raise OSError("lost successful provider deletion response")
+
+    with monkeypatch.context() as fault:
+        fault.setattr(remote.client, "delete_object", committed_delete)
+        with pytest.raises(OSError, match="lost successful"):
+            remote.purge_unbound(key, require_unbound=lambda _key: None)
+    # Recovery relists actual provider state after the ambiguous response.
+    # It never uploads again and never needs an unversioned delete.
+    remote.purge_unbound(key, require_unbound=lambda _key: None)
+    remote.require_absent(key)
+    assert deleted == [discovered[0].version_id]
+
+
+def _real_inventory_capacity(remote: ArchiveRemoteStore) -> None:
+    body = b"bounded real inventory quota proof"
+    digest = hashlib.sha256(body).hexdigest()
+    keys = [archive_key(str(uuid.uuid7())) for _ in range(archive_remote.MAX_REMOTE_KEYS)]
+    try:
+        for key in keys:
+            inventory = remote.inventory()
+            inventory.require_reservation(frozenset(inventory.versions))
+            remote.put_once(key, io.BytesIO(body), size=len(body), sha256=digest)
+        inventory = remote.inventory()
+        with pytest.raises(ArchiveCapacityError):
+            inventory.require_reservation(frozenset(inventory.versions))
+    finally:
+        for key in keys:
+            remote.purge_unbound(key, require_unbound=lambda _key: None)
+    assert not remote.inventory().versions
+
+
 def test_installed_remote_boundary_versions_markers_pagination_and_cleanup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -81,6 +143,8 @@ def test_installed_remote_boundary_versions_markers_pagination_and_cleanup(
     remote = ArchiveRemoteStore(client, bucket=bucket)
     upload_id: str | None = None
     try:
+        _lost_commit_responses(remote, monkeypatch, body, digest)
+        _real_inventory_capacity(remote)
         remote.inventory().require_reservation(frozenset())
         remote.require_absent(key)
         version = remote.put_once(key, io.BytesIO(body), size=len(body), sha256=digest)
