@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import os
 import socket
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
+from datetime import datetime
 from functools import partial
 from pathlib import Path
 from typing import cast
@@ -69,13 +70,15 @@ def _serve_construction(stream: socket.socket, root: Path, remote: ArchiveRemote
 
 
 @contextmanager
-def _host(
+def _host(  # noqa: PLR0913 - explicit private service fixture modes
     tmp_path: Path,
     *,
     lost_response: bool = False,
     revalidation: bool = False,
     restore: bool = False,
     deletion: bool = False,
+    now: Callable[[], datetime] = lambda: _NOW,
+    executor_factory: list[Callable[[str], AuthorizationExecutor]] | None = None,
 ) -> Iterator[
     tuple[AuthorizationExecutor, str, StateRepository, MemoryRemote, _Runtime, list[Future[None]]]
 ]:
@@ -130,7 +133,7 @@ def _host(
                 }
             ),
             operator_principal="operator@example.test",
-            now=_NOW,
+            now=now(),
             artifact=None,
         )
         cleanup = ArchiveCleanupClient(
@@ -149,7 +152,7 @@ def _host(
                 spool, connector=partial(connect, construction=True), expected_peer_uid=_OWNER
             ),
             cleanup_client=cleanup,
-            now=lambda: _NOW,
+            now=now,
             clock=lambda: 1_789_000_000_000,
             entropy=_Entropy(),
             reloader=runtime.reload,
@@ -173,7 +176,7 @@ def _host(
                 spool, connector=connect_read, expected_peer_uid=_OWNER
             ),
             cleanup_client=cleanup,
-            now=lambda: _NOW,
+            now=now,
             clock=lambda: 1_789_000_001_000,
             entropy=_Entropy(),
             reloader=runtime.reload,
@@ -188,7 +191,7 @@ def _host(
             store,
             OpenGate(),
             cleanup_client=cleanup,
-            now=lambda: _NOW,
+            now=now,
             clock=lambda: 1_789_000_002_000,
             entropy=_Entropy(),
             reloader=runtime.reload,
@@ -218,6 +221,8 @@ def _host(
                 tenant_runtime_validator=lambda *_args: True,
             )
 
+        if executor_factory is not None:
+            executor_factory.append(executor_for)
         executor = executor_for(issued.job_id)
         if revalidation or restore or deletion:
             assert executor.execute(issued.job_id).result["status"] == "succeeded"
@@ -232,7 +237,7 @@ def _host(
                     }
                 ),
                 operator_principal="operator@example.test",
-                now=_NOW,
+                now=now(),
                 artifact=None,
             )
             executor = executor_for(issued.job_id)
