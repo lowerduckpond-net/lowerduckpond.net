@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
@@ -55,7 +55,11 @@ class InterruptedRestoreError(BaseException):
 
 @contextmanager
 def _restoring(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, predecessors: bool = False
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    predecessors: bool = False,
+    before_prepare: Callable[[], None] | None = None,
 ) -> Iterator[tuple[ArchiveJournal, DeploymentReleaseStore, PreparedRestoreTransition, _Runtime]]:
     for module in ("portable_bundle", "zip_structure"):
         monkeypatch.setattr(
@@ -164,6 +168,8 @@ def _restoring(
             expected_owner=_OWNER,
         )
         retirement = journal.prepare_retirement(issued.job_id, now=_NOW)
+        if before_prepare is not None:
+            before_prepare()
         restoration = prepare_restore_transition(
             repository,
             spool,

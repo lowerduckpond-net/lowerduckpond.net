@@ -29,6 +29,7 @@ from lowerduckpond_static_host_agent.caddy_admin import (
 from lowerduckpond_static_host_agent.caddy_runtime import CaddyRuntime
 from lowerduckpond_static_host_agent.capacity import (
     DEFAULT_HOST_CAPACITY_LIMITS,
+    CapacityError,
     HostCapacityLimits,
 )
 from lowerduckpond_static_host_agent.execution import (
@@ -231,6 +232,7 @@ class ArchiveLifecycleHandler:
                 expected_owner=self._owner,
                 bucket=session.bucket,
                 require_quarantine_empty=quarantine.require_empty,
+                capacity_limits=self._limits,
             )
             prepared = journal.prepare(job_id, snapshot, now=self._now())
             descriptor = os.open(
@@ -244,19 +246,24 @@ class ArchiveLifecycleHandler:
     def _publish(
         self, job_id: str, construction: StoredContract, *, blocking: bool
     ) -> ExecutionOutcome:
-        prepared = prepare_archive_transition(
-            self._repository,
-            self._spool,
-            self._runtime,
-            self._gate,
-            job_id,
-            construction.document["intentId"],
-            now=self._now(),
-            clock=self._clock,
-            entropy=self._entropy,
-            capacity_limits=self._limits,
-            blocking=blocking,
-        )
+        try:
+            prepared = prepare_archive_transition(
+                self._repository,
+                self._spool,
+                self._runtime,
+                self._gate,
+                job_id,
+                construction.document["intentId"],
+                now=self._now(),
+                clock=self._clock,
+                entropy=self._entropy,
+                capacity_limits=self._limits,
+                blocking=blocking,
+            )
+        except CapacityError:
+            # Preparation discards an unjournaled candidate before propagating
+            # capacity refusal. Keep the source and durably retire this upload.
+            return self._abort(job_id, construction, blocking=blocking)
         outcome = activate_archive_transition(
             self._repository,
             self._spool,

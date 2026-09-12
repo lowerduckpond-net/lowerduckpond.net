@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
@@ -40,7 +40,11 @@ class SimulatedCrashError(RuntimeError):
 
 @contextmanager
 def _prepared(
-    tmp_path: Path, lifecycle: str, *, selected_generation: str | None = None
+    tmp_path: Path,
+    lifecycle: str,
+    *,
+    selected_generation: str | None = None,
+    before_prepare: Callable[[], None] | None = None,
 ) -> Iterator[tuple[ArchiveJournal, DeploymentReleaseStore, PreparedArchiveTransition, _Runtime]]:
     with prepared_source(tmp_path, MemoryRemote(), lifecycle=lifecycle) as (
         journal,
@@ -72,6 +76,8 @@ def _prepared(
             expected_release_group=os.getegid(),
             expected_staging_group=os.getegid(),
         ) as store:
+            if before_prepare is not None:
+                before_prepare()
             prepared = prepare_archive_transition(
                 journal.repository,
                 journal.spool,
