@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import stat
 from collections.abc import Callable
+from copy import deepcopy
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -83,9 +84,10 @@ class ExportSnapshot:
     deployment: dict[str, object]
     content: Path
     measurement: ReleaseTreeMeasurement
+    source_manifest: dict[str, object] | None = None
 
 
-def capture_export_snapshot(  # noqa: PLR0913 - each authority boundary is explicit
+def capture_export_snapshot(  # noqa: PLR0913,PLR0915 - each authority boundary is explicit
     spool: ExportSpool,
     transaction: ExportCaptureTransaction,
     *,
@@ -94,6 +96,7 @@ def capture_export_snapshot(  # noqa: PLR0913 - each authority boundary is expli
     expected_manifest_digest: Digest,
     expected_deployment_digest: Digest,
     expected_owner: int,
+    archive: bool = False,
     hook: Callable[[ExportCaptureBoundary], None] | None = None,
 ) -> ExportSnapshot:
     """Copy and verify before the caller releases its shared state transaction."""
@@ -136,16 +139,23 @@ def capture_export_snapshot(  # noqa: PLR0913 - each authority boundary is expli
             CapacityReservation(
                 before.logical_content_bytes
                 + (before.entry_count + 8) * fragment
-                + _METADATA_RESERVATION
+                + _METADATA_RESERVATION * (2 if archive else 1)
                 + MAXIMUM_PORTABLE_BUNDLE_BYTES,
-                before.entry_count + 5,
+                before.entry_count + (6 if archive else 5),
             )
         )
         _notify(hook, ExportCaptureBoundary.SOURCE_VERIFIED)
         content = spool.workspace / "content"
         _copy_content(source, content, spool, hook)
         _notify(hook, ExportCaptureBoundary.CONTENT_COPIED)
-        _write_metadata(spool.workspace / "manifest.json", canonical_json_bytes(manifest))
+        bundle_manifest = deepcopy(manifest)
+        if archive:
+            cast(dict[str, object], bundle_manifest["spec"])["desiredState"] = "archived"
+            validate_contract(bundle_manifest, expected_kind=ContractKind.SITE)
+            _write_metadata(
+                spool.workspace / "source-manifest.json", canonical_json_bytes(manifest)
+            )
+        _write_metadata(spool.workspace / "manifest.json", canonical_json_bytes(bundle_manifest))
         _write_metadata(spool.workspace / "deployment.json", canonical_json_bytes(deployment))
         _notify(hook, ExportCaptureBoundary.SNAPSHOT_SEALED)
         copied = measure_release_tree_snapshot(
@@ -160,10 +170,16 @@ def capture_export_snapshot(  # noqa: PLR0913 - each authority boundary is expli
             or copied.logical_content_bytes != before.logical_content_bytes
         ):
             raise ExportSpoolError("export content changed during snapshot capture")
-        if (spool.workspace / "manifest.json").read_bytes() != canonical_json_bytes(manifest) or (
+        if (spool.workspace / "manifest.json").read_bytes() != canonical_json_bytes(
+            bundle_manifest
+        ) or (
             (spool.workspace / "deployment.json").read_bytes() != canonical_json_bytes(deployment)
         ):
             raise ExportSpoolError("export metadata changed during snapshot capture")
+        if archive and (
+            spool.workspace / "source-manifest.json"
+        ).read_bytes() != canonical_json_bytes(manifest):
+            raise ExportSpoolError("archive source evidence changed during snapshot capture")
         if transaction.read(StateRecordPath.tenant_desired(tenant)).document != manifest or (
             transaction.read(StateRecordPath.tenant_deployment(tenant, deployment_id)).document
             != deployment
@@ -171,7 +187,9 @@ def capture_export_snapshot(  # noqa: PLR0913 - each authority boundary is expli
             raise ExportSpoolError("export authority changed during snapshot capture")
         spool.reserve(CapacityReservation(MAXIMUM_PORTABLE_BUNDLE_BYTES, 1))
         _notify(hook, ExportCaptureBoundary.SNAPSHOT_VERIFIED)
-        return ExportSnapshot(manifest, deployment, content, copied)
+        return ExportSnapshot(
+            bundle_manifest, deployment, content, copied, manifest if archive else None
+        )
     finally:
         os.close(parent)
 

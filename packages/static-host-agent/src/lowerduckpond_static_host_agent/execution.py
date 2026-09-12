@@ -3135,6 +3135,14 @@ def _validate_export_bundle(
     binding = result.get("exportBundle")
     if type(binding) is not dict:
         raise ExecutionError("successful export result has no bundle binding")
+    expected = cast(dict[str, object], job["expectedSource"])
+    if expected["lifecycle"] == "archived":
+        _, archive = _job_source_authority(job)
+        if archive is None or binding != {
+            "digest": archive["bundleDigest"],
+            "size": archive["bundleSize"],
+        }:
+            raise ExecutionError("archived export did not deliver the exact bound bundle")
     if job.get("exportDelivery") in {"acknowledged", "expired"}:
         if job.get("executionValidated") is not True or job["phase"] != "completed":
             raise ExecutionError("retired export has no executor validation")

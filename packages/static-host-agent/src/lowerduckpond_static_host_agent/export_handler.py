@@ -23,6 +23,11 @@ from lowerduckpond_static_contracts import (
 )
 from lowerduckpond_static_domain import generate_uuid7
 
+from lowerduckpond_static_host_agent.archive_bundle import (
+    fetch_archive_bundle,
+    require_archive_inspection,
+)
+from lowerduckpond_static_host_agent.archive_remote import ArchiveRemoteStore
 from lowerduckpond_static_host_agent.audit import DEFAULT_AUDIT_LIMITS
 from lowerduckpond_static_host_agent.capacity import (
     DEFAULT_HOST_CAPACITY_LIMITS,
@@ -108,6 +113,7 @@ class ExportLifecycleHandler:
         *,
         release_root: Path,
         expected_owner: int,
+        remote: ArchiveRemoteStore | None = None,
         capacity_limits: HostCapacityLimits = DEFAULT_HOST_CAPACITY_LIMITS,
         now: Callable[[], datetime] = _utc_now,
         hook: Callable[[ExportCommitBoundary], None] | None = None,
@@ -117,6 +123,7 @@ class ExportLifecycleHandler:
         self._gate = gate
         self._releases = release_root
         self._owner = expected_owner
+        self._remote = remote
         self._capacity_limits = capacity_limits
         self._now = now
         self._hook = hook
@@ -144,15 +151,47 @@ class ExportLifecycleHandler:
             except ExportSpoolOccupiedError as error:
                 raise LifecycleJobRejectionError("conflict") from error
             try:
-                snapshot, job = self._capture(canonical, blocking=blocking)
-                self._notify(ExportCommitBoundary.SNAPSHOT_CAPTURED)
-                inspection = self._build(snapshot)
+                archived = self._capture_archived(canonical, blocking=blocking)
+                if archived is None:
+                    snapshot, job = self._capture(canonical, blocking=blocking)
+                    self._notify(ExportCommitBoundary.SNAPSHOT_CAPTURED)
+                    inspection = self._build(snapshot)
+                else:
+                    inspection, job = archived
+                    self._notify(ExportCommitBoundary.SNAPSHOT_CAPTURED)
                 self._notify(ExportCommitBoundary.BUNDLE_VERIFIED)
                 return self._publish(job, inspection, blocking=blocking)
             except (ExportSpoolCapacityError, CapacityRejectedError) as error:
                 raise LifecycleJobRejectionError("capacity_exceeded") from error
             finally:
                 self._spool.discard_workspace()
+
+    def _capture_archived(
+        self, job_id: str, *, blocking: bool
+    ) -> tuple[PortableBundleInspection, StoredContract] | None:
+        with self._repository.transaction(mode=LockMode.SHARED, blocking=blocking) as transaction:
+            job = _read_job(transaction, job_id)
+            expected = cast(dict[str, object], job.document["expectedSource"])
+            if expected["lifecycle"] != "archived":
+                return None
+            if self._remote is None:
+                raise LifecycleJobRejectionError("not_implemented")
+            request = cast(dict[str, object], job.document["request"])
+            if build_expected_source(transaction, request) != expected:
+                raise LifecycleJobRejectionError("state_drift")
+            manifest = transaction.read(
+                StateRecordPath.tenant_desired(request["tenantId"])
+            ).document
+            desired = cast(
+                dict[str, object], cast(dict[str, object], manifest["spec"])["desiredDeployment"]
+            )
+            record = transaction.read(
+                StateRecordPath.tenant_archive(request["tenantId"], desired["id"])
+            ).document
+            inspection = fetch_archive_bundle(
+                self._remote, self._spool, record, manifest, expected_owner=self._owner
+            )
+            return inspection, job
 
     def _capture(self, job_id: str, *, blocking: bool) -> tuple[ExportSnapshot, StoredContract]:
         with self._repository.transaction(mode=LockMode.SHARED, blocking=blocking) as transaction:
@@ -316,6 +355,13 @@ class ExportLifecycleHandler:
         ):
             raise ExportLifecycleError("export commitment disagrees with its source authority")
         result = _make_result(job.document, inspection)
+        source_spec = cast(dict[str, object], inspection.provenance_manifest["spec"])
+        if source_spec["desiredState"] == "archived":
+            desired = cast(dict[str, object], source_spec["desiredDeployment"])
+            record = transaction.read(
+                StateRecordPath.tenant_archive(request["tenantId"], desired["id"])
+            ).document
+            require_archive_inspection(inspection, record, inspection.provenance_manifest)
         existing = _existing_result(transaction, validate_uuid7(job.document["jobId"]))
         if existing is not None and existing.document != result:
             raise ExportLifecycleError("export terminal result disagrees with the bound bundle")
