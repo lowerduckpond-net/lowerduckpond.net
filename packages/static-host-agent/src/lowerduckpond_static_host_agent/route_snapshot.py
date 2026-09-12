@@ -138,13 +138,34 @@ def snapshot_tenant_authority(
     )
 
 
-def _snapshot_tenants(
+def snapshot_other_tenant_routes(
+    transaction: RouteSnapshotTransaction,
+    *,
+    excluded_tenant_id: object,
+) -> TenantRouteSnapshot:
+    """Validate other tenants while a journal owns the excluded tenant's partial state.
+
+    Recovery must independently validate that tenant from its exact intent and
+    job. This projection alone grants no mutation or publication authority.
+    """
+    return _snapshot_tenants(
+        transaction,
+        overlay=None,
+        include_archived=False,
+        observed_drift_tenant_id=None,
+        deployment_transition_tenant_id=None,
+        excluded_tenant_id=validate_uuid7(excluded_tenant_id),
+    )
+
+
+def _snapshot_tenants(  # noqa: PLR0912, PLR0913 - explicit projection and recovery cases
     transaction: RouteSnapshotTransaction,
     *,
     overlay: TenantRouteOverlay | None,
     include_archived: bool,
     observed_drift_tenant_id: str | None,
     deployment_transition_tenant_id: str | None,
+    excluded_tenant_id: str | None = None,
 ) -> TenantRouteSnapshot:
     """Capture one complete tenant view under the caller's exclusive lock."""
 
@@ -152,6 +173,10 @@ def _snapshot_tenants(
     validate_contract(namespace, expected_kind=ContractKind.PLATFORM_NAMESPACE)
     inventory = transaction.measure_inventory()
     history_candidates = set(inventory.tenant_ids)
+    if excluded_tenant_id is not None:
+        if excluded_tenant_id not in history_candidates:
+            raise RouteSnapshotError("recovery route projection selected an absent tenant")
+        history_candidates.remove(excluded_tenant_id)
     if deployment_transition_tenant_id is not None:
         if deployment_transition_tenant_id not in history_candidates:
             raise RouteSnapshotError("deployment transition tenant is absent")
@@ -171,6 +196,8 @@ def _snapshot_tenants(
 
     tenants: list[tuple[TenantRouteInput, bool]] = []
     for tenant_id in inventory.tenant_ids:
+        if tenant_id == excluded_tenant_id:
+            continue
         if tenant_id == overlay_id:
             if candidate is None:  # pragma: no cover - equality proves otherwise
                 raise RouteSnapshotError("route overlay identity was lost")

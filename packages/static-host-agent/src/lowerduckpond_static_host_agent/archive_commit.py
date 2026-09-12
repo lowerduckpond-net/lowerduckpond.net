@@ -94,6 +94,23 @@ def admit_archive_transition(
     _prepare_commit(transaction, spool, job, deepcopy(plan), capacity_limits=capacity_limits)
 
 
+def validate_archive_transition(
+    transaction: _StateTransaction,
+    spool: ExportSpool,
+    job: StoredContract,
+    plan: ArchiveTransitionPlan,
+) -> None:
+    """Validate recovery authority before activation decides how to handle capacity."""
+    _prepare_commit(
+        transaction,
+        spool,
+        job,
+        deepcopy(plan),
+        capacity_limits=DEFAULT_HOST_CAPACITY_LIMITS,
+        admit=False,
+    )
+
+
 def finalize_archive_transition(  # noqa: PLR0913 - root-owned state and release boundaries
     transaction: _StateTransaction,
     spool: ExportSpool,
@@ -164,13 +181,14 @@ def finalize_archive_transition(  # noqa: PLR0913 - root-owned state and release
     return ArchiveCommitOutcome(deepcopy(frozen.result), progress.result_missing)
 
 
-def _prepare_commit(
+def _prepare_commit(  # noqa: PLR0913 - explicit authority versus capacity admission
     transaction: _StateTransaction,
     spool: ExportSpool,
     job: StoredContract,
     plan: ArchiveTransitionPlan,
     *,
     capacity_limits: HostCapacityLimits,
+    admit: bool = True,
 ) -> tuple[StoredContract, _Progress]:
     spool.locks.require_held(LockName.EXPORT, mode=LockMode.EXCLUSIVE)
     transaction.require_held(LockName.PUBLICATION, mode=LockMode.EXCLUSIVE)
@@ -225,6 +243,10 @@ def _prepare_commit(
         transaction.read(StateRecordPath.tenant_deployment(plan.tenant_id, identity)).document
         for identity in deployment_ids
     )
+    if not admit:
+        return current, _Progress(
+            desired, observed, archive_missing, result_missing, removal, deployments
+        )
     if audit_missing:
         transaction.admit_audit_append(plan.audit_entry)
     if result_missing:

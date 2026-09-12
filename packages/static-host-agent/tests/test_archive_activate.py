@@ -14,6 +14,7 @@ from lowerduckpond_static_host_agent.archive_prepare import (
     PreparedArchiveTransition,
     prepare_archive_transition,
 )
+from lowerduckpond_static_host_agent.archive_recover import reconstruct_archive_transition
 from lowerduckpond_static_host_agent.caddy_generation import PinnedCaddyGeneration
 from lowerduckpond_static_host_agent.caddy_runtime import CaddyRuntime
 from lowerduckpond_static_host_agent.capacity import CapacityRejectedError, FilesystemCapacity
@@ -226,7 +227,14 @@ def test_archive_capacity_failure_during_recovery_keeps_no_route_candidate_selec
                 lambda _self: FilesystemCapacity(1, 4096, 8_000_000, 0, 4_000_000, 3_000_000),
             )
             with pytest.raises(CapacityRejectedError):
-                _activate(journal, store, prepared, runtime)
+                recovered = reconstruct_archive_transition(
+                    journal.repository,
+                    journal.spool,
+                    cast(CaddyRuntime, runtime),
+                    OpenGate(),
+                    prepared.job.document["jobId"],
+                )
+                _activate(journal, store, recovered, runtime)
         assert runtime.active == runtime.running == prepared.candidate_manifest.generation_id
         assert "restored" not in runtime.events
         _activate(journal, store, prepared, runtime)
