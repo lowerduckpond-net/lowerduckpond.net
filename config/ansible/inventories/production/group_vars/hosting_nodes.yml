@@ -36,3 +36,7 @@ static_operator_public_key: >-
   {{ lookup('ansible.builtin.env', 'STATIC_OPERATOR_PUBLIC_KEY') }}
 static_operator_principal: >-
   {{ lookup('ansible.builtin.env', 'STATIC_OPERATOR_PRINCIPAL') }}
+
+# The reviewed M3.5 fallback predates every private archive/emergency entrypoint.
+static_host_agent_archive_lifecycle_enabled: >-
+  {{ lookup('ansible.builtin.env', 'M3_DARK_HOST_ROLLBACK_ARTIFACT_PATH') | length == 0 }}

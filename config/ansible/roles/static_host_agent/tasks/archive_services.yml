@@ -1,0 +1,42 @@
+---
+- name: Inspect M3.10 units before disabling them for a legacy rollback
+  ansible.builtin.stat:
+    path: "/etc/systemd/system/{{ item }}"
+  loop:
+    - lowerduckpond-static-emergency-reconcile.timer
+    - lowerduckpond-static-emergency-reconcile.service
+    - lowerduckpond-archive-export.socket
+    - lowerduckpond-archive-construction.socket
+    - lowerduckpond-archive-cleanup.socket
+  register: static_host_agent_m3_10_rollback_units
+  when: not static_host_agent_archive_lifecycle_enabled | bool
+
+- name: Stop and disable installed M3.10 units before legacy artifact selection
+  ansible.builtin.systemd_service:
+    name: "{{ item.item }}"
+    enabled: false
+    state: stopped
+  loop: "{{ static_host_agent_m3_10_rollback_units.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when:
+    - not static_host_agent_archive_lifecycle_enabled | bool
+    - item.stat.exists
+
+- name: Start the root-only archive sockets for a compatible artifact
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop:
+    - lowerduckpond-archive-export.socket
+    - lowerduckpond-archive-construction.socket
+    - lowerduckpond-archive-cleanup.socket
+  when: static_host_agent_archive_lifecycle_enabled | bool
+
+- name: Enable bounded emergency recovery for a compatible artifact
+  ansible.builtin.systemd_service:
+    name: lowerduckpond-static-emergency-reconcile.timer
+    enabled: true
+    state: started
+  when: static_host_agent_archive_lifecycle_enabled | bool

@@ -89,6 +89,7 @@ python_version = "3.14"
 strict = true
 warn_unreachable = true
 files = [
+  "tests/infrastructure/test_m3_10_rollback_selection.py",
   "tests/infrastructure/test_m3_10_spaces_workflow.py",
   "tests/infrastructure/test_m3_10_host_firewall.py",
   "scripts/check_m3_10_host_firewall.py",
