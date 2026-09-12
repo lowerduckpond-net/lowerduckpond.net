@@ -12,4 +12,6 @@ static_host_agent_reconciler: /usr/local/libexec/lowerduckpond/reconcile-authori
 # Empty during ordinary local baseline checks; production obtains the dedicated
 # values from encrypted OpenTofu state through configure-production.
 static_host_agent_archive_configuration: {}
+# Explicit legacy rollback cannot run entrypoints introduced in M3.10.
+static_host_agent_archive_lifecycle_enabled: true
 static_publication_enabled: false  # noqa var-naming[no-role-prefix]

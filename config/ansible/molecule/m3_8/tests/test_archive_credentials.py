@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 import test_export_import as exports
 from testinfra.host import Host
@@ -101,3 +106,67 @@ def test_installed_idle_emergency_recovery_needs_no_archive_credentials(host: Ho
         probe,
         replacements={"BindReadOnlyPaths=/etc/lowerduckpond/archive": ""},
     )
+
+
+def test_installed_legacy_selection_disables_only_the_new_service_family(
+    host: Host, tmp_path: Path
+) -> None:
+    inventory = tmp_path / "inventory.json"
+    inventory.write_text(
+        json.dumps(
+            {
+                "all": {
+                    "hosts": {
+                        "lowerduckpond-ubuntu-2604": {
+                            "ansible_connection": "community.docker.docker",
+                            "ansible_python_interpreter": "/usr/bin/python3",
+                        }
+                    }
+                }
+            }
+        )
+    )
+    playbook = tmp_path / "selection.json"
+    task_file = Path(__file__).parents[3] / "roles/static_host_agent/tasks/archive_services.yml"
+    units = [
+        "lowerduckpond-static-emergency-reconcile.timer",
+        "lowerduckpond-archive-export.socket",
+        "lowerduckpond-archive-construction.socket",
+        "lowerduckpond-archive-cleanup.socket",
+    ]
+
+    def select(enabled: bool) -> str:
+        playbook.write_text(
+            json.dumps(
+                [
+                    {
+                        "name": "Exercise the installed archive service selection",
+                        "hosts": "all",
+                        "gather_facts": False,
+                        "vars": {"static_host_agent_archive_lifecycle_enabled": enabled},
+                        "tasks": [{"ansible.builtin.include_tasks": str(task_file)}],
+                    }
+                ]
+            )
+        )
+        result = subprocess.run(  # noqa: S603 - fixed task-owned disposable inventory and task file
+            [sys.executable, "-m", "ansible.cli.playbook", "-i", str(inventory), str(playbook)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        return result.stdout
+
+    try:
+        select(False)
+        for unit in units:
+            assert host.run("systemctl is-active --quiet %s", unit).rc != 0
+            assert host.run("systemctl is-enabled --quiet %s", unit).rc != 0
+        assert host.run("systemctl is-active --quiet lowerduckpond-static-reconcile.timer").rc == 0
+        assert "changed=0" in select(False)
+    finally:
+        select(True)
+    for unit in units:
+        assert host.run("systemctl is-active --quiet %s", unit).rc == 0
+        assert host.run("systemctl is-enabled --quiet %s", unit).rc == 0
