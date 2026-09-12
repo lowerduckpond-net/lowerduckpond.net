@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from types import TracebackType
-from typing import Final, Self
+from typing import Final, Self, cast
 
 from lowerduckpond_static_contracts import (
     MAX_CANONICAL_BYTES,
@@ -1198,6 +1198,62 @@ class _StateTransaction:
         self._require_exclusive()
         candidate = self._repository._encode_new(path, document)
         return self._create_immutable_bytes(path, candidate)
+
+    def remove_restored_archive(self, retirement: StoredContract) -> None:
+        """Unbind only the exact archive protected by a committed restore transaction."""
+        self._require_exclusive()
+        self.require_held(LockName.PUBLICATION, mode=LockMode.EXCLUSIVE)
+        document = retirement.document
+        validate_contract(document, expected_kind=ContractKind.ARCHIVE_RETIREMENT_INTENT)
+        stored = self.read(StateRecordPath.archive_retirement_intent(document["intentId"]))
+        if stored.revision != retirement.revision or document["transition"] != "restore":
+            raise StateConflictError("restore retirement authority changed")
+        records = [
+            self.read_intent(value.intent_id)[1] for value in self.measure_intent_records().records
+        ]
+        local = [
+            value.document
+            for value in records
+            if value.revision.contract_kind is ContractKind.TRANSACTION_INTENT
+        ]
+        if len(records) != 2 or len(local) != 1:  # noqa: PLR2004 - exact transaction and retirement
+            raise StateRecordError("restore unbinding requires its two exact journals")
+        intent = local[0]
+        if (
+            any(
+                intent[field] != document[field]
+                for field in ("tenantId", "correlationId", "sourceManifestDigest")
+            )
+            or intent["operation"] != "restore"
+        ):
+            raise StateRecordError("restore journals disagree before archive unbinding")
+        recovery = cast(dict[str, object], intent["lifecycleRecovery"])
+        tenant = document["tenantId"]
+        if (
+            self.read(StateRecordPath.tenant_desired(tenant)).document
+            != intent["candidateManifest"]
+            or self.read(StateRecordPath.tenant_observed(tenant)).document
+            != recovery["candidateObservedState"]
+        ):
+            raise StateRecordError("archive unbinding precedes complete restored state")
+        archive = cast(dict[str, object], document["archiveRecord"])
+        path = StateRecordPath.tenant_archive(tenant, archive["deploymentId"])
+        try:
+            current = self.read(path)
+        except FileNotFoundError:
+            parent = self._repository._durable.open_descendant(path.components[:-1])
+            try:
+                descriptor = parent.duplicate_descriptor()
+                try:
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+            finally:
+                parent.close()
+        else:
+            if current.document != archive:
+                raise StateConflictError("archive record changed before retirement")
+            self._repository._durable.remove(path.components)
 
     def deployment_removal_token(
         self,
