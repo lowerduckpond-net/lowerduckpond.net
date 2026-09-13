@@ -37,6 +37,7 @@ from lowerduckpond_static_host_agent.capacity import (
     ReleaseCapacityUsage,
     admit_release_capacity,
 )
+from lowerduckpond_static_host_agent.correlations import lifecycle_reservation_owners
 from lowerduckpond_static_host_agent.durable import StatePathError
 from lowerduckpond_static_host_agent.intake import (
     AdmittedArtifact,
@@ -394,7 +395,7 @@ class AuthorizationExecutor:
         ) as transaction:
             current = transaction.read(StateRecordPath.authorization_job(job_id))
             _require_same_authority(initial.document, current.document)
-            _require_construction_capacity_owner(transaction, current.document)
+            _require_lifecycle_reservation_owner(transaction, current.document)
             phase = current.document["phase"]
             if phase not in {"claimed", "completed", "failed"}:
                 return None
@@ -450,7 +451,7 @@ class AuthorizationExecutor:
         ) as transaction:
             current = transaction.read(StateRecordPath.authorization_job(job_id))
             _require_same_authority(initial.document, current.document)
-            _require_construction_capacity_owner(transaction, current.document)
+            _require_lifecycle_reservation_owner(transaction, current.document)
             durable = _read_result_transaction(transaction, job_id)
             if durable is None or durable.document != existing.document:
                 raise ExecutionError("terminal result changed during replay")
@@ -563,7 +564,7 @@ class AuthorizationExecutor:
         ) as transaction:
             current = transaction.read(StateRecordPath.authorization_job(job_id))
             _require_same_authority(initial.document, current.document)
-            _require_construction_capacity_owner(transaction, current.document)
+            _require_lifecycle_reservation_owner(transaction, current.document)
             durable = _read_result_transaction(transaction, job_id)
             if durable is None or durable.document != expected_result:
                 raise ExecutionError("terminal result changed after artifact replay race")
@@ -659,7 +660,7 @@ class AuthorizationExecutor:
         ) as transaction:
             current = transaction.read(path)
             _require_same_authority(initial.document, current.document)
-            _require_construction_capacity_owner(transaction, current.document)
+            _require_lifecycle_reservation_owner(transaction, current.document)
             existing = _read_result_transaction(transaction, job_id)
             if existing is not None:
                 _validate_result_binding(current.document, existing.document)
@@ -767,7 +768,7 @@ class AuthorizationExecutor:
         ) as transaction:
             current = transaction.read(StateRecordPath.authorization_job(job_id))
             _require_same_authority(initial.document, current.document)
-            _require_construction_capacity_owner(transaction, current.document)
+            _require_lifecycle_reservation_owner(transaction, current.document)
             current = self._bind_import_manifest(transaction, current, prepared.claim)
             current = _bind_dispatch_authority(
                 transaction,
@@ -1302,7 +1303,7 @@ class AuthorizationExecutor:
         ) as transaction:
             current = transaction.read(StateRecordPath.authorization_job(job_id))
             _require_same_authority(initial.document, current.document)
-            _require_construction_capacity_owner(transaction, current.document)
+            _require_lifecycle_reservation_owner(transaction, current.document)
             stored = _read_result_transaction(transaction, job_id)
             if stored is None or stored.document != result:
                 raise ExecutionError("validated lifecycle result is no longer durable")
@@ -1351,7 +1352,7 @@ class AuthorizationExecutor:
         ) as transaction:
             current = transaction.read(StateRecordPath.authorization_job(job_id))
             _require_same_authority(initial.document, current.document)
-            _require_construction_capacity_owner(transaction, current.document)
+            _require_lifecycle_reservation_owner(transaction, current.document)
             existing = _read_result_transaction(transaction, job_id)
             if not require_pending and _has_bound_lifecycle_intent(
                 transaction,
@@ -2361,16 +2362,12 @@ def _failure_result(job: dict[str, object], error_code: str) -> dict[str, object
     return result
 
 
-def _require_construction_capacity_owner(
+def _require_lifecycle_reservation_owner(
     transaction: ExecutionTransaction, job: dict[str, object]
 ) -> None:
-    """Keep other admitted jobs behind the durable construction reservation."""
-    for identity in transaction.measure_intent_records().records:
-        intent = transaction.read_intent(identity.intent_id)[1].document
-        if intent["kind"] == "ArchiveConstructionIntent" and intent[
-            "correlationId"
-        ] != _correlation_id(job):
-            raise StateBusyError("export.lock is busy")
+    """Keep unrelated workers behind durable audit and capacity reservations."""
+    if lifecycle_reservation_owners(transaction) - {_correlation_id(job)}:
+        raise StateBusyError("export.lock is busy")
 
 
 def _publish_result(
@@ -2380,7 +2377,7 @@ def _publish_result(
     *,
     limits: HostCapacityLimits,
 ) -> None:
-    _require_construction_capacity_owner(transaction, job.document)
+    _require_lifecycle_reservation_owner(transaction, job.document)
     if result["status"] != "failed":  # pragma: no cover - only internal failures publish here
         raise ExecutionError("direct result publication is limited to failures")
     if not _is_executor_failure(result):

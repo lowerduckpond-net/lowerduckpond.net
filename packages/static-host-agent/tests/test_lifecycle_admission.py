@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
@@ -9,13 +11,17 @@ import pytest
 from lowerduckpond_static_contracts import canonical_json_bytes
 from lowerduckpond_static_host_agent import archive_handler, archive_journal, archive_prepare
 from lowerduckpond_static_host_agent.archive_abort import finalize_failed_construction
-from lowerduckpond_static_host_agent.archive_journal import ArchiveRetirementJournal
+from lowerduckpond_static_host_agent.archive_journal import ArchiveJournal, ArchiveRetirementJournal
+from lowerduckpond_static_host_agent.archive_quarantine import ArchiveQuarantine
 from lowerduckpond_static_host_agent.audit import DEFAULT_AUDIT_LIMITS, AuditCapacityError
 from lowerduckpond_static_host_agent.capacity import CapacityRejectedError, FilesystemCapacity
+from lowerduckpond_static_host_agent.correlations import CorrelationAdmission, CorrelationResolution
 from lowerduckpond_static_host_agent.execution import AuthorizationExecutor
+from lowerduckpond_static_host_agent.export_spool import ExportSpool
 from lowerduckpond_static_host_agent.intake import ArtifactIntake
-from lowerduckpond_static_host_agent.issuance import AuthorizationIssuer
-from lowerduckpond_static_host_agent.locks import StateBusyError
+from lowerduckpond_static_host_agent.issuance import AuthorizationIssuer, VerifiedArtifact
+from lowerduckpond_static_host_agent.job_runtime import StartupReconciler
+from lowerduckpond_static_host_agent.locks import LockName, StateBusyError
 from lowerduckpond_static_host_agent.repository import (
     StateRecordPath,
     StateRepository,
@@ -39,6 +45,7 @@ from test_archive_journal import (
     capacity,  # noqa: F401 - shared autouse capacity fixture
     prepared_source,
 )
+from test_job_runtime import _CaptureHandoff
 from test_restore_commit import _restore, _restoring
 
 
@@ -327,3 +334,170 @@ def test_archive_handler_routes_prepublication_drift_through_durable_cleanup(
         assert not repository.measure_intent_records().records
         for future in futures:
             future.result(timeout=5)
+
+
+@pytest.mark.parametrize("missing_copy", ["job", "correlation"])
+def test_pair_repairs_wait_for_construction_without_blocking_owner_recovery(  # noqa: PLR0915 - interrupted admission, restart, owner recovery, and resumed repair
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, missing_copy: str
+) -> None:
+    remote = MemoryRemote()
+    root = tmp_path / "state"
+    payload = b"durable intake must survive deferred pair repair"
+    artifact = VerifiedArtifact(len(payload), hashlib.sha256(payload).hexdigest())
+    correlation = "0198d17f-6f4a-7000-8000-000000000010"
+    with prepared_source(tmp_path, remote) as (journal, job_id, snapshot, _quarantine):
+        pending = AuthorizationIssuer(journal.repository, gate=OpenGate(), entropy=_entropy).issue(
+            canonical_json_bytes(
+                {
+                    "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+                    "kind": "OperationRequest",
+                    "operation": "deploy",
+                    "tenantId": _TENANT,
+                    "correlationId": correlation,
+                    "artifact": {"size": artifact.size, "sha256": artifact.sha256},
+                }
+            ),
+            operator_principal="operator@example.test",
+            now=_NOW + timedelta(seconds=1),
+            artifact=artifact,
+        )
+        # Reproduce an admitted intake and interrupted pair from durable files.
+        (root / "intake").mkdir(mode=0o700)
+        artifact_path = root / "intake" / f"{correlation}.artifact"
+        artifact_path.write_bytes(payload)
+        artifact_path.chmod(0o600)
+        missing = (
+            StateRecordPath.authorization_job(pending.job_id)
+            if missing_copy == "job"
+            else StateRecordPath.authorization_correlation(correlation)
+        )
+        missing_path = root.joinpath(*missing.components)
+        missing_path.unlink()
+        inventory = journal.repository.measure_inventory()
+        limits = replace(
+            DEFAULT_STATE_INVENTORY_LIMITS,
+            maximum_authorization_records=inventory.authorization_record_count + 1,
+        )
+        original_admit = _StateTransaction.admit_inventory
+        monkeypatch.setattr(
+            _StateTransaction,
+            "admit_inventory",
+            lambda tx, reservation, **_kwargs: original_admit(tx, reservation, limits=limits),
+        )
+        uploaded = journal.construct(job_id, snapshot, now=_NOW)
+        archive_remote = journal.remote
+
+    # Startup holds intake before state; the interrupted construction has
+    # released its process locks while its durable reservation remains.
+    with (
+        StateRepository(root, expected_owner=_OWNER) as repository,
+        ArtifactIntake(root, expected_owner=_OWNER) as intake,
+        ExportSpool(root, expected_owner=_OWNER) as spool,
+    ):
+        admission = CorrelationAdmission(repository, limits=limits)
+        binding = {
+            key: pending.document[key]
+            for key in ("operatorPrincipal", "request", "requestDigest", "artifact")
+        }
+        retries: tuple[Callable[[], CorrelationResolution | None], ...] = (
+            lambda: admission.resolve(pending.document, now=_NOW + timedelta(seconds=1)),
+            lambda: admission.find_retry(correlation, binding=binding),
+        )
+        for retry in retries:
+            if missing_copy == "job":
+                with pytest.raises(StateBusyError, match=r"export.lock is busy"):
+                    retry()
+            else:
+                resolved = retry()
+                assert resolved is not None
+                assert resolved.job.document["jobId"] == pending.job_id
+                assert resolved.repaired_records == 0
+        assert admission.reconcile().repaired_records == 0
+        owner = repository.read(StateRecordPath.authorization_job(job_id)).document
+        owner_request = cast(dict[str, object], owner["request"])
+        assert (
+            admission.find_retry(
+                owner_request["correlationId"], binding={key: owner[key] for key in binding}
+            )
+            is not None
+        )
+        handoff = _CaptureHandoff()
+        startup = StartupReconciler(repository, intake, handoff).reconcile()
+        assert job_id in startup.enqueued_jobs
+        assert (pending.job_id in startup.enqueued_jobs) is (missing_copy == "correlation")
+        assert startup.deferred_jobs == int(missing_copy == "job")
+        assert startup.removed_intake_entries == 0
+        assert not missing_path.exists()
+        assert repository.measure_inventory().authorization_record_count == (
+            inventory.authorization_record_count
+        )
+        with spool.locks.acquire(LockName.EXPORT):
+            quarantine = ArchiveQuarantine(
+                root, bucket=archive_remote.bucket, expected_owner=_OWNER, locks=spool.locks
+            )
+            resumed_journal = ArchiveJournal(
+                repository,
+                spool,
+                archive_remote,
+                expected_owner=_OWNER,
+                quarantine=quarantine.record,
+                require_quarantine_empty=quarantine.require_empty,
+            )
+            finalize_failed_construction(repository, spool, job_id)
+            resumed_journal.finish(str(uploaded.construction.document["intentId"]))
+        assert not remote.versions
+        assert not repository.measure_intent_records().records
+        monkeypatch.setattr(_StateTransaction, "admit_inventory", original_admit)
+        resumed = StartupReconciler(repository, intake, handoff).reconcile()
+        assert resumed.repaired_pairs == 1
+        assert pending.job_id in resumed.enqueued_jobs
+        assert missing_path.exists()
+        assert resumed.removed_intake_entries == 0
+        assert artifact_path.read_bytes() == payload
+
+
+def test_pending_failure_cannot_displace_a_prepared_restore_audit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pending_ids: list[str] = []
+
+    def admit_pending() -> None:
+        with StateRepository(tmp_path / "state", expected_owner=_OWNER) as repository:
+            pending = AuthorizationIssuer(repository, gate=OpenGate(), entropy=_entropy).issue(
+                canonical_json_bytes(
+                    {
+                        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+                        "kind": "OperationRequest",
+                        "operation": "delete",
+                        "tenantId": _TENANT,
+                        "correlationId": "0198d17f-6f4a-7000-8000-000000000020",
+                    }
+                ),
+                operator_principal="operator@example.test",
+                now=_NOW + timedelta(seconds=1),
+                artifact=None,
+            )
+            pending_ids.append(pending.job_id)
+
+    with _restoring(tmp_path, monkeypatch, before_retirement=admit_pending) as (
+        journal,
+        store,
+        prepared,
+        runtime,
+    ):
+        (tmp_path / "state/intake").mkdir(mode=0o700, exist_ok=True)
+        audit = journal.repository.inspect_audit()
+        pending_path = StateRecordPath.authorization_job(pending_ids[0])
+        pending = journal.repository.read(pending_path)
+        with (
+            ArtifactIntake(tmp_path / "state", expected_owner=_OWNER) as intake,
+            pytest.raises(StateBusyError, match=r"export.lock is busy"),
+        ):
+            AuthorizationExecutor(journal.repository, intake).execute(pending_ids[0])
+        assert journal.repository.inspect_audit() == audit
+        assert journal.repository.read(pending_path).revision == pending.revision
+        with pytest.raises(FileNotFoundError):
+            journal.repository.read(StateRecordPath.authorization_result(pending_ids[0]))
+        _restore(journal, store, prepared, runtime)
+        journal.finish(str(prepared.retirement.document["intentId"]))
+        assert not journal.repository.measure_intent_records().records
