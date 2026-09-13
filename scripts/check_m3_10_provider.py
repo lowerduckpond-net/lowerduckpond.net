@@ -145,6 +145,24 @@ def expected_rules(domain: str) -> dict[str, dict[str, object]]:
     }
 
 
+def _zone_account(details: object, *, zone_id: str, domain: str) -> str:
+    if (
+        not isinstance(details, dict)
+        or details.get("id") != zone_id
+        or details.get("name") != domain
+        or details.get("status") != "active"
+        or details.get("paused") is not False
+    ):
+        raise GateError("edge zone identity, active status, or proxy pause state drifted")
+    account = details.get("account")
+    if not isinstance(account, dict):
+        raise GateError("edge zone account identity is missing")
+    account_id = account.get("id")
+    if not isinstance(account_id, str) or re.fullmatch(r"[0-9a-f]{32}", account_id) is None:
+        raise GateError("edge zone account identity is malformed")
+    return account_id
+
+
 def check_edge(  # noqa: PLR0912, PLR0913 - explicit enforced-edge identity and trust
     client: CloudflareClient,
     *,
@@ -154,7 +172,7 @@ def check_edge(  # noqa: PLR0912, PLR0913 - explicit enforced-edge identity and 
     origin: str,
     ca_path: Path,
     now: datetime,
-) -> None:
+) -> str:
     if (
         re.fullmatch(r"[0-9a-f]{32}", zone_id) is None
         or re.fullmatch(
@@ -164,14 +182,7 @@ def check_edge(  # noqa: PLR0912, PLR0913 - explicit enforced-edge identity and 
     ):
         raise GateError("edge identity is malformed")
     zone = f"/zones/{zone_id}"
-    details = client.get(zone)
-    if (
-        not isinstance(details, dict)
-        or details.get("name") != domain
-        or details.get("status") != "active"
-        or details.get("paused") is not False
-    ):
-        raise GateError("edge zone identity, active status, or proxy pause state drifted")
+    account_id = _zone_account(client.get(zone), zone_id=zone_id, domain=domain)
     records = client.get_collection(f"{zone}/dns_records")
     routing = [
         item
@@ -255,6 +266,8 @@ def check_edge(  # noqa: PLR0912, PLR0913 - explicit enforced-edge identity and 
         ):
             raise GateError("edge block response policy drifted")
 
+    return account_id
+
 
 def required(environment: Mapping[str, str], name: str) -> str:
     value = environment.get(name, "")
@@ -319,12 +332,13 @@ def main() -> int:
             return 0
         edge = CloudflareClient(required(os.environ, "CLOUDFLARE_API_TOKEN"))
         now = datetime.now(UTC)
+        account_ids: set[str] = set()
         with verified_ca_bundle(now=now) as ca_path:
             for domain, prefix in (
                 ("lowerduckpond.net", "CLOUDFLARE"),
                 ("lowerduckpond.com", "CLOUDFLARE_TENANT"),
             ):
-                check_edge(
+                account_id = check_edge(
                     edge,
                     zone_id=required(os.environ, f"{prefix}_ZONE_ID"),
                     certificate_id=required(os.environ, f"{prefix}_ORIGIN_PULL_CERTIFICATE_ID"),
@@ -333,6 +347,9 @@ def main() -> int:
                     ca_path=ca_path,
                     now=now,
                 )
+                account_ids.add(account_id)
+        if len(account_ids) != 1:
+            raise GateError("production edge zones belong to different accounts")
     except (BotoCoreError, ClientError, RuntimeError, ValueError, OSError) as error:
         # Provider exceptions can include request URLs, headers, and credentials.
         message = (
