@@ -126,8 +126,13 @@ export SPACES_ARCHIVE_BUCKET
 SPACES_ARCHIVE_BUCKET=$(tofu -chdir="${production_root}" output -raw archive_bucket_name)
 
 temporary_directory=$(mktemp -d)
+preserve_private_diagnostics=false
 cleanup() {
-    find "${temporary_directory}" -depth -delete
+    if [[ ${preserve_private_diagnostics} == true ]]; then
+        printf 'Private convergence diagnostics retained at %s.\n' "${temporary_directory}" >&2
+    else
+        find "${temporary_directory}" -depth -delete
+    fi
 }
 trap cleanup EXIT
 second_converge_output="${temporary_directory}/second-converge.log"
@@ -189,6 +194,24 @@ if [[ -z ${rollback_artifact_path} && ${completed_candidate} != true ]]; then
         --source "$(git -C "${repository_root}" rev-parse HEAD)" \
         --artifact "${STATIC_HOST_AGENT_ARTIFACT_SHA256}"
     "${repository_root}/scripts/preflight-m3-10-production"
+fi
+
+if [[ -z ${rollback_artifact_path} ]]; then
+    # Exercise the exact freshly loaded runtime keys, including versioned
+    # writes/deletes and mutual bucket denial, before installing either key.
+    # This small storage proof supplements the full installed qualification.
+    if ! uv run --quiet --frozen ldp-m3-archive acceptance \
+        --backup-bucket "${backup_bucket_name}" --archive-bucket "${SPACES_ARCHIVE_BUCKET}" \
+        --source-revision "$(git -C "${repository_root}" rev-parse HEAD)" --region "${SPACES_REGION}" \
+        --output "${temporary_directory}/current-storage.json" \
+        >"${temporary_directory}/current-storage.log" 2>&1 ||
+       ! uv run --quiet --frozen ldp-m3-archive verify-report \
+        "${temporary_directory}/current-storage.json" \
+        >>"${temporary_directory}/current-storage.log" 2>&1; then
+        preserve_private_diagnostics=true
+        echo "Current archive/backup credential qualification failed before host mutation." >&2
+        exit 1
+    fi
 fi
 
 # Any interrupted attempt, including rollback, invalidates prior completion.

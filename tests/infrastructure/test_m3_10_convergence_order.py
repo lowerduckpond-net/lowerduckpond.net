@@ -58,6 +58,12 @@ def runner(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         *scripts.m3_10_qualification_report*)
             echo verify-report >>"$TEST_LOG"
             exit "$TEST_VERIFY_STATUS";;
+        *ldp-m3-archive*acceptance*)
+            echo current-credentials >>"$TEST_LOG"
+            exit "$TEST_CREDENTIAL_STATUS";;
+        *ldp-m3-archive*verify-report*)
+            echo current-credential-report >>"$TEST_LOG"
+            exit "$TEST_CREDENTIAL_REPORT_STATUS";;
         *ansible-playbook*)
             echo ansible >>"$TEST_LOG"
             [[ "$TEST_ANSIBLE_STATUS" == 0 ]] || exit "$TEST_ANSIBLE_STATUS"
@@ -82,6 +88,8 @@ def runner(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         "TEST_PREFLIGHT_STATUS": "0",
         "TEST_COMPLETED_STATUS": "1",
         "TEST_ANSIBLE_STATUS": "0",
+        "TEST_CREDENTIAL_STATUS": "0",
+        "TEST_CREDENTIAL_REPORT_STATUS": "0",
         "ANSIBLE_PRIVATE_KEY_FILE": str(key),
         "ADMIN_SOURCE_CIDRS_JSON": '["192.0.2.1/32"]',
         "CADDY_ORIGIN_PULL_ENFORCEMENT_ENABLED": "true",
@@ -148,6 +156,8 @@ def test_verified_upgrade_checks_report_and_preflight_before_any_convergence(
         "general-preflight",
         "verify-report",
         "m3-10-preflight",
+        "current-credentials",
+        "current-credential-report",
         "completion-clear",
         "ansible",
         "ansible",
@@ -167,6 +177,8 @@ def test_unchanged_artifact_reconfiguration_retains_the_general_gate(
     assert calls == [
         "general-preflight",
         "completion-check",
+        "current-credentials",
+        "current-credential-report",
         "completion-clear",
         "ansible",
         "ansible",
@@ -202,3 +214,19 @@ def test_interrupted_convergence_never_records_completion(
     assert status != 0
     assert "completion-clear" in calls
     assert "completion-record" not in calls
+
+
+@pytest.mark.parametrize("completed", [False, True])
+@pytest.mark.parametrize("failure", ["TEST_CREDENTIAL_STATUS", "TEST_CREDENTIAL_REPORT_STATUS"])
+def test_current_runtime_keys_must_pass_even_after_prior_qualification(
+    runner: tuple[Path, dict[str, str]], completed: bool, failure: str
+) -> None:
+    if completed:
+        runner[1]["TEST_SELECTED"] = CANDIDATE
+        runner[1]["TEST_COMPLETED_STATUS"] = "0"
+    runner[1][failure] = "1"
+    status, calls = run(runner)
+    assert status != 0
+    assert "current-credentials" in calls
+    assert "completion-clear" not in calls
+    assert "ansible" not in calls

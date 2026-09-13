@@ -108,6 +108,184 @@ def test_installed_idle_emergency_recovery_needs_no_archive_credentials(host: Ho
     )
 
 
+@pytest.mark.parametrize(
+    "unit", ["lowerduckpond-backup.service", "lowerduckpond-backup-maintenance.service"]
+)
+@pytest.mark.parametrize("written_before_retry", [False, True])
+def test_installed_credentials_drain_backup_processes_using_the_previous_isolation(
+    host: Host, tmp_path: Path, unit: str, written_before_retry: bool
+) -> None:
+    credential = "/etc/lowerduckpond/archive/credentials.json"
+    directory = "/run/lowerduckpond-m3-10-credential-drain"
+    dropin = f"/etc/systemd/system/{unit}.d/00-m3-10-install-proof.conf"
+    protection = f"/etc/systemd/system/{unit}.d/m3-10-archive-isolation.conf"
+    protected_content = (
+        "[Service]\nInaccessiblePaths=-/etc/lowerduckpond/archive\n"
+        "InaccessiblePaths=-/run/lowerduckpond-archive\n"
+    )
+    task_file = Path(__file__).parents[3] / "roles/static_host_agent/tasks/archive_credentials.yml"
+    install = {
+        "name": "Install the saved disposable credential through the production task",
+        "ansible.builtin.include_tasks": str(task_file),
+        "vars": {
+            "static_host_agent_archive_configuration": "{{ saved.content | b64decode | from_json }}"
+        },
+        "no_log": True,
+    }
+    proof = f"""import pathlib,time
+credential=pathlib.Path({credential!r})
+pathlib.Path({directory + "/ready"!r}).touch()
+while True:
+    if credential.exists():
+        pathlib.Path({directory + "/leaked"!r}).touch()
+    time.sleep(0.01)
+"""
+    tasks: list[dict[str, object]] = [
+        {"ansible.builtin.file": {"path": credential, "state": "absent"}, "no_log": True},
+        {"ansible.builtin.file": {"path": directory, "state": "directory", "mode": "0700"}},
+        {
+            "ansible.builtin.file": {
+                "path": f"/etc/systemd/system/{unit}.d",
+                "state": "directory",
+                "mode": "0755",
+            }
+        },
+        {"ansible.builtin.file": {"path": protection, "state": "absent"}},
+        {
+            "ansible.builtin.copy": {
+                "content": proof,
+                "dest": directory + "/probe.py",
+                "mode": "0600",
+            }
+        },
+        {
+            "ansible.builtin.copy": {
+                "dest": dropin,
+                "mode": "0644",
+                "content": (
+                    "[Service]\nType=simple\nInaccessiblePaths=\nExecStart=\n"
+                    f"ExecStart=/usr/bin/python3 {directory}/probe.py\nReadWritePaths={directory}\n"
+                ),
+            }
+        },
+        {
+            "ansible.builtin.systemd_service": {
+                "name": unit,
+                "state": "started",
+                "daemon_reload": True,
+            }
+        },
+        {"ansible.builtin.wait_for": {"path": directory + "/ready", "timeout": 30}},
+    ]
+    if written_before_retry:
+        # Simulate interruption after writing isolation, before reloading or
+        # draining the invocation that still has the older mount namespace.
+        tasks.append(
+            {
+                "ansible.builtin.copy": {
+                    "dest": protection,
+                    "content": protected_content,
+                    "mode": "0644",
+                }
+            }
+        )
+    tasks.extend(
+        [
+            install,
+            {
+                "ansible.builtin.command": {
+                    "argv": ["systemctl", "show", "--property=MainPID", "--value", unit]
+                },
+                "register": "main_pid",
+                "changed_when": False,
+            },
+            {"ansible.builtin.stat": {"path": directory + "/leaked"}, "register": "leaked"},
+            {"ansible.builtin.stat": {"path": credential}, "register": "installed"},
+            {
+                "ansible.builtin.assert": {
+                    "that": [
+                        "main_pid.stdout | trim == '0'",
+                        "not leaked.stat.exists",
+                        "installed.stat.exists",
+                    ]
+                }
+            },
+        ]
+    )
+    playbook = tmp_path / "credential-drain.json"
+    playbook.write_text(
+        json.dumps(
+            [
+                {
+                    "name": "Prove older backup processes exit before credential publication",
+                    "hosts": "all",
+                    "gather_facts": False,
+                    "tasks": [
+                        {
+                            "ansible.builtin.slurp": {"src": credential},
+                            "register": "saved",
+                            "no_log": True,
+                        },
+                        {
+                            "block": tasks,
+                            "always": [
+                                {
+                                    "ansible.builtin.systemd_service": {
+                                        "name": unit,
+                                        "state": "stopped",
+                                    }
+                                },
+                                {"ansible.builtin.file": {"path": dropin, "state": "absent"}},
+                                {"ansible.builtin.file": {"path": directory, "state": "absent"}},
+                                install,
+                                {"ansible.builtin.systemd_service": {"daemon_reload": True}},
+                            ],
+                        },
+                    ],
+                }
+            ]
+        )
+    )
+    inventory = tmp_path / "credential-drain-inventory.json"
+    inventory.write_text(
+        json.dumps(
+            {
+                "all": {
+                    "hosts": {
+                        "lowerduckpond-ubuntu-2604": {
+                            "ansible_connection": "community.docker.docker",
+                            "ansible_python_interpreter": "/usr/bin/python3",
+                        }
+                    }
+                }
+            }
+        )
+    )
+    timers = ["lowerduckpond-backup.timer", "lowerduckpond-backup-maintenance.timer"]
+    active = [
+        timer for timer in timers if host.run("systemctl is-active --quiet %s", timer).rc == 0
+    ]
+    try:
+        assert (
+            host.run(
+                "systemctl stop lowerduckpond-backup.timer "
+                "lowerduckpond-backup-maintenance.timer lowerduckpond-backup.service "
+                "lowerduckpond-backup-maintenance.service"
+            ).rc
+            == 0
+        )
+        result = subprocess.run(  # noqa: S603 - fixed disposable host and task-owned playbook
+            [sys.executable, "-m", "ansible.cli.playbook", "-i", str(inventory), str(playbook)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+    finally:
+        for timer in active:
+            assert host.run("systemctl start %s", timer).rc == 0
+
+
 def test_installed_empty_configuration_withdraws_existing_archive_credentials(
     host: Host, tmp_path: Path
 ) -> None:
