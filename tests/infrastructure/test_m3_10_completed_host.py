@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from lowerduckpond_static_contracts import canonical_json_bytes, manifest_digest
+from lowerduckpond_static_contracts import canonical_json_bytes, manifest_digest, result_digest
 from lowerduckpond_static_host_agent import LockManager, StateRepository
 
 ROOT = Path(__file__).parents[2]
@@ -70,7 +70,9 @@ def completed_host(tmp_path: Path) -> Path:
     record.write_bytes(canonical_json_bytes(job))
     record.chmod(0o600)
     with StateRepository(state, expected_owner=os.geteuid()) as repository:
-        repository.append_audit(json.loads((FIXTURES / "audit-entry.json").read_text()))
+        audit = json.loads((FIXTURES / "audit-entry.json").read_text())
+        audit["resultDigest"] = result_digest(json.loads(result.read_text())).to_dict()
+        repository.append_audit(audit)
     for name in ("srv/lowerduckpond/sites/.staging", "etc/caddy/intents"):
         directory = tmp_path / name
         directory.mkdir(parents=True)
@@ -122,10 +124,13 @@ def test_completed_host_preserves_nonempty_authorization_tenant_and_audit_state(
     assert (state / "tenants" / TENANT).is_dir()
 
 
+@pytest.mark.parametrize("drift", ["none", "missing", "digest", "reason", "principal"])
 def test_completed_host_preserves_administrator_results_without_an_ordinary_job(
     completed_host: Path,
+    drift: str,
 ) -> None:
     correlation = "0198d17f-6f4a-7000-8000-000000000077"
+    deleted_tenant = "0191e2c4-8f7a-7c3b-8d1e-5f62047a2199"
     result = {
         "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
         "kind": "OperationResult",
@@ -137,15 +142,51 @@ def test_completed_host_preserves_administrator_results_without_an_ordinary_job(
         "operation": "delete",
         "status": "succeeded",
         "correlationId": correlation,
-        "tenantId": TENANT,
-        "canonicalOrigin": "t-0191e2c48f7a7c3b8d1e5f62047a2100.lowerduckpond.com",
+        "tenantId": deleted_tenant,
+        "canonicalOrigin": "t-0191e2c48f7a7c3b8d1e5f62047a2199.lowerduckpond.com",
     }
     authorization = completed_host / "var/lib/lowerduckpond/static/authorization"
     path = authorization / "results" / (correlation + ".json")
     path.write_bytes(canonical_json_bytes(result))
     path.chmod(0o600)
+    with StateRepository(authorization.parent, expected_owner=os.geteuid()) as repository:
+        previous = repository.inspect_audit()
+        audit = json.loads((FIXTURES / "audit-entry.json").read_text())
+        audit.update(
+            sequence=previous.entry_count,
+            previousEntryDigest=previous.terminal_digest,
+            operatorPrincipal="ldp-admin",
+            operation="delete",
+            tenantId=deleted_tenant,
+            correlationId=correlation,
+            resultDigest=result_digest(result).to_dict(),
+        )
+        audit["deletionEvidence"] = {
+            "mode": "emergency",
+            "releasedSlugs": ["removed-tenant"],
+            "archiveRecordDigest": None,
+            "bucket": None,
+            "key": None,
+            "versionId": None,
+            "emergencyReason": "Installed administrator recovery",
+        }
+        repository.append_audit(audit, administrator=True)
+    segment = next((authorization.parent / "audit").iterdir())
+    if drift != "none":
+        first_entry = segment.read_bytes().splitlines(keepends=True)[0]
+        if drift == "digest":
+            audit["resultDigest"]["value"] = "f" * 64
+        elif drift == "reason":
+            audit["deletionEvidence"]["emergencyReason"] = "different reason"
+        elif drift == "principal":
+            audit["operatorPrincipal"] = "different-admin"
+        segment.write_bytes(
+            first_entry + (b"" if drift == "missing" else canonical_json_bytes(audit))
+        )
+    before = segment.read_bytes()
     outcome = gate(completed_host)
-    assert outcome.returncode == 0, outcome.stderr
+    assert (outcome.returncode == 0) is (drift == "none"), outcome.stderr
+    assert segment.read_bytes() == before
     assert path.read_bytes() == canonical_json_bytes(result)
     assert not (authorization / "jobs" / (correlation + ".json")).exists()
 
@@ -366,3 +407,72 @@ def test_completed_host_refuses_unbound_or_incomplete_archive_records(
     before = {p: p.read_bytes() for p in path.parent.rglob("*") if p.is_file()}
     assert gate(completed_host).returncode != 0
     assert {p: p.read_bytes() for p in path.parent.rglob("*") if p.is_file()} == before
+
+
+@pytest.mark.parametrize(
+    "drift", ["missing", "digest", "status", "principal", "tenant", "correlation"]
+)
+def test_completed_host_binds_each_terminal_result_to_its_audit(
+    completed_host: Path, drift: str
+) -> None:
+    directory = completed_host / "var/lib/lowerduckpond/static/audit"
+    path = next(directory.iterdir())
+    if drift == "missing":
+        path.unlink()
+    else:
+        audit = json.loads(path.read_text())
+        if drift == "digest":
+            audit["resultDigest"]["value"] = "f" * 64
+        elif drift == "status":
+            audit["resultStatus"] = "failed"
+        elif drift == "principal":
+            audit["operatorPrincipal"] = "different@example.test"
+        else:
+            audit["tenantId" if drift == "tenant" else "correlationId"] = (
+                "0198d17f-6f4a-7000-8000-000000000099"
+            )
+        path.write_bytes(canonical_json_bytes(audit))
+    before = {p: p.read_bytes() for p in directory.iterdir()}
+    assert gate(completed_host).returncode != 0
+    assert {p: p.read_bytes() for p in directory.iterdir()} == before
+
+
+@pytest.mark.parametrize(
+    "version,audited", [("static-job-v1", False), ("static-job-v2", False), ("static-job-v2", True)]
+)
+def test_completed_host_preserves_only_the_legacy_failed_job_audit_exception(
+    completed_host: Path, version: str, audited: bool
+) -> None:
+    state = completed_host / "var/lib/lowerduckpond/static"
+    job_path = next((state / "authorization/jobs").iterdir())
+    job = json.loads(job_path.read_text())
+    job["phase"] = "failed"
+    job["compatibilityVersion"] = version
+    if version == "static-job-v2":
+        job.update(executionValidated=True, sourceAuthority=None)
+    job_path.write_bytes(canonical_json_bytes(job))
+    correlation_path = next((state / "authorization/correlations").iterdir())
+    correlation_path.write_bytes(canonical_json_bytes(job))
+    result = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationResult",
+        "provenance": {"kind": "authorization-job", "jobId": job["jobId"]},
+        "correlationId": job["request"]["correlationId"],
+        "operation": "create",
+        "status": "failed",
+        "errorCode": "not_implemented",
+        "tenantId": None,
+    }
+    result_path = next((state / "authorization/results").iterdir())
+    result_path.write_bytes(canonical_json_bytes(result))
+    audit_path = next((state / "audit").iterdir())
+    audit = json.loads(audit_path.read_text())
+    audit_path.unlink()
+    if audited:
+        audit.update(
+            resultDigest=result_digest(result).to_dict(), resultStatus="failed", tenantId=None
+        )
+        with StateRepository(state, expected_owner=os.geteuid()) as repository:
+            repository.append_audit(audit)
+    outcome = gate(completed_host)
+    assert (outcome.returncode == 0) is (audited or version == "static-job-v1"), outcome.stderr

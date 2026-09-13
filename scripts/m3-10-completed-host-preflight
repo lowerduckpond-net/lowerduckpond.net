@@ -55,11 +55,11 @@ import re
 import sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
-from lowerduckpond_static_contracts import canonical_json_bytes, manifest_digest
+from lowerduckpond_static_contracts import canonical_json_bytes, manifest_digest, result_digest
 from lowerduckpond_static_host_agent import StateRepository, StateRecordPath
 from lowerduckpond_static_host_agent.audit import DEFAULT_AUDIT_LIMITS
 from lowerduckpond_static_host_agent.correlations import _durable_binding
-from lowerduckpond_static_host_agent.execution import _validate_request_integrity
+from lowerduckpond_static_host_agent.execution import _validate_request_integrity, _validate_result_audit
 from lowerduckpond_static_host_agent.job_runtime import _validate_result_for_job
 from lowerduckpond_static_host_agent.state_inventory import DEFAULT_STATE_INVENTORY_LIMITS
 
@@ -77,6 +77,10 @@ with StateRepository(Path(sys.argv[2]), expected_owner=0) as repository:
         # Reject incomplete publication files before invoking inventory/audit
         # readers, whose normal recovery behavior can retire abandoned copies.
         root = Path(sys.argv[2])
+        for name in names(root / 'audit', DEFAULT_AUDIT_LIMITS.maximum_segments):
+            if re.fullmatch(r'segment-[0-9]{20}\.jsonl', name) is None:
+                raise SystemExit('M3.10 audit publication is incomplete')
+        transaction.inspect_audit()
         remaining = DEFAULT_STATE_INVENTORY_LIMITS.maximum_authorization_records
         for directory, record_path in (
             ('jobs', StateRecordPath.authorization_job),
@@ -105,20 +109,31 @@ with StateRepository(Path(sys.argv[2]), expected_owner=0) as repository:
                         StateRecordPath.authorization_result(document['jobId'])).document
                     _validate_request_integrity(document)
                     _validate_result_for_job(document, result)
+                    # False denotes a valid historical result, not a failed check.
+                    # The validator preserves the legacy-v1 failed-result exception.
+                    _validate_result_audit(transaction, document, result)
                     if document['phase'] != ('completed' if result['status'] == 'succeeded' else 'failed'):
                         raise SystemExit('M3.10 terminal phase differs from its result')
                     peer = transaction.read(StateRecordPath.authorization_correlation(
                         document['request']['correlationId'])).document
                     if _durable_binding(peer) != _durable_binding(document):
                         raise SystemExit('M3.10 authorization pair has drifted')
+                elif directory == 'results' and document['provenance']['kind'] == 'emergency-administrator':
+                    audit = transaction.inspect_audit_correlation(document['correlationId']).entry
+                    provenance = document['provenance']
+                    if (audit is None or audit['operation'] != 'delete' or
+                        audit['operatorPrincipal'] != provenance['operatorPrincipal'] or
+                        audit['tenantId'] != document['tenantId'] or
+                        audit['resultStatus'] != document['status'] or
+                        audit['resultDigest'] != result_digest(document).to_dict() or
+                        audit['deletionEvidence']['emergencyReason'] != provenance['reason'] or
+                        os.path.lexists(root / 'tenants' / document['tenantId'])):
+                        raise SystemExit('M3.10 administrator result lacks exact audited deletion')
                 elif directory == 'correlations':
                     peer = transaction.read(
                         StateRecordPath.authorization_job(document['jobId'])).document
                     if _durable_binding(peer) != _durable_binding(document):
                         raise SystemExit('M3.10 authorization pair requires repair')
-        for name in names(root / 'audit', DEFAULT_AUDIT_LIMITS.maximum_segments):
-            if re.fullmatch(r'segment-[0-9]{20}\.jsonl', name) is None:
-                raise SystemExit('M3.10 audit publication is incomplete')
         inventory = transaction.measure_inventory()
         archives = []
         for tenant in inventory.tenant_ids:
@@ -141,7 +156,6 @@ with StateRepository(Path(sys.argv[2]), expected_owner=0) as repository:
             archives.append(record)
         if len({record['key'] for record in archives}) != len(archives):
             raise SystemExit('M3.10 archive key has multiple authoritative bindings')
-        transaction.inspect_audit()
         if transaction.measure_intent_records().records:
             raise SystemExit('M3.10 host has pending durable work')
         sys.stdout.buffer.write(canonical_json_bytes({'format': 'lowerduckpond-m3-10-archive-authority-v1',

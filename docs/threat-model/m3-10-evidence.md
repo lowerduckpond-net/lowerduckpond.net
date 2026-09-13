@@ -328,7 +328,7 @@ The subsequent installed archive/deletion rerun passed all four checks in
 cycles, full-size archive/restore, capture/Caddy/Ansible overlap, historical
 replay, ordinary/emergency deletion, interrupted archived deletion recovery,
 and final accounting. A separate complete remote inventory confirmed no
-versions, markers, or multipart uploads. The stricter completed-host preflight
+versions, markers, or multipart uploads. The completed-host preflight at `3754661f`
 also passed against that installed host with its permanent ordinary and
 administrator history retained.
 
@@ -341,6 +341,16 @@ after those ACL reads. Public or foreign grants, missing or extra versions,
 delete markers, and unaccounted multipart work fail without mutation. The SDK
 policy guard permits only version-specific managed-object ACL reads in addition
 to its existing bucket reads; runtime network authority is unchanged.
+
+A subsequent review correction binds each terminal ordinary result through the
+runtime's existing audit validator, including digest, status, principal,
+operation, tenant, transition time, and deletion/failure evidence. Its false
+return for valid superseded history is retained, as is its legacy-v1 failure
+exception. Administrator results independently require the exact audited reason
+and result, with the deleted tenant absent. Audit publication files are rejected
+before any correlation reader can retire an abandoned copy. Regression cases
+cover missing and conflicting ordinary/admin audit entries and the legacy/v2
+failure distinction; this gate-only change does not alter the installed artifact.
 
 ## Outstanding convergence gates
 
