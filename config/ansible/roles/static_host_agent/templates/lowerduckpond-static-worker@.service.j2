@@ -48,7 +48,9 @@ BindReadOnlyPaths={{ static_host_agent_install_root }}
 BindReadOnlyPaths=/etc/lowerduckpond/static-publication.json
 BindPaths=/run/caddy
 BindReadOnlyPaths=/run/systemd
+{% if static_host_agent_archive_lifecycle_enabled | bool %}
 BindReadOnlyPaths=/run/lowerduckpond-archive
+{% endif %}
 BindPaths={{ static_host_agent_state_root }}
 BindPaths={{ static_host_agent_release_root }}
 BindPaths=/etc/caddy

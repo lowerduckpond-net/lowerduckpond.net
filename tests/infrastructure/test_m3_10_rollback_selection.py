@@ -30,7 +30,22 @@ def test_production_inventory_disables_new_services_for_the_explicit_legacy_arti
                             / "config/ansible/inventories/production/group_vars/hosting_nodes.yml"
                         ),
                     ],
+                    "vars": {
+                        "provisioner_user": "ldp-provisioner",
+                        "provisioner_group": "ldp-provisioner",
+                    },
                     "tasks": [
+                        {
+                            "ansible.builtin.template": {
+                                "src": str(
+                                    ROOT
+                                    / "config/ansible/roles/static_host_agent/templates"
+                                    / "lowerduckpond-static-worker@.service.j2"
+                                ),
+                                "dest": str(tmp_path / "worker.service"),
+                                "mode": "0600",
+                            }
+                        },
                         {
                             "ansible.builtin.assert": {
                                 "that": [
@@ -46,7 +61,7 @@ def test_production_inventory_disables_new_services_for_the_explicit_legacy_arti
                                     ),
                                 ]
                             }
-                        }
+                        },
                     ],
                 }
             ]
@@ -74,3 +89,5 @@ def test_production_inventory_disables_new_services_for_the_explicit_legacy_arti
         text=True,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+    worker = (tmp_path / "worker.service").read_text()
+    assert ("BindReadOnlyPaths=/run/lowerduckpond-archive\n" in worker) is (not rollback)
