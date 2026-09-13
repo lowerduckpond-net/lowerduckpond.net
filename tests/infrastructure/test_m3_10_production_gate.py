@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import copy
+import json
 import os
 import subprocess
 import sys
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
@@ -387,12 +389,13 @@ def test_completed_storage_policy_allows_tenant_objects_without_reading_or_mutat
     storage.responses.update(
         list_objects_v2={"Contents": [{"Key": "tenant/archive.zip"}]},
         list_object_versions={"Versions": [{"Key": "tenant/archive.zip", "VersionId": "v1"}]},
-        list_multipart_uploads={"Uploads": [{"Key": "tenant/archive.zip", "UploadId": "u1"}]},
     )
     before = copy.deepcopy(storage.responses)
     check_storage(cast(PolicyClient, storage), bucket="archive-fixture", require_empty=False)
     assert storage.responses == before
-    assert storage.calls == [name for name in storage.responses if name.startswith("get_")]
+    assert storage.calls == [name for name in storage.responses if name.startswith("get_")] + [
+        "list_multipart_uploads"
+    ]
 
 
 @pytest.mark.parametrize(
@@ -436,8 +439,9 @@ def test_completed_provider_command_rechecks_both_edges_without_emptying_storage
     monkeypatch.setattr(sys, "argv", ["provider-check", "--allow-existing-archives"])
     monkeypatch.setattr(provider, "make_policy_client", lambda _config: storage)
     monkeypatch.setattr(provider, "CloudflareClient", lambda _token: object())
-    monkeypatch.setattr(provider, "_read_ca_path", lambda: (Path("/fixture/ca.pem"), "fixture-ca"))
-    monkeypatch.setattr(provider, "validate_ca_certificate", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        provider, "verified_ca_bundle", lambda **_kwargs: nullcontext(Path("/fixture/ca.pem"))
+    )
     checked: list[str] = []
 
     def check_zone(_client: object, **arguments: object) -> None:
@@ -453,4 +457,69 @@ def test_completed_provider_command_rechecks_both_edges_without_emptying_storage
         if failed_zone == "lowerduckpond.net"
         else ["lowerduckpond.net", "lowerduckpond.com"]
     )
-    assert storage.calls == [name for name in storage.responses if name.startswith("get_")]
+    assert storage.calls == [name for name in storage.responses if name.startswith("get_")] + [
+        "list_multipart_uploads"
+    ]
+
+
+def test_completed_provider_policy_refuses_whole_bucket_multipart_without_cleanup() -> None:
+    storage = Storage()
+    storage.responses["list_multipart_uploads"] = {
+        "Uploads": [{"Key": "outside-qualification/archive.zip", "UploadId": "u1"}],
+        "IsTruncated": False,
+    }
+    before = copy.deepcopy(storage.responses)
+    with pytest.raises(GateError, match="multipart"):
+        check_storage(cast(PolicyClient, storage), bucket="archive-fixture", require_empty=False)
+    assert storage.responses == before
+    assert storage.calls[-1] == "list_multipart_uploads"
+
+
+@pytest.mark.parametrize("selected", ["old", "replacement"])
+def test_overlapping_origin_pull_trust_accepts_the_leaf_from_either_valid_ca(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, selected: str
+) -> None:
+    anchors: dict[str, tuple[Path, dict[str, str]]] = {}
+    for name in ("old", "replacement"):
+        directory = tmp_path / name
+        directory.mkdir()
+        anchors[name] = _certificate_fixture(directory)
+    monkeypatch.setenv(
+        "CADDY_ORIGIN_PULL_CA_PATHS_JSON",
+        json.dumps([str(path) for path, _leaf in anchors.values()]),
+    )
+    with provider.verified_ca_bundle(now=datetime.now(UTC)) as bundle:
+        selected_edge = Edge(bundle, anchors[selected][1])
+        edge_gate(selected_edge)
+    assert not bundle.exists()
+    # A replacement leaf must still fail when only the old CA is trusted.
+    if selected == "replacement":
+        with pytest.raises(ProductionEdgePreflightError):
+            edge_gate(Edge(anchors["old"][0], anchors[selected][1]))
+
+
+@pytest.mark.parametrize("bad_anchor", ["relative", "duplicate", "three", "symlink", "leaf-as-ca"])
+def test_origin_pull_overlap_rejects_unsafe_or_unvalidated_anchors(
+    edge: Edge, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad_anchor: str
+) -> None:
+    paths = [str(edge.ca_path)]
+    other = tmp_path / "other.pem"
+    if bad_anchor == "relative":
+        paths.append("relative.pem")
+    elif bad_anchor == "duplicate":
+        paths.append(paths[0])
+    elif bad_anchor == "three":
+        paths.extend([str(other), str(tmp_path / "third.pem")])
+    elif bad_anchor == "symlink":
+        other.symlink_to(edge.ca_path)
+        paths.append(str(other))
+    else:
+        leaf = cast(list[dict[str, str]], edge.responses["/origin_tls_client_auth"])[0]
+        other.write_text(leaf["certificate"])
+        paths.append(str(other))
+    monkeypatch.setenv("CADDY_ORIGIN_PULL_CA_PATHS_JSON", json.dumps(paths))
+    with (
+        pytest.raises((GateError, ProductionEdgePreflightError)),
+        provider.verified_ca_bundle(now=datetime.now(UTC)),
+    ):
+        pytest.fail("unsafe overlapping trust was accepted")
