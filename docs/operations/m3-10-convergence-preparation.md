@@ -151,8 +151,9 @@ completion. First installation retains the strict M3.6 empty-state gate. A
 completed candidate instead checks operator identity, reproducible builds,
 the pinned installed artifact, authoritative Caddy state, and bounded permanent
 authorization and audit history. Jobs must have matching terminal results and
-complete job/correlation pairs; administrator results retain their separate
-authority. Tenant records and history are retained;
+complete job/correlation pairs. Terminal results must match their exact audit
+correlation, digest, status, and authority, retaining the runtime's legacy-failure
+exception. Administrator results retain their separately audited authority. Tenant records and history are retained;
 unfinished work, interrupted publication files, quarantine, or active lifecycle
 workers fail the check without cleanup. Ordinary reconfiguration requires the unchanged
 source revision and artifact in its root-owned completion record, written only after convergence,
