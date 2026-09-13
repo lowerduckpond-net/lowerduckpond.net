@@ -105,11 +105,19 @@ dedicated archive credential is retained in the established independent
 workstation backup. The report's source and artifact must exactly match the
 candidate, with completion within the preceding 24 hours. Repeat qualification
 if the source/artifact changes or evidence expires.
+The report also binds the oldest input evidence, so all supporting proofs must
+still be within 24 hours when consumed. Packaging an interrupted run cannot
+refresh its age: the final proof time is recorded before the independent final
+storage check, and stale phase markers or storage evidence prevent packaging.
 
 The guarded configuration runner also exercises the freshly loaded archive and
 backup runtime keys before its first host mutation. This bounded storage check
 proves versioned write/read/delete and mutual bucket denial with the exact keys
 about to be installed, including after key rotation or routine reconfiguration.
+First convergence retains the whole-bucket-empty guard. A previously completed,
+unchanged artifact uses only a new probe prefix, preserving existing tenant
+versions, delete markers, and multipart uploads. This scoped check cannot
+produce the full empty-baseline qualification report.
 It supplements the full installed qualification. A failure stops configuration
 and retains diagnostics in the private directory printed by the runner.
 
@@ -145,6 +153,11 @@ wrapper derives its dedicated archive values from encrypted OpenTofu outputs,
 separately from the backup key, and passes them to Ansible through environment
 lookups. Credential installation suppresses task logging and diffs. This is the
 host runtime credential location; the workstation source remains unchanged.
+Withdrawing configuration closes activation sockets, removes the credential
+file, and stops service instances that may already hold the key in memory.
+The same drain runs after an interrupted withdrawal that already removed the
+file. Compatible sockets can reopen afterward; new instances require the
+credential file and cannot acquire withdrawn authority.
 
 The read, construction, and cleanup services receive that configuration through
 separate root-only sockets under `/run/lowerduckpond-archive`. The parser worker

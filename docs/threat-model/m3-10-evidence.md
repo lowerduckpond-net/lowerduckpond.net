@@ -261,6 +261,21 @@ retry whose isolation file was already written.
 All four installed backup-process drain cases passed against the disposable
 systemd host, covering both backup units and both first-install/retry paths.
 
+Further gate review binds report age to the recorded final independent proof
+and the oldest supporting evidence; stale storage reports and phase markers
+cannot become fresh through later packaging. After completed convergence,
+current-key validation uses a unique probe prefix and preserves existing
+versions, delete markers, and multipart uploads. It cannot create an
+empty-baseline qualification report. The combined infrastructure/storage/report
+suite passed 177 tests, including the scoped command's success and failure paths.
+
+Credential withdrawal now closes activation, removes the file, and stops every
+active archive service instance that may retain loaded key material. Seven
+installed cases passed against the actual service templates: idle withdrawal
+and all three instance types, both before and after interrupted file removal.
+The tests retain credential bytes only inside a disposable service process,
+prove that its process exits, and restore the fixture's credential and sockets.
+
 ## Outstanding convergence gates
 
 1. Finish acceptance and required CI for every dependent PR, merge the reviewed
