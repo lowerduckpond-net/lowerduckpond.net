@@ -69,8 +69,10 @@ objects, historical versions, delete markers, or multipart uploads. Unknown
 inventory fails the gate and grants no cleanup authority.
 
 The live qualification first checks the entire empty archive bucket, then runs
-mutual archive/backup denial and exact-version storage acceptance. It installs
-the candidate on a disposable local systemd host and runs the existing full
+mutual archive/backup denial and exact-version storage acceptance.
+Each key must be denied both current-key deletion and exact-version deletion in
+the other bucket, using only objects created by that qualification run.
+It installs the candidate on a disposable local systemd host and runs the existing full
 M3.8–M3.10 lifecycle, races, emergency recovery, reboot, and quarantine matrix
 against real Spaces using the packaged private services. New installed probes
 exercise the complete service policy: only the archive network boundary can

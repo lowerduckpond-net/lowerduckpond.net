@@ -55,6 +55,8 @@ class FakeS3Client:
         self.backend = backend
         self.allowed_buckets = allowed_buckets
         self.write_buckets = write_buckets if write_buckets is not None else allowed_buckets
+        self.delete_buckets = self.write_buckets
+        self.delete_version_buckets = self.write_buckets
         self.denial_code = denial_code
         self.denial_status = denial_status
         self.corrupt_reads = False
@@ -215,6 +217,8 @@ class FakeS3Client:
             raise _client_error("ServiceUnavailable", 503, operation)
         bucket = _string_argument(kwargs, "Bucket")
         allowed = self.write_buckets if write else self.allowed_buckets
+        if operation == "DeleteObject":
+            allowed = self.delete_version_buckets if "VersionId" in kwargs else self.delete_buckets
         if bucket not in allowed:
             raise _client_error(self.denial_code, self.denial_status, operation)
         return bucket
@@ -401,6 +405,39 @@ def test_acceptance_permanently_deletes_an_unexpected_cross_bucket_write() -> No
         )
 
     assert all(not objects for objects in backend.objects.values())
+
+
+@pytest.mark.parametrize("source_bucket", ["backups", "archives"])
+@pytest.mark.parametrize("versioned", [False, True])
+@pytest.mark.parametrize("require_empty_archive", [False, True])
+def test_acceptance_refuses_delete_only_cross_bucket_authority(
+    source_bucket: str, versioned: bool, require_empty_archive: bool
+) -> None:
+    backend = FakeBackend()
+    backup = FakeS3Client(backend, {"backups"})
+    archive = FakeS3Client(backend, {"archives"})
+    # A retained object and its marker must survive the scoped credential check.
+    if not require_empty_archive:
+        archive.put_object(Bucket="archives", Key="retained", Body=b"kept", ContentLength=4)
+        archive.delete_object(Bucket="archives", Key="retained")
+    retained = deepcopy(backend.objects.get("archives", {}))
+    source = backup if source_bucket == "backups" else archive
+    if versioned:
+        source.delete_version_buckets = {"backups", "archives"}
+    else:
+        source.delete_buckets = {"backups", "archives"}
+
+    with pytest.raises(ArchiveQualificationError, match="operation unexpectedly succeeded"):
+        run_acceptance(
+            backup_client=backup,
+            archive_client=archive,
+            backup_bucket="backups",
+            archive_bucket="archives",
+            require_empty_archive=require_empty_archive,
+        )
+
+    assert backend.objects == {"backups": {}, "archives": retained}
+    assert all(not uploads for uploads in backend.uploads.values())
 
 
 def test_preflight_rejects_current_versions_and_markers() -> None:
