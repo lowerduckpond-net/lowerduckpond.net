@@ -300,6 +300,29 @@ configuration for the legacy artifact even when archive keys remain in the
 workstation environment, selecting the already-qualified withdrawal path.
 Production-profile Ansible lint passed for 141 files; typing and formatting passed.
 
+The completed-host preflight now runs after source/artifact completion is
+identified, allowing permanent tenant and audit history while retaining the
+initial empty-host gate. It checks bounded canonical authorization and audit
+records, exact artifact identity, authoritative enforced Caddy state, and
+quiescence. Interrupted publication files are rejected before readers that
+normally retire abandoned copies, so the gate preserves diagnostic evidence.
+The updated gate/storage suite passed 235 tests, with one separately configured
+MinIO test skipped; strict typing passed for 240 files. The actual production
+worker template also omits archive socket binds for the legacy rollback, and
+both edge zones must return their exact IDs and a common valid account identity.
+
+All nine installed credential-withdrawal cases passed against the selected
+`71947349c9d5452f39cce6b0ad22916950869c76a629dd4bbecf9c68168f4c27`
+artifact, including managed emergency recovery before and after credential
+unlink. Fresh installation, zero-change reapplication, installed source-bound
+completion, and full-size export/import passed for this artifact. A subsequent
+archive run exposed a timing race in the capture test helper: the worker can
+already be active while waiting for the export lock. The helper now identifies
+the exact worker's lock waiter; the failed deletion recovered through normal
+authority and succeeded. This failed run does not constitute complete installed
+qualification. Required CI and subsequent installed evidence must establish the
+final release; earlier complete runs remain identified by their revisions above.
+
 ## Outstanding convergence gates
 
 1. Finish acceptance and required CI for every dependent PR, merge the reviewed

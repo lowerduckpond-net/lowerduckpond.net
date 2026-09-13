@@ -107,7 +107,7 @@ check-ansible-static: _sync
     bash -n scripts/preflight-m3-dark-host-production
     bash -n scripts/preflight-m3-6-production
     bash -n scripts/preflight-m3-7-production
-    bash -n scripts/preflight-m3-10-production scripts/m3-10-host-preflight scripts/lib/m3-10-production-state scripts/m3-10-spaces-qualification
+    bash -n scripts/preflight-m3-10-production scripts/m3-10-host-preflight scripts/m3-10-completed-host-preflight scripts/m3-10-convergence-state scripts/lib/m3-10-production-state scripts/m3-10-spaces-qualification
     bash -n scripts/check-m3-6-operator-identity
     bash -n scripts/check-production-inventory
     bash -n config/ansible/roles/caddy/files/caddy-validate
