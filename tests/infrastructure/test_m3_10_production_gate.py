@@ -207,6 +207,59 @@ def test_enforced_edge_passes_unchanged(edge: Edge) -> None:
     edge_gate(edge)
 
 
+@pytest.mark.parametrize("status", ["active", "deleted"])
+def test_edge_gate_accepts_explicitly_invalidated_hostname_associations(
+    edge: Edge, status: str
+) -> None:
+    edge.responses["/origin_tls_client_auth/hostnames"] = [
+        {"hostname": f"retired-{index}.example.invalid", "enabled": None, "status": status}
+        for index in range(3)
+    ]
+    edge_gate(edge)
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        None,
+        [],
+        {},
+        {"hostname": "override.example.invalid", "status": "active"},
+        *(
+            {"hostname": "override.example.invalid", "enabled": enabled, "status": "active"}
+            for enabled in cast(
+                tuple[object, ...], (True, False, 0, 1, "null", "false", "", [], {})
+            )
+        ),
+        *(
+            {"hostname": "override.example.invalid", "enabled": None, "status": status}
+            for status in (
+                None,
+                "initializing",
+                "pending_deployment",
+                "pending_deletion",
+                "deployment_timed_out",
+                "deletion_timed_out",
+                "unknown",
+            )
+        ),
+        {"hostname": "override.example.invalid", "enabled": None},
+        {"enabled": None, "status": "active"},
+        {"hostname": None, "enabled": None, "status": "active"},
+        {"hostname": "", "enabled": None, "status": "active"},
+    ],
+)
+def test_edge_gate_rejects_overrides_or_ambiguous_records_after_invalidated_associations(
+    edge: Edge, entry: object
+) -> None:
+    edge.responses["/origin_tls_client_auth/hostnames"] = [
+        {"hostname": "retired.example.invalid", "enabled": None, "status": "active"},
+        entry,
+    ]
+    with pytest.raises(GateError, match="hostname-level origin-pull"):
+        edge_gate(edge)
+
+
 @pytest.mark.parametrize(
     "routes",
     [

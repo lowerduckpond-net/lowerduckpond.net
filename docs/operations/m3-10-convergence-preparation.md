@@ -85,6 +85,15 @@ Origin-pull trust accepts one or two distinct absolute public CA paths, supporti
 the existing phased CA rotation. Every supplied CA must pass the certificate
 policy; each active leaf must chain to a validated anchor in that set.
 
+Cloudflare may retain historical hostname-level origin-pull associations after
+invalidation. The gate accepts records with an explicit `enabled: null` and a
+settled association status (`active` or `deleted`); these do not require cleanup.
+Both `enabled: true` and `enabled: false` remain forbidden overrides: Cloudflare
+[documents that false suppresses the zone-level client certificate, while null
+invalidates the association](https://developers.cloudflare.com/api/resources/origin_tls_client_auth/subresources/hostnames/methods/update/).
+Missing or malformed fields and pending, failed, or unknown association states
+fail the gate. Certificate status is separate from association status.
+
 Run these commands in that secure shell:
 
 ```bash

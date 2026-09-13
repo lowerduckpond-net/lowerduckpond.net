@@ -322,8 +322,22 @@ def check_edge(  # noqa: PLR0912, PLR0913 - explicit enforced-edge identity and 
     aop = client.get_aop_setting(zone_id)
     if not isinstance(aop, dict) or aop.get("enabled") is not True:
         raise GateError("edge origin pulls are not enabled")
-    if client.get_collection(f"{zone}/origin_tls_client_auth/hostnames"):
-        raise GateError("edge has unexpected hostname-level origin-pull overrides")
+    # Cloudflare retains invalidated associations with enabled=null, even when
+    # status is active. False still suppresses the zone-level client certificate.
+    # Require explicit invalidation and a settled association, never a missing
+    # flag or an update whose deployment/deletion has not finished.
+    if any(
+        not isinstance(item, dict)
+        or not isinstance(item.get("hostname"), str)
+        or not item["hostname"]
+        or "enabled" not in item
+        or item["enabled"] is not None
+        or item.get("status") not in ("active", "deleted")
+        for item in client.get_collection(f"{zone}/origin_tls_client_auth/hostnames")
+    ):
+        raise GateError(
+            f"edge {domain} has unexpected or unsettled hostname-level origin-pull overrides"
+        )
     certificates = client.get_collection(f"{zone}/origin_tls_client_auth")
     active = [
         certificate
