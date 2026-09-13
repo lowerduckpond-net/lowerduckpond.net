@@ -47,6 +47,9 @@ Use the existing state passphrase. No new passphrase or credential storage
 convention is needed. Bucket-configuration reads use the existing operator key:
 [DigitalOcean distinguishes those permissions from limited object access](https://docs.digitalocean.com/reference/api/spaces/).
 An access-denied response never proves that a policy is absent.
+Origin-pull trust accepts one or two distinct absolute public CA paths, supporting
+the existing phased CA rotation. Every supplied CA must pass the certificate
+policy; each active leaf must chain to a validated anchor in that set.
 
 Run these commands in that secure shell:
 
@@ -116,10 +119,11 @@ proves versioned write/read/delete and mutual bucket denial with the exact keys
 about to be installed, including after key rotation or routine reconfiguration.
 First convergence retains the whole-bucket-empty guard. A previously completed,
 unchanged source and artifact use only a new probe prefix, preserving existing tenant
-versions, delete markers, and multipart uploads. This scoped check cannot
+versions and delete markers. This scoped check cannot
 produce the full empty-baseline qualification report. Every completed-candidate
 run also rechecks bucket privacy, versioning, absence of policy/lifecycle rules,
-both enforced edge zones, and the complete live host firewall. These read-only
+whole-bucket absence of incomplete multipart uploads, both enforced edge zones,
+and the complete live host firewall. These read-only
 checks allow existing archives and run before the credential probe or host mutation.
 It supplements the full installed qualification. A failure stops configuration
 and retains diagnostics in the private directory printed by the runner.
@@ -144,7 +148,8 @@ attempt clears prior completion before Ansible; interrupted attempts must pass
 the full gate again. Its strict preceding-host inventory refuses partial M3.10
 installations, which require investigation and a reviewed recovery rather than
 automatic authorization to retry. The explicit reviewed rollback workflow
-clears completion and retains its existing checks. After an actual convergence, record the new production
+clears completion, supplies empty archive configuration to withdraw its credential,
+and retains its existing checks. After an actual convergence, record the new production
 identity and update the preflight pins through review before another upgrade;
 do not add broad candidate allowances to the first-convergence gate.
 

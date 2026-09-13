@@ -4,31 +4,37 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sys
-from collections.abc import Callable, Mapping
+import tempfile
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from http import HTTPStatus
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Final, Protocol, cast
 
 from botocore.exceptions import BotoCoreError, ClientError  # type: ignore[import-untyped]
 from lowerduckpond_m3_archive.storage import (
     S3Client,
     assert_storage_empty,
     assert_versioning_enabled,
+    list_multipart_uploads,
 )
 from lowerduckpond_static_host_agent.archive_configuration import ArchiveConfiguration
 
 from scripts.check_m3_7_production_edge import (
+    MAXIMUM_CERTIFICATE_BYTES,
     CloudflareClient,
     ProductionEdgePreflightError,
-    _read_ca_path,
     validate_ca_certificate,
     validate_leaf_certificate,
 )
 from scripts.m3_10_policy_client import make_policy_client
+
+_MAXIMUM_TRUST_ANCHORS: Final = 2
 
 
 class GateError(RuntimeError):
@@ -99,6 +105,8 @@ def check_storage(client: PolicyClient, *, bucket: str, require_empty: bool = Tr
         assert_storage_empty(client, bucket=bucket, prefix="")
     else:
         assert_versioning_enabled(client, bucket=bucket)
+        if list_multipart_uploads(client, bucket=bucket, prefix="").uploads:
+            raise GateError("archive bucket has incomplete multipart uploads")
 
 
 def expected_rules(domain: str) -> dict[str, dict[str, object]]:
@@ -255,6 +263,36 @@ def required(environment: Mapping[str, str], name: str) -> str:
     return value
 
 
+@contextmanager
+def verified_ca_bundle(*, now: datetime) -> Iterator[Path]:
+    """Validate the one or two bounded public trust anchors used during rotation."""
+    paths = json.loads(required(os.environ, "CADDY_ORIGIN_PULL_CA_PATHS_JSON"))
+    if (
+        not isinstance(paths, list)
+        or not 1 <= len(paths) <= _MAXIMUM_TRUST_ANCHORS
+        or any(not isinstance(path, str) or not path.startswith("/") for path in paths)
+        or len(set(paths)) != len(paths)
+    ):
+        raise GateError("origin-pull trust requires one or two distinct absolute CA paths")
+    with tempfile.TemporaryDirectory(prefix="m3-10-trust-") as temporary:
+        certificates: list[bytes] = []
+        for index, name in enumerate(paths):
+            original = Path(name)
+            if not original.is_file() or original.is_symlink():
+                raise GateError("the production CA certificate path is unsafe")
+            with original.open("rb") as source:
+                pem = source.read(MAXIMUM_CERTIFICATE_BYTES + 1)
+            # Validate the exact bytes that will be trusted, even if the public
+            # input file changes before the provider returns its active leaf.
+            copied = Path(temporary) / f"ca-{index}.pem"
+            copied.write_bytes(pem)
+            validate_ca_certificate(copied, pem, now=now)
+            certificates.append(pem)
+        bundle = Path(temporary) / "trust.pem"
+        bundle.write_bytes(b"\n".join(certificates))
+        yield bundle
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--storage-only", action="store_true")
@@ -280,22 +318,21 @@ def main() -> int:
             print(f"M3.10 {storage_proof} passed.")
             return 0
         edge = CloudflareClient(required(os.environ, "CLOUDFLARE_API_TOKEN"))
-        ca_path, ca_pem = _read_ca_path()
         now = datetime.now(UTC)
-        validate_ca_certificate(ca_path, ca_pem, now=now)
-        for domain, prefix in (
-            ("lowerduckpond.net", "CLOUDFLARE"),
-            ("lowerduckpond.com", "CLOUDFLARE_TENANT"),
-        ):
-            check_edge(
-                edge,
-                zone_id=required(os.environ, f"{prefix}_ZONE_ID"),
-                certificate_id=required(os.environ, f"{prefix}_ORIGIN_PULL_CERTIFICATE_ID"),
-                domain=domain,
-                origin=required(os.environ, "PRODUCTION_ORIGIN_IPV4"),
-                ca_path=ca_path,
-                now=now,
-            )
+        with verified_ca_bundle(now=now) as ca_path:
+            for domain, prefix in (
+                ("lowerduckpond.net", "CLOUDFLARE"),
+                ("lowerduckpond.com", "CLOUDFLARE_TENANT"),
+            ):
+                check_edge(
+                    edge,
+                    zone_id=required(os.environ, f"{prefix}_ZONE_ID"),
+                    certificate_id=required(os.environ, f"{prefix}_ORIGIN_PULL_CERTIFICATE_ID"),
+                    domain=domain,
+                    origin=required(os.environ, "PRODUCTION_ORIGIN_IPV4"),
+                    ca_path=ca_path,
+                    now=now,
+                )
     except (BotoCoreError, ClientError, RuntimeError, ValueError, OSError) as error:
         # Provider exceptions can include request URLs, headers, and credentials.
         message = (

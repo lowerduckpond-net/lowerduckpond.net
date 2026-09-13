@@ -289,6 +289,17 @@ lifecycle configuration; both edge zones and the live firewall remain mandatory.
 All 189 current gate/storage tests passed, including unsafe provider controls,
 either edge zone failing, and refusal before any convergence mutation.
 
+The following provider/rollback regressions bring the current gate/storage suite
+to 197 passing tests. Completed checks reject whole-bucket multipart uploads
+without cleanup while permitting existing object versions. One or two bounded
+public CA inputs are individually validated and copied into temporary trust;
+real OpenSSL chain tests accept active leaves from either rotation anchor and
+reject a replacement leaf with only the old anchor. Unsafe overlap inputs fail
+closed. The evaluated production inventory now passes empty archive
+configuration for the legacy artifact even when archive keys remain in the
+workstation environment, selecting the already-qualified withdrawal path.
+Production-profile Ansible lint passed for 141 files; typing and formatting passed.
+
 ## Outstanding convergence gates
 
 1. Finish acceptance and required CI for every dependent PR, merge the reviewed
