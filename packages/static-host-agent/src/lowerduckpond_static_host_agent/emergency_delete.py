@@ -247,11 +247,42 @@ class EmergencyDeletion:
         )
         verify_emergency_state(self.repository, transaction, intent, committed=False)
         self._admit(transaction, intent, preparing=True, audit_missing=True, result_missing=True)
-        stored = transaction.create_immutable(
-            StateRecordPath.emergency_deletion_intent(correlation), intent
-        )
+        with self.runtime.using_held_publication_lock(self.repository):
+            try:
+                self._candidate(transaction, intent, audit_missing=True)
+                # Publishing a generation can share the state filesystem. Check
+                # terminal capacity again before installing durable authority.
+                self._admit(
+                    transaction, intent, preparing=True, audit_missing=True, result_missing=True
+                )
+                stored = transaction.create_immutable(
+                    StateRecordPath.emergency_deletion_intent(correlation), intent
+                )
+            except BaseException:
+                self._discard_uncommitted_candidate(transaction, intent)
+                raise
         self.hook("authority-sync")
         return stored
+
+    def _discard_uncommitted_candidate(
+        self, transaction: _StateTransaction, intent: dict[str, object]
+    ) -> None:
+        try:
+            stored = transaction.read(StateRecordPath.emergency_deletion_intent(intent["intentId"]))
+        except FileNotFoundError:
+            candidate_id = str(intent["candidateRuntimeGenerationId"])
+            try:
+                candidate = self.runtime.open_verified_generation(candidate_id)
+            except FileNotFoundError:
+                return
+            with candidate:
+                manifest = candidate.manifest
+            self.runtime.discard_unselected_candidate(candidate_id, manifest)
+        else:
+            if stored.document != intent:
+                raise EmergencyDeletionError(
+                    "emergency intent publication has conflicting authority"
+                )
 
     def _commit(self, prepared: StoredContract) -> dict[str, object]:
         document = prepared.document
