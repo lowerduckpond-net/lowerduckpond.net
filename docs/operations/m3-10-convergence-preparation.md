@@ -106,6 +106,13 @@ workstation backup. The report's source and artifact must exactly match the
 candidate, with completion within the preceding 24 hours. Repeat qualification
 if the source/artifact changes or evidence expires.
 
+The guarded configuration runner also exercises the freshly loaded archive and
+backup runtime keys before its first host mutation. This bounded storage check
+proves versioned write/read/delete and mutual bucket denial with the exact keys
+about to be installed, including after key rotation or routine reconfiguration.
+It supplements the full installed qualification. A failure stops configuration
+and retains diagnostics in the private directory printed by the runner.
+
 Stop here for the requested convergence starting gate. When production
 convergence is separately requested, retain these non-secret gate inputs in the
 secure shell and use the existing guarded runner:
@@ -143,7 +150,11 @@ The read, construction, and cleanup services receive that configuration through
 separate root-only sockets under `/run/lowerduckpond-archive`. The parser worker
 sees those sockets while retaining its network isolation and cannot see the
 credential file. Backup and maintenance units hide the credential directory
-and archive sockets. Each service derives the permitted object operation from
+and archive sockets. Before publishing the credential, installation loads that
+isolation for future backup invocations and stops any invocation that could
+still have the previous mount namespace. Retrying an interrupted first
+installation repeats this drain while the credential remains absent.
+Each service derives the permitted object operation from
 its durable job, source binding, and journal; requests cannot supply credentials
 or arbitrary storage locations.
 

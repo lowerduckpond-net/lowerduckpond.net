@@ -248,6 +248,19 @@ passed record, exact-artifact check, and invalidation against the disposable
 host's actual root-owned directory policy. These are local checks, not live
 Spaces or production evidence.
 
+The next convergence review fixes passed all 133 M3.10 infrastructure tests,
+the production Ansible lint profile (141 files), and the complete OpenTofu
+checks. Freshly loaded runtime keys must pass bounded storage acceptance before
+host mutation; regressions cover both an initial candidate and a previously
+completed candidate when either acceptance or report verification fails.
+Archive bucket names are rejected during infrastructure validation unless they
+match the same lowercase-letter, digit, and dash contract used at runtime.
+Credential installation now loads backup isolation and drains older invocations
+before publishing the archive credential, including an interrupted first-install
+retry whose isolation file was already written.
+All four installed backup-process drain cases passed against the disposable
+systemd host, covering both backup units and both first-install/retry paths.
+
 ## Outstanding convergence gates
 
 1. Finish acceptance and required CI for every dependent PR, merge the reviewed
