@@ -8,6 +8,8 @@ import os
 import subprocess
 from pathlib import Path
 
+from scripts.check_cloudflare_networks import NetworkSnapshotError, compare_snapshot
+
 
 def match(left: object, right: object, operation: str = "==") -> dict[str, object]:
     return {"match": {"op": operation, "left": left, "right": right}}
@@ -143,7 +145,9 @@ def main() -> int:
         if not isinstance(admin, list) or not all(isinstance(item, str) for item in admin):
             raise ValueError("administrative source contract is invalid")
         root = Path(__file__).resolve().parents[1]
-        published = json.loads((root / "platform/cloudflare-networks.json").read_text())
+        snapshot = root / "platform/cloudflare-networks.json"
+        compare_snapshot(snapshot, repository=root)
+        published = json.loads(snapshot.read_text())
         web = [
             value
             for name in (
@@ -177,7 +181,14 @@ def main() -> int:
             timeout=30,
         )
         check_firewall(json.loads(outcome.stdout), admin=admin, web=web)
-    except OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError:
+    except (
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+        subprocess.SubprocessError,
+        NetworkSnapshotError,
+    ):
         print("M3.10 active host firewall proof failed closed.")
         return 1
     print("M3.10 active host firewall matches reviewed administrative and Cloudflare-only policy.")

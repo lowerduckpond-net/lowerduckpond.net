@@ -105,8 +105,14 @@ review; private phase logs support workstation-side diagnosis.
 The workstation's Cloudflare token must also permit `Workers Routes Read` for
 both zones. The gate requires an empty
 [Workers-route inventory](https://developers.cloudflare.com/api/resources/workers/subresources/routes/methods/list/)
-for each zone, independently of the Rulesets inventory. An unavailable or
-nonempty inventory fails the check before host changes.
+for each zone, independently of the Rulesets inventory. It also requires empty
+[legacy Page Rules](https://developers.cloudflare.com/api/resources/page_rules/methods/list/)
+in both zones; their read endpoint accepts the existing `Zone Read` scope or
+`Page Rules Read`. An unavailable or nonempty inventory fails the check before
+host changes. The firewall proof compares the committed active CIDRs with both
+current Cloudflare network lists before inspecting the host. Provider drift or
+an unavailable list fails closed; reviewed retiring ranges retain their existing
+provenance checks, and the live check never replaces the committed snapshot.
 
 Record the accepted PRs and required CI, merged source, reproducible artifact,
 live report checksum, final read-only preflight, and confirmation that the

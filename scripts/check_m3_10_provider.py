@@ -274,11 +274,11 @@ def check_edge(  # noqa: PLR0912, PLR0913 - explicit enforced-edge identity and 
         raise GateError("edge identity is malformed")
     zone = f"/zones/{zone_id}"
     account_id = _zone_account(client.get(zone), zone_id=zone_id, domain=domain)
-    # Workers routes are a separate, non-paginated API collection; they are
-    # absent from the Rulesets inventory and must remain explicitly empty.
-    workers_routes = client.get(f"{zone}/workers/routes")
-    if not isinstance(workers_routes, list) or workers_routes:
-        raise GateError("edge Workers routes are present or malformed")
+    # Both collections are absent from Rulesets and have no pagination metadata.
+    for label, endpoint in (("Workers routes", "workers/routes"), ("Page Rules", "pagerules")):
+        inventory = client.get(f"{zone}/{endpoint}")
+        if not isinstance(inventory, list) or inventory:
+            raise GateError(f"edge {label} are present or malformed")
     records = client.get_collection(f"{zone}/dns_records")
     routing = [
         item
