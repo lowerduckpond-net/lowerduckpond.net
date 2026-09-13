@@ -122,7 +122,13 @@ class Edge:
         self.ca_path = ca_path
         self.now = datetime.now(UTC)
         self.responses: dict[str, object] = {
-            "": {"name": "lowerduckpond.net", "status": "active", "paused": False},
+            "": {
+                "id": "a" * 32,
+                "account": {"id": "e" * 32},
+                "name": "lowerduckpond.net",
+                "status": "active",
+                "paused": False,
+            },
             "/dns_records": [
                 {"name": name, "type": "A", "content": "192.0.2.1", "proxied": True, "ttl": 1}
                 for name in ("lowerduckpond.net", "*.lowerduckpond.net")
@@ -205,7 +211,7 @@ def test_edge_gate_revalidates_the_actual_origin_pull_certificate(edge: Edge, dr
 
 @pytest.mark.parametrize("status", [None, "pending", "moved", "deactivated"])
 def test_edge_gate_requires_an_active_zone(edge: Edge, status: str | None) -> None:
-    edge.responses[""] = {"name": "lowerduckpond.net", "status": status, "paused": False}
+    cast(dict[str, object], edge.responses[""])["status"] = status
     with pytest.raises(GateError, match="active status"):
         edge_gate(edge)
 
@@ -417,7 +423,9 @@ def test_completed_storage_policy_still_refuses_unsafe_provider_controls(
         check_storage(cast(PolicyClient, storage), bucket="archive-fixture", require_empty=False)
 
 
-@pytest.mark.parametrize("failed_zone", [None, "lowerduckpond.net", "lowerduckpond.com"])
+@pytest.mark.parametrize(
+    "failed_zone", [None, "lowerduckpond.net", "lowerduckpond.com", "different-account"]
+)
 def test_completed_provider_command_rechecks_both_edges_without_emptying_storage(
     monkeypatch: pytest.MonkeyPatch, failed_zone: str | None
 ) -> None:
@@ -444,11 +452,14 @@ def test_completed_provider_command_rechecks_both_edges_without_emptying_storage
     )
     checked: list[str] = []
 
-    def check_zone(_client: object, **arguments: object) -> None:
+    def check_zone(_client: object, **arguments: object) -> str:
         domain = str(arguments["domain"])
         checked.append(domain)
         if domain == failed_zone:
             raise GateError("edge policy drifted")
+        return (
+            "f" if failed_zone == "different-account" and domain == "lowerduckpond.com" else "e"
+        ) * 32
 
     monkeypatch.setattr(provider, "check_edge", check_zone)
     assert provider.main() == (0 if failed_zone is None else 1)
@@ -523,3 +534,23 @@ def test_origin_pull_overlap_rejects_unsafe_or_unvalidated_anchors(
         provider.verified_ca_bundle(now=datetime.now(UTC)),
     ):
         pytest.fail("unsafe overlapping trust was accepted")
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("id", None),
+        ("id", "c" * 32),
+        ("account", None),
+        ("account", {}),
+        ("account", {"id": "E" * 32}),
+        ("account", {"id": 3}),
+        ("account", {"id": "e" * 31}),
+    ],
+)
+def test_edge_gate_rejects_mismatched_zone_and_malformed_account(
+    edge: Edge, field: str, value: object
+) -> None:
+    cast(dict[str, object], edge.responses[""])[field] = value
+    with pytest.raises(GateError, match="identity"):
+        edge_gate(edge)
