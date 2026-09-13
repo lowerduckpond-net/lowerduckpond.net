@@ -72,6 +72,10 @@ The live qualification first checks the entire empty archive bucket, then runs
 mutual archive/backup denial and exact-version storage acceptance.
 Each key must be denied both current-key deletion and exact-version deletion in
 the other bucket, using only objects created by that qualification run.
+The same boundary checks bucket metadata, current and versioned reads/listings,
+and multipart listing, creation, and abort. Each owner opens a disposable upload
+so foreign abort denial is tested against a real upload; the owner verifies it
+survives, then aborts it. Cleanup remains confined to the run's probe prefixes.
 It installs the candidate on a disposable local systemd host and runs the existing full
 M3.8–M3.10 lifecycle, races, emergency recovery, reboot, and quarantine matrix
 against real Spaces using the packaged private services. New installed probes
