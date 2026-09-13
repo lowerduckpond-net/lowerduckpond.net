@@ -37,8 +37,9 @@ uses these existing infrastructure inputs:
 | --- | --- |
 | `OPENTOFU_STATE_ACCESS_KEY_ID`, `OPENTOFU_STATE_SECRET_ACCESS_KEY`, `OPENTOFU_STATE_BUCKET`, `SPACES_REGION`, `OPENTOFU_ENCRYPTION_PASSPHRASE` | Read and decrypt existing production state. |
 | `SPACES_ACCESS_KEY_ID`, `SPACES_SECRET_ACCESS_KEY` | Existing workstation Spaces operator key for read-only bucket ACL, policy, and lifecycle inspection. |
-| `CLOUDFLARE_API_TOKEN` | Existing infrastructure token for read-only current edge policy checks. |
+| `CLOUDFLARE_API_TOKEN` | Existing account-owned `production-edge-opentofu` token for current edge policy checks. |
 | `M3_10_TOKEN_AUDIT_TOKEN` | Temporary account-owned token with only Account API Tokens Read on the production account, lasting at most seven days. |
+| `M3_10_PAGE_RULES_TOKEN` | Separate workstation user-owned token with only Page Rules Read on both production zones; create with a 30-day expiry, up to 90 days permitted. |
 | `CLOUDFLARE_ZONE_ID`, `CLOUDFLARE_TENANT_ZONE_ID` | Exact production zone identities. |
 | `CLOUDFLARE_ORIGIN_PULL_CERTIFICATE_ID`, `CLOUDFLARE_TENANT_ORIGIN_PULL_CERTIFICATE_ID` | Exact accepted active origin-pull leaves. |
 
@@ -55,6 +56,31 @@ DNS Write on both reviewed zones. The audit token follows the existing
 [token-audit procedure](m3-public-edge-rollout.md#configure-the-protected-workflow-inputs);
 name it for M3.10 and its creation date. Keep it on the secure workstation,
 never install or back it up, and revoke it after the final provider check.
+The edge, Caddy, and audit credentials use account-token verification endpoints;
+their `cfat_` prefixes are passed unchanged. Their ownership is proved by the
+account API, including for legacy account tokens without the new prefix.
+
+[Cloudflare's account-token compatibility matrix](https://developers.cloudflare.com/fundamentals/api/get-started/account-owned-tokens/#compatibility-matrix)
+currently excludes Page Rules. A Page Rules Read grant on an account token cannot
+resolve that incompatibility. Create a separate user-owned token in your profile's
+API token settings, named `workstation-page-rules` with its creation date. Give it
+only **App Security → Page Rules → Read**, limited to `lowerduckpond.net` and
+`lowerduckpond.com`. Set its expiry to 30 days by default; up to 90 days is allowed.
+The gate requires it to be active, already valid, and expiring within the next
+90 days. It verifies this credential through `/user/tokens/verify` and confines
+its remaining requests to the two exact Page Rules inventories. It does not
+inspect or claim to audit the user token's full permission policy; configure the
+single grant above when creating it.
+
+This user token remains a workstation verification input for preflight, live
+qualification, and later production configuration sessions. The scripts do not
+persist it, install it on the host, or place it in state, inventory, backups, or
+GitHub secrets. Revoke it when no longer needed and create a replacement for a
+later session after expiry. Keep Caddy and the edge and audit credentials
+account-owned. The edge token retains its six existing OpenTofu edit grants plus
+**Developer Platform → Workers Routes → Read** on the two zones. It does not need
+Page Rules Read or Zone Read for M3.10.
+
 Origin-pull trust accepts one or two distinct absolute public CA paths, supporting
 the existing phased CA rotation. Every supplied CA must pass the certificate
 policy; each active leaf must chain to a validated anchor in that set.
@@ -119,14 +145,17 @@ review; private phase logs support workstation-side diagnosis.
 The workstation's Cloudflare token must also permit `Workers Routes Read` for
 both zones. The gate requires an empty
 [Workers-route inventory](https://developers.cloudflare.com/api/resources/workers/subresources/routes/methods/list/)
-for each zone, independently of the Rulesets inventory. It also requires empty
+for each zone, independently of the Rulesets inventory. The separate user token
+must prove empty
 [legacy Page Rules](https://developers.cloudflare.com/api/resources/page_rules/methods/list/)
-in both zones; their read endpoint accepts the existing `Zone Read` scope or
-`Page Rules Read`. An unavailable or nonempty inventory fails the check before
+in both zones using only Page Rules Read. An unavailable or nonempty inventory fails the check before
 host changes. The firewall proof compares the committed active CIDRs with both
 current Cloudflare network lists before inspecting the host. Provider drift or
 an unavailable list fails closed; reviewed retiring ranges retain their existing
 provenance checks, and the live check never replaces the committed snapshot.
+Cloudflare request failures report a sanitized endpoint template and HTTP status,
+or a network/TLS error category. Return that line for diagnosis; it excludes
+credential values, raw response bodies, queries, and account/zone/token IDs.
 
 Record the accepted PRs and required CI, merged source, reproducible artifact,
 live report checksum, final read-only preflight, and confirmation that the

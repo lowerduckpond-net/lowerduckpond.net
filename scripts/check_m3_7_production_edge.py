@@ -77,6 +77,36 @@ EDGE_TOKEN_PERMISSIONS: Final = frozenset(
 AUDIT_TOKEN_PERMISSIONS: Final = frozenset({"Account API Tokens Read"})
 WEB_ROUTING_DNS_RECORD_TYPES: Final = frozenset({"A", "AAAA", "CNAME", "HTTPS", "SVCB"})
 SAFE_COEXISTING_DNS_RECORD_TYPES: Final = frozenset({"CAA", "MX", "TXT"})
+_API_DIAGNOSTIC_PATHS: Final = (
+    "/user/tokens/verify",
+    "/zones/{zone_id}",
+    "/zones/{zone_id}/dns_records",
+    "/zones/{zone_id}/workers/routes",
+    "/zones/{zone_id}/pagerules",
+    "/zones/{zone_id}/origin_tls_client_auth",
+    "/zones/{zone_id}/origin_tls_client_auth/settings",
+    "/zones/{zone_id}/origin_tls_client_auth/hostnames",
+    "/zones/{zone_id}/rulesets",
+    *(
+        f"/zones/{{zone_id}}/settings/{name}"
+        for name in ("ssl", "always_online", "always_use_https")
+    ),
+    *(f"/zones/{{zone_id}}/rulesets/phases/{phase}/entrypoint" for phase in MANAGED_RULESET_PHASES),
+    "/accounts/{account_id}/tokens/verify",
+    "/accounts/{account_id}/tokens/permission_groups",
+    "/accounts/{account_id}/tokens/{token_id}",
+)
+
+
+def _api_diagnostic_path(path: str) -> str:
+    """Expose only known endpoint templates, never identifiers or query inputs."""
+    for template in _API_DIAGNOSTIC_PATHS:
+        pattern = re.escape(template)
+        for placeholder in ("zone_id", "account_id", "token_id"):
+            pattern = pattern.replace(re.escape("{" + placeholder + "}"), r"[0-9a-f]{32}")
+        if re.fullmatch(pattern, path):
+            return template
+    return "<unrecognized endpoint>"
 
 
 class ProductionEdgePreflightError(RuntimeError):
@@ -100,6 +130,7 @@ class CloudflareClient:
     ) -> dict[str, object]:
         if not path.startswith("/") or ".." in path:
             raise ProductionEdgePreflightError("a Cloudflare API path is unsafe")
+        context = f"Cloudflare GET {_api_diagnostic_path(path)}"
         encoded_query = ""
         if query:
             encoded_query = f"?{urllib.parse.urlencode(query)}"
@@ -117,21 +148,27 @@ class CloudflareClient:
             ) as response:
                 if response.status not in accepted_statuses:
                     raise ProductionEdgePreflightError(
-                        "Cloudflare returned an unexpected HTTP status"
+                        f"{context}: unexpected HTTP status {response.status}"
                     )
                 raw = response.read(MAXIMUM_API_RESPONSE_BYTES + 1)
-        except (OSError, TimeoutError, urllib.error.URLError) as error:
-            raise ProductionEdgePreflightError("a Cloudflare API request failed") from error
+        except urllib.error.HTTPError as error:
+            status = error.code
+            error.close()
+            raise ProductionEdgePreflightError(f"{context}: HTTP {status}") from None
+        except OSError, TimeoutError, urllib.error.URLError:
+            raise ProductionEdgePreflightError(
+                f"{context}: network or TLS request failed"
+            ) from None
         if len(raw) > MAXIMUM_API_RESPONSE_BYTES:
-            raise ProductionEdgePreflightError("a Cloudflare API response exceeded its bound")
+            raise ProductionEdgePreflightError(f"{context}: response exceeded its bound")
         try:
             value = json.loads(raw)
-        except (UnicodeError, json.JSONDecodeError) as error:
-            raise ProductionEdgePreflightError("a Cloudflare API response is invalid") from error
+        except UnicodeError, json.JSONDecodeError:
+            raise ProductionEdgePreflightError(f"{context}: response is invalid") from None
         if not isinstance(value, dict) or value.get("success") is not True:
-            raise ProductionEdgePreflightError("Cloudflare rejected a read-only preflight request")
+            raise ProductionEdgePreflightError(f"{context}: rejected read-only preflight request")
         if "result" not in value:
-            raise ProductionEdgePreflightError("a Cloudflare API response omitted its result")
+            raise ProductionEdgePreflightError(f"{context}: response omitted its result")
         return value
 
     def get(self, path: str, *, query: Mapping[str, str] | None = None) -> object:
@@ -572,14 +609,14 @@ def _resolve_permission_groups(
     return resolved
 
 
-def _account_token_details(
-    audit_client: CloudflareClient,
-    target_client: CloudflareClient,
+def verify_active_account_token(
+    client: CloudflareClient,
     *,
     account_id: str,
     label: str,
-) -> Mapping[str, object]:
-    verification = target_client.get(f"/accounts/{account_id}/tokens/verify")
+) -> str:
+    """Prove account ownership through its endpoint without inferring from a prefix."""
+    verification = client.get(f"/accounts/{account_id}/tokens/verify")
     token_id = verification.get("id") if isinstance(verification, dict) else None
     if (
         not isinstance(verification, dict)
@@ -588,6 +625,17 @@ def _account_token_details(
         or ZONE_ID_PATTERN.fullmatch(token_id) is None
     ):
         raise ProductionEdgePreflightError(f"the {label} token did not verify as active")
+    return token_id
+
+
+def _account_token_details(
+    audit_client: CloudflareClient,
+    target_client: CloudflareClient,
+    *,
+    account_id: str,
+    label: str,
+) -> Mapping[str, object]:
+    token_id = verify_active_account_token(target_client, account_id=account_id, label=label)
     details = audit_client.get(f"/accounts/{account_id}/tokens/{token_id}")
     if not isinstance(details, dict) or details.get("id") != token_id:
         raise ProductionEdgePreflightError(f"the {label} token details are malformed")

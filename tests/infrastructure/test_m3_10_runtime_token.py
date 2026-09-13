@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import sys
+import urllib.parse
+import urllib.request
 from contextlib import nullcontext
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
@@ -10,7 +12,9 @@ from typing import cast
 import pytest
 
 from scripts import check_m3_10_provider as provider
-from scripts.check_m3_7_production_edge import ProductionEdgePreflightError
+from scripts.check_m3_7_production_edge import CloudflareClient, ProductionEdgePreflightError
+
+from .test_m3_7_production_gate import _CloudflareResponse
 
 _ACCOUNT = "a" * 32
 _ZONES = {"b" * 32: "lowerduckpond.net", "c" * 32: "lowerduckpond.com"}
@@ -18,9 +22,10 @@ _RUNTIME = "d" * 32
 _AUDIT = "e" * 32
 _PERMISSIONS = {"Zone Read": "1" * 32, "DNS Write": "2" * 32, "Account API Tokens Read": "3" * 32}
 _SECRETS = {
-    "caddy": "caddy-token-canary",
-    "audit": "audit-token-canary",
-    "edge": "edge-token-canary",
+    "caddy": "cfat_caddy_test_canary_0000000000000000",
+    "audit": "cfat_audit_test_canary_0000000000000000",
+    "edge": "cfat_edge_test_canary_0000000000000000",
+    "pages": "cfut_page_rules_test_canary_0000000000",
 }
 
 
@@ -29,7 +34,7 @@ class TokenFixture:
         self.defect = defect
         self.calls: list[tuple[str, str]] = []
 
-    def client(self, token: str) -> provider.CloudflareClient:
+    def client(self, token: str) -> CloudflareClient:
         role = next(role for role, value in _SECRETS.items() if value == token)
         fixture = self
 
@@ -38,11 +43,18 @@ class TokenFixture:
                 fixture.calls.append((role, path))
                 return fixture.response(role, path, query)
 
-        return cast(provider.CloudflareClient, Client())
+        return cast(CloudflareClient, Client())
 
     def response(  # noqa: PLR0912 - explicit independent provider defects
         self, role: str, path: str, query: dict[str, str] | None
     ) -> object:
+        if path == "/user/tokens/verify":
+            assert role == "pages"
+            return {
+                "id": "f" * 32,
+                "status": "active",
+                "expires_on": (datetime.now(UTC) + timedelta(days=30)).isoformat(),
+            }
         if path.startswith("/zones/"):
             assert role == "caddy"
             zone_id = path.removeprefix("/zones/")
@@ -161,6 +173,7 @@ def test_provider_completion_requires_the_current_runtime_token_policy(
         "CLOUDFLARE_API_TOKEN": _SECRETS["edge"],
         "CADDY_CLOUDFLARE_API_TOKEN": _SECRETS["caddy"],
         "M3_10_TOKEN_AUDIT_TOKEN": _SECRETS["audit"],
+        "M3_10_PAGE_RULES_TOKEN": _SECRETS["pages"],
         "CLOUDFLARE_ZONE_ID": "b" * 32,
         "CLOUDFLARE_TENANT_ZONE_ID": "c" * 32,
         "CLOUDFLARE_ORIGIN_PULL_CERTIFICATE_ID": "1" * 32,
@@ -190,3 +203,39 @@ def test_provider_completion_requires_the_current_runtime_token_policy(
         assert ("caddy", f"/accounts/{_ACCOUNT}/tokens/verify") in fixture.calls
         assert ("audit", f"/accounts/{_ACCOUNT}/tokens/{_RUNTIME}") in fixture.calls
         assert all(("caddy", f"/zones/{zone}") in fixture.calls for zone in _ZONES)
+
+
+def test_cfat_runtime_and_auditor_use_account_endpoints_with_intact_bearer_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = TokenFixture(None)
+
+    def respond(request: urllib.request.Request, *, timeout: int) -> _CloudflareResponse:
+        assert timeout > 0
+        role = next(
+            role
+            for role, token in _SECRETS.items()
+            if request.get_header("Authorization") == f"Bearer {token}"
+        )
+        target = urllib.parse.urlsplit(request.full_url)
+        assert target.netloc == "api.cloudflare.com"
+        assert not target.path.startswith("/client/v4/user/")
+        path = target.path.removeprefix("/client/v4")
+        fixture.calls.append((role, path))
+        query = dict(urllib.parse.parse_qsl(target.query))
+        return _CloudflareResponse({"success": True, "result": fixture.response(role, path, query)})
+
+    monkeypatch.setattr(urllib.request, "urlopen", respond)
+    provider.check_caddy_token(
+        {
+            "CLOUDFLARE_API_TOKEN": _SECRETS["edge"],
+            "CADDY_CLOUDFLARE_API_TOKEN": _SECRETS["caddy"],
+            "M3_10_TOKEN_AUDIT_TOKEN": _SECRETS["audit"],
+            "CLOUDFLARE_ZONE_ID": "b" * 32,
+            "CLOUDFLARE_TENANT_ZONE_ID": "c" * 32,
+        },
+        account_id=_ACCOUNT,
+        now=datetime.now(UTC),
+    )
+    assert ("caddy", f"/accounts/{_ACCOUNT}/tokens/verify") in fixture.calls
+    assert ("audit", f"/accounts/{_ACCOUNT}/tokens/verify") in fixture.calls

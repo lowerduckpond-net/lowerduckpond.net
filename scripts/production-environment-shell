@@ -163,11 +163,16 @@ main() {
     if [[ ${m3_10_inputs} == true ]]; then
         # These are existing operator/provider credentials. Bucket-only runtime
         # credentials are still obtained exclusively from encrypted state.
-        local gate_name gate_value
+        local gate_name gate_value gate_label
         for gate_name in SPACES_ACCESS_KEY_ID SPACES_SECRET_ACCESS_KEY CLOUDFLARE_API_TOKEN; do
             gate_value=${!gate_name:-}
             if [[ -z ${gate_value} ]]; then
-                prompt_secret gate_value "Existing operator ${gate_name} (hidden)"
+                case ${gate_name} in
+                    SPACES_ACCESS_KEY_ID) gate_label='Existing full-access Spaces operator key ID' ;;
+                    SPACES_SECRET_ACCESS_KEY) gate_label='Matching full-access Spaces operator secret' ;;
+                    CLOUDFLARE_API_TOKEN) gate_label='production-edge-opentofu account API token' ;;
+                esac
+                prompt_secret gate_value "${gate_label} (${gate_name}; hidden)"
             fi
             [[ -n ${gate_value} ]] || return 2
             export "${gate_name}=${gate_value}"
@@ -176,7 +181,15 @@ main() {
             CLOUDFLARE_ORIGIN_PULL_CERTIFICATE_ID CLOUDFLARE_TENANT_ORIGIN_PULL_CERTIFICATE_ID; do
             gate_value=${!gate_name:-}
             if [[ -z ${gate_value} ]]; then
-                prompt gate_value "Existing production ${gate_name}"
+                case ${gate_name} in
+                    CLOUDFLARE_ZONE_ID) gate_label='lowerduckpond.net Zone ID' ;;
+                    CLOUDFLARE_TENANT_ZONE_ID) gate_label='lowerduckpond.com Zone ID' ;;
+                    CLOUDFLARE_ORIGIN_PULL_CERTIFICATE_ID)
+                        gate_label='lowerduckpond.net active origin-pull certificate ID' ;;
+                    CLOUDFLARE_TENANT_ORIGIN_PULL_CERTIFICATE_ID)
+                        gate_label='lowerduckpond.com active origin-pull certificate ID' ;;
+                esac
+                prompt gate_value "${gate_label} (${gate_name})"
             fi
             [[ -n ${gate_value} ]] || return 2
             export "${gate_name}=${gate_value}"
@@ -188,6 +201,13 @@ main() {
         fi
         [[ -n ${gate_value} ]] || return 2
         export M3_10_TOKEN_AUDIT_TOKEN=${gate_value}
+        gate_value=${M3_10_PAGE_RULES_TOKEN:-}
+        if [[ -z ${gate_value} ]]; then
+            prompt_secret gate_value \
+                'Workstation Page Rules Read user API token (expires within 90 days; hidden)'
+        fi
+        [[ -n ${gate_value} ]] || return 2
+        export M3_10_PAGE_RULES_TOKEN=${gate_value}
     fi
 
     cd "${repository_root}"

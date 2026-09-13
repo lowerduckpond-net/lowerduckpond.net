@@ -40,7 +40,9 @@ from scripts.check_m3_7_production_edge import (
     _require_zone_identity,
     validate_ca_certificate,
     validate_leaf_certificate,
+    verify_active_account_token,
 )
+from scripts.m3_10_page_rules import PageRulesClient
 from scripts.m3_10_policy_client import make_policy_client
 
 _MAXIMUM_TRUST_ANCHORS: Final = 2
@@ -259,6 +261,7 @@ def _zone_account(details: object, *, zone_id: str, domain: str) -> str:
 def check_edge(  # noqa: PLR0912, PLR0913 - explicit enforced-edge identity and trust
     client: CloudflareClient,
     *,
+    page_rules_client: PageRulesClient,
     zone_id: str,
     certificate_id: str,
     domain: str,
@@ -276,9 +279,13 @@ def check_edge(  # noqa: PLR0912, PLR0913 - explicit enforced-edge identity and 
         raise GateError("edge identity is malformed")
     zone = f"/zones/{zone_id}"
     account_id = _zone_account(client.get(zone), zone_id=zone_id, domain=domain)
+    verify_active_account_token(client, account_id=account_id, label="OpenTofu edge")
     # Both collections are absent from Rulesets and have no pagination metadata.
-    for label, endpoint in (("Workers routes", "workers/routes"), ("Page Rules", "pagerules")):
-        inventory = client.get(f"{zone}/{endpoint}")
+    for label, endpoint, reader in (
+        ("Workers routes", "workers/routes", client),
+        ("Page Rules", "pagerules", page_rules_client),
+    ):
+        inventory = reader.get(f"{zone}/{endpoint}")
         if not isinstance(inventory, list) or inventory:
             raise GateError(f"edge {label} are present or malformed")
     records = client.get_collection(f"{zone}/dns_records")
@@ -402,6 +409,27 @@ def check_caddy_token(environment: Mapping[str, str], *, account_id: str, now: d
     )
 
 
+def page_rules_client(environment: Mapping[str, str], *, now: datetime) -> PageRulesClient:
+    token = required(environment, "M3_10_PAGE_RULES_TOKEN")
+    if token in {
+        required(environment, name)
+        for name in (
+            "CLOUDFLARE_API_TOKEN",
+            "CADDY_CLOUDFLARE_API_TOKEN",
+            "M3_10_TOKEN_AUDIT_TOKEN",
+        )
+    }:
+        raise GateError("the Page Rules user token must be separate from the account tokens")
+    return PageRulesClient(
+        CloudflareClient(token),
+        zone_ids=frozenset(
+            required(environment, name)
+            for name in ("CLOUDFLARE_ZONE_ID", "CLOUDFLARE_TENANT_ZONE_ID")
+        ),
+        now=now,
+    )
+
+
 @contextmanager
 def verified_ca_bundle(*, now: datetime) -> Iterator[Path]:
     """Validate the one or two bounded public trust anchors used during rotation."""
@@ -478,6 +506,7 @@ def main() -> int:
             return 0
         edge = CloudflareClient(required(os.environ, "CLOUDFLARE_API_TOKEN"))
         now = datetime.now(UTC)
+        page_rules = page_rules_client(os.environ, now=now)
         account_ids: set[str] = set()
         with verified_ca_bundle(now=now) as ca_path:
             for domain, prefix in (
@@ -486,6 +515,7 @@ def main() -> int:
             ):
                 account_id = check_edge(
                     edge,
+                    page_rules_client=page_rules,
                     zone_id=required(os.environ, f"{prefix}_ZONE_ID"),
                     certificate_id=required(os.environ, f"{prefix}_ORIGIN_PULL_CERTIFICATE_ID"),
                     domain=domain,
