@@ -3,9 +3,9 @@
 Status: preparation only; the convergence starting gate has not passed.
 The [implementation plan](../plans/milestone-3.10.md) and
 [component evidence](../threat-model/m3-10-evidence.md) identify the implemented
-lifecycle and recovery paths. Local and disposable installed qualification are
-complete; live provider, production preflight, and reviewed-release evidence
-remain outstanding.
+lifecycle and recovery paths. Local and disposable installed evidence is recorded
+by revision. Release CI and live provider evidence must match the final candidate;
+production preflight and the convergence gate remain outstanding.
 Publication remains `static_publication_enabled: false`.
 
 ## Secure-workstation workflow

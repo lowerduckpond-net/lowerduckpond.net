@@ -179,7 +179,7 @@ def test_operator_identity_gate_refuses_tab_separated_key(tmp_path: Path) -> Non
     assert "STATIC_OPERATOR_PUBLIC_KEY" in result.stderr
 
 
-def test_production_convergence_repeats_the_m3_6_preflight() -> None:
+def test_production_convergence_retains_the_initial_m3_6_preflight() -> None:
     preflight = PREFLIGHT.read_text(encoding="utf-8")
     dark_host_preflight = DARK_HOST_PREFLIGHT.read_text(encoding="utf-8")
     configure = CONFIGURE.read_text(encoding="utf-8")
@@ -191,7 +191,9 @@ def test_production_convergence_repeats_the_m3_6_preflight() -> None:
     assert "--allow-exact-failed-caddy-recovery" in configure
     assert "--allow-exact-failed-caddy-recovery" in preflight
     assert "--allow-exact-failed-caddy-recovery" in dark_host_preflight
-    assert '"${repository_root}/scripts/preflight-m3-dark-host-production"' not in configure
+    # Completed M3.10 hosts use the shared build/SSH checks with a separate
+    # history-safe host check; behavioral gate selection is covered by M3.10.
+    assert '"${repository_root}/scripts/preflight-m3-dark-host-production"' in configure
     assert "output -json ansible_inventory" in configure
     assert "export PRODUCTION_ORIGIN_IPV4" in configure
     assert configure.index("output -json ansible_inventory") < configure.index(

@@ -1,6 +1,6 @@
 # Milestone 3.10 implementation plan
 
-- Status: implemented; local and disposable qualification complete; live starting gate pending
+- Status: implemented; convergence starting gate pending
 - Date: 2026-09-12
 - Base: `8d9adc1` on current `main`
 - Branch: `feat/m3.10-archive-restore-deletion`
@@ -39,7 +39,7 @@ carry distinct administrator provenance, without inventing an ordinary job.
 A dedicated bounded service and timer recover interrupted emergency deletion.
 Ordinary transport and provisioner sudo cannot invoke this command.
 
-The final component suite at `bd47ac8` passed 2,441 tests, with two separately
+The earlier component suite at `bd47ac8` passed 2,441 tests, with two separately
 scheduled MinIO skips and one inapplicable filesystem-fault parameter skip.
 Four repeated private archive/restore cycles and final deletion passed,
 including historical result replay and bounded release retention.
@@ -49,7 +49,7 @@ Both installed emergency deletion tests passed after fixture and service-policy
 corrections. Exact persisted state and served routes survived reboot with
 automatic recovery. The complete transport/recovery group passed, including
 all six idempotent configuration overlaps and competing requests. Installed
-quarantine recovery passed at `36aa88e`. The final inventory has no pending
+quarantine recovery passed at `36aa88e`. That qualification run ended with no pending
 intents, intake, exports, staging, quarantine, remote versions/markers, or
 multipart uploads. Live Spaces checks and the production starting gate remain
 outstanding.
