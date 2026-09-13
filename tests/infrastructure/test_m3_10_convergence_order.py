@@ -426,8 +426,8 @@ def test_actual_ansible_history_guard_requires_completed_artifact_authority(
     )
 
 
-@pytest.mark.parametrize("mode", ["initial", "published", "completed"])
-@pytest.mark.parametrize("drift", ["none", "source", "unit"])
+@pytest.mark.parametrize("mode", ["initial", "published", "completed-empty", "completed-tenant"])
+@pytest.mark.parametrize("drift", ["none", "source", "unit", "add-ca", "retire-ca"])
 def test_actual_ansible_caddy_convergence_preserves_completed_generation(
     tmp_path: Path, mode: str, drift: str
 ) -> None:
@@ -444,8 +444,13 @@ def test_actual_ansible_caddy_convergence_preserves_completed_generation(
     variables = {
         "caddy_generation_enabled": True,
         "static_publication_enabled": mode == "published",
-        "static_host_agent_verified_completed_candidate": mode == "completed",
-        "caddy_origin_pull_ca_paths": ["/disposable/ca.pem"],
+        "static_host_agent_verified_completed_candidate": mode.startswith("completed-"),
+        "static_host_agent_disabled_tenant_inventory": {
+            "stdout": "/disposable/tenants/retained" if mode == "completed-tenant" else ""
+        },
+        "caddy_origin_pull_ca_paths": ["/disposable/ca.pem", "/disposable/replacement.pem"]
+        if drift == "add-ca"
+        else ["/disposable/ca.pem"],
         "caddy_binary_path": "/disposable/caddy",
         "caddy_tenant_binary_input_probe": {
             "stat": {
@@ -462,8 +467,10 @@ def test_actual_ansible_caddy_convergence_preserves_completed_generation(
             "stat": {"islnk": True, "lnk_source": "/disposable/caddy"}
         },
         "caddy_tenant_environment_input_probe": {"changed": drift == "source"},
-        "caddy_tenant_origin_pull_ca_input_probe": {"results": [{"changed": False}]},
-        "caddy_tenant_retired_origin_pull_ca_probe": {"results": []},
+        "caddy_tenant_origin_pull_ca_input_probe": {"results": [{"changed": drift == "add-ca"}]},
+        "caddy_tenant_retired_origin_pull_ca_probe": {
+            "results": [{"changed": drift == "retire-ca"}]
+        },
         # A live tenant generation (or the generation after deleting the last tenant)
         # differs from the platform-only bootstrap even when its inputs are exact.
         "caddy_generation_check": {"stdout": "changed"},
@@ -479,7 +486,10 @@ def test_actual_ansible_caddy_convergence_preserves_completed_generation(
         {
             "name": "Require the expected bootstrap decision",
             "ansible.builtin.assert": {
-                "that": [f"caddy_generation_bootstrap_required == {mode == 'initial'}"]
+                "that": [
+                    f"caddy_generation_bootstrap_required == "
+                    f"{mode in {'initial', 'completed-empty'}}"
+                ]
             },
         }
     )
@@ -502,6 +512,6 @@ def test_actual_ansible_caddy_convergence_preserves_completed_generation(
         capture_output=True,
         text=True,
     )
-    assert (result.returncode == 0) is (mode == "initial" or drift == "none"), (
-        result.stdout + result.stderr
-    )
+    assert (result.returncode == 0) is (
+        mode in {"initial", "completed-empty"} or drift == "none"
+    ), result.stdout + result.stderr
