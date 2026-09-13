@@ -30,10 +30,28 @@ def test_installed_tls_storage_credentials_are_mutually_denied(host: Host) -> No
         host,
         """
 from botocore.exceptions import ClientError
-from lowerduckpond_static_host_agent.archive_remote import make_archive_client
-archive = make_archive_client(region='ams3', access_key_id='molecule-m3-10-archive',
+from botocore.config import Config
+from botocore.session import Session
+
+def credential_probe_client(*, access_key_id, secret_access_key):
+    # Exercise provider permissions independently of the runtime's SDK allowlist,
+    # which deliberately forbids creating or aborting multipart uploads.
+    session = Session()
+    session.set_config_variable('config_file', '/dev/null')
+    session.set_config_variable('credentials_file', '/dev/null')
+    return session.create_client('s3', aws_access_key_id=access_key_id,
+        aws_secret_access_key=secret_access_key, region_name='ams3',
+        endpoint_url='https://ams3.digitaloceanspaces.com',
+        verify='/etc/ssl/certs/ca-certificates.crt',
+        config=Config(signature_version='s3v4',
+            retries={'total_max_attempts': 1, 'mode': 'standard'}, proxies={},
+            s3={'addressing_style': 'path'},
+            request_checksum_calculation='when_required',
+            response_checksum_validation='when_required'))
+
+archive = credential_probe_client(access_key_id='molecule-m3-10-archive',
     secret_access_key='molecule-m3-10-disposable-archive-secret')
-backup = make_archive_client(region='ams3', access_key_id='molecule-m3-10-backup',
+backup = credential_probe_client(access_key_id='molecule-m3-10-backup',
     secret_access_key='molecule-m3-10-disposable-backup-secret')
 objects = []
 uploads = []
