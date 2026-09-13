@@ -161,8 +161,9 @@ wrapper derives its dedicated archive values from encrypted OpenTofu outputs,
 separately from the backup key, and passes them to Ansible through environment
 lookups. Credential installation suppresses task logging and diffs. This is the
 host runtime credential location; the workstation source remains unchanged.
-Withdrawing configuration closes activation sockets, removes the credential
-file, and stops service instances that may already hold the key in memory.
+Withdrawing configuration closes activation sockets and the emergency timer,
+removes the credential file, and stops archive instances and managed emergency
+recovery that may already hold the key in memory.
 The same drain runs after an interrupted withdrawal that already removed the
 file. Compatible sockets can reopen afterward; new instances require the
 credential file and cannot acquire withdrawn authority.
