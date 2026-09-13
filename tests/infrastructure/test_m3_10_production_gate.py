@@ -25,6 +25,7 @@ from scripts.check_m3_10_provider import (
     check_storage,
     expected_rules,
 )
+from scripts.m3_10_page_rules import PageRulesClient
 
 from .test_m3_7_production_gate import _certificate_fixture, _CloudflareResponse
 
@@ -163,6 +164,8 @@ class Edge:
         }
 
     def get(self, path: str) -> object:
+        if path == "/accounts/" + "e" * 32 + "/tokens/verify":
+            return {"id": "f" * 32, "status": "active"}
         assert path.startswith("/zones/" + "a" * 32)
         return self.responses[path.removeprefix("/zones/" + "a" * 32)]
 
@@ -190,6 +193,7 @@ def edge(edge_certificate: tuple[Path, dict[str, str]]) -> Edge:
 def edge_gate(edge: Edge) -> None:
     check_edge(
         cast(CloudflareClient, edge),
+        page_rules_client=cast(PageRulesClient, edge),
         zone_id="a" * 32,
         certificate_id="b" * 32,
         domain="lowerduckpond.net",
@@ -556,6 +560,7 @@ def test_completed_provider_command_rechecks_both_edges_without_emptying_storage
     )
     monkeypatch.setattr(provider, "make_policy_client", lambda _config: storage)
     monkeypatch.setattr(provider, "CloudflareClient", lambda _token: object())
+    monkeypatch.setattr(provider, "page_rules_client", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(
         provider, "verified_ca_bundle", lambda **_kwargs: nullcontext(Path("/fixture/ca.pem"))
     )
