@@ -99,3 +99,12 @@ The focused admission, generation-store, and emergency group passed all 77
 tests; formatting and strict typing across 239 source files passed.
 The resulting full host-agent suite passed 1,787 tests with the same two
 documented skips.
+
+Emergency preparation now publishes and validates its unselected generation
+before saving recovery authority, then rechecks terminal capacity after that
+allocation. A failed preparation discards only its verified candidate while the
+intent is absent; an ambiguously completed intent keeps its candidate for
+recovery. All 54 emergency tests passed, including generation-capacity refusal,
+terminal-capacity refusal after generation creation, and interruption before or
+after intent durability. These checks preserve the selected runtime and tenant
+state on preparation refusal, and prove a later retry succeeds.
