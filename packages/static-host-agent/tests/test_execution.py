@@ -6675,11 +6675,13 @@ def test_executor_requires_remote_absence_for_a_retired_restore_archive(
 
 
 @pytest.mark.parametrize("superseded", [False, True])
-@pytest.mark.parametrize("verification_error", [False, True])
-def test_executor_requires_remote_presence_after_a_failed_restore(
+@pytest.mark.parametrize("verification", ["present", "missing", "error"])
+@pytest.mark.parametrize("operation", ["archive", "restore"])
+def test_executor_requires_remote_presence_after_an_archived_source_failure(
     tmp_path: Path,
     superseded: bool,
-    verification_error: bool,
+    verification: str,
+    operation: str,
 ) -> None:
     root = _state_root(tmp_path)
     job, result, _previous, _previous_result = _write_committed_restore_replay(root)
@@ -6691,6 +6693,17 @@ def test_executor_requires_remote_presence_after_a_failed_restore(
     result.update({"status": "failed", "errorCode": "archive_unavailable"})
     result.pop("canonicalOrigin")
     result.pop("manifest")
+    if operation == "archive":
+        request = _mapping(job["request"])
+        request["operation"] = operation
+        job["requestDigest"] = request_digest(request).to_dict()
+        result["operation"] = operation
+        result["archiveRecord"] = None
+        correlation = json.loads(json.dumps(job))
+        correlation["phase"] = "pending"
+        _write(
+            root, StateRecordPath.authorization_correlation(result["correlationId"]), correlation
+        )
     _write(root, StateRecordPath.authorization_job(job["jobId"]), job)
     _write(root, StateRecordPath.authorization_result(job["jobId"]), result)
     _write(root, StateRecordPath.tenant_desired(_TENANT_ID), source)
@@ -6713,9 +6726,12 @@ def test_executor_requires_remote_presence_after_a_failed_restore(
             _write(root, StateRecordPath.tenant_desired(_TENANT_ID), manifest)
             _write_observed_for_manifest(root, manifest)
             _append_result_audit(repository, job, restored)
-        if verification_error:
+        if verification == "error":
             raise RuntimeError("retained archive binding is unavailable")
-        return False
+        return verification == "present"
+
+    def refuse_upload_accounting(_job_id: str) -> bool:
+        pytest.fail("retained archive must not use unreturned-upload accounting")
 
     with (
         StateRepository(root, expected_owner=os.geteuid()) as repository,
@@ -6726,8 +6742,10 @@ def test_executor_requires_remote_presence_after_a_failed_restore(
             repository,
             intake,
             retained_archive_validator=reject_missing_archive,
+            unreturned_archive_validator=refuse_upload_accounting,
+            tenant_runtime_validator=lambda *_arguments: True,
         )
-        if superseded:
+        if superseded or verification == "present":
             assert executor.execute(job["jobId"]).result == result
             assert (
                 repository.read(StateRecordPath.authorization_job(job["jobId"])).document[
@@ -6736,7 +6754,7 @@ def test_executor_requires_remote_presence_after_a_failed_restore(
                 is True
             )
         else:
-            error = RuntimeError if verification_error else ExecutionError
+            error = RuntimeError if verification == "error" else ExecutionError
             with pytest.raises(error, match="retained archive"):
                 executor.execute(job["jobId"])
 
