@@ -3765,8 +3765,12 @@ def test_executor_rejects_a_failed_archive_that_retains_archive_history(
     assert job["dispatchDeploymentIds"] == [_DEPLOYMENT_ID]
 
 
+@pytest.mark.parametrize("superseded", [False, True])
+@pytest.mark.parametrize("verification_error", [False, True])
 def test_executor_rejects_a_failed_archive_with_a_retained_upload_candidate(
     tmp_path: Path,
+    superseded: bool,
+    verification_error: bool,
 ) -> None:
     root = _state_root(tmp_path)
     _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
@@ -3796,6 +3800,29 @@ def test_executor_rejects_a_failed_archive_with_a_retained_upload_candidate(
 
     def reject_retained(candidate_record: dict[str, object]) -> bool:
         checked.append(candidate_record)
+        if superseded:
+            manifest = json.loads(json.dumps(source))
+            _mapping(manifest["spec"])["desiredState"] = "suspended"
+            _write(root, StateRecordPath.tenant_desired(_TENANT_ID), manifest)
+            _write_observed_for_manifest(root, manifest)
+            later: dict[str, object] = {
+                "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+                "kind": "OperationResult",
+                "provenance": {
+                    "kind": "authorization-job",
+                    "jobId": "0198d17f-6f4a-7000-8000-000000000009",
+                },
+                "correlationId": "0198d17f-6f4a-7000-8000-000000000010",
+                "operation": "suspend",
+                "status": "succeeded",
+                "tenantId": _TENANT_ID,
+                "canonicalOrigin": _mapping(manifest["metadata"])["canonicalOrigin"],
+                "manifest": manifest,
+            }
+            current_job = repository.read(StateRecordPath.authorization_job(issued.job_id)).document
+            _append_result_audit(repository, current_job, later)
+        if verification_error:
+            raise FileNotFoundError("retained source deployment was collected")
         return False
 
     with (
@@ -3812,23 +3839,28 @@ def test_executor_rejects_a_failed_archive_with_a_retained_upload_candidate(
             now=_NOW,
             artifact=None,
         )
-        with pytest.raises(ExecutionError, match="retained its candidate archive object"):
-            AuthorizationExecutor(
-                repository,
-                intake,
-                handlers={
-                    "archive": _CompletingFailureHandler(
-                        repository,
-                        archive_cleanup_record=candidate,
-                    )
-                },
-                retired_archive_validator=reject_retained,
-                tenant_runtime_validator=lambda *_arguments: True,
-            ).execute(issued.job_id)
+        executor = AuthorizationExecutor(
+            repository,
+            intake,
+            handlers={
+                "archive": _CompletingFailureHandler(
+                    repository,
+                    archive_cleanup_record=candidate,
+                )
+            },
+            retired_archive_validator=reject_retained,
+            tenant_runtime_validator=lambda *_arguments: True,
+        )
+        if superseded:
+            assert executor.execute(issued.job_id).result["status"] == "failed"
+        else:
+            error = FileNotFoundError if verification_error else ExecutionError
+            with pytest.raises(error, match="retained"):
+                executor.execute(issued.job_id)
         job = repository.read(StateRecordPath.authorization_job(issued.job_id)).document
 
     assert checked == [candidate]
-    assert job["executionValidated"] is False
+    assert job["executionValidated"] is superseded
 
 
 def test_executor_requires_source_release_validation_after_failed_deploy(

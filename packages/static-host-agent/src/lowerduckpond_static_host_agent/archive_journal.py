@@ -36,7 +36,7 @@ from lowerduckpond_static_host_agent.archive_remote import (
     RemoteVersion,
     archive_key,
 )
-from lowerduckpond_static_host_agent.audit import DEFAULT_AUDIT_LIMITS
+from lowerduckpond_static_host_agent.audit import DEFAULT_AUDIT_LIMITS, AuditCapacityError
 from lowerduckpond_static_host_agent.capacity import (
     DEFAULT_HOST_CAPACITY_LIMITS,
     CapacityReservation,
@@ -62,6 +62,7 @@ from lowerduckpond_static_host_agent.repository import (
     StoredContract,
     _StateTransaction,
 )
+from lowerduckpond_static_host_agent.state_inventory import StateInventoryReservation
 
 
 class ArchiveJournalError(ArchiveRemoteError):
@@ -708,6 +709,15 @@ def _require_terminal_local_state(
     audit: dict[str, object],
 ) -> None:
     tenant = intent["tenantId"]
+    if result["status"] == "failed" and intent["kind"] == "ArchiveConstructionIntent":
+        desired = _failed_construction_source(job, intent)
+        candidate = None if intent["phase"] == "prepared" else _archive_record(intent, desired)
+        if result.get("archiveRecord") != candidate:
+            raise ArchiveJournalError("failed construction lost its exact candidate evidence")
+        # This construction never published a local transaction. Its failure
+        # must not require or overwrite a source that has since drifted. The
+        # independent bound-version check still refuses retirement of live data.
+        return
     if result["operation"] == "delete" and result["status"] == "succeeded":
         expected = cast(dict[str, object], job["expectedSource"])
         if tenant in transaction.measure_inventory().tenant_ids or audit.get(
@@ -768,7 +778,44 @@ def _reserve_journal(filesystem: Callable[[], FilesystemCapacity]) -> None:
     )
 
 
+def _failed_construction_source(
+    job: dict[str, object], intent: dict[str, object]
+) -> dict[str, object]:
+    authority = cast(dict[str, object], job["sourceAuthority"])
+    source = authority["manifest"]
+    expected = cast(dict[str, object], job["expectedSource"])
+    if (
+        type(source) is not dict
+        or authority["archiveRecord"] is not None
+        or manifest_digest(source).to_dict() != expected["manifestDigest"]
+        or expected["manifestDigest"] != intent["sourceManifestDigest"]
+        or expected["deploymentDigest"] != intent["deploymentRecordDigest"]
+    ):
+        raise ArchiveJournalError("failed construction lost its captured source authority")
+    candidate = deepcopy(source)
+    spec = cast(dict[str, object], candidate["spec"])
+    spec["desiredState"] = "archived"
+    if manifest_digest(candidate).to_dict() != intent["candidateManifestDigest"]:
+        raise ArchiveJournalError("failed construction lost its captured candidate authority")
+    return cast(dict[str, object], spec["desiredDeployment"])
+
+
 def _reserve_construction(transaction: _StateTransaction, limits: HostCapacityLimits) -> None:
+    transaction.admit_inventory(
+        StateInventoryReservation(
+            authorization_records=1,
+            authorization_allocated_bytes=transaction.allocation_upper_bound(MAX_CANONICAL_BYTES),
+        )
+    )
+    audit = transaction.inspect_audit()
+    audit_allocation = transaction.allocation_upper_bound(
+        DEFAULT_AUDIT_LIMITS.maximum_segment_bytes
+    )
+    if (
+        audit.allocated_bytes + audit_allocation + transaction.namespace_allocation_upper_bound(1)
+        > DEFAULT_AUDIT_LIMITS.maximum_ordinary_bytes
+    ):
+        raise AuditCapacityError("archive terminal audit would consume protected capacity")
     # Before upload, allow the prepared/confirmed journal, source job binding,
     # transaction intent, and five terminal records at their schema ceiling.
     # Include the audit segment so even an aborted upload can finish its audit.
@@ -776,7 +823,7 @@ def _reserve_construction(transaction: _StateTransaction, limits: HostCapacityLi
     count = canonical_records + 1
     allocated = (
         canonical_records * transaction.allocation_upper_bound(MAX_CANONICAL_BYTES)
-        + transaction.allocation_upper_bound(DEFAULT_AUDIT_LIMITS.maximum_segment_bytes)
+        + audit_allocation
         + transaction.namespace_allocation_upper_bound(count)
     )
     admit_release_capacity(

@@ -616,7 +616,7 @@ def test_failed_construction_cleanup_requires_audited_result_and_independent_abs
                 "tenantId": _TENANT,
                 "correlationId": _CORRELATION,
                 "errorCode": "state_drift",
-                "archiveRecord": None,
+                "archiveRecord": uploaded.record,
             },
         )
         before = client.calls.count("list")

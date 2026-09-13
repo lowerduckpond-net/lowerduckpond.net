@@ -46,6 +46,7 @@ from lowerduckpond_static_host_agent.caddy_admin import (
 )
 from lowerduckpond_static_host_agent.caddy_bootstrap import (
     PlatformGenerationState,
+    empty_tenant_generation_matches_under_lock,
     ensure_platform_generation,
     platform_generation_state,
     platform_generation_state_under_lock,
@@ -811,6 +812,19 @@ def _authoritative_caddy_generation_matches(  # noqa: PLR0913
             )
             is PlatformGenerationState.UNCHANGED
         )
+        if not generation_matches and startup.inventory_is_empty():
+            try:
+                namespace = transaction.read(StateRecordPath.platform_namespace()).document
+            except FileNotFoundError:
+                return False
+            generation_matches = empty_tenant_generation_matches_under_lock(
+                runtime,
+                platform_namespace=namespace,
+                binary=binary,
+                environment=environment,
+                origin_pull_ca_der=origin_pull_ca_der,
+                origin_pull_required=origin_pull_required,
+            )
         # A dark platform bootstrap deliberately has no authoritative
         # platform namespace yet. Still validate the entire on-disk
         # publication root so an orphan tenant or populated staging tree

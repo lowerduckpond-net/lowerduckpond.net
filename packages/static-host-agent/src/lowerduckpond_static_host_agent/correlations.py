@@ -22,7 +22,7 @@ from lowerduckpond_static_host_agent.capacity import (
     ReleaseCapacityUsage,
     admit_release_capacity,
 )
-from lowerduckpond_static_host_agent.locks import LockMode
+from lowerduckpond_static_host_agent.locks import LockMode, StateBusyError
 from lowerduckpond_static_host_agent.repository import (
     StateRecordPath,
     StateRepository,
@@ -150,6 +150,16 @@ class CorrelationAdmission:
                     created=False,
                     repaired_records=repaired_records,
                 )
+
+            # Construction admission reserves terminal result and audit space.
+            # Preserve it until the sole remote construction is reconciled;
+            # exact retries above remain available for that recovery.
+            for identity in transaction.measure_intent_records().records:
+                if (
+                    transaction.read_intent(identity.intent_id)[1].document["kind"]
+                    == "ArchiveConstructionIntent"
+                ):
+                    raise StateBusyError("export.lock is busy")
 
             established_job_ids = {_job_id(document) for document in correlations.values()}
             if correlation_id in inventory.result_ids or job_id in inventory.result_ids:

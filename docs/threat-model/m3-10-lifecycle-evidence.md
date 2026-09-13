@@ -58,3 +58,24 @@ entrypoint suite passed 214 tests, including both raced and still-current
 failed-source checks. The installed entrypoint's unreturned-object callback
 was exercised with its job argument and correctly passed `(job, None,
 mode="accounted")` to the private client; no callback binding change was needed.
+
+Construction now admits logical authorization-result capacity and ordinary audit
+headroom before allowing upload. New correlations wait behind a construction
+journal so they cannot consume that reservation; exact retries remain available.
+An unpublished failure uses the captured job/journal source and can retire its
+exact unbound upload after current tenant state drifts or an old deployment is
+collected. Cleanup preserves current state and still refuses any bound object.
+Failed-candidate verification also rechecks audited supersession when the remote
+validator raises. The resulting full host-agent suite passed 1,775 tests with
+the same two documented skips; the focused admission/abort/journal group passed
+59 cases and the raced replay group passed eight.
+
+A disposable run completed four restores and both tenant deletions, then exposed
+an empty-host health mismatch during the last deletion's configuration overlap.
+The checker now also accepts the exact namespace-bound empty generation emitted
+by deletion, checking binary, environment, configuration, and route metadata and
+requiring empty startup/release namespaces. Four real generation-store cases
+prove acceptance and rejection of changed environment, namespace, and origin-pull
+inputs. A read-only evaluation of the revised checker against the retained
+disposable host returned `current`; installed artifact files were not modified.
+The full 1,775-test run includes these regressions.

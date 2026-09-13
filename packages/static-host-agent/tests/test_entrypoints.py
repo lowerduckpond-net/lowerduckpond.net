@@ -587,13 +587,15 @@ def test_runtime_authoritative_generation_does_not_traverse_retained_releases(
     )
 
 
-def test_authoritative_platform_generation_fails_closed_on_drift(
+@pytest.mark.parametrize("bound_empty", [False, True])
+def test_authoritative_empty_generation_requires_exact_bound_inputs(
     monkeypatch: pytest.MonkeyPatch,
+    bound_empty: bool,
 ) -> None:
     repository = SimpleNamespace(
         publication_transaction=lambda **_arguments: nullcontext(
             SimpleNamespace(
-                read=lambda _path: object(),
+                read=lambda _path: SimpleNamespace(document={}),
                 measure_inventory=lambda: SimpleNamespace(tenant_ids=()),
             )
         )
@@ -608,16 +610,25 @@ def test_authoritative_platform_generation_fails_closed_on_drift(
         "platform_generation_state_under_lock",
         lambda *_arguments, **_keywords: PlatformGenerationState.CHANGED,
     )
+    monkeypatch.setattr(
+        entrypoints,
+        "empty_tenant_generation_matches_under_lock",
+        lambda *_arguments, **_keywords: bound_empty,
+    )
+    monkeypatch.setattr(entrypoints, "_tenant_release_namespace_ids", lambda: ())
     runtime = SimpleNamespace(using_held_publication_lock=lambda _repository: nullcontext())
 
-    assert not entrypoints._authoritative_caddy_generation_matches(
-        runtime,  # type: ignore[arg-type]
-        object(),  # type: ignore[arg-type]
-        binary=object(),  # type: ignore[arg-type]
-        environment=b"environment",
-        origin_pull_ca_der=(b"ca",),
-        origin_pull_required=True,
-        startup=object(),  # type: ignore[arg-type]
+    assert (
+        entrypoints._authoritative_caddy_generation_matches(
+            runtime,  # type: ignore[arg-type]
+            object(),  # type: ignore[arg-type]
+            binary=object(),  # type: ignore[arg-type]
+            environment=b"environment",
+            origin_pull_ca_der=(b"ca",),
+            origin_pull_required=True,
+            startup=SimpleNamespace(inventory_is_empty=lambda: True),  # type: ignore[arg-type]
+        )
+        is bound_empty
     )
 
 
