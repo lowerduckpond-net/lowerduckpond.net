@@ -141,7 +141,13 @@ just configure-production
 
 For a source or artifact change, that runner validates the report against the actual
 built artifact and clean current source, and repeats the M3.10 preflight before
-its first host mutation. Ordinary reconfiguration requires the unchanged
+its first host mutation. Before choosing a host preflight, the runner checks
+completion. First installation retains the strict M3.6 empty-state gate. A
+completed candidate instead checks operator identity, reproducible builds,
+the pinned installed artifact, authoritative Caddy state, and bounded permanent
+authorization and audit history. Tenant records and history are retained;
+unfinished work, interrupted publication files, quarantine, or active lifecycle
+workers fail the check without cleanup. Ordinary reconfiguration requires the unchanged
 source revision and artifact in its root-owned completion record, written only after convergence,
 idempotence, and host acceptance pass. Selection alone is insufficient. Each
 attempt clears prior completion before Ansible; interrupted attempts must pass

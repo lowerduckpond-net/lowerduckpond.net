@@ -27,6 +27,9 @@ def runner(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     (scripts / "m3-10-convergence-state").write_bytes(
         (ROOT / "scripts/m3-10-convergence-state").read_bytes()
     )
+    (scripts / "m3-10-completed-host-preflight").write_bytes(
+        (ROOT / "scripts/m3-10-completed-host-preflight").read_bytes()
+    )
     commands = tmp_path / "commands"
     executable(
         commands / "git",
@@ -39,6 +42,9 @@ def runner(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     executable(
         commands / "ssh",
         """case "$*" in
+        *" completed-host")
+            echo completed-host-preflight >>"$TEST_LOG"
+            exit "$TEST_HOST_STATUS";;
         *"-- check "*)
             echo completion-check >>"$TEST_LOG"
             remote_command=${!#}
@@ -85,7 +91,15 @@ def runner(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         *) exit 99;;
     esac""",
     )
-    executable(scripts / "preflight-m3-6-production", 'echo general-preflight >>"$TEST_LOG"')
+    executable(
+        scripts / "preflight-m3-6-production",
+        'echo general-preflight >>"$TEST_LOG"; exit "$TEST_GENERAL_STATUS"',
+    )
+    for script, label, status in (
+        ("check-m3-6-operator-identity", "operator-identity", "TEST_IDENTITY_STATUS"),
+        ("preflight-m3-dark-host-production", "dark-host-preflight", "TEST_DARK_HOST_STATUS"),
+    ):
+        executable(scripts / script, f'echo {label} >>"$TEST_LOG"; exit "${{{status}}}"')
     executable(
         scripts / "preflight-m3-10-production",
         '''echo m3-10-preflight >>"$TEST_LOG"
@@ -100,6 +114,10 @@ def runner(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         "TEST_SELECTED": PRECEDING,
         "TEST_SOURCE": "0" * 40,
         "TEST_COMPLETED_SOURCE": "0" * 40,
+        "TEST_GENERAL_STATUS": "0",
+        "TEST_IDENTITY_STATUS": "0",
+        "TEST_DARK_HOST_STATUS": "0",
+        "TEST_HOST_STATUS": "0",
         "TEST_VERIFY_STATUS": "0",
         "TEST_PROVIDER_STATUS": "0",
         "TEST_FIREWALL_STATUS": "0",
@@ -184,17 +202,21 @@ def test_verified_upgrade_checks_report_and_preflight_before_any_convergence(
     ]
 
 
-def test_unchanged_artifact_reconfiguration_retains_the_general_gate(
+def test_completed_reconfiguration_uses_history_safe_host_gate(
     runner: tuple[Path, dict[str, str]],
 ) -> None:
     runner[1]["TEST_SELECTED"] = CANDIDATE
     runner[1]["TEST_COMPLETED_STATUS"] = "0"
     runner[1].pop("M3_10_QUALIFICATION_REPORT")
+    # The legacy empty-state preflight fails once any tenant or audit history exists.
+    runner[1]["TEST_GENERAL_STATUS"] = "1"
     status, calls = run(runner)
     assert status == 0
     assert calls == [
-        "general-preflight",
         "completion-check",
+        "operator-identity",
+        "dark-host-preflight",
+        "completed-host-preflight",
         "provider-policy",
         "firewall",
         "scoped-current-credentials",
@@ -293,3 +315,29 @@ def test_completed_candidate_still_requires_live_provider_and_firewall_policy(
     assert "ansible" not in calls
     assert "completion-clear" not in calls
     assert "completion-record" not in calls
+
+
+@pytest.mark.parametrize(
+    "failure", ["TEST_IDENTITY_STATUS", "TEST_DARK_HOST_STATUS", "TEST_HOST_STATUS"]
+)
+def test_completed_host_must_pass_identity_build_and_nonempty_state_integrity(
+    runner: tuple[Path, dict[str, str]], failure: str
+) -> None:
+    runner[1]["TEST_SELECTED"] = CANDIDATE
+    runner[1]["TEST_COMPLETED_STATUS"] = "0"
+    runner[1][failure] = "1"
+    status, calls = run(runner)
+    assert status != 0
+    assert "general-preflight" not in calls
+    assert "completion-clear" not in calls
+    assert "ansible" not in calls
+
+
+def test_incomplete_candidate_checks_completion_before_strict_empty_state_gate(
+    runner: tuple[Path, dict[str, str]],
+) -> None:
+    runner[1]["TEST_SELECTED"] = CANDIDATE
+    runner[1]["TEST_GENERAL_STATUS"] = "1"
+    status, calls = run(runner)
+    assert status != 0
+    assert calls == ["completion-check", "general-preflight"]
