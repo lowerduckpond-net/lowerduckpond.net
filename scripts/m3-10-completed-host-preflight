@@ -4,8 +4,9 @@ set +x
 set -euo pipefail
 export LC_ALL=C
 
-[[ $# == 2 && $1 =~ ^[0-9a-f]{64}$ && $2 == completed-host ]] || exit 2
+[[ $# == 3 && $1 =~ ^[0-9a-f]{64}$ && $2 == completed-host && $3 =~ ^[0-9a-f]{40}$ ]] || exit 2
 expected=$1
+source_revision=$3
 fail() {
     printf 'M3.10 completed-host preflight failed: %s\n' "$1" >&2
     exit 1
@@ -48,14 +49,18 @@ active=$(systemctl list-units --plain --no-legend --state=activating,active,deac
 
 # Validate bounded permanent authorization and audit records with the pinned
 # installed package. History is retained; no recovery or pair repair runs here.
-/usr/bin/python3 -I -B - "${install_root}/${expected}/site-packages" "${state_root}" <<'PYTHON'
+/usr/bin/python3 -I -B - "${install_root}/${expected}/site-packages" "${state_root}" "${expected}" "${source_revision}" <<'PYTHON'
 import os
 import re
 import sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
+from lowerduckpond_static_contracts import canonical_json_bytes, manifest_digest
 from lowerduckpond_static_host_agent import StateRepository, StateRecordPath
 from lowerduckpond_static_host_agent.audit import DEFAULT_AUDIT_LIMITS
+from lowerduckpond_static_host_agent.correlations import _durable_binding
+from lowerduckpond_static_host_agent.execution import _validate_request_integrity
+from lowerduckpond_static_host_agent.job_runtime import _validate_result_for_job
 from lowerduckpond_static_host_agent.state_inventory import DEFAULT_STATE_INVENTORY_LIMITS
 
 def names(directory, maximum):
@@ -83,14 +88,65 @@ with StateRepository(Path(sys.argv[2]), expected_owner=0) as repository:
             for name in identifiers:
                 if not name.endswith('.json'):
                     raise SystemExit('M3.10 authorization publication is incomplete')
-                transaction.read(record_path(name[:-5]))
+                selected_path = record_path(name[:-5])
+                if directory == 'results':
+                    try:
+                        transaction.read(StateRecordPath.authorization_job(name[:-5]))
+                    except FileNotFoundError:
+                        # Administrator results deliberately have no ordinary job.
+                        selected_path = StateRecordPath.emergency_result(name[:-5])
+                document = transaction.read(selected_path).document
+                if directory == 'jobs':
+                    if (document['phase'] not in {'completed', 'failed'} or
+                        (document['compatibilityVersion'] == 'static-job-v2' and
+                         document['executionValidated'] is not True)):
+                        raise SystemExit('M3.10 authorization job is not fully terminal')
+                    result = transaction.read(
+                        StateRecordPath.authorization_result(document['jobId'])).document
+                    _validate_request_integrity(document)
+                    _validate_result_for_job(document, result)
+                    if document['phase'] != ('completed' if result['status'] == 'succeeded' else 'failed'):
+                        raise SystemExit('M3.10 terminal phase differs from its result')
+                    peer = transaction.read(StateRecordPath.authorization_correlation(
+                        document['request']['correlationId'])).document
+                    if _durable_binding(peer) != _durable_binding(document):
+                        raise SystemExit('M3.10 authorization pair has drifted')
+                elif directory == 'correlations':
+                    peer = transaction.read(
+                        StateRecordPath.authorization_job(document['jobId'])).document
+                    if _durable_binding(peer) != _durable_binding(document):
+                        raise SystemExit('M3.10 authorization pair requires repair')
         for name in names(root / 'audit', DEFAULT_AUDIT_LIMITS.maximum_segments):
             if re.fullmatch(r'segment-[0-9]{20}\.jsonl', name) is None:
                 raise SystemExit('M3.10 audit publication is incomplete')
-        transaction.measure_inventory()
+        inventory = transaction.measure_inventory()
+        archives = []
+        for tenant in inventory.tenant_ids:
+            manifest = transaction.read(StateRecordPath.tenant_desired(tenant)).document
+            spec = manifest['spec']
+            archive_names = names(root / 'tenants' / tenant / 'archives', 1)
+            if spec['desiredState'] != 'archived':
+                if archive_names:
+                    raise SystemExit('M3.10 live tenant retains an archive binding')
+                continue
+            deployment_id = spec['desiredDeployment']['id']
+            if archive_names != [deployment_id + '.json']:
+                raise SystemExit('M3.10 archived tenant has no unique selected binding')
+            record = transaction.read(StateRecordPath.tenant_archive(tenant, deployment_id)).document
+            deployment = transaction.read(StateRecordPath.tenant_deployment(tenant, deployment_id)).document
+            if (record['manifestDigest'] != manifest_digest(manifest).to_dict() or
+                record['releaseTreeDigest'] != deployment['releaseTreeDigest'] or
+                spec['desiredDeployment']['archiveSha256'] != deployment['archiveSha256']):
+                raise SystemExit('M3.10 archive binding differs from authoritative tenant state')
+            archives.append(record)
+        if len({record['key'] for record in archives}) != len(archives):
+            raise SystemExit('M3.10 archive key has multiple authoritative bindings')
         transaction.inspect_audit()
         if transaction.measure_intent_records().records:
             raise SystemExit('M3.10 host has pending durable work')
+        sys.stdout.buffer.write(canonical_json_bytes({'format': 'lowerduckpond-m3-10-archive-authority-v1',
+                          'artifactSha256': sys.argv[3], 'sourceRevision': sys.argv[4],
+                          'archives': archives}, maximum_bytes=128 * 1024))
 PYTHON
 
 checker=/usr/local/libexec/lowerduckpond/check-caddy-generation
@@ -107,4 +163,4 @@ fi
 [[ $("${checker}") == current ]] || fail 'authoritative Caddy generation is not current'
 systemctl is-active --quiet caddy.service || fail 'Caddy is not active'
 
-printf 'Completed M3.10 host integrity and quiescence passed with permanent history retained.\n'
+printf 'Completed M3.10 host integrity and quiescence passed with permanent history retained.\n' >&2

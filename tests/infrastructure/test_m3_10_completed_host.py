@@ -7,12 +7,13 @@ import sys
 from pathlib import Path
 
 import pytest
-from lowerduckpond_static_contracts import canonical_json_bytes
+from lowerduckpond_static_contracts import canonical_json_bytes, manifest_digest
 from lowerduckpond_static_host_agent import LockManager, StateRepository
 
 ROOT = Path(__file__).parents[2]
 FIXTURES = ROOT / "tests/static-publication/fixtures/accepted"
 ARTIFACT = "c" * 64
+SOURCE = "0" * 40
 TENANT = "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100"
 
 
@@ -42,6 +43,8 @@ def completed_host(tmp_path: Path) -> Path:
         "exports",
         "intake",
         f"tenants/{TENANT}",
+        f"tenants/{TENANT}/archives",
+        f"tenants/{TENANT}/deployments",
     ):
         directory = state / name
         directory.mkdir(parents=True, exist_ok=True)
@@ -50,6 +53,19 @@ def completed_host(tmp_path: Path) -> Path:
     # Real canonical authorization history and a real hash-chained audit segment
     # must remain byte-identical through this read-only host gate.
     job = json.loads((FIXTURES / "authorization-job.json").read_text())
+    correlation = state / "authorization/correlations" / (job["request"]["correlationId"] + ".json")
+    correlation.write_bytes(canonical_json_bytes(job))
+    correlation.chmod(0o600)
+    result = state / "authorization/results" / (job["jobId"] + ".json")
+    result.write_bytes(
+        canonical_json_bytes(json.loads((FIXTURES / "operation-result.json").read_text()))
+    )
+    result.chmod(0o600)
+    manifest = json.loads(result.read_text())["manifest"]
+    desired = state / "tenants" / TENANT / "desired.json"
+    desired.write_bytes(canonical_json_bytes(manifest))
+    desired.chmod(0o600)
+    job["phase"] = "completed"
     record = state / "authorization/jobs" / (job["jobId"] + ".json")
     record.write_bytes(canonical_json_bytes(job))
     record.chmod(0o600)
@@ -81,7 +97,7 @@ def completed_host(tmp_path: Path) -> Path:
 
 def gate(tree: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(  # noqa: S603 - private copied program and local fixture state
-        ["/bin/bash", str(tree / "probe"), ARTIFACT, "completed-host"],
+        ["/bin/bash", str(tree / "probe"), ARTIFACT, "completed-host", SOURCE],
         env={"PATH": str(tree / "bin") + ":" + os.environ["PATH"]},
         capture_output=True,
         text=True,
@@ -96,8 +112,42 @@ def test_completed_host_preserves_nonempty_authorization_tenant_and_audit_state(
     before = {path: path.read_bytes() for path in state.rglob("*") if path.is_file()}
     result = gate(completed_host)
     assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "format": "lowerduckpond-m3-10-archive-authority-v1",
+        "sourceRevision": SOURCE,
+        "artifactSha256": ARTIFACT,
+        "archives": [],
+    }
     assert {path: path.read_bytes() for path in state.rglob("*") if path.is_file()} == before
     assert (state / "tenants" / TENANT).is_dir()
+
+
+def test_completed_host_preserves_administrator_results_without_an_ordinary_job(
+    completed_host: Path,
+) -> None:
+    correlation = "0198d17f-6f4a-7000-8000-000000000077"
+    result = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationResult",
+        "provenance": {
+            "kind": "emergency-administrator",
+            "operatorPrincipal": "ldp-admin",
+            "reason": "Installed administrator recovery",
+        },
+        "operation": "delete",
+        "status": "succeeded",
+        "correlationId": correlation,
+        "tenantId": TENANT,
+        "canonicalOrigin": "t-0191e2c48f7a7c3b8d1e5f62047a2100.lowerduckpond.com",
+    }
+    authorization = completed_host / "var/lib/lowerduckpond/static/authorization"
+    path = authorization / "results" / (correlation + ".json")
+    path.write_bytes(canonical_json_bytes(result))
+    path.chmod(0o600)
+    outcome = gate(completed_host)
+    assert outcome.returncode == 0, outcome.stderr
+    assert path.read_bytes() == canonical_json_bytes(result)
+    assert not (authorization / "jobs" / (correlation + ".json")).exists()
 
 
 @pytest.mark.parametrize(
@@ -187,3 +237,132 @@ def test_completed_host_does_not_retire_abandoned_publication_files(
     temporary.chmod(0o600)
     assert gate(completed_host).returncode != 0
     assert temporary.read_bytes() == b"retain interrupted publication"
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        "pending",
+        "claimed",
+        "pending-with-result",
+        "claimed-with-result",
+        "terminal-without-result",
+        "failed-with-success",
+        "unchecked-v2",
+        "missing-job",
+        "missing-correlation",
+        "changed-correlation",
+        "foreign-result",
+    ],
+)
+def test_completed_host_rejects_jobs_that_startup_would_queue_or_repair(
+    completed_host: Path, state: str
+) -> None:
+    root = completed_host / "var/lib/lowerduckpond/static/authorization"
+    job_path = next((root / "jobs").iterdir())
+    result_path = next((root / "results").iterdir())
+    correlation_path = next((root / "correlations").iterdir())
+    job = json.loads(job_path.read_text())
+    if state.startswith(("pending", "claimed")):
+        job["phase"] = state.split("-", maxsplit=1)[0]
+        job_path.write_bytes(canonical_json_bytes(job))
+        if not state.endswith("with-result"):
+            result_path.unlink()
+    elif state == "terminal-without-result":
+        result_path.unlink()
+    elif state == "failed-with-success":
+        job["phase"] = "failed"
+        job_path.write_bytes(canonical_json_bytes(job))
+    elif state == "unchecked-v2":
+        job.update(
+            compatibilityVersion="static-job-v2", executionValidated=False, sourceAuthority=None
+        )
+        job_path.write_bytes(canonical_json_bytes(job))
+    elif state == "missing-job":
+        job_path.unlink()
+    elif state == "missing-correlation":
+        correlation_path.unlink()
+    elif state == "changed-correlation":
+        correlation = json.loads(correlation_path.read_text())
+        correlation["operatorPrincipal"] = "different@example.test"
+        correlation_path.write_bytes(canonical_json_bytes(correlation))
+    else:
+        result = json.loads(result_path.read_text())
+        result["correlationId"] = "0198d17f-6f4a-7000-8000-000000000099"
+        result_path.write_bytes(canonical_json_bytes(result))
+    before = {p: p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    assert gate(completed_host).returncode != 0
+    assert {p: p.read_bytes() for p in root.rglob("*") if p.is_file()} == before
+
+
+def archived_tenant(tree: Path) -> tuple[Path, dict[str, object]]:
+    tenant = tree / "var/lib/lowerduckpond/static/tenants" / TENANT
+    manifest = json.loads((FIXTURES / "site.json").read_text())
+    deployment = json.loads((FIXTURES / "deployment-record.json").read_text())
+    record = json.loads((FIXTURES / "archive-record.json").read_text())
+    manifest["spec"]["desiredState"] = "archived"
+    manifest["spec"]["desiredDeployment"] = {
+        "id": deployment["id"],
+        "archiveSha256": deployment["archiveSha256"],
+    }
+    record["manifestDigest"] = manifest_digest(manifest).to_dict()
+    record["releaseTreeDigest"] = deployment["releaseTreeDigest"]
+    archive_path = tenant / "archives" / (record["deploymentId"] + ".json")
+    for path, document in (
+        (tenant / "desired.json", manifest),
+        (tenant / "deployments" / (deployment["id"] + ".json"), deployment),
+        (archive_path, record),
+    ):
+        path.write_bytes(canonical_json_bytes(document))
+        path.chmod(0o600)
+    return archive_path, record
+
+
+def test_completed_host_emits_only_validated_retained_archive_authority(
+    completed_host: Path,
+) -> None:
+    _path, record = archived_tenant(completed_host)
+    result = gate(completed_host)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "format": "lowerduckpond-m3-10-archive-authority-v1",
+        "sourceRevision": SOURCE,
+        "artifactSha256": ARTIFACT,
+        "archives": [record],
+    }
+
+
+@pytest.mark.parametrize(
+    "drift",
+    [
+        "manifest-binding",
+        "release-binding",
+        "missing",
+        "extra",
+        "interrupted",
+        "live-tenant",
+    ],
+)
+def test_completed_host_refuses_unbound_or_incomplete_archive_records(
+    completed_host: Path, drift: str
+) -> None:
+    path, record = archived_tenant(completed_host)
+    if drift in {"manifest-binding", "release-binding"}:
+        field = "manifestDigest" if drift == "manifest-binding" else "releaseTreeDigest"
+        changed = json.loads(path.read_text())
+        changed[field]["value"] = "f" * 64
+        path.write_bytes(canonical_json_bytes(changed))
+    elif drift == "missing":
+        path.unlink()
+    elif drift == "extra":
+        (path.parent / "extra.json").write_bytes(canonical_json_bytes(record))
+    elif drift == "interrupted":
+        path.rename(path.parent / ".publish-incomplete")
+    else:
+        desired = path.parent.parent / "desired.json"
+        manifest = json.loads(desired.read_text())
+        manifest["spec"]["desiredState"] = "active"
+        desired.write_bytes(canonical_json_bytes(manifest))
+    before = {p: p.read_bytes() for p in path.parent.rglob("*") if p.is_file()}
+    assert gate(completed_host).returncode != 0
+    assert {p: p.read_bytes() for p in path.parent.rglob("*") if p.is_file()} == before

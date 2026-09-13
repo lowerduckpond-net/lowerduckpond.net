@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import re
+import stat
 import sys
 import tempfile
 from collections.abc import Callable, Iterator, Mapping
@@ -20,10 +21,16 @@ from botocore.exceptions import BotoCoreError, ClientError  # type: ignore[impor
 from lowerduckpond_m3_archive.storage import (
     S3Client,
     assert_storage_empty,
-    assert_versioning_enabled,
-    list_multipart_uploads,
 )
+from lowerduckpond_static_contracts import ContractKind, canonical_json_bytes, validate_contract
 from lowerduckpond_static_host_agent.archive_configuration import ArchiveConfiguration
+from lowerduckpond_static_host_agent.archive_remote import (
+    MAX_REMOTE_VERSIONS,
+    ArchiveClient,
+    ArchiveRemoteError,
+    ArchiveRemoteStore,
+    RemoteVersion,
+)
 
 from scripts.check_m3_7_production_edge import (
     MAXIMUM_CERTIFICATE_BYTES,
@@ -35,6 +42,8 @@ from scripts.check_m3_7_production_edge import (
 from scripts.m3_10_policy_client import make_policy_client
 
 _MAXIMUM_TRUST_ANCHORS: Final = 2
+_MAXIMUM_AUTHORITY_BYTES: Final = 128 * 1024
+_PRIVATE_AUTHORITY_MODE: Final = 0o600
 
 
 class GateError(RuntimeError):
@@ -43,6 +52,8 @@ class GateError(RuntimeError):
 
 class PolicyClient(S3Client, Protocol):
     def get_bucket_acl(self, **kwargs: object) -> dict[str, object]: ...
+
+    def get_object_acl(self, **kwargs: object) -> dict[str, object]: ...
 
     def get_bucket_policy(self, **kwargs: object) -> dict[str, object]: ...
 
@@ -65,25 +76,19 @@ def _require_absent_configuration(
     raise GateError("archive bucket has an unexpected policy or lifecycle configuration")
 
 
-def check_storage(client: PolicyClient, *, bucket: str, require_empty: bool = True) -> None:
-    """Require private versioned storage, optionally including whole-bucket absence.
-
-    This uses the workstation's existing Spaces operator key for bucket policy
-    reads. The limited archive runtime key is never promoted to that role.
-    AccessDenied is a failed proof, never evidence of missing configuration.
-    """
-    acl = client.get_bucket_acl(Bucket=bucket)
+def _private_acl_owner(acl: dict[str, object], *, expected_owner: str | None = None) -> str:
     owner = acl.get("Owner")
     grants = acl.get("Grants")
     if (
         not isinstance(owner, dict)
         or not isinstance(owner.get("ID"), str)
         or not owner["ID"]
+        or (expected_owner is not None and owner["ID"] != expected_owner)
         or not isinstance(grants, list)
         or len(grants) != 1
         or not isinstance(grants[0], dict)
     ):
-        raise GateError("archive bucket ACL is not an exact private owner grant")
+        raise GateError("archive ACL is not an exact private owner grant")
     grant = grants[0]
     grantee = grant.get("Grantee")
     if (
@@ -92,7 +97,93 @@ def check_storage(client: PolicyClient, *, bucket: str, require_empty: bool = Tr
         or grantee.get("Type") != "CanonicalUser"
         or grantee.get("ID") != owner["ID"]
     ):
-        raise GateError("archive bucket ACL is not an exact private owner grant")
+        raise GateError("archive ACL is not an exact private owner grant")
+    return cast(str, owner["ID"])
+
+
+def read_archive_authority(
+    path: Path, *, bucket: str, artifact: str, source_revision: str
+) -> frozenset[RemoteVersion]:
+    """Consume only the private snapshot from this runner's verified host check."""
+    if not path.is_absolute() or path.resolve(strict=True) != path:
+        raise GateError("archive authority must be an absolute file without symlinks")
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+    with os.fdopen(descriptor, "rb") as stream:
+        metadata = os.fstat(stream.fileno())
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(metadata.st_mode) != _PRIVATE_AUTHORITY_MODE
+            or metadata.st_nlink != 1
+        ):
+            raise GateError("archive authority file metadata is unsafe")
+        raw = stream.read(_MAXIMUM_AUTHORITY_BYTES + 1)
+    if len(raw) > _MAXIMUM_AUTHORITY_BYTES:
+        raise GateError("archive authority exceeds its bound")
+    document = json.loads(raw)
+    if (
+        not isinstance(document, dict)
+        or set(document) != {"format", "artifactSha256", "sourceRevision", "archives"}
+        or document["format"] != "lowerduckpond-m3-10-archive-authority-v1"
+        or re.fullmatch(r"[0-9a-f]{64}", artifact) is None
+        or re.fullmatch(r"[0-9a-f]{40}", source_revision) is None
+        or document["artifactSha256"] != artifact
+        or document["sourceRevision"] != source_revision
+        or canonical_json_bytes(document, maximum_bytes=_MAXIMUM_AUTHORITY_BYTES) != raw
+    ):
+        raise GateError("archive authority does not bind the current candidate")
+    records = document["archives"]
+    if not isinstance(records, list) or len(records) > MAX_REMOTE_VERSIONS:
+        raise GateError("archive authority has an invalid inventory")
+    versions = set()
+    keys = set()
+    for record in records:
+        validate_contract(record, expected_kind=ContractKind.ARCHIVE_RECORD)
+        if record["bucket"] != bucket or record["key"] in keys:
+            raise GateError("archive authority has a foreign bucket or duplicate binding")
+        keys.add(record["key"])
+        versions.add(RemoteVersion(record["key"], record["versionId"], record["bundleSize"], False))
+    return frozenset(versions)
+
+
+def _check_retained_storage(
+    client: PolicyClient, *, bucket: str, owner: str, expected: frozenset[RemoteVersion]
+) -> None:
+    store = ArchiveRemoteStore(cast(ArchiveClient, client), bucket=bucket)
+    # Inventory on either side of the ACL reads must equal the validated host
+    # records. No new reservation is required when the legitimate bucket is full.
+    for pass_number in range(2):
+        try:
+            inventory = store.inventory()
+        except ArchiveRemoteError as error:
+            raise GateError("retained archive inventory could not be verified") from error
+        if inventory.multipart_uploads:
+            raise GateError("archive bucket has incomplete multipart uploads")
+        if frozenset(inventory.versions) != expected:
+            raise GateError("retained remote inventory differs from validated host authority")
+        if pass_number == 0:
+            for version in sorted(expected, key=lambda item: item.key):
+                _private_acl_owner(
+                    client.get_object_acl(
+                        Bucket=bucket, Key=version.key, VersionId=version.version_id
+                    ),
+                    expected_owner=owner,
+                )
+
+
+def check_storage(
+    client: PolicyClient,
+    *,
+    bucket: str,
+    require_empty: bool = True,
+    expected_versions: frozenset[RemoteVersion] | None = None,
+) -> None:
+    """Require private storage and exact empty or host-bound version accounting.
+
+    Workstation operator authority reads ACLs; runtime keys retain object-only
+    authority. Missing, ambiguous, foreign, or publicly granted state fails closed.
+    """
+    owner = _private_acl_owner(client.get_bucket_acl(Bucket=bucket))
     _require_absent_configuration(
         client.get_bucket_policy, bucket=bucket, missing_code="NoSuchBucketPolicy"
     )
@@ -104,9 +195,9 @@ def check_storage(client: PolicyClient, *, bucket: str, require_empty: bool = Tr
     if require_empty:
         assert_storage_empty(client, bucket=bucket, prefix="")
     else:
-        assert_versioning_enabled(client, bucket=bucket)
-        if list_multipart_uploads(client, bucket=bucket, prefix="").uploads:
-            raise GateError("archive bucket has incomplete multipart uploads")
+        if expected_versions is None:
+            raise GateError("retained archives require validated host authority")
+        _check_retained_storage(client, bucket=bucket, owner=owner, expected=expected_versions)
 
 
 def expected_rules(domain: str) -> dict[str, dict[str, object]]:
@@ -310,6 +401,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--storage-only", action="store_true")
     parser.add_argument("--allow-existing-archives", action="store_true")
+    parser.add_argument("--archive-authority", type=Path)
+    parser.add_argument("--artifact")
+    parser.add_argument("--source")
     arguments = parser.parse_args()
     try:
         configuration = ArchiveConfiguration(
@@ -318,9 +412,26 @@ def main() -> int:
             required(os.environ, "SPACES_ACCESS_KEY_ID"),
             required(os.environ, "SPACES_SECRET_ACCESS_KEY"),
         )
+        expected_versions = None
+        if arguments.allow_existing_archives:
+            if not (arguments.archive_authority and arguments.artifact and arguments.source):
+                raise GateError(
+                    "completed storage checks require the current host authority snapshot"
+                )
+            expected_versions = read_archive_authority(
+                arguments.archive_authority,
+                bucket=configuration.bucket,
+                artifact=arguments.artifact,
+                source_revision=arguments.source,
+            )
+        elif arguments.archive_authority or arguments.artifact or arguments.source:
+            raise GateError("host authority is only valid for completed storage checks")
         client = cast(PolicyClient, make_policy_client(configuration))
         check_storage(
-            client, bucket=configuration.bucket, require_empty=not arguments.allow_existing_archives
+            client,
+            bucket=configuration.bucket,
+            require_empty=not arguments.allow_existing_archives,
+            expected_versions=expected_versions,
         )
         storage_proof = (
             "private/versioned/no-lifecycle storage"

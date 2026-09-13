@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 from typing import Protocol, cast
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from botocore.config import Config  # type: ignore[import-untyped]
 from botocore.session import Session  # type: ignore[import-untyped]
+from lowerduckpond_static_contracts import validate_uuid7
 from lowerduckpond_static_host_agent.archive_configuration import ArchiveConfiguration
 
 _READS = frozenset(
     {
         "GetBucketAcl",
+        "GetObjectAcl",
         "GetBucketPolicy",
         "GetBucketLifecycleConfiguration",
         "GetBucketVersioning",
@@ -61,9 +63,26 @@ def make_policy_client(configuration: ArchiveConfiguration) -> object:
             raise RuntimeError("policy client attempted an automatic retry")
         prepared.context["lowerduckpond_policy_attempt"] = True
         target = urlsplit(prepared.url)
+        expected_path = f"/{configuration.bucket}"
+        if operation_name == "GetObjectAcl":
+            prefix = expected_path + "/archives/"
+            if not target.path.startswith(prefix) or not target.path.endswith(".zip"):
+                raise RuntimeError("policy client escaped managed archive ACL authority")
+            validate_uuid7(target.path.removeprefix(prefix).removesuffix(".zip"))
+            query = parse_qs(target.query, keep_blank_values=True)
+            versions = query.get("versionId", [])
+            if (
+                set(query) != {"acl", "versionId"}
+                or query["acl"] != [""]
+                or len(versions) != 1
+                or not versions[0]
+                or versions[0] == "null"
+            ):
+                raise RuntimeError("policy client attempted an unapproved mutable object ACL read")
+            expected_path = target.path
         if (
             f"{target.scheme}://{target.netloc}" != endpoint
-            or target.path != f"/{configuration.bucket}"
+            or target.path != expected_path
             or target.fragment
         ):
             raise RuntimeError("policy client escaped its configured bucket endpoint")
