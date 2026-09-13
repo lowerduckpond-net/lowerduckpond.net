@@ -42,8 +42,9 @@ def runner(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     executable(
         commands / "ssh",
         """case "$*" in
-        *" completed-host")
+        *" completed-host "*)
             echo completed-host-preflight >>"$TEST_LOG"
+            echo fixture-private-authority
             exit "$TEST_HOST_STATUS";;
         *"-- check "*)
             echo completion-check >>"$TEST_LOG"
@@ -67,6 +68,7 @@ def runner(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         *read_production_ansible_inventory*) echo 192.0.2.1;;
         *scripts.check_m3_10_provider*)
             [[ "$*" == *"--allow-existing-archives"* ]] || exit 99
+            [[ "$*" == *"--archive-authority "*"--artifact "*"--source "* ]] || exit 99
             echo provider-policy >>"$TEST_LOG"
             exit "$TEST_PROVIDER_STATUS";;
         *scripts.check_m3_10_host_firewall*)

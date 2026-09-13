@@ -323,6 +323,25 @@ authority and succeeded. This failed run does not constitute complete installed
 qualification. Required CI and subsequent installed evidence must establish the
 final release; earlier complete runs remain identified by their revisions above.
 
+The subsequent installed archive/deletion rerun passed all four checks in
+1,864.56 seconds against the same artifact: four repeated archive/restore
+cycles, full-size archive/restore, capture/Caddy/Ansible overlap, historical
+replay, ordinary/emergency deletion, interrupted archived deletion recovery,
+and final accounting. A separate complete remote inventory confirmed no
+versions, markers, or multipart uploads. The stricter completed-host preflight
+also passed against that installed host with its permanent ordinary and
+administrator history retained.
+
+Completed-host checks now reject any job that startup would queue or repair,
+require matching immutable terminal results, and emit a private source/artifact
+snapshot of manifest-bound archive records. Completed provider checks compare
+the entire remote version/size/marker inventory to that snapshot, read each
+exact version's ACL with workstation operator authority, and repeat inventory
+after those ACL reads. Public or foreign grants, missing or extra versions,
+delete markers, and unaccounted multipart work fail without mutation. The SDK
+policy guard permits only version-specific managed-object ACL reads in addition
+to its existing bucket reads; runtime network authority is unchanged.
+
 ## Outstanding convergence gates
 
 1. Finish acceptance and required CI for every dependent PR, merge the reviewed

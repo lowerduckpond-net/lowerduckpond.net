@@ -124,7 +124,12 @@ produce the full empty-baseline qualification report. Every completed-candidate
 run also rechecks bucket privacy, versioning, absence of policy/lifecycle rules,
 whole-bucket absence of incomplete multipart uploads, both enforced edge zones,
 and the complete live host firewall. These read-only
-checks allow existing archives and run before the credential probe or host mutation.
+checks allow only the exact archive versions bound to validated host records.
+A private snapshot from the current host check binds the source and artifact;
+remote versions, sizes, and markers must match it before and after per-version
+ACL reads. Each retained object's ACL must grant full control only to the bucket
+owner. Unknown, missing, public, or foreign state fails without cleanup. These
+checks run before the credential probe or host mutation.
 It supplements the full installed qualification. A failure stops configuration
 and retains diagnostics in the private directory printed by the runner.
 
@@ -145,7 +150,9 @@ its first host mutation. Before choosing a host preflight, the runner checks
 completion. First installation retains the strict M3.6 empty-state gate. A
 completed candidate instead checks operator identity, reproducible builds,
 the pinned installed artifact, authoritative Caddy state, and bounded permanent
-authorization and audit history. Tenant records and history are retained;
+authorization and audit history. Jobs must have matching terminal results and
+complete job/correlation pairs; administrator results retain their separate
+authority. Tenant records and history are retained;
 unfinished work, interrupted publication files, quarantine, or active lifecycle
 workers fail the check without cleanup. Ordinary reconfiguration requires the unchanged
 source revision and artifact in its root-owned completion record, written only after convergence,

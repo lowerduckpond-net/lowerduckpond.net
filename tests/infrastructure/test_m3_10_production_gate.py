@@ -13,6 +13,7 @@ from typing import cast
 import pytest
 from botocore.exceptions import ClientError  # type: ignore[import-untyped]
 from lowerduckpond_m3_archive.storage import ArchiveQualificationError
+from lowerduckpond_static_host_agent.archive_remote import RemoteVersion
 
 from scripts import check_m3_10_provider as provider
 from scripts.check_m3_7_production_edge import CloudflareClient, ProductionEdgePreflightError
@@ -27,6 +28,9 @@ from scripts.check_m3_10_provider import (
 from .test_m3_7_production_gate import _certificate_fixture
 
 ROOT = Path(__file__).parents[2]
+ARCHIVE_KEY = "archives/0198d17f-6f4a-7000-8000-000000000003.zip"
+BOUND_VERSION = RemoteVersion(ARCHIVE_KEY, "v1", 4096, False)
+INVENTORY_SNAPSHOTS = 2
 EXPECTED = "4e32c4a88d729b371b8cd5da96e5fedbc9f30266acb0984599c1d645939bef85"
 
 
@@ -51,13 +55,20 @@ class Storage:
             "list_multipart_uploads": {"IsTruncated": False},
         }
 
+        self.object_acl: object = copy.deepcopy(self.responses["get_bucket_acl"])
+        self.acl_requests: list[dict[str, object]] = []
+
     def __getattr__(self, name: str) -> object:
         def operation(**arguments: object) -> object:
             self.calls.append(name)
             assert arguments["Bucket"] == "archive-fixture"
             if name.startswith("list_"):
                 assert arguments["Prefix"] == ""
-            response = self.responses[name]
+            if name == "get_object_acl":
+                self.acl_requests.append(arguments)
+                response = self.object_acl
+            else:
+                response = self.responses[name]
             if isinstance(response, str):
                 raise ClientError(
                     {
@@ -394,14 +405,25 @@ def test_completed_storage_policy_allows_tenant_objects_without_reading_or_mutat
     storage = Storage()
     storage.responses.update(
         list_objects_v2={"Contents": [{"Key": "tenant/archive.zip"}]},
-        list_object_versions={"Versions": [{"Key": "tenant/archive.zip", "VersionId": "v1"}]},
+        list_object_versions={
+            "Versions": [{"Key": ARCHIVE_KEY, "VersionId": "v1", "Size": 4096}],
+            "IsTruncated": False,
+        },
     )
     before = copy.deepcopy(storage.responses)
-    check_storage(cast(PolicyClient, storage), bucket="archive-fixture", require_empty=False)
+    check_storage(
+        cast(PolicyClient, storage),
+        bucket="archive-fixture",
+        require_empty=False,
+        expected_versions=frozenset({BOUND_VERSION}),
+    )
     assert storage.responses == before
-    assert storage.calls == [name for name in storage.responses if name.startswith("get_")] + [
-        "list_multipart_uploads"
+    assert storage.acl_requests == [
+        {"Bucket": "archive-fixture", "Key": ARCHIVE_KEY, "VersionId": "v1"}
     ]
+    assert storage.calls.count("list_object_versions") == INVENTORY_SNAPSHOTS
+    assert storage.calls.count("list_multipart_uploads") == INVENTORY_SNAPSHOTS
+    assert "list_objects_v2" not in storage.calls
 
 
 @pytest.mark.parametrize(
@@ -420,7 +442,12 @@ def test_completed_storage_policy_still_refuses_unsafe_provider_controls(
     storage = Storage()
     storage.responses[operation] = response
     with pytest.raises((GateError, ArchiveQualificationError)):
-        check_storage(cast(PolicyClient, storage), bucket="archive-fixture", require_empty=False)
+        check_storage(
+            cast(PolicyClient, storage),
+            bucket="archive-fixture",
+            require_empty=False,
+            expected_versions=frozenset(),
+        )
 
 
 @pytest.mark.parametrize(
@@ -430,7 +457,10 @@ def test_completed_provider_command_rechecks_both_edges_without_emptying_storage
     monkeypatch: pytest.MonkeyPatch, failed_zone: str | None
 ) -> None:
     storage = Storage()
-    storage.responses["list_object_versions"] = {"Versions": [{"Key": "tenant/archive.zip"}]}
+    storage.responses["list_object_versions"] = {
+        "Versions": [{"Key": ARCHIVE_KEY, "VersionId": "v1", "Size": 4096}],
+        "IsTruncated": False,
+    }
     for key, value in {
         "SPACES_REGION": "fra1",
         "SPACES_ARCHIVE_BUCKET": "archive-fixture",
@@ -444,7 +474,23 @@ def test_completed_provider_command_rechecks_both_edges_without_emptying_storage
         "CLOUDFLARE_TENANT_ORIGIN_PULL_CERTIFICATE_ID": "d" * 32,
     }.items():
         monkeypatch.setenv(key, value)
-    monkeypatch.setattr(sys, "argv", ["provider-check", "--allow-existing-archives"])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "provider-check",
+            "--allow-existing-archives",
+            "--archive-authority",
+            "/private/current.json",
+            "--artifact",
+            "c" * 64,
+            "--source",
+            "0" * 40,
+        ],
+    )
+    monkeypatch.setattr(
+        provider, "read_archive_authority", lambda *_args, **_kwargs: frozenset({BOUND_VERSION})
+    )
     monkeypatch.setattr(provider, "make_policy_client", lambda _config: storage)
     monkeypatch.setattr(provider, "CloudflareClient", lambda _token: object())
     monkeypatch.setattr(
@@ -468,9 +514,11 @@ def test_completed_provider_command_rechecks_both_edges_without_emptying_storage
         if failed_zone == "lowerduckpond.net"
         else ["lowerduckpond.net", "lowerduckpond.com"]
     )
-    assert storage.calls == [name for name in storage.responses if name.startswith("get_")] + [
-        "list_multipart_uploads"
+    assert storage.acl_requests == [
+        {"Bucket": "archive-fixture", "Key": ARCHIVE_KEY, "VersionId": "v1"}
     ]
+    assert storage.calls.count("list_object_versions") == INVENTORY_SNAPSHOTS
+    assert storage.calls.count("list_multipart_uploads") == INVENTORY_SNAPSHOTS
 
 
 def test_completed_provider_policy_refuses_whole_bucket_multipart_without_cleanup() -> None:
@@ -481,7 +529,12 @@ def test_completed_provider_policy_refuses_whole_bucket_multipart_without_cleanu
     }
     before = copy.deepcopy(storage.responses)
     with pytest.raises(GateError, match="multipart"):
-        check_storage(cast(PolicyClient, storage), bucket="archive-fixture", require_empty=False)
+        check_storage(
+            cast(PolicyClient, storage),
+            bucket="archive-fixture",
+            require_empty=False,
+            expected_versions=frozenset(),
+        )
     assert storage.responses == before
     assert storage.calls[-1] == "list_multipart_uploads"
 
