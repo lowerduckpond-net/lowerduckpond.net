@@ -247,12 +247,15 @@ fi
 # Any interrupted attempt, including rollback, invalidates prior completion.
 # A partial installation remains subject to the full gate and its strict host
 # inventory; it needs investigation rather than automatic retry authorization.
+printf '{"static_host_agent_verified_completed_candidate":%s}\n' \
+    "${completed_candidate}" >"${temporary_directory}/convergence-authorization.json"
+convergence_arguments=(--extra-vars "@${temporary_directory}/convergence-authorization.json")
 convergence_state clear
 echo "Converging the production hosting node."
-uv run ansible-playbook --inventory "${inventory}" "${site_playbook}"
+uv run ansible-playbook --inventory "${inventory}" "${site_playbook}" "${convergence_arguments[@]}"
 
 echo "Reapplying the production configuration to prove idempotence."
-uv run ansible-playbook --inventory "${inventory}" "${site_playbook}" |
+uv run ansible-playbook --inventory "${inventory}" "${site_playbook}" "${convergence_arguments[@]}" |
     tee "${second_converge_output}"
 
 if ! grep --extended-regexp --quiet \

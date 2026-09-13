@@ -164,6 +164,10 @@ unfinished work, interrupted publication files, quarantine, or active lifecycle
 workers fail the check without cleanup. Ordinary reconfiguration requires the unchanged
 source revision and artifact in its root-owned completion record, written only after convergence,
 idempotence, and host acceptance pass. Selection alone is insufficient. Each
+verified completed run passes an explicit boolean to both Ansible converges.
+That path permits retained tenant history while publication remains closed and
+requires the selected artifact to remain exact. Initial convergence and legacy
+rollback retain the empty-history guard. Each
 attempt clears prior completion before Ansible; interrupted attempts must pass
 the full gate again. Its strict preceding-host inventory refuses partial M3.10
 installations, which require investigation and a reviewed recovery rather than

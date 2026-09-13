@@ -1,4 +1,15 @@
 ---
+- name: Require explicit completed-candidate verification authority
+  ansible.builtin.assert:
+    that:
+      - static_host_agent_verified_completed_candidate is boolean
+      - >-
+        not static_host_agent_verified_completed_candidate or
+        (static_host_agent_archive_lifecycle_enabled | bool and
+         caddy_generation_enabled | bool)
+    fail_msg: Completed-candidate verification cannot authorize a legacy configuration.
+    quiet: true
+
 - name: Inspect the static publication configuration before host convergence
   ansible.builtin.stat:
     path: /etc/lowerduckpond/static-publication.json
@@ -124,6 +135,7 @@
   ansible.builtin.assert:
     that:
       - >-
+        static_host_agent_verified_completed_candidate or
         not static_host_agent_disabled_tenant_storage.stat.exists or
         static_host_agent_disabled_tenant_inventory.stdout | default('') |
         trim | length == 0
@@ -176,7 +188,7 @@
   register: static_host_agent_enabled_selection
   changed_when: false
   failed_when: false
-  when: static_publication_enabled | bool
+  when: static_publication_enabled | bool or static_host_agent_verified_completed_candidate
 
 - name: Refuse host-agent selection drift while tenant publication is enabled
   ansible.builtin.assert:
@@ -190,7 +202,7 @@
       tenant publication is enabled; refusing to alter the live selector
       without a tenant-capable generation migration.
     quiet: true
-  when: static_publication_enabled | bool
+  when: static_publication_enabled | bool or static_host_agent_verified_completed_candidate
 
 - name: Probe installed host-agent command compatibility while tenant publication is enabled
   ansible.builtin.copy:
