@@ -36,6 +36,7 @@ archive = make_archive_client(region='ams3', access_key_id='molecule-m3-10-archi
 backup = make_archive_client(region='ams3', access_key_id='molecule-m3-10-backup',
     secret_access_key='molecule-m3-10-disposable-backup-secret')
 objects = []
+uploads = []
 try:
     for client, bucket in ((archive, 'molecule-tenant-archives'),
                            (backup, 'molecule-platform-backup')):
@@ -43,6 +44,9 @@ try:
         version = client.put_object(Bucket=bucket, Key='archives/credential-proof',
                                     Body=b'proof', ContentLength=5)['VersionId']
         objects.append((client, bucket, version))
+        upload = client.create_multipart_upload(Bucket=bucket,
+            Key='archives/credential-proof')['UploadId']
+        uploads.append((client, bucket, 'archives/credential-proof', upload))
         body = client.get_object(Bucket=bucket, Key='archives/credential-proof',
                                  VersionId=version)['Body']
         try:
@@ -52,25 +56,46 @@ try:
     for index, (owner, bucket, version) in enumerate(objects):
         other = backup if index == 0 else archive
         for operation, arguments in (
+            ('get_bucket_versioning', {}),
+            ('get_object', {'Key': 'archives/credential-proof'}),
             ('get_object', {'Key': 'archives/credential-proof', 'VersionId': version}),
+            ('list_objects_v2', {}),
             ('list_object_versions', {}),
+            ('list_multipart_uploads', {}),
             ('put_object', {'Key': 'archives/cross-denied', 'Body': b'x', 'ContentLength': 1}),
+            ('create_multipart_upload', {'Key': 'archives/cross-denied'}),
             ('delete_object', {'Key': 'archives/credential-proof'}),
             ('delete_object', {'Key': 'archives/credential-proof', 'VersionId': version}),
+            ('abort_multipart_upload', {'Key': 'archives/credential-proof',
+                                       'UploadId': uploads[index][3]}),
         ):
             try:
-                getattr(other, operation)(Bucket=bucket, **arguments)
+                response = getattr(other, operation)(Bucket=bucket, **arguments)
             except ClientError as error:
                 assert error.response['ResponseMetadata']['HTTPStatusCode'] == 403
                 assert error.response['Error']['Code'] == 'AccessDenied'
             else:
+                if operation == 'create_multipart_upload':
+                    uploads.append((owner, bucket, arguments['Key'], response['UploadId']))
+                if 'Body' in response:
+                    response['Body'].close()
                 raise AssertionError('cross-bucket access unexpectedly succeeded')
+        surviving = owner.list_multipart_uploads(Bucket=bucket,
+            Prefix='archives/credential-proof').get('Uploads', [])
+        assert len(surviving) == 1 and surviving[0]['UploadId'] == uploads[index][3]
 finally:
+    for owner, bucket, key, upload in uploads:
+        try:
+            owner.abort_multipart_upload(Bucket=bucket, Key=key, UploadId=upload)
+        except ClientError as error:
+            assert error.response['Error']['Code'] == 'NoSuchUpload'
+            assert error.response['ResponseMetadata']['HTTPStatusCode'] == 404
     for owner, bucket, version in objects:
         owner.delete_object(Bucket=bucket, Key='archives/credential-proof', VersionId=version)
 for owner, bucket, _ in objects:
     inventory = owner.list_object_versions(Bucket=bucket)
     assert not inventory.get('Versions') and not inventory.get('DeleteMarkers')
+    assert not owner.list_multipart_uploads(Bucket=bucket).get('Uploads')
 """,
     )
 

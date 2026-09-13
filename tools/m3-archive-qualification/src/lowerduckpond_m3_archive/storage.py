@@ -19,6 +19,7 @@ QUALIFICATION_BODY = b"lowerduckpond-m3.1-archive-qualification\n"
 EXPECTED_PAGINATED_ENTRIES = 2
 REQUIRED_S3_OPERATIONS = {
     "AbortMultipartUpload",
+    "CreateMultipartUpload",
     "DeleteObject",
     "GetBucketVersioning",
     "GetObject",
@@ -51,6 +52,8 @@ class S3Client(Protocol):
     def delete_object(self, **kwargs: object) -> dict[str, object]: ...
 
     def abort_multipart_upload(self, **kwargs: object) -> dict[str, object]: ...
+
+    def create_multipart_upload(self, **kwargs: object) -> dict[str, object]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -267,6 +270,14 @@ def run_acceptance(
         _assert_exact_read(
             archive_client, bucket=archive_bucket, key=archive_key, version_id=archive_version
         )
+        backup_upload = _required_string(
+            backup_client.create_multipart_upload(Bucket=backup_bucket, Key=backup_key),
+            "UploadId",
+        )
+        archive_upload = _required_string(
+            archive_client.create_multipart_upload(Bucket=archive_bucket, Key=archive_key),
+            "UploadId",
+        )
 
         _assert_cross_bucket_denial(
             source=backup_client,
@@ -274,6 +285,7 @@ def run_acceptance(
             target_bucket=archive_bucket,
             existing_key=archive_key,
             existing_version=archive_version,
+            existing_upload=archive_upload,
             write_key=f"{qualification_prefix}backup-to-archive",
         )
         _assert_cross_bucket_denial(
@@ -282,7 +294,15 @@ def run_acceptance(
             target_bucket=backup_bucket,
             existing_key=backup_key,
             existing_version=backup_version,
+            existing_upload=backup_upload,
             write_key=f"{qualification_prefix}archive-to-backup",
+        )
+
+        archive_client.abort_multipart_upload(
+            Bucket=archive_bucket, Key=archive_key, UploadId=archive_upload
+        )
+        backup_client.abort_multipart_upload(
+            Bucket=backup_bucket, Key=backup_key, UploadId=backup_upload
         )
 
         delete_response = archive_client.delete_object(Bucket=archive_bucket, Key=archive_key)
@@ -382,15 +402,30 @@ def _cleanup_acceptance_prefixes(targets: tuple[tuple[S3Client, str], ...], *, p
         ) from cleanup_errors[0]
 
 
-def _assert_cross_bucket_denial(  # noqa: PLR0913 - bind both owners and the exact disposable version
+def _assert_cross_bucket_denial(  # noqa: PLR0913 - bind both owners and exact disposable resources
     *,
     source: S3Client,
     target_owner: S3Client,
     target_bucket: str,
     existing_key: str,
     existing_version: str,
+    existing_upload: str,
     write_key: str,
 ) -> None:
+    for operation in (
+        partial(source.get_bucket_versioning, Bucket=target_bucket),
+        partial(source.list_object_versions, Bucket=target_bucket, Prefix=existing_key, MaxKeys=1),
+        partial(
+            source.list_multipart_uploads, Bucket=target_bucket, Prefix=existing_key, MaxUploads=1
+        ),
+        partial(
+            source.get_object,
+            Bucket=target_bucket,
+            Key=existing_key,
+            VersionId=existing_version,
+        ),
+    ):
+        _expect_error_code(operation, expected_code="AccessDenied", expected_status=403)
     _expect_error_code(
         lambda: source.list_objects_v2(Bucket=target_bucket, Prefix=write_key, MaxKeys=1),
         expected_code="AccessDenied",
@@ -421,6 +456,12 @@ def _assert_cross_bucket_denial(  # noqa: PLR0913 - bind both owners and the exa
         assert_storage_empty(target_owner, bucket=target_bucket, prefix=write_key)
         raise ArchiveQualificationError("cross-bucket write unexpectedly succeeded")
 
+    _expect_error_code(
+        partial(source.create_multipart_upload, Bucket=target_bucket, Key=write_key),
+        expected_code="AccessDenied",
+        expected_status=403,
+    )
+
     # These permissions are independent: deleting a current key creates a marker,
     # whereas deleting its exact version permanently removes bytes. Probe only
     # this run's owner-created object; finally cleanup uses that owner's key.
@@ -430,6 +471,20 @@ def _assert_cross_bucket_denial(  # noqa: PLR0913 - bind both owners and the exa
             expected_code="AccessDenied",
             expected_status=403,
         )
+    _expect_error_code(
+        partial(
+            source.abort_multipart_upload,
+            Bucket=target_bucket,
+            Key=existing_key,
+            UploadId=existing_upload,
+        ),
+        expected_code="AccessDenied",
+        expected_status=403,
+    )
+    if list_multipart_uploads(target_owner, bucket=target_bucket, prefix=existing_key).uploads != (
+        MultipartUpload(existing_key, existing_upload),
+    ):
+        raise ArchiveQualificationError("cross-bucket denial changed the owner's multipart upload")
     _assert_exact_read(
         target_owner, bucket=target_bucket, key=existing_key, version_id=existing_version
     )
@@ -499,10 +554,14 @@ def _expect_error_code(
     operation: Callable[[], object], *, expected_code: str, expected_status: int
 ) -> None:
     try:
-        operation()
+        response = operation()
     except ClientError as error:
         _require_client_error(error, expected_code=expected_code, expected_status=expected_status)
         return
+    if isinstance(response, Mapping):
+        close = getattr(response.get("Body"), "close", None)
+        if callable(close):
+            close()
     raise ArchiveQualificationError("operation unexpectedly succeeded")
 
 

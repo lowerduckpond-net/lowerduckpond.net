@@ -57,6 +57,7 @@ class FakeS3Client:
         self.write_buckets = write_buckets if write_buckets is not None else allowed_buckets
         self.delete_buckets = self.write_buckets
         self.delete_version_buckets = self.write_buckets
+        self.operation_buckets: dict[str, set[str]] = {}
         self.denial_code = denial_code
         self.denial_status = denial_status
         self.corrupt_reads = False
@@ -209,6 +210,13 @@ class FakeS3Client:
         uploads[:] = [item for item in uploads if item != (key, upload_id)]
         return {}
 
+    def create_multipart_upload(self, **kwargs: object) -> dict[str, object]:
+        bucket = self._authorize(kwargs, "CreateMultipartUpload", write=True)
+        key = _string_argument(kwargs, "Key")
+        upload_id = f"upload-{self._new_version_id()}"
+        self.backend.uploads.setdefault(bucket, []).append((key, upload_id))
+        return {"UploadId": upload_id}
+
     def _authorize(
         self, kwargs: Mapping[str, object], operation: str, *, write: bool = False
     ) -> str:
@@ -219,6 +227,10 @@ class FakeS3Client:
         allowed = self.write_buckets if write else self.allowed_buckets
         if operation == "DeleteObject":
             allowed = self.delete_version_buckets if "VersionId" in kwargs else self.delete_buckets
+        permission = (
+            "GetObjectVersion" if operation == "GetObject" and "VersionId" in kwargs else operation
+        )
+        allowed = self.operation_buckets.get(permission, allowed)
         if bucket not in allowed:
             raise _client_error(self.denial_code, self.denial_status, operation)
         return bucket
@@ -438,6 +450,47 @@ def test_acceptance_refuses_delete_only_cross_bucket_authority(
 
     assert backend.objects == {"backups": {}, "archives": retained}
     assert all(not uploads for uploads in backend.uploads.values())
+
+
+@pytest.mark.parametrize("source_bucket", ["backups", "archives"])
+@pytest.mark.parametrize("require_empty_archive", [False, True])
+@pytest.mark.parametrize(
+    "permission",
+    [
+        "AbortMultipartUpload",
+        "CreateMultipartUpload",
+        "GetObjectVersion",
+        "ListObjectVersions",
+        "ListMultipartUploads",
+        "GetBucketVersioning",
+    ],
+)
+def test_acceptance_refuses_independent_cross_bucket_permissions(
+    source_bucket: str, require_empty_archive: bool, permission: str
+) -> None:
+    backend = FakeBackend()
+    backup = FakeS3Client(backend, {"backups"})
+    archive = FakeS3Client(backend, {"archives"})
+    if not require_empty_archive:
+        archive.put_object(Bucket="archives", Key="retained", Body=b"kept", ContentLength=4)
+        archive.delete_object(Bucket="archives", Key="retained")
+        archive.create_multipart_upload(Bucket="archives", Key="retained-upload")
+    retained_objects = deepcopy(backend.objects.get("archives", {}))
+    retained_uploads = deepcopy(backend.uploads.get("archives", []))
+    source = backup if source_bucket == "backups" else archive
+    source.operation_buckets[permission] = {"backups", "archives"}
+
+    with pytest.raises(ArchiveQualificationError, match="operation unexpectedly succeeded"):
+        run_acceptance(
+            backup_client=backup,
+            archive_client=archive,
+            backup_bucket="backups",
+            archive_bucket="archives",
+            require_empty_archive=require_empty_archive,
+        )
+
+    assert backend.objects == {"backups": {}, "archives": retained_objects}
+    assert backend.uploads == {"backups": [], "archives": retained_uploads}
 
 
 def test_preflight_rejects_current_versions_and_markers() -> None:
