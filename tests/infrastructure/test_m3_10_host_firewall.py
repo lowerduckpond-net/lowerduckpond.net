@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from scripts import check_cloudflare_networks as networks
 from scripts.check_m3_10_host_firewall import check_firewall, main
 
 ROOT = Path(__file__).parents[2]
@@ -88,4 +89,49 @@ def test_firewall_probe_requests_the_full_remote_ruleset(
     monkeypatch.setenv("ADMIN_SOURCE_CIDRS_JSON", '["192.0.2.1/32"]')
     monkeypatch.setenv("ANSIBLE_PRIVATE_KEY_FILE", "/private/fixture-key")
     monkeypatch.setattr("scripts.check_m3_10_host_firewall.subprocess.run", remote)
+    monkeypatch.setattr(
+        "scripts.check_m3_10_host_firewall.compare_snapshot", lambda *_a, **_k: None
+    )
     assert main() == int(unexpected)
+
+
+@pytest.mark.parametrize("version", [4, 6])
+@pytest.mark.parametrize("change", ["none", "added", "removed", "unavailable"])
+def test_live_firewall_gate_revalidates_published_networks_before_contacting_host(
+    monkeypatch: pytest.MonkeyPatch, version: int, change: str
+) -> None:
+    reviewed = networks.load_snapshot(ROOT / "platform/cloudflare-networks.json")
+    calls: list[str] = []
+
+    def fetch(url: str, *, version: int) -> frozenset[str]:
+        assert url == (networks.IPV4_URL if version == networks.IPV4_VERSION else networks.IPV6_URL)
+        calls.append(str(version))
+        values = reviewed.active_ipv4 if version == networks.IPV4_VERSION else reviewed.active_ipv6
+        if version != changed_version or change == "none":
+            return values
+        if change == "unavailable":
+            raise OSError("public network endpoint is unavailable")
+        if change == "added":
+            return values | {
+                "192.0.2.0/24" if version == networks.IPV4_VERSION else "2001:db8::/32"
+            }
+        return values - {sorted(values)[0]}
+
+    def remote(arguments: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        calls.append("ssh")
+        return subprocess.CompletedProcess(arguments, 0, stdout=FIXTURE.read_bytes())
+
+    changed_version = version
+    monkeypatch.setenv("PRODUCTION_ORIGIN_IPV4", "192.0.2.1")
+    monkeypatch.setenv("ADMIN_SOURCE_CIDRS_JSON", '["192.0.2.1/32"]')
+    monkeypatch.setenv("ANSIBLE_PRIVATE_KEY_FILE", "/private/fixture-key")
+    monkeypatch.setattr(networks, "fetch_networks", fetch)
+    monkeypatch.setattr("scripts.check_m3_10_host_firewall.subprocess.run", remote)
+    assert main() == int(change != "none")
+    assert calls == (
+        ["4", "6", "ssh"]
+        if change == "none"
+        else ["4"]
+        if change == "unavailable" and version == networks.IPV4_VERSION
+        else ["4", "6"]
+    )

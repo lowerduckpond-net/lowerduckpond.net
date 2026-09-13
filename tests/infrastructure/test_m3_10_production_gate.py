@@ -152,6 +152,7 @@ class Edge:
             "/origin_tls_client_auth/hostnames": [],
             "/origin_tls_client_auth": [{**leaf, "id": "b" * 32}],
             "/workers/routes": [],
+            "/pagerules": [],
             "/rulesets": [
                 {"kind": "zone", "phase": phase} for phase in expected_rules("lowerduckpond.net")
             ],
@@ -166,7 +167,7 @@ class Edge:
         return self.responses[path.removeprefix("/zones/" + "a" * 32)]
 
     def get_collection(self, path: str) -> object:
-        assert not path.endswith("/workers/routes")  # this endpoint has no pagination metadata
+        assert not path.endswith(("/workers/routes", "/pagerules"))  # non-paginated endpoints
         return self.get(path)
 
     def get_cursor_collection(self, path: str) -> object:
@@ -219,16 +220,35 @@ def test_edge_gate_rejects_workers_routes_and_malformed_inventory(
         edge_gate(edge)
 
 
+@pytest.mark.parametrize(
+    "rules",
+    [
+        [{"status": "active", "actions": [{"id": "forwarding_url"}]}],
+        [{"status": "active", "actions": [{"id": "cache_level", "value": "cache_everything"}]}],
+        [{"status": "disabled", "actions": [{"id": "forwarding_url"}]}],
+        {},
+        None,
+    ],
+)
+def test_edge_gate_rejects_legacy_page_rules_and_malformed_inventory(
+    edge: Edge, rules: object
+) -> None:
+    edge.responses["/pagerules"] = rules
+    with pytest.raises(GateError, match="Page Rules"):
+        edge_gate(edge)
+
+
+@pytest.mark.parametrize("endpoint", ["/workers/routes", "/pagerules"])
 @pytest.mark.parametrize("allowed", [True, False])
-def test_workers_inventory_uses_the_single_page_api_and_refuses_denial(
-    edge: Edge, monkeypatch: pytest.MonkeyPatch, allowed: bool
+def test_edge_inventory_uses_the_single_page_api_and_refuses_denial(
+    edge: Edge, monkeypatch: pytest.MonkeyPatch, endpoint: str, allowed: bool
 ) -> None:
     client = CloudflareClient("x" * 20)
     original = edge.get
     requested: list[str] = []
 
     def get(path: str) -> object:
-        return client.get(path) if path.endswith("/workers/routes") else original(path)
+        return client.get(path) if path.endswith(endpoint) else original(path)
 
     def response(request: urllib.request.Request, *, timeout: int) -> _CloudflareResponse:
         assert timeout > 0
@@ -239,9 +259,7 @@ def test_workers_inventory_uses_the_single_page_api_and_refuses_denial(
     monkeypatch.setattr(urllib.request, "urlopen", response)
     with nullcontext() if allowed else pytest.raises(ProductionEdgePreflightError):
         edge_gate(edge)
-    assert requested == [
-        "https://api.cloudflare.com/client/v4/zones/" + "a" * 32 + "/workers/routes"
-    ]
+    assert requested == ["https://api.cloudflare.com/client/v4/zones/" + "a" * 32 + endpoint]
 
 
 @pytest.mark.parametrize("paused", [True, None, "false", 0])
