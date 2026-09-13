@@ -514,7 +514,7 @@ def test_completed_storage_policy_still_refuses_unsafe_provider_controls(
 
 
 @pytest.mark.parametrize(
-    "failed_zone", [None, "lowerduckpond.net", "lowerduckpond.com", "different-account"]
+    "failed_zone", [None, "lowerduckpond.net", "lowerduckpond.com", "different-account", "token"]
 )
 def test_completed_provider_command_rechecks_both_edges_without_emptying_storage(
     monkeypatch: pytest.MonkeyPatch, failed_zone: str | None
@@ -571,7 +571,16 @@ def test_completed_provider_command_rechecks_both_edges_without_emptying_storage
         ) * 32
 
     monkeypatch.setattr(provider, "check_edge", check_zone)
+    token_checks = []
+
+    def check_token(_environment: object, **arguments: object) -> None:
+        token_checks.append(arguments["account_id"])
+        if failed_zone == "token":
+            raise GateError("runtime token drifted")
+
+    monkeypatch.setattr(provider, "check_caddy_token", check_token)
     assert provider.main() == (0 if failed_zone is None else 1)
+    assert token_checks == (["e" * 32] if failed_zone in {None, "token"} else [])
     assert checked == (
         ["lowerduckpond.net"]
         if failed_zone == "lowerduckpond.net"

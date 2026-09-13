@@ -36,6 +36,8 @@ from scripts.check_m3_7_production_edge import (
     MAXIMUM_CERTIFICATE_BYTES,
     CloudflareClient,
     ProductionEdgePreflightError,
+    _require_account_token_policies,
+    _require_zone_identity,
     validate_ca_certificate,
     validate_leaf_certificate,
 )
@@ -372,6 +374,34 @@ def required(environment: Mapping[str, str], name: str) -> str:
     return value
 
 
+def check_caddy_token(environment: Mapping[str, str], *, account_id: str, now: datetime) -> None:
+    """Bind the live runtime token to its exact non-expiring two-zone policy."""
+    edge_token = required(environment, "CLOUDFLARE_API_TOKEN")
+    caddy_token = required(environment, "CADDY_CLOUDFLARE_API_TOKEN")
+    audit_token = required(environment, "M3_10_TOKEN_AUDIT_TOKEN")
+    if len({edge_token, caddy_token, audit_token}) != 3:  # noqa: PLR2004 - three credential roles
+        raise GateError("the Cloudflare token roles are not separated")
+    caddy = CloudflareClient(caddy_token)
+    zones = (
+        (required(environment, "CLOUDFLARE_ZONE_ID"), "lowerduckpond.net"),
+        (required(environment, "CLOUDFLARE_TENANT_ZONE_ID"), "lowerduckpond.com"),
+    )
+    for zone_id, domain in zones:
+        if _require_zone_identity(caddy, zone_id, domain) != account_id:
+            raise GateError("the Caddy token identified a different zone account")
+    # M3.10's workstation edge reader also inspects routes and legacy settings.
+    # Audit the installed runtime policy without imposing M3.7's narrower
+    # OpenTofu policy on that separate workstation credential.
+    _require_account_token_policies(
+        audit_client=CloudflareClient(audit_token),
+        caddy_client=caddy,
+        edge_client=None,
+        account_id=account_id,
+        zone_ids=frozenset(zone_id for zone_id, _ in zones),
+        now=now,
+    )
+
+
 @contextmanager
 def verified_ca_bundle(*, now: datetime) -> Iterator[Path]:
     """Validate the one or two bounded public trust anchors used during rotation."""
@@ -466,6 +496,7 @@ def main() -> int:
                 account_ids.add(account_id)
         if len(account_ids) != 1:
             raise GateError("production edge zones belong to different accounts")
+        check_caddy_token(os.environ, account_id=account_ids.pop(), now=now)
     except (BotoCoreError, ClientError, RuntimeError, ValueError, OSError) as error:
         # Provider exceptions can include request URLs, headers, and credentials.
         message = (

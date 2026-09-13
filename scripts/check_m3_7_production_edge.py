@@ -598,7 +598,7 @@ def _require_account_token_policies(  # noqa: PLR0913 -- all credential roles ar
     *,
     audit_client: CloudflareClient,
     caddy_client: CloudflareClient,
-    edge_client: CloudflareClient,
+    edge_client: CloudflareClient | None,
     account_id: str,
     zone_ids: frozenset[str],
     now: datetime,
@@ -635,16 +635,16 @@ def _require_account_token_policies(  # noqa: PLR0913 -- all credential roles ar
         raise ProductionEdgePreflightError("the temporary token-audit lifetime is outside policy")
 
     zone_resources = frozenset(f"com.cloudflare.api.account.zone.{zone_id}" for zone_id in zone_ids)
+    subjects = [(caddy_client, CADDY_TOKEN_PERMISSIONS, "Caddy runtime")]
+    if edge_client is not None:
+        subjects.append((edge_client, EDGE_TOKEN_PERMISSIONS, "OpenTofu edge"))
     zone_permissions = _resolve_permission_groups(
         audit_client,
         account_id=account_id,
-        names=CADDY_TOKEN_PERMISSIONS | EDGE_TOKEN_PERMISSIONS,
+        names=frozenset(name for _, permissions, _ in subjects for name in permissions),
         expected_scope="com.cloudflare.api.account.zone",
     )
-    for client, permissions, label in (
-        (caddy_client, CADDY_TOKEN_PERMISSIONS, "Caddy runtime"),
-        (edge_client, EDGE_TOKEN_PERMISSIONS, "OpenTofu edge"),
-    ):
+    for client, permissions, label in subjects:
         details = _account_token_details(
             audit_client,
             client,
