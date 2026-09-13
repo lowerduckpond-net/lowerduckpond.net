@@ -4,9 +4,11 @@ set +x
 set -euo pipefail
 umask 077
 
-[[ $# == 2 && $2 =~ ^[0-9a-f]{64}$ ]] || exit 2
+[[ $# == 3 && $2 =~ ^[0-9a-f]{64}$ && $3 =~ ^[0-9a-f]{40}$ ]] || exit 2
 action=$1
 artifact=$2
+source_revision=$3
+expected="${artifact} ${source_revision}"
 directory=/var/lib/lowerduckpond/convergence
 marker=${directory}/m3-10
 install_root=/opt/lowerduckpond/static-host-agent
@@ -20,8 +22,8 @@ case ${action} in
     check)
         private_directory || exit 1
         [[ -f ${marker} && ! -L ${marker} &&
-           $(stat --format='%u:%a:%h:%s' -- "${marker}") == 0:400:1:65 &&
-           $(cat -- "${marker}") == "${artifact}" ]] || exit 1
+           $(stat --format='%u:%a:%h:%s' -- "${marker}") == 0:400:1:106 &&
+           $(cat -- "${marker}") == "${expected}" ]] || exit 1
         ;;
     clear | record)
         parent=${directory%/*}
@@ -40,7 +42,7 @@ case ${action} in
         [[ $(readlink --canonicalize-existing -- "${install_root}/current") == "${install_root}/${artifact}" ]] || exit 1
         temporary=$(mktemp "${directory}/.m3-10.XXXXXXXX")
         trap 'rm --force -- "${temporary}"' EXIT
-        printf '%s\n' "${artifact}" >"${temporary}"
+        printf '%s\n' "${expected}" >"${temporary}"
         chmod 0400 -- "${temporary}"
         sync --file-system "${temporary}"
         mv --no-target-directory -- "${temporary}" "${marker}"

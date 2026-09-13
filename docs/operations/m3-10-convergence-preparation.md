@@ -115,7 +115,7 @@ backup runtime keys before its first host mutation. This bounded storage check
 proves versioned write/read/delete and mutual bucket denial with the exact keys
 about to be installed, including after key rotation or routine reconfiguration.
 First convergence retains the whole-bucket-empty guard. A previously completed,
-unchanged artifact uses only a new probe prefix, preserving existing tenant
+unchanged source and artifact use only a new probe prefix, preserving existing tenant
 versions, delete markers, and multipart uploads. This scoped check cannot
 produce the full empty-baseline qualification report.
 It supplements the full installed qualification. A failure stops configuration
@@ -132,10 +132,10 @@ export M3_10_ARCHIVE_CREDENTIAL_BACKUP_CONFIRMED=true
 just configure-production
 ```
 
-For an artifact upgrade, that runner validates the report against the actual
+For a source or artifact change, that runner validates the report against the actual
 built artifact and clean current source, and repeats the M3.10 preflight before
-its first host mutation. Ordinary reconfiguration requires both the unchanged
-artifact and its root-owned completion record, written only after convergence,
+its first host mutation. Ordinary reconfiguration requires the unchanged
+source revision and artifact in its root-owned completion record, written only after convergence,
 idempotence, and host acceptance pass. Selection alone is insufficient. Each
 attempt clears prior completion before Ansible; interrupted attempts must pass
 the full gate again. Its strict preceding-host inventory refuses partial M3.10

@@ -276,6 +276,12 @@ and all three instance types, both before and after interrupted file removal.
 The tests retain credential bytes only inside a disposable service process,
 prove that its process exits, and restore the fixture's credential and sockets.
 
+Completed convergence now binds the full clean source revision alongside the
+artifact digest. Ansible, systemd, or runner changes cannot reuse artifact-only
+completion to bypass qualification. Old completion markers fail closed. All
+23 ordering and completion tests passed, including source-only changes with
+missing/expired evidence or a failed preceding-host preflight.
+
 ## Outstanding convergence gates
 
 1. Finish acceptance and required CI for every dependent PR, merge the reviewed
