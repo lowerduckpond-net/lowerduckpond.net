@@ -174,6 +174,8 @@ class CorrelationAdmission:
                 raise CorrelationConflictError(
                     "correlation belongs to emergency administrator authority"
                 )
+            if transaction.inspect_audit_correlation(correlation_id).entry is not None:
+                raise CorrelationConflictError("correlation belongs to permanent audit authority")
             if job_id in established_job_ids:
                 raise CorrelationConflictError(
                     "new correlation selected an established job identity"

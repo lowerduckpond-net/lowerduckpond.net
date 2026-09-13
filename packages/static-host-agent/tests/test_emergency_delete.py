@@ -9,12 +9,17 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
-from lowerduckpond_static_contracts import manifest_digest
+from lowerduckpond_static_contracts import manifest_digest, request_digest
 from lowerduckpond_static_host_agent import emergency_entrypoint, entrypoints
 from lowerduckpond_static_host_agent.archive_journal import ArchiveJournal
 from lowerduckpond_static_host_agent.archive_quarantine import ArchiveQuarantine
 from lowerduckpond_static_host_agent.archive_remote import ArchiveRemoteStore
+from lowerduckpond_static_host_agent.audit import AuditAppend, AuditLimits, AuditState
 from lowerduckpond_static_host_agent.caddy_runtime import CaddyRuntime
+from lowerduckpond_static_host_agent.correlations import (
+    CorrelationAdmission,
+    CorrelationConflictError,
+)
 from lowerduckpond_static_host_agent.create_commit import finalize_create_transition
 from lowerduckpond_static_host_agent.emergency_delete import (
     EmergencyDeletion,
@@ -24,7 +29,11 @@ from lowerduckpond_static_host_agent.emergency_remote import finish_emergency_re
 from lowerduckpond_static_host_agent.execution import _later_audited_results
 from lowerduckpond_static_host_agent.export_spool import ExportSpool
 from lowerduckpond_static_host_agent.release_store import DeploymentReleaseStore
-from lowerduckpond_static_host_agent.repository import StateRecordPath, StateRepository
+from lowerduckpond_static_host_agent.repository import (
+    StateRecordPath,
+    StateRepository,
+    _StateTransaction,
+)
 from lowerduckpond_static_host_agent.route_snapshot import (
     TenantRouteSnapshot,
     snapshot_tenant_routes,
@@ -41,6 +50,7 @@ from test_archive_journal import (
     setup_root,
     write,
 )
+from test_correlations import _BASE_TIME, _candidate
 from test_create_commit import _prepared_create, _state_root
 from test_route_commit import _Entropy, _Runtime
 
@@ -214,6 +224,77 @@ def test_emergency_tombstone_remains_visible_to_ordinary_result_history(
         with handler.repository.publication_transaction() as transaction:
             later = _later_audited_results(transaction, earlier)
         assert tuple(value.result for value in later) == (result,)
+
+
+@pytest.mark.parametrize(
+    "collision,audit_only", [("correlation", False), ("job", False), ("correlation", True)]
+)
+def test_completed_emergency_authority_cannot_be_reused_by_ordinary_admission(
+    tmp_path: Path, collision: str, audit_only: bool
+) -> None:
+    with _emergency(tmp_path, "undeployed") as (handler, tenant, _memory):
+        handler.execute(tenant, _CORRELATION, operator_principal=_PRINCIPAL, reason=_REASON)
+        assert not handler.repository.measure_intent_records().records
+        if audit_only:
+            (tmp_path / "state").joinpath(
+                *StateRecordPath.emergency_result(_CORRELATION).components
+            ).unlink()
+        candidate = _candidate(99)
+        if collision == "job":
+            candidate["jobId"] = _CORRELATION
+        else:
+            request = cast(dict[str, object], candidate["request"])
+            request["correlationId"] = _CORRELATION
+            candidate["requestDigest"] = request_digest(request).to_dict()
+        CorrelationAdmission(handler.repository).reconcile()
+        before = handler.repository.measure_inventory()
+        with pytest.raises(CorrelationConflictError):
+            CorrelationAdmission(handler.repository).resolve(candidate, now=_BASE_TIME)
+        assert handler.repository.measure_inventory() == before
+
+
+@pytest.mark.parametrize("boundary", [None, "audit-sync"])
+def test_emergency_deletion_uses_the_administrator_audit_reserve(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, boundary: str | None
+) -> None:
+    limits = AuditLimits(maximum_ordinary_bytes=0)
+    admit = _StateTransaction.admit_audit_append
+    append = _StateTransaction.append_audit
+
+    def limited_admit(
+        transaction: _StateTransaction, document: dict[str, object], *, administrator: bool = False
+    ) -> AuditState:
+        return admit(transaction, document, administrator=administrator, limits=limits)
+
+    def limited_append(
+        transaction: _StateTransaction, document: dict[str, object], *, administrator: bool = False
+    ) -> AuditAppend:
+        return append(transaction, document, administrator=administrator, limits=limits)
+
+    with _emergency(tmp_path, "undeployed") as (handler, tenant, _memory):
+        monkeypatch.setattr(_StateTransaction, "admit_audit_append", limited_admit)
+        monkeypatch.setattr(_StateTransaction, "append_audit", limited_append)
+
+        def interrupt(value: str) -> None:
+            if value == boundary:
+                raise InterruptedEmergencyError
+
+        if boundary is not None:
+            handler.hook = interrupt
+            with pytest.raises(InterruptedEmergencyError):
+                handler.execute(tenant, _CORRELATION, operator_principal=_PRINCIPAL, reason=_REASON)
+        handler.hook = lambda _value: None
+        result = handler.execute(
+            tenant, _CORRELATION, operator_principal=_PRINCIPAL, reason=_REASON
+        )
+        assert result["status"] == "succeeded"
+        assert not handler.repository.measure_intent_records().records
+        state = handler.repository.inspect_audit()
+        assert (
+            limits.maximum_ordinary_bytes
+            < state.allocated_bytes
+            <= limits.maximum_administrator_bytes
+        )
 
 
 @pytest.mark.parametrize("inventory_failure", [False, True])

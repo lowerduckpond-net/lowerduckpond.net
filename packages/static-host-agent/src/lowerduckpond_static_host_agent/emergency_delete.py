@@ -47,7 +47,7 @@ from lowerduckpond_static_host_agent.route_activate import (
     GenerationVerifier,
     _ensure_candidate_running,
 )
-from lowerduckpond_static_host_agent.route_commit import _audit_needs_append, _ensure_audit
+from lowerduckpond_static_host_agent.route_commit import _audit_needs_append
 from lowerduckpond_static_host_agent.route_handler import (
     _entropy,
     _utc_now,
@@ -324,7 +324,8 @@ class EmergencyDeletion:
                         verifier=self.verifier,
                     )
                 self.hook("candidate-selected")
-                _ensure_audit(transaction, audit)
+                if _audit_needs_append(transaction.inspect_audit(), audit):
+                    transaction.append_audit(audit, administrator=True)
                 self.hook("audit-sync")
                 for record in cast(list[dict[str, object]], document["deploymentRecords"]):
                     self.store.remove_release(
@@ -468,7 +469,7 @@ class EmergencyDeletion:
         audit = cast(dict[str, object], intent["auditEntry"])
         result = cast(dict[str, object], intent["result"])
         if audit_missing:
-            transaction.admit_audit_append(audit)
+            transaction.admit_audit_append(audit, administrator=True)
         if result_missing:
             transaction.admit_inventory(
                 StateInventoryReservation(
