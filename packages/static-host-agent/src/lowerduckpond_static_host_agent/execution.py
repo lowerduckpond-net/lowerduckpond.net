@@ -23,6 +23,10 @@ from lowerduckpond_static_contracts import (
     validate_uuid7,
 )
 
+from lowerduckpond_static_host_agent.archive_journal import (
+    ArchiveJournalError,
+    failed_construction_result,
+)
 from lowerduckpond_static_host_agent.audit import (
     DEFAULT_AUDIT_LIMITS,
     AuditCorrelationSnapshot,
@@ -1593,7 +1597,13 @@ def _capture_authorized_lifecycle_authority(  # noqa: PLR0912,PLR0915 - authorit
             source_tenant_record_histories=_dispatch_tenant_record_histories(job),
         )
     if transaction_intent is None:
-        source = transaction.read(StateRecordPath.tenant_desired(request["tenantId"])).document
+        source = (
+            None
+            if construction_intent is None
+            else _failed_construction_replay_source(transaction, job, construction_intent)
+        )
+        if source is None:
+            source = transaction.read(StateRecordPath.tenant_desired(request["tenantId"])).document
         if request["operation"] == "archive" and expected["lifecycle"] == "archived":
             desired = cast(
                 dict[str, object], cast(dict[str, object], source["spec"])["desiredDeployment"]
@@ -3918,6 +3928,8 @@ def _archive_construction_intent_binds_job(
         or intent["deploymentRecordDigest"] != expected["deploymentDigest"]
     ):
         raise ExecutionError("archive construction authority does not match its job")
+    if _failed_construction_replay_source(transaction, job, intent) is not None:
+        return True
     try:
         desired = transaction.read(StateRecordPath.tenant_desired(request["tenantId"])).document
         spec = desired["spec"]
@@ -3940,6 +3952,44 @@ def _archive_construction_intent_binds_job(
     ):
         raise ExecutionError("archive construction release tree is not source-authorized")
     return True
+
+
+def _failed_construction_replay_source(
+    transaction: ExecutionTransaction,
+    job: dict[str, object],
+    intent: dict[str, object],
+) -> dict[str, object] | None:
+    """Allow only independently audited, unpublished failure cleanup after source drift."""
+
+    if len(transaction.measure_intent_records().records) != 1:
+        # A published local transaction must retain its ordinary source and
+        # rollback checks; this exception grants only construction cleanup.
+        return None
+    audit = transaction.inspect_audit_correlation(intent["correlationId"])
+    if audit.entry is None or audit.entry["resultStatus"] != "failed":
+        return None
+    expected = cast(dict[str, object], job["expectedSource"])
+    if (
+        job["compatibilityVersion"] != "static-job-v2"
+        or job["phase"] not in {"claimed", "failed"}
+        or expected["lifecycle"] not in {"active", "suspended"}
+    ):
+        raise ExecutionError("failed construction has no exclusive cleanup authority")
+    try:
+        result = failed_construction_result(job, intent)
+    except ArchiveJournalError as error:
+        raise ExecutionError("failed construction lost captured authority") from error
+    _validate_result_binding(job, result)
+    _validate_result_audit(transaction, job, result, require_failure=True)
+    if audit.entry["timestamp"] != intent["createdAt"]:
+        raise ExecutionError("failed construction audit time exceeds captured authority")
+    existing = _read_result_transaction(transaction, str(job["jobId"]))
+    if (existing is not None and existing.document != result) or (
+        existing is None and job["phase"] == "failed"
+    ):
+        raise ExecutionError("failed construction lost its exact result")
+    source, _archive = _job_source_authority(job)
+    return source
 
 
 def _archive_retirement_intent_binds_job(
