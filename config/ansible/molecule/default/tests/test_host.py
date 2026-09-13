@@ -1572,6 +1572,9 @@ def test_archive_socket_and_credentials_are_private(host: Host, operation: str) 
     assert host.file("/etc/systemd/system/lowerduckpond-static-reconcile.service").contains(
         "InaccessiblePaths=/etc/lowerduckpond/archive"
     )
+    assert host.file("/etc/systemd/system/lowerduckpond-static-reconcile.service").contains(
+        "InaccessiblePaths=-/run/lowerduckpond-archive"
+    )
     for name in ("lowerduckpond-backup.service", "lowerduckpond-backup-maintenance.service"):
         backup = host.file(f"/etc/systemd/system/{name}")
         for path in ("/etc/lowerduckpond/archive", "/run/lowerduckpond-archive"):
