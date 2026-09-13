@@ -1149,7 +1149,7 @@ class AuthorizationExecutor:
             job, result, authority=authority, blocking=blocking
         ):
             return
-        if result["operation"] in {"delete", "restore"} and archive is not None:
+        if result["operation"] in {"archive", "delete", "restore"} and archive is not None:
             validator = self._retained_archive_validator
             try:
                 retained = validator is not None and validator(archive)
@@ -1222,6 +1222,10 @@ class AuthorizationExecutor:
             return True
         candidate = result.get("archiveRecord")
         if candidate is None:
+            if authority.archive_record is not None:
+                # An archived source has no newly constructed upload to account
+                # for. The caller verifies its retained object instead.
+                return True
             unreturned_validator = self._unreturned_archive_validator
             provenance = cast(dict[str, object], result["provenance"])
             if (

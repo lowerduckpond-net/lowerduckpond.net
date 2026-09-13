@@ -118,3 +118,11 @@ runtime limit of three, while validating every retained generation and rejecting
 reserved temporaries. The original platform-bootstrap limit remains two.
 All 61 generation/entrypoint tests passed, including a valid three-generation
 history and refusal of four generations, malformed entries, and corruption.
+
+The complete normal-retention source passed 1,792 host-agent tests with the same
+two documented skips. Archived-source `archive` failures now verify their
+retained source object rather than invoking unreturned-upload accounting when
+the result has no candidate record. The shared retained-source path keeps its
+later-audited-supersession handling. All 226 executor/entrypoint tests passed,
+including 12 archived-source failure cases spanning present/missing/error
+verification and raced supersession for archive and restore.
