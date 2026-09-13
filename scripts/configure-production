@@ -169,11 +169,13 @@ export ANSIBLE_CONFIG="${repository_root}/config/ansible/ansible.cfg"
 export ANSIBLE_PRIVATE_KEY_FILE
 
 [[ ${STATIC_HOST_AGENT_ARTIFACT_SHA256} =~ ^[0-9a-f]{64}$ ]] || exit 2
+production_source_revision=$(git -C "${repository_root}" rev-parse HEAD)
+[[ ${production_source_revision} =~ ^[0-9a-f]{40}$ ]] || exit 2
 convergence_state() {
     ssh -o BatchMode=yes -o HostKeyAlias=lowerduckpond.net -o IdentitiesOnly=yes \
         -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
         -i "${ANSIBLE_PRIVATE_KEY_FILE}" "ldp-admin@${PRODUCTION_ORIGIN_IPV4}" \
-        "sudo --non-interactive /bin/bash -s -- $1 ${STATIC_HOST_AGENT_ARTIFACT_SHA256}" \
+        "sudo --non-interactive /bin/bash -s -- $1 ${STATIC_HOST_AGENT_ARTIFACT_SHA256} ${production_source_revision}" \
         <"${repository_root}/scripts/m3-10-convergence-state"
 }
 
@@ -191,7 +193,7 @@ if [[ -z ${rollback_artifact_path} && ${completed_candidate} != true ]]; then
     fi
     uv run --quiet --frozen python -m scripts.m3_10_qualification_report \
         "${M3_10_QUALIFICATION_REPORT}" --verify \
-        --source "$(git -C "${repository_root}" rev-parse HEAD)" \
+        --source "${production_source_revision}" \
         --artifact "${STATIC_HOST_AGENT_ARTIFACT_SHA256}"
     "${repository_root}/scripts/preflight-m3-10-production"
 fi
@@ -209,7 +211,7 @@ if [[ -z ${rollback_artifact_path} ]]; then
             uv run --quiet --frozen ldp-m3-archive credential-check "${storage_arguments[@]}"
         else
             uv run --quiet --frozen ldp-m3-archive acceptance "${storage_arguments[@]}" \
-                --source-revision "$(git -C "${repository_root}" rev-parse HEAD)" \
+                --source-revision "${production_source_revision}" \
                 --output "${temporary_directory}/current-storage.json" &&
             uv run --quiet --frozen ldp-m3-archive verify-report \
                 "${temporary_directory}/current-storage.json"

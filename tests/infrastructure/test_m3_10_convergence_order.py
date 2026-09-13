@@ -32,14 +32,18 @@ def runner(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         commands / "git",
         """case "$*" in
         *branch*) echo main;;
-        *rev-parse*) printf '%040d\\n' 0;;
+        *rev-parse*) echo "$TEST_SOURCE";;
     esac""",
     )
     executable(commands / "ssh-keygen", "exit 0")
     executable(
         commands / "ssh",
         """case "$*" in
-        *"-- check "*) echo completion-check >>"$TEST_LOG"; exit "$TEST_COMPLETED_STATUS";;
+        *"-- check "*)
+            echo completion-check >>"$TEST_LOG"
+            remote_command=${!#}
+            [[ ${remote_command##* } == "$TEST_COMPLETED_SOURCE" ]] || exit 1
+            exit "$TEST_COMPLETED_STATUS";;
         *"-- clear "*) echo completion-clear >>"$TEST_LOG";;
         *"-- record "*) echo completion-record >>"$TEST_LOG";;
         *) printf "/opt/lowerduckpond/static-host-agent/%s\\n" "$TEST_SELECTED";;
@@ -87,6 +91,8 @@ def runner(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         "PATH": str(commands) + ":" + os.environ["PATH"],
         "TEST_LOG": str(tmp_path / "calls"),
         "TEST_SELECTED": PRECEDING,
+        "TEST_SOURCE": "0" * 40,
+        "TEST_COMPLETED_SOURCE": "0" * 40,
         "TEST_VERIFY_STATUS": "0",
         "TEST_PREFLIGHT_STATUS": "0",
         "TEST_COMPLETED_STATUS": "1",
@@ -238,3 +244,25 @@ def test_current_runtime_keys_must_pass_even_after_prior_qualification(
     assert ("scoped-current-credentials" if completed else "current-credentials") in calls
     assert "completion-clear" not in calls
     assert "ansible" not in calls
+
+
+@pytest.mark.parametrize("failure", ["missing-report", "expired-report", "partial-host"])
+def test_same_artifact_with_new_deployment_source_cannot_reuse_completion(
+    runner: tuple[Path, dict[str, str]], failure: str
+) -> None:
+    runner[1]["TEST_SELECTED"] = CANDIDATE
+    runner[1]["TEST_COMPLETED_STATUS"] = "0"
+    runner[1]["TEST_SOURCE"] = "1" * 40
+    if failure == "missing-report":
+        runner[1].pop("M3_10_QUALIFICATION_REPORT")
+    elif failure == "expired-report":
+        runner[1]["TEST_VERIFY_STATUS"] = "1"
+    else:
+        runner[1]["TEST_PREFLIGHT_STATUS"] = "1"
+    status, calls = run(runner)
+    assert status != 0
+    assert "completion-check" in calls
+    assert "scoped-current-credentials" not in calls
+    assert "ansible" not in calls
+    assert "completion-clear" not in calls
+    assert "completion-record" not in calls
