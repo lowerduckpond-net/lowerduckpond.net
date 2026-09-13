@@ -157,6 +157,8 @@ def prepare(container: str, root: Path) -> dict[str, str]:
                     "s3:PutObject",
                     "s3:DeleteObject",
                     "s3:DeleteObjectVersion",
+                    # The credential-isolation probe owns and retires one upload.
+                    "s3:AbortMultipartUpload",
                 ],
                 "Resource": [f"arn:aws:s3:::{_ARCHIVE_BUCKET}/archives/*"],
             },
