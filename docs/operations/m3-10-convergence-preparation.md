@@ -203,6 +203,10 @@ wrapper derives its dedicated archive values from encrypted OpenTofu outputs,
 separately from the backup key, and passes them to Ansible through environment
 lookups. Credential installation suppresses task logging and diffs. This is the
 host runtime credential location; the workstation source remains unchanged.
+Before publishing a credential, the role creates the private socket directory,
+loads archive isolation for backup services and the ordinary reconciler, and
+drains invocations started under older unit policy. Creating the directory first
+ensures the mask covers sockets created after an ordinary process starts.
 Withdrawing configuration closes activation sockets and the emergency timer,
 removes the credential file, and stops archive instances and managed emergency
 recovery that may already hold the key in memory.

@@ -3,10 +3,13 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 import test_export_import as exports
+import yaml
 from testinfra.host import Host
 
 from config.ansible.molecule.default.tests.test_host import _run_installed_boundary_probe
@@ -30,6 +33,99 @@ for name in ('export', 'construction', 'cleanup'):
             raise AssertionError('ordinary reconciler reached archive authority')
 """,
     )
+
+
+@pytest.mark.parametrize("prepare_before_start", [False, True])
+def test_installed_reconciler_masks_entries_created_after_namespace_start(
+    host: Host, tmp_path: Path, prepare_before_start: bool
+) -> None:
+    role = Path(__file__).parents[3] / "roles/static_host_agent"
+    tasks = yaml.safe_load((role / "tasks/main.yml").read_text())
+    names = [task["name"] for task in tasks]
+    prepare = names.index(
+        "Create the private archive socket directory before ordinary service isolation"
+    )
+    assert prepare < names.index("Reconcile the dedicated archive credential")
+    assert prepare < names.index("Start bounded static authorization reconciliation")
+    # Use an isolated path so this namespace proof cannot disturb real sockets.
+    parent = f"/run/lowerduckpond-m3-10-mask-{tmp_path.name}"
+    protected = parent + "/archive"
+    socket_mask = "InaccessiblePaths=-/run/lowerduckpond-archive"
+    assert not host.file(parent).exists
+    task = json.loads(json.dumps(tasks[prepare]))
+    assert task["ansible.builtin.file"]["path"] == "/run/lowerduckpond-archive"
+    task["ansible.builtin.file"]["path"] = protected
+    inventory = tmp_path / "inventory.json"
+    inventory.write_text(
+        json.dumps(
+            {
+                "all": {
+                    "hosts": {
+                        "lowerduckpond-ubuntu-2604": {
+                            "ansible_connection": "community.docker.docker",
+                            "ansible_python_interpreter": "/usr/bin/python3",
+                        }
+                    }
+                }
+            }
+        )
+    )
+    playbook = tmp_path / "prepare.json"
+    playbook.write_text(json.dumps([{"hosts": "all", "gather_facts": False, "tasks": [task]}]))
+    probe = f"""from pathlib import Path
+import time
+parent = Path({parent!r})
+(parent / 'ready').touch()
+deadline = time.monotonic() + 30
+while not (parent / 'release').exists():
+    assert time.monotonic() < deadline, 'fixture never created its protected entry'
+    time.sleep(0.05)
+try:
+    Path({protected + "/later-entry"!r}).stat()
+except (PermissionError, FileNotFoundError):
+    pass
+else:
+    raise AssertionError('archive mask was skipped')
+"""
+    try:
+        host.run_expect([0], "install -d -m 0700 %s", parent)
+        if prepare_before_start:
+            result = subprocess.run(  # noqa: S603 - actual task, isolated disposable path
+                [sys.executable, "-m", "ansible.cli.playbook", "-i", str(inventory), str(playbook)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert result.returncode == 0, result.stdout + result.stderr
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(
+                _run_installed_boundary_probe,
+                host,
+                "lowerduckpond-static-reconcile.service",
+                probe,
+                replacements={
+                    socket_mask: f"InaccessiblePaths=-{protected}",
+                    "ProtectSystem=strict": f"ProtectSystem=strict\nReadWritePaths={parent}",
+                },
+            )
+            deadline = time.monotonic() + 30
+            while not host.file(parent + "/ready").exists:
+                if future.done():
+                    future.result()
+                assert time.monotonic() < deadline, "reconciler probe did not start"
+                time.sleep(0.05)
+            host.run_expect([0], "install -d -m 0700 %s", protected)
+            host.run_expect([0], "touch %s", protected + "/later-entry")
+            host.run_expect([0], "touch %s", parent + "/release")
+            if prepare_before_start:
+                future.result()
+            else:
+                # Negative control reproduces systemd skipping an absent '-'
+                # mask and exposing entries created after the process started.
+                with pytest.raises(pytest.fail.Exception, match="archive mask was skipped"):
+                    future.result()
+    finally:
+        host.run("rm -rf -- %s", parent)
 
 
 @pytest.mark.parametrize("operation", ["export", "construction", "cleanup"])
@@ -129,10 +225,15 @@ def test_installed_idle_emergency_recovery_needs_no_archive_credentials(host: Ho
 
 
 @pytest.mark.parametrize(
-    "unit", ["lowerduckpond-backup.service", "lowerduckpond-backup-maintenance.service"]
+    "unit",
+    [
+        "lowerduckpond-backup.service",
+        "lowerduckpond-backup-maintenance.service",
+        "lowerduckpond-static-reconcile.service",
+    ],
 )
 @pytest.mark.parametrize("written_before_retry", [False, True])
-def test_installed_credentials_drain_backup_processes_using_the_previous_isolation(
+def test_installed_credentials_drain_ordinary_processes_using_the_previous_isolation(
     host: Host, tmp_path: Path, unit: str, written_before_retry: bool
 ) -> None:
     credential = "/etc/lowerduckpond/archive/credentials.json"
@@ -237,7 +338,7 @@ while True:
         json.dumps(
             [
                 {
-                    "name": "Prove older backup processes exit before credential publication",
+                    "name": "Prove older ordinary processes exit before credential publication",
                     "hosts": "all",
                     "gather_facts": False,
                     "tasks": [
@@ -281,7 +382,11 @@ while True:
             }
         )
     )
-    timers = ["lowerduckpond-backup.timer", "lowerduckpond-backup-maintenance.timer"]
+    timers = [
+        "lowerduckpond-backup.timer",
+        "lowerduckpond-backup-maintenance.timer",
+        "lowerduckpond-static-reconcile.timer",
+    ]
     active = [
         timer for timer in timers if host.run("systemctl is-active --quiet %s", timer).rc == 0
     ]
@@ -290,7 +395,8 @@ while True:
             host.run(
                 "systemctl stop lowerduckpond-backup.timer "
                 "lowerduckpond-backup-maintenance.timer lowerduckpond-backup.service "
-                "lowerduckpond-backup-maintenance.service"
+                "lowerduckpond-backup-maintenance.service lowerduckpond-static-reconcile.timer "
+                "lowerduckpond-static-reconcile.service"
             ).rc
             == 0
         )

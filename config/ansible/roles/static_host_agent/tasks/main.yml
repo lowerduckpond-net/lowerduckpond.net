@@ -640,6 +640,14 @@
     group: root
     mode: "0700"
 
+- name: Create the private archive socket directory before ordinary service isolation
+  ansible.builtin.file:
+    path: /run/lowerduckpond-archive
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
 - name: Reconcile the dedicated archive credential
   ansible.builtin.include_tasks: archive_credentials.yml
 
