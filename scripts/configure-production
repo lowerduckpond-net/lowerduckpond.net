@@ -200,14 +200,22 @@ if [[ -z ${rollback_artifact_path} ]]; then
     # Exercise the exact freshly loaded runtime keys, including versioned
     # writes/deletes and mutual bucket denial, before installing either key.
     # This small storage proof supplements the full installed qualification.
-    if ! uv run --quiet --frozen ldp-m3-archive acceptance \
-        --backup-bucket "${backup_bucket_name}" --archive-bucket "${SPACES_ARCHIVE_BUCKET}" \
-        --source-revision "$(git -C "${repository_root}" rev-parse HEAD)" --region "${SPACES_REGION}" \
-        --output "${temporary_directory}/current-storage.json" \
-        >"${temporary_directory}/current-storage.log" 2>&1 ||
-       ! uv run --quiet --frozen ldp-m3-archive verify-report \
-        "${temporary_directory}/current-storage.json" \
-        >>"${temporary_directory}/current-storage.log" 2>&1; then
+    current_credential_check() {
+        local -a storage_arguments=(
+            --backup-bucket "${backup_bucket_name}" --archive-bucket "${SPACES_ARCHIVE_BUCKET}"
+            --region "${SPACES_REGION}"
+        )
+        if [[ ${completed_candidate} == true ]]; then
+            uv run --quiet --frozen ldp-m3-archive credential-check "${storage_arguments[@]}"
+        else
+            uv run --quiet --frozen ldp-m3-archive acceptance "${storage_arguments[@]}" \
+                --source-revision "$(git -C "${repository_root}" rev-parse HEAD)" \
+                --output "${temporary_directory}/current-storage.json" &&
+            uv run --quiet --frozen ldp-m3-archive verify-report \
+                "${temporary_directory}/current-storage.json"
+        fi
+    }
+    if ! current_credential_check >"${temporary_directory}/current-storage.log" 2>&1; then
         preserve_private_diagnostics=true
         echo "Current archive/backup credential qualification failed before host mutation." >&2
         exit 1

@@ -3,10 +3,13 @@ from __future__ import annotations
 import io
 from collections.abc import Callable, Mapping
 from contextlib import suppress
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 
 import pytest
 from botocore.exceptions import ClientError  # type: ignore[import-untyped]
+from lowerduckpond_m3_archive import cli
+from lowerduckpond_m3_archive.report import ArchiveQualificationReport, UnsafeArchiveReportError
 from lowerduckpond_m3_archive.storage import (
     ArchiveQualificationError,
     assert_storage_empty,
@@ -242,6 +245,86 @@ def test_acceptance_proves_isolation_pagination_and_cleanup() -> None:
 
     assert all(asdict(evidence).values())
     assert backend.objects == {"backups": {}, "archives": {}}
+
+
+@pytest.mark.parametrize("failed_read", [False, True])
+def test_scoped_credential_check_preserves_existing_archive_history(
+    failed_read: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    backend = FakeBackend(
+        objects={
+            "archives": {
+                "archives/tenant/bundle": [
+                    StoredVersion("retained-version", b"retained tenant bytes")
+                ],
+                "archives/tenant/deleted": [
+                    StoredVersion("retained-marker", b"", delete_marker=True)
+                ],
+            }
+        },
+        uploads={"archives": [("archives/tenant/partial", "retained-upload")]},
+    )
+    expected_objects = deepcopy(backend.objects["archives"])
+    expected_uploads = deepcopy(backend.uploads)
+    backup = FakeS3Client(backend, {"backups"})
+    archive = FakeS3Client(backend, {"archives"})
+    with pytest.raises(ArchiveQualificationError):
+        run_acceptance(
+            backup_client=backup,
+            archive_client=archive,
+            backup_bucket="backups",
+            archive_bucket="archives",
+        )
+    archive.corrupt_reads = failed_read
+    if failed_read:
+        with pytest.raises(ArchiveQualificationError):
+            run_acceptance(
+                backup_client=backup,
+                archive_client=archive,
+                backup_bucket="backups",
+                archive_bucket="archives",
+                require_empty_archive=False,
+            )
+    else:
+        evidence = run_acceptance(
+            backup_client=backup,
+            archive_client=archive,
+            backup_bucket="backups",
+            archive_bucket="archives",
+            require_empty_archive=False,
+        )
+        assert evidence.empty_archive_baseline is False
+        with pytest.raises(UnsafeArchiveReportError, match="every acceptance proof"):
+            ArchiveQualificationReport.create(evidence, source_revision="a" * 40)
+        assert all(
+            value for key, value in asdict(evidence).items() if key != "empty_archive_baseline"
+        )
+    assert backend.objects["archives"] == expected_objects
+    assert not backend.objects["backups"]
+    assert backend.uploads["archives"] == expected_uploads["archives"]
+    assert not backend.uploads["backups"]
+
+    def client(**arguments: object) -> FakeS3Client:
+        return backup if arguments["access_key_id"] == "backup-fixture" else archive
+
+    monkeypatch.setattr(cli, "create_client", client)
+    for owner in ("BACKUP", "ARCHIVE"):
+        monkeypatch.setenv(f"SPACES_{owner}_ACCESS_KEY_ID", f"{owner.lower()}-fixture")
+        monkeypatch.setenv(f"SPACES_{owner}_SECRET_ACCESS_KEY", "disposable-fixture")
+    status = cli.main(
+        [
+            "credential-check",
+            "--backup-bucket",
+            "backups",
+            "--archive-bucket",
+            "archives",
+            "--region",
+            "ams3",
+        ]
+    )
+    assert status == int(failed_read)
+    assert backend.objects["archives"] == expected_objects
+    assert backend.uploads["archives"] == expected_uploads["archives"]
 
 
 def test_acceptance_cleans_both_prefixes_after_read_failure() -> None:

@@ -246,13 +246,15 @@ def run_acceptance(
     archive_client: S3Client,
     backup_bucket: str,
     archive_bucket: str,
+    require_empty_archive: bool = True,
 ) -> AcceptanceEvidence:
     """Exercise isolation, exact versions, forced pagination, and complete cleanup."""
     if backup_bucket == archive_bucket:
         raise ArchiveQualificationError("backup and archive buckets must be distinct")
     assert_versioning_enabled(backup_client, bucket=backup_bucket)
-    assert_storage_empty(archive_client, bucket=archive_bucket)
     qualification_prefix = f"m3-1-qualification/{uuid.uuid7()}/"
+    archive_boundary = "" if require_empty_archive else qualification_prefix
+    assert_storage_empty(archive_client, bucket=archive_bucket, prefix=archive_boundary)
     backup_key = f"{qualification_prefix}backup-owner"
     archive_key = f"{qualification_prefix}archive-owner"
     try:
@@ -335,7 +337,7 @@ def run_acceptance(
             key=backup_key,
             version_id=backup_version,
         )
-        assert_storage_empty(archive_client, bucket=archive_bucket)
+        assert_storage_empty(archive_client, bucket=archive_bucket, prefix=archive_boundary)
         assert_storage_empty(backup_client, bucket=backup_bucket, prefix=qualification_prefix)
         return AcceptanceEvidence(
             buckets_versioned=True,
@@ -343,7 +345,7 @@ def run_acceptance(
             exact_version_read=True,
             delete_marker=True,
             forced_pagination=True,
-            empty_archive_baseline=True,
+            empty_archive_baseline=require_empty_archive,
             cleanup_complete=True,
         )
     finally:
