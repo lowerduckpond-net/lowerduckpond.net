@@ -79,3 +79,42 @@ prove acceptance and rejection of changed environment, namespace, and origin-pul
 inputs. A read-only evaluation of the revised checker against the retained
 disposable host returned `current`; installed artifact files were not modified.
 The full 1,775-test run includes these regressions.
+
+The next review closes reservation consumption by already-admitted jobs: each
+executor transaction defers a different job while the construction journal owns
+terminal capacity. Two regressions leave exactly one result slot, attempt a
+pending job's failure both with and without source drift, then prove the archive
+can still publish its failed result and retire its upload before the pending job
+resumes. Empty-tenant health now validates the entire generation-store shape and
+normal three-generation bound, including temporary, malformed, corrupt, and
+excess unselected entries.
+
+Emergency deletion now admits and appends its audit through the administrator
+reserve. Successful deletion and replay after interruption pass with zero
+ordinary audit allocation available. Completed emergency results already occupy
+the shared permanent result inventory; regression tests prove ordinary callers
+cannot reuse either their correlation or job identity. Admission additionally
+refuses a correlation retained by audit evidence if its result is missing.
+The focused admission, generation-store, and emergency group passed all 77
+tests; formatting and strict typing across 239 source files passed.
+The resulting full host-agent suite passed 1,787 tests with the same two
+documented skips.
+
+Emergency preparation now publishes and validates its unselected generation
+before saving recovery authority, then rechecks terminal capacity after that
+allocation. A failed preparation discards only its verified candidate while the
+intent is absent; an ambiguously completed intent keeps its candidate for
+recovery. All 54 emergency tests passed, including generation-capacity refusal,
+terminal-capacity refusal after generation creation, and interruption before or
+after intent durability. These checks preserve the selected runtime and tenant
+state on preparation refusal, and prove a later retry succeeds.
+
+The completed emergency-candidate change passed the full host-agent suite:
+1,791 tests with the same two documented skips. A subsequent retention check
+confirmed that ordinary route publication prunes to active plus one predecessor
+before adding its candidate, so last-tenant deletion can leave three complete
+generations. The namespace-bound empty health check now uses the existing normal
+runtime limit of three, while validating every retained generation and rejecting
+reserved temporaries. The original platform-bootstrap limit remains two.
+All 61 generation/entrypoint tests passed, including a valid three-generation
+history and refusal of four generations, malformed entries, and corruption.

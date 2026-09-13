@@ -12,6 +12,8 @@ from lowerduckpond_static_host_agent.archive_abort import finalize_failed_constr
 from lowerduckpond_static_host_agent.archive_journal import ArchiveRetirementJournal
 from lowerduckpond_static_host_agent.audit import DEFAULT_AUDIT_LIMITS, AuditCapacityError
 from lowerduckpond_static_host_agent.capacity import CapacityRejectedError, FilesystemCapacity
+from lowerduckpond_static_host_agent.execution import AuthorizationExecutor
+from lowerduckpond_static_host_agent.intake import ArtifactIntake
 from lowerduckpond_static_host_agent.issuance import AuthorizationIssuer
 from lowerduckpond_static_host_agent.locks import StateBusyError
 from lowerduckpond_static_host_agent.repository import (
@@ -222,6 +224,71 @@ def test_construction_preserves_terminal_capacity_while_exact_retries_remain_ava
         finalize_failed_construction(journal.repository, journal.spool, job_id)
         journal.finish(str(uploaded.construction.document["intentId"]))
         issue(new_request)
+
+
+@pytest.mark.parametrize("source_drift", [False, True])
+def test_pending_jobs_cannot_spend_construction_terminal_capacity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source_drift: bool
+) -> None:
+    remote = MemoryRemote()
+    with prepared_source(tmp_path, remote) as (journal, job_id, snapshot, _quarantine):
+        pending = AuthorizationIssuer(journal.repository, gate=OpenGate(), entropy=_entropy).issue(
+            canonical_json_bytes(
+                {
+                    "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+                    "kind": "OperationRequest",
+                    "operation": "suspend",
+                    "tenantId": _TENANT,
+                    "correlationId": "0198d17f-6f4a-7000-8000-000000000010",
+                }
+            ),
+            operator_principal="operator@example.test",
+            now=_NOW + timedelta(seconds=1),
+            artifact=None,
+        )
+        inventory = journal.repository.measure_inventory()
+        limits = replace(
+            DEFAULT_STATE_INVENTORY_LIMITS,
+            maximum_authorization_records=inventory.authorization_record_count + 1,
+        )
+        admit = _StateTransaction.admit_inventory
+
+        def limited_admit(
+            transaction: _StateTransaction, reservation: StateInventoryReservation
+        ) -> StateInventoryProjection:
+            return admit(transaction, reservation, limits=limits)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(_StateTransaction, "admit_inventory", limited_admit)
+            uploaded = journal.construct(job_id, snapshot, now=_NOW)
+            if source_drift:
+                desired_path = StateRecordPath.tenant_desired(_TENANT)
+                source = journal.repository.read(desired_path)
+                changed = source.document
+                cast(dict[str, object], cast(dict[str, object], changed["spec"])["quotas"])[
+                    "storageMiB"
+                ] = 99
+                journal.repository.compare_and_swap(desired_path, source.revision, changed)
+            (tmp_path / "state" / "intake").mkdir(mode=0o700)
+            with ArtifactIntake(tmp_path / "state", expected_owner=_OWNER) as intake:
+                executor = AuthorizationExecutor(journal.repository, intake)
+                with pytest.raises(StateBusyError, match=r"export.lock is busy"):
+                    executor.execute(pending.job_id)
+            assert journal.repository.measure_inventory() == inventory
+            assert journal.repository.inspect_audit().entry_count == 0
+            assert (
+                journal.repository.read(StateRecordPath.authorization_job(pending.job_id)).document[
+                    "phase"
+                ]
+                == "pending"
+            )
+            finalize_failed_construction(journal.repository, journal.spool, job_id)
+            journal.finish(str(uploaded.construction.document["intentId"]))
+            assert not remote.versions
+            assert not journal.repository.measure_intent_records().records
+        with ArtifactIntake(tmp_path / "state", expected_owner=_OWNER) as intake:
+            result = AuthorizationExecutor(journal.repository, intake).execute(pending.job_id)
+            assert result.result["status"] == "failed"
 
 
 def test_failed_construction_retires_only_its_upload_after_source_drift_and_collection(

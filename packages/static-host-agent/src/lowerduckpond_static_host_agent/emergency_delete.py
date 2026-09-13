@@ -47,7 +47,7 @@ from lowerduckpond_static_host_agent.route_activate import (
     GenerationVerifier,
     _ensure_candidate_running,
 )
-from lowerduckpond_static_host_agent.route_commit import _audit_needs_append, _ensure_audit
+from lowerduckpond_static_host_agent.route_commit import _audit_needs_append
 from lowerduckpond_static_host_agent.route_handler import (
     _entropy,
     _utc_now,
@@ -247,11 +247,42 @@ class EmergencyDeletion:
         )
         verify_emergency_state(self.repository, transaction, intent, committed=False)
         self._admit(transaction, intent, preparing=True, audit_missing=True, result_missing=True)
-        stored = transaction.create_immutable(
-            StateRecordPath.emergency_deletion_intent(correlation), intent
-        )
+        with self.runtime.using_held_publication_lock(self.repository):
+            try:
+                self._candidate(transaction, intent, audit_missing=True)
+                # Publishing a generation can share the state filesystem. Check
+                # terminal capacity again before installing durable authority.
+                self._admit(
+                    transaction, intent, preparing=True, audit_missing=True, result_missing=True
+                )
+                stored = transaction.create_immutable(
+                    StateRecordPath.emergency_deletion_intent(correlation), intent
+                )
+            except BaseException:
+                self._discard_uncommitted_candidate(transaction, intent)
+                raise
         self.hook("authority-sync")
         return stored
+
+    def _discard_uncommitted_candidate(
+        self, transaction: _StateTransaction, intent: dict[str, object]
+    ) -> None:
+        try:
+            stored = transaction.read(StateRecordPath.emergency_deletion_intent(intent["intentId"]))
+        except FileNotFoundError:
+            candidate_id = str(intent["candidateRuntimeGenerationId"])
+            try:
+                candidate = self.runtime.open_verified_generation(candidate_id)
+            except FileNotFoundError:
+                return
+            with candidate:
+                manifest = candidate.manifest
+            self.runtime.discard_unselected_candidate(candidate_id, manifest)
+        else:
+            if stored.document != intent:
+                raise EmergencyDeletionError(
+                    "emergency intent publication has conflicting authority"
+                )
 
     def _commit(self, prepared: StoredContract) -> dict[str, object]:
         document = prepared.document
@@ -324,7 +355,8 @@ class EmergencyDeletion:
                         verifier=self.verifier,
                     )
                 self.hook("candidate-selected")
-                _ensure_audit(transaction, audit)
+                if _audit_needs_append(transaction.inspect_audit(), audit):
+                    transaction.append_audit(audit, administrator=True)
                 self.hook("audit-sync")
                 for record in cast(list[dict[str, object]], document["deploymentRecords"]):
                     self.store.remove_release(
@@ -468,7 +500,7 @@ class EmergencyDeletion:
         audit = cast(dict[str, object], intent["auditEntry"])
         result = cast(dict[str, object], intent["result"])
         if audit_missing:
-            transaction.admit_audit_append(audit)
+            transaction.admit_audit_append(audit, administrator=True)
         if result_missing:
             transaction.admit_inventory(
                 StateInventoryReservation(

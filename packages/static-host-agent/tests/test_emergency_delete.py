@@ -9,12 +9,18 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
-from lowerduckpond_static_contracts import manifest_digest
+from lowerduckpond_static_contracts import manifest_digest, request_digest
 from lowerduckpond_static_host_agent import emergency_entrypoint, entrypoints
 from lowerduckpond_static_host_agent.archive_journal import ArchiveJournal
 from lowerduckpond_static_host_agent.archive_quarantine import ArchiveQuarantine, quarantine_present
 from lowerduckpond_static_host_agent.archive_remote import ArchiveRemoteStore
+from lowerduckpond_static_host_agent.audit import AuditAppend, AuditLimits, AuditState
 from lowerduckpond_static_host_agent.caddy_runtime import CaddyRuntime
+from lowerduckpond_static_host_agent.capacity import CapacityRejectedError
+from lowerduckpond_static_host_agent.correlations import (
+    CorrelationAdmission,
+    CorrelationConflictError,
+)
 from lowerduckpond_static_host_agent.create_commit import finalize_create_transition
 from lowerduckpond_static_host_agent.emergency_delete import (
     EmergencyDeletion,
@@ -24,7 +30,12 @@ from lowerduckpond_static_host_agent.emergency_remote import finish_emergency_re
 from lowerduckpond_static_host_agent.execution import _later_audited_results
 from lowerduckpond_static_host_agent.export_spool import ExportSpool
 from lowerduckpond_static_host_agent.release_store import DeploymentReleaseStore
-from lowerduckpond_static_host_agent.repository import StateRecordPath, StateRepository
+from lowerduckpond_static_host_agent.repository import (
+    StateRecordPath,
+    StateRepository,
+    StoredContract,
+    _StateTransaction,
+)
 from lowerduckpond_static_host_agent.route_snapshot import (
     TenantRouteSnapshot,
     snapshot_tenant_routes,
@@ -41,8 +52,9 @@ from test_archive_journal import (
     setup_root,
     write,
 )
+from test_correlations import _BASE_TIME, _candidate
 from test_create_commit import _prepared_create, _state_root
-from test_route_commit import _Entropy, _Runtime
+from test_route_commit import _Entropy, _Generation, _Runtime
 
 _CORRELATION = "0198d17f-6f4a-7000-8000-000000000030"
 _REASON = "verified administrative deletion"
@@ -54,6 +66,12 @@ class InterruptedEmergencyError(BaseException):
 
 
 class _EmergencyRuntime(_Runtime):
+    def open_verified_generation(self, generation_id: object) -> _Generation:
+        assert type(generation_id) is str
+        if generation_id not in self.snapshots:
+            raise FileNotFoundError
+        return super().open_verified_generation(generation_id)
+
     def read_generation_route_snapshot(self, generation_id: str) -> TenantRouteSnapshot:
         if generation_id not in self.snapshots:
             raise FileNotFoundError
@@ -197,6 +215,83 @@ def test_emergency_deletion_recovers_with_distinct_administrator_authority(
             )
 
 
+@pytest.mark.parametrize(
+    "failure", ["generation-capacity", "terminal-capacity", "intent-before", "intent-after"]
+)
+def test_emergency_candidate_is_admitted_before_recovery_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    with _emergency(tmp_path, "undeployed") as (handler, tenant, _memory):
+        runtime = cast(_EmergencyRuntime, handler.runtime)
+        active = runtime.active
+        before = handler.repository.measure_inventory()
+        original_create = _StateTransaction.create_immutable
+        original_admit = handler._admit
+        calls = 0
+
+        def refuse_generation(*_args: object, **_kwargs: object) -> None:
+            raise CapacityRejectedError("generation filesystem is full")
+
+        def admit(
+            transaction: _StateTransaction,
+            intent: dict[str, object],
+            *,
+            preparing: bool,
+            audit_missing: bool,
+            result_missing: bool,
+        ) -> None:
+            nonlocal calls
+            calls += 1
+            if calls > 1:
+                raise CapacityRejectedError("terminal capacity consumed by generation")
+            original_admit(
+                transaction,
+                intent,
+                preparing=preparing,
+                audit_missing=audit_missing,
+                result_missing=result_missing,
+            )
+
+        def create(
+            transaction: _StateTransaction, path: StateRecordPath, document: dict[str, object]
+        ) -> StoredContract:
+            if document["kind"] != "EmergencyDeletionIntent":
+                return original_create(transaction, path, document)
+            candidate = str(document["candidateRuntimeGenerationId"])
+            assert candidate in runtime.snapshots
+            assert runtime.active == active
+            if failure == "intent-after":
+                original_create(transaction, path, document)
+            raise InterruptedEmergencyError
+
+        with monkeypatch.context() as patch:
+            if failure == "generation-capacity":
+                patch.setattr(runtime, "publish_candidate", refuse_generation)
+            elif failure == "terminal-capacity":
+                patch.setattr(handler, "_admit", admit)
+            else:
+                patch.setattr(_StateTransaction, "create_immutable", create)
+            with pytest.raises((CapacityRejectedError, InterruptedEmergencyError)):
+                handler.execute(tenant, _CORRELATION, operator_principal=_PRINCIPAL, reason=_REASON)
+        assert runtime.active == runtime.running == active
+        assert handler.repository.measure_inventory() == before
+        intents = handler.repository.measure_intent_records().records
+        if failure == "intent-after":
+            assert len(intents) == 1
+            document = handler.repository.read(
+                StateRecordPath.emergency_deletion_intent(intents[0].intent_id)
+            ).document
+            assert document["candidateRuntimeGenerationId"] in runtime.snapshots
+        else:
+            assert not intents
+            assert tuple(runtime.snapshots) == (active,)
+        result = handler.execute(
+            tenant, _CORRELATION, operator_principal=_PRINCIPAL, reason=_REASON
+        )
+        assert result["status"] == "succeeded"
+        assert not handler.repository.measure_intent_records().records
+
+
 @pytest.mark.parametrize("lifecycle", ["undeployed", "archived"])
 def test_emergency_tombstone_remains_visible_to_ordinary_result_history(
     tmp_path: Path, lifecycle: str
@@ -214,6 +309,77 @@ def test_emergency_tombstone_remains_visible_to_ordinary_result_history(
         with handler.repository.publication_transaction() as transaction:
             later = _later_audited_results(transaction, earlier)
         assert tuple(value.result for value in later) == (result,)
+
+
+@pytest.mark.parametrize(
+    "collision,audit_only", [("correlation", False), ("job", False), ("correlation", True)]
+)
+def test_completed_emergency_authority_cannot_be_reused_by_ordinary_admission(
+    tmp_path: Path, collision: str, audit_only: bool
+) -> None:
+    with _emergency(tmp_path, "undeployed") as (handler, tenant, _memory):
+        handler.execute(tenant, _CORRELATION, operator_principal=_PRINCIPAL, reason=_REASON)
+        assert not handler.repository.measure_intent_records().records
+        if audit_only:
+            (tmp_path / "state").joinpath(
+                *StateRecordPath.emergency_result(_CORRELATION).components
+            ).unlink()
+        candidate = _candidate(99)
+        if collision == "job":
+            candidate["jobId"] = _CORRELATION
+        else:
+            request = cast(dict[str, object], candidate["request"])
+            request["correlationId"] = _CORRELATION
+            candidate["requestDigest"] = request_digest(request).to_dict()
+        CorrelationAdmission(handler.repository).reconcile()
+        before = handler.repository.measure_inventory()
+        with pytest.raises(CorrelationConflictError):
+            CorrelationAdmission(handler.repository).resolve(candidate, now=_BASE_TIME)
+        assert handler.repository.measure_inventory() == before
+
+
+@pytest.mark.parametrize("boundary", [None, "audit-sync"])
+def test_emergency_deletion_uses_the_administrator_audit_reserve(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, boundary: str | None
+) -> None:
+    limits = AuditLimits(maximum_ordinary_bytes=0)
+    admit = _StateTransaction.admit_audit_append
+    append = _StateTransaction.append_audit
+
+    def limited_admit(
+        transaction: _StateTransaction, document: dict[str, object], *, administrator: bool = False
+    ) -> AuditState:
+        return admit(transaction, document, administrator=administrator, limits=limits)
+
+    def limited_append(
+        transaction: _StateTransaction, document: dict[str, object], *, administrator: bool = False
+    ) -> AuditAppend:
+        return append(transaction, document, administrator=administrator, limits=limits)
+
+    with _emergency(tmp_path, "undeployed") as (handler, tenant, _memory):
+        monkeypatch.setattr(_StateTransaction, "admit_audit_append", limited_admit)
+        monkeypatch.setattr(_StateTransaction, "append_audit", limited_append)
+
+        def interrupt(value: str) -> None:
+            if value == boundary:
+                raise InterruptedEmergencyError
+
+        if boundary is not None:
+            handler.hook = interrupt
+            with pytest.raises(InterruptedEmergencyError):
+                handler.execute(tenant, _CORRELATION, operator_principal=_PRINCIPAL, reason=_REASON)
+        handler.hook = lambda _value: None
+        result = handler.execute(
+            tenant, _CORRELATION, operator_principal=_PRINCIPAL, reason=_REASON
+        )
+        assert result["status"] == "succeeded"
+        assert not handler.repository.measure_intent_records().records
+        state = handler.repository.inspect_audit()
+        assert (
+            limits.maximum_ordinary_bytes
+            < state.allocated_bytes
+            <= limits.maximum_administrator_bytes
+        )
 
 
 @pytest.mark.parametrize("inventory_failure", [False, True])
