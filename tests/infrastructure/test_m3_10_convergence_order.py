@@ -59,6 +59,13 @@ def runner(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         commands / "uv",
         """case "$*" in
         *read_production_ansible_inventory*) echo 192.0.2.1;;
+        *scripts.check_m3_10_provider*)
+            [[ "$*" == *"--allow-existing-archives"* ]] || exit 99
+            echo provider-policy >>"$TEST_LOG"
+            exit "$TEST_PROVIDER_STATUS";;
+        *scripts.check_m3_10_host_firewall*)
+            echo firewall >>"$TEST_LOG"
+            exit "$TEST_FIREWALL_STATUS";;
         *scripts.m3_10_qualification_report*)
             echo verify-report >>"$TEST_LOG"
             exit "$TEST_VERIFY_STATUS";;
@@ -94,6 +101,8 @@ def runner(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         "TEST_SOURCE": "0" * 40,
         "TEST_COMPLETED_SOURCE": "0" * 40,
         "TEST_VERIFY_STATUS": "0",
+        "TEST_PROVIDER_STATUS": "0",
+        "TEST_FIREWALL_STATUS": "0",
         "TEST_PREFLIGHT_STATUS": "0",
         "TEST_COMPLETED_STATUS": "1",
         "TEST_ANSIBLE_STATUS": "0",
@@ -186,6 +195,8 @@ def test_unchanged_artifact_reconfiguration_retains_the_general_gate(
     assert calls == [
         "general-preflight",
         "completion-check",
+        "provider-policy",
+        "firewall",
         "scoped-current-credentials",
         "completion-clear",
         "ansible",
@@ -262,6 +273,22 @@ def test_same_artifact_with_new_deployment_source_cannot_reuse_completion(
     status, calls = run(runner)
     assert status != 0
     assert "completion-check" in calls
+    assert "scoped-current-credentials" not in calls
+    assert "ansible" not in calls
+    assert "completion-clear" not in calls
+    assert "completion-record" not in calls
+
+
+@pytest.mark.parametrize("failure", ["TEST_PROVIDER_STATUS", "TEST_FIREWALL_STATUS"])
+def test_completed_candidate_still_requires_live_provider_and_firewall_policy(
+    runner: tuple[Path, dict[str, str]], failure: str
+) -> None:
+    runner[1]["TEST_SELECTED"] = CANDIDATE
+    runner[1]["TEST_COMPLETED_STATUS"] = "0"
+    runner[1][failure] = "1"
+    status, calls = run(runner)
+    assert status != 0
+    assert "provider-policy" in calls
     assert "scoped-current-credentials" not in calls
     assert "ansible" not in calls
     assert "completion-clear" not in calls

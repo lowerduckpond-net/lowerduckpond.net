@@ -196,6 +196,12 @@ if [[ -z ${rollback_artifact_path} && ${completed_candidate} != true ]]; then
         --source "${production_source_revision}" \
         --artifact "${STATIC_HOST_AGENT_ARTIFACT_SHA256}"
     "${repository_root}/scripts/preflight-m3-10-production"
+elif [[ -z ${rollback_artifact_path} ]]; then
+    # Completion cannot attest to mutable provider policy or current firewall
+    # enforcement. Recheck those controls without requiring an empty archive
+    # or the preceding M3.9 host that the first-convergence gate requires.
+    uv run --quiet --frozen python -m scripts.check_m3_10_provider --allow-existing-archives
+    uv run --quiet --frozen python -m scripts.check_m3_10_host_firewall
 fi
 
 if [[ -z ${rollback_artifact_path} ]]; then

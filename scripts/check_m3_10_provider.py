@@ -14,7 +14,11 @@ from pathlib import Path
 from typing import Protocol, cast
 
 from botocore.exceptions import BotoCoreError, ClientError  # type: ignore[import-untyped]
-from lowerduckpond_m3_archive.storage import S3Client, assert_storage_empty
+from lowerduckpond_m3_archive.storage import (
+    S3Client,
+    assert_storage_empty,
+    assert_versioning_enabled,
+)
 from lowerduckpond_static_host_agent.archive_configuration import ArchiveConfiguration
 
 from scripts.check_m3_7_production_edge import (
@@ -55,8 +59,8 @@ def _require_absent_configuration(
     raise GateError("archive bucket has an unexpected policy or lifecycle configuration")
 
 
-def check_storage(client: PolicyClient, *, bucket: str) -> None:
-    """Require owner-only ACL, no policy/lifecycle, and whole-bucket absence.
+def check_storage(client: PolicyClient, *, bucket: str, require_empty: bool = True) -> None:
+    """Require private versioned storage, optionally including whole-bucket absence.
 
     This uses the workstation's existing Spaces operator key for bucket policy
     reads. The limited archive runtime key is never promoted to that role.
@@ -91,7 +95,10 @@ def check_storage(client: PolicyClient, *, bucket: str) -> None:
         bucket=bucket,
         missing_code="NoSuchLifecycleConfiguration",
     )
-    assert_storage_empty(client, bucket=bucket, prefix="")
+    if require_empty:
+        assert_storage_empty(client, bucket=bucket, prefix="")
+    else:
+        assert_versioning_enabled(client, bucket=bucket)
 
 
 def expected_rules(domain: str) -> dict[str, dict[str, object]]:
@@ -251,6 +258,7 @@ def required(environment: Mapping[str, str], name: str) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--storage-only", action="store_true")
+    parser.add_argument("--allow-existing-archives", action="store_true")
     arguments = parser.parse_args()
     try:
         configuration = ArchiveConfiguration(
@@ -260,9 +268,16 @@ def main() -> int:
             required(os.environ, "SPACES_SECRET_ACCESS_KEY"),
         )
         client = cast(PolicyClient, make_policy_client(configuration))
-        check_storage(client, bucket=configuration.bucket)
+        check_storage(
+            client, bucket=configuration.bucket, require_empty=not arguments.allow_existing_archives
+        )
+        storage_proof = (
+            "private/versioned/no-lifecycle storage"
+            if arguments.allow_existing_archives
+            else "private/versioned/no-lifecycle storage and whole-bucket absence"
+        )
         if arguments.storage_only:
-            print("M3.10 private/versioned/no-lifecycle storage and whole-bucket absence passed.")
+            print(f"M3.10 {storage_proof} passed.")
             return 0
         edge = CloudflareClient(required(os.environ, "CLOUDFLARE_API_TOKEN"))
         ca_path, ca_pem = _read_ca_path()
@@ -290,7 +305,7 @@ def main() -> int:
         )
         print(f"M3.10 provider preflight failed closed: {message}.", file=sys.stderr)
         return 1
-    print("M3.10 provider policy and whole-bucket absence passed; both edges remain enforced.")
+    print(f"M3.10 {storage_proof} passed; both edges remain enforced.")
     return 0
 
 
