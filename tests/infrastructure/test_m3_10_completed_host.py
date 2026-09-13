@@ -124,7 +124,21 @@ def test_completed_host_preserves_nonempty_authorization_tenant_and_audit_state(
     assert (state / "tenants" / TENANT).is_dir()
 
 
-@pytest.mark.parametrize("drift", ["none", "missing", "digest", "reason", "principal"])
+def test_completed_host_refuses_audit_after_ordinary_authorization_history_loss(
+    completed_host: Path,
+) -> None:
+    state = completed_host / "var/lib/lowerduckpond/static"
+    for directory in ("jobs", "results", "correlations"):
+        for path in (state / "authorization" / directory).iterdir():
+            path.unlink()
+    before = {path: path.read_bytes() for path in state.rglob("*") if path.is_file()}
+    assert gate(completed_host).returncode != 0
+    assert {path: path.read_bytes() for path in state.rglob("*") if path.is_file()} == before
+
+
+@pytest.mark.parametrize(
+    "drift", ["none", "missing", "digest", "reason", "principal", "lost-result"]
+)
 def test_completed_host_preserves_administrator_results_without_an_ordinary_job(
     completed_host: Path,
     drift: str,
@@ -172,7 +186,9 @@ def test_completed_host_preserves_administrator_results_without_an_ordinary_job(
         }
         repository.append_audit(audit, administrator=True)
     segment = next((authorization.parent / "audit").iterdir())
-    if drift != "none":
+    if drift == "lost-result":
+        path.unlink()
+    elif drift != "none":
         first_entry = segment.read_bytes().splitlines(keepends=True)[0]
         if drift == "digest":
             audit["resultDigest"]["value"] = "f" * 64
@@ -187,7 +203,10 @@ def test_completed_host_preserves_administrator_results_without_an_ordinary_job(
     outcome = gate(completed_host)
     assert (outcome.returncode == 0) is (drift == "none"), outcome.stderr
     assert segment.read_bytes() == before
-    assert path.read_bytes() == canonical_json_bytes(result)
+    if drift == "lost-result":
+        assert not path.exists()
+    else:
+        assert path.read_bytes() == canonical_json_bytes(result)
     assert not (authorization / "jobs" / (correlation + ".json")).exists()
 
 
@@ -438,7 +457,13 @@ def test_completed_host_binds_each_terminal_result_to_its_audit(
 
 
 @pytest.mark.parametrize(
-    "version,audited", [("static-job-v1", False), ("static-job-v2", False), ("static-job-v2", True)]
+    "version,audited",
+    [
+        ("static-job-v1", False),
+        ("static-job-v1", True),
+        ("static-job-v2", False),
+        ("static-job-v2", True),
+    ],
 )
 def test_completed_host_preserves_only_the_legacy_failed_job_audit_exception(
     completed_host: Path, version: str, audited: bool

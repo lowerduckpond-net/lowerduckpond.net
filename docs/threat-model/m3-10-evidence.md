@@ -352,6 +352,26 @@ before any correlation reader can retire an abandoned copy. Regression cases
 cover missing and conflicting ordinary/admin audit entries and the legacy/v2
 failure distinction; this gate-only change does not alter the installed artifact.
 
+The gate also checks audit-to-result completeness. Every retained audit entry
+must match one exact result; lost administrator results or a lost ordinary
+authorization history cannot pass merely because the remaining audit chain is
+valid. Legacy failures may omit an audit, but an existing audit must bind the
+exact result and principal. The combined gate/storage suite passed 300 tests
+with one separately configured MinIO case skipped, and strict typing passed for
+241 files.
+
+Executor recovery now dispatches an unpublished failed archive construction
+from its captured source and exact failure audit after source deployment
+replacement or collection. Fourteen real private-service regressions exercise
+all three failure-publication crash boundaries and altered candidate, release
+tree, result, or missing audit authority. All 39 focused handler/abort tests
+passed. Cleanup retires the remote object and construction journal while the
+executor continues to refuse the externally changed deployment history. This
+runtime correction produces artifact
+`14d6323f72a5df07902e120215ca99c10b220fb6de0d2dd32c85539b01342216`;
+the earlier installed evidence remains bound to its stated artifact. Fresh
+qualification and required CI must validate the new candidate before release.
+
 ## Outstanding convergence gates
 
 1. Finish acceptance and required CI for every dependent PR, merge the reviewed

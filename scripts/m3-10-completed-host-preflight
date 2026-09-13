@@ -80,7 +80,8 @@ with StateRepository(Path(sys.argv[2]), expected_owner=0) as repository:
         for name in names(root / 'audit', DEFAULT_AUDIT_LIMITS.maximum_segments):
             if re.fullmatch(r'segment-[0-9]{20}\.jsonl', name) is None:
                 raise SystemExit('M3.10 audit publication is incomplete')
-        transaction.inspect_audit()
+        audit_state = transaction.inspect_audit()
+        matched_audits = set()
         remaining = DEFAULT_STATE_INVENTORY_LIMITS.maximum_authorization_records
         for directory, record_path in (
             ('jobs', StateRecordPath.authorization_job),
@@ -134,6 +135,21 @@ with StateRepository(Path(sys.argv[2]), expected_owner=0) as repository:
                         StateRecordPath.authorization_job(document['jobId'])).document
                     if _durable_binding(peer) != _durable_binding(document):
                         raise SystemExit('M3.10 authorization pair requires repair')
+                if directory == 'results':
+                    correlation = document['correlationId']
+                    audit = transaction.inspect_audit_correlation(correlation).entry
+                    if audit is not None:
+                        if correlation in matched_audits:
+                            raise SystemExit('M3.10 audit correlation has multiple results')
+                        if document['provenance']['kind'] == 'authorization-job':
+                            job = transaction.read(StateRecordPath.authorization_job(
+                                document['provenance']['jobId'])).document
+                            # Legacy failures may lack an audit, but a retained
+                            # audit must still bind its exact result and principal.
+                            _validate_result_audit(transaction, job, document, require_failure=True)
+                        matched_audits.add(correlation)
+        if len(matched_audits) != audit_state.entry_count:
+            raise SystemExit('M3.10 audit history has an unmatched result')
         inventory = transaction.measure_inventory()
         archives = []
         for tenant in inventory.tenant_ids:
