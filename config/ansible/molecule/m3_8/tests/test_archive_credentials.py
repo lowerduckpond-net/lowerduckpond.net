@@ -291,7 +291,7 @@ while True:
     [(None, False)]
     + [
         (service, unlinked)
-        for service in ("export", "construction", "cleanup")
+        for service in ("export", "construction", "cleanup", "emergency")
         for unlinked in (False, True)
     ],
 )
@@ -324,16 +324,23 @@ def test_installed_empty_configuration_withdraws_existing_archive_credentials(
     before: list[dict[str, object]] = []
     drained: list[dict[str, object]] = []
     cleanup: list[dict[str, object]] = []
-    sockets = [
+    activation_units = [
         f"lowerduckpond-archive-{kind}.socket" for kind in ("export", "construction", "cleanup")
-    ]
-    active_sockets = [
-        unit for unit in sockets if host.run("systemctl is-active --quiet %s", unit).rc == 0
+    ] + ["lowerduckpond-static-emergency-reconcile.timer"]
+    active_units = [
+        unit
+        for unit in activation_units
+        if host.run("systemctl is-active --quiet %s", unit).rc == 0
     ]
     if service is not None:
-        unit = f"lowerduckpond-archive-{service}@m3-10-withdrawal-proof.service"
+        unit = (
+            "lowerduckpond-static-emergency-reconcile.service"
+            if service == "emergency"
+            else f"lowerduckpond-archive-{service}@m3-10-withdrawal-proof.service"
+        )
         directory = "/run/lowerduckpond-m3-10-withdrawal-proof"
         dropin_directory = f"/etc/systemd/system/{unit}.d"
+        assert not host.file(dropin_directory).exists
         program = (
             "from pathlib import Path\nimport time\n"
             f"private_configuration = Path({credential!r}).read_bytes()\n"
@@ -359,7 +366,7 @@ def test_installed_empty_configuration_withdraws_existing_archive_credentials(
             {
                 "ansible.builtin.copy": {
                     "content": (
-                        "[Service]\nStandardInput=null\nExecStart=\n"
+                        "[Service]\nType=simple\nStandardInput=null\nExecStart=\n"
                         f"ExecStart=/usr/bin/python3 -I -B {directory}/probe.py\n"
                         f"BindPaths={directory}\n"
                     ),
@@ -457,7 +464,7 @@ def test_installed_empty_configuration_withdraws_existing_archive_credentials(
                                         "name": "{{ item }}",
                                         "state": "started",
                                     },
-                                    "loop": active_sockets,
+                                    "loop": active_units,
                                 },
                             ],
                         },
