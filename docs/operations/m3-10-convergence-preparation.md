@@ -166,7 +166,10 @@ source revision and artifact in its root-owned completion record, written only a
 idempotence, and host acceptance pass. Selection alone is insufficient. Each
 verified completed run passes an explicit boolean to both Ansible converges.
 That path permits retained tenant history while publication remains closed and
-requires the selected artifact to remain exact. Initial convergence and legacy
+requires the selected artifact and Caddy generation to remain exact, including
+a completed host whose last tenant was deleted. Caddy retains the same immutable
+input guards used during tenant publication and skips platform-only bootstrap.
+Initial convergence and legacy
 rollback retain the empty-history guard. Each
 attempt clears prior completion before Ansible; interrupted attempts must pass
 the full gate again. Its strict preceding-host inventory refuses partial M3.10

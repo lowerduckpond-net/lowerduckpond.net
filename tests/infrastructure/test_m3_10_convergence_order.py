@@ -424,3 +424,84 @@ def test_actual_ansible_history_guard_requires_completed_artifact_authority(
     assert (result.returncode == 0) is (case in {"empty", "verified"}), (
         result.stdout + result.stderr
     )
+
+
+@pytest.mark.parametrize("mode", ["initial", "published", "completed"])
+@pytest.mark.parametrize("drift", ["none", "source", "unit"])
+def test_actual_ansible_caddy_convergence_preserves_completed_generation(
+    tmp_path: Path, mode: str, drift: str
+) -> None:
+    role = ROOT / "config/ansible/roles/caddy"
+    tasks = cast(list[dict[str, object]], yaml.safe_load((role / "tasks/main.yml").read_text()))
+    names = {
+        "Preserve the selected generation for tenant or completed-candidate convergence",
+        "Refuse generation-bound source drift while preserving the selected generation",
+        "Refuse immutable Caddy input drift while preserving the selected generation",
+        "Decide whether a stopped and masked bootstrap transaction is required",
+    }
+    selected = [task for task in tasks if task["name"] in names]
+    assert len(selected) == len(names)
+    variables = {
+        "caddy_generation_enabled": True,
+        "static_publication_enabled": mode == "published",
+        "static_host_agent_verified_completed_candidate": mode == "completed",
+        "caddy_origin_pull_ca_paths": ["/disposable/ca.pem"],
+        "caddy_binary_path": "/disposable/caddy",
+        "caddy_tenant_binary_input_probe": {
+            "stat": {
+                "exists": True,
+                "isreg": True,
+                "islnk": False,
+                "pw_name": "root",
+                "gr_name": "root",
+                "mode": "0755",
+                "checksum": "c" * 64,
+            }
+        },
+        "caddy_tenant_binary_selection_probe": {
+            "stat": {"islnk": True, "lnk_source": "/disposable/caddy"}
+        },
+        "caddy_tenant_environment_input_probe": {"changed": drift == "source"},
+        "caddy_tenant_origin_pull_ca_input_probe": {"results": [{"changed": False}]},
+        "caddy_tenant_retired_origin_pull_ca_probe": {"results": []},
+        # A live tenant generation (or the generation after deleting the last tenant)
+        # differs from the platform-only bootstrap even when its inputs are exact.
+        "caddy_generation_check": {"stdout": "changed"},
+        "static_host_agent_installation": {"changed": False},
+        "caddy_generation_bootstrap_probe": {"results": [{"changed": False}]},
+        "caddy_generation_check_probe": {"changed": False},
+        "caddy_generation_publication_open_check_probe": {"changed": False},
+        "caddy_generation_runtime_check_probe": {"changed": False},
+        "caddy_generation_unit_probe": {"changed": drift == "unit"},
+        "caddy_generation_recovery_unit_probe": {"changed": False},
+    }
+    selected.append(
+        {
+            "name": "Require the expected bootstrap decision",
+            "ansible.builtin.assert": {
+                "that": [f"caddy_generation_bootstrap_required == {mode == 'initial'}"]
+            },
+        }
+    )
+    playbook = tmp_path / "caddy.json"
+    playbook.write_text(
+        json.dumps(
+            [{"hosts": "localhost", "gather_facts": False, "vars": variables, "tasks": selected}]
+        )
+    )
+    result = subprocess.run(  # noqa: S603 - actual tracked Caddy decision and guard tasks
+        [
+            str(Path(sys.executable).with_name("ansible-playbook")),
+            "--inventory",
+            "localhost,",
+            "--connection",
+            "local",
+            str(playbook),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert (result.returncode == 0) is (mode == "initial" or drift == "none"), (
+        result.stdout + result.stderr
+    )
