@@ -32,6 +32,7 @@ def verify_report(path: Path, *, source: str, artifact: str) -> None:
         "source_revision",
         "artifact_sha256",
         "completed_at",
+        "oldest_evidence_at",
         "environment",
         "storage_report_sha256",
         "storage_run_id",
@@ -54,12 +55,10 @@ def verify_report(path: Path, *, source: str, artifact: str) -> None:
     for key, expected in EMPTY_ACCOUNTING.items():
         if type(report["accounting"][key]) is not type(expected):
             raise ValueError("qualification accounting types are invalid")
-    if not isinstance(report["completed_at"], str) or not report["completed_at"].endswith("Z"):
-        raise ValueError("qualification report timestamp is invalid")
-    completed = datetime.fromisoformat(report["completed_at"])
-    age = datetime.now(UTC) - completed
-    if not -timedelta(minutes=5) <= age <= timedelta(hours=24):
-        raise ValueError("qualification report is stale or future-dated")
+    completed = _fresh_timestamp(report["completed_at"])
+    oldest = _fresh_timestamp(report["oldest_evidence_at"])
+    if oldest > completed:
+        raise ValueError("qualification evidence chronology is invalid")
     if (
         not isinstance(report["storage_report_sha256"], str)
         or re.fullmatch(r"[0-9a-f]{64}", report["storage_report_sha256"]) is None
@@ -70,6 +69,22 @@ def verify_report(path: Path, *, source: str, artifact: str) -> None:
         raise ValueError("storage evidence run identity is invalid")
 
 
+def _fresh_timestamp(value: object) -> datetime:
+    if not isinstance(value, str) or not value.endswith("Z"):
+        raise ValueError("qualification report timestamp is invalid")
+    timestamp = datetime.fromisoformat(value)
+    age = datetime.now(UTC) - timestamp
+    if not -timedelta(minutes=5) <= age <= timedelta(hours=24):
+        raise ValueError("qualification report is stale or future-dated")
+    return timestamp
+
+
+def _evidence_time(path: Path) -> datetime:
+    return _fresh_timestamp(
+        datetime.fromtimestamp(path.stat().st_mtime, UTC).isoformat().replace("+00:00", "Z")
+    )
+
+
 def create_report(directory: Path) -> dict[str, object]:
     source = (directory / "source-revision").read_text(encoding="ascii").strip()
     if re.fullmatch(r"[0-9a-f]{40}", source) is None:
@@ -78,10 +93,23 @@ def create_report(directory: Path) -> dict[str, object]:
     storage = ArchiveQualificationReport.from_json(storage_raw.decode("ascii"))
     if storage.source_revision != source:
         raise ValueError("storage qualification used another source revision")
+    evidence_times = [_fresh_timestamp(storage.generated_at)]
     for phase in PHASES:
         if (directory / f"{phase}.passed").read_text(encoding="ascii") != "passed\n":
             raise ValueError("an installed qualification phase did not pass")
+        evidence_times.append(_evidence_time(directory / f"{phase}.passed"))
     installed = json.loads((directory / "installed.json").read_text(encoding="ascii"))
+    evidence_times.append(_evidence_time(directory / "installed.json"))
+    # Captured immediately before the final independent proof, never when the
+    # envelope happens to be packaged after destruction or a suspended process.
+    completed = _fresh_timestamp(
+        (directory / "final-proof.started-at").read_text(encoding="ascii").strip()
+    )
+    if (
+        _evidence_time(directory / "verify.passed") > completed
+        or _evidence_time(directory / "destroy.passed") < completed
+    ):
+        raise ValueError("qualification final proof chronology is invalid")
     if not isinstance(installed, dict) or set(installed) != {"artifact_sha256", *EMPTY_ACCOUNTING}:
         raise ValueError("installed accounting report has unknown fields")
     for key, expected in EMPTY_ACCOUNTING.items():
@@ -94,7 +122,8 @@ def create_report(directory: Path) -> dict[str, object]:
         "format": FORMAT,
         "source_revision": source,
         "artifact_sha256": digest,
-        "completed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "completed_at": completed.isoformat().replace("+00:00", "Z"),
+        "oldest_evidence_at": min(*evidence_times, completed).isoformat().replace("+00:00", "Z"),
         "environment": "secure-workstation-installed-production-spaces",
         "storage_report_sha256": hashlib.sha256(storage_raw).hexdigest(),
         "storage_run_id": storage.run_id,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -23,11 +24,15 @@ def completed_run(tmp_path: Path) -> Path:
     evidence = AcceptanceEvidence(True, True, True, True, True, True, True)
     report = ArchiveQualificationReport.create(evidence, source_revision=source)
     report.write(tmp_path / "storage.json")
-    for phase in PHASES:
+    for phase in PHASES[:-1]:
         (tmp_path / f"{phase}.passed").write_text("passed\n")
     (tmp_path / "installed.json").write_text(
         json.dumps({"artifact_sha256": "b" * 64, **EMPTY_ACCOUNTING})
     )
+    (tmp_path / "final-proof.started-at").write_text(
+        datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    )
+    (tmp_path / "destroy.passed").write_text("passed\n")
     return tmp_path
 
 
@@ -40,6 +45,50 @@ def test_sanitized_report_binds_completed_storage_and_installed_artifact(
     assert report["accounting"] == EMPTY_ACCOUNTING
     assert "bucket" not in json.dumps(report)
     assert "credential" not in json.dumps(report)
+
+
+def test_packaging_uses_the_recorded_final_proof_time(completed_run: Path) -> None:
+    report = create_report(completed_run)
+    assert report["completed_at"] == (completed_run / "final-proof.started-at").read_text()
+    assert str(report["oldest_evidence_at"]) <= str(report["completed_at"])
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        "storage.json",
+        "installed.json",
+        "final-proof.started-at",
+        *(f"{phase}.passed" for phase in PHASES),
+    ],
+)
+@pytest.mark.parametrize("offset", [timedelta(days=-2), timedelta(hours=1)])
+def test_old_or_future_input_proofs_cannot_be_repackaged(
+    completed_run: Path, evidence: str, offset: timedelta
+) -> None:
+    timestamp = datetime.now(UTC) + offset
+    path = completed_run / evidence
+    if evidence == "storage.json":
+        document = json.loads(path.read_text())
+        document["generated_at"] = timestamp.isoformat().replace("+00:00", "Z")
+        path.write_text(json.dumps(document))
+    elif evidence == "final-proof.started-at":
+        path.write_text(timestamp.isoformat().replace("+00:00", "Z"))
+    else:
+        os.utime(path, (timestamp.timestamp(), timestamp.timestamp()))
+    with pytest.raises(ValueError, match="stale or future"):
+        create_report(completed_run)
+
+
+def test_fresh_envelope_cannot_hide_expired_earlier_evidence(completed_run: Path) -> None:
+    report = create_report(completed_run)
+    report["oldest_evidence_at"] = (
+        (datetime.now(UTC) - timedelta(days=2)).isoformat().replace("+00:00", "Z")
+    )
+    path = completed_run / "qualification.json"
+    path.write_text(json.dumps(report))
+    with pytest.raises(ValueError, match="stale or future"):
+        verify_report(path, source="a" * 40, artifact="b" * 64)
 
 
 @pytest.mark.parametrize("phase", PHASES)
