@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from types import TracebackType
-from typing import Final, Self
+from typing import Final, Self, cast
 
 from lowerduckpond_static_contracts import (
     MAX_CANONICAL_BYTES,
@@ -36,6 +36,7 @@ from lowerduckpond_static_host_agent.audit import (
     AuditState,
     AuditTransition,
     deployment_audit_history_tenant_ids,
+    tenant_has_creation_audit_history,
     tenant_has_deployment_audit_history,
     tenant_has_identity_audit_history,
 )
@@ -161,6 +162,7 @@ class _StateRecordName(StrEnum):
     EMERGENCY_RESULT = "emergency-result"
     AUTHORIZATION_CORRELATION = "authorization-correlation"
     TRANSACTION_INTENT = "transaction-intent"
+    EMERGENCY_DELETION_INTENT = "emergency-deletion-intent"
     ARCHIVE_CONSTRUCTION_INTENT = "archive-construction-intent"
     ARCHIVE_RETIREMENT_INTENT = "archive-retirement-intent"
 
@@ -241,6 +243,13 @@ class StateRecordPath:
         )
 
     @classmethod
+    def emergency_deletion_intent(cls, correlation_id: object) -> Self:
+        return cls._new(
+            _StateRecordName.EMERGENCY_DELETION_INTENT,
+            record_id=validate_uuid7(correlation_id),
+        )
+
+    @classmethod
     def transaction_intent(cls, intent_id: object) -> Self:
         return cls._new(
             _StateRecordName.TRANSACTION_INTENT,
@@ -291,6 +300,7 @@ class StateRecordPath:
             _StateRecordName.EMERGENCY_RESULT: ContractKind.OPERATION_RESULT,
             _StateRecordName.AUTHORIZATION_CORRELATION: ContractKind.AUTHORIZATION_JOB,
             _StateRecordName.TRANSACTION_INTENT: ContractKind.TRANSACTION_INTENT,
+            _StateRecordName.EMERGENCY_DELETION_INTENT: ContractKind.EMERGENCY_DELETION_INTENT,
             _StateRecordName.ARCHIVE_CONSTRUCTION_INTENT: (
                 ContractKind.ARCHIVE_CONSTRUCTION_INTENT
             ),
@@ -318,6 +328,7 @@ class StateRecordPath:
                 f"{self._require_record_id()}.json",
             )
         elif self.name in {
+            _StateRecordName.EMERGENCY_DELETION_INTENT,
             _StateRecordName.TRANSACTION_INTENT,
             _StateRecordName.ARCHIVE_CONSTRUCTION_INTENT,
             _StateRecordName.ARCHIVE_RETIREMENT_INTENT,
@@ -385,6 +396,7 @@ class StateRecordPath:
         elif (
             self.name
             in {
+                _StateRecordName.EMERGENCY_DELETION_INTENT,
                 _StateRecordName.TRANSACTION_INTENT,
                 _StateRecordName.ARCHIVE_CONSTRUCTION_INTENT,
                 _StateRecordName.ARCHIVE_RETIREMENT_INTENT,
@@ -411,6 +423,7 @@ class StateRecordPath:
     @property
     def is_intent(self) -> bool:
         return self.name in {
+            _StateRecordName.EMERGENCY_DELETION_INTENT,
             _StateRecordName.TRANSACTION_INTENT,
             _StateRecordName.ARCHIVE_CONSTRUCTION_INTENT,
             _StateRecordName.ARCHIVE_RETIREMENT_INTENT,
@@ -657,6 +670,10 @@ class StateRepository:
         with self.transaction(mode=LockMode.EXCLUSIVE, blocking=blocking) as transaction:
             return transaction.tenant_has_deployment_history(tenant_id)
 
+    def tenant_has_creation_history(self, tenant_id: object) -> bool:
+        with self.transaction(mode=LockMode.EXCLUSIVE) as transaction:
+            return transaction.tenant_has_creation_history(tenant_id)
+
     def tenant_has_identity_history(
         self,
         tenant_id: object,
@@ -846,6 +863,7 @@ class StateRepository:
         document = decode_contract(raw, maximum_raw_bytes=MAX_CANONICAL_BYTES)
         factories = {
             ContractKind.TRANSACTION_INTENT: StateRecordPath.transaction_intent,
+            ContractKind.EMERGENCY_DELETION_INTENT: StateRecordPath.emergency_deletion_intent,
             ContractKind.ARCHIVE_CONSTRUCTION_INTENT: (StateRecordPath.archive_construction_intent),
             ContractKind.ARCHIVE_RETIREMENT_INTENT: StateRecordPath.archive_retirement_intent,
         }
@@ -969,6 +987,17 @@ class _StateTransaction:
                 )
             )
         return frozenset(matches)
+
+    def tenant_has_creation_history(self, tenant_id: object) -> bool:
+        """Require the complete audit chain to establish this still-live tenant's creation."""
+        self._require_exclusive()
+        return tenant_has_creation_audit_history(
+            self._repository._durable,
+            tenant_id,
+            expected_owner=self._repository._expected_owner,
+            expected_directory_mode=self._repository._expected_directory_mode,
+            expected_record_mode=self._repository._expected_record_mode,
+        )
 
     def tenant_has_identity_history(self, tenant_id: object) -> bool:
         """Inspect current and audited identity history while state is serialized."""
@@ -1198,6 +1227,62 @@ class _StateTransaction:
         self._require_exclusive()
         candidate = self._repository._encode_new(path, document)
         return self._create_immutable_bytes(path, candidate)
+
+    def remove_restored_archive(self, retirement: StoredContract) -> None:
+        """Unbind only the exact archive protected by a committed restore transaction."""
+        self._require_exclusive()
+        self.require_held(LockName.PUBLICATION, mode=LockMode.EXCLUSIVE)
+        document = retirement.document
+        validate_contract(document, expected_kind=ContractKind.ARCHIVE_RETIREMENT_INTENT)
+        stored = self.read(StateRecordPath.archive_retirement_intent(document["intentId"]))
+        if stored.revision != retirement.revision or document["transition"] != "restore":
+            raise StateConflictError("restore retirement authority changed")
+        records = [
+            self.read_intent(value.intent_id)[1] for value in self.measure_intent_records().records
+        ]
+        local = [
+            value.document
+            for value in records
+            if value.revision.contract_kind is ContractKind.TRANSACTION_INTENT
+        ]
+        if len(records) != 2 or len(local) != 1:  # noqa: PLR2004 - exact transaction and retirement
+            raise StateRecordError("restore unbinding requires its two exact journals")
+        intent = local[0]
+        if (
+            any(
+                intent[field] != document[field]
+                for field in ("tenantId", "correlationId", "sourceManifestDigest")
+            )
+            or intent["operation"] != "restore"
+        ):
+            raise StateRecordError("restore journals disagree before archive unbinding")
+        recovery = cast(dict[str, object], intent["lifecycleRecovery"])
+        tenant = document["tenantId"]
+        if (
+            self.read(StateRecordPath.tenant_desired(tenant)).document
+            != intent["candidateManifest"]
+            or self.read(StateRecordPath.tenant_observed(tenant)).document
+            != recovery["candidateObservedState"]
+        ):
+            raise StateRecordError("archive unbinding precedes complete restored state")
+        archive = cast(dict[str, object], document["archiveRecord"])
+        path = StateRecordPath.tenant_archive(tenant, archive["deploymentId"])
+        try:
+            current = self.read(path)
+        except FileNotFoundError:
+            parent = self._repository._durable.open_descendant(path.components[:-1])
+            try:
+                descriptor = parent.duplicate_descriptor()
+                try:
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+            finally:
+                parent.close()
+        else:
+            if current.document != archive:
+                raise StateConflictError("archive record changed before retirement")
+            self._repository._durable.remove(path.components)
 
     def deployment_removal_token(
         self,

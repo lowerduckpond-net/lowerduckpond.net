@@ -22,6 +22,7 @@ from lowerduckpond_static_host_agent.durable import (
 )
 
 _LOCK_OPEN_FLAGS: Final = os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC
+_MAXIMUM_FDINFO_BYTES: Final = 4096
 _LOCK_CONTEXT = threading.local()
 
 
@@ -68,6 +69,7 @@ class _HeldLock:
     name: LockName
     mode: LockMode
     inode: tuple[int, int]
+    descriptor: int
 
 
 class LockManager:
@@ -197,27 +199,89 @@ class LockManager:
                 if error.errno in {errno.EACCES, errno.EAGAIN}:
                     raise StateBusyError(f"{name.filename} is busy") from error
                 raise
-            held = self._held()
-            metadata = os.fstat(lock_fd)
-            held_lock = _HeldLock(
-                self._token,
-                name,
-                mode,
-                (metadata.st_dev, metadata.st_ino),
-            )
-            held.append(held_lock)
             try:
-                yield
+                with self._registered_lock(name, mode, lock_fd):
+                    yield
             finally:
-                removed = held.pop()
-                if removed != held_lock:
-                    raise RuntimeError("lock stack was corrupted")
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                # An export lease may be held by another process until its
+                # remote stream closes. LOCK_UN would release that process's
+                # exclusion too; close releases only this descriptor's share.
+                if name is not LockName.EXPORT:
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
         finally:
             try:
                 os.close(lock_fd)
             finally:
                 self._release_acquisition()
+
+    def duplicate_export_descriptor(self) -> int:
+        """Lend export exclusion to trusted code; the recipient must only close.
+
+        The duplicate is non-inheritable. Passing it to another process needs
+        an explicit descriptor transport, authenticated separately by its
+        caller. This method grants no job, spool, or remote-object authority.
+        """
+
+        self.require_held(LockName.EXPORT, mode=LockMode.EXCLUSIVE, innermost=True)
+        held = next(
+            lock
+            for lock in self._held()
+            if lock.manager_token is self._token and lock.name is LockName.EXPORT
+        )
+        return os.dup(held.descriptor)
+
+    @contextmanager
+    def borrow_export_descriptor(self, descriptor: int) -> Iterator[None]:
+        """Register a verified already-exclusive lease without unlocking it.
+
+        The caller retains its descriptor; this context owns a duplicate. The
+        Linux descriptor's lock record must already prove exclusive flock
+        ownership of the current root-owned export inode. Do not acquire or
+        upgrade a caller's unlocked or shared descriptor as a side effect.
+        """
+
+        self._assert_next(LockName.EXPORT)
+        self._reserve_acquisition()
+        try:
+            borrowed = os.dup(descriptor)
+        except BaseException:
+            self._release_acquisition()
+            raise
+        try:
+            expected = self._open_verified_lock(LockName.EXPORT)
+            try:
+                supplied = validate_regular_state_file(
+                    borrowed,
+                    expected_owner=self._expected_owner,
+                    expected_mode=0o600,
+                )
+                current = os.fstat(expected)
+                if (supplied.st_dev, supplied.st_ino) != (current.st_dev, current.st_ino):
+                    raise StatePathError("borrowed export lock is not the current lock inode")
+            finally:
+                os.close(expected)
+            _require_exclusive_flock(borrowed)
+            with self._registered_lock(LockName.EXPORT, LockMode.EXCLUSIVE, borrowed):
+                yield
+        finally:
+            try:
+                os.close(borrowed)
+            finally:
+                self._release_acquisition()
+
+    @contextmanager
+    def _registered_lock(self, name: LockName, mode: LockMode, descriptor: int) -> Iterator[None]:
+        held = self._held()
+        metadata = os.fstat(descriptor)
+        held_lock = _HeldLock(
+            self._token, name, mode, (metadata.st_dev, metadata.st_ino), descriptor
+        )
+        held.append(held_lock)
+        try:
+            yield
+        finally:
+            if held.pop() != held_lock:
+                raise RuntimeError("lock stack was corrupted")
 
     @contextmanager
     def acquire_many(
@@ -261,6 +325,7 @@ class LockManager:
         *,
         mode: LockMode | None = None,
         descriptor: int | None = None,
+        innermost: bool = False,
     ) -> None:
         """Require this manager's named lock in the current execution context."""
 
@@ -277,6 +342,8 @@ class LockManager:
         if matching is None:
             requirement = "" if mode is None else f" in {mode.value} mode"
             raise LockOrderError(f"{name.filename} must already be held{requirement}")
+        if innermost and self._held()[-1] is not matching:
+            raise LockOrderError("a remote lease cannot be lent while an inner host lock is held")
         if descriptor is not None:
             metadata = os.fstat(descriptor)
             if matching.inode != (metadata.st_dev, metadata.st_ino):
@@ -314,3 +381,22 @@ class LockManager:
             os.close(lock_fd)
             raise
         return lock_fd
+
+
+def _require_exclusive_flock(descriptor: int) -> None:
+    """Inspect this open-file description, rather than another process's lock."""
+
+    fdinfo = os.open(f"/proc/self/fdinfo/{descriptor}", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        payload = os.read(fdinfo, _MAXIMUM_FDINFO_BYTES + 1)
+        if len(payload) > _MAXIMUM_FDINFO_BYTES or os.read(fdinfo, 1):
+            raise LockOrderError("borrowed export descriptor metadata is oversized")
+    finally:
+        os.close(fdinfo)
+    locks = [line.split() for line in payload.splitlines() if line.startswith(b"lock:")]
+    if (
+        len(locks) != 1
+        or locks[0][2:5] != [b"FLOCK", b"ADVISORY", b"WRITE"]
+        or locks[0][7:] != [b"0", b"EOF"]
+    ):
+        raise LockOrderError("borrowed export descriptor has no exclusive whole-file flock")

@@ -670,7 +670,6 @@ def test_successful_archive_result_requires_complete_archive_authority(
     ("field", "value"),
     [
         ("tenantId", "0198d17f-6f4a-7000-8000-000000000099"),
-        ("correlationId", "0198d17f-6f4a-7000-8000-000000000099"),
         (
             "manifestDigest",
             {
@@ -2216,6 +2215,57 @@ def _archive_transaction_intent() -> dict[str, object]:
     return intent
 
 
+def _archive_revalidation_intent() -> dict[str, object]:
+    intent = _archive_transaction_intent()
+    recovery = intent["archiveRecovery"]
+    assert type(recovery) is dict
+    source = deepcopy(recovery["candidateManifest"])
+    assert type(source) is dict
+    digest = manifest_digest(source).to_dict()
+    observed = recovery["sourceObservedState"]
+    assert type(observed) is dict
+    observed.update(
+        desiredManifestDigest=digest,
+        observedState="archived",
+        activeDeploymentId=None,
+        runtimeGenerationId=None,
+    )
+    recovery["sourceManifest"] = source
+    recovery["sourceRouteSet"] = "absent"
+    recovery["sourceRuntimeGenerationId"] = recovery["candidateRuntimeGenerationId"]
+    intent["sourceManifest"] = source
+    intent["sourceManifestDigest"] = digest
+    intent["correlationId"] = "0198d17f-6f4a-7000-8000-000000000999"
+    return intent
+
+
+def test_archive_revalidation_preserves_the_existing_object_provenance() -> None:
+    intent = _archive_revalidation_intent()
+    assert validate_contract(intent) is ContractKind.TRANSACTION_INTENT
+    recovery = intent["archiveRecovery"]
+    assert type(recovery) is dict
+    record = recovery["candidateArchiveRecord"]
+    assert type(record) is dict
+    assert record["correlationId"] != intent["correlationId"]
+
+
+@pytest.mark.parametrize("defect", ["new-runtime", "source-routes", "active-observation"])
+def test_archive_revalidation_cannot_change_runtime_or_lifecycle(defect: str) -> None:
+    intent = _archive_revalidation_intent()
+    recovery = intent["archiveRecovery"]
+    assert type(recovery) is dict
+    if defect == "new-runtime":
+        recovery["candidateRuntimeGenerationId"] = "0198d17f-6f4a-7000-8000-000000000008"
+    elif defect == "source-routes":
+        recovery["sourceRouteSet"] = "both"
+    else:
+        observed = recovery["sourceObservedState"]
+        assert type(observed) is dict
+        observed["activeDeploymentId"] = "0198d17f-6f4a-7000-8000-000000000009"
+    with pytest.raises(ContractError):
+        validate_contract(intent)
+
+
 def test_archive_transaction_intent_binds_both_recovery_outcomes() -> None:
     intent = _archive_transaction_intent()
 
@@ -2227,6 +2277,17 @@ def test_archive_transaction_intent_binds_both_recovery_outcomes() -> None:
     with pytest.raises(ContractError) as captured:
         validate_contract(intent)
     assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+def test_archive_source_observation_can_precede_the_selected_complete_host_generation() -> None:
+    intent = _archive_transaction_intent()
+    recovery = intent["archiveRecovery"]
+    assert type(recovery) is dict
+    observed = recovery["sourceObservedState"]
+    assert type(observed) is dict
+    recovery["sourceRuntimeGenerationId"] = "0198d17f-6f4a-7000-8000-000000000999"
+    assert observed["runtimeGenerationId"] != recovery["sourceRuntimeGenerationId"]
+    assert validate_contract(intent) is ContractKind.TRANSACTION_INTENT
 
 
 def test_archive_transaction_intent_rejects_drift_between_candidate_copies() -> None:

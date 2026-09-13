@@ -3782,10 +3782,14 @@ def test_executor_rejects_a_failed_archive_with_a_retained_upload_candidate(
         "tenantId": _TENANT_ID,
     }
     candidate = _fixture("archive-record.json")
+    archived_manifest = _fixture("site.json")
+    archived_spec = archived_manifest["spec"]
+    assert type(archived_spec) is dict
+    archived_spec["desiredState"] = "archived"
     candidate.update(
         {
             "correlationId": correlation_id,
-            "manifestDigest": manifest_digest(source).to_dict(),
+            "manifestDigest": manifest_digest(archived_manifest).to_dict(),
         }
     )
     checked: list[dict[str, object]] = []

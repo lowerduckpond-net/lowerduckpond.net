@@ -37,7 +37,8 @@
                 "desiredState": {
                   "enum": [
                     "active",
-                    "suspended"
+                    "suspended",
+                    "archived"
                   ]
                 }
               },
@@ -53,7 +54,8 @@
             "observedState": {
               "enum": [
                 "active",
-                "suspended"
+                "suspended",
+                "archived"
               ]
             }
           }

@@ -14,15 +14,20 @@ from typing import Final, Protocol
 
 from lowerduckpond_static_contracts import ContractError, Digest, validate_uuid7
 
+from lowerduckpond_static_host_agent.archive_bundle import require_archive_inspection
 from lowerduckpond_static_host_agent.capacity import (
     DEFAULT_HOST_CAPACITY_LIMITS,
     CapacityReservation,
     HostCapacityLimits,
     ReleaseCapacityUsage,
 )
+from lowerduckpond_static_host_agent.export_spool import EXPORT_WORKSPACE_BUNDLE_NAME, ExportSpool
 from lowerduckpond_static_host_agent.intake import AdmittedArtifact, ArtifactIntake
 from lowerduckpond_static_host_agent.locks import LockMode, LockName
-from lowerduckpond_static_host_agent.portable_bundle import PortableBundleImport
+from lowerduckpond_static_host_agent.portable_bundle import (
+    PortableBundleImport,
+    import_portable_bundle,
+)
 from lowerduckpond_static_host_agent.release_tree import (
     RELEASE_TREE_FORMAT,
     InodeAllocation,
@@ -218,6 +223,61 @@ class DeploymentReleaseStore:
             if isinstance(error, ReleaseStoreError):
                 raise
             raise ReleaseStoreError("deployment release could not be staged safely") from error
+
+    def stage_archive(  # noqa: PLR0913 - complete archive and publication authority
+        self,
+        spool: ExportSpool,
+        archive_record: dict[str, object],
+        source_manifest: dict[str, object],
+        *,
+        tenant_id: object,
+        deployment_id: object,
+        retained_usage: ReleaseCapacityUsage,
+        publication_lock: PublicationLockProof,
+        capacity_limits: HostCapacityLimits = DEFAULT_HOST_CAPACITY_LIMITS,
+    ) -> StagedDeploymentRelease:
+        """Validate an exact remote bundle and extract a fresh release for its tenant."""
+        self._require_locked(publication_lock)
+        spool.locks.require_held(LockName.INTAKE, mode=LockMode.EXCLUSIVE)
+        spool.locks.require_held(LockName.EXPORT, mode=LockMode.EXCLUSIVE)
+        tenant = validate_uuid7(tenant_id)
+        deployment = validate_uuid7(deployment_id)
+        if tenant != archive_record["tenantId"] or deployment == archive_record["deploymentId"]:
+            raise ReleaseStoreError("restore must select a new deployment for the archived tenant")
+        staging_name = _staging_name(tenant, deployment)
+        owns_staging = False
+        try:
+            extracted = import_portable_bundle(
+                spool.workspace / EXPORT_WORKSPACE_BUNDLE_NAME,
+                staging_parent=self._staging_root,
+                staging_name=staging_name,
+                expected_owner=self._expected_owner,
+                retained_usage=retained_usage,
+                publication_reservation=self._publication_namespace_reservation(tenant),
+                lock_manager=spool.locks,
+                capacity_limits=capacity_limits,
+            )
+            owns_staging = True
+            require_archive_inspection(extracted.inspection, archive_record, source_manifest)
+            measurement = measure_release_tree(
+                self._staging_root / staging_name,
+                lock_manager=publication_lock,
+                expected_owner=self._expected_owner,
+            )
+            if measurement.digest.to_dict() != archive_record["releaseTreeDigest"]:
+                raise ReleaseStoreError("restore extraction disagrees with archive authority")
+            return StagedDeploymentRelease(tenant, deployment, staging_name, measurement)
+        except BaseException as error:
+            if owns_staging:
+                try:
+                    self._discard_name(staging_name)
+                except BaseException as cleanup_error:
+                    raise ReleaseStoreError(
+                        "failed restore staging could not be removed"
+                    ) from cleanup_error
+            if isinstance(error, ReleaseStoreError):
+                raise
+            raise ReleaseStoreError("archive release could not be staged safely") from error
 
     def publish(
         self,

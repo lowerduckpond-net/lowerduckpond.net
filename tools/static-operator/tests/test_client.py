@@ -504,3 +504,54 @@ def test_retired_result_and_lost_acknowledgement_preserve_local_delivery(
         assert destination.read_bytes() == export
         assert capture.with_suffix(".ack").exists()
     assert list(tmp_path.glob(".ldp-export-*")) == []
+
+
+@pytest.mark.parametrize("early_response", [False, True])
+def test_client_preserves_early_rejection_during_a_large_upload(
+    tmp_path: Path, early_response: bool
+) -> None:
+    identity = _regular(tmp_path / "identity", b"private")
+    artifact = b"x" * (2 * 1024 * 1024)
+    artifact_path = _regular(tmp_path / "artifact.zip", artifact)
+    request = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationRequest",
+        "operation": "deploy",
+        "correlationId": "0198d17f-6f4a-7000-8000-000000000003",
+        "tenantId": "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100",
+        "artifact": {"size": len(artifact), "sha256": hashlib.sha256(artifact).hexdigest()},
+    }
+    request_path = _regular(tmp_path / "request.json", canonical_json_bytes(request))
+    ssh = _regular(
+        tmp_path / "ssh",
+        (
+            f"#!{sys.executable}\n"
+            "import os, struct, sys\n"
+            "header = sys.stdin.buffer.read(24)\n"
+            "sys.stdin.buffer.read(struct.unpack('!I', header[12:16])[0])\n"
+            "os.close(0)\n"
+            "sys.stderr.write('intake.lock is busy\\n')\n"
+            "sys.stderr.flush()\n"
+            + (
+                "sys.stdout.buffer.write(b'premature response'); sys.stdout.buffer.flush()\n"
+                if early_response
+                else ""
+            )
+            + "raise SystemExit(1)\n"
+        ).encode(),
+        mode=0o700,
+    )
+    expected = (
+        "operator transport closed input before the request completed"
+        if early_response
+        else "operator transport failed: intake.lock is busy"
+    )
+    with pytest.raises(OperatorClientError) as caught:
+        submit(
+            host="hosting.lowerduckpond.net",
+            identity_path=identity,
+            request_path=request_path,
+            artifact_path=artifact_path,
+            ssh_executable=ssh,
+        )
+    assert str(caught.value) == expected

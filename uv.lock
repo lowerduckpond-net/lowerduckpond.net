@@ -880,6 +880,7 @@ name = "lowerduckpond-static-host-agent"
 version = "0.0.0"
 source = { editable = "packages/static-host-agent" }
 dependencies = [
+    { name = "botocore" },
     { name = "lowerduckpond-static-contracts" },
     { name = "lowerduckpond-static-domain" },
 ]
@@ -891,6 +892,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
+    { name = "botocore", specifier = ">=1.43.70,<1.44" },
     { name = "lowerduckpond-static-contracts", editable = "packages/static-contracts" },
     { name = "lowerduckpond-static-domain", editable = "packages/static-domain" },
 ]

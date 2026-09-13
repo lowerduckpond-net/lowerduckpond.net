@@ -2,13 +2,16 @@ FROM python@sha256:8edbf9e42c7fb168b9c523718ed907117e6d2e60f5889c0c499bbda3a787d
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/workspace/host-agent
 
 WORKDIR /workspace
-COPY . /workspace/tool
+COPY tool /workspace/tool
+COPY artifact/site-packages /workspace/host-agent
+COPY test_archive_remote_minio.py /workspace/test_archive_remote_minio.py
 RUN python -m pip install \
     botocore==1.43.78 \
     pytest==9.0.2 \
     /workspace/tool
 
-CMD ["python", "-m", "pytest", "-m", "minio", "/workspace/tool/tests/test_minio.py"]
+CMD ["python", "-m", "pytest", "-m", "minio", "/workspace/tool/tests/test_minio.py", "/workspace/test_archive_remote_minio.py"]

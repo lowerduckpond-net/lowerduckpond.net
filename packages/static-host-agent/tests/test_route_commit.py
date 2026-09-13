@@ -155,12 +155,14 @@ class _Runtime:
         transaction: object,
         overlay: TenantRouteOverlay,
         gate: _Gate,
+        deployment_transition_tenant_id: object | None = None,
     ) -> CaddyGenerationManifest:
         gate.require_enabled()
         self.events.append("published")
         self.snapshots[generation_id] = snapshot_tenant_routes(
             cast(RouteSnapshotTransaction, transaction),
             overlay=overlay,
+            deployment_transition_tenant_id=deployment_transition_tenant_id,
         )
         return cast(CaddyGenerationManifest, _GenerationManifest(generation_id))
 
@@ -193,7 +195,10 @@ class _Runtime:
         source: PinnedCaddyGeneration,
         candidate: PinnedCaddyGeneration,
     ) -> None:
-        assert source.manifest.generation_id == _SOURCE_GENERATION
+        assert (
+            source.manifest.generation_id == _SOURCE_GENERATION
+            or source.manifest.generation_id in self.snapshots
+        )
         assert self.active == candidate.manifest.generation_id
         self.running = candidate.manifest.generation_id
         self.events.append("reloaded")

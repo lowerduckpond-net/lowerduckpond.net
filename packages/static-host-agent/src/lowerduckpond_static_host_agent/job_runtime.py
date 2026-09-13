@@ -411,6 +411,8 @@ class StartupReconciler:
         active: set[str] = set()
         for identity in transaction.measure_intent_records().records:
             _path, intent = transaction.read_intent(identity.intent_id)
+            if intent.document["kind"] == "EmergencyDeletionIntent":
+                continue
             provenance = intent.document.get("provenance")
             if (
                 intent.document["kind"] == "ArchiveRetirementIntent"

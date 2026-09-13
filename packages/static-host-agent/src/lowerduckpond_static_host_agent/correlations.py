@@ -152,6 +152,18 @@ class CorrelationAdmission:
                 )
 
             established_job_ids = {_job_id(document) for document in correlations.values()}
+            if correlation_id in inventory.result_ids or job_id in inventory.result_ids:
+                raise CorrelationConflictError(
+                    "new authorization collides with permanent result identity"
+                )
+            try:
+                transaction.read(StateRecordPath.emergency_deletion_intent(correlation_id))
+            except FileNotFoundError:
+                pass
+            else:
+                raise CorrelationConflictError(
+                    "correlation belongs to emergency administrator authority"
+                )
             if job_id in established_job_ids:
                 raise CorrelationConflictError(
                     "new correlation selected an established job identity"

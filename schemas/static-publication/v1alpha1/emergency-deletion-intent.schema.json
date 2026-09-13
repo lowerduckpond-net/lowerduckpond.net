@@ -1,0 +1,102 @@
+{
+  "$id": "https://schemas.lowerduckpond.net/static-publication/v1alpha1/emergency-deletion-intent.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "apiVersion": {
+      "$ref": "common.schema.json#/$defs/apiVersion"
+    },
+    "archiveRecord": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "archive-record.schema.json"
+        }
+      ]
+    },
+    "auditEntry": {
+      "$ref": "audit-entry.schema.json"
+    },
+    "candidateRuntimeGenerationId": {
+      "$ref": "common.schema.json#/$defs/uuidv7"
+    },
+    "compatibilityVersion": {
+      "const": "static-emergency-deletion-v1"
+    },
+    "correlationId": {
+      "$ref": "common.schema.json#/$defs/correlationId"
+    },
+    "createdAt": {
+      "$ref": "common.schema.json#/$defs/timestamp"
+    },
+    "deploymentRecords": {
+      "items": {
+        "$ref": "deployment-record.schema.json"
+      },
+      "maxItems": 3,
+      "type": "array"
+    },
+    "intentId": {
+      "$ref": "common.schema.json#/$defs/uuidv7"
+    },
+    "kind": {
+      "const": "EmergencyDeletionIntent"
+    },
+    "operatorPrincipal": {
+      "$ref": "common.schema.json#/$defs/principal"
+    },
+    "reason": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "type": "string"
+    },
+    "result": {
+      "$ref": "operation-result.schema.json"
+    },
+    "retirementIntent": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "archive-retirement-intent.schema.json"
+        }
+      ]
+    },
+    "sourceManifest": {
+      "$ref": "site.schema.json"
+    },
+    "sourceObservedState": {
+      "$ref": "tenant-observed-state.schema.json"
+    },
+    "sourceRuntimeGenerationId": {
+      "$ref": "common.schema.json#/$defs/uuidv7"
+    },
+    "tenantId": {
+      "$ref": "common.schema.json#/$defs/uuidv7"
+    }
+  },
+  "required": [
+    "apiVersion",
+    "kind",
+    "compatibilityVersion",
+    "intentId",
+    "correlationId",
+    "operatorPrincipal",
+    "reason",
+    "createdAt",
+    "tenantId",
+    "sourceManifest",
+    "sourceObservedState",
+    "deploymentRecords",
+    "archiveRecord",
+    "sourceRuntimeGenerationId",
+    "candidateRuntimeGenerationId",
+    "retirementIntent",
+    "result",
+    "auditEntry"
+  ],
+  "type": "object"
+}
