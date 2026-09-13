@@ -5,7 +5,42 @@ from pathlib import Path
 
 import test_archive_lifecycle as archives
 import test_lifecycle as support
+from lowerduckpond_static_operator.client import OperatorClientError
 from testinfra.host import Host
+
+
+def _worker_diagnostics(host: Host, correlation_id: str) -> str:
+    return archives._installed_python(
+        host,
+        f"""
+import json
+import subprocess
+from pathlib import Path
+from lowerduckpond_static_contracts import validate_uuid7
+
+root = Path({support.STATE_ROOT!r})
+correlation = validate_uuid7({correlation_id!r})
+binding = json.loads((root / 'authorization/correlations' / (correlation + '.json')).read_bytes())
+job_id = validate_uuid7(binding['jobId'])
+job = json.loads((root / 'authorization/jobs' / (job_id + '.json')).read_bytes())
+result_path = root / 'authorization/results' / (job_id + '.json')
+result = json.loads(result_path.read_bytes()) if result_path.exists() else {{}}
+unit = subprocess.run(['/usr/bin/systemctl', 'show',
+    '--property=ActiveState,SubState,Result,ExecMainCode,ExecMainStatus,MemoryPeak',
+    'lowerduckpond-static-worker@' + job_id + '.service'],
+    capture_output=True, text=True, timeout=10, check=False)
+print(json.dumps({{
+    'jobId': job_id,
+    'phase': job['phase'],
+    'executionValidated': job.get('executionValidated'),
+    'resultStatus': result.get('status'),
+    'resultError': result.get('errorCode'),
+    'intents': sorted(path.name for path in (root / 'intents').iterdir())[:8],
+    'quarantine': (root / 'platform/archive-quarantine.json').exists(),
+    'unitStatus': unit.stdout[:4096],
+}}))
+""",
+    )
 
 
 def test_installed_terminal_retry_reopens_only_proven_quarantine(
@@ -21,14 +56,22 @@ def test_installed_terminal_retry_reopens_only_proven_quarantine(
     def submit(operation: str, **fields: object) -> dict[str, object]:
         artifact = fields.pop("artifact", None)
         assert artifact is None or isinstance(artifact, bytes)
-        result = support._submit(
-            tmp_path,
-            operator,
-            identity,
-            ssh,
-            support._request(operation, next(identifiers), **fields),
-            artifact=artifact,
-        )
+        correlation_id = next(identifiers)
+        try:
+            result = support._submit(
+                tmp_path,
+                operator,
+                identity,
+                ssh,
+                support._request(operation, correlation_id, **fields),
+                artifact=artifact,
+            )
+        except OperatorClientError as error:
+            try:
+                diagnostics = _worker_diagnostics(host, correlation_id)
+            except Exception:  # Diagnostics must preserve the original failure.
+                diagnostics = "worker diagnostics unavailable"
+            raise AssertionError(f"{error}\nWorker diagnostics: {diagnostics}") from error
         assert result["status"] == "succeeded", result
         return result
 
