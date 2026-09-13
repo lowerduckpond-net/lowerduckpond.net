@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from dataclasses import replace
 from pathlib import Path
@@ -24,9 +25,80 @@ from lowerduckpond_static_host_agent import (
     platform_generation_state,
     require_exact_file,
 )
+from lowerduckpond_static_host_agent.caddy_bootstrap import (
+    empty_tenant_generation_matches_under_lock,
+)
+from lowerduckpond_static_host_agent.caddy_generation import CaddyGenerationPayload
+from lowerduckpond_static_host_agent.caddy_routes import build_tenant_caddy_routes
 
 _GENERATION_A = "0198d17f-6f4a-7000-8000-000000000001"
 _GENERATION_B = "0198d17f-6f4a-7000-8000-000000000002"
+
+
+@pytest.mark.parametrize("drift", ["none", "environment", "namespace", "origin-pull"])
+def test_last_tenant_generation_remains_bound_to_every_installed_input(
+    tmp_path: Path, drift: str
+) -> None:
+    owner, group = os.geteuid(), os.getegid()
+    root = tmp_path / "runtime"
+    root.mkdir(mode=CADDY_RUNTIME_ROOT_MODE)
+    generations = root / "generations"
+    generations.mkdir(mode=CADDY_GENERATION_ROOT_MODE)
+    lock = tmp_path / "publication.lock"
+    lock.touch(mode=CADDY_PUBLICATION_LOCK_MODE)
+    binary = tmp_path / "caddy"
+    binary.write_bytes(Path("/usr/bin/true").read_bytes())
+    binary.chmod(0o755)
+    source = CaddyBinarySource(binary, owner=owner, group=group)
+    environment = b"CLOUDFLARE_API_TOKEN=fixture\n"
+    fixture = (
+        Path(__file__).parents[3]
+        / "tests/static-publication/fixtures/accepted/platform-namespace.json"
+    )
+    namespace = json.loads(fixture.read_text())
+    routes = build_tenant_caddy_routes(
+        platform_namespace=namespace,
+        tenants=(),
+        runtime_generation_id=_GENERATION_B,
+        origin_pull_ca_der=(b"ca-a",),
+        origin_pull_required=True,
+    )
+    with (
+        CaddyRuntime.open(
+            root,
+            lock,
+            expected_owner=owner,
+            expected_group=group,
+            validation_uid=owner,
+            validation_gid=group,
+            expected_binary_sha256=hashlib.sha256(binary.read_bytes()).hexdigest(),
+            candidate_validator=_accept_candidate,
+        ) as runtime,
+        CaddyGenerationStore.open(generations, expected_owner=owner, expected_group=group) as store,
+        runtime.locked(),
+    ):
+        store.publish(
+            _GENERATION_B,
+            CaddyGenerationPayload(
+                binary=source,
+                environment=environment,
+                configuration=routes.configuration,
+                route_metadata=routes.route_metadata,
+            ),
+        )
+        runtime.select_active(_GENERATION_B)
+        if drift == "environment":
+            environment = b"CLOUDFLARE_API_TOKEN=other\n"
+        if drift == "namespace":
+            namespace["initializedAt"] = "2026-08-30T12:00:00Z"
+        assert empty_tenant_generation_matches_under_lock(
+            runtime,
+            platform_namespace=namespace,
+            binary=source,
+            environment=environment,
+            origin_pull_ca_der=(b"ca-a",),
+            origin_pull_required=drift != "origin-pull",
+        ) is (drift == "none")
 
 
 def _accept_candidate(_generation: object, _environment: object) -> None:
