@@ -37,6 +37,13 @@ def test_production_inventory_disables_new_services_for_the_explicit_legacy_arti
                                     "static_host_agent_archive_lifecycle_enabled is boolean",
                                     "static_host_agent_archive_lifecycle_enabled == "
                                     + ("false" if rollback else "true"),
+                                    "static_host_agent_archive_configuration is mapping",
+                                    (
+                                        "static_host_agent_archive_configuration == {}"
+                                        if rollback
+                                        else "static_host_agent_archive_configuration.accessKeyId "
+                                        "== 'fixture-archive-key'"
+                                    ),
                                 ]
                             }
                         }
@@ -56,7 +63,12 @@ def test_production_inventory_disables_new_services_for_the_explicit_legacy_arti
             "local",
             str(playbook),
         ],
-        env={**os.environ, "M3_DARK_HOST_ROLLBACK_ARTIFACT_PATH": rollback},
+        env={
+            **os.environ,
+            "M3_DARK_HOST_ROLLBACK_ARTIFACT_PATH": rollback,
+            "SPACES_ARCHIVE_ACCESS_KEY_ID": "fixture-archive-key",
+            "SPACES_ARCHIVE_SECRET_ACCESS_KEY": "fixture-archive-secret",
+        },
         check=False,
         capture_output=True,
         text=True,
