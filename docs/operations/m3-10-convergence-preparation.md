@@ -38,6 +38,7 @@ uses these existing infrastructure inputs:
 | `OPENTOFU_STATE_ACCESS_KEY_ID`, `OPENTOFU_STATE_SECRET_ACCESS_KEY`, `OPENTOFU_STATE_BUCKET`, `SPACES_REGION`, `OPENTOFU_ENCRYPTION_PASSPHRASE` | Read and decrypt existing production state. |
 | `SPACES_ACCESS_KEY_ID`, `SPACES_SECRET_ACCESS_KEY` | Existing workstation Spaces operator key for read-only bucket ACL, policy, and lifecycle inspection. |
 | `CLOUDFLARE_API_TOKEN` | Existing infrastructure token for read-only current edge policy checks. |
+| `M3_10_TOKEN_AUDIT_TOKEN` | Temporary account-owned token with only Account API Tokens Read on the production account, lasting at most seven days. |
 | `CLOUDFLARE_ZONE_ID`, `CLOUDFLARE_TENANT_ZONE_ID` | Exact production zone identities. |
 | `CLOUDFLARE_ORIGIN_PULL_CERTIFICATE_ID`, `CLOUDFLARE_TENANT_ORIGIN_PULL_CERTIFICATE_ID` | Exact accepted active origin-pull leaves. |
 
@@ -47,6 +48,13 @@ Use the existing state passphrase. No new passphrase or credential storage
 convention is needed. Bucket-configuration reads use the existing operator key:
 [DigitalOcean distinguishes those permissions from limited object access](https://docs.digitalocean.com/reference/api/spaces/).
 An access-denied response never proves that a policy is absent.
+The gate authenticates separately with `CADDY_CLOUDFLARE_API_TOKEN`, checks both
+zone identities, and uses the temporary audit token to read its current policy.
+The runtime token must be active, non-expiring, and grant exactly Zone Read and
+DNS Write on both reviewed zones. The audit token follows the existing
+[token-audit procedure](m3-public-edge-rollout.md#configure-the-protected-workflow-inputs);
+name it for M3.10 and its creation date. Keep it on the secure workstation,
+never install or back it up, and revoke it after the final provider check.
 Origin-pull trust accepts one or two distinct absolute public CA paths, supporting
 the existing phased CA rotation. Every supplied CA must pass the certificate
 policy; each active leaf must chain to a validated anchor in that set.
