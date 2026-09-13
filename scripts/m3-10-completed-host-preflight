@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# Fixed stdin program for an already accepted artifact and deployment source.
+set +x
+set -euo pipefail
+export LC_ALL=C
+
+[[ $# == 2 && $1 =~ ^[0-9a-f]{64}$ && $2 == completed-host ]] || exit 2
+expected=$1
+fail() {
+    printf 'M3.10 completed-host preflight failed: %s\n' "$1" >&2
+    exit 1
+}
+install_root=/opt/lowerduckpond/static-host-agent
+[[ -L ${install_root}/current &&
+   $(readlink --canonicalize-existing -- "${install_root}/current") == "${install_root}/${expected}" ]] ||
+    fail 'selected artifact differs from the completed candidate'
+/usr/local/libexec/lowerduckpond/verify-static-host-agent-artifact \
+    "${install_root}/${expected}" >/dev/null || fail 'complete artifact verification failed'
+
+state_root=/var/lib/lowerduckpond/static
+for directory in "${state_root}" "${state_root}/platform" "${state_root}/tenants" \
+    "${state_root}/authorization" "${state_root}/authorization/jobs" \
+    "${state_root}/authorization/results" "${state_root}/authorization/correlations" \
+    "${state_root}/audit" "${state_root}/locks"; do
+    [[ -d ${directory} && ! -L ${directory} &&
+       $(stat --format='%u:%a' -- "${directory}") == 0:700 ]] ||
+        fail 'permanent state directory metadata drifted'
+done
+for directory in "${state_root}/intents" "${state_root}/intake" "${state_root}/exports" \
+    /srv/lowerduckpond/sites/.staging /etc/caddy/intents; do
+    [[ -d ${directory} && ! -L ${directory} &&
+       $(stat --format='%u:%a' -- "${directory}") == 0:700 ]] ||
+        fail 'transient state directory metadata drifted'
+    [[ -z $(find "${directory}" -mindepth 1 -print -quit) ]] ||
+        fail 'unfinished lifecycle or publication work remains'
+done
+quarantine=${state_root}/platform/archive-quarantine.json
+[[ ! -e ${quarantine} && ! -L ${quarantine} ]] || fail 'archive quarantine remains'
+queued=$(systemctl list-jobs --no-legend --plain) || fail 'could not query queued work'
+[[ -z $(printf '%s\n' "${queued}" | awk \
+    '$2 ~ /^(caddy|lowerduckpond-static|lowerduckpond-archive)/ { print; exit }') ]] ||
+    fail 'publication or lifecycle work is queued'
+active=$(systemctl list-units --plain --no-legend --state=activating,active,deactivating \
+    'lowerduckpond-static-worker@*.service' 'lowerduckpond-static-reconcile.service' \
+    'lowerduckpond-static-emergency-reconcile.service' 'lowerduckpond-archive-*.service') ||
+    fail 'could not query active lifecycle work'
+[[ -z ${active} ]] || fail 'lifecycle work is active'
+
+# Validate bounded permanent authorization and audit records with the pinned
+# installed package. History is retained; no recovery or pair repair runs here.
+/usr/bin/python3 -I -B - "${install_root}/${expected}/site-packages" "${state_root}" <<'PYTHON'
+import os
+import re
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from lowerduckpond_static_host_agent import StateRepository, StateRecordPath
+from lowerduckpond_static_host_agent.audit import DEFAULT_AUDIT_LIMITS
+from lowerduckpond_static_host_agent.state_inventory import DEFAULT_STATE_INVENTORY_LIMITS
+
+def names(directory, maximum):
+    result = []
+    with os.scandir(directory) as entries:
+        for entry in entries:
+            result.append(entry.name)
+            if len(result) > maximum:
+                raise SystemExit('M3.10 permanent history exceeds its inventory bound')
+    return result
+
+with StateRepository(Path(sys.argv[2]), expected_owner=0) as repository:
+    with repository.publication_transaction() as transaction:
+        # Reject incomplete publication files before invoking inventory/audit
+        # readers, whose normal recovery behavior can retire abandoned copies.
+        root = Path(sys.argv[2])
+        remaining = DEFAULT_STATE_INVENTORY_LIMITS.maximum_authorization_records
+        for directory, record_path in (
+            ('jobs', StateRecordPath.authorization_job),
+            ('results', StateRecordPath.authorization_result),
+            ('correlations', StateRecordPath.authorization_correlation),
+        ):
+            identifiers = names(root / 'authorization' / directory, remaining)
+            remaining -= len(identifiers)
+            for name in identifiers:
+                if not name.endswith('.json'):
+                    raise SystemExit('M3.10 authorization publication is incomplete')
+                transaction.read(record_path(name[:-5]))
+        for name in names(root / 'audit', DEFAULT_AUDIT_LIMITS.maximum_segments):
+            if re.fullmatch(r'segment-[0-9]{20}\.jsonl', name) is None:
+                raise SystemExit('M3.10 audit publication is incomplete')
+        transaction.measure_inventory()
+        transaction.inspect_audit()
+        if transaction.measure_intent_records().records:
+            raise SystemExit('M3.10 host has pending durable work')
+PYTHON
+
+checker=/usr/local/libexec/lowerduckpond/check-caddy-generation
+[[ -f ${checker} && ! -L ${checker} &&
+   $(stat --format='%u:%a:%h' -- "${checker}") == 0:755:1 ]] ||
+    fail 'authoritative Caddy checker metadata drifted'
+for option in --authoritative-check --origin-pull-required; do
+    grep --extended-regexp --quiet -- '^[[:space:]]+'"${option}"'[[:space:]]+\\$' "${checker}" ||
+        fail 'Caddy checker lost authoritative or enforced origin-pull mode'
+done
+if grep --extended-regexp --quiet -- '--origin-pull-staged|--runtime-authoritative-check' "${checker}"; then
+    fail 'Caddy checker retains a weaker verification mode'
+fi
+[[ $("${checker}") == current ]] || fail 'authoritative Caddy generation is not current'
+systemctl is-active --quiet caddy.service || fail 'Caddy is not active'
+
+printf 'Completed M3.10 host integrity and quiescence passed with permanent history retained.\n'
