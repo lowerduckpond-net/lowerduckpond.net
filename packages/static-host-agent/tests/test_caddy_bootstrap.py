@@ -49,11 +49,12 @@ _GENERATION_B = "0198d17f-6f4a-7000-8000-000000000002"
         "temporary",
         "malformed",
         "corrupt-predecessor",
+        "normal-retention",
         "excess-generations",
     ],
 )
 def test_last_tenant_generation_remains_bound_to_every_installed_input(
-    tmp_path: Path, drift: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, drift: str
 ) -> None:
     owner, group = os.geteuid(), os.getegid()
     root = tmp_path / "runtime"
@@ -103,8 +104,15 @@ def test_last_tenant_generation_remains_bound_to_every_installed_input(
             ),
         )
         runtime.select_active(_GENERATION_B)
-        if drift in {"predecessor", "corrupt-predecessor", "excess-generations"}:
+        if drift in {
+            "predecessor",
+            "corrupt-predecessor",
+            "normal-retention",
+            "excess-generations",
+        }:
             identifiers = [_GENERATION_A]
+            if drift in {"normal-retention", "excess-generations"}:
+                identifiers.append("0198d17f-6f4a-7000-8000-000000000000")
             if drift == "excess-generations":
                 identifiers.append("0198d17f-6f4a-7000-8000-000000000003")
             for identifier in identifiers:
@@ -115,15 +123,23 @@ def test_last_tenant_generation_remains_bound_to_every_installed_input(
                     origin_pull_ca_der=(b"ca-a",),
                     origin_pull_required=True,
                 )
-                store.publish(
-                    identifier,
-                    CaddyGenerationPayload(
-                        binary=source,
-                        environment=environment,
-                        configuration=other_routes.configuration,
-                        route_metadata=other_routes.route_metadata,
-                    ),
-                )
+                with monkeypatch.context() as patch:
+                    # Construct an invalid retained inventory without weakening
+                    # the production admission or the subsequent health check.
+                    if drift == "excess-generations":
+                        patch.setattr(
+                            "lowerduckpond_static_host_agent.caddy_generation.MAX_CADDY_GENERATIONS",
+                            4,
+                        )
+                    store.publish(
+                        identifier,
+                        CaddyGenerationPayload(
+                            binary=source,
+                            environment=environment,
+                            configuration=other_routes.configuration,
+                            route_metadata=other_routes.route_metadata,
+                        ),
+                    )
         if drift == "temporary":
             (generations / (".ldp-generation-" + "a" * 32)).mkdir()
         if drift == "malformed":
@@ -138,9 +154,7 @@ def test_last_tenant_generation_remains_bound_to_every_installed_input(
             environment = b"CLOUDFLARE_API_TOKEN=other\n"
         if drift == "namespace":
             namespace["initializedAt"] = "2026-08-30T12:00:00Z"
-        if drift in {"malformed", "corrupt-predecessor"}:
-            with pytest.raises(CaddyGenerationError):
-                store.bootstrap_retention_matches(_GENERATION_B)
+        if drift in {"temporary", "malformed", "corrupt-predecessor"}:
             with pytest.raises(CaddyGenerationError):
                 empty_tenant_generation_matches_under_lock(
                     runtime,
@@ -160,7 +174,7 @@ def test_last_tenant_generation_remains_bound_to_every_installed_input(
             environment=environment,
             origin_pull_ca_der=(b"ca-a",),
             origin_pull_required=drift != "origin-pull",
-        ) is (drift in {"none", "predecessor"})
+        ) is (drift in {"none", "predecessor", "normal-retention"})
 
 
 def _accept_candidate(_generation: object, _environment: object) -> None:

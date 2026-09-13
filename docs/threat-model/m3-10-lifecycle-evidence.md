@@ -86,7 +86,7 @@ terminal capacity. Two regressions leave exactly one result slot, attempt a
 pending job's failure both with and without source drift, then prove the archive
 can still publish its failed result and retire its upload before the pending job
 resumes. Empty-tenant health now validates the entire generation-store shape and
-two-generation retention bound, including temporary, malformed, corrupt, and
+normal three-generation bound, including temporary, malformed, corrupt, and
 excess unselected entries.
 
 Emergency deletion now admits and appends its audit through the administrator
@@ -108,3 +108,13 @@ recovery. All 54 emergency tests passed, including generation-capacity refusal,
 terminal-capacity refusal after generation creation, and interruption before or
 after intent durability. These checks preserve the selected runtime and tenant
 state on preparation refusal, and prove a later retry succeeds.
+
+The completed emergency-candidate change passed the full host-agent suite:
+1,791 tests with the same two documented skips. A subsequent retention check
+confirmed that ordinary route publication prunes to active plus one predecessor
+before adding its candidate, so last-tenant deletion can leave three complete
+generations. The namespace-bound empty health check now uses the existing normal
+runtime limit of three, while validating every retained generation and rejecting
+reserved temporaries. The original platform-bootstrap limit remains two.
+All 61 generation/entrypoint tests passed, including a valid three-generation
+history and refusal of four generations, malformed entries, and corruption.
