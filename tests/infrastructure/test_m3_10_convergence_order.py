@@ -69,7 +69,7 @@ def runner(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     executable(
         commands / "uv",
         """case "$*" in
-        *read_production_ansible_inventory*) echo 192.0.2.1;;
+        *read_production_ansible_inventory*) cat >/dev/null; echo 192.0.2.1;;
         *scripts.check_m3_10_provider*)
             [[ "$*" == *"--allow-existing-archives"* ]] || exit 99
             [[ "$*" == *"--archive-authority "*"--artifact "*"--source "* ]] || exit 99
@@ -173,6 +173,23 @@ def run(runner: tuple[Path, dict[str, str]]) -> tuple[int, list[str]]:
     )
     path = Path(environment["TEST_LOG"])
     return outcome.returncode, path.read_text().splitlines() if path.exists() else []
+
+
+def test_inventory_reader_drains_the_upstream_pipe(
+    runner: tuple[Path, dict[str, str]],
+) -> None:
+    # Exceed pipe capacity so an unread producer deterministically fails under
+    # pipefail, rather than depending on which tiny command double runs first.
+    executable(
+        runner[0].parent.parent / "commands" / "tofu",
+        """case "$*" in
+        *ansible_inventory*) head --bytes=1048576 /dev/zero;;
+        *output*) echo fixture-value;;
+    esac""",
+    )
+    status, calls = run(runner)
+    assert status == 0
+    assert calls[-1] == "completion-record"
 
 
 @pytest.mark.parametrize(
