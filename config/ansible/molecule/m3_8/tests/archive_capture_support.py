@@ -86,7 +86,6 @@ def exercise_capture_exclusion(
             exports._await_capture_line(process, "unlocked")
         started = host.run("systemctl start --no-block lowerduckpond-static-worker@%s.service", job)
         assert started.rc == 0, started.stderr
-        recovery._await_worker_start(host, job)
         blocked = host.run(
             "/usr/bin/python3 -I -B -c %s",
             f"""
@@ -102,7 +101,14 @@ while time.monotonic() < deadline:
         if fields[1:5] != ['->', 'FLOCK', 'ADVISORY', 'WRITE']:
             continue
         major, minor, inode = fields[6].split(':')
-        if (int(major, 16), int(minor, 16), int(inode)) == identity:
+        if (int(major, 16), int(minor, 16), int(inode)) != identity:
+            continue
+        try:
+            groups = Path('/proc/' + fields[5] + '/cgroup').read_text().splitlines()
+        except FileNotFoundError:
+            continue
+        unit = {"lowerduckpond-static-worker@" + job + ".service"!r}
+        if any(unit in group.split(':', 2)[-1].split('/') for group in groups):
             raise SystemExit(0)
     time.sleep(0.1)
 raise SystemExit('lifecycle worker did not wait for export capture')
