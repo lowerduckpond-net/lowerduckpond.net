@@ -42,6 +42,13 @@ def build_parser() -> argparse.ArgumentParser:
     acceptance.add_argument("--output", required=True, type=Path)
     _add_endpoint_arguments(acceptance)
 
+    credentials = subparsers.add_parser(
+        "credential-check", help="check current runtime keys using only a fresh probe prefix"
+    )
+    credentials.add_argument("--backup-bucket", required=True)
+    credentials.add_argument("--archive-bucket", required=True)
+    _add_endpoint_arguments(credentials)
+
     verify = subparsers.add_parser("verify-report", help="validate a sanitized report")
     verify.add_argument("report", type=Path)
     return parser
@@ -84,12 +91,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             archive_client=archive_client,
             backup_bucket=arguments.backup_bucket,
             archive_bucket=arguments.archive_bucket,
+            require_empty_archive=arguments.command == "acceptance",
         )
-        report = ArchiveQualificationReport.create(
-            evidence, source_revision=arguments.source_revision
-        )
-        report.write(arguments.output)
-        print("M3.1 archive storage acceptance passed and wrote sanitized evidence.")
+        if arguments.command == "credential-check":
+            print("Current runtime keys passed scoped version and mutual-denial checks.")
+        else:
+            report = ArchiveQualificationReport.create(
+                evidence, source_revision=arguments.source_revision
+            )
+            report.write(arguments.output)
+            print("M3.1 archive storage acceptance passed and wrote sanitized evidence.")
         return 0
     except (ArchiveQualificationError, UnsafeArchiveReportError) as error:
         print(f"M3.1 archive storage gate failed closed: {error}", file=sys.stderr)

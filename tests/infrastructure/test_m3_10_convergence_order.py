@@ -58,6 +58,9 @@ def runner(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         *scripts.m3_10_qualification_report*)
             echo verify-report >>"$TEST_LOG"
             exit "$TEST_VERIFY_STATUS";;
+        *ldp-m3-archive*credential-check*)
+            echo scoped-current-credentials >>"$TEST_LOG"
+            exit "$TEST_CREDENTIAL_STATUS";;
         *ldp-m3-archive*acceptance*)
             echo current-credentials >>"$TEST_LOG"
             exit "$TEST_CREDENTIAL_STATUS";;
@@ -177,8 +180,7 @@ def test_unchanged_artifact_reconfiguration_retains_the_general_gate(
     assert calls == [
         "general-preflight",
         "completion-check",
-        "current-credentials",
-        "current-credential-report",
+        "scoped-current-credentials",
         "completion-clear",
         "ansible",
         "ansible",
@@ -216,8 +218,14 @@ def test_interrupted_convergence_never_records_completion(
     assert "completion-record" not in calls
 
 
-@pytest.mark.parametrize("completed", [False, True])
-@pytest.mark.parametrize("failure", ["TEST_CREDENTIAL_STATUS", "TEST_CREDENTIAL_REPORT_STATUS"])
+@pytest.mark.parametrize(
+    "completed,failure",
+    [
+        (False, "TEST_CREDENTIAL_STATUS"),
+        (False, "TEST_CREDENTIAL_REPORT_STATUS"),
+        (True, "TEST_CREDENTIAL_STATUS"),
+    ],
+)
 def test_current_runtime_keys_must_pass_even_after_prior_qualification(
     runner: tuple[Path, dict[str, str]], completed: bool, failure: str
 ) -> None:
@@ -227,6 +235,6 @@ def test_current_runtime_keys_must_pass_even_after_prior_qualification(
     runner[1][failure] = "1"
     status, calls = run(runner)
     assert status != 0
-    assert "current-credentials" in calls
+    assert ("scoped-current-credentials" if completed else "current-credentials") in calls
     assert "completion-clear" not in calls
     assert "ansible" not in calls
