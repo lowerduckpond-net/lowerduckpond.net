@@ -60,6 +60,7 @@ def _restoring(
     *,
     predecessors: bool = False,
     before_prepare: Callable[[], None] | None = None,
+    before_retirement: Callable[[], None] | None = None,
 ) -> Iterator[tuple[ArchiveJournal, DeploymentReleaseStore, PreparedRestoreTransition, _Runtime]]:
     for module in ("portable_bundle", "zip_structure"):
         monkeypatch.setattr(
@@ -167,6 +168,8 @@ def _restoring(
             job_id=issued.job_id,
             expected_owner=_OWNER,
         )
+        if before_retirement is not None:
+            before_retirement()
         retirement = journal.prepare_retirement(issued.job_id, now=_NOW)
         if before_prepare is not None:
             before_prepare()

@@ -126,3 +126,17 @@ the result has no candidate record. The shared retained-source path keeps its
 later-audited-supersession handling. All 226 executor/entrypoint tests passed,
 including 12 archived-source failure cases spanning present/missing/error
 verification and raced supersession for archive and restore.
+
+Durable lifecycle journals now protect their audit position and terminal
+capacity from every unrelated executor path and correlation repair. Exact
+retries of a durable job remain available. Startup defers missing job copies,
+retains their hash-bound intake files, and still queues the journal owner;
+repairs resume after the journal is removed. Regressions interrupt actual
+construction with one remaining result slot and either missing pair copy, then
+prove startup and owner recovery complete before repair. Separate prepared
+restore and emergency-deletion cases prove a foreign pending failure cannot
+append audit or a result, and the original transition can still finish.
+
+The complete integration source passed 1,804 host-agent tests with the same two
+documented skips. All 55 emergency tests passed. Formatting, lint, and strict
+typing across 239 source files passed.
