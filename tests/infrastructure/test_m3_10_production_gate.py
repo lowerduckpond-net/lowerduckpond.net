@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import os
 import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
@@ -11,6 +12,7 @@ import pytest
 from botocore.exceptions import ClientError  # type: ignore[import-untyped]
 from lowerduckpond_m3_archive.storage import ArchiveQualificationError
 
+from scripts import check_m3_10_provider as provider
 from scripts.check_m3_7_production_edge import CloudflareClient, ProductionEdgePreflightError
 from scripts.check_m3_10_provider import (
     GateError,
@@ -378,3 +380,77 @@ def test_edge_gate_requires_an_exact_zone_phase_inventory(edge: Edge, malformed:
         inventory.append({"kind": "unrecognized", "phase": "http_request_origin"})
     with pytest.raises(GateError):
         edge_gate(edge)
+
+
+def test_completed_storage_policy_allows_tenant_objects_without_reading_or_mutating_them() -> None:
+    storage = Storage()
+    storage.responses.update(
+        list_objects_v2={"Contents": [{"Key": "tenant/archive.zip"}]},
+        list_object_versions={"Versions": [{"Key": "tenant/archive.zip", "VersionId": "v1"}]},
+        list_multipart_uploads={"Uploads": [{"Key": "tenant/archive.zip", "UploadId": "u1"}]},
+    )
+    before = copy.deepcopy(storage.responses)
+    check_storage(cast(PolicyClient, storage), bucket="archive-fixture", require_empty=False)
+    assert storage.responses == before
+    assert storage.calls == [name for name in storage.responses if name.startswith("get_")]
+
+
+@pytest.mark.parametrize(
+    ("operation", "response"),
+    [
+        ("get_bucket_acl", {"Owner": {"ID": "owner"}, "Grants": []}),
+        ("get_bucket_policy", "AccessDenied"),
+        ("get_bucket_policy", {"Policy": "{}"}),
+        ("get_bucket_lifecycle_configuration", {"Rules": [{"Status": "Enabled"}]}),
+        ("get_bucket_versioning", {"Status": "Suspended"}),
+    ],
+)
+def test_completed_storage_policy_still_refuses_unsafe_provider_controls(
+    operation: str, response: object
+) -> None:
+    storage = Storage()
+    storage.responses[operation] = response
+    with pytest.raises((GateError, ArchiveQualificationError)):
+        check_storage(cast(PolicyClient, storage), bucket="archive-fixture", require_empty=False)
+
+
+@pytest.mark.parametrize("failed_zone", [None, "lowerduckpond.net", "lowerduckpond.com"])
+def test_completed_provider_command_rechecks_both_edges_without_emptying_storage(
+    monkeypatch: pytest.MonkeyPatch, failed_zone: str | None
+) -> None:
+    storage = Storage()
+    storage.responses["list_object_versions"] = {"Versions": [{"Key": "tenant/archive.zip"}]}
+    for key, value in {
+        "SPACES_REGION": "fra1",
+        "SPACES_ARCHIVE_BUCKET": "archive-fixture",
+        "SPACES_ACCESS_KEY_ID": "fixture-key",
+        "SPACES_SECRET_ACCESS_KEY": "fixture-secret",
+        "CLOUDFLARE_API_TOKEN": "fixture-token",
+        "PRODUCTION_ORIGIN_IPV4": "192.0.2.1",
+        "CLOUDFLARE_ZONE_ID": "a" * 32,
+        "CLOUDFLARE_ORIGIN_PULL_CERTIFICATE_ID": "b" * 32,
+        "CLOUDFLARE_TENANT_ZONE_ID": "c" * 32,
+        "CLOUDFLARE_TENANT_ORIGIN_PULL_CERTIFICATE_ID": "d" * 32,
+    }.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(sys, "argv", ["provider-check", "--allow-existing-archives"])
+    monkeypatch.setattr(provider, "make_policy_client", lambda _config: storage)
+    monkeypatch.setattr(provider, "CloudflareClient", lambda _token: object())
+    monkeypatch.setattr(provider, "_read_ca_path", lambda: (Path("/fixture/ca.pem"), "fixture-ca"))
+    monkeypatch.setattr(provider, "validate_ca_certificate", lambda *_args, **_kwargs: None)
+    checked: list[str] = []
+
+    def check_zone(_client: object, **arguments: object) -> None:
+        domain = str(arguments["domain"])
+        checked.append(domain)
+        if domain == failed_zone:
+            raise GateError("edge policy drifted")
+
+    monkeypatch.setattr(provider, "check_edge", check_zone)
+    assert provider.main() == (0 if failed_zone is None else 1)
+    assert checked == (
+        ["lowerduckpond.net"]
+        if failed_zone == "lowerduckpond.net"
+        else ["lowerduckpond.net", "lowerduckpond.com"]
+    )
+    assert storage.calls == [name for name in storage.responses if name.startswith("get_")]

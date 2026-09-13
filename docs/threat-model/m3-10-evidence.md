@@ -282,6 +282,13 @@ completion to bypass qualification. Old completion markers fail closed. All
 23 ordering and completion tests passed, including source-only changes with
 missing/expired evidence or a failed preceding-host preflight.
 
+Completed-candidate reconfiguration also revalidates mutable provider and
+firewall controls. Its read-only storage mode permits existing tenant objects
+while requiring private ACL, enabled versioning, and absent bucket policy and
+lifecycle configuration; both edge zones and the live firewall remain mandatory.
+All 189 current gate/storage tests passed, including unsafe provider controls,
+either edge zone failing, and refusal before any convergence mutation.
+
 ## Outstanding convergence gates
 
 1. Finish acceptance and required CI for every dependent PR, merge the reviewed

@@ -117,7 +117,10 @@ about to be installed, including after key rotation or routine reconfiguration.
 First convergence retains the whole-bucket-empty guard. A previously completed,
 unchanged source and artifact use only a new probe prefix, preserving existing tenant
 versions, delete markers, and multipart uploads. This scoped check cannot
-produce the full empty-baseline qualification report.
+produce the full empty-baseline qualification report. Every completed-candidate
+run also rechecks bucket privacy, versioning, absence of policy/lifecycle rules,
+both enforced edge zones, and the complete live host firewall. These read-only
+checks allow existing archives and run before the credential probe or host mutation.
 It supplements the full installed qualification. A failure stops configuration
 and retains diagnostics in the private directory printed by the runner.
 
