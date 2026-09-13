@@ -102,6 +102,12 @@ review; private phase logs support workstation-side diagnosis.
 
 ## Closing the starting gate
 
+The workstation's Cloudflare token must also permit `Workers Routes Read` for
+both zones. The gate requires an empty
+[Workers-route inventory](https://developers.cloudflare.com/api/resources/workers/subresources/routes/methods/list/)
+for each zone, independently of the Rulesets inventory. An unavailable or
+nonempty inventory fails the check before host changes.
+
 Record the accepted PRs and required CI, merged source, reproducible artifact,
 live report checksum, final read-only preflight, and confirmation that the
 dedicated archive credential is retained in the established independent

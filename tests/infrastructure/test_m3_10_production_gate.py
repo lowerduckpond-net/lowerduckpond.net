@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import urllib.request
 from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -25,7 +26,7 @@ from scripts.check_m3_10_provider import (
     expected_rules,
 )
 
-from .test_m3_7_production_gate import _certificate_fixture
+from .test_m3_7_production_gate import _certificate_fixture, _CloudflareResponse
 
 ROOT = Path(__file__).parents[2]
 ARCHIVE_KEY = "archives/0198d17f-6f4a-7000-8000-000000000003.zip"
@@ -150,6 +151,7 @@ class Edge:
             "/origin_tls_client_auth/settings": {"enabled": True},
             "/origin_tls_client_auth/hostnames": [],
             "/origin_tls_client_auth": [{**leaf, "id": "b" * 32}],
+            "/workers/routes": [],
             "/rulesets": [
                 {"kind": "zone", "phase": phase} for phase in expected_rules("lowerduckpond.net")
             ],
@@ -164,6 +166,7 @@ class Edge:
         return self.responses[path.removeprefix("/zones/" + "a" * 32)]
 
     def get_collection(self, path: str) -> object:
+        assert not path.endswith("/workers/routes")  # this endpoint has no pagination metadata
         return self.get(path)
 
     def get_cursor_collection(self, path: str) -> object:
@@ -197,6 +200,48 @@ def edge_gate(edge: Edge) -> None:
 
 def test_enforced_edge_passes_unchanged(edge: Edge) -> None:
     edge_gate(edge)
+
+
+@pytest.mark.parametrize(
+    "routes",
+    [
+        [{"id": "c" * 32, "pattern": "*lowerduckpond.net/*", "script": "unexpected"}],
+        [{"id": "c" * 32, "pattern": "*lowerduckpond.net/private/*"}],
+        {},
+        None,
+    ],
+)
+def test_edge_gate_rejects_workers_routes_and_malformed_inventory(
+    edge: Edge, routes: object
+) -> None:
+    edge.responses["/workers/routes"] = routes
+    with pytest.raises(GateError, match="Workers routes"):
+        edge_gate(edge)
+
+
+@pytest.mark.parametrize("allowed", [True, False])
+def test_workers_inventory_uses_the_single_page_api_and_refuses_denial(
+    edge: Edge, monkeypatch: pytest.MonkeyPatch, allowed: bool
+) -> None:
+    client = CloudflareClient("x" * 20)
+    original = edge.get
+    requested: list[str] = []
+
+    def get(path: str) -> object:
+        return client.get(path) if path.endswith("/workers/routes") else original(path)
+
+    def response(request: urllib.request.Request, *, timeout: int) -> _CloudflareResponse:
+        assert timeout > 0
+        requested.append(request.full_url)
+        return _CloudflareResponse({"success": True, "result": []}, status=200 if allowed else 403)
+
+    monkeypatch.setattr(edge, "get", get)
+    monkeypatch.setattr(urllib.request, "urlopen", response)
+    with nullcontext() if allowed else pytest.raises(ProductionEdgePreflightError):
+        edge_gate(edge)
+    assert requested == [
+        "https://api.cloudflare.com/client/v4/zones/" + "a" * 32 + "/workers/routes"
+    ]
 
 
 @pytest.mark.parametrize("paused", [True, None, "false", 0])
