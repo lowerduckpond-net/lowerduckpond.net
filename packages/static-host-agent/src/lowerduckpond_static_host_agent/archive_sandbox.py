@@ -30,7 +30,8 @@ ARCHIVE_SANDBOX_STATIC_PROPERTIES: Final[tuple[tuple[str, str], ...]] = (
     ("PrivateIPC", "true"),
     ("PrivateDevices", "true"),
     ("PrivateNetwork", "true"),
-    ("ProtectSystem", "strict"),
+    # A strict host-root bind would override the empty read-only tmpfs root.
+    ("ProtectSystem", "false"),
     ("TemporaryFileSystem", "/:ro"),
     ("ProtectHome", "true"),
     ("ProtectHostname", "true"),

@@ -89,6 +89,20 @@ python_version = "3.14"
 strict = true
 warn_unreachable = true
 files = [
+  "scripts/m3_10_policy_client.py",
+  "tests/infrastructure/test_m3_10_policy_client.py",
+  "tests/infrastructure/test_m3_10_convergence_order.py",
+  "tests/infrastructure/test_m3_10_convergence_state.py",
+  "tests/infrastructure/test_m3_10_completed_host.py",
+  "tests/infrastructure/test_m3_10_retained_storage.py",
+  "tests/infrastructure/test_m3_10_rollback_selection.py",
+  "tests/infrastructure/test_m3_10_spaces_workflow.py",
+  "tests/infrastructure/test_m3_10_host_firewall.py",
+  "scripts/check_m3_10_host_firewall.py",
+  "scripts/check_m3_10_provider.py",
+  "scripts/m3_10_qualification_report.py",
+  "tests/infrastructure/test_m3_10_production_gate.py",
+  "tests/infrastructure/test_m3_10_qualification_report.py",
   "packages/static-contracts/src",
   "packages/static-contracts/tests",
   "packages/static-domain/src",

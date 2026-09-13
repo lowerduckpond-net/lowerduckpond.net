@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# Run only on the secure workstation. This never connects to the production host.
+set +x
+set -euo pipefail
+umask 077
+
+repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+cd "${repository_root}"
+if (($#)); then
+    echo "Usage: $0" >&2
+    exit 2
+fi
+for variable_name in SPACES_ACCESS_KEY_ID SPACES_SECRET_ACCESS_KEY; do
+    if [[ -z ${!variable_name:-} ]]; then
+        echo "Required environment variable ${variable_name} is not set." >&2
+        exit 2
+    fi
+done
+for command_name in docker git jq tofu uv; do
+    command -v "${command_name}" >/dev/null || {
+        echo "Required command ${command_name} is unavailable." >&2
+        exit 2
+    }
+done
+if [[ -n $(git status --porcelain) ]]; then
+    echo "Live M3.10 qualification requires a clean source revision." >&2
+    exit 2
+fi
+# A remote daemon would copy the live archive credential off the workstation.
+if [[ -n ${DOCKER_CONTEXT:-} ]]; then
+    docker_endpoint=$(docker context inspect "${DOCKER_CONTEXT}" --format '{{.Endpoints.docker.Host}}')
+else
+    docker_endpoint=${DOCKER_HOST:-$(docker context inspect --format '{{.Endpoints.docker.Host}}')}
+fi
+if [[ ${docker_endpoint} != unix:///* ]]; then
+    echo "Live M3.10 qualification requires a local Unix-socket Docker daemon." >&2
+    exit 2
+fi
+# Pin both the CLI and Python Docker clients to the checked endpoint.
+unset DOCKER_CONTEXT
+export DOCKER_HOST="${docker_endpoint}"
+docker info >/dev/null
+for container in lowerduckpond-ubuntu-2604 lowerduckpond-m3-10-minio; do
+    if docker inspect "${container}" >/dev/null 2>&1; then
+        echo "A qualification container already exists; preserve it and resolve its run first." >&2
+        exit 2
+    fi
+done
+
+source_revision=$(git rev-parse HEAD)
+evidence_root=${M3_10_EVIDENCE_ROOT:-${XDG_DATA_HOME:-${HOME}/.local/share}/lowerduckpond.net/m3-10}
+mkdir -p -- "${evidence_root}"
+chmod 0700 "${evidence_root}"
+run_directory=$(mktemp -d "${evidence_root}/spaces-${source_revision:0:7}.XXXXXX")
+run_directory=$(cd -- "${run_directory}" && pwd -P)
+printf 'Private M3.10 qualification run: %s\n' "${run_directory}"
+printf '%s\n' "${source_revision}" >"${run_directory}/source-revision"
+failed() {
+    local status=$?
+    if ((status != 0)); then
+        printf 'Qualification failed; no passing report was created.\n' >&2
+        printf 'Preserve the disposable host, its intents, and private logs at %s.\n' "${run_directory}" >&2
+        printf 'Do not purge archive objects or destroy unresolved recovery state.\n' >&2
+    fi
+}
+trap failed EXIT
+
+# State access and every provider secret stay in this process tree. Logs are
+# private operator diagnostics, not sanitized reports or uploadable artifacts.
+source "${repository_root}/scripts/lib/m3-10-production-state"
+uv sync --all-packages --all-groups --frozen >"${run_directory}/dependencies.log" 2>&1
+uv run --quiet --frozen python -m scripts.check_m3_10_provider --storage-only
+uv run --quiet --frozen ldp-m3-archive acceptance \
+    --backup-bucket "${SPACES_BACKUP_BUCKET}" --archive-bucket "${SPACES_ARCHIVE_BUCKET}" \
+    --source-revision "${source_revision}" --region "${SPACES_REGION}" \
+    --output "${run_directory}/storage.json" >"${run_directory}/storage.log" 2>&1
+uv run --quiet --frozen ldp-m3-archive verify-report "${run_directory}/storage.json"
+
+export M3_10_ARCHIVE_BACKEND=spaces
+export M3_10_INSTALLED_REPORT="${run_directory}/installed.json"
+export M3_8_STATIC_PUBLICATION_ENABLED=false
+unset M3_8_CLOUDFLARE_API_TOKEN
+export ANSIBLE_CONFIG="${repository_root}/config/ansible/ansible.cfg"
+# Live values are attached using no_log add_host and installed using the normal
+# no_log role. Inventory, generated artifacts, and fixtures contain no secrets.
+cd "${repository_root}/config/ansible"
+for phase in create prepare converge idempotence verify; do
+    printf 'M3.10 installed Spaces qualification: %s\n' "${phase}"
+    uv run --frozen molecule "${phase}" --scenario-name m3_8 \
+        >"${run_directory}/${phase}.log" 2>&1
+    printf '%s\n' passed >"${run_directory}/${phase}.passed"
+done
+cd "${repository_root}"
+# Record the start of the final independent proof conservatively, so pausing
+# before report packaging cannot refresh evidence that was already collected.
+date --utc +%Y-%m-%dT%H:%M:%S.%NZ >"${run_directory}/final-proof.started-at"
+uv run --quiet --frozen python -m scripts.check_m3_10_provider --storage-only
+if [[ $(git rev-parse HEAD) != "${source_revision}" || -n $(git status --porcelain) ]]; then
+    echo "Source changed during live qualification; preserve this run for investigation." >&2
+    exit 1
+fi
+artifact_digest=$(sha256sum /tmp/lowerduckpond-static-host-agent-m3-8.tar)
+artifact_digest=${artifact_digest%% *}
+if [[ $(jq --exit-status --raw-output '.artifact_sha256' "${M3_10_INSTALLED_REPORT}") != "${artifact_digest}" ]]; then
+    echo "The installed artifact differs from the built qualification artifact." >&2
+    exit 1
+fi
+
+# Only a completed lifecycle and an independent empty-bucket proof permit
+# destruction. Failures retain the host that owns any remaining remote bytes.
+cd "${repository_root}/config/ansible"
+uv run --frozen molecule destroy --scenario-name m3_8 >"${run_directory}/destroy.log" 2>&1
+printf '%s\n' passed >"${run_directory}/destroy.passed"
+cd "${repository_root}"
+uv run --quiet --frozen python -m scripts.m3_10_qualification_report "${run_directory}"
+printf 'Share only qualification.json and qualification.sha256 from %s.\n' "${run_directory}"

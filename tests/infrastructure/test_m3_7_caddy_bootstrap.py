@@ -154,7 +154,7 @@ def test_generation_migration_is_stopped_masked_and_defaults_on() -> None:
     ) in tasks
     assert tasks.index(canonical_lock_assertion) < tasks.index("Install Caddy build dependencies")
     source_drift_assertion = (
-        "Refuse generation-bound source drift while tenant publication is enabled"
+        "Refuse generation-bound source drift while preserving the selected generation"
     )
     assert source_drift_assertion in tasks
     assert tasks.index(source_drift_assertion) < tasks.index("Install Caddy build dependencies")

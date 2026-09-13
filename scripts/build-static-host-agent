@@ -62,12 +62,15 @@ uv export \
     --no-emit-workspace \
     --no-header > "${requirements}"
 
+# Bind generated dependency launchers to the supported host interpreter rather
+# than the checkout's .venv path. Wheel selection still targets Python 3.14.
 UV_LINK_MODE=copy uv pip install \
     --quiet \
     --target "${site_packages}" \
     --requirements "${requirements}" \
     --require-hashes \
     --no-deps \
+    --python /usr/bin/python3 \
     --python-version 3.14 \
     --python-platform x86_64-manylinux_2_39
 

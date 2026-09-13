@@ -78,7 +78,7 @@ variable "archive_bucket_name" {
 
   validation {
     condition = (
-      can(regex("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", var.archive_bucket_name)) &&
+      can(regex("^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$", var.archive_bucket_name)) &&
       var.archive_bucket_name != var.backup_bucket_name
     )
     error_message = "archive_bucket_name must be a valid, distinct 3-63 character Spaces bucket name."

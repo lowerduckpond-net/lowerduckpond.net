@@ -3,7 +3,7 @@ variable "bucket_name" {
   type        = string
 
   validation {
-    condition     = can(regex("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", var.bucket_name))
+    condition     = can(regex("^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$", var.bucket_name))
     error_message = "bucket_name must be a valid 3-63 character Spaces bucket name."
   }
 }

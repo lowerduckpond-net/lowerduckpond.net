@@ -19,6 +19,10 @@
           - backup_spaces_access_key_id == 'inventory-test-access-key'
           - backup_spaces_secret_access_key == 'inventory-test-secret-key'
           - backup_spaces_region == 'inventory-test-region'
+          - static_host_agent_archive_configuration.accessKeyId == 'inventory-test-archive-access-key'
+          - static_host_agent_archive_configuration.secretAccessKey == 'inventory-test-archive-secret-key'
+          - static_host_agent_archive_configuration.bucket == 'inventory-test-archive-bucket'
+          - static_host_agent_archive_configuration.region == 'inventory-test-region'
           - static_operator_principal == 'inventory-operator-v1'
           - >-
             static_operator_public_key ==

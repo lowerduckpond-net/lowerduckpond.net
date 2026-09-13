@@ -12,7 +12,7 @@ import pytest
 from lowerduckpond_static_contracts import manifest_digest, request_digest
 from lowerduckpond_static_host_agent import emergency_entrypoint, entrypoints
 from lowerduckpond_static_host_agent.archive_journal import ArchiveJournal
-from lowerduckpond_static_host_agent.archive_quarantine import ArchiveQuarantine
+from lowerduckpond_static_host_agent.archive_quarantine import ArchiveQuarantine, quarantine_present
 from lowerduckpond_static_host_agent.archive_remote import ArchiveRemoteStore
 from lowerduckpond_static_host_agent.audit import AuditAppend, AuditLimits, AuditState
 from lowerduckpond_static_host_agent.caddy_runtime import CaddyRuntime
@@ -421,6 +421,18 @@ def test_root_recovery_resolves_quarantine_after_emergency_retirement_disappears
         assert (tmp_path / "state/platform/archive-quarantine.json").exists()
         remote = journal.remote
         calls = tuple(cast(MemoryRemote, remote.client).calls)
+    _local_recovery_entrypoint(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        emergency_entrypoint,
+        "load_archive_configuration",
+        lambda: SimpleNamespace(remote_store=lambda: remote),
+    )
+    assert emergency_entrypoint.emergency_delete_main(["--recover"]) == 0
+    assert not (tmp_path / "state/platform/archive-quarantine.json").exists()
+    assert cast(MemoryRemote, remote.client).calls[len(calls) :].count("delete") == 0
+
+
+def _local_recovery_entrypoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(os, "geteuid", lambda: 0)
     monkeypatch.delenv("SUDO_USER", raising=False)
     monkeypatch.setattr(entrypoints, "_STATE_ROOT", tmp_path / "state")
@@ -443,12 +455,26 @@ def test_root_recovery_resolves_quarantine_after_emergency_retirement_disappears
     )
     monkeypatch.setattr(
         emergency_entrypoint,
-        "load_archive_configuration",
-        lambda: SimpleNamespace(remote_store=lambda: remote),
+        "quarantine_present",
+        lambda path, expected_owner, locks: quarantine_present(
+            path, expected_owner=_OWNER, locks=locks
+        ),
     )
-    assert emergency_entrypoint.emergency_delete_main(["--recover"]) == 0
-    assert not (tmp_path / "state/platform/archive-quarantine.json").exists()
-    assert cast(MemoryRemote, remote.client).calls[len(calls) :].count("delete") == 0
+
+
+def test_idle_root_recovery_needs_no_archive_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with _emergency(tmp_path, "active"):
+        _local_recovery_entrypoint(tmp_path, monkeypatch)
+
+        def unexpected_configuration() -> None:
+            pytest.fail("idle recovery attempted to load archive credentials")
+
+        monkeypatch.setattr(
+            emergency_entrypoint, "load_archive_configuration", unexpected_configuration
+        )
+        assert emergency_entrypoint.emergency_delete_main(["--recover"]) == 0
 
 
 def test_pending_failure_cannot_displace_emergency_audit_reservation(tmp_path: Path) -> None:

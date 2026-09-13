@@ -6,6 +6,7 @@ import io
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from functools import partial
 from typing import Protocol, cast
 
 import botocore.session  # type: ignore[import-untyped]
@@ -18,6 +19,7 @@ QUALIFICATION_BODY = b"lowerduckpond-m3.1-archive-qualification\n"
 EXPECTED_PAGINATED_ENTRIES = 2
 REQUIRED_S3_OPERATIONS = {
     "AbortMultipartUpload",
+    "CreateMultipartUpload",
     "DeleteObject",
     "GetBucketVersioning",
     "GetObject",
@@ -50,6 +52,8 @@ class S3Client(Protocol):
     def delete_object(self, **kwargs: object) -> dict[str, object]: ...
 
     def abort_multipart_upload(self, **kwargs: object) -> dict[str, object]: ...
+
+    def create_multipart_upload(self, **kwargs: object) -> dict[str, object]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -246,13 +250,15 @@ def run_acceptance(
     archive_client: S3Client,
     backup_bucket: str,
     archive_bucket: str,
+    require_empty_archive: bool = True,
 ) -> AcceptanceEvidence:
     """Exercise isolation, exact versions, forced pagination, and complete cleanup."""
     if backup_bucket == archive_bucket:
         raise ArchiveQualificationError("backup and archive buckets must be distinct")
     assert_versioning_enabled(backup_client, bucket=backup_bucket)
-    assert_storage_empty(archive_client, bucket=archive_bucket)
     qualification_prefix = f"m3-1-qualification/{uuid.uuid7()}/"
+    archive_boundary = "" if require_empty_archive else qualification_prefix
+    assert_storage_empty(archive_client, bucket=archive_bucket, prefix=archive_boundary)
     backup_key = f"{qualification_prefix}backup-owner"
     archive_key = f"{qualification_prefix}archive-owner"
     try:
@@ -264,12 +270,22 @@ def run_acceptance(
         _assert_exact_read(
             archive_client, bucket=archive_bucket, key=archive_key, version_id=archive_version
         )
+        backup_upload = _required_string(
+            backup_client.create_multipart_upload(Bucket=backup_bucket, Key=backup_key),
+            "UploadId",
+        )
+        archive_upload = _required_string(
+            archive_client.create_multipart_upload(Bucket=archive_bucket, Key=archive_key),
+            "UploadId",
+        )
 
         _assert_cross_bucket_denial(
             source=backup_client,
             target_owner=archive_client,
             target_bucket=archive_bucket,
             existing_key=archive_key,
+            existing_version=archive_version,
+            existing_upload=archive_upload,
             write_key=f"{qualification_prefix}backup-to-archive",
         )
         _assert_cross_bucket_denial(
@@ -277,7 +293,16 @@ def run_acceptance(
             target_owner=backup_client,
             target_bucket=backup_bucket,
             existing_key=backup_key,
+            existing_version=backup_version,
+            existing_upload=backup_upload,
             write_key=f"{qualification_prefix}archive-to-backup",
+        )
+
+        archive_client.abort_multipart_upload(
+            Bucket=archive_bucket, Key=archive_key, UploadId=archive_upload
+        )
+        backup_client.abort_multipart_upload(
+            Bucket=backup_bucket, Key=backup_key, UploadId=backup_upload
         )
 
         delete_response = archive_client.delete_object(Bucket=archive_bucket, Key=archive_key)
@@ -335,7 +360,7 @@ def run_acceptance(
             key=backup_key,
             version_id=backup_version,
         )
-        assert_storage_empty(archive_client, bucket=archive_bucket)
+        assert_storage_empty(archive_client, bucket=archive_bucket, prefix=archive_boundary)
         assert_storage_empty(backup_client, bucket=backup_bucket, prefix=qualification_prefix)
         return AcceptanceEvidence(
             buckets_versioned=True,
@@ -343,7 +368,7 @@ def run_acceptance(
             exact_version_read=True,
             delete_marker=True,
             forced_pagination=True,
-            empty_archive_baseline=True,
+            empty_archive_baseline=require_empty_archive,
             cleanup_complete=True,
         )
     finally:
@@ -377,14 +402,30 @@ def _cleanup_acceptance_prefixes(targets: tuple[tuple[S3Client, str], ...], *, p
         ) from cleanup_errors[0]
 
 
-def _assert_cross_bucket_denial(
+def _assert_cross_bucket_denial(  # noqa: PLR0913 - bind both owners and exact disposable resources
     *,
     source: S3Client,
     target_owner: S3Client,
     target_bucket: str,
     existing_key: str,
+    existing_version: str,
+    existing_upload: str,
     write_key: str,
 ) -> None:
+    for operation in (
+        partial(source.get_bucket_versioning, Bucket=target_bucket),
+        partial(source.list_object_versions, Bucket=target_bucket, Prefix=existing_key, MaxKeys=1),
+        partial(
+            source.list_multipart_uploads, Bucket=target_bucket, Prefix=existing_key, MaxUploads=1
+        ),
+        partial(
+            source.get_object,
+            Bucket=target_bucket,
+            Key=existing_key,
+            VersionId=existing_version,
+        ),
+    ):
+        _expect_error_code(operation, expected_code="AccessDenied", expected_status=403)
     _expect_error_code(
         lambda: source.list_objects_v2(Bucket=target_bucket, Prefix=write_key, MaxKeys=1),
         expected_code="AccessDenied",
@@ -404,16 +445,49 @@ def _assert_cross_bucket_denial(
         )
     except ClientError as error:
         _require_client_error(error, expected_code="AccessDenied", expected_status=403)
-        return
-    unexpected_version = _nonnull_version_id(response)
-    _delete_version(
-        target_owner,
-        bucket=target_bucket,
-        key=write_key,
-        version_id=unexpected_version,
+    else:
+        unexpected_version = _nonnull_version_id(response)
+        _delete_version(
+            target_owner,
+            bucket=target_bucket,
+            key=write_key,
+            version_id=unexpected_version,
+        )
+        assert_storage_empty(target_owner, bucket=target_bucket, prefix=write_key)
+        raise ArchiveQualificationError("cross-bucket write unexpectedly succeeded")
+
+    _expect_error_code(
+        partial(source.create_multipart_upload, Bucket=target_bucket, Key=write_key),
+        expected_code="AccessDenied",
+        expected_status=403,
     )
-    assert_storage_empty(target_owner, bucket=target_bucket, prefix=write_key)
-    raise ArchiveQualificationError("cross-bucket write unexpectedly succeeded")
+
+    # These permissions are independent: deleting a current key creates a marker,
+    # whereas deleting its exact version permanently removes bytes. Probe only
+    # this run's owner-created object; finally cleanup uses that owner's key.
+    for version_fields in ({}, {"VersionId": existing_version}):
+        _expect_error_code(
+            partial(source.delete_object, Bucket=target_bucket, Key=existing_key, **version_fields),
+            expected_code="AccessDenied",
+            expected_status=403,
+        )
+    _expect_error_code(
+        partial(
+            source.abort_multipart_upload,
+            Bucket=target_bucket,
+            Key=existing_key,
+            UploadId=existing_upload,
+        ),
+        expected_code="AccessDenied",
+        expected_status=403,
+    )
+    if list_multipart_uploads(target_owner, bucket=target_bucket, prefix=existing_key).uploads != (
+        MultipartUpload(existing_key, existing_upload),
+    ):
+        raise ArchiveQualificationError("cross-bucket denial changed the owner's multipart upload")
+    _assert_exact_read(
+        target_owner, bucket=target_bucket, key=existing_key, version_id=existing_version
+    )
 
 
 def _put_exact(client: S3Client, *, bucket: str, key: str) -> str:
@@ -480,10 +554,14 @@ def _expect_error_code(
     operation: Callable[[], object], *, expected_code: str, expected_status: int
 ) -> None:
     try:
-        operation()
+        response = operation()
     except ClientError as error:
         _require_client_error(error, expected_code=expected_code, expected_status=expected_status)
         return
+    if isinstance(response, Mapping):
+        close = getattr(response.get("Body"), "close", None)
+        if callable(close):
+            close()
     raise ArchiveQualificationError("operation unexpectedly succeeded")
 
 

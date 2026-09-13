@@ -1,4 +1,15 @@
 ---
+- name: Require explicit completed-candidate verification authority
+  ansible.builtin.assert:
+    that:
+      - static_host_agent_verified_completed_candidate is boolean
+      - >-
+        not static_host_agent_verified_completed_candidate or
+        (static_host_agent_archive_lifecycle_enabled | bool and
+         caddy_generation_enabled | bool)
+    fail_msg: Completed-candidate verification cannot authorize a legacy configuration.
+    quiet: true
+
 - name: Inspect the static publication configuration before host convergence
   ansible.builtin.stat:
     path: /etc/lowerduckpond/static-publication.json
@@ -64,7 +75,11 @@
       - --plain
       - --no-legend
       - lowerduckpond-static-reconcile.service
+      - lowerduckpond-static-emergency-reconcile.service
       - lowerduckpond-static-worker@*.service
+      - lowerduckpond-archive-export@*.service
+      - lowerduckpond-archive-construction@*.service
+      - lowerduckpond-archive-cleanup@*.service
   register: static_host_agent_disabled_active_processes
   changed_when: false
   until: static_host_agent_disabled_active_processes.stdout | trim | length == 0
@@ -120,6 +135,7 @@
   ansible.builtin.assert:
     that:
       - >-
+        static_host_agent_verified_completed_candidate or
         not static_host_agent_disabled_tenant_storage.stat.exists or
         static_host_agent_disabled_tenant_inventory.stdout | default('') |
         trim | length == 0
@@ -172,7 +188,7 @@
   register: static_host_agent_enabled_selection
   changed_when: false
   failed_when: false
-  when: static_publication_enabled | bool
+  when: static_publication_enabled | bool or static_host_agent_verified_completed_candidate
 
 - name: Refuse host-agent selection drift while tenant publication is enabled
   ansible.builtin.assert:
@@ -186,7 +202,7 @@
       tenant publication is enabled; refusing to alter the live selector
       without a tenant-capable generation migration.
     quiet: true
-  when: static_publication_enabled | bool
+  when: static_publication_enabled | bool or static_host_agent_verified_completed_candidate
 
 - name: Probe installed host-agent command compatibility while tenant publication is enabled
   ansible.builtin.copy:
@@ -203,6 +219,9 @@
     - verify-static-host-agent-artifact
     - execute-authorized-job
     - reconcile-authorized-jobs
+    - archive-export-service
+    - archive-construction-service
+    - archive-cleanup-service
     - check-current-caddy-generation
   when: static_publication_enabled | bool
 
@@ -287,8 +306,28 @@
     - verify-static-host-agent-artifact
     - execute-authorized-job
     - reconcile-authorized-jobs
+    - archive-export-service
+    - archive-construction-service
+    - archive-cleanup-service
     - check-current-caddy-generation
   when: not static_publication_enabled | bool
+
+- name: Install or inspect the root-only emergency deletion command
+  ansible.builtin.copy:
+    src: emergency-delete-tenant
+    dest: /usr/local/libexec/lowerduckpond/emergency-delete-tenant
+    owner: root
+    group: root
+    mode: "0700"
+  check_mode: "{{ static_publication_enabled | bool }}"
+  register: static_host_agent_emergency_command_probe
+
+- name: Refuse emergency command drift while tenant publication is enabled
+  ansible.builtin.assert:
+    that:
+      - not static_host_agent_emergency_command_probe.changed
+    quiet: true
+  when: static_publication_enabled | bool
 
 - name: Wait for pre-lock static host-agent processes to finish
   ansible.builtin.command:
@@ -299,7 +338,11 @@
       - --plain
       - --no-legend
       - lowerduckpond-static-reconcile.service
+      - lowerduckpond-static-emergency-reconcile.service
       - lowerduckpond-static-worker@*.service
+      - lowerduckpond-archive-export@*.service
+      - lowerduckpond-archive-construction@*.service
+      - lowerduckpond-archive-cleanup@*.service
   register: static_host_agent_active_legacy_processes
   changed_when: false
   until: static_host_agent_active_legacy_processes.stdout | trim | length == 0
@@ -375,6 +418,16 @@
     owner: root
     group: root
     mode: "0700"
+
+- name: Validate the selected artifact's archive lifecycle capability
+  ansible.builtin.assert:
+    that:
+      - static_host_agent_archive_lifecycle_enabled is boolean
+    quiet: true
+
+- name: Stop incompatible M3.10 services before selecting a legacy artifact
+  ansible.builtin.include_tasks: archive_services.yml
+  when: not static_host_agent_archive_lifecycle_enabled | bool
 
 - name: Install and atomically select the pinned host-agent artifact
   ansible.builtin.command:
@@ -579,6 +632,53 @@
     static_publication_gate_enabled: false
   when: not static_host_agent_publication_configuration.stat.exists
 
+- name: Create the private archive credential directory
+  ansible.builtin.file:
+    path: /etc/lowerduckpond/archive
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Create the private archive socket directory before ordinary service isolation
+  ansible.builtin.file:
+    path: /run/lowerduckpond-archive
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Reconcile the dedicated archive credential
+  ansible.builtin.include_tasks: archive_credentials.yml
+
+- name: Install the private archived export service and socket
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - lowerduckpond-archive-export.socket
+    - lowerduckpond-archive-export@.service
+    - lowerduckpond-archive-construction.socket
+    - lowerduckpond-archive-cleanup.socket
+    - lowerduckpond-archive-construction@.service
+    - lowerduckpond-archive-cleanup@.service
+  notify: Reload systemd for the static host agent
+
+- name: Install separately privileged emergency recovery units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - lowerduckpond-static-emergency-reconcile.service
+    - lowerduckpond-static-emergency-reconcile.timer
+  notify: Reload systemd for the static host agent
+
 - name: Install the inert static worker boundary
   ansible.builtin.template:
     src: lowerduckpond-static-worker@.service.j2
@@ -639,6 +739,10 @@
   ansible.builtin.systemd_service:
     name: lowerduckpond-static-reconcile.timer
     state: started
+
+- name: Enable services supported by the selected M3.10 artifact
+  ansible.builtin.include_tasks: archive_services.yml
+  when: static_host_agent_archive_lifecycle_enabled | bool
 
 - name: Prove an empty Caddy candidate passes the publication boundary
   ansible.builtin.command:

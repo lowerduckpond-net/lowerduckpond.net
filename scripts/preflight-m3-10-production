@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# This command is read-only on production. It never installs candidate services.
+set +x
+set -euo pipefail
+umask 077
+
+repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+cd "${repository_root}"
+if (($#)); then
+    echo "Usage: $0" >&2
+    exit 2
+fi
+required_environment=(
+    ADMIN_SOURCE_CIDRS_JSON
+    ANSIBLE_PRIVATE_KEY_FILE STATIC_OPERATOR_PRINCIPAL STATIC_OPERATOR_PUBLIC_KEY
+    SPACES_ACCESS_KEY_ID SPACES_SECRET_ACCESS_KEY CLOUDFLARE_API_TOKEN
+    CADDY_CLOUDFLARE_API_TOKEN M3_10_TOKEN_AUDIT_TOKEN
+    CLOUDFLARE_ZONE_ID CLOUDFLARE_TENANT_ZONE_ID
+    CLOUDFLARE_ORIGIN_PULL_CERTIFICATE_ID CLOUDFLARE_TENANT_ORIGIN_PULL_CERTIFICATE_ID
+)
+for variable_name in "${required_environment[@]}"; do
+    if [[ -z ${!variable_name:-} ]]; then
+        echo "Required environment variable ${variable_name} is not set." >&2
+        exit 2
+    fi
+done
+git fetch --quiet origin main
+if [[ $(git branch --show-current) != main || -n $(git status --porcelain) ||
+      $(git rev-parse HEAD) != "$(git rev-parse origin/main)" ]]; then
+    echo "M3.10 production preflight requires clean, current main." >&2
+    exit 2
+fi
+source "${repository_root}/scripts/lib/m3-10-production-state"
+
+# Retain the existing reproducible-build, verified SSH, operator identity,
+# empty history, disabled-publication, and immutable-generation proofs.
+"${repository_root}/scripts/preflight-m3-6-production"
+
+# M3.10 accepts exactly the preceding reviewed deployment, never a candidate
+# identity or the older rollback identity admitted by the general M3.6 gate.
+ssh -o BatchMode=yes -o HostKeyAlias=lowerduckpond.net -o IdentitiesOnly=yes \
+    -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
+    -i "${ANSIBLE_PRIVATE_KEY_FILE}" "ldp-admin@${PRODUCTION_ORIGIN_IPV4}" \
+    'sudo --non-interactive /bin/bash -s' <"${repository_root}/scripts/m3-10-host-preflight"
+
+uv run --quiet --frozen python -m scripts.check_m3_10_provider
+uv run --quiet --frozen python -m scripts.check_m3_10_host_firewall
+printf 'M3.10 read-only production preflight passed.\n'
+printf 'Source revision: %s\n' "$(git rev-parse HEAD)"
+printf 'Live installed Spaces qualification and credential-backup evidence are separate gates.\n'

@@ -1,0 +1,196 @@
+#!/usr/bin/env bash
+# Fixed stdin program for an already accepted artifact and deployment source.
+set +x
+set -euo pipefail
+export LC_ALL=C
+
+[[ $# == 3 && $1 =~ ^[0-9a-f]{64}$ && $2 == completed-host && $3 =~ ^[0-9a-f]{40}$ ]] || exit 2
+expected=$1
+source_revision=$3
+fail() {
+    printf 'M3.10 completed-host preflight failed: %s\n' "$1" >&2
+    exit 1
+}
+install_root=/opt/lowerduckpond/static-host-agent
+[[ -L ${install_root}/current &&
+   $(readlink --canonicalize-existing -- "${install_root}/current") == "${install_root}/${expected}" ]] ||
+    fail 'selected artifact differs from the completed candidate'
+/usr/local/libexec/lowerduckpond/verify-static-host-agent-artifact \
+    "${install_root}/${expected}" >/dev/null || fail 'complete artifact verification failed'
+
+state_root=/var/lib/lowerduckpond/static
+for directory in "${state_root}" "${state_root}/platform" "${state_root}/tenants" \
+    "${state_root}/authorization" "${state_root}/authorization/jobs" \
+    "${state_root}/authorization/results" "${state_root}/authorization/correlations" \
+    "${state_root}/audit" "${state_root}/locks"; do
+    [[ -d ${directory} && ! -L ${directory} &&
+       $(stat --format='%u:%a' -- "${directory}") == 0:700 ]] ||
+        fail 'permanent state directory metadata drifted'
+done
+for directory in "${state_root}/intents" "${state_root}/intake" "${state_root}/exports" \
+    /srv/lowerduckpond/sites/.staging /etc/caddy/intents; do
+    [[ -d ${directory} && ! -L ${directory} &&
+       $(stat --format='%u:%a' -- "${directory}") == 0:700 ]] ||
+        fail 'transient state directory metadata drifted'
+    [[ -z $(find "${directory}" -mindepth 1 -print -quit) ]] ||
+        fail 'unfinished lifecycle or publication work remains'
+done
+quarantine=${state_root}/platform/archive-quarantine.json
+[[ ! -e ${quarantine} && ! -L ${quarantine} ]] || fail 'archive quarantine remains'
+queued=$(systemctl list-jobs --no-legend --plain) || fail 'could not query queued work'
+[[ -z $(printf '%s\n' "${queued}" | awk \
+    '$2 ~ /^(caddy|lowerduckpond-static|lowerduckpond-archive)/ { print; exit }') ]] ||
+    fail 'publication or lifecycle work is queued'
+active=$(systemctl list-units --plain --no-legend --state=activating,active,deactivating \
+    'lowerduckpond-static-worker@*.service' 'lowerduckpond-static-reconcile.service' \
+    'lowerduckpond-static-emergency-reconcile.service' 'lowerduckpond-archive-*.service') ||
+    fail 'could not query active lifecycle work'
+[[ -z ${active} ]] || fail 'lifecycle work is active'
+
+# Validate bounded permanent authorization and audit records with the pinned
+# installed package. History is retained; no recovery or pair repair runs here.
+/usr/bin/python3 -I -B - "${install_root}/${expected}/site-packages" "${state_root}" "${expected}" "${source_revision}" <<'PYTHON'
+import os
+import re
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from lowerduckpond_static_contracts import canonical_json_bytes, manifest_digest, result_digest
+from lowerduckpond_static_host_agent import StateRepository, StateRecordPath
+from lowerduckpond_static_host_agent.audit import DEFAULT_AUDIT_LIMITS
+from lowerduckpond_static_host_agent.correlations import _durable_binding
+from lowerduckpond_static_host_agent.execution import _validate_request_integrity, _validate_result_audit
+from lowerduckpond_static_host_agent.job_runtime import _validate_result_for_job
+from lowerduckpond_static_host_agent.state_inventory import DEFAULT_STATE_INVENTORY_LIMITS
+
+def names(directory, maximum):
+    result = []
+    with os.scandir(directory) as entries:
+        for entry in entries:
+            result.append(entry.name)
+            if len(result) > maximum:
+                raise SystemExit('M3.10 permanent history exceeds its inventory bound')
+    return result
+
+with StateRepository(Path(sys.argv[2]), expected_owner=0) as repository:
+    with repository.publication_transaction() as transaction:
+        # Reject incomplete publication files before invoking inventory/audit
+        # readers, whose normal recovery behavior can retire abandoned copies.
+        root = Path(sys.argv[2])
+        for name in names(root / 'audit', DEFAULT_AUDIT_LIMITS.maximum_segments):
+            if re.fullmatch(r'segment-[0-9]{20}\.jsonl', name) is None:
+                raise SystemExit('M3.10 audit publication is incomplete')
+        audit_state = transaction.inspect_audit()
+        matched_audits = set()
+        remaining = DEFAULT_STATE_INVENTORY_LIMITS.maximum_authorization_records
+        for directory, record_path in (
+            ('jobs', StateRecordPath.authorization_job),
+            ('results', StateRecordPath.authorization_result),
+            ('correlations', StateRecordPath.authorization_correlation),
+        ):
+            identifiers = names(root / 'authorization' / directory, remaining)
+            remaining -= len(identifiers)
+            for name in identifiers:
+                if not name.endswith('.json'):
+                    raise SystemExit('M3.10 authorization publication is incomplete')
+                selected_path = record_path(name[:-5])
+                if directory == 'results':
+                    try:
+                        transaction.read(StateRecordPath.authorization_job(name[:-5]))
+                    except FileNotFoundError:
+                        # Administrator results deliberately have no ordinary job.
+                        selected_path = StateRecordPath.emergency_result(name[:-5])
+                document = transaction.read(selected_path).document
+                if directory == 'jobs':
+                    if (document['phase'] not in {'completed', 'failed'} or
+                        (document['compatibilityVersion'] == 'static-job-v2' and
+                         document['executionValidated'] is not True)):
+                        raise SystemExit('M3.10 authorization job is not fully terminal')
+                    result = transaction.read(
+                        StateRecordPath.authorization_result(document['jobId'])).document
+                    _validate_request_integrity(document)
+                    _validate_result_for_job(document, result)
+                    # False denotes a valid historical result, not a failed check.
+                    # The validator preserves the legacy-v1 failed-result exception.
+                    _validate_result_audit(transaction, document, result)
+                    if document['phase'] != ('completed' if result['status'] == 'succeeded' else 'failed'):
+                        raise SystemExit('M3.10 terminal phase differs from its result')
+                    peer = transaction.read(StateRecordPath.authorization_correlation(
+                        document['request']['correlationId'])).document
+                    if _durable_binding(peer) != _durable_binding(document):
+                        raise SystemExit('M3.10 authorization pair has drifted')
+                elif directory == 'results' and document['provenance']['kind'] == 'emergency-administrator':
+                    audit = transaction.inspect_audit_correlation(document['correlationId']).entry
+                    provenance = document['provenance']
+                    if (audit is None or audit['operation'] != 'delete' or
+                        audit['operatorPrincipal'] != provenance['operatorPrincipal'] or
+                        audit['tenantId'] != document['tenantId'] or
+                        audit['resultStatus'] != document['status'] or
+                        audit['resultDigest'] != result_digest(document).to_dict() or
+                        audit['deletionEvidence']['emergencyReason'] != provenance['reason'] or
+                        os.path.lexists(root / 'tenants' / document['tenantId'])):
+                        raise SystemExit('M3.10 administrator result lacks exact audited deletion')
+                elif directory == 'correlations':
+                    peer = transaction.read(
+                        StateRecordPath.authorization_job(document['jobId'])).document
+                    if _durable_binding(peer) != _durable_binding(document):
+                        raise SystemExit('M3.10 authorization pair requires repair')
+                if directory == 'results':
+                    correlation = document['correlationId']
+                    audit = transaction.inspect_audit_correlation(correlation).entry
+                    if audit is not None:
+                        if correlation in matched_audits:
+                            raise SystemExit('M3.10 audit correlation has multiple results')
+                        if document['provenance']['kind'] == 'authorization-job':
+                            job = transaction.read(StateRecordPath.authorization_job(
+                                document['provenance']['jobId'])).document
+                            # Legacy failures may lack an audit, but a retained
+                            # audit must still bind its exact result and principal.
+                            _validate_result_audit(transaction, job, document, require_failure=True)
+                        matched_audits.add(correlation)
+        if len(matched_audits) != audit_state.entry_count:
+            raise SystemExit('M3.10 audit history has an unmatched result')
+        inventory = transaction.measure_inventory()
+        archives = []
+        for tenant in inventory.tenant_ids:
+            manifest = transaction.read(StateRecordPath.tenant_desired(tenant)).document
+            spec = manifest['spec']
+            archive_names = names(root / 'tenants' / tenant / 'archives', 1)
+            if spec['desiredState'] != 'archived':
+                if archive_names:
+                    raise SystemExit('M3.10 live tenant retains an archive binding')
+                continue
+            deployment_id = spec['desiredDeployment']['id']
+            if archive_names != [deployment_id + '.json']:
+                raise SystemExit('M3.10 archived tenant has no unique selected binding')
+            record = transaction.read(StateRecordPath.tenant_archive(tenant, deployment_id)).document
+            deployment = transaction.read(StateRecordPath.tenant_deployment(tenant, deployment_id)).document
+            if (record['manifestDigest'] != manifest_digest(manifest).to_dict() or
+                record['releaseTreeDigest'] != deployment['releaseTreeDigest'] or
+                spec['desiredDeployment']['archiveSha256'] != deployment['archiveSha256']):
+                raise SystemExit('M3.10 archive binding differs from authoritative tenant state')
+            archives.append(record)
+        if len({record['key'] for record in archives}) != len(archives):
+            raise SystemExit('M3.10 archive key has multiple authoritative bindings')
+        if transaction.measure_intent_records().records:
+            raise SystemExit('M3.10 host has pending durable work')
+        sys.stdout.buffer.write(canonical_json_bytes({'format': 'lowerduckpond-m3-10-archive-authority-v1',
+                          'artifactSha256': sys.argv[3], 'sourceRevision': sys.argv[4],
+                          'archives': archives}, maximum_bytes=128 * 1024))
+PYTHON
+
+checker=/usr/local/libexec/lowerduckpond/check-caddy-generation
+[[ -f ${checker} && ! -L ${checker} &&
+   $(stat --format='%u:%a:%h' -- "${checker}") == 0:755:1 ]] ||
+    fail 'authoritative Caddy checker metadata drifted'
+for option in --authoritative-check --origin-pull-required; do
+    grep --extended-regexp --quiet -- '^[[:space:]]+'"${option}"'[[:space:]]+\\$' "${checker}" ||
+        fail 'Caddy checker lost authoritative or enforced origin-pull mode'
+done
+if grep --extended-regexp --quiet -- '--origin-pull-staged|--runtime-authoritative-check' "${checker}"; then
+    fail 'Caddy checker retains a weaker verification mode'
+fi
+[[ $("${checker}") == current ]] || fail 'authoritative Caddy generation is not current'
+systemctl is-active --quiet caddy.service || fail 'Caddy is not active'
+
+printf 'Completed M3.10 host integrity and quiescence passed with permanent history retained.\n' >&2

@@ -1,0 +1,70 @@
+[Unit]
+Description=Recover recorded Lower Duck Pond emergency deletions
+After=local-fs.target network-online.target caddy.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=caddy
+UMask=0077
+ExecStart=/usr/local/libexec/lowerduckpond/emergency-delete-tenant --recover
+StandardInput=null
+StandardOutput=null
+StandardError=journal
+MemoryMax=256M
+MemorySwapMax=0
+TasksMax=16
+LimitNOFILE=1024
+LimitCPU=120
+LimitCORE=0
+TimeoutStartSec=5min
+TimeoutStopSec=15s
+CPUQuota=100%
+PrivateIPC=true
+PrivateDevices=true
+# ProtectSystem=strict would mount the host root over the empty tmpfs root.
+# The tmpfs root and each explicit read-only bind enforce filesystem isolation.
+ProtectSystem=false
+TemporaryFileSystem=/:ro
+BindReadOnlyPaths=/usr
+BindReadOnlyPaths=/lib
+BindReadOnlyPaths=/lib64
+BindReadOnlyPaths=/etc/ssl/certs
+BindReadOnlyPaths=/etc/nsswitch.conf
+BindReadOnlyPaths=/etc/hosts
+BindReadOnlyPaths=/etc/resolv.conf
+BindReadOnlyPaths=/etc/lowerduckpond/archive
+BindReadOnlyPaths={{ static_host_agent_install_root }}
+BindReadOnlyPaths=/etc/group
+BindReadOnlyPaths=/etc/passwd
+BindReadOnlyPaths=/etc/lowerduckpond/static-publication.json
+BindReadOnlyPaths=/run/systemd
+BindPaths=/run/caddy
+BindPaths=/etc/caddy
+BindPaths={{ static_host_agent_state_root }}
+BindPaths={{ static_host_agent_release_root }}
+ProtectHome=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectProc=invisible
+ProcSubset=pid
+NoNewPrivileges=true
+CapabilityBoundingSet=CAP_CHOWN CAP_SETGID CAP_SETUID
+# Caddy validation must drop user, group, and supplementary-group identities.
+# Retain both switches through sandbox setup with NoNewPrivileges.
+AmbientCapabilities=CAP_SETGID CAP_SETUID
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@keyring @resources
+SystemCallErrorNumber=EPERM

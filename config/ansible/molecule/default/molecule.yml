@@ -43,6 +43,12 @@ provisioner:
         backup_spaces_secret_access_key: molecule-spaces-secret-key
         backup_spaces_region: us-east-1
         backup_node_name: molecule
+        static_host_agent_archive_configuration:
+          format: lowerduckpond-archive-configuration-v1
+          region: ams3
+          bucket: molecule-tenant-archives
+          accessKeyId: molecule-dedicated-archive-key
+          secretAccessKey: molecule-dedicated-archive-secret
 verifier:
   name: testinfra
 scenario:

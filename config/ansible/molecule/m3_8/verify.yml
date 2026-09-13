@@ -1,8 +1,31 @@
 ---
-- name: Run disposable M3.8 and M3.9 installed-host qualification
+- name: Run disposable M3.8 through M3.10 installed-host qualification
   hosts: localhost
   gather_facts: false
   tasks:
+    - name: Verify isolated storage credentials before the paced lifecycle groups
+      ansible.builtin.command:
+        cmd: >-
+          python -m pytest --verbose
+          --hosts=docker://lowerduckpond-ubuntu-2604
+          tests/test_archive_lifecycle.py::test_installed_tls_storage_credentials_are_mutually_denied
+      args:
+        chdir: >-
+          {{ lookup('ansible.builtin.env', 'MOLECULE_SCENARIO_DIRECTORY') }}
+      changed_when: false
+      when: lookup('ansible.builtin.env', 'M3_10_ARCHIVE_BACKEND') != 'spaces'
+
+    - name: Prove the installed archive credential boundary before lifecycle mutations
+      ansible.builtin.command:
+        cmd: >-
+          python -m pytest --verbose
+          --hosts=docker://lowerduckpond-ubuntu-2604
+          tests/test_archive_credentials.py
+      args:
+        chdir: >-
+          {{ lookup('ansible.builtin.env', 'MOLECULE_SCENARIO_DIRECTORY') }}
+      changed_when: false
+
     - name: Execute the installed core lifecycle before reboot
       ansible.builtin.command:
         cmd: >-
@@ -20,6 +43,28 @@
           python -m pytest --verbose
           --hosts=docker://lowerduckpond-ubuntu-2604
           tests/test_export_import.py
+      args:
+        chdir: >-
+          {{ lookup('ansible.builtin.env', 'MOLECULE_SCENARIO_DIRECTORY') }}
+      changed_when: false
+
+    - name: Qualify the complete installed remote archive lifecycle
+      ansible.builtin.command:
+        cmd: >-
+          python -m pytest --verbose
+          --hosts=docker://lowerduckpond-ubuntu-2604
+          tests/test_archive_lifecycle.py::test_installed_archive_export_restore_rearchive_and_delete
+      args:
+        chdir: >-
+          {{ lookup('ansible.builtin.env', 'MOLECULE_SCENARIO_DIRECTORY') }}
+      changed_when: false
+
+    - name: Qualify installed ordinary and emergency deletion
+      ansible.builtin.command:
+        cmd: >-
+          python -m pytest --verbose
+          --hosts=docker://lowerduckpond-ubuntu-2604
+          tests/test_deletion.py
       args:
         chdir: >-
           {{ lookup('ansible.builtin.env', 'MOLECULE_SCENARIO_DIRECTORY') }}
@@ -109,6 +154,28 @@
           python -m pytest --verbose
           --hosts=docker://lowerduckpond-ubuntu-2604
           tests/test_transport_recovery.py
+      args:
+        chdir: >-
+          {{ lookup('ansible.builtin.env', 'MOLECULE_SCENARIO_DIRECTORY') }}
+      changed_when: false
+
+    - name: Qualify installed quarantine recovery after journal removal
+      ansible.builtin.command:
+        cmd: >-
+          python -m pytest --verbose
+          --hosts=docker://lowerduckpond-ubuntu-2604
+          tests/test_quarantine_recovery.py
+      args:
+        chdir: >-
+          {{ lookup('ansible.builtin.env', 'MOLECULE_SCENARIO_DIRECTORY') }}
+      changed_when: false
+
+    - name: Record the artifact and exact final lifecycle accounting
+      ansible.builtin.command:
+        cmd: >-
+          python -m pytest --verbose
+          --hosts=docker://lowerduckpond-ubuntu-2604
+          tests/test_archive_completion.py
       args:
         chdir: >-
           {{ lookup('ansible.builtin.env', 'MOLECULE_SCENARIO_DIRECTORY') }}

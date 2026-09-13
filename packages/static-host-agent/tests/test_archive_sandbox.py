@@ -34,7 +34,7 @@ _EXPECTED_ISOLATION_PROPERTIES = {
     "PrivateIPC": "true",
     "PrivateNetwork": "true",
     "ProtectHome": "true",
-    "ProtectSystem": "strict",
+    "ProtectSystem": "false",
     "RestrictAddressFamilies": "~AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_PACKET",
     "RestrictNamespaces": "true",
     "StandardError": "null",

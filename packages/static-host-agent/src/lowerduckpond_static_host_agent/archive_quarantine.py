@@ -34,6 +34,21 @@ _IDENTITY_FIELDS: Final = 2
 _MAXIMUM_STRING_BYTES: Final = 1024
 
 
+def quarantine_present(state_root: Path, *, expected_owner: int, locks: LockManager) -> bool:
+    """Check durable closure presence without loading provider credentials."""
+    locks.require_held(LockName.EXPORT, mode=LockMode.EXCLUSIVE)
+    with DurableDirectory.open(
+        state_root, expected_owner=expected_owner, expected_directory_mode=0o700
+    ) as root:
+        try:
+            root.regular_metadata_generation(
+                _PATH, expected_owner=expected_owner, expected_mode=0o600
+            )
+        except FileNotFoundError:
+            return False
+    return True
+
+
 class ArchiveQuarantine:
     """Preserve observations on every error; presence always closes admission.
 
