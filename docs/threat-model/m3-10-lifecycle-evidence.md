@@ -79,3 +79,23 @@ prove acceptance and rejection of changed environment, namespace, and origin-pul
 inputs. A read-only evaluation of the revised checker against the retained
 disposable host returned `current`; installed artifact files were not modified.
 The full 1,775-test run includes these regressions.
+
+The next review closes reservation consumption by already-admitted jobs: each
+executor transaction defers a different job while the construction journal owns
+terminal capacity. Two regressions leave exactly one result slot, attempt a
+pending job's failure both with and without source drift, then prove the archive
+can still publish its failed result and retire its upload before the pending job
+resumes. Empty-tenant health now validates the entire generation-store shape and
+two-generation retention bound, including temporary, malformed, corrupt, and
+excess unselected entries.
+
+Emergency deletion now admits and appends its audit through the administrator
+reserve. Successful deletion and replay after interruption pass with zero
+ordinary audit allocation available. Completed emergency results already occupy
+the shared permanent result inventory; regression tests prove ordinary callers
+cannot reuse either their correlation or job identity. Admission additionally
+refuses a correlation retained by audit evidence if its result is missing.
+The focused admission, generation-store, and emergency group passed all 77
+tests; formatting and strict typing across 239 source files passed.
+The resulting full host-agent suite passed 1,787 tests with the same two
+documented skips.

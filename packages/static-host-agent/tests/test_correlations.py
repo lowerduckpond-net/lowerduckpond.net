@@ -66,6 +66,7 @@ def _state_root(tmp_path: Path) -> Path:
         ("authorization", "jobs"),
         ("authorization", "results"),
         ("intents",),
+        ("audit",),
         ("locks",),
     ):
         _mkdir(root.joinpath(*components))
