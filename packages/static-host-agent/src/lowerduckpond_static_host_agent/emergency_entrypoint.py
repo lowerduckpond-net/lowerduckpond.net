@@ -52,13 +52,16 @@ def emergency_delete_main(arguments: list[str] | None = None) -> int:
             )
             spool = resources.enter_context(ExportSpool(entrypoints._STATE_ROOT, expected_owner=0))
             if recovering:
-                pending = _pending_administration(repository)
-                if pending is None:
-                    # Retirement removal can precede a failed quarantine proof.
-                    # A fresh lease waits for every old remote session; resolution
-                    # independently verifies all bindings and never deletes remote
-                    # objects or grants new emergency-deletion authority.
-                    with spool.locks.acquire(LockName.EXPORT, blocking=True):
+                # Discovery takes tenant-state. Join export exclusion first so
+                # this timer cannot interrupt a private service's nonblocking
+                # state proofs while that service borrows an active worker lease.
+                # Release the scan lease before execute acquires intake -> export.
+                with spool.locks.acquire(LockName.EXPORT, blocking=True):
+                    pending = _pending_administration(repository)
+                    if pending is None:
+                        # Retirement removal can precede a failed quarantine proof.
+                        # Independently verify all bindings without granting any
+                        # new deletion authority.
                         if not quarantine_present(
                             entrypoints._STATE_ROOT, expected_owner=0, locks=spool.locks
                         ):
@@ -70,7 +73,7 @@ def emergency_delete_main(arguments: list[str] | None = None) -> int:
                             expected_owner=0,
                             locks=spool.locks,
                         ).resolve(repository, remote)
-                    return 0
+                        return 0
                 tenant, correlation, principal, reason = pending
             else:
                 tenant, correlation = validate_uuid7(values[1]), validate_uuid7(values[3])
