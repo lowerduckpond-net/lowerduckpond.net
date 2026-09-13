@@ -15,7 +15,9 @@
   ansible.builtin.set_fact:
     caddy_preserve_selected_generation: >-
       {{ static_publication_enabled | bool or
-         static_host_agent_verified_completed_candidate | default(false) | bool }}
+         (static_host_agent_verified_completed_candidate | default(false) | bool and
+          static_host_agent_disabled_tenant_inventory.stdout | default('') |
+          trim | length > 0) }}
   when: caddy_generation_enabled | bool
 
 - name: Inspect the generation-bound Caddy binary before tenant convergence
