@@ -16,8 +16,7 @@ from lowerduckpond_static_contracts import (
 )
 
 from lowerduckpond_static_host_agent.archive_journal import (
-    _archive_record,
-    _failed_construction_source,
+    failed_construction_result,
 )
 from lowerduckpond_static_host_agent.audit import DEFAULT_AUDIT_LIMITS
 from lowerduckpond_static_host_agent.capacity import (
@@ -89,21 +88,7 @@ def finalize_failed_construction(  # noqa: PLR0912, PLR0913, PLR0915 - explicit 
             or intent["deploymentRecordDigest"] != expected["deploymentDigest"]
         ):
             raise ArchiveAbortError("construction failure exceeds its job authority")
-        desired = _failed_construction_source(job.document, intent)
-        result: dict[str, object] = {
-            "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
-            "kind": "OperationResult",
-            "provenance": {"kind": "authorization-job", "jobId": canonical_job},
-            "operation": "archive",
-            "status": "failed",
-            "tenantId": request["tenantId"],
-            "correlationId": request["correlationId"],
-            "errorCode": "archive_unavailable",
-            "archiveRecord": None
-            if intent["phase"] == "prepared"
-            else _archive_record(intent, desired),
-        }
-        validate_contract(result, expected_kind=ContractKind.OPERATION_RESULT)
+        result = failed_construction_result(job.document, intent)
         result_path = StateRecordPath.authorization_result(canonical_job)
         try:
             existing = transaction.read(result_path)
