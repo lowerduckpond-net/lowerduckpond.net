@@ -3765,8 +3765,12 @@ def test_executor_rejects_a_failed_archive_that_retains_archive_history(
     assert job["dispatchDeploymentIds"] == [_DEPLOYMENT_ID]
 
 
+@pytest.mark.parametrize("superseded", [False, True])
+@pytest.mark.parametrize("verification_error", [False, True])
 def test_executor_rejects_a_failed_archive_with_a_retained_upload_candidate(
     tmp_path: Path,
+    superseded: bool,
+    verification_error: bool,
 ) -> None:
     root = _state_root(tmp_path)
     _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
@@ -3796,6 +3800,29 @@ def test_executor_rejects_a_failed_archive_with_a_retained_upload_candidate(
 
     def reject_retained(candidate_record: dict[str, object]) -> bool:
         checked.append(candidate_record)
+        if superseded:
+            manifest = json.loads(json.dumps(source))
+            _mapping(manifest["spec"])["desiredState"] = "suspended"
+            _write(root, StateRecordPath.tenant_desired(_TENANT_ID), manifest)
+            _write_observed_for_manifest(root, manifest)
+            later: dict[str, object] = {
+                "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+                "kind": "OperationResult",
+                "provenance": {
+                    "kind": "authorization-job",
+                    "jobId": "0198d17f-6f4a-7000-8000-000000000009",
+                },
+                "correlationId": "0198d17f-6f4a-7000-8000-000000000010",
+                "operation": "suspend",
+                "status": "succeeded",
+                "tenantId": _TENANT_ID,
+                "canonicalOrigin": _mapping(manifest["metadata"])["canonicalOrigin"],
+                "manifest": manifest,
+            }
+            current_job = repository.read(StateRecordPath.authorization_job(issued.job_id)).document
+            _append_result_audit(repository, current_job, later)
+        if verification_error:
+            raise FileNotFoundError("retained source deployment was collected")
         return False
 
     with (
@@ -3812,23 +3839,28 @@ def test_executor_rejects_a_failed_archive_with_a_retained_upload_candidate(
             now=_NOW,
             artifact=None,
         )
-        with pytest.raises(ExecutionError, match="retained its candidate archive object"):
-            AuthorizationExecutor(
-                repository,
-                intake,
-                handlers={
-                    "archive": _CompletingFailureHandler(
-                        repository,
-                        archive_cleanup_record=candidate,
-                    )
-                },
-                retired_archive_validator=reject_retained,
-                tenant_runtime_validator=lambda *_arguments: True,
-            ).execute(issued.job_id)
+        executor = AuthorizationExecutor(
+            repository,
+            intake,
+            handlers={
+                "archive": _CompletingFailureHandler(
+                    repository,
+                    archive_cleanup_record=candidate,
+                )
+            },
+            retired_archive_validator=reject_retained,
+            tenant_runtime_validator=lambda *_arguments: True,
+        )
+        if superseded:
+            assert executor.execute(issued.job_id).result["status"] == "failed"
+        else:
+            error = FileNotFoundError if verification_error else ExecutionError
+            with pytest.raises(error, match="retained"):
+                executor.execute(issued.job_id)
         job = repository.read(StateRecordPath.authorization_job(issued.job_id)).document
 
     assert checked == [candidate]
-    assert job["executionValidated"] is False
+    assert job["executionValidated"] is superseded
 
 
 def test_executor_requires_source_release_validation_after_failed_deploy(
@@ -6474,8 +6506,10 @@ def test_executor_revalidates_archive_after_handler_cleared_intents(
     assert stored["executionValidated"] is True
 
 
+@pytest.mark.parametrize("verification_error", [False, True])
 def test_executor_accepts_archive_superseded_during_remote_validation(
     tmp_path: Path,
+    verification_error: bool,
 ) -> None:
     root = _state_root(tmp_path)
     job, construction, result = _write_committed_archive_replay(root)
@@ -6551,6 +6585,8 @@ def test_executor_accepts_archive_superseded_during_remote_validation(
             )
             _write_observed_for_manifest(root, later_manifest)
             _append_result_audit(repository, job, later)
+            if verification_error:
+                raise RuntimeError("the later restore removed the retained archive binding")
             return False
 
         outcome = AuthorizationExecutor(
@@ -6638,11 +6674,18 @@ def test_executor_requires_remote_absence_for_a_retired_restore_archive(
     assert checked == [source_authority["archiveRecord"]]
 
 
-def test_executor_requires_remote_presence_after_a_failed_restore(
+@pytest.mark.parametrize("superseded", [False, True])
+@pytest.mark.parametrize("verification", ["present", "missing", "error"])
+@pytest.mark.parametrize("operation", ["archive", "restore"])
+def test_executor_requires_remote_presence_after_an_archived_source_failure(
     tmp_path: Path,
+    superseded: bool,
+    verification: str,
+    operation: str,
 ) -> None:
     root = _state_root(tmp_path)
     job, result, _previous, _previous_result = _write_committed_restore_replay(root)
+    restored = json.loads(json.dumps(result))
     source_authority = _mapping(job["sourceAuthority"])
     source = _mapping(source_authority["manifest"])
     archive = _mapping(source_authority["archiveRecord"])
@@ -6650,6 +6693,17 @@ def test_executor_requires_remote_presence_after_a_failed_restore(
     result.update({"status": "failed", "errorCode": "archive_unavailable"})
     result.pop("canonicalOrigin")
     result.pop("manifest")
+    if operation == "archive":
+        request = _mapping(job["request"])
+        request["operation"] = operation
+        job["requestDigest"] = request_digest(request).to_dict()
+        result["operation"] = operation
+        result["archiveRecord"] = None
+        correlation = json.loads(json.dumps(job))
+        correlation["phase"] = "pending"
+        _write(
+            root, StateRecordPath.authorization_correlation(result["correlationId"]), correlation
+        )
     _write(root, StateRecordPath.authorization_job(job["jobId"]), job)
     _write(root, StateRecordPath.authorization_result(job["jobId"]), result)
     _write(root, StateRecordPath.tenant_desired(_TENANT_ID), source)
@@ -6662,19 +6716,47 @@ def test_executor_requires_remote_presence_after_a_failed_restore(
 
     def reject_missing_archive(candidate: dict[str, object]) -> bool:
         checked.append(candidate)
-        return False
+        if superseded:
+            root.joinpath(
+                *StateRecordPath.tenant_archive(_TENANT_ID, archive["deploymentId"]).components
+            ).unlink()
+            _mapping(restored["provenance"])["jobId"] = "0198d17f-6f4a-7000-8000-000000000009"
+            restored["correlationId"] = "0198d17f-6f4a-7000-8000-000000000010"
+            manifest = _mapping(restored["manifest"])
+            _write(root, StateRecordPath.tenant_desired(_TENANT_ID), manifest)
+            _write_observed_for_manifest(root, manifest)
+            _append_result_audit(repository, job, restored)
+        if verification == "error":
+            raise RuntimeError("retained archive binding is unavailable")
+        return verification == "present"
+
+    def refuse_upload_accounting(_job_id: str) -> bool:
+        pytest.fail("retained archive must not use unreturned-upload accounting")
 
     with (
         StateRepository(root, expected_owner=os.geteuid()) as repository,
         ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
     ):
         _append_result_audit(repository, job, result)
-        with pytest.raises(ExecutionError, match="lost its retained archive object"):
-            AuthorizationExecutor(
-                repository,
-                intake,
-                retained_archive_validator=reject_missing_archive,
-            ).execute(job["jobId"])
+        executor = AuthorizationExecutor(
+            repository,
+            intake,
+            retained_archive_validator=reject_missing_archive,
+            unreturned_archive_validator=refuse_upload_accounting,
+            tenant_runtime_validator=lambda *_arguments: True,
+        )
+        if superseded or verification == "present":
+            assert executor.execute(job["jobId"]).result == result
+            assert (
+                repository.read(StateRecordPath.authorization_job(job["jobId"])).document[
+                    "executionValidated"
+                ]
+                is True
+            )
+        else:
+            error = RuntimeError if verification == "error" else ExecutionError
+            with pytest.raises(error, match="retained archive"):
+                executor.execute(job["jobId"])
 
     assert checked == [archive]
 

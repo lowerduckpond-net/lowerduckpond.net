@@ -23,6 +23,10 @@ from lowerduckpond_static_contracts import (
     validate_uuid7,
 )
 
+from lowerduckpond_static_host_agent.archive_journal import (
+    ArchiveJournalError,
+    failed_construction_result,
+)
 from lowerduckpond_static_host_agent.audit import (
     DEFAULT_AUDIT_LIMITS,
     AuditCorrelationSnapshot,
@@ -37,6 +41,7 @@ from lowerduckpond_static_host_agent.capacity import (
     ReleaseCapacityUsage,
     admit_release_capacity,
 )
+from lowerduckpond_static_host_agent.correlations import lifecycle_reservation_owners
 from lowerduckpond_static_host_agent.durable import StatePathError
 from lowerduckpond_static_host_agent.intake import (
     AdmittedArtifact,
@@ -50,7 +55,7 @@ from lowerduckpond_static_host_agent.issuance import (
     VerifiedArtifact,
     build_expected_source,
 )
-from lowerduckpond_static_host_agent.locks import LockMode
+from lowerduckpond_static_host_agent.locks import LockMode, StateBusyError
 from lowerduckpond_static_host_agent.repository import (
     StateConflictError,
     StateRecordError,
@@ -394,6 +399,7 @@ class AuthorizationExecutor:
         ) as transaction:
             current = transaction.read(StateRecordPath.authorization_job(job_id))
             _require_same_authority(initial.document, current.document)
+            _require_lifecycle_reservation_owner(transaction, current.document)
             phase = current.document["phase"]
             if phase not in {"claimed", "completed", "failed"}:
                 return None
@@ -449,6 +455,7 @@ class AuthorizationExecutor:
         ) as transaction:
             current = transaction.read(StateRecordPath.authorization_job(job_id))
             _require_same_authority(initial.document, current.document)
+            _require_lifecycle_reservation_owner(transaction, current.document)
             durable = _read_result_transaction(transaction, job_id)
             if durable is None or durable.document != existing.document:
                 raise ExecutionError("terminal result changed during replay")
@@ -561,6 +568,7 @@ class AuthorizationExecutor:
         ) as transaction:
             current = transaction.read(StateRecordPath.authorization_job(job_id))
             _require_same_authority(initial.document, current.document)
+            _require_lifecycle_reservation_owner(transaction, current.document)
             durable = _read_result_transaction(transaction, job_id)
             if durable is None or durable.document != expected_result:
                 raise ExecutionError("terminal result changed after artifact replay race")
@@ -656,6 +664,7 @@ class AuthorizationExecutor:
         ) as transaction:
             current = transaction.read(path)
             _require_same_authority(initial.document, current.document)
+            _require_lifecycle_reservation_owner(transaction, current.document)
             existing = _read_result_transaction(transaction, job_id)
             if existing is not None:
                 _validate_result_binding(current.document, existing.document)
@@ -763,6 +772,7 @@ class AuthorizationExecutor:
         ) as transaction:
             current = transaction.read(StateRecordPath.authorization_job(job_id))
             _require_same_authority(initial.document, current.document)
+            _require_lifecycle_reservation_owner(transaction, current.document)
             current = self._bind_import_manifest(transaction, current, prepared.claim)
             current = _bind_dispatch_authority(
                 transaction,
@@ -968,7 +978,13 @@ class AuthorizationExecutor:
         if result["operation"] == "archive":
             archive = result.get("archiveRecord")
             validator = self._retained_archive_validator
-            if type(archive) is not dict or validator is None or validator(archive) is not True:
+            try:
+                retained = type(archive) is dict and validator is not None and validator(archive)
+            except Exception:
+                if self._result_was_superseded(job, result, blocking=blocking):
+                    return
+                raise
+            if retained is not True:
                 if self._result_was_superseded(job, result, blocking=blocking):
                     return
                 raise ExecutionError(
@@ -1123,7 +1139,7 @@ class AuthorizationExecutor:
                 return
             raise ExecutionError("successful delete retained an active tenant route")
 
-    def _validate_failed_external_terminal_state(
+    def _validate_failed_external_terminal_state(  # noqa: PLR0911, PLR0912 - distinct failed-source and supersession boundaries
         self,
         job: dict[str, object],
         result: dict[str, object],
@@ -1134,10 +1150,21 @@ class AuthorizationExecutor:
         source_manifest = authority.source_manifest
         source_route_set = authority.source_route_set
         archive = authority.archive_record
-        self._validate_failed_archive_absence(result, authority=authority)
-        if result["operation"] in {"delete", "restore"} and archive is not None:
+        if not self._validate_failed_archive_absence(
+            job, result, authority=authority, blocking=blocking
+        ):
+            return
+        if result["operation"] in {"archive", "delete", "restore"} and archive is not None:
             validator = self._retained_archive_validator
-            if validator is None or validator(archive) is not True:
+            try:
+                retained = validator is not None and validator(archive)
+            except Exception:
+                if self._result_was_superseded(job, result, blocking=blocking):
+                    return
+                raise
+            if retained is not True:
+                if self._result_was_superseded(job, result, blocking=blocking):
+                    return
                 raise ExecutionError("failed lifecycle result lost its retained archive object")
         if source_manifest is None:
             return
@@ -1190,14 +1217,20 @@ class AuthorizationExecutor:
 
     def _validate_failed_archive_absence(
         self,
+        job: dict[str, object],
         result: dict[str, object],
         *,
         authority: _LifecycleDispatchAuthority,
-    ) -> None:
+        blocking: bool,
+    ) -> bool:
         if result["operation"] != "archive":
-            return
+            return True
         candidate = result.get("archiveRecord")
         if candidate is None:
+            if authority.archive_record is not None:
+                # An archived source has no newly constructed upload to account
+                # for. The caller verifies its retained object instead.
+                return True
             unreturned_validator = self._unreturned_archive_validator
             provenance = cast(dict[str, object], result["provenance"])
             if (
@@ -1205,7 +1238,7 @@ class AuthorizationExecutor:
                 and unreturned_validator(validate_uuid7(provenance["jobId"])) is not True
             ):
                 raise ExecutionError("failed archive retains unaccounted remote evidence")
-            return
+            return True
         source_manifest = authority.source_manifest
         if type(candidate) is not dict or type(source_manifest) is not dict:
             raise ExecutionError("failed archive candidate authority is malformed")
@@ -1227,8 +1260,17 @@ class AuthorizationExecutor:
         ):
             raise ExecutionError("failed archive candidate authority is malformed")
         validator = self._retired_archive_validator
-        if validator is None or validator(candidate) is not True:
+        try:
+            retired = validator is not None and validator(candidate)
+        except Exception:
+            if self._result_was_superseded(job, result, blocking=blocking):
+                return False
+            raise
+        if retired is not True:
+            if self._result_was_superseded(job, result, blocking=blocking):
+                return False
             raise ExecutionError("failed archive retained its candidate archive object")
+        return True
 
     def _result_was_superseded(
         self,
@@ -1265,6 +1307,7 @@ class AuthorizationExecutor:
         ) as transaction:
             current = transaction.read(StateRecordPath.authorization_job(job_id))
             _require_same_authority(initial.document, current.document)
+            _require_lifecycle_reservation_owner(transaction, current.document)
             stored = _read_result_transaction(transaction, job_id)
             if stored is None or stored.document != result:
                 raise ExecutionError("validated lifecycle result is no longer durable")
@@ -1313,6 +1356,7 @@ class AuthorizationExecutor:
         ) as transaction:
             current = transaction.read(StateRecordPath.authorization_job(job_id))
             _require_same_authority(initial.document, current.document)
+            _require_lifecycle_reservation_owner(transaction, current.document)
             existing = _read_result_transaction(transaction, job_id)
             if not require_pending and _has_bound_lifecycle_intent(
                 transaction,
@@ -1553,7 +1597,13 @@ def _capture_authorized_lifecycle_authority(  # noqa: PLR0912,PLR0915 - authorit
             source_tenant_record_histories=_dispatch_tenant_record_histories(job),
         )
     if transaction_intent is None:
-        source = transaction.read(StateRecordPath.tenant_desired(request["tenantId"])).document
+        source = (
+            None
+            if construction_intent is None
+            else _failed_construction_replay_source(transaction, job, construction_intent)
+        )
+        if source is None:
+            source = transaction.read(StateRecordPath.tenant_desired(request["tenantId"])).document
         if request["operation"] == "archive" and expected["lifecycle"] == "archived":
             desired = cast(
                 dict[str, object], cast(dict[str, object], source["spec"])["desiredDeployment"]
@@ -2322,6 +2372,14 @@ def _failure_result(job: dict[str, object], error_code: str) -> dict[str, object
     return result
 
 
+def _require_lifecycle_reservation_owner(
+    transaction: ExecutionTransaction, job: dict[str, object]
+) -> None:
+    """Keep unrelated workers behind durable audit and capacity reservations."""
+    if lifecycle_reservation_owners(transaction) - {_correlation_id(job)}:
+        raise StateBusyError("export.lock is busy")
+
+
 def _publish_result(
     transaction: ExecutionTransaction,
     job: StoredContract,
@@ -2329,6 +2387,7 @@ def _publish_result(
     *,
     limits: HostCapacityLimits,
 ) -> None:
+    _require_lifecycle_reservation_owner(transaction, job.document)
     if result["status"] != "failed":  # pragma: no cover - only internal failures publish here
         raise ExecutionError("direct result publication is limited to failures")
     if not _is_executor_failure(result):
@@ -3869,6 +3928,8 @@ def _archive_construction_intent_binds_job(
         or intent["deploymentRecordDigest"] != expected["deploymentDigest"]
     ):
         raise ExecutionError("archive construction authority does not match its job")
+    if _failed_construction_replay_source(transaction, job, intent) is not None:
+        return True
     try:
         desired = transaction.read(StateRecordPath.tenant_desired(request["tenantId"])).document
         spec = desired["spec"]
@@ -3891,6 +3952,44 @@ def _archive_construction_intent_binds_job(
     ):
         raise ExecutionError("archive construction release tree is not source-authorized")
     return True
+
+
+def _failed_construction_replay_source(
+    transaction: ExecutionTransaction,
+    job: dict[str, object],
+    intent: dict[str, object],
+) -> dict[str, object] | None:
+    """Allow only independently audited, unpublished failure cleanup after source drift."""
+
+    if len(transaction.measure_intent_records().records) != 1:
+        # A published local transaction must retain its ordinary source and
+        # rollback checks; this exception grants only construction cleanup.
+        return None
+    audit = transaction.inspect_audit_correlation(intent["correlationId"])
+    if audit.entry is None or audit.entry["resultStatus"] != "failed":
+        return None
+    expected = cast(dict[str, object], job["expectedSource"])
+    if (
+        job["compatibilityVersion"] != "static-job-v2"
+        or job["phase"] not in {"claimed", "failed"}
+        or expected["lifecycle"] not in {"active", "suspended"}
+    ):
+        raise ExecutionError("failed construction has no exclusive cleanup authority")
+    try:
+        result = failed_construction_result(job, intent)
+    except ArchiveJournalError as error:
+        raise ExecutionError("failed construction lost captured authority") from error
+    _validate_result_binding(job, result)
+    _validate_result_audit(transaction, job, result, require_failure=True)
+    if audit.entry["timestamp"] != intent["createdAt"]:
+        raise ExecutionError("failed construction audit time exceeds captured authority")
+    existing = _read_result_transaction(transaction, str(job["jobId"]))
+    if (existing is not None and existing.document != result) or (
+        existing is None and job["phase"] == "failed"
+    ):
+        raise ExecutionError("failed construction lost its exact result")
+    source, _archive = _job_source_authority(job)
+    return source
 
 
 def _archive_retirement_intent_binds_job(

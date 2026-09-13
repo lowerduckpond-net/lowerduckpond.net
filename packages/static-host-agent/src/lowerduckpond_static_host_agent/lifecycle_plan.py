@@ -77,6 +77,234 @@ class DeploymentTransitionPlan:
     audit_entry: dict[str, object]
 
 
+@dataclass(frozen=True, slots=True)
+class ArchiveTransitionPlan:
+    """Exact local publication documents bound to one verified remote construction."""
+
+    tenant_id: str
+    intent_id: str
+    construction_intent_id: str
+    manifest: dict[str, object]
+    observed_state: dict[str, object]
+    archive_record: dict[str, object]
+    intent: dict[str, object]
+    result: dict[str, object]
+    audit_entry: dict[str, object]
+
+
+def plan_archive_transition(  # noqa: PLR0913, PLR0917 - complete authority tuple
+    authorization_job: dict[str, object],
+    platform_namespace: dict[str, object],
+    source_manifest: dict[str, object],
+    source_observed_state: dict[str, object],
+    source_deployment: dict[str, object],
+    construction_intent: dict[str, object],
+    archive_record: dict[str, object],
+    *,
+    source_runtime_generation_id: object,
+    candidate_runtime_generation_id: object,
+    source_route_set: object,
+    audit_state: AuditState,
+    now: datetime,
+    clock: MillisecondClock,
+    entropy: EntropySource,
+    intent_id: object | None = None,
+) -> ArchiveTransitionPlan:
+    """Preserve the exact active or suspended rollback source before route removal."""
+    job = deepcopy(authorization_job)
+    namespace = deepcopy(platform_namespace)
+    source = deepcopy(source_manifest)
+    observed = deepcopy(source_observed_state)
+    deployment = deepcopy(source_deployment)
+    construction = deepcopy(construction_intent)
+    archive = deepcopy(archive_record)
+    for document, kind in (
+        (job, ContractKind.AUTHORIZATION_JOB),
+        (namespace, ContractKind.PLATFORM_NAMESPACE),
+        (source, ContractKind.SITE),
+        (observed, ContractKind.TENANT_OBSERVED_STATE),
+        (deployment, ContractKind.DEPLOYMENT_RECORD),
+        (construction, ContractKind.ARCHIVE_CONSTRUCTION_INTENT),
+        (archive, ContractKind.ARCHIVE_RECORD),
+    ):
+        validate_contract(document, expected_kind=kind)
+    request = cast(dict[str, object], job["request"])
+    metadata = cast(dict[str, object], source["metadata"])
+    spec = cast(dict[str, object], source["spec"])
+    tenant_id = cast(str, metadata["id"])
+    if (
+        job["compatibilityVersion"] != "static-job-v2"
+        or job["phase"] != "claimed"
+        or job["artifact"] is not None
+        or request["operation"] != "archive"
+        or request["tenantId"] != tenant_id
+        or spec["desiredState"] not in {"active", "suspended"}
+        or job["sourceAuthority"] != {"manifest": source, "archiveRecord": None}
+    ):
+        raise LifecyclePlanError("archive planning requires a current claimed live source")
+    desired = cast(dict[str, object], spec["desiredDeployment"])
+    source_digest = manifest_digest(source).to_dict()
+    deployment_digest = deployment_record_digest(deployment).to_dict()
+    if (
+        deployment["tenantId"] != tenant_id
+        or deployment["id"] != desired["id"]
+        or deployment["archiveSha256"] != desired["archiveSha256"]
+        or job["expectedSource"]
+        != {
+            "expectsTenantAbsent": False,
+            "lifecycle": spec["desiredState"],
+            "manifestDigest": source_digest,
+            "deploymentDigest": deployment_digest,
+            "archiveRecordDigest": None,
+            "platformStateDigest": platform_state_digest(namespace).to_dict(),
+        }
+    ):
+        raise LifecyclePlanError(
+            "archive source exceeds its job's manifest or deployment authority"
+        )
+    candidate = deepcopy(source)
+    cast(dict[str, object], candidate["spec"])["desiredState"] = "archived"
+    candidate_digest = manifest_digest(candidate).to_dict()
+    _require_archive_construction(
+        construction,
+        archive,
+        job,
+        source_digest=source_digest,
+        candidate_digest=candidate_digest,
+        deployment=deployment,
+    )
+    source_generation = validate_uuid7(source_runtime_generation_id)
+    candidate_generation = validate_uuid7(candidate_runtime_generation_id)
+    timestamp = _canonical_timestamp(now)
+    intent_id = (
+        generate_uuid7(clock=clock, entropy=entropy)
+        if intent_id is None
+        else validate_uuid7(intent_id)
+    )
+    if len({intent_id, construction["intentId"], tenant_id}) != 3:  # noqa: PLR2004 - identities
+        raise LifecyclePlanError("archive transaction identities collided")
+    candidate_observed: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "TenantObservedState",
+        "tenantId": tenant_id,
+        "desiredManifestDigest": candidate_digest,
+        "observedState": "archived",
+        "activeDeploymentId": None,
+        "runtimeGenerationId": None,
+        "reconciledAt": timestamp,
+    }
+    intent: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "TransactionIntent",
+        "compatibilityVersion": "static-intent-v2",
+        "intentId": intent_id,
+        "tenantId": tenant_id,
+        "correlationId": request["correlationId"],
+        "operation": "archive",
+        "archiveRecovery": {
+            "sourceManifest": source,
+            "sourceObservedState": observed,
+            "sourceRuntimeGenerationId": source_generation,
+            "sourceRouteSet": source_route_set,
+            "candidateManifest": candidate,
+            "candidateArchiveRecord": archive,
+            "candidateRuntimeGenerationId": candidate_generation,
+            "candidateRouteSet": "absent",
+        },
+        "lifecycleRecovery": None,
+        "sourceManifest": source,
+        "sourceManifestDigest": source_digest,
+        "candidateManifest": candidate,
+        "candidateManifestDigest": candidate_digest,
+        "phase": "prepared",
+        "restartFence": None,
+        "createdAt": timestamp,
+    }
+    result: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationResult",
+        "provenance": {"kind": "authorization-job", "jobId": job["jobId"]},
+        "correlationId": request["correlationId"],
+        "operation": "archive",
+        "status": "succeeded",
+        "tenantId": tenant_id,
+        "canonicalOrigin": metadata["canonicalOrigin"],
+        "manifest": candidate,
+        "archiveRecord": archive,
+    }
+    for document, kind in (
+        (candidate_observed, ContractKind.TENANT_OBSERVED_STATE),
+        (intent, ContractKind.TRANSACTION_INTENT),
+        (result, ContractKind.OPERATION_RESULT),
+    ):
+        validate_contract(document, expected_kind=kind)
+    return ArchiveTransitionPlan(
+        tenant_id,
+        intent_id,
+        cast(str, construction["intentId"]),
+        deepcopy(candidate),
+        deepcopy(candidate_observed),
+        deepcopy(archive),
+        deepcopy(intent),
+        deepcopy(result),
+        _successful_audit_entry(
+            job,
+            operation="archive",
+            tenant_id=tenant_id,
+            result=result,
+            audit_state=audit_state,
+            timestamp=timestamp,
+        ),
+    )
+
+
+def _require_archive_construction(  # noqa: PLR0913 - bind independent construction evidence
+    construction: dict[str, object],
+    archive: dict[str, object],
+    job: dict[str, object],
+    *,
+    source_digest: dict[str, str],
+    candidate_digest: dict[str, str],
+    deployment: dict[str, object],
+) -> None:
+    request = cast(dict[str, object], job["request"])
+    if (
+        construction["phase"] != "uploaded"
+        or construction["versionId"] in {None, "null"}
+        or construction["jobId"] != job["jobId"]
+        or construction["operatorPrincipal"] != job["operatorPrincipal"]
+        or construction["tenantId"] != request["tenantId"]
+        or construction["correlationId"] != request["correlationId"]
+        or construction["sourceManifestDigest"] != source_digest
+        or construction["candidateManifestDigest"] != candidate_digest
+        or construction["deploymentRecordDigest"] != deployment_record_digest(deployment).to_dict()
+        or construction["releaseTreeDigest"] != deployment["releaseTreeDigest"]
+        or construction["key"] != f"archives/{construction['uploadAttemptId']}.zip"
+        or archive
+        != {
+            "apiVersion": construction["apiVersion"],
+            "kind": "ArchiveRecord",
+            "deploymentId": deployment["id"],
+            "manifestDigest": candidate_digest,
+            **{
+                key: construction[key]
+                for key in (
+                    "tenantId",
+                    "correlationId",
+                    "createdAt",
+                    "bucket",
+                    "key",
+                    "versionId",
+                    "bundleSize",
+                    "bundleDigest",
+                    "releaseTreeDigest",
+                )
+            },
+        }
+    ):
+        raise LifecyclePlanError("archive publication lacks its exact uploaded construction")
+
+
 def plan_create_transition(  # noqa: PLR0913 - each authority input is explicit
     authorization_job: dict[str, object],
     platform_namespace: dict[str, object],

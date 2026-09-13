@@ -11,6 +11,8 @@ from types import SimpleNamespace
 
 import pytest
 from lowerduckpond_static_host_agent import entrypoints
+from lowerduckpond_static_host_agent.archive_cleanup_service import ArchiveCleanupClient
+from lowerduckpond_static_host_agent.archive_handler import ArchiveLifecycleHandler
 from lowerduckpond_static_host_agent.audit import AuditError
 from lowerduckpond_static_host_agent.caddy_admin import CaddyAdminError
 from lowerduckpond_static_host_agent.caddy_bootstrap import PlatformGenerationState
@@ -31,11 +33,19 @@ from lowerduckpond_static_host_agent.create_handler import (
     CreateLifecycleError,
     CreateLifecycleHandler,
 )
+from lowerduckpond_static_host_agent.delete_handler import (
+    DeleteLifecycleError,
+    DeleteLifecycleHandler,
+)
 from lowerduckpond_static_host_agent.deployment_handler import DeploymentLifecycleHandler
 from lowerduckpond_static_host_agent.export_handler import ExportLifecycleHandler
 from lowerduckpond_static_host_agent.issuance import PublicationDisabledError
 from lowerduckpond_static_host_agent.release_tree import ReleaseTreeError
 from lowerduckpond_static_host_agent.repository import StateConflictError, StateRecordPath
+from lowerduckpond_static_host_agent.restore_handler import (
+    RestoreLifecycleError,
+    RestoreLifecycleHandler,
+)
 from lowerduckpond_static_host_agent.route_handler import RouteLifecycleHandler
 from lowerduckpond_static_host_agent.route_snapshot import (
     RouteSnapshotError,
@@ -46,7 +56,7 @@ _DISABLED_STATUS = 78
 _USAGE_STATUS = 64
 
 
-def test_executor_entrypoint_registers_the_available_lifecycle_handlers(
+def test_executor_entrypoint_registers_the_available_lifecycle_handlers(  # noqa: PLR0915 - complete installed executor wiring
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     job_id = "0198d17f-6f4a-7000-8000-000000000001"
@@ -56,6 +66,13 @@ def test_executor_entrypoint_registers_the_available_lifecycle_handlers(
     export_spool = object()
     runtime = object()
     captured: dict[str, object] = {}
+    terminal_checks: list[tuple[str, object, str]] = []
+
+    def verify_terminal(_self: object, selected_job: str, record: object, *, mode: str) -> bool:
+        terminal_checks.append((selected_job, record, mode))
+        return True
+
+    monkeypatch.setattr(ArchiveCleanupClient, "verify_terminal", verify_terminal)
 
     class _Context:
         def __init__(self, value: object) -> None:
@@ -112,9 +129,16 @@ def test_executor_entrypoint_registers_the_available_lifecycle_handlers(
 
     arguments = captured["arguments"]
     assert type(arguments) is dict
+    unreturned = arguments["unreturned_archive_validator"]
+    assert callable(unreturned)
+    assert unreturned(job_id) is True
+    assert terminal_checks == [(job_id, None, "accounted")]
     handlers = arguments["handlers"]
     assert type(handlers) is dict
     assert set(handlers) == {
+        "archive",
+        "restore",
+        "delete",
         "export",
         "import",
         "create",
@@ -125,6 +149,12 @@ def test_executor_entrypoint_registers_the_available_lifecycle_handlers(
         "rename",
         "reconcile",
     }
+    assert isinstance(handlers["archive"], ArchiveLifecycleHandler)
+    assert handlers["archive"]._spool is export_spool
+    assert isinstance(handlers["restore"], RestoreLifecycleHandler)
+    assert handlers["restore"]._spool is export_spool
+    assert isinstance(handlers["delete"], DeleteLifecycleHandler)
+    assert handlers["delete"]._spool is export_spool
     assert isinstance(handlers["export"], ExportLifecycleHandler)
     assert handlers["export"]._spool is export_spool
     handler = handlers["create"]
@@ -156,6 +186,8 @@ def test_executor_entrypoint_registers_the_available_lifecycle_handlers(
     "failure",
     [
         CreateLifecycleError,
+        DeleteLifecycleError,
+        RestoreLifecycleError,
         CaddyAdminError,
         CaddyGenerationError,
         CaddyRuntimeError,
@@ -555,13 +587,15 @@ def test_runtime_authoritative_generation_does_not_traverse_retained_releases(
     )
 
 
-def test_authoritative_platform_generation_fails_closed_on_drift(
+@pytest.mark.parametrize("bound_empty", [False, True])
+def test_authoritative_empty_generation_requires_exact_bound_inputs(
     monkeypatch: pytest.MonkeyPatch,
+    bound_empty: bool,
 ) -> None:
     repository = SimpleNamespace(
         publication_transaction=lambda **_arguments: nullcontext(
             SimpleNamespace(
-                read=lambda _path: object(),
+                read=lambda _path: SimpleNamespace(document={}),
                 measure_inventory=lambda: SimpleNamespace(tenant_ids=()),
             )
         )
@@ -576,16 +610,25 @@ def test_authoritative_platform_generation_fails_closed_on_drift(
         "platform_generation_state_under_lock",
         lambda *_arguments, **_keywords: PlatformGenerationState.CHANGED,
     )
+    monkeypatch.setattr(
+        entrypoints,
+        "empty_tenant_generation_matches_under_lock",
+        lambda *_arguments, **_keywords: bound_empty,
+    )
+    monkeypatch.setattr(entrypoints, "_tenant_release_namespace_ids", lambda: ())
     runtime = SimpleNamespace(using_held_publication_lock=lambda _repository: nullcontext())
 
-    assert not entrypoints._authoritative_caddy_generation_matches(
-        runtime,  # type: ignore[arg-type]
-        object(),  # type: ignore[arg-type]
-        binary=object(),  # type: ignore[arg-type]
-        environment=b"environment",
-        origin_pull_ca_der=(b"ca",),
-        origin_pull_required=True,
-        startup=object(),  # type: ignore[arg-type]
+    assert (
+        entrypoints._authoritative_caddy_generation_matches(
+            runtime,  # type: ignore[arg-type]
+            object(),  # type: ignore[arg-type]
+            binary=object(),  # type: ignore[arg-type]
+            environment=b"environment",
+            origin_pull_ca_der=(b"ca",),
+            origin_pull_required=True,
+            startup=SimpleNamespace(inventory_is_empty=lambda: True),  # type: ignore[arg-type]
+        )
+        is bound_empty
     )
 
 

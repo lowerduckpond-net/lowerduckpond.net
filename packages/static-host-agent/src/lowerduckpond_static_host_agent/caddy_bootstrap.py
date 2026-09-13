@@ -17,12 +17,16 @@ from lowerduckpond_static_host_agent.caddy_generation import (
     CADDY_CONFIGURATION_NAME,
     CADDY_ENVIRONMENT_NAME,
     CADDY_ROUTE_METADATA_NAME,
+    MAX_CADDY_GENERATIONS,
     CaddyBinarySource,
     CaddyGenerationPayload,
     CaddyGenerationStore,
     PinnedCaddyGeneration,
 )
-from lowerduckpond_static_host_agent.caddy_routes import build_platform_only_caddy_routes
+from lowerduckpond_static_host_agent.caddy_routes import (
+    build_platform_only_caddy_routes,
+    build_tenant_caddy_routes,
+)
 from lowerduckpond_static_host_agent.caddy_runtime import CaddyRuntime
 from lowerduckpond_static_host_agent.caddy_startup import (
     CaddyStartIntent,
@@ -294,6 +298,40 @@ def _active_matches(runtime: CaddyRuntime, payload: CaddyGenerationPayload) -> b
         return False
     with selected.generation as active:
         return _generation_matches(active, payload)
+
+
+def empty_tenant_generation_matches_under_lock(  # noqa: PLR0913 - exact installed inputs
+    runtime: CaddyRuntime,
+    store: CaddyGenerationStore,
+    *,
+    platform_namespace: dict[str, object],
+    binary: CaddyBinarySource,
+    environment: bytes,
+    origin_pull_ca_der: tuple[bytes, ...],
+    origin_pull_required: bool,
+) -> bool:
+    """Accept the fully bound empty generation produced by last-tenant deletion."""
+    identifiers = store.list_verified()
+    if len(identifiers) > MAX_CADDY_GENERATIONS:
+        return False
+    selected = runtime.open_active_verified()
+    with selected.generation as active:
+        routes = build_tenant_caddy_routes(
+            platform_namespace=platform_namespace,
+            tenants=(),
+            runtime_generation_id=selected.generation_id,
+            origin_pull_ca_der=origin_pull_ca_der,
+            origin_pull_required=origin_pull_required,
+        )
+        return selected.generation_id in identifiers and _generation_matches(
+            active,
+            CaddyGenerationPayload(
+                binary=binary,
+                environment=environment,
+                configuration=routes.configuration,
+                route_metadata=routes.route_metadata,
+            ),
+        )
 
 
 def _platform_payload(

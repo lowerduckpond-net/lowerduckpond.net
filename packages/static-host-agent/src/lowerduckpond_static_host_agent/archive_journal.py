@@ -36,9 +36,12 @@ from lowerduckpond_static_host_agent.archive_remote import (
     RemoteVersion,
     archive_key,
 )
+from lowerduckpond_static_host_agent.audit import DEFAULT_AUDIT_LIMITS, AuditCapacityError
 from lowerduckpond_static_host_agent.capacity import (
+    DEFAULT_HOST_CAPACITY_LIMITS,
     CapacityReservation,
     FilesystemCapacity,
+    HostCapacityLimits,
     ReleaseCapacityUsage,
     admit_release_capacity,
 )
@@ -52,12 +55,14 @@ from lowerduckpond_static_host_agent.portable_bundle import (
     inspect_portable_bundle,
 )
 from lowerduckpond_static_host_agent.repository import (
+    IntentRemovalToken,
     StateRecordPath,
     StateRepository,
     StateRevision,
     StoredContract,
     _StateTransaction,
 )
+from lowerduckpond_static_host_agent.state_inventory import StateInventoryReservation
 
 
 class ArchiveJournalError(ArchiveRemoteError):
@@ -115,6 +120,7 @@ class ArchiveConstructionJournal:
         bucket: str,
         require_quarantine_empty: Callable[[], None],
         hook: Callable[[ArchiveJournalBoundary], None] | None = None,
+        capacity_limits: HostCapacityLimits = DEFAULT_HOST_CAPACITY_LIMITS,
     ) -> None:
         self.repository = repository
         self.spool = spool
@@ -122,6 +128,7 @@ class ArchiveConstructionJournal:
         self.bucket = bucket
         self.require_quarantine_empty = require_quarantine_empty
         self.hook = hook
+        self.capacity_limits = capacity_limits
 
     def prepare(self, job_id: str, snapshot: ExportSnapshot, *, now: datetime) -> PreparedArchive:
         """Validate the complete local bundle and sync a unique prepared intent."""
@@ -183,7 +190,7 @@ class ArchiveConstructionJournal:
             }
             intent["key"] = archive_key(intent["uploadAttemptId"])
             path = StateRecordPath.archive_construction_intent(intent["intentId"])
-            _reserve_journal(transaction.measure_filesystem_capacity)
+            _reserve_construction(transaction, self.capacity_limits)
             stored = transaction.create_immutable(path, intent)
         self._notify(ArchiveJournalBoundary.CONSTRUCTION_SYNC)
         return PreparedArchive(stored, snapshot, inspection)
@@ -297,6 +304,53 @@ class ArchiveRetirementJournal:
             )
         self._notify(ArchiveJournalBoundary.RETIREMENT_SYNC)
         return stored
+
+    def cancel_unstarted_retirement(self, job_id: str, retirement: StoredContract) -> bool:
+        """Release a read-only preparation barrier while its archived source is intact."""
+        self._require_lock()
+        with self.repository.transaction(mode=LockMode.EXCLUSIVE) as transaction:
+            records = transaction.measure_intent_records().records
+            documents = [transaction.read_intent(value.intent_id)[1] for value in records]
+            if any(value.document["kind"] == "TransactionIntent" for value in documents):
+                # Local publication may have crossed a durable boundary before failing.
+                # Its transaction must retain the retirement and recover forward.
+                return False
+            if len(documents) != 1 or documents[0].revision != retirement.revision:
+                raise ArchiveJournalError(
+                    "retirement cancellation has ambiguous retirement authority"
+                )
+            job = transaction.read(StateRecordPath.authorization_job(job_id)).document
+            request = cast(dict[str, object], job["request"])
+            document = documents[0].document
+            if (
+                job["phase"] != "claimed"
+                or request["operation"] not in {"restore", "delete"}
+                or document["kind"] != "ArchiveRetirementIntent"
+                or document["transition"] != request["operation"]
+                or document["provenance"] != {"kind": "authorization-job", "jobId": job_id}
+                or document["correlationId"] != request["correlationId"]
+                or document["tenantId"] != request["tenantId"]
+                or document["bucket"] != self.bucket
+                or build_expected_source(transaction, request) != job["expectedSource"]
+                or cast(dict[str, object], job["sourceAuthority"])["archiveRecord"]
+                != document["archiveRecord"]
+                or transaction.inspect_audit_correlation(request["correlationId"]).entry is not None
+            ):
+                raise ArchiveJournalError(
+                    "retirement cancellation lost its unchanged archived source"
+                )
+            try:
+                transaction.read(StateRecordPath.authorization_result(job_id))
+            except FileNotFoundError:
+                pass
+            else:
+                raise ArchiveJournalError("retirement cancellation follows a terminal result")
+            transaction.remove_reconciled_intent(
+                StateRecordPath.archive_retirement_intent(document["intentId"]),
+                IntentRemovalToken(retirement.revision, records[0].metadata_generation),
+            )
+        self._notify(ArchiveJournalBoundary.INTENT_REMOVED)
+        return True
 
     def _require_lock(self) -> None:
         self.spool.locks.require_held(LockName.EXPORT, mode=LockMode.EXCLUSIVE)
@@ -655,6 +709,15 @@ def _require_terminal_local_state(
     audit: dict[str, object],
 ) -> None:
     tenant = intent["tenantId"]
+    if result["status"] == "failed" and intent["kind"] == "ArchiveConstructionIntent":
+        desired = _failed_construction_source(job, intent)
+        candidate = None if intent["phase"] == "prepared" else _archive_record(intent, desired)
+        if result.get("archiveRecord") != candidate:
+            raise ArchiveJournalError("failed construction lost its exact candidate evidence")
+        # This construction never published a local transaction. Its failure
+        # must not require or overwrite a source that has since drifted. The
+        # independent bound-version check still refuses retirement of live data.
+        return
     if result["operation"] == "delete" and result["status"] == "succeeded":
         expected = cast(dict[str, object], job["expectedSource"])
         if tenant in transaction.measure_inventory().tenant_ids or audit.get(
@@ -712,4 +775,83 @@ def _reserve_journal(filesystem: Callable[[], FilesystemCapacity]) -> None:
         ReleaseCapacityUsage(()),
         CapacityReservation(4 * MAX_CANONICAL_BYTES, 4),
         filesystem(),
+    )
+
+
+def _failed_construction_source(
+    job: dict[str, object], intent: dict[str, object]
+) -> dict[str, object]:
+    authority = cast(dict[str, object], job["sourceAuthority"])
+    source = authority["manifest"]
+    expected = cast(dict[str, object], job["expectedSource"])
+    if (
+        type(source) is not dict
+        or authority["archiveRecord"] is not None
+        or manifest_digest(source).to_dict() != expected["manifestDigest"]
+        or expected["manifestDigest"] != intent["sourceManifestDigest"]
+        or expected["deploymentDigest"] != intent["deploymentRecordDigest"]
+    ):
+        raise ArchiveJournalError("failed construction lost its captured source authority")
+    candidate = deepcopy(source)
+    spec = cast(dict[str, object], candidate["spec"])
+    spec["desiredState"] = "archived"
+    if manifest_digest(candidate).to_dict() != intent["candidateManifestDigest"]:
+        raise ArchiveJournalError("failed construction lost its captured candidate authority")
+    return cast(dict[str, object], spec["desiredDeployment"])
+
+
+def failed_construction_result(
+    job: dict[str, object], intent: dict[str, object]
+) -> dict[str, object]:
+    """Reconstruct the sole permitted failure from captured construction authority."""
+
+    desired = _failed_construction_source(job, intent)
+    result: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationResult",
+        "provenance": {"kind": "authorization-job", "jobId": job["jobId"]},
+        "operation": "archive",
+        "status": "failed",
+        "tenantId": intent["tenantId"],
+        "correlationId": intent["correlationId"],
+        "errorCode": "archive_unavailable",
+        "archiveRecord": None
+        if intent["phase"] == "prepared"
+        else _archive_record(intent, desired),
+    }
+    validate_contract(result, expected_kind=ContractKind.OPERATION_RESULT)
+    return result
+
+
+def _reserve_construction(transaction: _StateTransaction, limits: HostCapacityLimits) -> None:
+    transaction.admit_inventory(
+        StateInventoryReservation(
+            authorization_records=1,
+            authorization_allocated_bytes=transaction.allocation_upper_bound(MAX_CANONICAL_BYTES),
+        )
+    )
+    audit = transaction.inspect_audit()
+    audit_allocation = transaction.allocation_upper_bound(
+        DEFAULT_AUDIT_LIMITS.maximum_segment_bytes
+    )
+    if (
+        audit.allocated_bytes + audit_allocation + transaction.namespace_allocation_upper_bound(1)
+        > DEFAULT_AUDIT_LIMITS.maximum_ordinary_bytes
+    ):
+        raise AuditCapacityError("archive terminal audit would consume protected capacity")
+    # Before upload, allow the prepared/confirmed journal, source job binding,
+    # transaction intent, and five terminal records at their schema ceiling.
+    # Include the audit segment so even an aborted upload can finish its audit.
+    canonical_records = 9
+    count = canonical_records + 1
+    allocated = (
+        canonical_records * transaction.allocation_upper_bound(MAX_CANONICAL_BYTES)
+        + audit_allocation
+        + transaction.namespace_allocation_upper_bound(count)
+    )
+    admit_release_capacity(
+        ReleaseCapacityUsage(()),
+        CapacityReservation(allocated, count),
+        transaction.measure_filesystem_capacity(),
+        limits=limits,
     )
