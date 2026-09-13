@@ -31,6 +31,7 @@ from lowerduckpond_static_host_agent.repository import (
 from lowerduckpond_static_host_agent.state_inventory import (
     DEFAULT_STATE_INVENTORY_LIMITS,
     AuthorizationRecordInventory,
+    IntentRecordInventory,
     StateInventoryLimits,
     StateInventoryReservation,
 )
@@ -69,9 +70,24 @@ class CorrelationReconciliation:
 
     jobs: tuple[StoredContract, ...]
     repaired_records: int
+    deferred_jobs: tuple[StoredContract, ...] = ()
 
 
-class _CorrelationTransaction(Protocol):
+class _IntentTransaction(Protocol):
+    def measure_intent_records(self) -> IntentRecordInventory: ...
+
+    def read_intent(self, intent_id: object) -> tuple[StateRecordPath, StoredContract]: ...
+
+
+def lifecycle_reservation_owners(transaction: _IntentTransaction) -> frozenset[str]:
+    """Read durable lifecycle owners before spending audit or terminal capacity."""
+    return frozenset(
+        validate_uuid7(transaction.read_intent(identity.intent_id)[1].document["correlationId"])
+        for identity in transaction.measure_intent_records().records
+    )
+
+
+class _CorrelationTransaction(_IntentTransaction, Protocol):
     def read(self, path: StateRecordPath) -> StoredContract: ...
 
     def create_immutable(
@@ -146,20 +162,15 @@ class CorrelationAdmission:
                     )
                 established_job_id = _job_id(established)
                 return CorrelationResolution(
-                    job=transaction.read(StateRecordPath.authorization_job(established_job_id)),
+                    job=_read_retry_job(transaction, established_job_id),
                     created=False,
                     repaired_records=repaired_records,
                 )
 
-            # Construction admission reserves terminal result and audit space.
-            # Preserve it until the sole remote construction is reconciled;
-            # exact retries above remain available for that recovery.
-            for identity in transaction.measure_intent_records().records:
-                if (
-                    transaction.read_intent(identity.intent_id)[1].document["kind"]
-                    == "ArchiveConstructionIntent"
-                ):
-                    raise StateBusyError("export.lock is busy")
+            # Lifecycle intents hold terminal capacity and may precompute the
+            # next audit position. Exact durable retries above can recover them.
+            if lifecycle_reservation_owners(transaction):
+                raise StateBusyError("export.lock is busy")
 
             established_job_ids = {_job_id(document) for document in correlations.values()}
             if correlation_id in inventory.result_ids or job_id in inventory.result_ids:
@@ -235,11 +246,22 @@ class CorrelationAdmission:
             limits=self._limits,
             capacity_limits=self._capacity_limits,
         )
-        jobs = tuple(
-            transaction.read(StateRecordPath.authorization_job(_job_id(correlation)))
-            for _correlation_id, correlation in sorted(correlations.items())
+        jobs: list[StoredContract] = []
+        deferred: list[StoredContract] = []
+        for correlation_id, correlation in sorted(correlations.items()):
+            try:
+                jobs.append(
+                    transaction.read(StateRecordPath.authorization_job(_job_id(correlation)))
+                )
+            except FileNotFoundError:
+                # The correlation copy still authorizes its intake artifact,
+                # but cannot be handed to a worker before repair is admitted.
+                deferred.append(
+                    transaction.read(StateRecordPath.authorization_correlation(correlation_id))
+                )
+        return CorrelationReconciliation(
+            jobs=tuple(jobs), repaired_records=repaired_records, deferred_jobs=tuple(deferred)
         )
-        return CorrelationReconciliation(jobs=jobs, repaired_records=repaired_records)
 
     def find_retry(
         self,
@@ -270,10 +292,18 @@ class CorrelationAdmission:
                     "correlation ID is already bound to another authorized request"
                 )
             return CorrelationResolution(
-                job=transaction.read(StateRecordPath.authorization_job(_job_id(established))),
+                job=_read_retry_job(transaction, _job_id(established)),
                 created=False,
                 repaired_records=repaired_records,
             )
+
+
+def _read_retry_job(transaction: _CorrelationTransaction, job_id: str) -> StoredContract:
+    try:
+        return transaction.read(StateRecordPath.authorization_job(job_id))
+    except FileNotFoundError as error:
+        # Pair validation found durable authority but deferred its missing copy.
+        raise StateBusyError("export.lock is busy") from error
 
 
 def _validate_candidate(
@@ -301,7 +331,7 @@ def _validate_candidate(
     return correlation_id, job_id, accepted_at, canonical_json_bytes(candidate)
 
 
-def _reconcile_pairs(
+def _reconcile_pairs(  # noqa: PLR0912 - validate both durable indexes before deferring or publishing repairs
     transaction: _CorrelationTransaction,
     *,
     inventory: AuthorizationRecordInventory,
@@ -355,6 +385,10 @@ def _reconcile_pairs(
             repairs.append((StateRecordPath.authorization_correlation(correlation_id), job))
             correlations[correlation_id] = job
 
+    if repairs and lifecycle_reservation_owners(transaction):
+        # Validate all bindings, but preserve the owner's final result slot and
+        # allow startup to recover that owner before publishing missing copies.
+        return correlations, 0
     if repairs:
         reservation_bytes = sum(
             transaction.allocation_upper_bound(len(canonical_json_bytes(document)))

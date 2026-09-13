@@ -27,8 +27,10 @@ from lowerduckpond_static_host_agent.emergency_delete import (
     EmergencyDeletionError,
 )
 from lowerduckpond_static_host_agent.emergency_remote import finish_emergency_retirement
-from lowerduckpond_static_host_agent.execution import _later_audited_results
+from lowerduckpond_static_host_agent.execution import AuthorizationExecutor, _later_audited_results
 from lowerduckpond_static_host_agent.export_spool import ExportSpool
+from lowerduckpond_static_host_agent.intake import ArtifactIntake
+from lowerduckpond_static_host_agent.locks import StateBusyError
 from lowerduckpond_static_host_agent.release_store import DeploymentReleaseStore
 from lowerduckpond_static_host_agent.repository import (
     StateRecordPath,
@@ -473,3 +475,36 @@ def test_idle_root_recovery_needs_no_archive_credentials(
             emergency_entrypoint, "load_archive_configuration", unexpected_configuration
         )
         assert emergency_entrypoint.emergency_delete_main(["--recover"]) == 0
+
+
+def test_pending_failure_cannot_displace_emergency_audit_reservation(tmp_path: Path) -> None:
+    with _emergency(tmp_path, "undeployed") as (handler, tenant, _memory):
+        pending = CorrelationAdmission(handler.repository).resolve(_candidate(1), now=_BASE_TIME)
+        job_id = str(pending.job.document["jobId"])
+
+        def interrupt(boundary: str) -> None:
+            if boundary == "authority-sync":
+                raise InterruptedEmergencyError
+
+        handler.hook = interrupt
+        with pytest.raises(InterruptedEmergencyError):
+            handler.execute(tenant, _CORRELATION, operator_principal=_PRINCIPAL, reason=_REASON)
+        audit = handler.repository.inspect_audit()
+        (tmp_path / "state/intake").mkdir(mode=0o700, exist_ok=True)
+        with (
+            ArtifactIntake(tmp_path / "state", expected_owner=_OWNER) as intake,
+            pytest.raises(StateBusyError, match=r"export.lock is busy"),
+        ):
+            AuthorizationExecutor(handler.repository, intake).execute(job_id)
+        assert handler.repository.inspect_audit() == audit
+        assert handler.repository.read(StateRecordPath.authorization_job(job_id)).revision == (
+            pending.job.revision
+        )
+        with pytest.raises(FileNotFoundError):
+            handler.repository.read(StateRecordPath.authorization_result(job_id))
+        handler.hook = lambda _boundary: None
+        result = handler.execute(
+            tenant, _CORRELATION, operator_principal=_PRINCIPAL, reason=_REASON
+        )
+        assert result["status"] == "succeeded"
+        assert not handler.repository.measure_intent_records().records

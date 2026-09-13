@@ -319,11 +319,12 @@ class StartupReconciler:
 
     def reconcile(self) -> ReconciliationOutcome:
         repaired_pairs: int | None = None
+        deferred_repairs = 0
         queued: list[str] = []
         batch: tuple[str, ...] | None = None
 
         def load_authority() -> tuple[dict[str, VerifiedArtifact], set[str]]:
-            nonlocal batch, repaired_pairs
+            nonlocal batch, repaired_pairs, deferred_repairs
             with self._repository.transaction(
                 mode=LockMode.EXCLUSIVE,
                 blocking=True,
@@ -333,6 +334,11 @@ class StartupReconciler:
                 active_intent_jobs = self._active_intent_job_ids(transaction, repaired.jobs)
                 authorized: dict[str, VerifiedArtifact] = {}
                 terminal: set[str] = set()
+                deferred_repairs = len(repaired.deferred_jobs)
+                for stored in repaired.deferred_jobs:
+                    artifact = _artifact_binding(stored.document)
+                    if artifact is not None:
+                        authorized[f"{_correlation_id(stored.document)}.artifact"] = artifact
                 for stored in repaired.jobs:
                     job = stored.document
                     job_id = validate_uuid7(job["jobId"])
@@ -386,7 +392,7 @@ class StartupReconciler:
             repaired_pairs=repaired_pairs,
             removed_intake_entries=intake.removed_entries,
             enqueued_jobs=tuple(batch),
-            deferred_jobs=len(queued) - len(batch),
+            deferred_jobs=deferred_repairs + len(queued) - len(batch),
         )
 
     @staticmethod
