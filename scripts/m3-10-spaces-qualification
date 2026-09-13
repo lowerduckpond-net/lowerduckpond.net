@@ -91,6 +91,9 @@ for phase in create prepare converge idempotence verify; do
     printf '%s\n' passed >"${run_directory}/${phase}.passed"
 done
 cd "${repository_root}"
+# Record the start of the final independent proof conservatively, so pausing
+# before report packaging cannot refresh evidence that was already collected.
+date --utc +%Y-%m-%dT%H:%M:%S.%NZ >"${run_directory}/final-proof.started-at"
 uv run --quiet --frozen python -m scripts.check_m3_10_provider --storage-only
 if [[ $(git rev-parse HEAD) != "${source_revision}" || -n $(git status --porcelain) ]]; then
     echo "Source changed during live qualification; preserve this run for investigation." >&2
