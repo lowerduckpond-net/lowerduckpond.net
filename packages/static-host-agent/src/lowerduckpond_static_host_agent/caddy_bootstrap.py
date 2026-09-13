@@ -301,6 +301,7 @@ def _active_matches(runtime: CaddyRuntime, payload: CaddyGenerationPayload) -> b
 
 def empty_tenant_generation_matches_under_lock(  # noqa: PLR0913 - exact installed inputs
     runtime: CaddyRuntime,
+    store: CaddyGenerationStore,
     *,
     platform_namespace: dict[str, object],
     binary: CaddyBinarySource,
@@ -318,7 +319,7 @@ def empty_tenant_generation_matches_under_lock(  # noqa: PLR0913 - exact install
             origin_pull_ca_der=origin_pull_ca_der,
             origin_pull_required=origin_pull_required,
         )
-        return _generation_matches(
+        return store.bootstrap_retention_matches(selected.generation_id) and _generation_matches(
             active,
             CaddyGenerationPayload(
                 binary=binary,
