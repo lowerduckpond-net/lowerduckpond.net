@@ -22,12 +22,14 @@ backup_spaces_region: "{{ lookup('ansible.builtin.env', 'SPACES_REGION') }}"
 
 static_host_agent_artifact_path: >-
   {{ lookup('ansible.builtin.env', 'STATIC_HOST_AGENT_ARTIFACT_PATH') }}
-static_host_agent_archive_configuration:
-  format: lowerduckpond-archive-configuration-v1
-  region: "{{ lookup('ansible.builtin.env', 'SPACES_REGION') }}"
-  bucket: "{{ lookup('ansible.builtin.env', 'SPACES_ARCHIVE_BUCKET') }}"
-  accessKeyId: "{{ lookup('ansible.builtin.env', 'SPACES_ARCHIVE_ACCESS_KEY_ID') }}"
-  secretAccessKey: "{{ lookup('ansible.builtin.env', 'SPACES_ARCHIVE_SECRET_ACCESS_KEY') }}"
+static_host_agent_archive_configuration: >-
+  {{ {
+    'format': 'lowerduckpond-archive-configuration-v1',
+    'region': lookup('ansible.builtin.env', 'SPACES_REGION'),
+    'bucket': lookup('ansible.builtin.env', 'SPACES_ARCHIVE_BUCKET'),
+    'accessKeyId': lookup('ansible.builtin.env', 'SPACES_ARCHIVE_ACCESS_KEY_ID'),
+    'secretAccessKey': lookup('ansible.builtin.env', 'SPACES_ARCHIVE_SECRET_ACCESS_KEY')
+  } if static_host_agent_archive_lifecycle_enabled else {} }}
 static_host_agent_artifact_sha256: >-
   {{ lookup('ansible.builtin.env', 'STATIC_HOST_AGENT_ARTIFACT_SHA256') }}
 static_publication_enabled: false
