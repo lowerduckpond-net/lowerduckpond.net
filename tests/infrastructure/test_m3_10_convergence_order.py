@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
+import sys
 from pathlib import Path
+from typing import cast
 
 import pytest
+import yaml  # type: ignore[import-untyped]
 
 ROOT = Path(__file__).parents[2]
 CANDIDATE = "c" * 64
@@ -88,6 +92,13 @@ def runner(tmp_path: Path) -> tuple[Path, dict[str, str]]:
             exit "$TEST_CREDENTIAL_REPORT_STATUS";;
         *ansible-playbook*)
             echo ansible >>"$TEST_LOG"
+            for (( index=1; index<=$#; index++ )); do
+                if [[ ${!index} == --extra-vars ]]; then
+                    (( index+=1 ))
+                    variables=${!index}
+                    cat "${variables#@}" >>"$TEST_VARIABLES"
+                fi
+            done
             [[ "$TEST_ANSIBLE_STATUS" == 0 ]] || exit "$TEST_ANSIBLE_STATUS"
             echo 'host: ok=1 changed=0 unreachable=0 failed=0';;
         *) exit 99;;
@@ -113,6 +124,7 @@ def runner(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     environment = {
         "PATH": str(commands) + ":" + os.environ["PATH"],
         "TEST_LOG": str(tmp_path / "calls"),
+        "TEST_VARIABLES": str(tmp_path / "convergence-variables"),
         "TEST_SELECTED": PRECEDING,
         "TEST_SOURCE": "0" * 40,
         "TEST_COMPLETED_SOURCE": "0" * 40,
@@ -190,6 +202,9 @@ def test_verified_upgrade_checks_report_and_preflight_before_any_convergence(
 ) -> None:
     status, calls = run(runner)
     assert status == 0
+    assert [
+        json.loads(line) for line in Path(runner[1]["TEST_VARIABLES"]).read_text().splitlines()
+    ] == [{"static_host_agent_verified_completed_candidate": False}] * 2
     assert calls == [
         "general-preflight",
         "verify-report",
@@ -214,6 +229,9 @@ def test_completed_reconfiguration_uses_history_safe_host_gate(
     runner[1]["TEST_GENERAL_STATUS"] = "1"
     status, calls = run(runner)
     assert status == 0
+    assert [
+        json.loads(line) for line in Path(runner[1]["TEST_VARIABLES"]).read_text().splitlines()
+    ] == [{"static_host_agent_verified_completed_candidate": True}] * 2
     assert calls == [
         "completion-check",
         "operator-identity",
@@ -343,3 +361,66 @@ def test_incomplete_candidate_checks_completion_before_strict_empty_state_gate(
     status, calls = run(runner)
     assert status != 0
     assert calls == ["completion-check", "general-preflight"]
+
+
+@pytest.mark.parametrize(
+    "case", ["empty", "history", "verified", "changed-selection", "string", "legacy"]
+)
+def test_actual_ansible_history_guard_requires_completed_artifact_authority(
+    tmp_path: Path, case: str
+) -> None:
+    role = ROOT / "config/ansible/roles/static_host_agent"
+    tasks = cast(list[dict[str, object]], yaml.safe_load((role / "tasks/main.yml").read_text()))
+    defaults = cast(dict[str, object], yaml.safe_load((role / "defaults/main.yml").read_text()))
+    names = {
+        "Require explicit completed-candidate verification authority",
+        "Inspect authoritative tenant storage before disabled convergence",
+        "Refuse unsafe authoritative tenant storage before disabled convergence",
+        "Inspect authoritative tenant inventory before disabled convergence",
+        "Refuse disabling publication after tenant history exists",
+        "Inspect the selected host-agent artifact while tenant publication is enabled",
+        "Refuse host-agent selection drift while tenant publication is enabled",
+    }
+    selected = [task for task in tasks if task["name"] in names]
+    assert len(selected) == len(names)
+    state = tmp_path / "state"
+    (state / "tenants").mkdir(parents=True)
+    if case != "empty":
+        (state / "tenants/retained").mkdir()
+    installed = tmp_path / "installed"
+    target = installed / ("d" * 64 if case == "changed-selection" else CANDIDATE)
+    target.mkdir(parents=True)
+    (installed / "current").symlink_to(target)
+    variables = {
+        **defaults,
+        "static_host_agent_state_root": str(state),
+        "static_host_agent_install_root": str(installed),
+        "static_host_agent_artifact_sha256": CANDIDATE,
+        "caddy_generation_enabled": True,
+        "static_host_agent_verified_completed_candidate": "true"
+        if case == "string"
+        else case not in {"empty", "history"},
+        "static_host_agent_archive_lifecycle_enabled": case != "legacy",
+    }
+    playbook = tmp_path / "guard.json"
+    playbook.write_text(
+        json.dumps(
+            [{"hosts": "localhost", "gather_facts": False, "vars": variables, "tasks": selected}]
+        )
+    )
+    result = subprocess.run(  # noqa: S603 - actual tracked guard tasks on a disposable local state
+        [
+            str(Path(sys.executable).with_name("ansible-playbook")),
+            "--inventory",
+            "localhost,",
+            "--connection",
+            "local",
+            str(playbook),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert (result.returncode == 0) is (case in {"empty", "verified"}), (
+        result.stdout + result.stderr
+    )

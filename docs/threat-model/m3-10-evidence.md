@@ -372,6 +372,17 @@ runtime correction produces artifact
 the earlier installed evidence remains bound to its stated artifact. Fresh
 qualification and required CI must validate the new candidate before release.
 
+Further convergence review hides archive sockets from the ordinary reconciler,
+requires empty Workers-route inventories for both edge zones, and passes
+completed-candidate verification explicitly into both Ansible converges. The
+role still refuses ordinary tenant-history changes, legacy configuration, and
+a changed selected artifact. Six tests execute the actual Ansible guards on
+disposable local state. The combined gate/storage suite passed 312 tests with
+one separately configured MinIO case skipped; strict typing passed for 241 files
+and the production Ansible lint profile passed for 141 files. The installed
+credential suite also contains a direct socket-access probe using the ordinary
+reconciler's actual service policy.
+
 ## Outstanding convergence gates
 
 1. Finish acceptance and required CI for every dependent PR, merge the reviewed
