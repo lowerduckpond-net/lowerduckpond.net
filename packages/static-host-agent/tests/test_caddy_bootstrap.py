@@ -28,14 +28,30 @@ from lowerduckpond_static_host_agent import (
 from lowerduckpond_static_host_agent.caddy_bootstrap import (
     empty_tenant_generation_matches_under_lock,
 )
-from lowerduckpond_static_host_agent.caddy_generation import CaddyGenerationPayload
+from lowerduckpond_static_host_agent.caddy_generation import (
+    CaddyGenerationError,
+    CaddyGenerationPayload,
+)
 from lowerduckpond_static_host_agent.caddy_routes import build_tenant_caddy_routes
 
 _GENERATION_A = "0198d17f-6f4a-7000-8000-000000000001"
 _GENERATION_B = "0198d17f-6f4a-7000-8000-000000000002"
 
 
-@pytest.mark.parametrize("drift", ["none", "environment", "namespace", "origin-pull"])
+@pytest.mark.parametrize(
+    "drift",
+    [
+        "none",
+        "environment",
+        "namespace",
+        "origin-pull",
+        "predecessor",
+        "temporary",
+        "malformed",
+        "corrupt-predecessor",
+        "excess-generations",
+    ],
+)
 def test_last_tenant_generation_remains_bound_to_every_installed_input(
     tmp_path: Path, drift: str
 ) -> None:
@@ -87,18 +103,64 @@ def test_last_tenant_generation_remains_bound_to_every_installed_input(
             ),
         )
         runtime.select_active(_GENERATION_B)
+        if drift in {"predecessor", "corrupt-predecessor", "excess-generations"}:
+            identifiers = [_GENERATION_A]
+            if drift == "excess-generations":
+                identifiers.append("0198d17f-6f4a-7000-8000-000000000003")
+            for identifier in identifiers:
+                other_routes = build_tenant_caddy_routes(
+                    platform_namespace=namespace,
+                    tenants=(),
+                    runtime_generation_id=identifier,
+                    origin_pull_ca_der=(b"ca-a",),
+                    origin_pull_required=True,
+                )
+                store.publish(
+                    identifier,
+                    CaddyGenerationPayload(
+                        binary=source,
+                        environment=environment,
+                        configuration=other_routes.configuration,
+                        route_metadata=other_routes.route_metadata,
+                    ),
+                )
+        if drift == "temporary":
+            (generations / (".ldp-generation-" + "a" * 32)).mkdir()
+        if drift == "malformed":
+            (generations / "unknown").mkdir()
+        if drift == "corrupt-predecessor":
+            predecessor = generations / _GENERATION_A
+            original_mode = predecessor.stat().st_mode & 0o777
+            predecessor.chmod(original_mode | 0o200)
+            (predecessor / "unexpected").touch()
+            predecessor.chmod(original_mode)
         if drift == "environment":
             environment = b"CLOUDFLARE_API_TOKEN=other\n"
         if drift == "namespace":
             namespace["initializedAt"] = "2026-08-30T12:00:00Z"
+        if drift in {"malformed", "corrupt-predecessor"}:
+            with pytest.raises(CaddyGenerationError):
+                store.bootstrap_retention_matches(_GENERATION_B)
+            with pytest.raises(CaddyGenerationError):
+                empty_tenant_generation_matches_under_lock(
+                    runtime,
+                    store,
+                    platform_namespace=namespace,
+                    binary=source,
+                    environment=environment,
+                    origin_pull_ca_der=(b"ca-a",),
+                    origin_pull_required=True,
+                )
+            return
         assert empty_tenant_generation_matches_under_lock(
             runtime,
+            store,
             platform_namespace=namespace,
             binary=source,
             environment=environment,
             origin_pull_ca_der=(b"ca-a",),
             origin_pull_required=drift != "origin-pull",
-        ) is (drift == "none")
+        ) is (drift in {"none", "predecessor"})
 
 
 def _accept_candidate(_generation: object, _environment: object) -> None:

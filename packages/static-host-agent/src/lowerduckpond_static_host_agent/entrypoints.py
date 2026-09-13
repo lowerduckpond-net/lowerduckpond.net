@@ -819,6 +819,7 @@ def _authoritative_caddy_generation_matches(  # noqa: PLR0913
                 return False
             generation_matches = empty_tenant_generation_matches_under_lock(
                 runtime,
+                store,
                 platform_namespace=namespace,
                 binary=binary,
                 environment=environment,
