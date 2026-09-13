@@ -286,8 +286,17 @@ while True:
             assert host.run("systemctl start %s", timer).rc == 0
 
 
+@pytest.mark.parametrize(
+    "service,already_unlinked",
+    [(None, False)]
+    + [
+        (service, unlinked)
+        for service in ("export", "construction", "cleanup")
+        for unlinked in (False, True)
+    ],
+)
 def test_installed_empty_configuration_withdraws_existing_archive_credentials(
-    host: Host, tmp_path: Path
+    host: Host, tmp_path: Path, service: str | None, already_unlinked: bool
 ) -> None:
     credential = "/etc/lowerduckpond/archive/credentials.json"
     assert host.file(credential).exists
@@ -312,6 +321,81 @@ def test_installed_empty_configuration_withdraws_existing_archive_credentials(
         "ansible.builtin.include_tasks": str(task_file),
         "vars": {"static_host_agent_archive_configuration": {}},
     }
+    before: list[dict[str, object]] = []
+    drained: list[dict[str, object]] = []
+    cleanup: list[dict[str, object]] = []
+    sockets = [
+        f"lowerduckpond-archive-{kind}.socket" for kind in ("export", "construction", "cleanup")
+    ]
+    active_sockets = [
+        unit for unit in sockets if host.run("systemctl is-active --quiet %s", unit).rc == 0
+    ]
+    if service is not None:
+        unit = f"lowerduckpond-archive-{service}@m3-10-withdrawal-proof.service"
+        directory = "/run/lowerduckpond-m3-10-withdrawal-proof"
+        dropin_directory = f"/etc/systemd/system/{unit}.d"
+        program = (
+            "from pathlib import Path\nimport time\n"
+            f"private_configuration = Path({credential!r}).read_bytes()\n"
+            f"Path({directory + '/ready'!r}).write_text('loaded')\n"
+            "while True: time.sleep(1)\n"
+        )
+        before = [
+            {"ansible.builtin.file": {"path": directory, "state": "directory", "mode": "0700"}},
+            {
+                "ansible.builtin.file": {
+                    "path": dropin_directory,
+                    "state": "directory",
+                    "mode": "0755",
+                }
+            },
+            {
+                "ansible.builtin.copy": {
+                    "content": program,
+                    "dest": directory + "/probe.py",
+                    "mode": "0600",
+                }
+            },
+            {
+                "ansible.builtin.copy": {
+                    "content": (
+                        "[Service]\nStandardInput=null\nExecStart=\n"
+                        f"ExecStart=/usr/bin/python3 -I -B {directory}/probe.py\n"
+                        f"BindPaths={directory}\n"
+                    ),
+                    "dest": dropin_directory + "/00-m3-10-withdrawal-proof.conf",
+                    "mode": "0644",
+                }
+            },
+            {
+                "ansible.builtin.systemd_service": {
+                    "name": unit,
+                    "state": "started",
+                    "daemon_reload": True,
+                }
+            },
+            {"ansible.builtin.wait_for": {"path": directory + "/ready", "timeout": 30}},
+        ]
+        if already_unlinked:
+            before.append(
+                {"ansible.builtin.file": {"path": credential, "state": "absent"}, "no_log": True}
+            )
+        drained = [
+            {
+                "ansible.builtin.command": {
+                    "argv": ["systemctl", "show", "--property=MainPID", "--value", unit]
+                },
+                "register": "archive_pid",
+                "changed_when": False,
+            },
+            {"ansible.builtin.assert": {"that": "archive_pid.stdout | trim == '0'"}},
+        ]
+        cleanup = [
+            {"ansible.builtin.systemd_service": {"name": unit, "state": "stopped"}},
+            {"ansible.builtin.file": {"path": dropin_directory, "state": "absent"}},
+            {"ansible.builtin.file": {"path": directory, "state": "absent"}},
+            {"ansible.builtin.systemd_service": {"daemon_reload": True}},
+        ]
     playbook = tmp_path / "withdrawal.json"
     playbook.write_text(
         json.dumps(
@@ -330,7 +414,9 @@ def test_installed_empty_configuration_withdraws_existing_archive_credentials(
                         {
                             "name": "Verify withdrawal and restore the fixture",
                             "block": [
+                                *before,
                                 withdraw,
+                                *drained,
                                 {
                                     "name": "Inspect the withdrawn credential path",
                                     "ansible.builtin.stat": {"path": credential},
@@ -354,6 +440,7 @@ def test_installed_empty_configuration_withdraws_existing_archive_credentials(
                                 },
                             ],
                             "always": [
+                                *cleanup,
                                 {
                                     "name": "Restore the private disposable archive configuration",
                                     "ansible.builtin.include_tasks": str(task_file),
@@ -364,7 +451,14 @@ def test_installed_empty_configuration_withdraws_existing_archive_credentials(
                                         )
                                     },
                                     "no_log": True,
-                                }
+                                },
+                                {
+                                    "ansible.builtin.systemd_service": {
+                                        "name": "{{ item }}",
+                                        "state": "started",
+                                    },
+                                    "loop": active_sockets,
+                                },
                             ],
                         },
                     ],
