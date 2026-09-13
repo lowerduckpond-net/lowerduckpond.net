@@ -6,6 +6,7 @@ import io
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from functools import partial
 from typing import Protocol, cast
 
 import botocore.session  # type: ignore[import-untyped]
@@ -272,6 +273,7 @@ def run_acceptance(
             target_owner=archive_client,
             target_bucket=archive_bucket,
             existing_key=archive_key,
+            existing_version=archive_version,
             write_key=f"{qualification_prefix}backup-to-archive",
         )
         _assert_cross_bucket_denial(
@@ -279,6 +281,7 @@ def run_acceptance(
             target_owner=backup_client,
             target_bucket=backup_bucket,
             existing_key=backup_key,
+            existing_version=backup_version,
             write_key=f"{qualification_prefix}archive-to-backup",
         )
 
@@ -379,12 +382,13 @@ def _cleanup_acceptance_prefixes(targets: tuple[tuple[S3Client, str], ...], *, p
         ) from cleanup_errors[0]
 
 
-def _assert_cross_bucket_denial(
+def _assert_cross_bucket_denial(  # noqa: PLR0913 - bind both owners and the exact disposable version
     *,
     source: S3Client,
     target_owner: S3Client,
     target_bucket: str,
     existing_key: str,
+    existing_version: str,
     write_key: str,
 ) -> None:
     _expect_error_code(
@@ -406,16 +410,29 @@ def _assert_cross_bucket_denial(
         )
     except ClientError as error:
         _require_client_error(error, expected_code="AccessDenied", expected_status=403)
-        return
-    unexpected_version = _nonnull_version_id(response)
-    _delete_version(
-        target_owner,
-        bucket=target_bucket,
-        key=write_key,
-        version_id=unexpected_version,
+    else:
+        unexpected_version = _nonnull_version_id(response)
+        _delete_version(
+            target_owner,
+            bucket=target_bucket,
+            key=write_key,
+            version_id=unexpected_version,
+        )
+        assert_storage_empty(target_owner, bucket=target_bucket, prefix=write_key)
+        raise ArchiveQualificationError("cross-bucket write unexpectedly succeeded")
+
+    # These permissions are independent: deleting a current key creates a marker,
+    # whereas deleting its exact version permanently removes bytes. Probe only
+    # this run's owner-created object; finally cleanup uses that owner's key.
+    for version_fields in ({}, {"VersionId": existing_version}):
+        _expect_error_code(
+            partial(source.delete_object, Bucket=target_bucket, Key=existing_key, **version_fields),
+            expected_code="AccessDenied",
+            expected_status=403,
+        )
+    _assert_exact_read(
+        target_owner, bucket=target_bucket, key=existing_key, version_id=existing_version
     )
-    assert_storage_empty(target_owner, bucket=target_bucket, prefix=write_key)
-    raise ArchiveQualificationError("cross-bucket write unexpectedly succeeded")
 
 
 def _put_exact(client: S3Client, *, bucket: str, key: str) -> str:

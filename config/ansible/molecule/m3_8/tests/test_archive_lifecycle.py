@@ -55,11 +55,14 @@ try:
             ('get_object', {'Key': 'archives/credential-proof', 'VersionId': version}),
             ('list_object_versions', {}),
             ('put_object', {'Key': 'archives/cross-denied', 'Body': b'x', 'ContentLength': 1}),
+            ('delete_object', {'Key': 'archives/credential-proof'}),
+            ('delete_object', {'Key': 'archives/credential-proof', 'VersionId': version}),
         ):
             try:
                 getattr(other, operation)(Bucket=bucket, **arguments)
             except ClientError as error:
                 assert error.response['ResponseMetadata']['HTTPStatusCode'] == 403
+                assert error.response['Error']['Code'] == 'AccessDenied'
             else:
                 raise AssertionError('cross-bucket access unexpectedly succeeded')
 finally:
