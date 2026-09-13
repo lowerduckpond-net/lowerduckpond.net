@@ -12,6 +12,26 @@ from testinfra.host import Host
 from config.ansible.molecule.default.tests.test_host import _run_installed_boundary_probe
 
 
+def test_installed_ordinary_reconciler_cannot_connect_to_archive_services(host: Host) -> None:
+    for name in ("export", "construction", "cleanup"):
+        assert host.file(f"/run/lowerduckpond-archive/{name}.sock").exists
+    _run_installed_boundary_probe(
+        host,
+        "lowerduckpond-static-reconcile.service",
+        """
+import socket
+for name in ('export', 'construction', 'cleanup'):
+    with socket.socket(socket.AF_UNIX) as client:
+        try:
+            client.connect(f'/run/lowerduckpond-archive/{name}.sock')
+        except (PermissionError, FileNotFoundError):
+            pass
+        else:
+            raise AssertionError('ordinary reconciler reached archive authority')
+""",
+    )
+
+
 @pytest.mark.parametrize("operation", ["export", "construction", "cleanup"])
 def test_installed_archive_credentials_stay_inside_the_network_boundary(
     host: Host, operation: str
