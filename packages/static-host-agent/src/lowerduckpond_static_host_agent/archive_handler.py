@@ -17,7 +17,10 @@ from lowerduckpond_static_host_agent.archive_activate import activate_archive_tr
 from lowerduckpond_static_host_agent.archive_cleanup_service import ArchiveCleanupClient
 from lowerduckpond_static_host_agent.archive_construction_service import ArchiveConstructionClient
 from lowerduckpond_static_host_agent.archive_journal import ArchiveConstructionJournal
-from lowerduckpond_static_host_agent.archive_prepare import prepare_archive_transition
+from lowerduckpond_static_host_agent.archive_prepare import (
+    ArchiveAuthorityDriftError,
+    prepare_archive_transition,
+)
 from lowerduckpond_static_host_agent.archive_quarantine import ArchiveQuarantine
 from lowerduckpond_static_host_agent.archive_recover import reconstruct_archive_transition
 from lowerduckpond_static_host_agent.archive_revalidate import revalidate_archive
@@ -260,9 +263,9 @@ class ArchiveLifecycleHandler:
                 capacity_limits=self._limits,
                 blocking=blocking,
             )
-        except CapacityError:
+        except CapacityError, ArchiveAuthorityDriftError:
             # Preparation discards an unjournaled candidate before propagating
-            # capacity refusal. Keep the source and durably retire this upload.
+            # refusal. Keep current tenant state and durably retire this upload.
             return self._abort(job_id, construction, blocking=blocking)
         outcome = activate_archive_transition(
             self._repository,

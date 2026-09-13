@@ -1129,7 +1129,7 @@ class AuthorizationExecutor:
                 return
             raise ExecutionError("successful delete retained an active tenant route")
 
-    def _validate_failed_external_terminal_state(  # noqa: PLR0911 - distinct failed-source and supersession boundaries
+    def _validate_failed_external_terminal_state(  # noqa: PLR0911, PLR0912 - distinct failed-source and supersession boundaries
         self,
         job: dict[str, object],
         result: dict[str, object],
@@ -1140,7 +1140,10 @@ class AuthorizationExecutor:
         source_manifest = authority.source_manifest
         source_route_set = authority.source_route_set
         archive = authority.archive_record
-        self._validate_failed_archive_absence(result, authority=authority)
+        if not self._validate_failed_archive_absence(
+            job, result, authority=authority, blocking=blocking
+        ):
+            return
         if result["operation"] in {"delete", "restore"} and archive is not None:
             validator = self._retained_archive_validator
             try:
@@ -1204,12 +1207,14 @@ class AuthorizationExecutor:
 
     def _validate_failed_archive_absence(
         self,
+        job: dict[str, object],
         result: dict[str, object],
         *,
         authority: _LifecycleDispatchAuthority,
-    ) -> None:
+        blocking: bool,
+    ) -> bool:
         if result["operation"] != "archive":
-            return
+            return True
         candidate = result.get("archiveRecord")
         if candidate is None:
             unreturned_validator = self._unreturned_archive_validator
@@ -1219,7 +1224,7 @@ class AuthorizationExecutor:
                 and unreturned_validator(validate_uuid7(provenance["jobId"])) is not True
             ):
                 raise ExecutionError("failed archive retains unaccounted remote evidence")
-            return
+            return True
         source_manifest = authority.source_manifest
         if type(candidate) is not dict or type(source_manifest) is not dict:
             raise ExecutionError("failed archive candidate authority is malformed")
@@ -1241,8 +1246,17 @@ class AuthorizationExecutor:
         ):
             raise ExecutionError("failed archive candidate authority is malformed")
         validator = self._retired_archive_validator
-        if validator is None or validator(candidate) is not True:
+        try:
+            retired = validator is not None and validator(candidate)
+        except Exception:
+            if self._result_was_superseded(job, result, blocking=blocking):
+                return False
+            raise
+        if retired is not True:
+            if self._result_was_superseded(job, result, blocking=blocking):
+                return False
             raise ExecutionError("failed archive retained its candidate archive object")
+        return True
 
     def _result_was_superseded(
         self,

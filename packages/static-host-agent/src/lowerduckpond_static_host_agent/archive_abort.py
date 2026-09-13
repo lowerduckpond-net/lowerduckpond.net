@@ -1,4 +1,4 @@
-"""Durable failure of an unpublished construction, preserving its exact source."""
+"""Durable failure of an unpublished construction, preserving current tenant state."""
 
 from __future__ import annotations
 
@@ -10,13 +10,15 @@ from typing import cast
 from lowerduckpond_static_contracts import (
     ContractKind,
     canonical_json_bytes,
-    manifest_digest,
     result_digest,
     validate_contract,
     validate_uuid7,
 )
 
-from lowerduckpond_static_host_agent.archive_journal import _archive_record
+from lowerduckpond_static_host_agent.archive_journal import (
+    _archive_record,
+    _failed_construction_source,
+)
 from lowerduckpond_static_host_agent.audit import DEFAULT_AUDIT_LIMITS
 from lowerduckpond_static_host_agent.capacity import (
     DEFAULT_HOST_CAPACITY_LIMITS,
@@ -27,7 +29,6 @@ from lowerduckpond_static_host_agent.capacity import (
 )
 from lowerduckpond_static_host_agent.execution import ExecutionOutcome
 from lowerduckpond_static_host_agent.export_spool import ExportSpool
-from lowerduckpond_static_host_agent.issuance import build_expected_source
 from lowerduckpond_static_host_agent.locks import LockMode, LockName
 from lowerduckpond_static_host_agent.repository import StateRecordPath, StateRepository
 from lowerduckpond_static_host_agent.route_commit import _ensure_audit, _ensure_result
@@ -55,8 +56,9 @@ def finalize_failed_construction(  # noqa: PLR0912, PLR0913, PLR0915 - explicit 
 ) -> ExecutionOutcome:
     """Publish failure while retaining the construction for independent remote cleanup.
 
-    No local transaction may exist and the complete authorized source must
-    remain current. The result stays behind the intent barrier until the
+    No local transaction may exist. The captured source binds only this
+    unpublished construction, without changing current tenant state. The
+    result stays behind the intent barrier until the
     network service proves permanent remote absence and removes that journal.
     """
     canonical_job = validate_uuid7(job_id)
@@ -72,10 +74,9 @@ def finalize_failed_construction(  # noqa: PLR0912, PLR0913, PLR0915 - explicit 
             or job.document["phase"] not in {"claimed", "failed"}
             or request["operation"] != "archive"
             or expected["lifecycle"] not in {"active", "suspended"}
-            or build_expected_source(transaction, request) != expected
             or len(identities) != 1
         ):
-            raise ArchiveAbortError("construction failure has no unchanged exclusive source")
+            raise ArchiveAbortError("construction failure has no exclusive source authority")
         _intent_path, stored = transaction.read_intent(identities[0].intent_id)
         intent = stored.document
         if (
@@ -88,22 +89,7 @@ def finalize_failed_construction(  # noqa: PLR0912, PLR0913, PLR0915 - explicit 
             or intent["deploymentRecordDigest"] != expected["deploymentDigest"]
         ):
             raise ArchiveAbortError("construction failure exceeds its job authority")
-        source = transaction.read(StateRecordPath.tenant_desired(request["tenantId"])).document
-        if job.document["sourceAuthority"] != {"manifest": source, "archiveRecord": None}:
-            raise ArchiveAbortError("construction failure lost its exact source manifest")
-        desired = cast(
-            dict[str, object], cast(dict[str, object], source["spec"])["desiredDeployment"]
-        )
-        deployment = transaction.read(
-            StateRecordPath.tenant_deployment(request["tenantId"], desired["id"])
-        ).document
-        candidate = deepcopy(source)
-        cast(dict[str, object], candidate["spec"])["desiredState"] = "archived"
-        if (
-            intent["candidateManifestDigest"] != manifest_digest(candidate).to_dict()
-            or intent["releaseTreeDigest"] != deployment["releaseTreeDigest"]
-        ):
-            raise ArchiveAbortError("construction failure lost its exact candidate binding")
+        desired = _failed_construction_source(job.document, intent)
         result: dict[str, object] = {
             "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
             "kind": "OperationResult",
@@ -115,7 +101,7 @@ def finalize_failed_construction(  # noqa: PLR0912, PLR0913, PLR0915 - explicit 
             "errorCode": "archive_unavailable",
             "archiveRecord": None
             if intent["phase"] == "prepared"
-            else _archive_record(intent, deployment),
+            else _archive_record(intent, desired),
         }
         validate_contract(result, expected_kind=ContractKind.OPERATION_RESULT)
         result_path = StateRecordPath.authorization_result(canonical_job)
