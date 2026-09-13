@@ -15,6 +15,10 @@ from unittest.mock import patch as mock_patch
 import pytest
 from lowerduckpond_static_contracts import canonical_json_bytes
 from lowerduckpond_static_host_agent import archive_handler as handler_module
+from lowerduckpond_static_host_agent.archive_abort import (
+    ArchiveAbortBoundary,
+    finalize_failed_construction,
+)
 from lowerduckpond_static_host_agent.archive_activate import activate_archive_transition
 from lowerduckpond_static_host_agent.archive_cleanup_service import ArchiveCleanupClient
 from lowerduckpond_static_host_agent.archive_commit import ArchiveCommitBoundary
@@ -25,6 +29,7 @@ from lowerduckpond_static_host_agent.archive_construction_service import (
 )
 from lowerduckpond_static_host_agent.archive_handler import ArchiveLifecycleHandler
 from lowerduckpond_static_host_agent.archive_journal import PreparedArchive, VerifiedArchiveUpload
+from lowerduckpond_static_host_agent.archive_prepare import prepare_archive_transition
 from lowerduckpond_static_host_agent.archive_quarantine import ArchiveQuarantine
 from lowerduckpond_static_host_agent.archive_remote import ArchiveRemoteError, ArchiveRemoteStore
 from lowerduckpond_static_host_agent.archive_revalidate import revalidate_archive
@@ -32,7 +37,7 @@ from lowerduckpond_static_host_agent.archive_service import ArchiveExportClient
 from lowerduckpond_static_host_agent.caddy_runtime import CaddyRuntime
 from lowerduckpond_static_host_agent.capacity import admit_release_capacity
 from lowerduckpond_static_host_agent.delete_handler import DeleteLifecycleHandler
-from lowerduckpond_static_host_agent.execution import AuthorizationExecutor
+from lowerduckpond_static_host_agent.execution import AuthorizationExecutor, ExecutionError
 from lowerduckpond_static_host_agent.export_spool import ExportSpool
 from lowerduckpond_static_host_agent.intake import ArtifactIntake
 from lowerduckpond_static_host_agent.issuance import AuthorizationIssuer
@@ -470,6 +475,125 @@ def test_archive_handler_replays_a_lost_cleanup_receipt_without_losing_remote_ev
         for future in futures:
             future.result(timeout=5)
         assert remote.calls.count("put") == 1
+
+
+def _collect_failed_archive_source(
+    root: Path, repository: StateRepository, job_id: str, defect: str | None
+) -> None:
+    job = repository.read(StateRecordPath.authorization_job(job_id)).document
+    source = cast(dict[str, object], cast(dict[str, object], job["sourceAuthority"])["manifest"])
+    selected = cast(dict[str, object], cast(dict[str, object], source["spec"])["desiredDeployment"])
+    old_path = StateRecordPath.tenant_deployment(_TENANT, selected["id"])
+    root.joinpath(*old_path.components).unlink()
+    if defect in {"candidate", "release-tree"}:
+        identity = repository.measure_intent_records().records[0]
+        with repository.publication_transaction() as transaction:
+            path, stored = transaction.read_intent(identity.intent_id)
+            changed = stored.document
+            field = "candidateManifestDigest" if defect == "candidate" else "releaseTreeDigest"
+            cast(dict[str, object], changed[field])["value"] = "0" * 64
+            transaction.compare_and_swap(path, stored.revision, changed)
+    elif defect == "result":
+        path = StateRecordPath.authorization_result(job_id)
+        changed = repository.read(path).document
+        changed["errorCode"] = "conflict"
+        root.joinpath(*path.components).write_bytes(canonical_json_bytes(changed))
+    elif defect == "missing-audit":
+        for segment in (root / "audit").iterdir():
+            segment.unlink()
+
+
+@pytest.mark.parametrize(
+    ("boundary", "defect"),
+    [(boundary, None) for boundary in ArchiveAbortBoundary]
+    + [
+        (ArchiveAbortBoundary.JOB_SYNC, defect)
+        for defect in ("candidate", "release-tree", "result", "missing-audit")
+    ],
+)
+@pytest.mark.parametrize("replacement", [False, True])
+def test_failed_archive_cleanup_replays_after_source_deployment_collection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    boundary: ArchiveAbortBoundary,
+    defect: str | None,
+    replacement: bool,
+) -> None:
+    factories: list[Callable[[str], AuthorizationExecutor]] = []
+    with _host(tmp_path, executor_factory=factories) as (
+        executor,
+        job_id,
+        repository,
+        remote,
+        runtime,
+        futures,
+    ):
+
+        def drift(*args: object, **kwargs: object) -> object:
+            with repository.publication_transaction() as transaction:
+                path = StateRecordPath.tenant_desired(_TENANT)
+                current = transaction.read(path)
+                document = current.document
+                desired = cast(dict[str, object], document["spec"])
+                selected = cast(dict[str, object], desired["desiredDeployment"])
+                old_path = StateRecordPath.tenant_deployment(_TENANT, selected["id"])
+                if replacement:
+                    deployment = transaction.read(old_path).document
+                    deployment["id"] = "0198d17f-6f4a-7000-8000-000000000888"
+                    selected["id"] = deployment["id"]
+                    transaction.create_immutable(
+                        StateRecordPath.tenant_deployment(_TENANT, deployment["id"]), deployment
+                    )
+                else:
+                    cast(dict[str, object], document["metadata"])["slug"] = "changed-slug"
+                transaction.compare_and_swap(path, current.revision, document)
+            return prepare_archive_transition(*args, **kwargs)  # type: ignore[arg-type]
+
+        def interrupt(event: ArchiveAbortBoundary) -> None:
+            if event == boundary:
+                raise SimulatedCrashError
+
+        with monkeypatch.context() as patch:
+            patch.setattr(handler_module, "prepare_archive_transition", drift)
+            patch.setattr(
+                handler_module,
+                "finalize_failed_construction",
+                partial(finalize_failed_construction, failure_hook=interrupt),
+            )
+            with pytest.raises(SimulatedCrashError):
+                executor.execute(job_id)
+        assert remote.versions
+        assert len(repository.measure_intent_records().records) == 1
+        _collect_failed_archive_source(tmp_path / "state", repository, job_id, defect)
+        desired_before = repository.read(StateRecordPath.tenant_desired(_TENANT))
+        observed_before = repository.read(StateRecordPath.tenant_observed(_TENANT))
+        active_before = runtime.active
+        # Cleanup must run before the executor continues to refuse the externally
+        # changed deployment history. That refusal must not strand remote bytes.
+        with pytest.raises(ExecutionError, match=None if defect else "deployment history"):
+            factories[0](job_id).execute(job_id)
+        if defect is not None:
+            assert remote.versions
+            assert repository.measure_intent_records().records
+            assert "delete" not in remote.calls
+            return
+        result = repository.read(StateRecordPath.authorization_result(job_id)).document
+        assert result["status"] == "failed"
+        assert result["errorCode"] == "archive_unavailable"
+        assert not remote.versions
+        assert not repository.measure_intent_records().records
+        assert remote.calls.count("put") == 1
+        assert (
+            repository.read(StateRecordPath.tenant_desired(_TENANT)).revision
+            == desired_before.revision
+        )
+        assert (
+            repository.read(StateRecordPath.tenant_observed(_TENANT)).revision
+            == observed_before.revision
+        )
+        assert runtime.active == active_before
+        for future in futures:
+            future.result(timeout=5)
 
 
 def test_archive_recovery_waits_for_upload_after_client_disconnect(

@@ -800,6 +800,29 @@ def _failed_construction_source(
     return cast(dict[str, object], spec["desiredDeployment"])
 
 
+def failed_construction_result(
+    job: dict[str, object], intent: dict[str, object]
+) -> dict[str, object]:
+    """Reconstruct the sole permitted failure from captured construction authority."""
+
+    desired = _failed_construction_source(job, intent)
+    result: dict[str, object] = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationResult",
+        "provenance": {"kind": "authorization-job", "jobId": job["jobId"]},
+        "operation": "archive",
+        "status": "failed",
+        "tenantId": intent["tenantId"],
+        "correlationId": intent["correlationId"],
+        "errorCode": "archive_unavailable",
+        "archiveRecord": None
+        if intent["phase"] == "prepared"
+        else _archive_record(intent, desired),
+    }
+    validate_contract(result, expected_kind=ContractKind.OPERATION_RESULT)
+    return result
+
+
 def _reserve_construction(transaction: _StateTransaction, limits: HostCapacityLimits) -> None:
     transaction.admit_inventory(
         StateInventoryReservation(
