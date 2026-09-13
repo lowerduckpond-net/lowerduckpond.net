@@ -17,6 +17,7 @@ from lowerduckpond_static_host_agent.caddy_generation import (
     CADDY_CONFIGURATION_NAME,
     CADDY_ENVIRONMENT_NAME,
     CADDY_ROUTE_METADATA_NAME,
+    MAX_CADDY_GENERATIONS,
     CaddyBinarySource,
     CaddyGenerationPayload,
     CaddyGenerationStore,
@@ -310,6 +311,9 @@ def empty_tenant_generation_matches_under_lock(  # noqa: PLR0913 - exact install
     origin_pull_required: bool,
 ) -> bool:
     """Accept the fully bound empty generation produced by last-tenant deletion."""
+    identifiers = store.list_verified()
+    if len(identifiers) > MAX_CADDY_GENERATIONS:
+        return False
     selected = runtime.open_active_verified()
     with selected.generation as active:
         routes = build_tenant_caddy_routes(
@@ -319,7 +323,7 @@ def empty_tenant_generation_matches_under_lock(  # noqa: PLR0913 - exact install
             origin_pull_ca_der=origin_pull_ca_der,
             origin_pull_required=origin_pull_required,
         )
-        return store.bootstrap_retention_matches(selected.generation_id) and _generation_matches(
+        return selected.generation_id in identifiers and _generation_matches(
             active,
             CaddyGenerationPayload(
                 binary=binary,
