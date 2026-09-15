@@ -3,6 +3,8 @@ Description=Lower Duck Pond archived export network service
 Wants=network-online.target
 After=network-online.target
 ConditionPathExists=/etc/lowerduckpond/archive/credentials.json
+# Socket activation serializes requests; short valid exchanges may be frequent.
+StartLimitIntervalSec=0
 
 [Service]
 Type=exec

@@ -330,7 +330,13 @@ def _exercise_ansible_worker_overlap(
                     "--property=InvocationID %s",
                     unit,
                 )
-                journal = host.run("journalctl --no-pager --lines=30 --unit=%s", unit)
+                journal = host.run(
+                    "journalctl --no-pager --lines=30 --unit=%s "
+                    "--unit=lowerduckpond-archive-export.socket "
+                    "--unit=lowerduckpond-archive-construction.socket "
+                    "--unit=lowerduckpond-archive-cleanup.socket",
+                    unit,
+                )
                 worker_diagnostics = state.stdout + state.stderr + journal.stdout + journal.stderr
             ansible_result = ansible.result(timeout=600)
     finally:

@@ -7,6 +7,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import archive_capture_support as captures
+import archive_socket_support as sockets
 import pytest
 import test_export_import as exports
 import test_lifecycle as support
@@ -279,6 +280,12 @@ def test_installed_archive_export_restore_rearchive_and_delete(host: Host, tmp_p
             mode=("caddy-fault", "capture-archived", "ansible", "ordinary")[iteration],
         )
         assert support._lifecycle(restored) == "active"
+        if iteration == 0:
+            provenance = restored["provenance"]
+            assert isinstance(provenance, dict)
+            sockets.assert_cleanup_request_queues_through_service_teardown(
+                host, str(provenance["jobId"])
+            )
         assert restored["canonicalOrigin"] == original_origin
         deployment = support._desired_deployment(restored)
         assert deployment not in deployments

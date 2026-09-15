@@ -8,8 +8,10 @@ SocketUser=root
 SocketGroup=root
 SocketMode=0600
 DirectoryMode=0700
-Accept=yes
-MaxConnections=1
+# One fixed instance drains one connection; the next waits for service exit.
+Accept=no
+Service=lowerduckpond-archive-cleanup@request.service
+FlushPending=no
 Backlog=1
 RemoveOnStop=true
 
