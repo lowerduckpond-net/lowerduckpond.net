@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 import shlex
 import shutil
 import stat
@@ -16,6 +15,7 @@ from io import BytesIO
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from ansible_output import assert_reapply_result, plain_environment, plain_output
 from lowerduckpond_static_contracts import canonical_json_bytes, manifest_digest
 from lowerduckpond_static_operator import OperatorClientError, submit
 from testinfra.host import Host
@@ -330,7 +330,7 @@ def _run_ansible_reapply(
     return subprocess.run(  # noqa: S603 - resolved trusted tool path
         [uv, "run", "molecule", "converge", "--scenario-name", "m3_8"],
         cwd=project,
-        env=environment,
+        env=plain_environment(environment),
         check=False,
         capture_output=True,
         text=True,
@@ -342,12 +342,11 @@ def _assert_ansible_reapply_result(
     *,
     expected_changes: int = 0,
 ) -> None:
-    assert result.returncode == 0, result.stdout + result.stderr
-    recap = re.compile(
-        rf"^{re.escape(CONTAINER)}\s+: ok=\d+\s+changed={expected_changes}\s+",
-        re.MULTILINE,
+    assert_reapply_result(
+        result,
+        container=CONTAINER,
+        expected_changes=expected_changes,
     )
-    assert recap.search(result.stdout) is not None, result.stdout + result.stderr
 
 
 def _reapply_ansible(*, expected_changes: int = 0) -> None:
@@ -376,7 +375,7 @@ def _assert_ansible_refuses_generation_input_drift(host: Host) -> None:
     assert result.returncode != 0, result.stdout + result.stderr
     assert (
         "refusing to alter staged inputs without a tenant-capable generation migration"
-        in result.stdout
+        in plain_output(result)
     )
 
     selected_after = host.run("cat /etc/caddy/active")
@@ -426,7 +425,7 @@ def _assert_ansible_refuses_live_operator_boundary_drift(host: Host) -> None:
     try:
         result = _run_ansible_reapply()
         assert result.returncode != 0, result.stdout + result.stderr
-        assert "refusing to mutate an admitted request path" in result.stdout, (
+        assert "refusing to mutate an admitted request path" in plain_output(result), (
             result.stdout + result.stderr
         )
         unchanged = host.run("sha256sum %s", adapter)
@@ -459,7 +458,7 @@ def _assert_ansible_refuses_publication_disable(host: Host) -> None:
 
     result = _run_ansible_reapply(static_publication_enabled=False)
     assert result.returncode != 0, result.stdout + result.stderr
-    assert "refusing to disable static publication" in result.stdout
+    assert "refusing to disable static publication" in plain_output(result)
 
     selected_after = host.run("cat /etc/caddy/active")
     configuration_after = host.run("cat %s", PUBLICATION_CONFIGURATION)
