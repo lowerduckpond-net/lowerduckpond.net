@@ -13,6 +13,15 @@ _DIRECTORY = "/run/lowerduckpond-m3-10-socket-queue"
 _DROP_IN = "/run/systemd/system/lowerduckpond-archive-cleanup@.service.d/m3-10-queue.conf"
 
 
+def _active_cleanup_units(host: Host) -> list[str]:
+    active = host.run(
+        "systemctl list-units --state=active,activating,deactivating "
+        "--plain --no-legend 'lowerduckpond-archive-cleanup@*.service'"
+    )
+    assert active.rc == 0, active.stderr
+    return [line.split()[0] for line in active.stdout.splitlines()]
+
+
 def assert_cleanup_request_queues_through_service_teardown(host: Host, job_id: str) -> None:
     # This runs after a fully validated restore. Both probes only recheck the
     # retired archive's absence; neither creates a job nor mutates remote data.
@@ -42,14 +51,22 @@ drop_in.write_text('[Service]\\nBindPaths={_DIRECTORY}\\n'
         f"""
 import json
 from pathlib import Path
-from lowerduckpond_static_host_agent.archive_cleanup_service import ArchiveCleanupClient
+from lowerduckpond_static_host_agent.archive_cleanup_service import (
+    ArchiveCleanupClient, connect_archive_cleanup,
+)
 from lowerduckpond_static_host_agent.export_spool import ExportSpool
 root = Path({support.STATE_ROOT!r})
 job = json.loads((root / 'authorization/jobs' / {job_id + ".json"!r}).read_text())
 assert job['executionValidated'] is True
 assert job['request']['operation'] == 'restore'
+attempt_marker = None
+def connect():
+    stream = connect_archive_cleanup()
+    if attempt_marker is not None:
+        attempt_marker.touch()
+    return stream
 with ExportSpool(root, expected_owner=0) as spool:
-    assert ArchiveCleanupClient(spool).verify_terminal(
+    assert ArchiveCleanupClient(spool, connector=connect).verify_terminal(
         {job_id!r}, job['sourceAuthority']['archiveRecord'], mode='retired')
 """,
     )
@@ -60,16 +77,11 @@ with ExportSpool(root, expected_owner=0) as spool:
         while not host.file(f"{_DIRECTORY}/ready").exists:
             assert time.monotonic() < deadline, "archive helper did not enter held teardown"
             time.sleep(0.05)
-        active = host.run(
-            "systemctl list-units --state=active,activating,deactivating "
-            "--plain --no-legend 'lowerduckpond-archive-cleanup@*.service'"
-        )
-        assert active.rc == 0, active.stderr
-        units = [line.split()[0] for line in active.stdout.splitlines()]
-        assert len(units) == 1, active.stdout
+        units = _active_cleanup_units(host)
+        assert len(units) == 1, units
         queued_script = script.replace(
-            "with ExportSpool",
-            f"Path({_DIRECTORY + '/attempted'!r}).touch()\nwith ExportSpool",
+            "attempt_marker = None",
+            f"attempt_marker = Path({_DIRECTORY + '/attempted'!r})",
         )
         with ThreadPoolExecutor(max_workers=1) as executor:
             second = executor.submit(host.run, "/usr/bin/python3 -I -B -c %s", queued_script)
@@ -80,6 +92,7 @@ with ExportSpool(root, expected_owner=0) as spool:
                     time.sleep(0.05)
                 time.sleep(0.5)
                 assert not second.done(), "next archive request was dropped during helper teardown"
+                assert _active_cleanup_units(host) == units
                 state = host.run("systemctl show --property=SubState --value %s", units[0])
                 assert state.rc == 0 and state.stdout.strip() == "stop-post", state.stdout
             finally:
@@ -100,14 +113,7 @@ Path({_DROP_IN!r}).unlink()
         reload = host.run("systemctl daemon-reload")
         assert reload.rc == 0, reload.stderr
         deadline = time.monotonic() + 30
-        while True:
-            active = host.run(
-                "systemctl list-units --state=active,activating,deactivating "
-                "--plain --no-legend 'lowerduckpond-archive-cleanup@*.service'"
-            )
-            assert active.rc == 0, active.stderr
-            if not active.stdout.strip():
-                break
+        while _active_cleanup_units(host):
             assert time.monotonic() < deadline, "archive probe helper did not finish"
             time.sleep(0.1)
         removed = host.run(

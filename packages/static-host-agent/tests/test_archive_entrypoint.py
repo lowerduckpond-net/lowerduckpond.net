@@ -123,3 +123,31 @@ def test_connected_stdin_is_rejected_before_loading_archive_credentials(
         assert entrypoint([]) == 1
     operation = entrypoint.__name__.removeprefix("archive_").removesuffix("_main")
     assert capsys.readouterr().err == f"archive_{operation}_service_failed\n"
+
+
+@pytest.mark.parametrize(
+    ("family", "kind"),
+    [(socket.AF_INET, socket.SOCK_STREAM), (socket.AF_UNIX, socket.SOCK_DGRAM)],
+)
+def test_activation_rejects_other_socket_families_and_datagrams(
+    monkeypatch: pytest.MonkeyPatch, family: int, kind: int
+) -> None:
+    duplicate = os.dup
+    with socket.socket(family, kind) as source:
+        monkeypatch.setattr(os, "dup", lambda _descriptor: duplicate(source.fileno()))
+        with (
+            pytest.raises(ValueError, match="listening Unix stream"),
+            archive_entrypoint._accept_connection(),
+        ):
+            pytest.fail("unsupported activation socket was accepted")
+
+
+def test_activation_wait_is_bounded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    duplicate = os.dup
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+        listener.bind(str(tmp_path / "s"))
+        listener.listen(1)
+        monkeypatch.setattr(os, "dup", lambda _descriptor: duplicate(listener.fileno()))
+        monkeypatch.setattr(archive_entrypoint, "_ACCEPT_TIMEOUT", 0.01)
+        with pytest.raises(TimeoutError), archive_entrypoint._accept_connection():
+            pytest.fail("activation without a waiting client was accepted")
