@@ -25,11 +25,11 @@
     - not static_host_agent_archive_lifecycle_enabled | bool
     - item.stat.exists
 
-- name: Start the root-only archive sockets for a compatible artifact
+- name: Apply the root-only archive sockets for a compatible artifact
   ansible.builtin.systemd_service:
     name: "{{ item }}"
     enabled: true
-    state: started
+    state: "{{ 'restarted' if static_host_agent_archive_units.changed | default(false) else 'started' }}"
   loop:
     - lowerduckpond-archive-export.socket
     - lowerduckpond-archive-construction.socket
