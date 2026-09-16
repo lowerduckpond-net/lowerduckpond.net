@@ -665,6 +665,7 @@
     - lowerduckpond-archive-cleanup.socket
     - lowerduckpond-archive-construction@.service
     - lowerduckpond-archive-cleanup@.service
+  register: static_host_agent_archive_units
   notify: Reload systemd for the static host agent
 
 - name: Install separately privileged emergency recovery units

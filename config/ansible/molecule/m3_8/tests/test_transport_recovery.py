@@ -304,6 +304,7 @@ def _exercise_ansible_worker_overlap(
     _install_worker_delay(host, seconds=30)
     worker_result = None
     ansible_result = None
+    worker_diagnostics = ""
     try:
         with ThreadPoolExecutor(max_workers=2) as executor:
             worker = executor.submit(
@@ -320,13 +321,32 @@ def _exercise_ansible_worker_overlap(
             assert not worker.done(), "worker did not overlap Ansible convergence"
             assert not ansible.done(), "Ansible did not overlap the active worker"
             worker_result = worker.result(timeout=90)
+            if worker_result.rc != 0:
+                # Capture the failed invocation before convergence can reconcile
+                # it: a durable result alone does not prove executor validation.
+                state = host.run(
+                    "systemctl show --property=ActiveState --property=SubState "
+                    "--property=Result --property=ExecMainCode --property=ExecMainStatus "
+                    "--property=InvocationID %s",
+                    unit,
+                )
+                journal = host.run(
+                    "journalctl --no-pager --lines=30 --unit=%s "
+                    "--unit=lowerduckpond-archive-export.socket "
+                    "--unit=lowerduckpond-archive-construction.socket "
+                    "--unit=lowerduckpond-archive-cleanup.socket",
+                    unit,
+                )
+                worker_diagnostics = state.stdout + state.stderr + journal.stdout + journal.stderr
             ansible_result = ansible.result(timeout=600)
     finally:
         _remove_worker_delay(host)
     assert worker_result is not None
     assert ansible_result is not None
     result = _await_result(host, job_id)
-    assert worker_result.rc == 0 or result["status"] == "failed", worker_result.stderr
+    assert worker_result.rc == 0 or result["status"] == "failed", (
+        worker_result.stderr + worker_diagnostics
+    )
     assert ansible_result.returncode == 0, ansible_result.stdout + ansible_result.stderr
     _await_authorization_quiescent(host, job_id)
     return result

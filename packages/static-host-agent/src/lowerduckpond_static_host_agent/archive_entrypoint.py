@@ -1,10 +1,12 @@
-"""Fixed socket-activated root entry point for archived export reads."""
+"""Serve one queued archive connection per bounded root service invocation."""
 
 from __future__ import annotations
 
 import os
 import socket
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Final
 
@@ -17,10 +19,29 @@ from lowerduckpond_static_host_agent.export_spool import ExportSpool
 from lowerduckpond_static_host_agent.repository import StateRepository
 
 _STATE_ROOT: Final = Path("/var/lib/lowerduckpond/static")
+_ACCEPT_TIMEOUT: Final = 30.0
+
+
+@contextmanager
+def _accept_connection() -> Iterator[socket.socket]:
+    # Accept=no keeps the next request in the socket's bounded backlog until
+    # the previous service has exited. Accept=yes/MaxConnections=1 instead
+    # drops it during the gap between a helper's reply and its process exit.
+    with socket.socket(fileno=os.dup(0)) as listener:
+        if (
+            listener.family != socket.AF_UNIX
+            or listener.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE) != socket.SOCK_STREAM
+            or listener.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN) != 1
+        ):
+            raise ValueError("archive activation requires a listening Unix stream")
+        listener.settimeout(_ACCEPT_TIMEOUT)
+        stream, _address = listener.accept()
+        with stream:
+            yield stream
 
 
 def archive_export_main(arguments: list[str] | None = None) -> int:
-    """Accept only systemd's connected socket on stdin, with no caller options."""
+    """Accept from systemd's listening socket on stdin, with no caller options."""
 
     return _archive_main(arguments, operation="export")
 
@@ -44,7 +65,7 @@ def _archive_main(arguments: list[str] | None, *, operation: str) -> int:
         return 64
     try:
         with (
-            socket.socket(fileno=os.dup(0)) as stream,
+            _accept_connection() as stream,
             StateRepository(_STATE_ROOT, expected_owner=0) as repository,
             ExportSpool(_STATE_ROOT, expected_owner=0) as spool,
         ):

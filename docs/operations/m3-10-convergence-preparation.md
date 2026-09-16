@@ -272,6 +272,13 @@ Each service derives the permitted object operation from
 its durable job, source binding, and journal; requests cannot supply credentials
 or arbitrary storage locations.
 
+Each socket activates one fixed service instance, which accepts one connection
+from a bounded backlog and exits after serving it. The next request remains
+queued until that instance finishes, including any teardown after its reply.
+This avoids `Accept=yes`/`MaxConnections=1` dropping a follow-up verification
+request while the previous helper is still exiting. Socket changes are
+restarted during convergence so the running activation policy matches disk.
+
 The full installed-unit policy is tested, including filesystem isolation,
 credential denial, descriptor lifetime, and the root emergency recovery service.
 Record the final artifact and installed lifecycle results in the evidence map;
