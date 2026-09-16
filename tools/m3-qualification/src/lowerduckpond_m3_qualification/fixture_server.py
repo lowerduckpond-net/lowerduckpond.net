@@ -23,7 +23,16 @@ class QualificationRequestHandler(BaseHTTPRequestHandler):
             self.send_error(HTTPStatus.NOT_FOUND)
             return
         state_received = bool(self.headers.get("Cookie"))
-        fetch_site = self.headers.get("Sec-Fetch-Site", "none")
+        # Emit only fixed labels, never request text (including folded headers).
+        fetch_site = {
+            "none": "none",
+            "same-origin": "same-origin",
+            "same-site": "same-site",
+            "cross-site": "cross-site",
+        }.get(self.headers.get("Sec-Fetch-Site", "none"))
+        if fetch_site is None:
+            self.send_error(HTTPStatus.BAD_REQUEST)
+            return
         body = b"lowerduckpond-m3-cookie-independent-body\n"
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
