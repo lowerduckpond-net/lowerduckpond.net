@@ -7,8 +7,12 @@ from typing import Final
 
 from botocore import exceptions as sdk_errors  # type: ignore[import-untyped]
 
+from lowerduckpond_static_host_agent.archive_configuration import ArchiveConfigurationError
 from lowerduckpond_static_host_agent.archive_remote import ArchiveRemoteError
 from lowerduckpond_static_host_agent.archive_transport import ArchiveTransportError
+from lowerduckpond_static_host_agent.durable import StatePathError
+from lowerduckpond_static_host_agent.repository import StateRecordError
+from lowerduckpond_static_host_agent.state_inventory import StateInventoryError
 
 _MIN_HTTP_STATUS: Final = 100
 _MAX_HTTP_STATUS: Final = 599
@@ -47,6 +51,10 @@ _ERROR_CATEGORIES: Final[tuple[tuple[type[BaseException], str], ...]] = (
     (sdk_errors.BotoCoreError, "provider_sdk"),
     (ArchiveRemoteError, "archive_validation"),
     (ArchiveTransportError, "archive_transport"),
+    (ArchiveConfigurationError, "archive_configuration"),
+    (StatePathError, "state_validation"),
+    (StateRecordError, "state_validation"),
+    (StateInventoryError, "state_validation"),
     (TimeoutError, "local_timeout"),
     (ConnectionError, "local_connection"),
     (PermissionError, "local_permission"),
