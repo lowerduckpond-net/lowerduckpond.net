@@ -13,6 +13,7 @@ from typing import Final
 from lowerduckpond_static_host_agent.archive_cleanup_service import serve_archive_cleanup
 from lowerduckpond_static_host_agent.archive_configuration import load_archive_configuration
 from lowerduckpond_static_host_agent.archive_construction_service import serve_archive_construction
+from lowerduckpond_static_host_agent.archive_diagnostics import archive_failure_diagnostic
 from lowerduckpond_static_host_agent.archive_quarantine import ArchiveQuarantine
 from lowerduckpond_static_host_agent.archive_service import serve_archive_export
 from lowerduckpond_static_host_agent.export_spool import ExportSpool
@@ -92,8 +93,10 @@ def _archive_main(arguments: list[str] | None, *, operation: str) -> int:
             else:
                 serve_archive_export(stream, repository, spool, remote)
         return 0
-    except Exception:
-        # Provider exceptions can contain sensitive request details. This is
-        # the process boundary, so diagnostics deliberately use one fixed code.
-        print(f"archive_{operation}_service_failed", file=sys.stderr)
+    except Exception as error:
+        # Classify failures using fixed labels, never private exception details.
+        print(
+            f"archive_{operation}_service_failed {archive_failure_diagnostic(error)}",
+            file=sys.stderr,
+        )
         return 1

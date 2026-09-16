@@ -149,6 +149,16 @@ archive bucket empty. Never remove journals, quarantine, or provider objects
 to force a successful run. Record the failed stage and sanitized error for
 review; private phase logs support workstation-side diagnosis.
 
+Archive service failures retain their `archive_<operation>_service_failed`
+prefix and add a fixed `category` in the service journal. Categories distinguish
+provider connection/read timeouts, rejected provider responses, archive
+validation, and local transport or filesystem failures. Rejected responses
+include only allowlisted operation/code labels and a bounded HTTP status;
+unknown values become `other`. Exception text, request headers, credentials,
+bucket names, and object keys are never logged by this diagnostic. These labels
+help diagnose a retained fixture; they do not authorize a new upload or cleanup,
+and a subsequent successful worker exit can represent a validated rollback.
+
 ## Closing the starting gate
 
 The workstation's Cloudflare token must also permit `Workers Routes Read` for
