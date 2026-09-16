@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import json
 import secrets
+import socket
+import ssl
 import subprocess
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 from lowerduckpond_m3_qualification import edge
@@ -568,6 +571,34 @@ def test_http_policy_requires_exact_method_preserving_redirects(
     assert evidence == {"redirect_only": True}
     assert any(method == "POST" for method, _, _ in observed)
     assert all("?m3=" in path for _, _, path in observed)
+
+
+def test_edge_certificate_enforces_tls_floor_and_retains_peer_verification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = ssl.create_default_context()
+    # Exercise the probe with a permissive default instead of depending on the
+    # interpreter's current TLS floor to enforce the qualification policy.
+    context.minimum_version = ssl.TLSVersion.MINIMUM_SUPPORTED
+    connect = MagicMock()
+    secured = MagicMock()
+    secured.__enter__.return_value = secured
+    secured.getpeercert.return_value = b"verified-edge-certificate"
+    wrap = MagicMock(return_value=secured)
+    monkeypatch.setattr(ssl, "create_default_context", lambda: context)
+    monkeypatch.setattr(socket, "create_connection", connect)
+    monkeypatch.setattr(context, "wrap_socket", wrap)
+
+    assert edge._edge_certificate(edge.PLATFORM_HOST) == b"verified-edge-certificate"
+
+    assert context.minimum_version == ssl.TLSVersion.TLSv1_2
+    assert context.verify_mode == ssl.CERT_REQUIRED
+    assert context.check_hostname is True
+    connect.assert_called_once_with((edge.PLATFORM_HOST, 443), timeout=edge.HTTP_TIMEOUT_SECONDS)
+    wrap.assert_called_once_with(
+        connect.return_value.__enter__.return_value, server_hostname=edge.PLATFORM_HOST
+    )
+    secured.getpeercert.assert_called_once_with(binary_form=True)
 
 
 def test_origin_certificate_is_observed_before_expected_client_auth_failure(
