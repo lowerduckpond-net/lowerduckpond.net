@@ -54,7 +54,9 @@ gate. After this interval or a candidate change, obtain the fresh evidence
 required by the [convergence runbook](../operations/m3-10-convergence-preparation.md).
 That applies to source-only changes too, until a separately reviewed evidence
 policy explicitly says otherwise. Coordinate the intended convergence window
-before choosing the next qualification revision.
+before choosing the next qualification revision. S6 below requires review of
+this blanket expiry; the current rule remains enforced until an accepted
+replacement is implemented and qualified.
 
 ## 2. Evidence for the work
 
@@ -67,6 +69,7 @@ before choosing the next qualification revision.
 | Failed runs preserve the host and private logs but have no structured failure summary. | [Spaces wrapper](../../scripts/m3-10-spaces-qualification) | Operators assemble evidence manually across logs and state. |
 | Publication-enabled hosts reject artifact replacement. | [Host-agent role](../../config/ansible/roles/static_host_agent/tasks/main.yml) | A retained failed fixture cannot simply receive a new artifact via converge. |
 | Fixed container names, SSH port, and artifact paths are shared. | [Molecule configuration](../../config/ansible/molecule/m3_8/molecule.yml), [wrapper](../../scripts/m3-10-spaces-qualification) | Concurrent scenarios need resource isolation before parallel execution. |
+| All supporting qualification evidence expires after 24 hours, while convergence separately rechecks provider/host conditions and current credentials. | [Report verifier](../../scripts/m3_10_qualification_report.py), [convergence runner](../../scripts/configure-production) | Elapsed time alone can force the complete installed/live suite to repeat; the blanket threshold needs a documented risk justification. |
 
 These observations establish opportunities, not a measured attribution of the
 three-hour runtime. Preserve the guarantees in
@@ -221,6 +224,42 @@ jobs fail closed. Compare coverage and wall/runner time with the S1 baseline.
 Changes to the live wrapper or its verifier also require the existing complete
 secure-workstation qualification before using that workflow as release evidence.
 
+### S6: Review qualification validity and freshness
+
+Review the blanket 24-hour expiry as a required sustainability deliverable.
+Separate candidate qualification from observations of mutable operating
+conditions. Evaluate retaining qualification for precisely identified inputs,
+with fresh bounded checks immediately before convergence. The review may proceed
+alongside S1 and inform S5; the current M3.10 corrective work still follows the
+existing gate until a replacement is implemented and qualified.
+
+Inventory what each proof establishes and what invalidates it. Candidate
+identity must cover the artifact, dependencies, service/Ansible policy, relevant
+configuration, test harness, and requirements. An unchanged artifact alone is
+insufficient when installation or verification behavior changes. Define how
+known regressions, changed assumptions, and relevant source changes revoke
+qualification. Any reuse across source revisions needs a verified comparison
+of those inputs and retained original provenance, including how documentation
+and other unrelated changes are distinguished from executable inputs.
+
+Specify which host, bucket, credential, and provider observations must be
+repeated immediately before convergence. Account for provider behavior that can
+change without an observable configuration change and is not covered by the
+existing short probes. If that residual risk justifies periodic full
+qualification or a maximum age, document the risk, chosen interval, coverage,
+and operator/runtime cost. Retaining 24 hours requires that justification;
+extending the number alone does not resolve the evidence-policy question.
+
+Acceptance: record a reviewed decision with an evidence-class validity and
+invalidation matrix, the chosen freshness windows and rationale, and a migration
+path for existing reports. Implement any changed verifier/runner policy and
+update its runbook and tests before declaring this slice complete. Prove that
+changed relevant inputs, failed fresh checks, incomplete reports, future-dated
+observations, and attempts to refresh timestamps cannot authorize convergence.
+If age-based reuse is allowed, demonstrate it only for the verified unchanged
+inputs and required fresh checks. A historical pass, failed run, or diagnostic
+report cannot silently acquire new qualification scope or cleanup authority.
+
 ## 4. Budgets and exit gate before M3.11
 
 These are engineering targets to validate, not performance claims:
@@ -248,6 +287,8 @@ The exit record must show:
 - the S2 failure report and independently runnable S3 case, including failure
   and cleanup behavior;
 - admission-policy equivalence and an invariant-to-test map for S4/S5;
+- the S6 evidence-validity decision, justified freshness windows, and completed
+  implementation/validation of any replacement policy;
 - reviewer acceptance, required CI, and final full installed qualification of
   the changed harness;
 - instructions a second operator can follow without reconstructing this chat.
