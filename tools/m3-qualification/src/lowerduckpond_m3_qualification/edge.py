@@ -779,6 +779,7 @@ def _origin_reached(response: EdgeResponse) -> bool:
 
 def _edge_certificate(hostname: str) -> bytes:
     context = ssl.create_default_context()
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
     with (
         socket.create_connection((hostname, 443), timeout=HTTP_TIMEOUT_SECONDS) as connection,
         context.wrap_socket(connection, server_hostname=hostname) as secured,
