@@ -1,8 +1,8 @@
 # M3 operational sustainability plan
 
 - Status: proposed; planning can proceed during M3.10 diagnosis
-- Date: 2026-09-16
-- Baseline: `9f8e95d296b93ab721c2643e751dfdae7ced0217` on `main`
+- Planned: 2026-09-16
+- Original planning baseline: `9f8e95d296b93ab721c2643e751dfdae7ced0217`
 - Parent: [Milestone 3](milestone-3.md)
 - Placement: after M3.10 qualification, before M3.11 implementation
 - Outcome: bounded development feedback, independently reproducible installed
@@ -10,30 +10,29 @@
 
 ## 1. Current constraints and sequence
 
-M3.10 has local installed evidence, but its live Spaces qualification and
-production convergence starting gate remain incomplete. The latest reported
+The 2026-09-16 planning checkpoint had local installed evidence but no passing
+live Spaces qualification or completed convergence starting gate. The reported
 full-size archive attempt ended in a validated rollback with an
 `archive_unavailable` result, no pending intents, and no archive quarantine.
 That does not establish fresh whole-bucket absence or a passing qualification.
-The original service exception was not retained, so its cause is unknown.
+The original service exception was not retained, so that report did not identify
+its cause.
 
 [PR #146](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/146)
-adds bounded service diagnostics. At this planning checkpoint it has reviewer
-acceptance and its installed-host CI is running. It is not the archive fix.
-Further review/CI corrections, diagnosis, a separate corrective PR, and another
-live qualification may still be necessary. None is assumed complete here.
+delivered bounded service diagnostics in merged commit `8618818b`. Its required
+CI passed before merge. Diagnostics do not establish the archive failure's
+cause or qualify a correction. The remaining prerequisites below require that
+evidence explicitly; live PR and CI progress belongs in the operator task.
 
 The delivery order is:
 
-1. Prepare and review this plan independently of PR #146. Read existing logs
-   and map tests while its checks run; do not restart its CI to carry planning.
-2. Finish any PR #146 corrections, obtain passing CI and reviewer acceptance,
-   and merge through the existing operator workflow. Diagnose the live failure
-   with a reviewed, safe reproduction procedure. Give the actual fix its own
-   regression, review, and required qualification.
-3. Record passing M3.10 live qualification for the exact candidate and preserve
+1. Diagnose the live failure with a reviewed, safe reproduction procedure using
+   the merged diagnostics. Give any required correction its own regression,
+   reviewer acceptance, required CI, and merge through the existing operator
+   workflow. Review this plan and map tests independently of that work.
+2. Record passing M3.10 live qualification for the exact candidate and preserve
    its evidence. Record remaining convergence prerequisites separately.
-4. Implement the bounded sustainability slices below. Complete their exit gate
+3. Implement the bounded sustainability slices below. Complete their exit gate
    before starting M3.11 implementation; preserve the full M3.12 acceptance gate.
 
 Planning and credential-free prototypes may proceed now. A minimal diagnostic
