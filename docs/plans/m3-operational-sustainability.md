@@ -121,8 +121,8 @@ diagnostic command for a retained run and known environment checks, including
 Docker credential-helper usability and supported filesystem/mount behavior.
 
 Cleanup eligibility requires fresh authoritative local accounting and the
-existing independent remote proof. No intents or quarantine alone is
-insufficient. A report must not delete objects, retry a failed job, or grant
+existing independent remote proof. Both proofs are mandatory even when intents
+and quarantine are absent. A report must not delete objects, retry a failed job, or grant
 cleanup authority. If collection fails, preserve the host and report unknown.
 
 Acceptance: injected provider, configuration, unavailable-host, and reporter
