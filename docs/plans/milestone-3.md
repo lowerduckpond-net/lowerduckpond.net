@@ -1,7 +1,7 @@
 # Milestone 3 implementation plan
 
 - Status: implementation in progress; M3.0 through M3.9 complete
-- Updated: 2026-09-12
+- Updated: 2026-09-16
 - Outcome: deliver the complete static-tenant lifecycle through the trusted
   workstation without enabling the Milestone 4 public control plane
 
@@ -1150,6 +1150,15 @@ and charged with archive admission closed until reconciliation proves its exact
 state.
 
 ### M3.11: complete backup, audit, and restored-state recovery
+
+Prerequisite: complete the bounded
+[M3 operational sustainability phase](m3-operational-sustainability.md) after
+M3.10 qualification and before implementing this phase. Its plan can be reviewed
+while M3.10 diagnosis continues. It adds independently reproducible installed
+scenarios, bounded failure reports, measured runtime improvements, reviewed
+CI selection, and an explicit review of qualification validity and the blanket
+24-hour expiry. Existing acceptance requirements remain in force until any
+replacement policy is reviewed, implemented, and qualified.
 
 Acquire the tenant-state lock in shared mode for backup and exclusive mode for
 mutation. Update Restic sources and excludes for every authoritative M3 path.

@@ -4,14 +4,14 @@ This roadmap turns the architecture in [`architecture.md`](architecture.md) into
 
 ## Progress
 
-Status as of 2026-09-07:
+Status as of 2026-09-16:
 
 | Milestone | Status | Outcome |
 | --- | --- | --- |
 | 0: Repository foundation | Complete | The public repository, development workflow, CI gates, application boundaries, and architecture decisions are established. |
 | 1: DigitalOcean foundation | Complete | OpenTofu manages the production network, Droplet, reserved IP, firewall, DNS, state, and durable backup storage; the guarded rebuild drill succeeded. |
 | 2: Reproducible host configuration | Complete | One trusted-workstation command converges production idempotently and passes host, HTTPS, backup, restore, and post-reboot acceptance checks. |
-| 3: Static tenant MVP | Current | M3.0 through M3.8 are complete; M3.9 portable export and import is next. Production publication remains disabled. |
+| 3: Static tenant MVP | Current | M3.0 through M3.9 are complete; M3.10 live qualification remains pending. A bounded operational sustainability phase precedes M3.11. Production publication remains disabled. |
 | 4: Control plane and lifecycle automation | Planned | Expose the static lifecycle through the FastAPI control plane with approvals, jobs, policy, and audit history. |
 | 5: Backup, observability, and operations | Planned | Complete platform-level recovery, central observability, alerting, and operator runbooks. Host backup and monitoring foundations arrived early in Milestone 2. |
 | 6: Dynamic PHP pilot | Planned | Introduce isolated PHP and tenant-scoped SQL only after the static platform and recovery path are proven. |
@@ -51,7 +51,11 @@ failure-injection, and Ansible-overlap gates passed on the disposable installed
 host. An actual systemd-host restart additionally preserved the exact durable
 trees, selected generation, and routes, completed startup reconciliation, and
 passed the full transport and recovery matrix afterward. M3.9 portable export
-and import is next.
+and import are complete. M3.10 implementation has local installed evidence;
+live Spaces qualification and the production convergence starting gate remain
+pending. The [operational sustainability plan](plans/m3-operational-sustainability.md)
+can be reviewed during diagnosis, with implementation following M3.10
+qualification and its exit gate required before M3.11 implementation.
 Production publication remains disabled, and Milestone 3 remains incomplete
 until every phase gate through M3.12 passes.
 
