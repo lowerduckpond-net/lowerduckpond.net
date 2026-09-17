@@ -314,9 +314,9 @@ def _exercise_ansible_worker_overlap(
             )
             _await_worker_start(host, job_id)
             ansible = executor.submit(support._run_ansible_reapply)
-            # The role deliberately waits for pre-lock workers before closing
-            # publication. Prove both operations are genuinely concurrent,
-            # then let that ordering drain the worker ahead of convergence.
+            # Prove that both operations are genuinely concurrent. Convergence
+            # closes publication before draining pre-lock workers; inspect the
+            # original invocation before subsequent recovery can replace it.
             time.sleep(5)
             assert not worker.done(), "worker did not overlap Ansible convergence"
             assert not ansible.done(), "Ansible did not overlap the active worker"
