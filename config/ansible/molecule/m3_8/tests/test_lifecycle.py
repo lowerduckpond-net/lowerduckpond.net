@@ -16,6 +16,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from ansible_output import assert_reapply_result, plain_environment, plain_output
+from correlation_pacing import BURST_REFILL_SECONDS, CorrelationPacer, wait_for_host_time
 from lowerduckpond_static_contracts import canonical_json_bytes, manifest_digest
 from lowerduckpond_static_operator import OperatorClientError, submit
 from testinfra.host import Host
@@ -29,12 +30,7 @@ PUBLICATION_CONFIGURATION = "/etc/lowerduckpond/static-publication.json"
 PUBLICATION_GATE = "/usr/local/libexec/lowerduckpond/static-publication-gate"
 STATE_ROOT = "/var/lib/lowerduckpond/static"
 RELEASE_ROOT = "/srv/lowerduckpond/sites"
-_BURST_CAPACITY = 5
-_CORRELATION_INTERVAL_SECONDS = 60.25
-_BURST_REFILL_SECONDS = _BURST_CAPACITY * _CORRELATION_INTERVAL_SECONDS
-_AVAILABLE_CORRELATION_TOKENS = float(_BURST_CAPACITY)
-_CORRELATION_TOKENS_UPDATED_AT: float | None = None
-_SEEN_CORRELATIONS: set[str] = set()
+_CORRELATION_PACER: CorrelationPacer | None = None
 _RETRYABLE_BUSY = frozenset(
     f"operator transport failed: {name}.lock is busy"
     for name in ("intake", "export", "publication", "tenant-state")
@@ -110,6 +106,8 @@ def _prepare_edge_probe(host: Host) -> None:
 
 
 def _await_persisted_admission_burst(host: Host) -> None:
+    global _CORRELATION_PACER  # noqa: PLW0603 - one integration run
+
     command = f"""
 import datetime
 import json
@@ -125,14 +123,20 @@ for path in root.glob("*.json"):
         )
     )
 if timestamps:
-    elapsed = (datetime.datetime.now(datetime.UTC) - max(timestamps)).total_seconds()
-    print(max(0.0, {_BURST_REFILL_SECONDS!r} - elapsed))
+    print(max(timestamps).timestamp() + {BURST_REFILL_SECONDS!r})
 else:
     print(0.0)
 """
     result = host.run("/usr/bin/python3 -I -B -c %s", command)
     assert result.rc == 0, result.stderr
-    time.sleep(float(result.stdout.strip()))
+
+    def host_clock() -> float:
+        sampled = host.run("/usr/bin/python3 -I -B -c %s", "import time; print(time.time())")
+        assert sampled.rc == 0, sampled.stderr
+        return float(sampled.stdout.strip())
+
+    wait_for_host_time(float(result.stdout.strip()), clock=host_clock)
+    _CORRELATION_PACER = CorrelationPacer(clock=host_clock)
 
 
 def _assert_route(
@@ -530,39 +534,15 @@ def _submit(  # noqa: PLR0913
 
 
 def _pace_new_correlation(request: dict[str, object]) -> bool:
-    global _AVAILABLE_CORRELATION_TOKENS  # noqa: PLW0603 - one integration run
-    global _CORRELATION_TOKENS_UPDATED_AT  # noqa: PLW0603 - one integration run
-
+    assert _CORRELATION_PACER is not None, "wait for persisted admission before issuing requests"
     correlation_id = request["correlationId"]
     assert type(correlation_id) is str
-    if correlation_id in _SEEN_CORRELATIONS:
-        return False
-
-    now = time.monotonic()
-    if _CORRELATION_TOKENS_UPDATED_AT is not None:
-        _AVAILABLE_CORRELATION_TOKENS = min(
-            float(_BURST_CAPACITY),
-            _AVAILABLE_CORRELATION_TOKENS
-            + (now - _CORRELATION_TOKENS_UPDATED_AT) / _CORRELATION_INTERVAL_SECONDS,
-        )
-    if _AVAILABLE_CORRELATION_TOKENS < 1.0:
-        time.sleep((1.0 - _AVAILABLE_CORRELATION_TOKENS) * _CORRELATION_INTERVAL_SECONDS)
-        now = time.monotonic()
-        _AVAILABLE_CORRELATION_TOKENS = 1.0
-
-    _AVAILABLE_CORRELATION_TOKENS -= 1.0
-    _CORRELATION_TOKENS_UPDATED_AT = now
-    _SEEN_CORRELATIONS.add(correlation_id)
-    return True
+    return _CORRELATION_PACER.pace(correlation_id)
 
 
 def _complete_correlation_pacing(new_correlation: bool) -> None:
-    global _CORRELATION_TOKENS_UPDATED_AT  # noqa: PLW0603 - one integration run
-
-    if new_correlation:
-        # Admission happens before the response completes. Discarding that elapsed
-        # time keeps the test-side bucket slightly more conservative than the host.
-        _CORRELATION_TOKENS_UPDATED_AT = time.monotonic()
+    assert _CORRELATION_PACER is not None
+    _CORRELATION_PACER.complete(new_correlation)
 
 
 def _request(operation: str, correlation_id: str, **fields: object) -> dict[str, object]:
