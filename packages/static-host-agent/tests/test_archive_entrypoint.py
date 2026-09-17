@@ -7,6 +7,7 @@ from contextlib import nullcontext
 from pathlib import Path
 
 import pytest
+from botocore.exceptions import ReadTimeoutError  # type: ignore[import-untyped]
 from lowerduckpond_static_host_agent import archive_entrypoint
 
 
@@ -48,10 +49,12 @@ def test_archive_entrypoint_requires_root(
     assert entrypoint([]) == 64  # noqa: PLR2004 - EX_USAGE
 
 
+@pytest.mark.parametrize("provider_timeout", [False, True])
 def test_archive_entrypoint_never_logs_provider_or_credential_exception_details(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     entrypoint: Callable[[list[str]], int],
+    provider_timeout: bool,
 ) -> None:
     monkeypatch.setattr(os, "geteuid", lambda: 0)
     monkeypatch.setattr(archive_entrypoint, "_accept_connection", lambda: nullcontext(object()))
@@ -63,12 +66,15 @@ def test_archive_entrypoint_never_logs_provider_or_credential_exception_details(
     )
 
     def unavailable() -> None:
+        if provider_timeout:
+            raise ReadTimeoutError(endpoint_url="https://private-provider.example/secret-object")
         raise RuntimeError("sensitive provider request diagnostic")
 
     monkeypatch.setattr(archive_entrypoint, "load_archive_configuration", unavailable)
     assert entrypoint([]) == 1
     operation = entrypoint.__name__.removeprefix("archive_").removesuffix("_main")
-    assert capsys.readouterr().err == f"archive_{operation}_service_failed\n"
+    category = "provider_read_timeout" if provider_timeout else "unexpected"
+    assert capsys.readouterr().err == f"archive_{operation}_service_failed category={category}\n"
 
 
 def test_each_activation_accepts_only_one_connection_and_preserves_the_queue(
@@ -122,7 +128,7 @@ def test_connected_stdin_is_rejected_before_loading_archive_credentials(
         monkeypatch.setattr(os, "dup", lambda _descriptor: duplicate(first.fileno()))
         assert entrypoint([]) == 1
     operation = entrypoint.__name__.removeprefix("archive_").removesuffix("_main")
-    assert capsys.readouterr().err == f"archive_{operation}_service_failed\n"
+    assert capsys.readouterr().err == f"archive_{operation}_service_failed category=unexpected\n"
 
 
 @pytest.mark.parametrize(
