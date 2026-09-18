@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import archive_capture_support as captures
@@ -19,6 +20,18 @@ from testinfra.host import Host
 _CYCLES = 4
 _HISTORY_LIMIT = 3
 _CONTENT = b"installed M3.10 versioned archive content\n"
+
+
+@contextmanager
+def _diagnose_submission(host: Host, request: dict[str, object]) -> Iterator[None]:
+    try:
+        yield
+    except OperatorClientError as error:
+        try:
+            diagnostics = _worker_diagnostics(host, str(request["correlationId"]))
+        except Exception:  # Keep the original failure if inspection also fails.
+            diagnostics = "worker diagnostics unavailable"
+        raise AssertionError(f"{error}\nWorker diagnostics: {diagnostics}") from error
 
 
 def _installed_python(host: Host, body: str) -> str:
@@ -266,15 +279,16 @@ def test_installed_archive_export_restore_rearchive_and_delete(host: Host, tmp_p
                 assert_rolled_back=lambda: recovery._assert_tenant_snapshot(host, snapshot),
             )
         else:
-            result = support._submit(
-                tmp_path,
-                operator,
-                identity,
-                ssh,
-                request,
-                artifact=artifact,
-                export_path=export_path,
-            )
+            with _diagnose_submission(host, request):
+                result = support._submit(
+                    tmp_path,
+                    operator,
+                    identity,
+                    ssh,
+                    request,
+                    artifact=artifact,
+                    export_path=export_path,
+                )
         assert result["status"] == "succeeded", result
         history.append((request, result))
         return result
@@ -368,12 +382,6 @@ def test_installed_archive_export_restore_rearchive_and_delete(host: Host, tmp_p
         # Export delivery is already acknowledged; historical requests return only results.
         if request["operation"] in {"deploy", "import"}:
             continue
-        try:
+        with _diagnose_submission(host, request):
             replayed = support._submit(tmp_path, operator, identity, ssh, request)
-        except OperatorClientError as error:
-            try:
-                diagnostics = _worker_diagnostics(host, str(request["correlationId"]))
-            except Exception:  # Keep the original failure if inspection also fails.
-                diagnostics = "worker diagnostics unavailable"
-            raise AssertionError(f"{error}\nWorker diagnostics: {diagnostics}") from error
         assert replayed == result
