@@ -337,7 +337,10 @@ def _exercise_ansible_worker_overlap(
                     "journalctl --no-pager --lines=30 --unit=%s "
                     "--unit=lowerduckpond-archive-export.socket "
                     "--unit=lowerduckpond-archive-construction.socket "
-                    "--unit=lowerduckpond-archive-cleanup.socket",
+                    "--unit=lowerduckpond-archive-cleanup.socket "
+                    "--unit=lowerduckpond-archive-export@request.service "
+                    "--unit=lowerduckpond-archive-construction@request.service "
+                    "--unit=lowerduckpond-archive-cleanup@request.service",
                     unit,
                 )
                 worker_diagnostics = state.stdout + state.stderr + journal.stdout + journal.stderr
