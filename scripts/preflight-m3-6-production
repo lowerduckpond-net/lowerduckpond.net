@@ -69,7 +69,7 @@ set -euo pipefail
 export LC_ALL=C
 
 candidate_artifact_digest=$1
-production_artifact_digest=4e32c4a88d729b371b8cd5da96e5fedbc9f30266acb0984599c1d645939bef85
+production_artifact_digest=a7ae4afe77c1fe9077ae58c8750a33518b26f7c5dc42485626b1ef22cd192800
 rollback_artifact_digest=3709daa0fd2465a73ae6b0c7dd0d6137cf0ec747e11e5e670df084113265d43b
 
 remote_fail() {

@@ -1,12 +1,20 @@
 # M3.10 convergence preparation
 
-Status: preparation only; the convergence starting gate has not passed.
-The [implementation plan](../plans/milestone-3.10.md) and
-[component evidence](../threat-model/m3-10-evidence.md) identify the implemented
-lifecycle and recovery paths. Local and disposable installed evidence is recorded
-by revision. Release CI and live provider evidence must match the final candidate;
-production preflight and the convergence gate remain outstanding.
-Publication remains `static_publication_enabled: false`.
+Status: live qualification, the starting gate, and production convergence
+completed on 2026-09-18 for source `22147a64e9b39e7965201cf2d96e07aeaa6d3ca1`
+and artifact
+`a7ae4afe77c1fe9077ae58c8750a33518b26f7c5dc42485626b1ef22cd192800`.
+The [production checkpoint](../threat-model/m3-10-evidence.md#production-checkpoint-2026-09-18)
+records the sanitized evidence, passing acceptance, and successful runner exit.
+Publication remains `static_publication_enabled: false`; the
+[implementation plan](../plans/milestone-3.10.md) defines the completed scope.
+
+The first-installation workflow below retains its exact preceding M3.9 host
+requirement. It is not a post-convergence health check. The guarded runner uses
+its completed-host path for a validated previous installation with a valid
+completion record. The recorded qualification is historical evidence for that
+release; a later source revision still needs the evidence required by the
+current policy.
 
 ## Secure-workstation workflow
 
@@ -192,8 +200,8 @@ The guarded configuration runner also exercises the freshly loaded archive and
 backup runtime keys before its first host mutation. This bounded storage check
 proves versioned write/read/delete and mutual bucket denial with the exact keys
 about to be installed, including after key rotation or routine reconfiguration.
-First convergence retains the whole-bucket-empty guard. A previously completed,
-unchanged source and artifact use only a new probe prefix, preserving existing tenant
+First convergence retains the whole-bucket-empty guard. A previously completed
+host uses only a new probe prefix, preserving existing tenant
 versions and delete markers. This scoped check cannot
 produce the full empty-baseline qualification report. Every completed-candidate
 run also rechecks bucket privacy, versioning, absence of policy/lifecycle rules,
@@ -219,30 +227,38 @@ export M3_10_ARCHIVE_CREDENTIAL_BACKUP_CONFIRMED=true
 just configure-production
 ```
 
-For a source or artifact change, that runner validates the report against the actual
-built artifact and clean current source, and repeats the M3.10 preflight before
-its first host mutation. Before choosing a host preflight, the runner checks
-completion. First installation retains the strict M3.6 empty-state gate. A
-completed candidate instead checks operator identity, reproducible builds,
+For a source or artifact change, that runner validates a fresh report against the
+actual built artifact and clean current source. Before choosing a host preflight,
+the runner reads the root-owned completion record and verifies its selected
+artifact. The recorded source must be available in the candidate's Git ancestry;
+an unavailable or unrelated source requires investigation. Missing completion
+retains the strict first-installation gates, including the exact M3.9 predecessor.
+Malformed records, untrusted metadata, SSH errors, and selection drift stop the
+runner rather than falling back to first installation. A completed host instead
+checks operator identity, reproducible builds,
 the pinned installed artifact, authoritative Caddy state, and bounded permanent
 authorization and audit history. Jobs must have matching terminal results and
 complete job/correlation pairs. Terminal results must match their exact audit
 correlation, digest, status, and authority, retaining the runtime's legacy-failure
 exception. Administrator results retain their separately audited authority. Tenant records and history are retained;
 unfinished work, interrupted publication files, quarantine, or active lifecycle
-workers fail the check without cleanup. Ordinary reconfiguration requires the unchanged
-source revision and artifact in its root-owned completion record, written only after convergence,
-idempotence, and host acceptance pass. Selection alone is insufficient. Each
-verified completed run passes an explicit boolean to both Ansible converges.
-That path permits retained tenant history while publication remains closed and
-requires the selected artifact to remain exact. While tenant inventory remains,
+workers fail the check without cleanup. Only the exact completed source and
+artifact can skip candidate qualification. A successor source still requires
+its own report under the current evidence policy, even if its artifact matches.
+The provider snapshot binds the previous installation's identity; the report
+binds the incoming candidate. Same-artifact convergence passes an explicit
+boolean to both Ansible converges to permit retained tenant history while
+publication remains closed. Artifact replacement requires empty authoritative
+history, platform state, Caddy routes, and releases, with no emergency state;
+it does not authorize migration of tenant history. While tenant inventory remains,
 Caddy preserves the selected generation, keeps the same immutable input guards
 used during tenant publication, and skips platform-only bootstrap. Completed
 hosts with no tenant inventory retain the platform-only bootstrap workflow,
 including adding overlapping origin-pull trust and retiring the old CA. Tenant
 generation input migration remains subject to the existing publication guard.
-Initial convergence and legacy
-rollback retain the empty-history guard. Each
+Completion is recorded for the incoming source and artifact only after
+convergence, idempotence, and host acceptance pass. Selection alone is
+insufficient. Initial convergence and legacy rollback retain the empty-history guard. Each
 attempt clears prior completion before Ansible; interrupted attempts must pass
 the full gate again. Its strict preceding-host inventory refuses partial M3.10
 installations, which require investigation and a reviewed recovery rather than

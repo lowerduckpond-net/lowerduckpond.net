@@ -1,6 +1,6 @@
 # M3 operational sustainability plan
 
-- Status: proposed; planning can proceed during M3.10 diagnosis
+- Status: implementation started; M3.10 qualified and converged 2026-09-18
 - Planned: 2026-09-16
 - Original planning baseline: `9f8e95d296b93ab721c2643e751dfdae7ced0217`
 - Parent: [Milestone 3](milestone-3.md)
@@ -9,6 +9,25 @@
   failures, and usable operator evidence before adding backup/recovery cases
 
 ## 1. Current constraints and sequence
+
+The implementation entry condition is satisfied: the
+[M3.10 production checkpoint](../threat-model/m3-10-evidence.md#production-checkpoint-2026-09-18)
+records passing installed live Spaces qualification and production convergence
+for merged source `22147a64e9b39e7965201cf2d96e07aeaa6d3ca1`.
+The bounded sustainability slices are next, before M3.11. The closeout first
+repairs successor convergence: the runner validates the completed host's recorded
+identity separately from the incoming candidate. An empty completed M3.10 host
+can accept a qualified successor without being mistaken for an M3.9 host.
+Same-artifact reconfiguration retains validated history; artifact replacement
+still requires empty history. This routing correction retains the existing
+exact-source report and 24-hour expiry requirements.
+
+Next, implement S6's candidate-identity and freshness policy so bookkeeping does
+not force repeated qualification or deployment. Then deliver S1 timings, S2
+failure summaries, and S3 independent reproduction before using their evidence
+to choose S4 pacing and S5 CI changes. Use one active PR at a time, do not request
+reviews, and keep progress commentary in the operator task. The diagnosis and
+delivery sequence below retain the original planning context.
 
 The 2026-09-16 planning checkpoint had local installed evidence but no passing
 live Spaces qualification or completed convergence starting gate. The reported

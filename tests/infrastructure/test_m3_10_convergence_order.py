@@ -40,23 +40,33 @@ def runner(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         """case "$*" in
         *branch*) echo main;;
         *rev-parse*) echo "$TEST_SOURCE";;
+        *merge-base*) exit "$TEST_ANCESTOR_STATUS";;
     esac""",
     )
     executable(commands / "ssh-keygen", "exit 0")
     executable(
         commands / "ssh",
-        """case "$*" in
+        """remote_command=${!#}
+    case "$*" in
         *" completed-host "*)
+            [[ "$remote_command" == *"$TEST_SELECTED completed-host $TEST_COMPLETED_SOURCE" ]]
             echo completed-host-preflight >>"$TEST_LOG"
             echo fixture-private-authority
             exit "$TEST_HOST_STATUS";;
-        *"-- check "*)
-            echo completion-check >>"$TEST_LOG"
-            remote_command=${!#}
-            [[ ${remote_command##* } == "$TEST_COMPLETED_SOURCE" ]] || exit 1
-            exit "$TEST_COMPLETED_STATUS";;
+        *" upgrade-host "*)
+            [[ "$remote_command" == *"$TEST_SELECTED upgrade-host $TEST_COMPLETED_SOURCE" ]]
+            echo upgrade-host-preflight >>"$TEST_LOG"
+            echo fixture-private-authority
+            exit "$TEST_HOST_STATUS";;
+        *"-- inspect")
+            echo completion-inspect >>"$TEST_LOG"
+            [[ "$TEST_COMPLETED_STATUS" == 0 ]] || exit "$TEST_COMPLETED_STATUS"
+            artifact=${TEST_COMPLETED_ARTIFACT:-$TEST_SELECTED}
+            printf '%s %s\\n' "$artifact" "$TEST_COMPLETED_SOURCE";;
         *"-- clear "*) echo completion-clear >>"$TEST_LOG";;
-        *"-- record "*) echo completion-record >>"$TEST_LOG";;
+        *"-- record "*)
+            [[ ${remote_command##* } == "$TEST_SOURCE" ]]
+            echo completion-record >>"$TEST_LOG";;
         *) printf "/opt/lowerduckpond/static-host-agent/%s\\n" "$TEST_SELECTED";;
     esac""",
     )
@@ -73,12 +83,14 @@ def runner(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         *scripts.check_m3_10_provider*)
             [[ "$*" == *"--allow-existing-archives"* ]] || exit 99
             [[ "$*" == *"--archive-authority "*"--artifact "*"--source "* ]] || exit 99
+            [[ "$*" == *"--artifact $TEST_SELECTED --source $TEST_COMPLETED_SOURCE" ]] || exit 99
             echo provider-policy >>"$TEST_LOG"
             exit "$TEST_PROVIDER_STATUS";;
         *scripts.check_m3_10_host_firewall*)
             echo firewall >>"$TEST_LOG"
             exit "$TEST_FIREWALL_STATUS";;
         *scripts.m3_10_qualification_report*)
+            [[ "$*" == *"--source $TEST_SOURCE --artifact "* ]] || exit 99
             echo verify-report >>"$TEST_LOG"
             exit "$TEST_VERIFY_STATUS";;
         *ldp-m3-archive*credential-check*)
@@ -136,7 +148,8 @@ def runner(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         "TEST_PROVIDER_STATUS": "0",
         "TEST_FIREWALL_STATUS": "0",
         "TEST_PREFLIGHT_STATUS": "0",
-        "TEST_COMPLETED_STATUS": "1",
+        "TEST_COMPLETED_STATUS": "3",
+        "TEST_ANCESTOR_STATUS": "0",
         "TEST_ANSIBLE_STATUS": "0",
         "TEST_CREDENTIAL_STATUS": "0",
         "TEST_CREDENTIAL_REPORT_STATUS": "0",
@@ -201,7 +214,7 @@ def test_upgrade_never_reaches_ansible_without_required_evidence(
     runner[1].pop(missing)
     status, calls = run(runner)
     assert status != 0
-    assert calls == ["general-preflight"]
+    assert calls == ["completion-inspect", "general-preflight"]
 
 
 @pytest.mark.parametrize("failure", ["TEST_VERIFY_STATUS", "TEST_PREFLIGHT_STATUS"])
@@ -223,6 +236,7 @@ def test_verified_upgrade_checks_report_and_preflight_before_any_convergence(
         json.loads(line) for line in Path(runner[1]["TEST_VARIABLES"]).read_text().splitlines()
     ] == [{"static_host_agent_verified_completed_candidate": False}] * 2
     assert calls == [
+        "completion-inspect",
         "general-preflight",
         "verify-report",
         "m3-10-preflight",
@@ -250,7 +264,7 @@ def test_completed_reconfiguration_uses_history_safe_host_gate(
         json.loads(line) for line in Path(runner[1]["TEST_VARIABLES"]).read_text().splitlines()
     ] == [{"static_host_agent_verified_completed_candidate": True}] * 2
     assert calls == [
-        "completion-check",
+        "completion-inspect",
         "operator-identity",
         "dark-host-preflight",
         "completed-host-preflight",
@@ -263,6 +277,80 @@ def test_completed_reconfiguration_uses_history_safe_host_gate(
         "ansible",
         "completion-record",
     ]
+
+
+@pytest.mark.parametrize("same_artifact", [True, False])
+def test_completed_predecessor_can_install_a_qualified_successor(
+    runner: tuple[Path, dict[str, str]], same_artifact: bool
+) -> None:
+    runner[1].update(
+        TEST_SELECTED=CANDIDATE if same_artifact else "d" * 64,
+        TEST_COMPLETED_STATUS="0",
+        TEST_SOURCE="1" * 40,
+        # These first-installation checks cannot pass on an M3.10 host.
+        TEST_GENERAL_STATUS="1",
+        TEST_PREFLIGHT_STATUS="1",
+    )
+    status, calls = run(runner)
+    assert status == 0
+    assert [
+        json.loads(line) for line in Path(runner[1]["TEST_VARIABLES"]).read_text().splitlines()
+    ] == [{"static_host_agent_verified_completed_candidate": same_artifact}] * 2
+    assert calls == [
+        "completion-inspect",
+        "operator-identity",
+        "dark-host-preflight",
+        "completed-host-preflight" if same_artifact else "upgrade-host-preflight",
+        "verify-report",
+        "provider-policy",
+        "firewall",
+        "scoped-current-credentials",
+        "completion-clear",
+        "ansible",
+        "ansible",
+        "ansible",
+        "completion-record",
+    ]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "TEST_HOST_STATUS",
+        "TEST_VERIFY_STATUS",
+        "TEST_PROVIDER_STATUS",
+        "TEST_FIREWALL_STATUS",
+        "TEST_CREDENTIAL_STATUS",
+    ],
+)
+def test_artifact_upgrade_requires_all_current_gates_before_mutation(
+    runner: tuple[Path, dict[str, str]], failure: str
+) -> None:
+    runner[1].update(TEST_SELECTED="d" * 64, TEST_COMPLETED_STATUS="0", TEST_SOURCE="1" * 40)
+    runner[1][failure] = "1"
+    status, calls = run(runner)
+    assert status != 0
+    assert "upgrade-host-preflight" in calls
+    assert "completion-clear" not in calls
+    assert "ansible" not in calls
+
+
+@pytest.mark.parametrize("failure", ["invalid", "ssh", "selection", "source", "ancestry"])
+def test_unverifiable_completion_cannot_fall_back_to_first_installation(
+    runner: tuple[Path, dict[str, str]], failure: str
+) -> None:
+    runner[1].update(TEST_SELECTED=CANDIDATE, TEST_COMPLETED_STATUS="0")
+    if failure in {"invalid", "ssh"}:
+        runner[1]["TEST_COMPLETED_STATUS"] = "1" if failure == "invalid" else "255"
+    elif failure == "selection":
+        runner[1]["TEST_COMPLETED_ARTIFACT"] = "d" * 64
+    elif failure == "source":
+        runner[1]["TEST_COMPLETED_SOURCE"] = "malformed"
+    else:
+        runner[1]["TEST_ANCESTOR_STATUS"] = "1"
+    status, calls = run(runner)
+    assert status != 0
+    assert calls == ["completion-inspect"]
 
 
 @pytest.mark.parametrize("failure", ["missing-report", "expired-report", "partial-host"])
@@ -278,7 +366,7 @@ def test_selected_but_incomplete_candidate_retains_the_full_gate(
         runner[1]["TEST_PREFLIGHT_STATUS"] = "1"
     status, calls = run(runner)
     assert status != 0
-    assert "completion-check" in calls
+    assert "completion-inspect" in calls
     assert "ansible" not in calls
     assert "completion-clear" not in calls
     assert "completion-record" not in calls
@@ -328,10 +416,10 @@ def test_same_artifact_with_new_deployment_source_cannot_reuse_completion(
     elif failure == "expired-report":
         runner[1]["TEST_VERIFY_STATUS"] = "1"
     else:
-        runner[1]["TEST_PREFLIGHT_STATUS"] = "1"
+        runner[1]["TEST_HOST_STATUS"] = "1"
     status, calls = run(runner)
     assert status != 0
-    assert "completion-check" in calls
+    assert "completion-inspect" in calls
     assert "scoped-current-credentials" not in calls
     assert "ansible" not in calls
     assert "completion-clear" not in calls
@@ -377,7 +465,7 @@ def test_incomplete_candidate_checks_completion_before_strict_empty_state_gate(
     runner[1]["TEST_GENERAL_STATUS"] = "1"
     status, calls = run(runner)
     assert status != 0
-    assert calls == ["completion-check", "general-preflight"]
+    assert calls == ["completion-inspect", "general-preflight"]
 
 
 @pytest.mark.parametrize(

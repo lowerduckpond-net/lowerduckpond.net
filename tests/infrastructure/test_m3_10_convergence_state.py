@@ -9,6 +9,7 @@ import pytest
 ROOT = Path(__file__).parents[2]
 CANDIDATE = "c" * 64
 SOURCE = "a" * 40
+ABSENT_STATUS = 3
 
 
 @pytest.fixture
@@ -37,6 +38,34 @@ def run(
     ).returncode
 
 
+def inspect(state: tuple[Path, Path]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(  # noqa: S603 - fixed copied program in private fixture
+        ["/bin/bash", str(state[0]), "inspect"], capture_output=True, text=True, check=False
+    )
+
+
+def test_inspection_distinguishes_absence_from_a_completed_predecessor(
+    state: tuple[Path, Path],
+) -> None:
+    assert inspect(state).returncode == ABSENT_STATUS
+    assert run(state, "record") == 0
+    result = inspect(state)
+    assert result.returncode == 0
+    assert result.stdout == f"{CANDIDATE} {SOURCE}\n"
+    assert run(state, "clear") == 0
+    assert inspect(state).returncode == ABSENT_STATUS
+
+
+def test_inspection_rejects_selection_drift(state: tuple[Path, Path]) -> None:
+    assert run(state, "record") == 0
+    installed = state[0].parent / "installed"
+    (installed / "current").unlink()
+    (installed / ("d" * 64)).mkdir()
+    (installed / "current").symlink_to("d" * 64)
+    assert inspect(state).returncode == 1
+    assert inspect(state).stdout == ""
+
+
 def test_completion_requires_a_recorded_selected_artifact(state: tuple[Path, Path]) -> None:
     assert run(state, "check") != 0
     assert run(state, "record", "d" * 64) != 0
@@ -48,7 +77,9 @@ def test_completion_requires_a_recorded_selected_artifact(state: tuple[Path, Pat
     assert run(state, "clear") == 0
 
 
-@pytest.mark.parametrize("drift", ["mode", "extra-bytes", "symlink", "directory"])
+@pytest.mark.parametrize(
+    "drift", ["mode", "extra-bytes", "symlink", "directory", "hardlink", "invalid-source"]
+)
 def test_completion_rejects_untrusted_or_ambiguous_records(
     state: tuple[Path, Path], drift: str
 ) -> None:
@@ -64,9 +95,17 @@ def test_completion_rejects_untrusted_or_ambiguous_records(
         target = marker.with_name("target")
         marker.rename(target)
         marker.symlink_to(target)
+    elif drift == "hardlink":
+        marker.with_name("alias").hardlink_to(marker)
+    elif drift == "invalid-source":
+        marker.chmod(0o600)
+        marker.write_text(f"{CANDIDATE} {'z' * 40}\n")
+        marker.chmod(0o400)
     else:
         marker.parent.chmod(0o755)
     assert run(state, "check") != 0
+    assert inspect(state).returncode == 1
+    assert inspect(state).stdout == ""
 
 
 def test_completion_binds_deployment_only_changes_to_the_accepted_source(
@@ -90,3 +129,4 @@ def test_legacy_artifact_only_completion_cannot_authorize_deployment_changes(
     state[1].write_text(CANDIDATE + "\n")
     state[1].chmod(0o400)
     assert run(state, "check") != 0
+    assert inspect(state).returncode == 1

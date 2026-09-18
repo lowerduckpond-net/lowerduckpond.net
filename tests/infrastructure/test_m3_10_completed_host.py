@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -73,7 +74,7 @@ def completed_host(tmp_path: Path) -> Path:
         audit = json.loads((FIXTURES / "audit-entry.json").read_text())
         audit["resultDigest"] = result_digest(json.loads(result.read_text())).to_dict()
         repository.append_audit(audit)
-    for name in ("srv/lowerduckpond/sites/.staging", "etc/caddy/intents"):
+    for name in ("srv/lowerduckpond/sites/.staging", "etc/caddy/intents", "etc/caddy/routes.d"):
         directory = tmp_path / name
         directory.mkdir(parents=True)
         directory.chmod(0o700)
@@ -97,14 +98,76 @@ def completed_host(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def gate(tree: Path) -> subprocess.CompletedProcess[str]:
+def gate(tree: Path, mode: str = "completed-host") -> subprocess.CompletedProcess[str]:
     return subprocess.run(  # noqa: S603 - private copied program and local fixture state
-        ["/bin/bash", str(tree / "probe"), ARTIFACT, "completed-host", SOURCE],
+        ["/bin/bash", str(tree / "probe"), ARTIFACT, mode, SOURCE],
         env={"PATH": str(tree / "bin") + ":" + os.environ["PATH"]},
         capture_output=True,
         text=True,
         check=False,
     )
+
+
+@pytest.fixture
+def empty_completed_host(completed_host: Path) -> Path:
+    state = completed_host / "var/lib/lowerduckpond/static"
+    for name in (
+        "tenants",
+        "authorization/jobs",
+        "authorization/results",
+        "authorization/correlations",
+        "audit",
+    ):
+        for child in (state / name).iterdir():
+            if child.is_dir():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+    return completed_host
+
+
+def test_empty_completed_host_can_prepare_an_artifact_upgrade(empty_completed_host: Path) -> None:
+    result = gate(empty_completed_host, "upgrade-host")
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["artifactSha256"] == ARTIFACT
+    assert json.loads(result.stdout)["sourceRevision"] == SOURCE
+    assert json.loads(result.stdout)["archives"] == []
+
+
+def test_artifact_upgrade_refuses_retained_history_without_changing_it(
+    completed_host: Path,
+) -> None:
+    state = completed_host / "var/lib/lowerduckpond/static"
+    before = {path: path.read_bytes() for path in state.rglob("*") if path.is_file()}
+    result = gate(completed_host, "upgrade-host")
+    assert result.returncode != 0
+    assert "empty authoritative history" in result.stderr
+    assert {path: path.read_bytes() for path in state.rglob("*") if path.is_file()} == before
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "var/lib/lowerduckpond/static/platform/namespace.json",
+        "var/lib/lowerduckpond/static/tenants/retained",
+        "var/lib/lowerduckpond/static/authorization/jobs/retained",
+        "var/lib/lowerduckpond/static/authorization/results/retained",
+        "var/lib/lowerduckpond/static/authorization/correlations/retained",
+        "var/lib/lowerduckpond/static/audit/retained",
+        "var/lib/lowerduckpond/static/emergency",
+        "etc/caddy/routes.d/retained",
+        "srv/lowerduckpond/sites/retained",
+    ],
+)
+def test_artifact_upgrade_refuses_each_retained_authority(
+    empty_completed_host: Path, path: str
+) -> None:
+    retained = empty_completed_host / path
+    retained.write_text("retained\n")
+    result = gate(empty_completed_host, "upgrade-host")
+    assert result.returncode != 0
+    assert "artifact upgrade" in result.stderr
+    assert retained.read_text() == "retained\n"
 
 
 def test_completed_host_preserves_nonempty_authorization_tenant_and_audit_state(
