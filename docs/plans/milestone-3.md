@@ -1,7 +1,7 @@
 # Milestone 3 implementation plan
 
-- Status: implementation in progress; M3.0 through M3.9 complete
-- Updated: 2026-09-16
+- Status: M3.0 through M3.10 complete; operational sustainability before M3.11
+- Updated: 2026-09-18
 - Outcome: deliver the complete static-tenant lifecycle through the trusted
   workstation without enabling the Milestone 4 public control plane
 
@@ -232,7 +232,7 @@ four DNS records, four Authenticated Origin Pulls associations, six rulesets,
 ACME records, and four uploaded leaves absent. Both temporary Cloudflare tokens
 were revoked and disposable trusted-workstation material was removed. The
 backed-up CA roots remain retained as qualification-only material. M3.1 through
-M3.9 subsequently completed, and M3.10 is the next implementation phase; the
+M3.10 subsequently completed; the
 M3.0 result does not enable production or satisfy any later Milestone 3 gate.
 
 Add executable qualification probes and a sanitized report before depending on
@@ -328,9 +328,9 @@ passed, its sanitized report and SHA-256 sidecar were verified and backed up,
 and an independent version-aware and multipart-aware probe proved the entire
 archive bucket empty. Protected run `33219502391` then passed ordinary
 production policy and reported no changes with the migration flag disabled.
-The archive credential remains in operator custody and off the production host
-until M3.10. M3.2 through M3.9 subsequently completed, and M3.10 is the next
-implementation phase; M3.1 does not enable production or satisfy any later
+The archive credential remained in operator custody and off the production host
+until M3.10 installed it in the dedicated network boundary. M3.2 through M3.10
+subsequently completed; M3.1 does not enable production or satisfy any later
 Milestone 3 gate.
 
 Add a `digitalocean-tenant-archives` module rather than renaming the existing
@@ -726,8 +726,7 @@ production flag rejected before request intake or state allocation. The
 private operator key and its passphrase are backed up separately, only its
 public half is installed, and the stable audit principal is the non-personal
 role alias `production-static-operator`. Production publication remains
-disabled. M3.7 through M3.9 subsequently completed, and M3.10 is the next
-implementation phase.
+disabled. M3.7 through M3.10 subsequently completed.
 
 The first review boundary installed the dedicated,
 password-disabled SSH identity, root-owned key binding and principal,
@@ -856,8 +855,7 @@ state to `enforced`, reported no changes, and passed production policy. The two
 temporary Cloudflare tokens were revoked and the four working leaf-key and CSR
 files were removed after their retained public certificates, certificate IDs,
 CA material, and separate backups were confirmed. Static publication remains
-disabled. M3.8 and M3.9 subsequently completed, and M3.10 is the next
-implementation phase.
+disabled. M3.8 through M3.10 subsequently completed.
 
 Extend the production OpenTofu stack with a second instance of the existing
 Cloudflare DNS module for the `lowerduckpond.com` apex and wildcard, then evolve
@@ -1003,8 +1001,8 @@ reconcile. The reboot gate proves a new PID 1 and cleared volatile state while
 retaining exact durable trees, metadata, selected generation, and routes, then
 runs the complete transport and recovery matrix after startup reconciliation.
 Publication was enabled only inside that disposable environment; production
-remains disabled. M3.9 portable export and import subsequently completed;
-remote archive, restoration, and deletion are the next phase in M3.10.
+remains disabled. M3.9 portable export/import and M3.10 remote
+archive/restore/deletion subsequently completed.
 
 Implement `create`, `deploy`, `rollback`, `suspend`, `resume`, `rename`, and
 `reconcile` through authorization jobs. Initialize the namespace record only
@@ -1072,7 +1070,7 @@ checks passed; imported tenants retained their exact durable state across
 reboot. The [qualification evidence map](../threat-model/m3-9-evidence.md)
 links the corresponding unit, process, installed-host, and recovery checks.
 Production publication remains disabled. Remote archived export and
-archive/restore/deletion races remain gated on M3.10.
+archive/restore/deletion races were subsequently qualified in M3.10.
 
 Routine production convergence completed on 2026-09-12 from source revision
 `90b0353bd89328730e49c57babd8dc9d17d849aa` and selected host-agent artifact
