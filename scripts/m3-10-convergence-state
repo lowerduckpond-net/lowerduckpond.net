@@ -4,10 +4,14 @@ set +x
 set -euo pipefail
 umask 077
 
-[[ $# == 3 && $2 =~ ^[0-9a-f]{64}$ && $3 =~ ^[0-9a-f]{40}$ ]] || exit 2
-action=$1
-artifact=$2
-source_revision=$3
+action=${1:-}
+if [[ ${action} == inspect ]]; then
+    [[ $# == 1 ]] || exit 2
+else
+    [[ $# == 3 && $2 =~ ^[0-9a-f]{64}$ && $3 =~ ^[0-9a-f]{40}$ ]] || exit 2
+fi
+artifact=${2:-}
+source_revision=${3:-}
 expected="${artifact} ${source_revision}"
 directory=/var/lib/lowerduckpond/convergence
 marker=${directory}/m3-10
@@ -19,6 +23,24 @@ private_directory() {
 }
 
 case ${action} in
+    inspect)
+        # Only absence has status 3. Untrusted metadata or selector drift must
+        # never be mistaken for a host eligible for first installation.
+        if [[ ! -e ${directory} && ! -L ${directory} ]]; then
+            exit 3
+        fi
+        private_directory || exit 1
+        if [[ ! -e ${marker} && ! -L ${marker} ]]; then
+            exit 3
+        fi
+        [[ -f ${marker} && ! -L ${marker} &&
+           $(stat --format='%u:%a:%h:%s' -- "${marker}") == 0:400:1:106 ]] || exit 1
+        recorded=$(cat -- "${marker}")
+        [[ ${recorded} =~ ^[0-9a-f]{64}\ [0-9a-f]{40}$ ]] || exit 1
+        [[ $(readlink --canonicalize-existing -- "${install_root}/current") == \
+           "${install_root}/${recorded%% *}" ]] || exit 1
+        printf '%s\n' "${recorded}"
+        ;;
     check)
         private_directory || exit 1
         [[ -f ${marker} && ! -L ${marker} &&

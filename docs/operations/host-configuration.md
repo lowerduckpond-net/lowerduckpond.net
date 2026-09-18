@@ -258,16 +258,19 @@ boundaries each retain their own review and authorization requirement.
 ## Routine operations
 
 After reviewed configuration changes merge, repeat `just
-configure-production`. Ansible first repeats the current M3.6 production gate
-and validates a candidate Caddyfile before its
+configure-production`. The runner validates the recorded completed installation
+or, when no completion record exists, applies the strict first-installation
+gates. Ansible validates a candidate Caddyfile before its
 atomic rename, and systemd validates the live configuration before every
 reload.
 
-When convergence changes the selected host-agent artifact, record that exact
-production digest in the preflight and closeout documentation before the next
-host-agent change. This preserves a pinned forward transition from the live
-artifact to the next reproducible candidate instead of accepting an arbitrary
-installed artifact.
+Successful convergence records the exact accepted source and artifact on the
+host. Later candidates validate that recorded predecessor rather than adding
+another milestone-specific digest to the runner. Keep the closeout documentation
+as deployment provenance; updating it does not itself require reconvergence.
+Under the current evidence policy, deploying a later source still requires a
+matching qualification report. The first-installation and legacy rollback
+preflights retain their explicit historical artifact pins.
 
 The current production identity, selected by the 2026-09-18 M3.10 convergence
 from source revision `22147a64e9b39e7965201cf2d96e07aeaa6d3ca1`, is

@@ -4,7 +4,8 @@ set +x
 set -euo pipefail
 export LC_ALL=C
 
-[[ $# == 3 && $1 =~ ^[0-9a-f]{64}$ && $2 == completed-host && $3 =~ ^[0-9a-f]{40}$ ]] || exit 2
+[[ $# == 3 && $1 =~ ^[0-9a-f]{64}$ &&
+   ($2 == completed-host || $2 == upgrade-host) && $3 =~ ^[0-9a-f]{40}$ ]] || exit 2
 expected=$1
 source_revision=$3
 fail() {
@@ -46,6 +47,23 @@ active=$(systemctl list-units --plain --no-legend --state=activating,active,deac
     'lowerduckpond-static-emergency-reconcile.service' 'lowerduckpond-archive-*.service') ||
     fail 'could not query active lifecycle work'
 [[ -z ${active} ]] || fail 'lifecycle work is active'
+
+# Artifact replacement remains restricted to the empty dark-host boundary.
+# Same-artifact reconfiguration uses the history-preserving checks below.
+if [[ $2 == upgrade-host ]]; then
+    for directory in "${state_root}/platform" "${state_root}/tenants" \
+        "${state_root}/authorization/jobs" "${state_root}/authorization/results" \
+        "${state_root}/authorization/correlations" "${state_root}/audit" \
+        /etc/caddy/routes.d; do
+        [[ -d ${directory} && ! -L ${directory} &&
+           -z $(find "${directory}" -mindepth 1 -print -quit) ]] ||
+            fail 'artifact upgrade requires empty authoritative history and routes'
+    done
+    [[ ! -e ${state_root}/emergency && ! -L ${state_root}/emergency ]] ||
+        fail 'artifact upgrade has retained emergency state'
+    [[ $(find /srv/lowerduckpond/sites -mindepth 1 -maxdepth 1 -printf '%f\n') == .staging ]] ||
+        fail 'artifact upgrade has retained release state'
+fi
 
 # Validate bounded permanent authorization and audit records with the pinned
 # installed package. History is retained; no recovery or pair repair runs here.
