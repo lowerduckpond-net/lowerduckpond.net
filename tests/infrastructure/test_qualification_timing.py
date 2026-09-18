@@ -54,6 +54,25 @@ def test_interval_union_handles_overlapping_processes() -> None:
     assert timing.union_ns([(5, 15), (0, 10), (20, 30), (6, 8)]) == expected
 
 
+@pytest.mark.parametrize(
+    ("output", "expected"),
+    [
+        ("uv 0.12.5 (x86_64-unknown-linux-musl)", "0.12.5"),
+        ("uv 0.12.5 (abcdef012 2026-09-01)", "0.12.5"),
+        (f"uv 0.12.5 {CANARY}", "0.12.5"),
+        (CANARY, "unknown"),
+    ],
+)
+def test_uv_build_details_are_excluded_from_version_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, output: str, expected: str
+) -> None:
+    monkeypatch.setattr(timing, "_tool_output", lambda command: output)
+    timing.start_run(tmp_path, "minio")
+    metadata = (tmp_path / "timing-start.json").read_text()
+    assert json.loads(metadata)["tools"]["uv"] == expected
+    assert CANARY not in metadata
+
+
 @pytest.mark.parametrize("shape", ["symlink", "directory", "fifo"])
 def test_event_sink_failure_cannot_replace_test_failure(
     run_directory: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str], shape: str
