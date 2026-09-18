@@ -11,6 +11,7 @@ from molecule.config import Config
 
 from scripts import qualification_case as case
 from scripts import qualification_local as local
+from scripts import qualification_retirement as retirement
 from scripts.m3_10_qualification_report import verify_report
 from scripts.qualification_context import ARCHIVE_ENV, HOST_ENV, RUN_ENV, resource_names
 
@@ -37,6 +38,11 @@ def write_receipt(directory: Path, environment: dict[str, str]) -> None:
 @pytest.fixture
 def environment() -> dict[str, str]:
     return {**resource_names(uuid.uuid7().hex), "DOCKER_HOST": "unix:///owned/docker.sock"}
+
+
+@pytest.fixture(autouse=True)
+def quiescent_accounting(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(retirement, "local_proof", lambda *args: "quiescent-installed")
 
 
 @pytest.mark.parametrize(
@@ -69,6 +75,13 @@ def test_only_a_complete_case_reaches_independent_proof_and_teardown(
         events.append("independent-proof")
 
     monkeypatch.setattr(case, "independent_storage_absence", proof)
+
+    def local_proof(values: dict[str, str], host_id: str) -> str:
+        assert host_id == HOST_ID
+        events.append("local-proof")
+        return "quiescent-installed"
+
+    monkeypatch.setattr(retirement, "local_proof", local_proof)
     status = case.run_full_size(tmp_path, environment, "uv")
     sequence = [
         "create",
@@ -76,7 +89,9 @@ def test_only_a_complete_case_reaches_independent_proof_and_teardown(
         "converge",
         "idempotence",
         "verify",
+        "local-proof",
         "independent-proof",
+        "local-proof",
         "destroy",
     ]
     assert events == (
@@ -92,7 +107,7 @@ def test_only_a_complete_case_reaches_independent_proof_and_teardown(
             verify_report(tmp_path / "case.json", source="a" * 40, artifact="a" * 64)
 
 
-@pytest.mark.parametrize("problem", ["identity", "provider"])
+@pytest.mark.parametrize("problem", ["identity", "provider", "local-before", "local-after"])
 def test_unknown_or_changed_obligations_retain_the_case(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, environment: dict[str, str], problem: str
 ) -> None:
@@ -117,8 +132,22 @@ def test_unknown_or_changed_obligations_retain_the_case(
 
     monkeypatch.setattr(case, "owned_containers", owned)
 
+    observations = 0
+
+    def local_proof(values: dict[str, str], host_id: str) -> str:
+        nonlocal observations
+        observations += 1
+        if (problem == "local-before" and observations == 1) or (
+            problem == "local-after" and observations > 1
+        ):
+            raise ValueError("local obligations are not settled")
+        return "quiescent-installed"
+
+    monkeypatch.setattr(retirement, "local_proof", local_proof)
+
     def proof(values: dict[str, str], archive_id: str) -> None:
-        raise ValueError("unavailable independent storage proof")
+        if problem == "provider":
+            raise ValueError("unavailable independent storage proof")
 
     monkeypatch.setattr(case, "independent_storage_absence", proof)
     with pytest.raises(ValueError):

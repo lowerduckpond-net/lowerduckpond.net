@@ -121,6 +121,9 @@ def run_full_size(directory: Path, environment: dict[str, str], uv: str) -> int:
 
 def _run_full_size(directory: Path, environment: dict[str, str], uv: str) -> int:
     """Only this named case's completed tests and fresh storage proof permit teardown."""
+    # Retirement shares these case primitives; defer the import to avoid a cycle.
+    from scripts.qualification_retirement import local_proof  # noqa: PLC0415
+
     environment = {
         **environment,
         "NO_COLOR": "1",
@@ -149,15 +152,18 @@ def _run_full_size(directory: Path, environment: dict[str, str], uv: str) -> int
             with (directory / "case-containers.json").open("x", encoding="ascii") as stream:
                 json.dump(identities, stream)
     receipt = installed_receipt(directory, environment)
-    # Local accounting and artifact integrity are asserted by the named installed
-    # test immediately before returning. Failure reports are never consulted.
     if owned_containers(environment) != identities:
         raise ValueError("fixture identity changed before final storage proof")
+    if local_proof(environment, identities[HOST_ENV]) != "quiescent-installed":
+        raise ValueError("installed case accounting is incomplete")
     record_phase("final-storage-proof")
     print("Independent full-size archive: final storage proof", flush=True)
     independent_storage_absence(environment, identities[ARCHIVE_ENV])
-    if owned_containers(environment) != identities:
-        raise ValueError("fixture identity changed before teardown")
+    if (
+        owned_containers(environment) != identities
+        or local_proof(environment, identities[HOST_ENV]) != "quiescent-installed"
+    ):
+        raise ValueError("fixture changed before teardown")
     status = phase(directory, environment, uv, "destroy")
     if status:
         return status
