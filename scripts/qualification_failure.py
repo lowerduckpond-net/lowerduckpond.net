@@ -15,6 +15,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+from scripts.qualification_context import host_name  # noqa: E402
 from scripts.qualification_probe import (  # noqa: E402 - standalone entry point import root
     DIGEST,
     OPERATIONS,
@@ -182,7 +183,7 @@ def capture_fixture() -> None:
     if directory is None or (directory / "failure-fixture.json").exists():
         return
     try:
-        output = bounded_command(["docker", "inspect", "--format", "{{.Id}}", CONTAINER])
+        output = bounded_command(["docker", "inspect", "--format", "{{.Id}}", host_name()])
         identity = matching(output.decode("ascii").strip() if output else None, DIGEST)
         if identity != UNKNOWN:
             _write(directory / "failure-fixture.json", {"container_id": identity})

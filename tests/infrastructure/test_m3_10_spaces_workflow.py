@@ -93,6 +93,10 @@ if 'scripts.check_m3_10_provider' in sys.argv or 'molecule' in sys.argv:
     assert marker.exists(), 'provider proof started before input capture'
 if 'molecule' in sys.argv:
     assert 'DOCKER_CONTEXT' not in os.environ
+    allowed = {'LDP_QUALIFICATION_TIMING_EVENTS', 'LDP_QUALIFICATION_TIMING_GROUP'}
+    assert not any(key.startswith('LDP_QUALIFICATION_') and key not in allowed
+                   for key in os.environ)
+    assert 'MOLECULE_EPHEMERAL_DIRECTORY' not in os.environ
     assert os.environ['DOCKER_HOST'] == 'unix:///disposable/docker.sock'
     phase = sys.argv[sys.argv.index('molecule') + 1]
     destination = Path(os.environ['M3_10_INSTALLED_REPORT'])
@@ -128,6 +132,18 @@ if 'scripts.m3_10_qualification_report' in sys.argv:
             "SPACES_BACKUP_BUCKET": "disposable-backup",
             "M3_10_EVIDENCE_ROOT": evidence,
             "TEST_ARTIFACT": digest,
+            **dict.fromkeys(
+                (
+                    "LDP_QUALIFICATION_RUN_ID",
+                    "LDP_QUALIFICATION_HOST",
+                    "LDP_QUALIFICATION_ARCHIVE",
+                    "LDP_QUALIFICATION_IMAGE",
+                    "LDP_QUALIFICATION_SSH_PORT",
+                    "LDP_QUALIFICATION_ARTIFACT",
+                    "MOLECULE_EPHEMERAL_DIRECTORY",
+                ),
+                "foreign-local-fixture",
+            ),
         },
         capture_output=True,
         text=True,

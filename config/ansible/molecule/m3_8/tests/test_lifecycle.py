@@ -21,10 +21,11 @@ from lowerduckpond_static_contracts import canonical_json_bytes, manifest_digest
 from lowerduckpond_static_operator import OperatorClientError, submit
 from testinfra.host import Host
 
+from scripts.qualification_context import host_name
 from scripts.qualification_failure import record_submission
 from scripts.qualification_timing import measure
 
-CONTAINER = "lowerduckpond-ubuntu-2604"
+CONTAINER = host_name()
 OPERATOR_KEY = "/run/lowerduckpond-molecule/operator-key"
 ORIGIN_PULL_CLIENT_CERTIFICATE = "/run/lowerduckpond-molecule/origin-pull-client.pem"
 ORIGIN_PULL_CLIENT_KEY = "/run/lowerduckpond-molecule/origin-pull-client.key"
@@ -214,6 +215,8 @@ def _operator_inputs(tmp_path: Path) -> tuple[str, Path, Path]:
     host = urlsplit(os.environ.get("DOCKER_HOST", "")).hostname or "127.0.0.1"
     transport_path = Path(os.environ["MOLECULE_EPHEMERAL_DIRECTORY"]) / "operator-transport.json"
     transport = json.loads(transport_path.read_text(encoding="ascii"))
+    port = int(transport["sshPort"])
+    assert 1 <= port <= 65535, "qualification SSH port is invalid"  # noqa: PLR2004
     peer_address = transport.get("peerAddress")
     assert peer_address is None or isinstance(peer_address, str)
     hostname_option = (
@@ -222,7 +225,7 @@ def _operator_inputs(tmp_path: Path) -> tuple[str, Path, Path]:
     ssh = tmp_path / "ssh"
     ssh.write_text(
         "#!/bin/sh\n"
-        "exec /usr/bin/ssh -p 2222 -o StrictHostKeyChecking=no "
+        f"exec /usr/bin/ssh -p {port} -o StrictHostKeyChecking=no "
         f"{hostname_option}"
         '-o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "$@"\n',
         encoding="ascii",

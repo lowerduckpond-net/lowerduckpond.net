@@ -122,7 +122,7 @@ check-ansible-static: _sync
 # Run paced installed M3.8–M3.10 lifecycle, export/import, and archive qualification.
 check-ansible-m3-8: _sync
     uv run ansible-galaxy collection install --no-deps --requirements-file config/ansible/requirements.yml
-    uv run python -m scripts.qualification_timing run -- uv run molecule test --scenario-name m3_8
+    uv run python -m scripts.qualification_timing run -- uv run python "$PWD/scripts/qualification_local.py"
 
 # Prove the M3.5 production starting conditions without changing host state.
 preflight-m3-dark-host-production: _sync

@@ -159,3 +159,25 @@ choose pacing and scheduling changes before making performance claims.
 
 `just check-python` also prints the 20 slowest tests lasting at least one second.
 This identifies fast-lane costs without rerunning the test suite for profiling.
+
+## Owned local fixtures
+
+`just check-ansible-m3-8` allocates a fresh local MinIO fixture for each run.
+The timing directory also contains a private `fixture.json` identifying its
+containers and Docker endpoint. Host and storage container names, host image
+tag, assigned SSH port, artifact path, and Molecule state are distinct for each
+run. The supported entry point does not reuse resources from ambient fixture
+variables or a previous run. Nested Ansible reapplication uses the same owned
+context throughout that run.
+
+The complete local sequence retains its existing Molecule cleanup behavior.
+Failure diagnostics bind to its concrete container ID and capture state before
+that cleanup. Private fixture metadata is not included in CI diagnostic
+artifacts. Live Spaces continues to use its serialized secure-workstation
+workflow; local resource overrides cannot redirect it.
+
+Separate resources do not provide additional machine capacity. In particular,
+privileged Docker fixtures share the host kernel's loop-device pool. This
+workspace's eight exposed loop-device nodes were insufficient to prepare two
+complete fixtures simultaneously. Use separate runners for parallel installed
+checks; do not detach another run's devices or prune shared Docker resources.

@@ -5,8 +5,10 @@ dependency:
 driver:
   name: docker
 platforms:
-  - name: lowerduckpond-ubuntu-2604
-    image: ubuntu:26.04
+  - name: "${LDP_QUALIFICATION_HOST:-lowerduckpond-ubuntu-2604}"
+    image: "${LDP_QUALIFICATION_IMAGE:-ubuntu:26.04}"
+    labels:
+      lowerduckpond.qualification.run: "${LDP_QUALIFICATION_RUN_ID:-legacy-m3-8}"
     groups:
       - hosting_nodes
     dockerfile: Dockerfile.j2
@@ -15,13 +17,15 @@ platforms:
     command: /sbin/init
     keep_volumes: false
     published_ports:
-      - "2222:22"
+      - "${LDP_QUALIFICATION_SSH_PORT:-2222}:22"
     tmpfs:
       - /run
       - /run/lock
       - /tmp
-  - name: lowerduckpond-m3-10-minio
+  - name: "${LDP_QUALIFICATION_ARCHIVE:-lowerduckpond-m3-10-minio}"
     image: quay.io/minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    labels:
+      lowerduckpond.qualification.run: "${LDP_QUALIFICATION_RUN_ID:-legacy-m3-8}"
     groups:
       - archive_fixture
     pre_build_image: true

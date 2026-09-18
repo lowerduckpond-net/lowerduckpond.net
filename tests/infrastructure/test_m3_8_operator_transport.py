@@ -8,6 +8,16 @@ import pytest
 from config.ansible.molecule.m3_8 import resolve_operator_transport
 
 
+@pytest.fixture(autouse=True)
+def published_port(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        resolve_operator_transport, "_published_ssh_port", lambda container: "32123"
+    )
+
+
+_published_ssh_port = resolve_operator_transport._published_ssh_port
+
+
 def test_local_tcp_endpoint_uses_container_gateway(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -28,6 +38,7 @@ def test_local_tcp_endpoint_uses_container_gateway(
     ) == {
         "peerAddress": "127.0.0.1",
         "sourceCidr": "172.17.0.1/32",
+        "sshPort": "32123",
     }
     assert gateways == ["lowerduckpond-ubuntu-2604"]
 
@@ -55,6 +66,7 @@ def test_remote_tcp_endpoint_uses_connected_source(
     ) == {
         "peerAddress": "198.51.100.30",
         "sourceCidr": "192.0.2.20/32",
+        "sshPort": "32123",
     }
 
 
@@ -81,7 +93,7 @@ def test_ssh_endpoint_uses_openssh_and_preserves_the_alias(
 
     assert resolve_operator_transport.resolve_operator_transport(
         "ssh://docker-user@deployment-docker:2200", "lowerduckpond-ubuntu-2604"
-    ) == {"sourceCidr": "203.0.113.20/32"}
+    ) == {"sourceCidr": "203.0.113.20/32", "sshPort": "32123"}
     assert commands == [
         [
             "/usr/bin/ssh",
@@ -118,7 +130,7 @@ def test_local_ssh_endpoint_uses_container_gateway(
 
     assert resolve_operator_transport.resolve_operator_transport(
         "ssh://deployment-docker", "lowerduckpond-ubuntu-2604"
-    ) == {"sourceCidr": "172.17.0.1/32"}
+    ) == {"sourceCidr": "172.17.0.1/32", "sshPort": "32123"}
     assert gateways == ["lowerduckpond-ubuntu-2604"]
 
 
@@ -146,3 +158,49 @@ def test_container_gateway_requires_one_address(
 
     with pytest.raises(RuntimeError, match="container gateway is ambiguous"):
         resolve_operator_transport._container_gateway("lowerduckpond-ubuntu-2604")
+
+
+@pytest.mark.parametrize(
+    "bindings",
+    [
+        None,
+        [],
+        {},
+        [None],
+        [{"HostPort": "0"}],
+        [{"HostPort": "65536"}],
+        [{"HostPort": 2222}],
+        [{"HostPort": "22\n"}],
+        [{"HostPort": "22"}, {"HostPort": "23"}],
+    ],
+)
+def test_published_port_rejects_missing_invalid_or_ambiguous_bindings(
+    monkeypatch: pytest.MonkeyPatch, bindings: object
+) -> None:
+    monkeypatch.setattr(
+        resolve_operator_transport.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess([], 0, json.dumps(bindings)),
+    )
+    with pytest.raises(RuntimeError, match="SSH port"):
+        _published_ssh_port("owned-fixture")
+
+
+def test_published_port_accepts_matching_ipv4_and_ipv6_bindings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[list[str]] = []
+
+    def inspect(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            json.dumps(
+                [{"HostIp": "0.0.0.0", "HostPort": "32123"}, {"HostIp": "::", "HostPort": "32123"}]  # noqa: S104 - Docker inspect fixture
+            ),
+        )
+
+    monkeypatch.setattr(resolve_operator_transport.subprocess, "run", inspect)
+    assert _published_ssh_port("owned-fixture") == "32123"
+    assert commands[0][-1] == "owned-fixture"
