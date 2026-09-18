@@ -224,10 +224,20 @@ def test_real_pytest_group_retains_a_failed_operator_span(
         (ROOT / "config/ansible/molecule/m3_8/tests/conftest.py").read_bytes()
     )
     (scenario / "test_lifecycle.py").write_text("""from scripts.qualification_timing import measure
+from scripts.qualification_failure import record_submission
 
 def test_private_parameter():
+    record_submission(
+        {'operation': 'archive', 'correlationId': '01a0b11c-8fe8-7781-b277-81e5e4c813ba'}
+    )
     with measure("operator"):
         raise AssertionError("private-provider-response-canary")
+
+def test_secondary_failure():
+    record_submission(
+        {'operation': 'delete', 'correlationId': '01a0b11d-7e30-754f-8ad5-44c8a329494d'}
+    )
+    raise RuntimeError("private-provider-response-canary")
 """)
     commands = tmp_path / "commands"
     commands.mkdir()
@@ -250,11 +260,17 @@ def test_private_parameter():
         "category": "assertion",
         "group": "core",
         "file": "test_lifecycle.py",
-        "line": 5,
+        "line": 9,
+        "submission": {
+            "operation": "archive",
+            "correlation_id": "01a0b11c-8fe8-7781-b277-81e5e4c813ba",
+            "group": "core",
+        },
     }
     events = timing._events(run_directory / "timing-events.jsonl")
     assert [(event["kind"], event["group"], event["outcome"]) for event in events] == [
         ("operator", "core", "failed"),
+        ("group", "core", "failed"),
         ("group", "core", "failed"),
     ]
     timing.finish_run(run_directory, result.returncode)
