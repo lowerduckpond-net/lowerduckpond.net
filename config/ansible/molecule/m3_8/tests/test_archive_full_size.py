@@ -62,12 +62,6 @@ def test_fresh_full_size_archive_restore(host: Host, tmp_path: Path) -> None:
     assert full_size.installed_digest(host, tenant, restored_deployment) == expected_digest
     support._assert_route(host, origin, status=200, body=full_size.INDEX)
     assert not archives._remote_versions(host)
-    suspended_again = submit("suspend")
-    assert support._lifecycle(suspended_again) == "suspended"
-    support._assert_route(host, origin, status=404)
-    submit("delete")
-    assert not host.file(f"{support.STATE_ROOT}/tenants/{tenant}").exists
-    assert not host.file(f"{support.RELEASE_ROOT}/{tenant}").exists
     accounting.test_installed_archive_qualification_has_no_unresolved_accounting(host)
     selected = host.run("readlink --canonicalize /opt/lowerduckpond/static-host-agent/current")
     assert selected.rc == 0

@@ -202,8 +202,10 @@ checks idempotence. It then creates, deploys, and suspends a 100-MiB/5,000-file
 source through the supported operator interface. Archive and restore use the
 installed services and unchanged production resource/admission limits. The
 restored deployment must have a new identity and exactly the original filenames,
-lengths, and content hashes. The case deletes its tenant through the normal
-lifecycle and checks local accounting and installed artifact integrity.
+lengths, and content hashes. The case finishes with the restored active tenant,
+as the complete archive journey does, then checks settled local accounting and
+installed artifact integrity before fixture teardown. Ordinary archived-tenant
+deletion remains covered by the complete archive journey.
 
 The command prints each phase and the private run directory. It writes readable
 per-phase logs there. A failed command, missing installed receipt, changed
