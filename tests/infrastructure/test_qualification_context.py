@@ -91,6 +91,29 @@ def test_live_backend_is_rejected_before_allocating_resources(
     assert not list(tmp_path.iterdir())
 
 
+def test_nested_reapply_keeps_the_owned_state_and_certificate_directory(tmp_path: Path) -> None:
+    environment = local.create_environment(tmp_path)
+    expected = environment["MOLECULE_EPHEMERAL_DIRECTORY"]
+    environment.update(
+        MOLECULE_EPHEMERAL_DIRECTORY="/unrelated/child-export",
+        MOLECULE_INVENTORY_FILE="/unrelated/inventory",
+        MOLECULE_SCENARIO_DIRECTORY="/unrelated/scenario",
+    )
+    nested = context.reapply_environment(environment)
+    assert nested["MOLECULE_EPHEMERAL_DIRECTORY"] == expected
+    assert {key for key in nested if key.startswith("MOLECULE_")} == {
+        "MOLECULE_EPHEMERAL_DIRECTORY"
+    }
+    assert all(nested[key] == environment[key] for key in context.RESOURCE_ENV)
+    assert environment["MOLECULE_EPHEMERAL_DIRECTORY"] == "/unrelated/child-export"
+
+
+def test_legacy_reapply_keeps_existing_molecule_rediscovery_behavior() -> None:
+    assert context.reapply_environment(
+        {"PATH": "/bin", "MOLECULE_EPHEMERAL_DIRECTORY": "/child"}
+    ) == {"PATH": "/bin"}
+
+
 @pytest.mark.parametrize("key", sorted(context.RESOURCE_ENV))
 def test_partial_or_mixed_resource_ownership_is_rejected(key: str) -> None:
     assert context.host_name({}) == context.LEGACY_HOST

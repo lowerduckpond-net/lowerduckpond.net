@@ -21,7 +21,7 @@ from lowerduckpond_static_contracts import canonical_json_bytes, manifest_digest
 from lowerduckpond_static_operator import OperatorClientError, submit
 from testinfra.host import Host
 
-from scripts.qualification_context import host_name
+from scripts.qualification_context import host_name, reapply_environment
 from scripts.qualification_failure import record_submission
 from scripts.qualification_timing import measure
 
@@ -333,9 +333,7 @@ def _run_ansible_reapply(
     project = Path(__file__).resolve().parents[3]
     uv = shutil.which("uv")
     assert uv is not None
-    environment = {
-        key: value for key, value in os.environ.items() if not key.startswith("MOLECULE_")
-    }
+    environment = reapply_environment(os.environ)
     environment["M3_8_STATIC_PUBLICATION_ENABLED"] = str(static_publication_enabled).lower()
     if cloudflare_api_token is not None:
         environment["M3_8_CLOUDFLARE_API_TOKEN"] = cloudflare_api_token

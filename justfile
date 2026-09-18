@@ -129,6 +129,10 @@ check-archive-full-size: _sync
     uv run ansible-galaxy collection install --no-deps --requirements-file config/ansible/requirements.yml
     uv run python -m scripts.qualification_timing run -- uv run python "$PWD/scripts/qualification_local.py" --case full-size-archive
 
+# Retire one inactive owned archive fixture after fresh accounting and storage proof.
+retire-archive-fixture directory: _sync
+    uv run python -m scripts.qualification_retirement {{quote(directory)}}
+
 # Prove the M3.5 production starting conditions without changing host state.
 preflight-m3-dark-host-production: _sync
     scripts/preflight-m3-dark-host-production

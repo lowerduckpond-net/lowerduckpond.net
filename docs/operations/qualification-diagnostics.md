@@ -215,3 +215,20 @@ The first CI runs establish the expected duration; the initial job limit is
 45 minutes, with the plan's 30-minute installed-case target still to be measured.
 The complete existing lifecycle journey remains required for the same selected
 changes, and CI runs the independent case on a separate runner.
+
+After diagnosing an unsuccessful independent archive case, use
+`just retire-archive-fixture /absolute/path/to/the/run` to remove its owned
+containers when their obligations are settled. This explicit command refuses an
+active controller, changed container IDs, unvalidated jobs, pending state,
+quarantine, archived tenants, or unknown/nonempty independent storage inventory.
+It verifies the installed artifact against the run's retained artifact and
+checks local accounting again after the storage observation. A failed setup
+before installation instead requires empty local state and independently empty
+storage. Existing failure reports are never cleanup authority.
+
+Only the two exact container IDs bound to that independent run are stopped and
+removed. Private evidence and the artifact remain in its run directory, with a
+diagnostic `retirement.json` after successful removal. This command does not
+resume work, retry failed operations, replace an artifact, or apply to live
+Spaces fixtures. If checks cannot establish quiescence, resolve the reported
+operation through its existing recovery procedure before requesting retirement.

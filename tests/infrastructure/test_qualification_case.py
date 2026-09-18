@@ -40,7 +40,7 @@ def environment() -> dict[str, str]:
 
 
 @pytest.mark.parametrize(
-    "failed_phase", ["create", "converge", "idempotence", "verify", "destroy", None]
+    "failed_phase", ["create", "prepare", "converge", "idempotence", "verify", "destroy", None]
 )
 def test_only_a_complete_case_reaches_independent_proof_and_teardown(
     tmp_path: Path,
@@ -70,7 +70,15 @@ def test_only_a_complete_case_reaches_independent_proof_and_teardown(
 
     monkeypatch.setattr(case, "independent_storage_absence", proof)
     status = case.run_full_size(tmp_path, environment, "uv")
-    sequence = ["create", "converge", "idempotence", "verify", "independent-proof", "destroy"]
+    sequence = [
+        "create",
+        "prepare",
+        "converge",
+        "idempotence",
+        "verify",
+        "independent-proof",
+        "destroy",
+    ]
     assert events == (
         sequence if failed_phase is None else sequence[: sequence.index(failed_phase) + 1]
     )

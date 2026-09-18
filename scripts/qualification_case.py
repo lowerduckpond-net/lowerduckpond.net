@@ -7,7 +7,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from scripts.qualification_context import ARCHIVE_ENV, HOST_ENV, RUN_ENV, host_name
+from scripts.qualification_context import ARCHIVE_ENV, HOST_ENV, RUN_ENV, host_name, run_lease
 from scripts.qualification_failure import record_phase
 from scripts.qualification_probe import bounded_command, document
 
@@ -115,6 +115,11 @@ def phase(directory: Path, environment: dict[str, str], uv: str, name: str) -> i
 
 
 def run_full_size(directory: Path, environment: dict[str, str], uv: str) -> int:
+    with run_lease(directory, create=True):
+        return _run_full_size(directory, environment, uv)
+
+
+def _run_full_size(directory: Path, environment: dict[str, str], uv: str) -> int:
     """Only this named case's completed tests and fresh storage proof permit teardown."""
     environment = {
         **environment,
@@ -124,17 +129,18 @@ def run_full_size(directory: Path, environment: dict[str, str], uv: str) -> int:
         "ANSIBLE_NOCOLOR": "1",
     }
     base = {
+        "scenario": {"create_sequence": ["dependency", "create"]},
         "ansible": {
             "playbooks": {
                 "verify": str(ROOT / "config/ansible/molecule/m3_8/verify_full_size_archive.yml")
             }
-        }
+        },
     }
     with (directory / "case-base.yml").open("x", encoding="ascii") as stream:
         # JSON is also valid YAML and avoids introducing a controller dependency.
         json.dump(base, stream)
     identities: dict[str, str] = {}
-    for name in ("create", "converge", "idempotence", "verify"):
+    for name in ("create", "prepare", "converge", "idempotence", "verify"):
         status = phase(directory, environment, uv, name)
         if status:
             return status

@@ -37,6 +37,8 @@ relevant_paths=(
     scripts/qualification_local.py
     scripts/qualification_failure.py
     scripts/qualification_probe.py
+    scripts/qualification_retirement.py
+    scripts/qualification_retirement_probe.py
     scripts/qualification_timing.py
     scripts/qualification_pytest_timing.py
     tools/static-operator
