@@ -119,6 +119,18 @@ def resolve_operator_transport(docker_host: str, container: str) -> dict[str, st
     return transport
 
 
+def current_operator_transport(
+    docker_host: str, container: str, recorded: dict[str, str]
+) -> dict[str, str]:
+    """Refresh Docker's ephemeral port without accepting a changed access boundary."""
+    current = resolve_operator_transport(docker_host, container)
+    if {key: value for key, value in current.items() if key != "sshPort"} != {
+        key: value for key, value in recorded.items() if key != "sshPort"
+    }:
+        raise RuntimeError("M3.8 operator transport access boundary changed")
+    return current
+
+
 def main(arguments: Sequence[str] | None = None) -> int:
     values = sys.argv[1:] if arguments is None else arguments
     if len(values) != _ARGUMENT_COUNT:

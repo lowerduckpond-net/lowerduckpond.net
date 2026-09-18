@@ -21,6 +21,7 @@ from lowerduckpond_static_contracts import canonical_json_bytes, manifest_digest
 from lowerduckpond_static_operator import OperatorClientError, submit
 from testinfra.host import Host
 
+from config.ansible.molecule.m3_8.resolve_operator_transport import current_operator_transport
 from scripts.qualification_context import host_name, reapply_environment
 from scripts.qualification_failure import record_submission
 from scripts.qualification_timing import measure
@@ -214,7 +215,11 @@ def _operator_inputs(tmp_path: Path) -> tuple[str, Path, Path]:
     identity.chmod(0o600)
     host = urlsplit(os.environ.get("DOCKER_HOST", "")).hostname or "127.0.0.1"
     transport_path = Path(os.environ["MOLECULE_EPHEMERAL_DIRECTORY"]) / "operator-transport.json"
-    transport = json.loads(transport_path.read_text(encoding="ascii"))
+    transport = current_operator_transport(
+        os.environ.get("DOCKER_HOST", ""),
+        CONTAINER,
+        json.loads(transport_path.read_text(encoding="ascii")),
+    )
     port = int(transport["sshPort"])
     assert 1 <= port <= 65535, "qualification SSH port is invalid"  # noqa: PLR2004
     peer_address = transport.get("peerAddress")

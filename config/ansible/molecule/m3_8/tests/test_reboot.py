@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ipaddress
 import json
+import os
 import shlex
 import uuid
 from pathlib import Path
@@ -19,6 +21,45 @@ _RUNTIME_FIXTURE_NAMES = (
     "origin-pull-client.pem",
 )
 _DURABLE_ROOTS = (support.STATE_ROOT, support.RELEASE_ROOT, "/etc/caddy")
+_ARCHIVE_HOSTNAME = "ams3.digitaloceanspaces.com"
+
+
+def _archive_hosts_line(host: Host) -> str | None:
+    if os.environ.get("M3_10_ARCHIVE_BACKEND", "minio") == "spaces":
+        return None
+    result = host.run("/usr/bin/cat /etc/hosts")
+    assert result.rc == 0, result.stderr
+    mappings = [
+        line.split() for line in result.stdout.splitlines() if _ARCHIVE_HOSTNAME in line.split()
+    ]
+    assert len(mappings) == 1
+    address, hostname = mappings[0]
+    assert hostname == _ARCHIVE_HOSTNAME
+    return f"{ipaddress.ip_address(address)} {hostname}"
+
+
+def _restore_archive_hosts_line(host: Host, line: object) -> None:
+    # Docker regenerates /etc/hosts on restart. Restore only the previously
+    # observed disposable endpoint, before any post-reboot archive request.
+    if line is None:
+        assert os.environ.get("M3_10_ARCHIVE_BACKEND") == "spaces"
+        return
+    assert isinstance(line, str)
+    address, hostname = line.split()
+    assert hostname == _ARCHIVE_HOSTNAME
+    assert line == f"{ipaddress.ip_address(address)} {hostname}"
+    script = f"""
+from pathlib import Path
+path = Path('/etc/hosts')
+lines = path.read_text().splitlines()
+matches = [item.split() for item in lines if {hostname!r} in item.split()]
+assert not matches or matches == [{line!r}.split()], 'fixture endpoint changed'
+if not matches:
+    with path.open('a') as stream:
+        stream.write('\\n' + {line!r} + '\\n')
+"""
+    result = host.run("/usr/bin/python3 -I -B -c %s", script)
+    assert result.rc == 0, result.stderr
 
 
 def _remote_snapshot(host: Host) -> dict[str, object]:
@@ -290,6 +331,7 @@ def test_capture_installed_reboot_state(host: Host, tmp_path: Path) -> None:
     assert selected.rc == 0, selected.stderr
     assert selected.stdout.strip()
     expectation = {
+        "archiveHostsLine": _archive_hosts_line(host),
         "pidOneStartTicks": _pid_one_start_ticks(host),
         "reconcileInvocation": _property(
             host, "lowerduckpond-static-reconcile.service", "InvocationID"
@@ -352,6 +394,7 @@ def test_verify_installed_reboot_state(host: Host) -> None:
     assert selected.rc == 0, selected.stderr
     assert selected.stdout.strip() == expectation["selectedGeneration"]
     assert _remote_snapshot(host) == expectation["snapshot"]
+    _restore_archive_hosts_line(host, expectation["archiveHostsLine"])
     _restore_volatile_test_fixtures(host)
     support._prepare_edge_probe(host)
     routes = expectation["routes"]

@@ -184,6 +184,12 @@ workspace's eight exposed loop-device nodes were insufficient to prepare two
 complete fixtures simultaneously. Use separate runners for parallel installed
 checks; do not detach another run's devices or prune shared Docker resources.
 
+After reboot, operator connections rediscover Docker's assigned SSH port while
+requiring the recorded source and peer addresses to remain unchanged. The
+reboot verifier also restores the captured disposable MinIO hostname mapping
+that Docker removes from `/etc/hosts`. These test-fixture repairs do not reapply
+the production configuration or accept a changed access boundary.
+
 ## Independent full-size archive
 
 Use `just check-archive-full-size` after the normal `just setup` prerequisites.

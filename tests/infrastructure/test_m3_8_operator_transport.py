@@ -204,3 +204,36 @@ def test_published_port_accepts_matching_ipv4_and_ipv6_bindings(
     monkeypatch.setattr(resolve_operator_transport.subprocess, "run", inspect)
     assert _published_ssh_port("owned-fixture") == "32123"
     assert commands[0][-1] == "owned-fixture"
+
+
+def test_restarted_fixture_uses_new_port_with_same_access_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorded = {"sourceCidr": "172.17.0.1/32", "peerAddress": "127.0.0.1", "sshPort": "32123"}
+    current = {**recorded, "sshPort": "32124"}
+    monkeypatch.setattr(
+        resolve_operator_transport, "resolve_operator_transport", lambda *args: current
+    )
+    assert (
+        resolve_operator_transport.current_operator_transport(
+            "unix:///var/run/docker.sock", "owned-fixture", recorded
+        )
+        == current
+    )
+    assert recorded["sshPort"] == "32123"
+
+
+@pytest.mark.parametrize("field", ["sourceCidr", "peerAddress"])
+def test_restarted_fixture_rejects_changed_access_boundary(
+    monkeypatch: pytest.MonkeyPatch, field: str
+) -> None:
+    recorded = {"sourceCidr": "172.17.0.1/32", "peerAddress": "127.0.0.1", "sshPort": "32123"}
+    monkeypatch.setattr(
+        resolve_operator_transport,
+        "resolve_operator_transport",
+        lambda *args: {**recorded, field: "192.0.2.10"},
+    )
+    with pytest.raises(RuntimeError, match="access boundary changed"):
+        resolve_operator_transport.current_operator_transport(
+            "unix:///var/run/docker.sock", "owned-fixture", recorded
+        )
