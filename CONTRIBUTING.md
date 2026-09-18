@@ -27,6 +27,11 @@ Create a focused branch, keep each pull request to one coherent change, and
 describe the behavior and validation performed. Architecture changes should add
 or update an ADR in `docs/adr/`.
 
+Installed qualification records monotonic timing diagnostics automatically.
+Read [qualification diagnostics](docs/operations/qualification-diagnostics.md)
+for report locations, overlapping categories, and comparison limits. Python
+checks also print their 20 slowest tests above one second.
+
 Record deployment closeouts under `docs/records/` with their original source,
 artifact, and evidence; recording completion does not require redeployment.
 Those records must never become executable, configuration, test, or requirements

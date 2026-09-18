@@ -68,6 +68,8 @@ def repository(tmp_path: Path) -> tuple[Path, str]:
         "schemas/static-publication/v1alpha1/example.json",
         "scripts/build-static-host-agent",
         "scripts/m3-8-ci-required",
+        "scripts/qualification_timing.py",
+        "scripts/qualification_pytest_timing.py",
         "tools/static-operator/src/example.py",
         "uv.lock",
     ],

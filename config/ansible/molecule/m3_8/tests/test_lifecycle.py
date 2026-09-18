@@ -21,6 +21,8 @@ from lowerduckpond_static_contracts import canonical_json_bytes, manifest_digest
 from lowerduckpond_static_operator import OperatorClientError, submit
 from testinfra.host import Host
 
+from scripts.qualification_timing import measure
+
 CONTAINER = "lowerduckpond-ubuntu-2604"
 OPERATOR_KEY = "/run/lowerduckpond-molecule/operator-key"
 ORIGIN_PULL_CLIENT_CERTIFICATE = "/run/lowerduckpond-molecule/origin-pull-client.pem"
@@ -135,7 +137,8 @@ else:
         assert sampled.rc == 0, sampled.stderr
         return float(sampled.stdout.strip())
 
-    wait_for_host_time(float(result.stdout.strip()), clock=host_clock)
+    with measure("pacing"):
+        wait_for_host_time(float(result.stdout.strip()), clock=host_clock)
     _CORRELATION_PACER = CorrelationPacer(clock=host_clock)
 
 
@@ -300,7 +303,8 @@ with StateRepository(pathlib.Path({STATE_ROOT!r}), expected_owner=0) as reposito
     print(issued.job_id)
 """
     try:
-        result = host.run("/usr/bin/python3 -I -B -c %s", command)
+        with measure("operator"):
+            result = host.run("/usr/bin/python3 -I -B -c %s", command)
     finally:
         _complete_correlation_pacing(new_correlation)
     assert result.rc == 0, result.stderr
@@ -331,14 +335,15 @@ def _run_ansible_reapply(
     environment["M3_8_STATIC_PUBLICATION_ENABLED"] = str(static_publication_enabled).lower()
     if cloudflare_api_token is not None:
         environment["M3_8_CLOUDFLARE_API_TOKEN"] = cloudflare_api_token
-    return subprocess.run(  # noqa: S603 - resolved trusted tool path
-        [uv, "run", "molecule", "converge", "--scenario-name", "m3_8"],
-        cwd=project,
-        env=plain_environment(environment),
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    with measure("ansible-reapply"):
+        return subprocess.run(  # noqa: S603 - resolved trusted tool path
+            [uv, "run", "molecule", "converge", "--scenario-name", "m3_8"],
+            cwd=project,
+            env=plain_environment(environment),
+            check=False,
+            capture_output=True,
+            text=True,
+        )
 
 
 def _assert_ansible_reapply_result(
@@ -512,20 +517,21 @@ def _submit(  # noqa: PLR0913
     request_path.write_bytes(canonical_json_bytes(request))
     request_path.chmod(0o600)
     try:
-        for attempt in range(_BUSY_RETRY_ATTEMPTS):
-            try:
-                return submit(
-                    host=host,
-                    identity_path=identity,
-                    request_path=request_path,
-                    artifact_path=artifact_path,
-                    export_path=export_path,
-                    ssh_executable=ssh,
-                )
-            except OperatorClientError as error:
-                if str(error) not in _RETRYABLE_BUSY or attempt == _BUSY_RETRY_ATTEMPTS - 1:
-                    raise
-                time.sleep(_BUSY_RETRY_SECONDS)
+        with measure("operator"):
+            for attempt in range(_BUSY_RETRY_ATTEMPTS):
+                try:
+                    return submit(
+                        host=host,
+                        identity_path=identity,
+                        request_path=request_path,
+                        artifact_path=artifact_path,
+                        export_path=export_path,
+                        ssh_executable=ssh,
+                    )
+                except OperatorClientError as error:
+                    if str(error) not in _RETRYABLE_BUSY or attempt == _BUSY_RETRY_ATTEMPTS - 1:
+                        raise
+                    time.sleep(_BUSY_RETRY_SECONDS)
     finally:
         _complete_correlation_pacing(new_correlation)
     raise AssertionError(
@@ -537,7 +543,8 @@ def _pace_new_correlation(request: dict[str, object]) -> bool:
     assert _CORRELATION_PACER is not None, "wait for persisted admission before issuing requests"
     correlation_id = request["correlationId"]
     assert type(correlation_id) is str
-    return _CORRELATION_PACER.pace(correlation_id)
+    with measure("pacing"):
+        return _CORRELATION_PACER.pace(correlation_id)
 
 
 def _complete_correlation_pacing(new_correlation: bool) -> None:

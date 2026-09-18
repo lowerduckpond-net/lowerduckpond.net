@@ -243,7 +243,20 @@ jobs:
           install_args: just python uv
       - name: Check installed M3.8 lifecycle behavior
         if: steps.selection.outputs.required == 'true'
+        env:
+          LDP_QUALIFICATION_TIMING_DIRECTORY: ${{ runner.temp }}/ldp-m3-8-timing
         run: just check-ansible-m3-8
+      - name: Retain allowlisted qualification timings
+        if: always() && steps.selection.outputs.required == 'true'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: m3-8-timing
+          path: |
+            ${{ runner.temp }}/ldp-m3-8-timing/timing.json
+            ${{ runner.temp }}/ldp-m3-8-timing/timing.txt
+          if-no-files-found: warn
+          retention-days: 30
       - name: Record the selective skip
         if: steps.selection.outputs.required != 'true'
         run: >-
