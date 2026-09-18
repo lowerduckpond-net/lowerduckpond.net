@@ -20,8 +20,8 @@ the reference for complete installed-job time.
 
 These are controller monotonic durations on four-CPU GitHub runners with local
 MinIO, Python 3.14.7, and the unchanged production admission policy. Group time
-includes nested activity: do not add these rows. Cache state and queue time were
-not measured. Fresh CI fixtures were provisioned; no operator changed them
+includes nested activity: do not add these rows. Cache state and precise queue time were
+not measured; API-derived start delays and job durations are recorded below. Fresh CI fixtures were provisioned; no operator changed them
 during execution. Diagnostic capture changed between attempts, and the built
 fixture image digests differ, so these are consistent partial observations,
 not a controlled before/after speed comparison.
@@ -41,3 +41,26 @@ would leave configuration work and fixture setup substantial. Independent
 groups must retain those assertions, production rate limits, recovery coverage,
 and accounting. Compare their eventual wall time and summed runner cost before
 claiming an improvement; obtain further samples through required validation.
+
+## CI attempts, including cancellations
+
+| Attempt | Outcome | Installed job | Start delay | Summed CI job time |
+| --- | --- | --- | --- | --- |
+| [35352183923](https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35352183923) | Failed archive handoff | 1h48m47s | 2s | 2h12m25s |
+| [35364684047](https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35364684047) | Failed archive overlap | 1h44m21s | 3s | 2h05m48s |
+| [35376258925](https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35376258925) | Canceled when superseded | 2m46s | 3s | 12m48s |
+| [35376431634](https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35376431634) | Canceled to deliver cleanup correction first | 26m31s | 1m22s | 49m43s |
+
+These durations come from GitHub's recorded job start/end timestamps and include
+setup and cleanup. Start delay is workflow creation to installed-job start;
+it does not isolate runner queue time. Summed execution time covers all jobs in
+the CI workflow, including failed aggregate checks, but excludes the separate
+CodeQL workflow and is not a billing calculation. The JSON preserves the job
+timestamps, outcomes, URLs and PR head revisions. Its instrumented source
+revision may instead identify the tested PR merge commit.
+
+The first cancellation superseded an instrumentation revision. The second
+parked the timing PR so the confirmed archive cleanup correction could be
+reviewed and merged first, with only one PR open. Neither canceled run is a
+passing qualification or a valid completed-runtime sample; their consumed time
+remains part of the development record.

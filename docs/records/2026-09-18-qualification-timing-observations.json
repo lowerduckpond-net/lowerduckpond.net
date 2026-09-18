@@ -451,5 +451,512 @@
         }
       }
     }
-  ]
+  ],
+  "ci_attempts": [
+    {
+      "run_id": 35352183923,
+      "run_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35352183923",
+      "head_revision": "634548fd8e2e3e48dd1df2e9de8e2dc27049eae6",
+      "outcome": "failure",
+      "created_at": "2026-09-18T13:46:24Z",
+      "installed_job_start_delay_seconds": 2,
+      "installed_job_seconds": 6527,
+      "workflow_elapsed_seconds": 6539,
+      "summed_ci_job_seconds": 7945,
+      "jobs": [
+        {
+          "completed_at": "2026-09-18T13:46:40Z",
+          "conclusion": "success",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35352183923/job/105622705350",
+          "name": "M3 contract spine",
+          "started_at": "2026-09-18T13:46:26Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T13:47:53Z",
+          "conclusion": "success",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35352183923/job/105622705424",
+          "name": "M3 qualification (local)",
+          "started_at": "2026-09-18T13:46:27Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T13:46:33Z",
+          "conclusion": "success",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35352183923/job/105622705484",
+          "name": "Actions",
+          "started_at": "2026-09-18T13:46:27Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T13:46:41Z",
+          "conclusion": "success",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35352183923/job/105622705489",
+          "name": "Secrets",
+          "started_at": "2026-09-18T13:46:28Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T13:53:59Z",
+          "conclusion": "success",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35352183923/job/105622705495",
+          "name": "Python",
+          "started_at": "2026-09-18T13:46:27Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T13:46:43Z",
+          "conclusion": "success",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35352183923/job/105622705496",
+          "name": "Cloudflare networks",
+          "started_at": "2026-09-18T13:46:28Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T13:46:50Z",
+          "conclusion": "success",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35352183923/job/105622705501",
+          "name": "Pre-commit",
+          "started_at": "2026-09-18T13:46:26Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T13:46:54Z",
+          "conclusion": "success",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35352183923/job/105622705561",
+          "name": "OpenTofu",
+          "started_at": "2026-09-18T13:46:27Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T13:46:41Z",
+          "conclusion": "success",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35352183923/job/105622705575",
+          "name": "Links",
+          "started_at": "2026-09-18T13:46:27Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T13:47:17Z",
+          "conclusion": "success",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35352183923/job/105622705586",
+          "name": "M3 archive storage (local)",
+          "started_at": "2026-09-18T13:46:27Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T15:35:13Z",
+          "conclusion": "failure",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35352183923/job/105622705628",
+          "name": "Ansible M3.8",
+          "started_at": "2026-09-18T13:46:26Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T13:58:18Z",
+          "conclusion": "success",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35352183923/job/105622705910",
+          "name": "Ansible static",
+          "started_at": "2026-09-18T13:46:27Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T15:35:18Z",
+          "conclusion": "failure",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35352183923/job/105659666230",
+          "name": "Ansible",
+          "started_at": "2026-09-18T15:35:15Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T15:35:23Z",
+          "conclusion": "failure",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35352183923/job/105659695060",
+          "name": "Gate",
+          "started_at": "2026-09-18T15:35:20Z",
+          "status": "completed"
+        }
+      ],
+      "intervention": "No fixture intervention during execution; instrumentation changed between attempts."
+    },
+    {
+      "run_id": 35364684047,
+      "run_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35364684047",
+      "head_revision": "9079dfea8a050f08353becb4770a6e5596d2ac39",
+      "outcome": "failure",
+      "created_at": "2026-09-18T15:48:45Z",
+      "installed_job_start_delay_seconds": 3,
+      "installed_job_seconds": 6261,
+      "workflow_elapsed_seconds": 6276,
+      "summed_ci_job_seconds": 7548,
+      "jobs": [
+        {
+          "completed_at": "2026-09-18T15:59:34Z",
+          "conclusion": "success",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35364684047/job/105664138813",
+          "name": "Ansible static",
+          "started_at": "2026-09-18T15:48:47Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T15:49:04Z",
+          "conclusion": "success",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35364684047/job/105664139057",
+          "name": "Links",
+          "started_at": "2026-09-18T15:48:48Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T15:49:00Z",
+          "conclusion": "success",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35364684047/job/105664139072",
+          "name": "M3 contract spine",
+          "started_at": "2026-09-18T15:48:47Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T15:49:18Z",
+          "conclusion": "success",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35364684047/job/105664139108",
+          "name": "Pre-commit",
+          "started_at": "2026-09-18T15:48:48Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T15:48:58Z",
+          "conclusion": "success",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35364684047/job/105664139154",
+          "name": "Cloudflare networks",
+          "started_at": "2026-09-18T15:48:47Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T15:48:59Z",
+          "conclusion": "success",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35364684047/job/105664139229",
+          "name": "Actions",
+          "started_at": "2026-09-18T15:48:48Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T15:55:21Z",
+          "conclusion": "success",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35364684047/job/105664139260",
+          "name": "Python",
+          "started_at": "2026-09-18T15:48:47Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T15:49:55Z",
+          "conclusion": "success",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35364684047/job/105664139277",
+          "name": "M3 qualification (local)",
+          "started_at": "2026-09-18T15:48:47Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T17:33:09Z",
+          "conclusion": "failure",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35364684047/job/105664139282",
+          "name": "Ansible M3.8",
+          "started_at": "2026-09-18T15:48:48Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T15:49:40Z",
+          "conclusion": "success",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35364684047/job/105664139317",
+          "name": "M3 archive storage (local)",
+          "started_at": "2026-09-18T15:48:49Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T15:49:16Z",
+          "conclusion": "success",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35364684047/job/105664139327",
+          "name": "OpenTofu",
+          "started_at": "2026-09-18T15:48:48Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T15:48:58Z",
+          "conclusion": "success",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35364684047/job/105664139449",
+          "name": "Secrets",
+          "started_at": "2026-09-18T15:48:47Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T17:33:16Z",
+          "conclusion": "failure",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35364684047/job/105697542762",
+          "name": "Ansible",
+          "started_at": "2026-09-18T17:33:12Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T17:33:21Z",
+          "conclusion": "failure",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35364684047/job/105697581406",
+          "name": "Gate",
+          "started_at": "2026-09-18T17:33:18Z",
+          "status": "completed"
+        }
+      ],
+      "intervention": "No fixture intervention during execution; instrumentation changed between attempts."
+    },
+    {
+      "run_id": 35376258925,
+      "run_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35376258925",
+      "head_revision": "abb22b616a4739dcc606c0872c56e68e9aa8f24d",
+      "outcome": "cancelled",
+      "created_at": "2026-09-18T17:45:57Z",
+      "installed_job_start_delay_seconds": 3,
+      "installed_job_seconds": 166,
+      "workflow_elapsed_seconds": 188,
+      "summed_ci_job_seconds": 768,
+      "jobs": [
+        {
+          "completed_at": "2026-09-18T17:48:46Z",
+          "conclusion": "cancelled",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35376258925/job/105701524167",
+          "name": "Python",
+          "started_at": "2026-09-18T17:46:00Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T17:46:14Z",
+          "conclusion": "success",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35376258925/job/105701524301",
+          "name": "Links",
+          "started_at": "2026-09-18T17:46:00Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T17:46:13Z",
+          "conclusion": "success",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35376258925/job/105701524431",
+          "name": "M3 contract spine",
+          "started_at": "2026-09-18T17:46:00Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T17:46:20Z",
+          "conclusion": "success",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35376258925/job/105701524496",
+          "name": "OpenTofu",
+          "started_at": "2026-09-18T17:45:59Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T17:48:46Z",
+          "conclusion": "cancelled",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35376258925/job/105701524528",
+          "name": "Ansible static",
+          "started_at": "2026-09-18T17:46:00Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T17:47:26Z",
+          "conclusion": "success",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35376258925/job/105701524553",
+          "name": "M3 qualification (local)",
+          "started_at": "2026-09-18T17:46:00Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T17:47:03Z",
+          "conclusion": "success",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35376258925/job/105701524570",
+          "name": "M3 archive storage (local)",
+          "started_at": "2026-09-18T17:46:00Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T17:46:31Z",
+          "conclusion": "success",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35376258925/job/105701524597",
+          "name": "Pre-commit",
+          "started_at": "2026-09-18T17:46:00Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T17:46:15Z",
+          "conclusion": "success",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35376258925/job/105701524608",
+          "name": "Cloudflare networks",
+          "started_at": "2026-09-18T17:46:00Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T17:46:14Z",
+          "conclusion": "success",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35376258925/job/105701524632",
+          "name": "Secrets",
+          "started_at": "2026-09-18T17:46:00Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T17:48:46Z",
+          "conclusion": "cancelled",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35376258925/job/105701524682",
+          "name": "Ansible M3.8",
+          "started_at": "2026-09-18T17:46:00Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T17:46:06Z",
+          "conclusion": "success",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35376258925/job/105701524733",
+          "name": "Actions",
+          "started_at": "2026-09-18T17:45:59Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T17:48:57Z",
+          "conclusion": "failure",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35376258925/job/105702399531",
+          "name": "Ansible",
+          "started_at": "2026-09-18T17:48:53Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T17:49:05Z",
+          "conclusion": "failure",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35376258925/job/105702450407",
+          "name": "Gate",
+          "started_at": "2026-09-18T17:49:03Z",
+          "status": "completed"
+        }
+      ],
+      "intervention": "Superseded by the following instrumentation commit; canceled before installed verification completed."
+    },
+    {
+      "run_id": 35376431634,
+      "run_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35376431634",
+      "head_revision": "cc49fa4b61e927ae5a0c672306228b9869e21d5f",
+      "outcome": "cancelled",
+      "created_at": "2026-09-18T17:47:46Z",
+      "installed_job_start_delay_seconds": 82,
+      "installed_job_seconds": 1591,
+      "workflow_elapsed_seconds": 1685,
+      "summed_ci_job_seconds": 2983,
+      "jobs": [
+        {
+          "completed_at": "2026-09-18T17:49:35Z",
+          "conclusion": "success",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35376431634/job/105702484036",
+          "name": "Pre-commit",
+          "started_at": "2026-09-18T17:49:08Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T17:49:20Z",
+          "conclusion": "success",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35376431634/job/105702484047",
+          "name": "M3 contract spine",
+          "started_at": "2026-09-18T17:49:08Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T17:55:43Z",
+          "conclusion": "success",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35376431634/job/105702484088",
+          "name": "Python",
+          "started_at": "2026-09-18T17:49:08Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T17:49:23Z",
+          "conclusion": "success",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35376431634/job/105702484113",
+          "name": "Cloudflare networks",
+          "started_at": "2026-09-18T17:49:09Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T17:50:26Z",
+          "conclusion": "success",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35376431634/job/105702484128",
+          "name": "M3 qualification (local)",
+          "started_at": "2026-09-18T17:49:08Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T18:01:42Z",
+          "conclusion": "success",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35376431634/job/105702484151",
+          "name": "Ansible static",
+          "started_at": "2026-09-18T17:49:08Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T18:15:39Z",
+          "conclusion": "cancelled",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35376431634/job/105702484178",
+          "name": "Ansible M3.8",
+          "started_at": "2026-09-18T17:49:08Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T17:49:34Z",
+          "conclusion": "success",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35376431634/job/105702484208",
+          "name": "Links",
+          "started_at": "2026-09-18T17:49:20Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T17:49:16Z",
+          "conclusion": "success",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35376431634/job/105702484261",
+          "name": "Actions",
+          "started_at": "2026-09-18T17:49:08Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T17:49:21Z",
+          "conclusion": "success",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35376431634/job/105702484271",
+          "name": "Secrets",
+          "started_at": "2026-09-18T17:49:08Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T17:49:53Z",
+          "conclusion": "success",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35376431634/job/105702484387",
+          "name": "M3 archive storage (local)",
+          "started_at": "2026-09-18T17:49:08Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T17:49:36Z",
+          "conclusion": "success",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35376431634/job/105702484956",
+          "name": "OpenTofu",
+          "started_at": "2026-09-18T17:49:08Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T18:15:45Z",
+          "conclusion": "failure",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35376431634/job/105710856501",
+          "name": "Ansible",
+          "started_at": "2026-09-18T18:15:43Z",
+          "status": "completed"
+        },
+        {
+          "completed_at": "2026-09-18T18:15:51Z",
+          "conclusion": "failure",
+          "html_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35376431634/job/105710892262",
+          "name": "Gate",
+          "started_at": "2026-09-18T18:15:49Z",
+          "status": "completed"
+        }
+      ],
+      "intervention": "Parked the timing PR and canceled its run to deliver the confirmed archive cleanup correction first, keeping one open PR."
+    }
+  ],
+  "ci_accounting_scope": "CI workflow only; CodeQL is separate. Job durations include setup/cleanup. Summed job seconds are observed execution time, not billed minutes. Start delay is run creation to installed job start, not a measured runner queue interval."
 }
