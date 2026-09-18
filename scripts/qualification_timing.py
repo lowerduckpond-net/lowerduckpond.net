@@ -207,7 +207,12 @@ def start_run(directory: Path, backend: str) -> None:
             versions[package] = _version(importlib.metadata.version(package))
         except importlib.metadata.PackageNotFoundError:
             versions[package] = "unknown"
-    versions["uv"] = _version(_tool_output(["uv", "--version"]).removeprefix("uv "))
+    uv_output = _tool_output(["uv", "--version"])
+    versions["uv"] = (
+        _version(uv_output.removeprefix("uv ").split(" ", 1)[0])
+        if uv_output.startswith("uv ")
+        else "unknown"
+    )
     versions["docker"] = _version(
         _tool_output(["docker", "version", "--format", "{{.Server.Version}}"])
     )
