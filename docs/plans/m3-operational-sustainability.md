@@ -22,9 +22,11 @@ Same-artifact reconfiguration retains validated history; artifact replacement
 still requires empty history. This routing correction retains the existing
 exact-source report and 24-hour expiry requirements.
 
-Next, implement S6's candidate-identity and freshness policy so bookkeeping does
-not force repeated qualification or deployment. Then deliver S1 timings, S2
-failure summaries, and S3 independent reproduction before using their evidence
+S6 implements candidate identity and freshness under ADR 0029; record-only
+commits can retain qualification without relabelling provenance. Live validation
+of the changed workflow remains part of the final sustainability gate.
+Next deliver S1 timings, S2 failure summaries, and S3 independent reproduction
+before using their evidence
 to choose S4 pacing and S5 CI changes. Use one active PR at a time, do not request
 reviews, and keep progress commentary in the operator task. The diagnosis and
 delivery sequence below retain the original planning context.
@@ -64,17 +66,13 @@ by this planning snapshot.
 
 Qualification is distinct from production convergence. This plan does not
 authorize production mutation or publication enablement. Production credentials
-remain on the secure workstation. Passing historical evidence is retained, but
-the [current report verifier](../../scripts/m3_10_qualification_report.py)
-requires an exact source/artifact match and evidence no older than 24 hours.
-Do not refresh timestamps, relabel reports, or reuse an old pass as a new release
-gate. After this interval or a candidate change, obtain the fresh evidence
-required by the [convergence runbook](../operations/m3-10-convergence-preparation.md).
-That applies to source-only changes too, until a separately reviewed evidence
-policy explicitly says otherwise. Coordinate the intended convergence window
-before choosing the next qualification revision. S6 below requires review of
-this blanket expiry; the current rule remains enforced until an accepted
-replacement is implemented and qualified.
+remain on the secure workstation. [ADR 0029](../adr/0029-bind-qualification-to-inputs-and-live-observations.md)
+defines S6's implemented candidate identity, record-only equivalence, revocation,
+seven-day pending-installation provider window, and fresh live checks. Existing
+v1 reports retain their exact-source/24-hour rule and are not promoted. The new
+live workflow still needs complete secure-workstation qualification with the
+final sustainability harness before use as release authority. Historical M3.10
+convergence remains complete; merging this policy does not require redeployment.
 
 ## 2. Evidence for the work
 
@@ -87,7 +85,7 @@ replacement is implemented and qualified.
 | Failed runs preserve the host and private logs but have no structured failure summary. | [Spaces wrapper](../../scripts/m3-10-spaces-qualification) | Operators assemble evidence manually across logs and state. |
 | Publication-enabled hosts reject artifact replacement. | [Host-agent role](../../config/ansible/roles/static_host_agent/tasks/main.yml) | A retained failed fixture cannot simply receive a new artifact via converge. |
 | Fixed container names, SSH port, and artifact paths are shared. | [Molecule configuration](../../config/ansible/molecule/m3_8/molecule.yml), [wrapper](../../scripts/m3-10-spaces-qualification) | Concurrent scenarios need resource isolation before parallel execution. |
-| All supporting qualification evidence expires after 24 hours, while convergence separately rechecks provider/host conditions and current credentials. | [Report verifier](../../scripts/m3_10_qualification_report.py), [convergence runner](../../scripts/configure-production) | Elapsed time alone can force the complete installed/live suite to repeat; the blanket threshold needs a documented risk justification. |
+| At planning, all supporting qualification evidence expired after 24 hours, while convergence separately rechecked provider/host conditions and current credentials. | [Report verifier](../../scripts/m3_10_qualification_report.py), [convergence runner](../../scripts/configure-production) | Elapsed time alone can force the complete installed/live suite to repeat; the blanket threshold needs a documented risk justification. |
 
 These observations establish opportunities, not a measured attribution of the
 three-hour runtime. Preserve the guarantees in
@@ -99,9 +97,11 @@ relocated assertion must name its replacement and the environment that proves it
 
 Use one coherent PR per slice, splitting only when the review or dependencies
 justify it. Review the implementation against the then-current merged archive
-fix. Obtain reviewer acceptance and the required CI for each final revision;
-do not merge automatically. The first three slices provide useful improvements
-even if the pacing or selection proposals need further design.
+fix. Complete required CI and address applicable review findings for each final
+revision. On 2026-09-18 the operator explicitly authorized continuing merges of
+the single open sustainability PR; merge it before opening the next. Do not
+request reviews or post progress commentary to PRs. The first three slices
+provide useful improvements even if the pacing or selection proposals need further design.
 
 ### S1: Measure execution and waiting
 
@@ -307,8 +307,8 @@ The exit record must show:
 - admission-policy equivalence and an invariant-to-test map for S4/S5;
 - the S6 evidence-validity decision, justified freshness windows, and completed
   implementation/validation of any replacement policy;
-- reviewer acceptance, required CI, and final full installed qualification of
-  the changed harness;
+- addressed review findings, required CI, and final full installed qualification
+  of the changed harness under the operator-authorized merge workflow;
 - instructions a second operator can follow without reconstructing this chat.
 
 If a target cannot be met, record the measured result, cause, bounded alternative,

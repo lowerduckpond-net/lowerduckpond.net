@@ -188,13 +188,21 @@ credential values, raw response bodies, queries, and account/zone/token IDs.
 Record the accepted PRs and required CI, merged source, reproducible artifact,
 live report checksum, final read-only preflight, and confirmation that the
 dedicated archive credential is retained in the established independent
-workstation backup. The report's source and artifact must exactly match the
-candidate, with completion within the preceding 24 hours. Repeat qualification
-if the source/artifact changes or evidence expires.
-The report also binds the oldest input evidence, so all supporting proofs must
-still be within 24 hours when consumed. Packaging an interrupted run cannot
-refresh its age: the final proof time is recorded before the independent final
-storage check, and stale phase markers or storage evidence prevent packaging.
+workstation backup. New v2 reports bind the original source and artifact, the
+[qualification input fingerprint](../adr/0029-bind-qualification-to-inputs-and-live-observations.md),
+and the exact Spaces region/bucket pair. A later record-only descendant may
+consume the original report when those inputs remain equal. All other changed
+inputs require new qualification. Before accepting a new installation, the
+oldest evidence must be within seven days. Existing v1 reports retain their
+exact-source and 24-hour rule; do not relabel them.
+
+Packaging still requires every input proof from the preceding 24 hours and the
+original final-proof chronology. Packaging interrupted or stale work cannot
+refresh its age. Future-dated or incomplete reports fail. Revocations in
+`scripts/qualification-revocations.json` override age and input equivalence.
+The new workflow requires full secure-workstation qualification before release
+use; collect that with the final sustainability harness. The prior completed
+M3.10 deployment remains valid and needs no repeat merely to record this change.
 
 The guarded configuration runner also exercises the freshly loaded archive and
 backup runtime keys before its first host mutation. This bounded storage check
@@ -227,8 +235,9 @@ export M3_10_ARCHIVE_CREDENTIAL_BACKUP_CONFIRMED=true
 just configure-production
 ```
 
-For a source or artifact change, that runner validates a fresh report against the
-actual built artifact and clean current source. Before choosing a host preflight,
+For changed qualification inputs, artifact, or storage target, the runner
+validates a matching report against the built artifact and clean current source.
+Before choosing a host preflight,
 the runner reads the root-owned completion record and verifies its selected
 artifact. The recorded source must be available in the candidate's Git ancestry;
 an unavailable or unrelated source requires investigation. Missing completion
@@ -242,9 +251,11 @@ complete job/correlation pairs. Terminal results must match their exact audit
 correlation, digest, status, and authority, retaining the runtime's legacy-failure
 exception. Administrator results retain their separately audited authority. Tenant records and history are retained;
 unfinished work, interrupted publication files, quarantine, or active lifecycle
-workers fail the check without cleanup. Only the exact completed source and
-artifact can skip candidate qualification. A successor source still requires
-its own report under the current evidence policy, even if its artifact matches.
+workers fail the check without cleanup. A completed installation with identical
+qualification inputs, artifact, and recorded storage target can skip candidate
+qualification, retaining its original accepted source. A legacy completion
+record lacks target provenance and cannot authorize that reuse. Record-only
+changes do not trigger deployment; other source changes remain inputs by default.
 The provider snapshot binds the previous installation's identity; the report
 binds the incoming candidate. Same-artifact convergence passes an explicit
 boolean to both Ansible converges to permit retained tenant history while
@@ -256,17 +267,19 @@ used during tenant publication, and skips platform-only bootstrap. Completed
 hosts with no tenant inventory retain the platform-only bootstrap workflow,
 including adding overlapping origin-pull trust and retiring the old CA. Tenant
 generation input migration remains subject to the existing publication guard.
-Completion is recorded for the incoming source and artifact only after
-convergence, idempotence, and host acceptance pass. Selection alone is
+Completion is recorded for the qualified source, artifact, and storage target
+only after convergence, idempotence, and host acceptance pass. Equivalent
+reconfiguration retains the original accepted source. Selection alone is
 insufficient. Initial convergence and legacy rollback retain the empty-history guard. Each
 attempt clears prior completion before Ansible; interrupted attempts must pass
 the full gate again. Its strict preceding-host inventory refuses partial M3.10
 installations, which require investigation and a reviewed recovery rather than
 automatic authorization to retry. The explicit reviewed rollback workflow
 clears completion, supplies empty archive configuration to withdraw its credential,
-and retains its existing checks. After an actual convergence, record the new production
-identity and update the preflight pins through review before another upgrade;
-do not add broad candidate allowances to the first-convergence gate.
+and retains its existing checks. After an actual convergence, record its identity
+and acceptance in `docs/records/` with the original sanitized report. Keep
+requirements/runbooks separate from closeout-only commits. Historical first-install
+and rollback pins do not advance merely to record a completed deployment.
 
 ## Installed credential boundary
 

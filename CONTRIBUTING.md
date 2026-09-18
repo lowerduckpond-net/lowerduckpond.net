@@ -27,6 +27,12 @@ Create a focused branch, keep each pull request to one coherent change, and
 describe the behavior and validation performed. Architecture changes should add
 or update an ADR in `docs/adr/`.
 
+Record deployment closeouts under `docs/records/` with their original source,
+artifact, and evidence; recording completion does not require redeployment.
+Those records must never become executable, configuration, test, or requirements
+inputs. All other tracked files remain qualification inputs by default under
+[ADR 0029](docs/adr/0029-bind-qualification-to-inputs-and-live-observations.md).
+
 ## Repository safety
 
 Never commit:
