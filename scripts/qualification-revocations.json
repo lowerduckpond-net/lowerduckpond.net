@@ -1,7 +1,9 @@
 {
   "format": "lowerduckpond-qualification-revocations-v1",
   "sources": [],
-  "artifacts": [],
+  "artifacts": [
+    "a7ae4afe77c1fe9077ae58c8750a33518b26f7c5dc42485626b1ef22cd192800"
+  ],
   "reports": [],
   "input_digests": []
 }
