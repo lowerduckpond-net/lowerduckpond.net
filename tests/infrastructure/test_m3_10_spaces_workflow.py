@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -77,6 +78,8 @@ fi
         """#!/usr/bin/python3
 import json, os, sys
 from pathlib import Path
+with Path(os.environ['TEST_UV_CALLS']).open('a') as stream:
+    stream.write(json.dumps(sys.argv[1:]) + '\\n')
 # A broken optional reporter cannot change the qualification's exit status.
 if any(arg.endswith('/scripts/qualification_timing.py') for arg in sys.argv):
     sys.exit(57)
@@ -115,6 +118,7 @@ if 'scripts.m3_10_qualification_report' in sys.argv:
             "TEST_CONTEXT_ENDPOINT": context_endpoint,
             "TEST_LOADER_MARKER": str(tmp_path / "loaded"),
             "TEST_INPUT_MARKER": str(tmp_path / "input-captured"),
+            "TEST_UV_CALLS": str(tmp_path / "uv-calls.jsonl"),
             "TEST_INPUTS_AVAILABLE": str(inputs_available).lower(),
             "SPACES_ACCESS_KEY_ID": "disposable-operator",
             "SPACES_SECRET_ACCESS_KEY": "disposable-secret",
@@ -136,6 +140,10 @@ if 'scripts.m3_10_qualification_report' in sys.argv:
         assert not expected.exists()
         return
     assert (tmp_path / "loaded").exists()
+    calls = [json.loads(line) for line in (tmp_path / "uv-calls.jsonl").read_text().splitlines()]
+    assert "start" in calls[0] and "--no-sync" in calls[0]
+    assert calls[1] == ["sync", "--all-packages", "--all-groups", "--frozen"]
+    assert "finish" in calls[-1] and "--no-sync" in calls[-1]
     directories = list(expected.glob("spaces-*"))
     assert len(directories) == 1
     if not inputs_available:
