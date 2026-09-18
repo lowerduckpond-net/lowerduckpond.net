@@ -488,24 +488,26 @@ class ArchiveJournal:
                     versions.add(entry)
         return frozenset(versions)
 
-    def purge_unbound_construction(self, intent_id: str) -> None:
+    def purge_unbound_construction(self, intent_id: str, *, blocking: bool = False) -> None:
         """Discover a lost upload response and purge, retaining the journal for audit.
 
         Caller must durably publish the failed lifecycle result before finish.
         Prepared recovery never repeats PutObject, even after an empty listing.
         """
-        intent = self._remote_intent(intent_id)
+        intent = self._remote_intent(intent_id, blocking=blocking)
         if intent.kind is not ContractKind.ARCHIVE_CONSTRUCTION_INTENT:
             raise ArchiveJournalError("construction cleanup received other authority")
-        self._purge(intent.record.document)
+        self._purge(intent.record.document, blocking=blocking)
 
-    def finish(self, intent_id: str) -> None:
+    def finish(self, intent_id: str, *, blocking: bool = False) -> None:
         """Clear only after audited terminal state and independent remote proof."""
-        intent = self._remote_intent(intent_id)
+        intent = self._remote_intent(intent_id, blocking=blocking)
         document = intent.record.document
-        result = self._terminal_result(document)
+        result = self._terminal_result(document, blocking=blocking)
         key = cast(str, document["key"])
-        bound = tuple(version for version in self.bound_versions() if version.key == key)
+        bound = tuple(
+            version for version in self.bound_versions(blocking=blocking) if version.key == key
+        )
         construction = intent.kind is ContractKind.ARCHIVE_CONSTRUCTION_INTENT
         preserve = result["status"] == "succeeded" if construction else result["status"] == "failed"
         if preserve:
@@ -536,8 +538,10 @@ class ArchiveJournal:
                 raise ArchiveJournalError(
                     "terminal cleanup still has authoritative archive bindings"
                 )
-            self._purge(document)
-        self.repository.remove_reconciled_intent(intent.path, intent.removal_token)
+            self._purge(document, blocking=blocking)
+        self.repository.remove_reconciled_intent(
+            intent.path, intent.removal_token, blocking=blocking
+        )
         self._notify(ArchiveJournalBoundary.INTENT_REMOVED)
 
     def verify_retained(self, archive: dict[str, object]) -> bool:
@@ -571,9 +575,9 @@ class ArchiveJournal:
             raise
         return True
 
-    def _remote_intent(self, intent_id: str) -> DiscoveredIntent:
+    def _remote_intent(self, intent_id: str, *, blocking: bool = False) -> DiscoveredIntent:
         self._require_lock()
-        discovery = IntentDiscovery(self.repository).discover()
+        discovery = IntentDiscovery(self.repository).discover(blocking=blocking)
         if len(discovery.intents) != 1:
             raise ArchiveJournalError("reconcile lifecycle authority before remote cleanup")
         intent = discovery.intents[0]
@@ -589,14 +593,16 @@ class ArchiveJournal:
             raise ArchiveJournalError("remote cleanup journal identity is inconsistent")
         return intent
 
-    def _terminal_result(self, intent: dict[str, object]) -> dict[str, object]:
+    def _terminal_result(
+        self, intent: dict[str, object], *, blocking: bool = False
+    ) -> dict[str, object]:
         job_id = intent.get("jobId")
         if job_id is None:
             provenance = cast(dict[str, object], intent["provenance"])
             if provenance["kind"] != "authorization-job":
                 raise ArchiveJournalError("ordinary cleanup cannot consume emergency provenance")
             job_id = provenance["jobId"]
-        with self.repository.transaction(mode=LockMode.EXCLUSIVE) as transaction:
+        with self.repository.transaction(mode=LockMode.EXCLUSIVE, blocking=blocking) as transaction:
             job = transaction.read(StateRecordPath.authorization_job(job_id)).document
             result = transaction.read(StateRecordPath.authorization_result(job_id)).document
             request = cast(dict[str, object], job["request"])
@@ -626,9 +632,9 @@ class ArchiveJournal:
             _require_terminal_local_state(transaction, job, result, intent, audit.entry)
             return result
 
-    def _purge(self, document: dict[str, object]) -> None:
+    def _purge(self, document: dict[str, object], *, blocking: bool = False) -> None:
         def require_unbound(key: str) -> None:
-            if any(version.key == key for version in self.bound_versions()):
+            if any(version.key == key for version in self.bound_versions(blocking=blocking)):
                 raise ArchiveJournalError("remote key remains bound by authoritative state")
 
         known: tuple[RemoteVersion, ...] = ()
