@@ -77,6 +77,9 @@ fi
         """#!/usr/bin/python3
 import json, os, sys
 from pathlib import Path
+# A broken optional reporter cannot change the qualification's exit status.
+if any(arg.endswith('/scripts/qualification_timing.py') for arg in sys.argv):
+    sys.exit(57)
 marker = Path(os.environ['TEST_INPUT_MARKER'])
 if 'scripts.production_qualification_inputs' in sys.argv:
     if os.environ['TEST_INPUTS_AVAILABLE'] != 'true':
@@ -136,7 +139,7 @@ if 'scripts.m3_10_qualification_report' in sys.argv:
     directories = list(expected.glob("spaces-*"))
     assert len(directories) == 1
     if not inputs_available:
-        assert result.returncode != 0
+        assert result.returncode == 1
         assert not (tmp_path / "input-captured").exists()
         assert not list(directories[0].glob("*.passed"))
         assert not (directories[0] / "qualification.json").exists()

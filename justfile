@@ -35,7 +35,7 @@ check-python: _sync
     uv run ruff format --check .
     uv run ruff check .
     uv run mypy
-    uv run pytest
+    uv run pytest --durations=20 --durations-min=1
 
 # Prove the standalone M3.2 contract wheel carries and loads every strict schema.
 check-m3-static-contracts: _sync
@@ -122,7 +122,7 @@ check-ansible-static: _sync
 # Run paced installed M3.8–M3.10 lifecycle, export/import, and archive qualification.
 check-ansible-m3-8: _sync
     uv run ansible-galaxy collection install --no-deps --requirements-file config/ansible/requirements.yml
-    cd config/ansible && ANSIBLE_CONFIG="$(pwd)/ansible.cfg" uv run molecule test --scenario-name m3_8
+    uv run python -m scripts.qualification_timing run -- uv run molecule test --scenario-name m3_8
 
 # Prove the M3.5 production starting conditions without changing host state.
 preflight-m3-dark-host-production: _sync

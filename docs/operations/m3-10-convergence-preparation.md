@@ -281,6 +281,11 @@ and acceptance in `docs/records/` with the original sanitized report. Keep
 requirements/runbooks separate from closeout-only commits. Historical first-install
 and rollback pins do not advance merely to record a completed deployment.
 
+The wrapper also writes allowlisted `timing.json` and `timing.txt` diagnostics,
+including after ordinary failures. These may be shared separately; raw logs and
+intermediate timing files stay private. Timings grant no qualification or cleanup
+authority. See [qualification diagnostics](qualification-diagnostics.md).
+
 ## Installed credential boundary
 
 The implementation uses `/etc/lowerduckpond/archive/credentials.json` inside a
