@@ -261,7 +261,6 @@ def _replace_state(host: Host, path: str, document: dict[str, object]) -> None:
 
 
 def _issue_without_handoff(host: Host, request: dict[str, object]) -> str:
-    record_submission(request)
     new_correlation = _pace_new_correlation(request)
     selected = host.run("readlink --canonicalize /opt/lowerduckpond/static-host-agent/current")
     assert selected.rc == 0, selected.stderr
@@ -507,7 +506,6 @@ def _submit(  # noqa: PLR0913
     artifact: bytes | None = None,
     export_path: Path | None = None,
 ) -> dict[str, object]:
-    record_submission(request)
     new_correlation = _pace_new_correlation(request)
     request_path = tmp_path / f"{request['correlationId']}.json"
     artifact_path = None
@@ -543,6 +541,7 @@ def _submit(  # noqa: PLR0913
 
 
 def _pace_new_correlation(request: dict[str, object]) -> bool:
+    record_submission(request)
     assert _CORRELATION_PACER is not None, "wait for persisted admission before issuing requests"
     correlation_id = request["correlationId"]
     assert type(correlation_id) is str
