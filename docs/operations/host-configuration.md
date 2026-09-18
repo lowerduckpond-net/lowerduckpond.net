@@ -268,9 +268,11 @@ Successful convergence records the exact accepted source and artifact on the
 host. Later candidates validate that recorded predecessor rather than adding
 another milestone-specific digest to the runner. Keep the closeout documentation
 as deployment provenance; updating it does not itself require reconvergence.
-Under the current evidence policy, deploying a later source still requires a
-matching qualification report. The first-installation and legacy rollback
-preflights retain their explicit historical artifact pins.
+Record closeout-only changes in `docs/records/`. Under
+[ADR 0029](../adr/0029-bind-qualification-to-inputs-and-live-observations.md), an
+equivalent completed installation retains its original provenance while live
+checks repeat. Other changed inputs require matching qualification evidence.
+The first-installation and legacy rollback preflights retain their explicit historical artifact pins.
 
 The current production identity, selected by the 2026-09-18 M3.10 convergence
 from source revision `22147a64e9b39e7965201cf2d96e07aeaa6d3ca1`, is
@@ -285,8 +287,8 @@ The [M3.10 checkpoint](../threat-model/m3-10-evidence.md#production-checkpoint-2
 retains the live qualification report and release evidence. Subsequent
 configuration must follow the
 [completed-candidate rules](m3-10-convergence-preparation.md#closing-the-starting-gate),
-including the current exact-source requirement; this record does not authorize
-reusing that report for a later revision.
+including the versioned input and freshness policy. The historical v1 report
+retains its exact-source/24-hour rule and is not promoted to the new format.
 
 The convergence command's internal preflight can also recover an interrupted
 immutable-Caddy bootstrap. This recovery mode accepts only a loaded service

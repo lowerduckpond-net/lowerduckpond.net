@@ -18,6 +18,7 @@ def executable(path: Path, body: str) -> None:
 
 
 @pytest.mark.parametrize("relative", [False, True])
+@pytest.mark.parametrize("inputs_available", [False, True])
 @pytest.mark.parametrize(
     "docker_selection",
     [
@@ -30,7 +31,10 @@ def executable(path: Path, body: str) -> None:
     ],
 )
 def test_spaces_workflow_keeps_evidence_paths_stable_across_phase_directories(
-    tmp_path: Path, relative: bool, docker_selection: tuple[str, str, str, bool]
+    tmp_path: Path,
+    relative: bool,
+    docker_selection: tuple[str, str, str, bool],
+    inputs_available: bool,
 ) -> None:
     docker_host, docker_context, context_endpoint, accepted = docker_selection
     checkout = tmp_path / "checkout"
@@ -73,6 +77,13 @@ fi
         """#!/usr/bin/python3
 import json, os, sys
 from pathlib import Path
+marker = Path(os.environ['TEST_INPUT_MARKER'])
+if 'scripts.production_qualification_inputs' in sys.argv:
+    if os.environ['TEST_INPUTS_AVAILABLE'] != 'true':
+        sys.exit(1)
+    marker.write_text('captured')
+if 'scripts.check_m3_10_provider' in sys.argv or 'molecule' in sys.argv:
+    assert marker.exists(), 'provider proof started before input capture'
 if 'molecule' in sys.argv:
     assert 'DOCKER_CONTEXT' not in os.environ
     assert os.environ['DOCKER_HOST'] == 'unix:///disposable/docker.sock'
@@ -100,6 +111,8 @@ if 'scripts.m3_10_qualification_report' in sys.argv:
             "DOCKER_CONTEXT": docker_context,
             "TEST_CONTEXT_ENDPOINT": context_endpoint,
             "TEST_LOADER_MARKER": str(tmp_path / "loaded"),
+            "TEST_INPUT_MARKER": str(tmp_path / "input-captured"),
+            "TEST_INPUTS_AVAILABLE": str(inputs_available).lower(),
             "SPACES_ACCESS_KEY_ID": "disposable-operator",
             "SPACES_SECRET_ACCESS_KEY": "disposable-secret",
             "SPACES_REGION": "nyc3",
@@ -119,10 +132,16 @@ if 'scripts.m3_10_qualification_report' in sys.argv:
         assert not (tmp_path / "loaded").exists()
         assert not expected.exists()
         return
-    assert result.returncode == 0, result.stdout + result.stderr
     assert (tmp_path / "loaded").exists()
     directories = list(expected.glob("spaces-*"))
     assert len(directories) == 1
+    if not inputs_available:
+        assert result.returncode != 0
+        assert not (tmp_path / "input-captured").exists()
+        assert not list(directories[0].glob("*.passed"))
+        assert not (directories[0] / "qualification.json").exists()
+        return
+    assert result.returncode == 0, result.stdout + result.stderr
     for phase in PHASES:
         assert (directories[0] / f"{phase}.passed").exists()
         assert (directories[0] / f"{phase}.log").exists()

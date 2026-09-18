@@ -110,6 +110,7 @@ export SPACES_BACKUP_SECRET_ACCESS_KEY
 SPACES_BACKUP_SECRET_ACCESS_KEY=$(tofu -chdir="${production_root}" \
     output -raw backup_runtime_secret_access_key)
 backup_bucket_name=$(tofu -chdir="${production_root}" output -raw backup_bucket_name)
+export SPACES_BACKUP_BUCKET=${backup_bucket_name}
 export BACKUP_REPOSITORY="s3:https://${SPACES_REGION}.digitaloceanspaces.com/${backup_bucket_name}/backups/lowerduckpond-production-01"
 
 # The archive service receives its own bucket-only key, separately from Restic.
@@ -167,12 +168,13 @@ export ANSIBLE_PRIVATE_KEY_FILE
 
 [[ ${STATIC_HOST_AGENT_ARTIFACT_SHA256} =~ ^[0-9a-f]{64}$ ]] || exit 2
 production_source_revision=$(git -C "${repository_root}" rev-parse HEAD)
+completion_source_revision=${production_source_revision}
 [[ ${production_source_revision} =~ ^[0-9a-f]{40}$ ]] || exit 2
 convergence_state() {
     ssh -o BatchMode=yes -o HostKeyAlias=lowerduckpond.net -o IdentitiesOnly=yes \
         -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
         -i "${ANSIBLE_PRIVATE_KEY_FILE}" "ldp-admin@${PRODUCTION_ORIGIN_IPV4}" \
-        "sudo --non-interactive /bin/bash -s -- $1 ${STATIC_HOST_AGENT_ARTIFACT_SHA256} ${production_source_revision}" \
+        "sudo --non-interactive /bin/bash -s -- $1 ${STATIC_HOST_AGENT_ARTIFACT_SHA256} ${completion_source_revision} ${production_storage_target:-}" \
         <"${repository_root}/scripts/m3-10-convergence-state"
 }
 
@@ -185,9 +187,14 @@ if [[ -z ${rollback_artifact_path} ]]; then
         -i "${ANSIBLE_PRIVATE_KEY_FILE}" "ldp-admin@${PRODUCTION_ORIGIN_IPV4}" \
         'sudo --non-interactive /bin/bash -s -- inspect' \
         <"${repository_root}/scripts/m3-10-convergence-state"); then
-        [[ ${completed_record} =~ ^[0-9a-f]{64}\ [0-9a-f]{40}$ ]] || exit 1
+        [[ ${completed_record} =~ ^[0-9a-f]{64}\ [0-9a-f]{40}(\ [0-9a-f]{64})?$ ]] || exit 1
         completed_artifact=${completed_record%% *}
-        completed_source=${completed_record##* }
+        completed_remainder=${completed_record#* }
+        completed_source=${completed_remainder%% *}
+        completed_storage_target=""
+        if [[ ${completed_remainder} == *" "* ]]; then
+            completed_storage_target=${completed_remainder#* }
+        fi
         [[ ${selected_production_artifact} == "/opt/lowerduckpond/static-host-agent/${completed_artifact}" ]] || exit 1
         if ! git -C "${repository_root}" merge-base --is-ancestor \
             "${completed_source}" "${production_source_revision}"; then
@@ -197,9 +204,6 @@ if [[ -z ${rollback_artifact_path} ]]; then
         completed_host=true
         if [[ ${completed_artifact} == "${STATIC_HOST_AGENT_ARTIFACT_SHA256}" ]]; then
             preserve_completed_history=true
-            if [[ ${completed_source} == "${production_source_revision}" ]]; then
-                completed_candidate=true
-            fi
         fi
     else
         completion_status=$?
@@ -208,6 +212,25 @@ if [[ -z ${rollback_artifact_path} ]]; then
             exit 1
         fi
     fi
+fi
+if [[ -z ${rollback_artifact_path} ]]; then
+    input_arguments=(--source "${production_source_revision}" --artifact "${STATIC_HOST_AGENT_ARTIFACT_SHA256}")
+    if [[ ${preserve_completed_history} == true ]]; then
+        input_arguments+=(--completed-source "${completed_source}" --completed-storage-target "${completed_storage_target}")
+    fi
+    input_status=$(uv run --quiet --frozen python -m scripts.production_qualification_inputs "${input_arguments[@]}")
+    [[ ${input_status} =~ ^(completed|changed)\ [0-9a-f]{64}$ ]] || exit 1
+    production_storage_target=${input_status#* }
+    case ${input_status%% *} in
+        completed)
+            [[ ${preserve_completed_history} == true ]] || exit 1
+            completed_candidate=true
+            # A bookkeeping descendant does not rewrite accepted provenance.
+            completion_source_revision=${completed_source}
+            ;;
+        changed) ;;
+        *) exit 1 ;;
+    esac
 fi
 # Existing host authority and candidate qualification are separate. A changed
 # source never erases a validated previous installation or becomes M3.9 again.

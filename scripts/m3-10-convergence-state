@@ -8,11 +8,15 @@ action=${1:-}
 if [[ ${action} == inspect ]]; then
     [[ $# == 1 ]] || exit 2
 else
-    [[ $# == 3 && $2 =~ ^[0-9a-f]{64}$ && $3 =~ ^[0-9a-f]{40}$ ]] || exit 2
+    [[ ($# == 3 || $# == 4) && $2 =~ ^[0-9a-f]{64}$ && $3 =~ ^[0-9a-f]{40}$ ]] || exit 2
+    [[ $# == 3 || $4 =~ ^[0-9a-f]{64}$ ]] || exit 2
 fi
 artifact=${2:-}
 source_revision=${3:-}
 expected="${artifact} ${source_revision}"
+if [[ -n ${4:-} ]]; then
+    expected+=" $4"
+fi
 directory=/var/lib/lowerduckpond/convergence
 marker=${directory}/m3-10
 install_root=/opt/lowerduckpond/static-host-agent
@@ -34,9 +38,12 @@ case ${action} in
             exit 3
         fi
         [[ -f ${marker} && ! -L ${marker} &&
-           $(stat --format='%u:%a:%h:%s' -- "${marker}") == 0:400:1:106 ]] || exit 1
+           $(stat --format='%u:%a:%h' -- "${marker}") == 0:400:1 ]] || exit 1
+        size=$(stat --format='%s' -- "${marker}")
+        [[ ${size} == 106 || ${size} == 171 ]] || exit 1
         recorded=$(cat -- "${marker}")
-        [[ ${recorded} =~ ^[0-9a-f]{64}\ [0-9a-f]{40}$ ]] || exit 1
+        [[ ${recorded} =~ ^[0-9a-f]{64}\ [0-9a-f]{40}(\ [0-9a-f]{64})?$ ]] || exit 1
+        [[ ${size} == $((${#recorded} + 1)) ]] || exit 1
         [[ $(readlink --canonicalize-existing -- "${install_root}/current") == \
            "${install_root}/${recorded%% *}" ]] || exit 1
         printf '%s\n' "${recorded}"
@@ -44,7 +51,7 @@ case ${action} in
     check)
         private_directory || exit 1
         [[ -f ${marker} && ! -L ${marker} &&
-           $(stat --format='%u:%a:%h:%s' -- "${marker}") == 0:400:1:106 &&
+           $(stat --format='%u:%a:%h:%s' -- "${marker}") == 0:400:1:$((${#expected} + 1)) &&
            $(cat -- "${marker}") == "${expected}" ]] || exit 1
         ;;
     clear | record)

@@ -44,6 +44,24 @@ def inspect(state: tuple[Path, Path]) -> subprocess.CompletedProcess[str]:
     )
 
 
+def test_completion_can_bind_storage_target_without_relabelling_legacy_state(
+    state: tuple[Path, Path],
+) -> None:
+    assert run(state, "record") == 0
+    assert inspect(state).stdout == f"{CANDIDATE} {SOURCE}\n"
+    target = "e" * 64
+    result = subprocess.run(  # noqa: S603 - copied fixed program in private fixture
+        ["/bin/bash", str(state[0]), "record", CANDIDATE, SOURCE, target],
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert inspect(state).stdout == f"{CANDIDATE} {SOURCE} {target}\n"
+    assert run(state, "check") != 0  # A legacy check cannot ignore target identity.
+    assert run(state, "clear") == 0
+    assert inspect(state).returncode == ABSENT_STATUS
+
+
 def test_inspection_distinguishes_absence_from_a_completed_predecessor(
     state: tuple[Path, Path],
 ) -> None:

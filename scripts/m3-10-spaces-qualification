@@ -69,6 +69,8 @@ trap failed EXIT
 # private operator diagnostics, not sanitized reports or uploadable artifacts.
 source "${repository_root}/scripts/lib/m3-10-production-state"
 uv sync --all-packages --all-groups --frozen >"${run_directory}/dependencies.log" 2>&1
+uv run --quiet --frozen python -m scripts.production_qualification_inputs \
+    --capture-run "${run_directory}" --source "${source_revision}"
 uv run --quiet --frozen python -m scripts.check_m3_10_provider --storage-only
 uv run --quiet --frozen ldp-m3-archive acceptance \
     --backup-bucket "${SPACES_BACKUP_BUCKET}" --archive-bucket "${SPACES_ARCHIVE_BUCKET}" \

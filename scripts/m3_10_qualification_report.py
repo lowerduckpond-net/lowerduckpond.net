@@ -12,7 +12,21 @@ from pathlib import Path
 
 from lowerduckpond_m3_archive.report import ArchiveQualificationReport
 
+from scripts.production_qualification_inputs import (
+    POLICY,
+    ROOT,
+    assert_not_revoked,
+    candidate_inputs,
+    current_candidate,
+    fingerprint,
+    git,
+    revision,
+    storage_target_digest,
+)
+
 FORMAT = "lowerduckpond-m3-10-installed-spaces-v1"
+INPUT_BOUND_FORMAT = "lowerduckpond-m3-10-installed-spaces-v2"
+PROVIDER_EVIDENCE_MAX_AGE = timedelta(days=7)
 PHASES = ("create", "prepare", "converge", "idempotence", "verify", "destroy")
 EMPTY_ACCOUNTING = {
     "pending_intents": 0,
@@ -25,8 +39,17 @@ EMPTY_ACCOUNTING = {
 }
 
 
-def verify_report(path: Path, *, source: str, artifact: str) -> None:
-    report = json.loads(path.read_text(encoding="ascii"))
+def verify_report(
+    path: Path,
+    *,
+    source: str,
+    artifact: str,
+    repository: Path | None = None,
+    storage_target: str | None = None,
+) -> None:
+    raw = path.read_bytes()
+    report = json.loads(raw)
+    input_bound = isinstance(report, dict) and report.get("format") == INPUT_BOUND_FORMAT
     expected_fields = {
         "format",
         "source_revision",
@@ -39,12 +62,14 @@ def verify_report(path: Path, *, source: str, artifact: str) -> None:
         "phases",
         "accounting",
     }
+    if input_bound:
+        expected_fields |= {"input_policy", "qualification_inputs_sha256", "storage_target_sha256"}
     if (
         not isinstance(report, dict)
         or set(report) != expected_fields
-        or report["format"] != FORMAT
+        or report["format"] not in {FORMAT, INPUT_BOUND_FORMAT}
         or report["environment"] != "secure-workstation-installed-production-spaces"
-        or report["source_revision"] != source
+        or (not input_bound and report["source_revision"] != source)
         or re.fullmatch(r"[0-9a-f]{40}", source) is None
         or report["artifact_sha256"] != artifact
         or re.fullmatch(r"[0-9a-f]{64}", artifact) is None
@@ -55,8 +80,9 @@ def verify_report(path: Path, *, source: str, artifact: str) -> None:
     for key, expected in EMPTY_ACCOUNTING.items():
         if type(report["accounting"][key]) is not type(expected):
             raise ValueError("qualification accounting types are invalid")
-    completed = _fresh_timestamp(report["completed_at"])
-    oldest = _fresh_timestamp(report["oldest_evidence_at"])
+    maximum_age = PROVIDER_EVIDENCE_MAX_AGE if input_bound else timedelta(hours=24)
+    completed = _fresh_timestamp(report["completed_at"], maximum_age=maximum_age)
+    oldest = _fresh_timestamp(report["oldest_evidence_at"], maximum_age=maximum_age)
     if oldest > completed:
         raise ValueError("qualification evidence chronology is invalid")
     if (
@@ -67,14 +93,37 @@ def verify_report(path: Path, *, source: str, artifact: str) -> None:
     run_id = report["storage_run_id"]
     if not isinstance(run_id, str) or str(uuid.UUID(run_id, version=7)) != run_id:
         raise ValueError("storage evidence run identity is invalid")
+    if input_bound and repository is None:
+        raise ValueError("input-bound qualification requires its Git repository")
+    if repository is not None:
+        inputs = candidate_inputs(repository, source, artifact)
+        original = revision(report["source_revision"])
+        assert_not_revoked(
+            current_candidate(repository, source),
+            source=original,
+            artifact=artifact,
+            inputs=inputs,
+            report=raw,
+        )
+        if input_bound:
+            git(repository, "merge-base", "--is-ancestor", original, source)
+            if (
+                report["input_policy"] != POLICY
+                or report["qualification_inputs_sha256"] != inputs
+                or fingerprint(repository, original) != inputs
+                or storage_target is None
+                or re.fullmatch(r"[0-9a-f]{64}", storage_target) is None
+                or report["storage_target_sha256"] != storage_target
+            ):
+                raise ValueError("qualification inputs or storage target changed")
 
 
-def _fresh_timestamp(value: object) -> datetime:
+def _fresh_timestamp(value: object, *, maximum_age: timedelta = timedelta(hours=24)) -> datetime:
     if not isinstance(value, str) or not value.endswith("Z"):
         raise ValueError("qualification report timestamp is invalid")
     timestamp = datetime.fromisoformat(value)
     age = datetime.now(UTC) - timestamp
-    if not -timedelta(minutes=5) <= age <= timedelta(hours=24):
+    if not -timedelta(minutes=5) <= age <= maximum_age:
         raise ValueError("qualification report is stale or future-dated")
     return timestamp
 
@@ -85,7 +134,9 @@ def _evidence_time(path: Path) -> datetime:
     )
 
 
-def create_report(directory: Path) -> dict[str, object]:
+def create_report(
+    directory: Path, *, repository: Path | None = None, storage_target: str | None = None
+) -> dict[str, object]:
     source = (directory / "source-revision").read_text(encoding="ascii").strip()
     if re.fullmatch(r"[0-9a-f]{40}", source) is None:
         raise ValueError("qualification source identity is invalid")
@@ -118,7 +169,7 @@ def create_report(directory: Path) -> dict[str, object]:
     digest = installed["artifact_sha256"]
     if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
         raise ValueError("installed artifact identity is invalid")
-    return {
+    report: dict[str, object] = {
         "format": FORMAT,
         "source_revision": source,
         "artifact_sha256": digest,
@@ -130,6 +181,20 @@ def create_report(directory: Path) -> dict[str, object]:
         "phases": dict.fromkeys(PHASES, "passed"),
         "accounting": EMPTY_ACCOUNTING,
     }
+    if repository is not None:
+        if storage_target is None or re.fullmatch(r"[0-9a-f]{64}", storage_target) is None:
+            raise ValueError("qualification storage target is unavailable")
+        captured = json.loads((directory / "qualification-inputs.json").read_bytes())
+        expected_inputs = {
+            "source_revision": source,
+            "input_policy": POLICY,
+            "qualification_inputs_sha256": candidate_inputs(repository, source, digest),
+            "storage_target_sha256": storage_target,
+        }
+        if captured != expected_inputs:
+            raise ValueError("qualification inputs changed since the run started")
+        report.update(format=INPUT_BOUND_FORMAT, **expected_inputs)
+    return report
 
 
 def main() -> int:
@@ -143,12 +208,20 @@ def main() -> int:
         if arguments.verify:
             if not arguments.source or not arguments.artifact:
                 raise ValueError("source and artifact are required")
-            verify_report(arguments.path, source=arguments.source, artifact=arguments.artifact)
-            print("M3.10 live qualification binds this exact source and artifact.")
+            verify_report(
+                arguments.path,
+                source=arguments.source,
+                artifact=arguments.artifact,
+                repository=ROOT,
+                storage_target=storage_target_digest(),
+            )
+            print("M3.10 live qualification binds this candidate and its original evidence.")
             return 0
         if arguments.source or arguments.artifact:
             raise ValueError("unexpected evidence creation options")
-        report = create_report(arguments.path)
+        report = create_report(
+            arguments.path, repository=ROOT, storage_target=storage_target_digest()
+        )
         raw = (json.dumps(report, sort_keys=True, separators=(",", ":")) + "\n").encode("ascii")
         with (arguments.path / "qualification.json").open("xb") as stream:
             stream.write(raw)
