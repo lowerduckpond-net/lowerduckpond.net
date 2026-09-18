@@ -246,6 +246,11 @@ def sanitize(raw: dict[str, object]) -> dict[str, object]:
         return value if isinstance(value, dict) else {}
 
     job, local, remote, service = (section(k) for k in ("job", "local", "remote", "service"))
+    # The host emits an already-sanitized nested diagnostic. Revalidate it when
+    # the controller receives that payload or reads its retained snapshot.
+    remote_diagnostic = remote.get("diagnostic")
+    if not isinstance(remote_diagnostic, dict):
+        remote_diagnostic = remote
     return {
         "artifact_sha256": matching(raw.get("artifact_sha256"), DIGEST),
         "state_filesystem": label(raw.get("state_filesystem"), FILESYSTEMS),
@@ -269,7 +274,7 @@ def sanitize(raw: dict[str, object]) -> dict[str, object]:
             "versions_and_markers": count(remote.get("versions_and_markers")),
             "multipart_uploads": count(remote.get("multipart_uploads")),
             "category": label(remote.get("category"), CATEGORIES | {"observed"}),
-            "diagnostic": safe_diagnostic(remote),
+            "diagnostic": safe_diagnostic(remote_diagnostic),
         },
         "service": safe_diagnostic(service),
     }

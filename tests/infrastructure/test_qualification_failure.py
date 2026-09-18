@@ -396,6 +396,67 @@ def test_unknown_provider_labels_are_not_copied() -> None:
     }
 
 
+@pytest.mark.parametrize("host_available", [False, True])
+def test_provider_diagnostic_survives_host_controller_and_snapshot_boundaries(
+    directory: Path, monkeypatch: pytest.MonkeyPatch, host_available: bool
+) -> None:
+    def denied() -> None:
+        raise ClientError(
+            {
+                "Error": {"Code": "AccessDenied", "Message": CANARY},
+                "ResponseMetadata": {"HTTPStatusCode": 403},
+            },
+            "ListObjectVersions",
+        )
+
+    monkeypatch.setattr(archive_configuration, "load_archive_configuration", denied)
+    raw = observation()
+    raw["remote"] = probe.remote_observation()
+    # The fixture sanitizes before serialization; the controller sanitizes again.
+    payload = probe.sanitize(raw)
+    monkeypatch.setattr(
+        failure, "bounded_command", lambda *args, **kwargs: json.dumps(payload).encode()
+    )
+    failure.capture_failure_observation()
+    if not host_available:
+        monkeypatch.setattr(failure, "bounded_command", lambda *args, **kwargs: None)
+    report = json.loads(failure.collect(directory, FAILURE_STATUS).read_text())
+    assert report["observation_origin"] == (
+        "fresh" if host_available else "captured-before-teardown"
+    )
+    assert report["observation"]["remote"]["diagnostic"] == {
+        "category": "provider_response",
+        "operation": "list_object_versions",
+        "code": "access_denied",
+        "http_status": 403,
+    }
+    assert CANARY not in json.dumps(report)
+
+
+def test_nested_provider_diagnostic_is_sanitized_on_every_boundary() -> None:
+    raw = observation()
+    raw["remote"] = {
+        "diagnostic": {
+            "category": "provider_response",
+            "operation": CANARY,
+            "code": CANARY,
+            "http_status": CANARY,
+            "private": CANARY,
+        }
+    }
+    sanitized = probe.sanitize(raw)
+    remote = sanitized["remote"]
+    assert isinstance(remote, dict)
+    assert remote["diagnostic"] == {
+        "category": "provider_response",
+        "operation": "unknown",
+        "code": "unknown",
+        "http_status": "unknown",
+    }
+    assert probe.sanitize(sanitized) == sanitized
+    assert CANARY not in json.dumps(sanitized)
+
+
 @pytest.mark.parametrize("current", [False, True])
 def test_job_observation_uses_contracts_and_checks_result_provenance(
     monkeypatch: pytest.MonkeyPatch,
