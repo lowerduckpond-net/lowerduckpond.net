@@ -257,6 +257,15 @@ jobs:
             ${{ runner.temp }}/ldp-m3-8-timing/timing.txt
           if-no-files-found: warn
           retention-days: 30
+      - name: Retain allowlisted qualification failure
+        if: always() && steps.selection.outputs.required == 'true'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: m3-8-failure
+          path: ${{ runner.temp }}/ldp-m3-8-timing/failure.json
+          if-no-files-found: ignore
+          retention-days: 30
       - name: Record the selective skip
         if: steps.selection.outputs.required != 'true'
         run: >-

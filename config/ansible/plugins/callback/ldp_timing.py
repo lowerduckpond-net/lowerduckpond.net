@@ -12,6 +12,11 @@ from ansible.plugins.callback import CallbackBase  # type: ignore[import-untyped
 
 # The controller loads callbacks outside the repository's Python import root.
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
+from scripts.qualification_failure import (
+    capture_failure_observation,
+    capture_fixture,
+    record_phase,
+)
 from scripts.qualification_timing import EVENT_ENV, record_span
 
 if TYPE_CHECKING:
@@ -48,6 +53,8 @@ class CallbackModule(CallbackBase):  # type: ignore[misc]
         self._timing_phase = name if name in PHASES else "other-playbook"
         if name == "converge" and any("molecule-idempotence-notest" in arg for arg in sys.argv):
             self._timing_phase = "idempotence"
+        if os.environ.get("LDP_QUALIFICATION_TIMING_GROUP", "unclassified") == "unclassified":
+            record_phase("syntax" if "--syntax-check" in sys.argv else self._timing_phase)
         self._reboot_timing: tuple[str, int] | None = None
 
     def v2_playbook_on_task_start(self, task: Task, is_conditional: bool) -> None:
@@ -75,5 +82,12 @@ class CallbackModule(CallbackBase):  # type: ignore[misc]
         self._finish_reboot("failed")
 
     def v2_playbook_on_stats(self, stats: AggregateStats) -> None:
+        if self._timing_phase == "create":
+            capture_fixture()
         failed = any(stats.failures.values()) or any(stats.dark.values())
         record_span(self._timing_phase, self._timing_start, "failed" if failed else "completed")
+        if (
+            failed
+            and os.environ.get("LDP_QUALIFICATION_TIMING_GROUP", "unclassified") == "unclassified"
+        ):
+            capture_failure_observation()

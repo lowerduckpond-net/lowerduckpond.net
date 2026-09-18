@@ -81,7 +81,8 @@ from pathlib import Path
 with Path(os.environ['TEST_UV_CALLS']).open('a') as stream:
     stream.write(json.dumps(sys.argv[1:]) + '\\n')
 # A broken optional reporter cannot change the qualification's exit status.
-if any(arg.endswith('/scripts/qualification_timing.py') for arg in sys.argv):
+reporters = ('/scripts/qualification_timing.py', '/scripts/qualification_failure.py')
+if any(arg.endswith(reporters) for arg in sys.argv):
     sys.exit(57)
 marker = Path(os.environ['TEST_INPUT_MARKER'])
 if 'scripts.production_qualification_inputs' in sys.argv:

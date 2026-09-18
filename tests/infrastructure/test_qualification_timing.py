@@ -246,6 +246,12 @@ def test_private_parameter():
         timeout=30,
     )
     assert result.returncode == 1, result.stdout + result.stderr
+    assert json.loads((run_directory / "failure-test.json").read_text()) == {
+        "category": "assertion",
+        "group": "core",
+        "file": "test_lifecycle.py",
+        "line": 5,
+    }
     events = timing._events(run_directory / "timing-events.jsonl")
     assert [(event["kind"], event["group"], event["outcome"]) for event in events] == [
         ("operator", "core", "failed"),

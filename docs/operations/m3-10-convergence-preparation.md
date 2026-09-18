@@ -284,7 +284,9 @@ and rollback pins do not advance merely to record a completed deployment.
 The wrapper also writes allowlisted `timing.json` and `timing.txt` diagnostics,
 including after ordinary failures. These may be shared separately; raw logs and
 intermediate timing files stay private. Timings grant no qualification or cleanup
-authority. See [qualification diagnostics](qualification-diagnostics.md).
+authority. Failed runs also produce a separate allowlisted `failure.json`; the
+[qualification diagnostics](qualification-diagnostics.md#collecting-a-failure)
+command collects a fresh observation of a retained run without retrying it.
 
 ## Installed credential boundary
 
