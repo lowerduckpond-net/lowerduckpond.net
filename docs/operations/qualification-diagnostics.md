@@ -21,6 +21,8 @@ and prints a short summary. CI retains this separate, allowlisted file as the
 `m3-8-failure` artifact. The live wrapper keeps raw logs private on the secure
 workstation. Share the JSON report when reporting a failure; it contains no raw
 exception, provider response, credential, bucket/key name, or tenant content.
+The first failed test and its submission context are retained even if later
+tests or teardown also fail. Later errors remain available in the private log.
 
 To observe the retained run again, run this from its checkout, on the machine
 that owns the fixture, replacing the path with the printed run directory:

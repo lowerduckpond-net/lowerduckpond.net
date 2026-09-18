@@ -9,6 +9,7 @@ import re
 import shutil
 import sys
 import tempfile
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -95,7 +96,7 @@ def _directory() -> Path | None:
     return Path(events).parent if events else None
 
 
-def _write(path: Path, payload: dict[str, object]) -> None:
+def _write(path: Path, payload: dict[str, object], *, first: bool = False) -> None:
     # Replacement does not follow an old leaf symlink or block on an old FIFO.
     with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False) as stream:
         temporary = Path(stream.name)
@@ -103,7 +104,11 @@ def _write(path: Path, payload: dict[str, object]) -> None:
             json.dump(payload, stream, sort_keys=True)
             stream.write("\n")
             stream.close()
-            temporary.replace(path)
+            if first:
+                with suppress(FileExistsError):
+                    os.link(temporary, path)
+            else:
+                temporary.replace(path)
         finally:
             temporary.unlink(missing_ok=True)
 
@@ -144,6 +149,7 @@ def record_test_failure(category: str, *, file: str = UNKNOWN, line: int | str =
     directory = _directory()
     if directory:
         try:
+            submission = _optional(directory / "failure-submission.json")
             _write(
                 directory / "failure-test.json",
                 {
@@ -151,7 +157,13 @@ def record_test_failure(category: str, *, file: str = UNKNOWN, line: int | str =
                     "group": label(os.environ.get("LDP_QUALIFICATION_TIMING_GROUP"), GROUPS),
                     "file": label(file, TEST_FILES),
                     "line": source_line(line),
+                    "submission": {
+                        "operation": label(submission.get("operation"), OPERATIONS),
+                        "correlation_id": matching(submission.get("correlation_id"), UUID),
+                        "group": label(submission.get("group"), GROUPS),
+                    },
                 },
+                first=True,
             )
         except Exception:
             print("Qualification failure context unavailable.", file=sys.stderr)
@@ -265,7 +277,8 @@ def _observe(directory: Path, correlation: str) -> tuple[str, dict[str, object]]
 def _last_submission(directory: Path) -> tuple[str, dict[str, object], str]:
     context = _optional(directory / "failure-test.json")
     group = label(context.get("group"), GROUPS)
-    last = _optional(directory / "failure-submission.json")
+    frozen = context.get("submission")
+    last = frozen if isinstance(frozen, dict) else _optional(directory / "failure-submission.json")
     correlation = (
         matching(last.get("correlation_id"), UUID) if last.get("group") == group else UNKNOWN
     )

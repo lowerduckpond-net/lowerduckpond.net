@@ -42,10 +42,10 @@ def directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         )
     )
     failure.record_phase("verify")
-    failure.record_test_failure("assertion")
     failure.record_submission(
         {"operation": "delete", "correlationId": CORRELATION, "secret": CANARY}
     )
+    failure.record_test_failure("assertion")
     (tmp_path / "failure-fixture.json").write_text(json.dumps({"container_id": CONTAINER}))
     return tmp_path
 
@@ -176,6 +176,33 @@ def test_manual_collection_keeps_original_phase_and_refuses_new_exit_status(
         failure.collect(directory, 7)
 
 
+def test_later_test_and_submission_cannot_replace_first_failure_context(
+    directory: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = (directory / "failure-test.json").read_bytes()
+    monkeypatch.setenv(timing.CONTEXT_ENV, "accounting")
+    failure.record_submission({"operation": "create", "correlationId": JOB})
+    failure.record_test_failure("test-error", file="test_archive_completion.py", line=13)
+    assert (directory / "failure-test.json").read_bytes() == original
+    monkeypatch.setattr(failure, "bounded_command", lambda *args, **kwargs: None)
+    report = json.loads(failure.collect(directory, FAILURE_STATUS).read_text())
+    assert report["group"] == "archive"
+    assert report["failure_category"] == "assertion"
+    assert report["last_submission"] == {"operation": "delete", "correlation_id": CORRELATION}
+
+
+def test_submission_after_first_failure_cannot_fill_missing_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(timing.EVENT_ENV, str(tmp_path / "timing-events.jsonl"))
+    monkeypatch.setenv(timing.CONTEXT_ENV, "archive")
+    failure.record_test_failure("assertion")
+    failure.record_submission({"operation": "delete", "correlationId": CORRELATION})
+    group, submission, correlation = failure._last_submission(tmp_path)
+    assert group == "archive"
+    assert submission["operation"] == correlation == "unknown"
+
+
 def test_failure_observation_survives_teardown_and_is_not_claimed_fresh(
     directory: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -268,9 +295,10 @@ def test_terminal_dispositions_do_not_treat_absent_intents_as_success(
 
 @pytest.mark.parametrize("field", ["phase", "category", "operation", "correlationId"])
 def test_context_never_serializes_unknown_text(directory: Path, field: str) -> None:
+    (directory / "failure-test.json").unlink()
     failure.record_phase(CANARY)
-    failure.record_test_failure(CANARY)
     failure.record_submission({"operation": "delete", "correlationId": CORRELATION, field: CANARY})
+    failure.record_test_failure(CANARY)
     for name in ("phase", "test", "submission"):
         assert CANARY not in (directory / f"failure-{name}.json").read_text()
 
