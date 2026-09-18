@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -515,3 +516,22 @@ def test_standalone_collection_command_accepts_retained_directory(directory: Pat
 def test_failure_report_rejects_non_failure_exit_status(directory: Path, status: int) -> None:
     with pytest.raises(ValueError, match="nonzero"):
         failure.collect(directory, status)
+
+
+@pytest.mark.parametrize("unavailable", [False, True])
+def test_required_tool_presence_omits_paths_and_lookup_errors(
+    monkeypatch: pytest.MonkeyPatch, unavailable: bool
+) -> None:
+    def lookup(name: str) -> str | None:
+        if unavailable:
+            raise OSError(CANARY)
+        return None if name == "rsync" else "/" + CANARY + "/" + name
+
+    monkeypatch.setattr(shutil, "which", lookup)
+    tools = failure.required_tools()
+    assert set(tools) == set(failure.REQUIRED_TOOLS)
+    assert tools == {
+        name: "unknown" if unavailable else "missing" if name == "rsync" else "present"
+        for name in failure.REQUIRED_TOOLS
+    }
+    assert CANARY not in json.dumps(tools)

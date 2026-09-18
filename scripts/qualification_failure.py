@@ -27,6 +27,7 @@ from scripts.qualification_probe import (  # noqa: E402 - standalone entry point
     sanitize,
 )
 
+REQUIRED_TOOLS = ("docker", "git", "rsync", "ssh", "uv")
 MAX_HELPERS = 8
 MAX_EXIT_STATUS = 255
 FORMAT = "lowerduckpond-qualification-failure-v1"
@@ -168,6 +169,16 @@ def capture_fixture() -> None:
             _write(directory / "failure-fixture.json", {"container_id": identity})
     except Exception:
         print("Qualification fixture context unavailable.", file=sys.stderr)
+
+
+def required_tools() -> dict[str, str]:
+    result = {}
+    for name in REQUIRED_TOOLS:
+        try:
+            result[name] = "present" if shutil.which(name) else "missing"
+        except OSError:
+            result[name] = UNKNOWN
+    return result
 
 
 def helper_check() -> str:  # noqa: PLR0911 - distinct bounded environment outcomes
@@ -389,6 +400,7 @@ def collect(directory: Path, status: int | None = None, phase: str | None = None
         omissions.append("host")
     if matching(metadata.get("source_revision"), re.compile(r"[0-9a-f]{40}")) == UNKNOWN:
         omissions.append("source_revision")
+    tools = required_tools()
     report: dict[str, object] = {
         "format": FORMAT,
         "authority": "diagnostic-only",
@@ -423,6 +435,7 @@ def collect(directory: Path, status: int | None = None, phase: str | None = None
         "independent_operator_storage_proof": "not-collected",
         "cleanup_authority": "none",
         "environment": {
+            "required_tools": tools,
             "docker_credential_helper": helper_check(),
             "controller_worktree_filesystem": filesystem(ROOT),
             "controller_tmp_filesystem": filesystem(Path(tempfile.gettempdir())),
@@ -443,6 +456,9 @@ def collect(directory: Path, status: int | None = None, phase: str | None = None
         f"  Local obligations: {report['local_obligations']}; "
         "independent storage proof: not collected."
     )
+    missing = [name for name, state in tools.items() if state == "missing"]
+    if missing:
+        print("  Controller prerequisites missing: " + ", ".join(missing) + ".")
     return destination
 
 

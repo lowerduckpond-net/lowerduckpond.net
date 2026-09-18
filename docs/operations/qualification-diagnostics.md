@@ -56,6 +56,9 @@ The report separates:
   deliberate failure injections elsewhere in the fixture; they are explicitly
   **not bound to the last submission** and do not establish the cause by
   themselves.
+- Controller prerequisite presence for `docker`, `git`, `rsync`, `ssh` and `uv`.
+  Only fixed names and `present`/`missing`/`unknown` appear; paths and lookup
+  errors are omitted. Presence does not prove version compatibility or usability.
 - Docker credential-helper usability and controller/host filesystem types.
   The helper check invokes only `list`, discards account names, and does not
   prove registry authentication. `missing` or `unavailable` identifies the
