@@ -169,20 +169,23 @@ def serve_archive_cleanup(  # noqa: PLR0913 - explicit privileged boundaries
                     quarantine.resolve(repository, remote, blocking=True)
                 channel.send(proof)
                 return
+            # Initial cleanup overlaps state readers just as terminal replay does.
+            # Wait in the existing export-before-state order, within the same
+            # socket/service deadlines, instead of aborting a valid request.
             intent_id = _cleanup_authority(repository, job_id, operation=operation)
             if operation == "purge-construction":
-                journal.purge_unbound_construction(intent_id)
+                journal.purge_unbound_construction(intent_id, blocking=True)
             else:
-                journal.finish(intent_id)
+                journal.finish(intent_id, blocking=True)
                 # The journal has already supplied deletion authority. Whole-bucket
                 # verification may now clear an admission closure left by that upload;
                 # it grants no permission to delete any unknown object.
-                quarantine.resolve(repository, remote)
+                quarantine.resolve(repository, remote, blocking=True)
             channel.send({"status": "cleaned", "operation": operation, "intentId": intent_id})
 
 
 def _cleanup_authority(repository: StateRepository, job_id: str, *, operation: str) -> str:
-    with repository.transaction(mode=LockMode.EXCLUSIVE) as transaction:
+    with repository.transaction(mode=LockMode.EXCLUSIVE, blocking=True) as transaction:
         job = transaction.read(StateRecordPath.authorization_job(job_id)).document
         request = cast(dict[str, object], job["request"])
         identities = transaction.measure_intent_records().records
