@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shlex
 import subprocess
@@ -212,7 +213,9 @@ def _start_reconcile_timer(host: Host) -> None:
 
 
 def _install_worker_delay(host: Host, *, seconds: int) -> None:
-    content = f"[Service]\nExecStartPre=/usr/bin/sleep {seconds}\n"
+    # The disposable overlap fixture retains the executor's fixed failure label.
+    # The production unit continues to discard process output.
+    content = f"[Service]\nExecStartPre=/usr/bin/sleep {seconds}\nStandardError=journal\n"
     command = (
         f"install -d -o root -g root -m 0755 {shlex.quote(_WORKER_DROP_IN_DIRECTORY)} && "
         f"printf %s {shlex.quote(content)} > {shlex.quote(_WORKER_DELAY_DROP_IN)} && "
@@ -338,6 +341,12 @@ def _exercise_ansible_worker_overlap(
                     unit,
                 )
                 worker_diagnostics = state.stdout + state.stderr + journal.stdout + journal.stderr
+                job = support._read_state(
+                    host, f"{support.STATE_ROOT}/authorization/jobs/{job_id}.json"
+                )
+                worker_diagnostics += json.dumps(
+                    {key: job.get(key) for key in ("phase", "executionValidated")}
+                )
             ansible_result = ansible.result(timeout=600)
     finally:
         _remove_worker_delay(host)
