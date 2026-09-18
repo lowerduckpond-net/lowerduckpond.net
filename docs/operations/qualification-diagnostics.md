@@ -23,6 +23,9 @@ workstation. Share the JSON report when reporting a failure; it contains no raw
 exception, provider response, credential, bucket/key name, or tenant content.
 The first failed test and its submission context are retained even if later
 tests or teardown also fail. Later errors remain available in the private log.
+The console names the operation separately from its observed outcome. Known
+burst-limit and ordinary-deletion eligibility rejections receive fixed categories;
+unrecognized transport errors stay generic without copying private messages.
 
 To observe the retained run again, run this from its checkout, on the machine
 that owns the fixture, replacing the path with the printed run directory:

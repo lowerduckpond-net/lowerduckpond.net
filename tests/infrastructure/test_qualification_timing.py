@@ -215,30 +215,49 @@ def test_real_ansible_callback_captures_playbook_and_reboot_without_payloads(
     assert CANARY not in report_text(run_directory)
 
 
+@pytest.mark.parametrize(
+    ("exception", "category"),
+    [
+        ('AssertionError("private-provider-response-canary")', "assertion"),
+        ('OperatorClientError("private-provider-response-canary")', "operator-transport"),
+        (
+            'OperatorClientError("operator transport failed: '
+            'correlation burst limit is exhausted")',
+            "admission-burst-exhausted",
+        ),
+        (
+            'OperatorClientError("operator transport failed: tenant lifecycle '
+            'is not eligible for ordinary deletion")',
+            "ordinary-delete-ineligible",
+        ),
+    ],
+)
 def test_real_pytest_group_retains_a_failed_operator_span(
-    run_directory: Path, tmp_path: Path
+    run_directory: Path, tmp_path: Path, exception: str, category: str
 ) -> None:
     scenario = tmp_path / "scenario"
     scenario.mkdir()
     (scenario / "conftest.py").write_bytes(
         (ROOT / "config/ansible/molecule/m3_8/tests/conftest.py").read_bytes()
     )
-    (scenario / "test_lifecycle.py").write_text("""from scripts.qualification_timing import measure
+    body = """from scripts.qualification_timing import measure
 from scripts.qualification_failure import record_submission
+from lowerduckpond_static_operator import OperatorClientError
 
 def test_private_parameter():
     record_submission(
         {'operation': 'archive', 'correlationId': '01a0b11c-8fe8-7781-b277-81e5e4c813ba'}
     )
     with measure("operator"):
-        raise AssertionError("private-provider-response-canary")
+        raise FIRST_FAILURE
 
 def test_secondary_failure():
     record_submission(
         {'operation': 'delete', 'correlationId': '01a0b11d-7e30-754f-8ad5-44c8a329494d'}
     )
     raise RuntimeError("private-provider-response-canary")
-""")
+"""
+    (scenario / "test_lifecycle.py").write_text(body.replace("FIRST_FAILURE", exception))
     commands = tmp_path / "commands"
     commands.mkdir()
     docker = commands / "docker"
@@ -257,10 +276,10 @@ def test_secondary_failure():
     )
     assert result.returncode == 1, result.stdout + result.stderr
     assert json.loads((run_directory / "failure-test.json").read_text()) == {
-        "category": "assertion",
+        "category": category,
         "group": "core",
         "file": "test_lifecycle.py",
-        "line": 9,
+        "line": 10,
         "submission": {
             "operation": "archive",
             "correlation_id": "01a0b11c-8fe8-7781-b277-81e5e4c813ba",

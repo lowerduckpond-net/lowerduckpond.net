@@ -22,6 +22,12 @@ GROUPS = {
     "test_quarantine_recovery.py": "quarantine-recovery",
     "test_archive_completion.py": "accounting",
 }
+OPERATOR_FAILURES = {
+    "operator transport failed: correlation burst limit is exhausted": "admission-burst-exhausted",
+    "operator transport failed: tenant lifecycle is not eligible for ordinary deletion": (
+        "ordinary-delete-ineligible"
+    ),
+}
 
 
 def pytest_sessionstart(session: pytest.Session) -> None:
@@ -71,11 +77,7 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[None]) ->
 
     error = call.excinfo.value
     if isinstance(error, OperatorClientError):
-        category = (
-            "admission-burst-exhausted"
-            if str(error) == "operator transport failed: correlation burst limit is exhausted"
-            else "operator-transport"
-        )
+        category = OPERATOR_FAILURES.get(str(error), "operator-transport")
     else:
         category = "assertion" if isinstance(error, AssertionError) else "test-error"
     location = next(

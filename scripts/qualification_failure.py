@@ -69,7 +69,14 @@ GROUPS = frozenset(
     }
 )
 FAILURES = frozenset(
-    {"assertion", "operator-transport", "admission-burst-exhausted", "test-error", "command-failed"}
+    {
+        "assertion",
+        "operator-transport",
+        "admission-burst-exhausted",
+        "ordinary-delete-ineligible",
+        "test-error",
+        "command-failed",
+    }
 )
 TEST_FILES = frozenset(
     {
@@ -414,6 +421,7 @@ def collect(directory: Path, status: int | None = None, phase: str | None = None
     if matching(metadata.get("source_revision"), re.compile(r"[0-9a-f]{40}")) == UNKNOWN:
         omissions.append("source_revision")
     tools = required_tools()
+    operation = label(last.get("operation"), OPERATIONS) if correlation != UNKNOWN else UNKNOWN
     report: dict[str, object] = {
         "format": FORMAT,
         "authority": "diagnostic-only",
@@ -423,9 +431,7 @@ def collect(directory: Path, status: int | None = None, phase: str | None = None
         "group": group,
         "last_submission": {
             "correlation_id": correlation,
-            "operation": label(last.get("operation"), OPERATIONS)
-            if correlation != UNKNOWN
-            else UNKNOWN,
+            "operation": operation,
         },
         "failure_category": label(context.get("category", "command-failed"), FAILURES),
         "test_location": {
@@ -464,7 +470,10 @@ def collect(directory: Path, status: int | None = None, phase: str | None = None
     _write(destination, report)
     print(f"Failure diagnostics: {destination}")
     print(f"  {report['phase']} / {group}: {report['failure_category']}; original exit {status}.")
-    print(f"  Last submission: {report['last_submission_disposition']}; host: {host_status}.")
+    print(
+        f"  Last submission: {operation}; "
+        f"outcome: {report['last_submission_disposition']}; host: {host_status}."
+    )
     print(
         f"  Local obligations: {report['local_obligations']}; "
         "independent storage proof: not collected."

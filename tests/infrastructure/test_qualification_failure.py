@@ -98,7 +98,9 @@ def test_failure_summary_is_allowlisted_and_cannot_qualify(
     assert report["cleanup_authority"] == "none"
     assert report["independent_operator_storage_proof"] == "not-collected"
     assert report["observation"]["service"]["code"] == "unknown"
-    assert CANARY not in path.read_text() + capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "Last submission: delete; outcome: operation-succeeded; host: observed" in output
+    assert CANARY not in path.read_text() + output
     with pytest.raises(ValueError):
         verify_report(path, source="a" * 40, artifact="b" * 64)
     assert not (directory / "qualification.json").exists()
@@ -536,7 +538,7 @@ def test_standalone_collection_command_accepts_retained_directory(directory: Pat
         text=True,
     )
     assert result.returncode == 0
-    assert "Last submission: unknown; host: unbound" in result.stdout
+    assert "Last submission: delete; outcome: unknown; host: unbound" in result.stdout
     assert CANARY not in result.stdout + result.stderr
 
 
