@@ -187,9 +187,21 @@ jobs:
         run: just check-ansible-static
 
   ansible-m3-8:
-    name: Ansible M3.8
+    name: Ansible ${{ matrix.label }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 330
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: M3.8
+            recipe: check-ansible-m3-8
+            artifact: m3-8
+            timeout: 330
+          - label: full-size archive
+            recipe: check-archive-full-size
+            artifact: full-size-archive
+            timeout: 45
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -241,20 +253,21 @@ jobs:
           github_token: ${{ github.token }}
           version: 2026.8.8
           install_args: just python uv
-      - name: Check installed M3.8 lifecycle behavior
+      - name: Check installed ${{ matrix.label }} behavior
         if: steps.selection.outputs.required == 'true'
         env:
           LDP_QUALIFICATION_TIMING_DIRECTORY: ${{ runner.temp }}/ldp-m3-8-timing
-        run: just check-ansible-m3-8
+        run: just ${{ matrix.recipe }}
       - name: Retain allowlisted qualification timings
         if: always() && steps.selection.outputs.required == 'true'
         continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: m3-8-timing
+          name: ${{ matrix.artifact }}-timing
           path: |
             ${{ runner.temp }}/ldp-m3-8-timing/timing.json
             ${{ runner.temp }}/ldp-m3-8-timing/timing.txt
+            ${{ runner.temp }}/ldp-m3-8-timing/case.json
           if-no-files-found: warn
           retention-days: 30
       - name: Retain allowlisted qualification failure
@@ -262,7 +275,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: m3-8-failure
+          name: ${{ matrix.artifact }}-failure
           path: ${{ runner.temp }}/ldp-m3-8-timing/failure.json
           if-no-files-found: ignore
           retention-days: 30

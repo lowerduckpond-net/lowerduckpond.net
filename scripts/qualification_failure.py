@@ -61,6 +61,7 @@ GROUPS = frozenset(
         "core",
         "export-import",
         "archive",
+        "full-size-archive",
         "deletion",
         "reboot-capture",
         "reboot-verify",
@@ -83,6 +84,8 @@ TEST_FILES = frozenset(
     {
         "test_lifecycle.py",
         "test_archive_lifecycle.py",
+        "test_archive_full_size.py",
+        "full_size_fixture.py",
         "test_archive_credentials.py",
         "test_export_import.py",
         "test_deletion.py",

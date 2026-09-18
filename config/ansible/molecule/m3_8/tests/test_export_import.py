@@ -4,73 +4,24 @@ import json
 import os
 import select
 import shutil
-import stat
 import subprocess
 import time
 import uuid
-import zipfile
-from io import BytesIO
 from pathlib import Path
 
+import full_size_fixture as full_size
 import pytest
 import test_lifecycle as support
 import test_transport_recovery as recovery
-from lowerduckpond_static_contracts import MAX_DEPLOY_ARTIFACT_BYTES, manifest_digest
+from lowerduckpond_static_contracts import manifest_digest
 from lowerduckpond_static_host_agent.portable_bundle import inspect_portable_bundle
 from lowerduckpond_static_operator import client
 from testinfra.host import Host
 
-_CONTENT_BYTES = 100 * 1024 * 1024
-_ENTRY_COUNT = 5_000
-_FILE_BYTES = 4 * 1024 * 1024
-_INDEX = b"full-size installed M3.9 content\n"
-_WORKER_MEMORY_BYTES = 256 * 1024 * 1024
-
-
-def _full_size_deployment() -> bytes:
-    stream = BytesIO()
-    remaining = _CONTENT_BYTES - len(_INDEX)
-    with zipfile.ZipFile(stream, mode="w") as archive:
-        for index in range(_ENTRY_COUNT):
-            name = "index.html" if index == 0 else f"file-{index:04d}.bin"
-            member = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
-            member.create_system = 3
-            member.external_attr = (stat.S_IFREG | 0o644) << 16
-            member.compress_type = zipfile.ZIP_DEFLATED
-            if index == 0:
-                content = _INDEX
-            else:
-                size = min(remaining, _FILE_BYTES)
-                # Moderate compression fills the complete content quota while
-                # leaving room for ZIP metadata in the bounded upload envelope.
-                random_bytes = size // 2
-                content = os.urandom(random_bytes) + bytes(size - random_bytes)
-            archive.writestr(member, content)
-            if index != 0:
-                remaining -= len(content)
-    assert remaining == 0
-    payload = stream.getvalue()
-    assert len(payload) <= MAX_DEPLOY_ARTIFACT_BYTES
-    return payload
-
-
-def _assert_worker_budget(host: Host, result: dict[str, object]) -> None:
-    provenance = result["provenance"]
-    assert isinstance(provenance, dict)
-    job_id = str(provenance["jobId"])
-    unit = f"lowerduckpond-static-worker@{job_id}.service"
-    checked = host.run(
-        "/usr/bin/systemctl show --property=Result --property=MemoryMax "
-        "--property=MemorySwapMax --property=LimitCPU --property=CPUQuotaPerSecUSec %s",
-        unit,
-    )
-    assert checked.rc == 0, checked.stderr
-    properties = dict(line.split("=", 1) for line in checked.stdout.splitlines())
-    assert properties["Result"] == "success"
-    assert int(properties["MemoryMax"]) == _WORKER_MEMORY_BYTES
-    assert properties["MemorySwapMax"] == "0"
-    assert properties["LimitCPU"] == "120"
-    assert properties["CPUQuotaPerSecUSec"] == "1s"
+_CONTENT_BYTES = full_size.CONTENT_BYTES
+_ENTRY_COUNT = full_size.ENTRY_COUNT
+_INDEX = full_size.INDEX
+_assert_worker_budget = full_size.assert_worker_budget
 
 
 def _assert_empty_spool(host: Host) -> None:
@@ -86,30 +37,8 @@ def test_installed_full_size_export_import_round_trip(host: Host, tmp_path: Path
     support._await_persisted_admission_burst(host)
     operator_host, identity, ssh = support._operator_inputs(tmp_path)
     slug = f"m3-nine-{str(uuid.uuid7()).replace('-', '')[-12:]}"
-    created = support._submit(
-        tmp_path,
-        operator_host,
-        identity,
-        ssh,
-        support._request(
-            "create",
-            str(uuid.uuid7()),
-            slug=slug,
-            quotas={"storageMiB": 100, "entries": _ENTRY_COUNT},
-        ),
-    )
-    tenant_id = str(created["tenantId"])
-    deployed = support._submit(
-        tmp_path,
-        operator_host,
-        identity,
-        ssh,
-        support._request("deploy", str(uuid.uuid7()), tenantId=tenant_id),
-        artifact=_full_size_deployment(),
-    )
-    assert deployed["status"] == "succeeded"
-    support._assert_route(host, str(deployed["canonicalOrigin"]), status=200, body=_INDEX)
-    _assert_worker_budget(host, deployed)
+    deployed, _ = full_size.create(host, tmp_path, (operator_host, identity, ssh), slug=slug)
+    tenant_id = str(deployed["tenantId"])
     desired_path = f"{support.STATE_ROOT}/tenants/{tenant_id}/desired.json"
     observed_path = f"{support.STATE_ROOT}/tenants/{tenant_id}/observed.json"
     first_bytes: bytes | None = None

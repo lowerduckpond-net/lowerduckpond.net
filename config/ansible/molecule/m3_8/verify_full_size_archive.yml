@@ -1,0 +1,24 @@
+---
+- name: Diagnose a fresh full-size archive without preceding lifecycle test groups
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Require the owned local diagnostic entry point
+      ansible.builtin.assert:
+        that:
+          - lookup('ansible.builtin.env', 'LDP_QUALIFICATION_RUN_ID') | length == 32
+          - lookup('ansible.builtin.env', 'M3_10_ARCHIVE_BACKEND') == 'minio'
+          - lookup('ansible.builtin.env', 'M3_10_INSTALLED_REPORT') == ''
+
+    - name: Exercise full-size archive and restore through installed services
+      ansible.builtin.command:
+        argv:
+          - python
+          - -m
+          - pytest
+          - --verbose
+          - "--hosts=docker://{{ groups['hosting_nodes'] | first }}"
+          - tests/test_archive_full_size.py
+      args:
+        chdir: "{{ playbook_dir }}"
+      changed_when: false

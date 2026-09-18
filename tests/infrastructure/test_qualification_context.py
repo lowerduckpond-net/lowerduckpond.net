@@ -185,3 +185,33 @@ def test_diagnostics_inspect_only_their_owned_host(
     assert commands[1][2] == environment[context.HOST_ENV]
     assert commands[2][-1] == environment[context.HOST_ENV]
     assert context.LEGACY_HOST not in json.dumps(commands)
+
+
+@pytest.mark.parametrize("case_name,scenario", [("complete", "m3_8"), ("baseline", "default")])
+def test_complete_and_baseline_commands_use_only_new_owned_contexts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case_name: str, scenario: str
+) -> None:
+    monkeypatch.setattr(shutil, "which", lambda value: f"/usr/bin/{value}")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(
+            command, 0 if command[1] == "info" else 1
+        ),
+    )
+    called: list[list[str]] = []
+
+    def invoke(command: list[str], **kwargs: object) -> int:
+        called.append(command)
+        values = kwargs["env"]
+        assert isinstance(values, dict)
+        assert context.host_name(values) != context.LEGACY_HOST
+        configuration = (ROOT / f"config/ansible/molecule/{scenario}/molecule.yml").read_text()
+        rendered = Interpolator(TemplateWithDefaults, values).interpolate(configuration)
+        assert yaml.safe_load(rendered)["platforms"][0]["name"] == values[context.HOST_ENV]
+        assert Path(values[context.ARTIFACT_ENV]).is_relative_to(tmp_path)
+        return 0
+
+    monkeypatch.setattr(subprocess, "call", invoke)
+    assert local.run(tmp_path, case=case_name) == 0
+    assert called[0][-1] == scenario

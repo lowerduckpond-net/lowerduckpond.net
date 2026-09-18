@@ -5,8 +5,11 @@
   become: false
   gather_facts: false
   vars:
-    m3_qualification_molecule_source_root: /tmp/lowerduckpond-m3-controller-source
-    static_host_agent_molecule_artifact: /tmp/lowerduckpond-static-host-agent-molecule.tar
+    m3_qualification_molecule_source_root: >-
+      {{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/controller-source
+    static_host_agent_molecule_artifact: >-
+      {{ lookup('ansible.builtin.env', 'LDP_QUALIFICATION_ARTIFACT') |
+         default('/tmp/lowerduckpond-static-host-agent-molecule.tar', true) }}
   tasks:
     - name: Build the locked static host-agent artifact
       ansible.builtin.command:
@@ -89,7 +92,8 @@
     m3_expected_run_id: "0198d17f-6f4a-7000-8000-000000000001"
     m3_expected_source_revision: "{{ '0' * 40 }}"
     m3_qualification_install_root: /opt/lowerduckpond/m3-qualification
-    m3_qualification_package_source_root: /tmp/lowerduckpond-m3-controller-source
+    m3_qualification_package_source_root: >-
+      {{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/controller-source
     m3_qualification_validator_log_path: /tmp/lowerduckpond-m3-qualification.json
     m3_qualification_origin_pull_ca_paths:
       - /tmp/lowerduckpond-m3-origin-pull-ca.pem

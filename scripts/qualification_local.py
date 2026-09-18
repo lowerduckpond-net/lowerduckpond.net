@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -88,7 +89,11 @@ def create_environment(directory: Path) -> dict[str, str]:
     return environment
 
 
-def run(directory: Path, *, create_only: bool = False) -> int:
+def run(directory: Path, *, create_only: bool = False, case: str = "complete") -> int:
+    if case not in {"complete", "full-size-archive", "baseline"} or (
+        create_only and case != "complete"
+    ):
+        raise ValueError("unsupported qualification case")
     environment = create_environment(directory)
     docker = shutil.which("docker")
     uv = shutil.which("uv")
@@ -114,6 +119,10 @@ def run(directory: Path, *, create_only: bool = False) -> int:
         if existing.returncode == 0:
             raise ValueError("generated qualification name already exists")
     print(f"Owned local fixture: {environment[HOST_ENV]}", flush=True)
+    if case == "full-size-archive":
+        from scripts.qualification_case import run_full_size  # noqa: PLC0415
+
+        return run_full_size(directory, environment, uv)
     command = [
         uv,
         "run",
@@ -121,7 +130,7 @@ def run(directory: Path, *, create_only: bool = False) -> int:
         "molecule",
         "create" if create_only else "test",
         "--scenario-name",
-        "m3_8",
+        "default" if case == "baseline" else "m3_8",
     ]
     return subprocess.call(  # noqa: S603 - same fixed qualification, with owned resources
         command,
@@ -133,16 +142,25 @@ def run(directory: Path, *, create_only: bool = False) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--create-only", action="store_true")
+    parser.add_argument(
+        "--case", choices=("complete", "full-size-archive", "baseline"), default="complete"
+    )
     args = parser.parse_args()
     try:
         events = os.environ.get("LDP_QUALIFICATION_TIMING_EVENTS")
-        if not events:
-            raise ValueError("use the qualification timing entry point")
         os.umask(0o077)
-        return run(Path(events).parent, create_only=args.create_only)
+        if events:
+            directory = Path(events).parent
+        else:
+            root = Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local/share")))
+            root = root / "lowerduckpond.net/m3-10"
+            root.mkdir(parents=True, exist_ok=True, mode=0o700)
+            directory = Path(tempfile.mkdtemp(prefix="local-", dir=root))
+        print(f"Private local qualification run: {directory}", flush=True)
+        return run(directory, create_only=args.create_only, case=args.case)
     except Exception:
         print(
-            "Owned local qualification could not start; private run context retained.",
+            "Owned local qualification did not complete; private run context retained.",
             file=sys.stderr,
         )
         return 2

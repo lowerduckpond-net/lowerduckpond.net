@@ -163,6 +163,8 @@ This identifies fast-lane costs without rerunning the test suite for profiling.
 ## Owned local fixtures
 
 `just check-ansible-m3-8` allocates a fresh local MinIO fixture for each run.
+`just check-ansible-static` also allocates its own baseline host, image tag,
+artifact, controller-source fixture, and Molecule state.
 The timing directory also contains a private `fixture.json` identifying its
 containers and Docker endpoint. Host and storage container names, host image
 tag, assigned SSH port, artifact path, and Molecule state are distinct for each
@@ -181,3 +183,35 @@ privileged Docker fixtures share the host kernel's loop-device pool. This
 workspace's eight exposed loop-device nodes were insufficient to prepare two
 complete fixtures simultaneously. Use separate runners for parallel installed
 checks; do not detach another run's devices or prune shared Docker resources.
+
+## Independent full-size archive
+
+Use `just check-archive-full-size` after the normal `just setup` prerequisites.
+It requires a local MinIO backend and a Docker daemon that supports the existing
+privileged systemd/ext4 fixture. The operator SSH endpoint published by that
+daemon must be reachable from the controller. Live Spaces inputs are excluded.
+
+This command creates a fresh owned host, installs the current artifact, and
+checks idempotence. It then creates, deploys, and suspends a 100-MiB/5,000-file
+source through the supported operator interface. Archive and restore use the
+installed services and unchanged production resource/admission limits. The
+restored deployment must have a new identity and exactly the original filenames,
+lengths, and content hashes. The case deletes its tenant through the normal
+lifecycle and checks local accounting and installed artifact integrity.
+
+The command prints each phase and the private run directory. It writes readable
+per-phase logs there. A failed command, missing installed receipt, changed
+container identity, or unavailable/nonempty independent storage inventory stops
+without destroying the fixture. A passing case separately checks all versions,
+delete markers, and multipart uploads in both owned MinIO buckets with the
+fixture's root identity before teardown. Failure reports never grant teardown
+authority. A new invocation always gets a new fixture and correlation IDs; it
+does not resume an earlier job or replace a retained host's artifact.
+
+`case.json` is a diagnostic result, not a full M3.10 qualification report. Its
+format is rejected by the production qualification validator. Read `timing.json`
+alongside it for source revision, artifact/image identity, and measured runtime.
+The first CI runs establish the expected duration; the initial job limit is
+45 minutes, with the plan's 30-minute installed-case target still to be measured.
+The complete existing lifecycle journey remains required for the same selected
+changes, and CI runs the independent case on a separate runner.

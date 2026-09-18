@@ -50,6 +50,8 @@ class CallbackModule(CallbackBase):  # type: ignore[misc]
     def v2_playbook_on_start(self, playbook: Playbook) -> None:
         self._timing_start = time.monotonic_ns()
         name = Path(playbook._file_name).stem
+        if name == "verify_full_size_archive":
+            name = "verify"
         self._timing_phase = name if name in PHASES else "other-playbook"
         if name == "converge" and any("molecule-idempotence-notest" in arg for arg in sys.argv):
             self._timing_phase = "idempotence"

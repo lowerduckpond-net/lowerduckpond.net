@@ -32,6 +32,8 @@ Read [qualification diagnostics](docs/operations/qualification-diagnostics.md)
 for report locations, overlapping categories, comparison limits, and the single
 read-only command that summarizes a retained failure. Python
 checks also print their 20 slowest tests above one second.
+Use `just check-archive-full-size` for the fresh, independently runnable local
+100-MiB archive case; its diagnostic pass does not replace complete qualification.
 
 Record deployment closeouts under `docs/records/` with their original source,
 artifact, and evidence; recording completion does not require redeployment.

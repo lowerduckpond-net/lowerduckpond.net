@@ -30,6 +30,7 @@ GROUPS = frozenset(
         "core",
         "export-import",
         "archive",
+        "full-size-archive",
         "deletion",
         "reboot-capture",
         "reboot-verify",

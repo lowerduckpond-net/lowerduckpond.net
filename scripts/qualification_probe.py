@@ -126,7 +126,11 @@ LOCAL_PATHS = {
 
 
 def bounded_command(
-    arguments: list[str], *, timeout: float = 5, stdin: bytes = b""
+    arguments: list[str],
+    *,
+    timeout: float = 5,
+    stdin: bytes = b"",
+    environment: dict[str, str] | None = None,
 ) -> bytes | None:
     """Bound time and captured bytes, discard stderr, and never expose tool errors."""
     executable = shutil.which(arguments[0])
@@ -138,6 +142,7 @@ def bounded_command(
         try:
             process = subprocess.Popen(  # noqa: S603 - fixed diagnostic commands, no shell
                 [executable, *arguments[1:]],
+                env=environment,
                 stdin=source,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
