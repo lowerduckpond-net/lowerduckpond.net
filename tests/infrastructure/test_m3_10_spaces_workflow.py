@@ -144,7 +144,18 @@ if 'scripts.m3_10_qualification_report' in sys.argv:
     calls = [json.loads(line) for line in (tmp_path / "uv-calls.jsonl").read_text().splitlines()]
     assert "start" in calls[0] and "--no-sync" in calls[0]
     assert calls[1] == ["sync", "--all-packages", "--all-groups", "--frozen"]
-    assert "finish" in calls[-1] and "--no-sync" in calls[-1]
+    timing_calls = [
+        call for call in calls if any(arg.endswith("/qualification_timing.py") for arg in call)
+    ]
+    start_call, finish_call = timing_calls
+    assert start_call == calls[0]
+    assert "finish" in finish_call and "--no-sync" in finish_call
+    failure_calls = [
+        call for call in calls if any(arg.endswith("/qualification_failure.py") for arg in call)
+    ]
+    assert len(failure_calls) == 1
+    assert ("fixture" if inputs_available else "collect") in failure_calls[0]
+    assert all("--no-sync" in call for call in failure_calls)
     directories = list(expected.glob("spaces-*"))
     assert len(directories) == 1
     if not inputs_available:

@@ -60,7 +60,7 @@ failed() {
     uv run --quiet --no-sync --frozen python "${repository_root}/scripts/qualification_timing.py" \
         finish "${run_directory}" --status "${status}" || true
     if ((status != 0)); then
-        uv run --quiet --frozen python "${repository_root}/scripts/qualification_failure.py" \
+        uv run --quiet --no-sync --frozen python "${repository_root}/scripts/qualification_failure.py" \
             collect "${run_directory}" --status "${status}" --phase "${diagnostic_phase}" || true
         printf 'Qualification failed; no passing report was created.\n' >&2
         printf 'Private run logs: %s\n' "${run_directory}" >&2
@@ -108,7 +108,7 @@ for phase in create prepare converge idempotence verify; do
         >"${run_directory}/${phase}.log" 2>&1
     printf '%s\n' passed >"${run_directory}/${phase}.passed"
     if [[ ${phase} == create ]]; then
-        uv run --quiet --frozen python "${repository_root}/scripts/qualification_failure.py" fixture || true
+        uv run --quiet --no-sync --frozen python "${repository_root}/scripts/qualification_failure.py" fixture || true
     fi
 done
 cd "${repository_root}"
