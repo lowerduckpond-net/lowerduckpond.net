@@ -181,8 +181,11 @@ workflow; local resource overrides cannot redirect it.
 Separate resources do not provide additional machine capacity. In particular,
 privileged Docker fixtures share the host kernel's loop-device pool. This
 workspace's eight exposed loop-device nodes were insufficient to prepare two
-complete fixtures simultaneously. Use separate runners for parallel installed
-checks; do not detach another run's devices or prune shared Docker resources.
+complete fixtures simultaneously. Concurrent systemd fixtures also caused
+disposable MinIO TLS startup to fail with `too many open files`; stopping the
+unused second host allowed the unchanged service to start. Serialize systemd
+fixtures on one daemon and use separate runners for parallel installed checks;
+do not detach another run's devices or prune shared Docker resources.
 
 After reboot, operator connections rediscover Docker's assigned SSH port while
 requiring the recorded source and peer addresses to remain unchanged. The
