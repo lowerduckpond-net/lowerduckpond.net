@@ -1,6 +1,6 @@
 # M3 operational sustainability plan
 
-- Status: proposed; planning can proceed during M3.10 diagnosis
+- Status: ready for implementation; M3.10 qualified and converged 2026-09-18
 - Planned: 2026-09-16
 - Original planning baseline: `9f8e95d296b93ab721c2643e751dfdae7ced0217`
 - Parent: [Milestone 3](milestone-3.md)
@@ -9,6 +9,14 @@
   failures, and usable operator evidence before adding backup/recovery cases
 
 ## 1. Current constraints and sequence
+
+The implementation entry condition is satisfied: the
+[M3.10 production checkpoint](../threat-model/m3-10-evidence.md#production-checkpoint-2026-09-18)
+records passing installed live Spaces qualification and production convergence
+for merged source `22147a64e9b39e7965201cf2d96e07aeaa6d3ca1`.
+The bounded sustainability slices are next, before M3.11. The diagnosis and
+delivery sequence below retain the original planning context; evidence-policy
+changes remain part of S6 and have not been implemented by this closeout.
 
 The 2026-09-16 planning checkpoint had local installed evidence but no passing
 live Spaces qualification or completed convergence starting gate. The reported

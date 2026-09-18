@@ -1107,20 +1107,22 @@ authoritative tenants and releases remain unchanged.
 
 ### M3.10: implement remote archive, restore, and deletion
 
-Implementation status (2026-09-12): implemented on
-`feat/m3.10-archive-restore-deletion`; local and disposable installed
-qualification are complete. The component suite passed 2,441 tests with three
-explicit skips, and the separately scheduled MinIO checks passed. Installed
-archive/export/restore/deletion, administrator recovery, deferred snapshot and
-Caddy/Ansible races, reboot, transport recovery, and quarantine checks passed.
+Implementation status (2026-09-18): completed. The merged release passed local,
+disposable installed-host, and secure-workstation live Spaces qualification.
+Installed archive/export/restore/deletion, administrator recovery, deferred
+snapshot and Caddy/Ansible races, reboot, transport recovery, and quarantine
+checks passed, with final local and remote accounting empty.
 The [M3.10 plan](milestone-3.10.md),
 [evidence map](../threat-model/m3-10-evidence.md), and
 [convergence preparation](../operations/m3-10-convergence-preparation.md)
 record exact checkpoints, artifact identity, and recovery instructions.
-The convergence starting gate remains pending live Spaces qualification,
-production preflight, and reviewed merged-release evidence. Live commands run on the secure workstation; only sanitized evidence returns
-to this task. Production
-publication remains disabled.
+Production convergence completed from source
+`22147a64e9b39e7965201cf2d96e07aeaa6d3ca1`, selecting artifact SHA-256
+`a7ae4afe77c1fe9077ae58c8750a33518b26f7c5dc42485626b1ef22cd192800`.
+The guarded runner passed its preflight, zero-change second convergence, and
+host acceptance including encrypted-backup verification and disposable restore.
+The operator reported `ok=20`, `changed=0`, `unreachable=0`, and `failed=0`,
+followed by runner exit status `0`. Production publication remains disabled.
 
 Wire the low-level S3 client only to the dedicated archive credential. Implement
 the construction intent, remote capacity reservation, one known-length
@@ -1153,9 +1155,10 @@ state.
 
 Prerequisite: complete the bounded
 [M3 operational sustainability phase](m3-operational-sustainability.md) after
-M3.10 qualification and before implementing this phase. Its plan can be reviewed
-while M3.10 diagnosis continues. It adds independently reproducible installed
-scenarios, bounded failure reports, measured runtime improvements, reviewed
+M3.10 qualification and before implementing this phase. M3.10 qualification and
+production convergence passed on 2026-09-18. The sustainability phase adds
+independently reproducible installed scenarios, bounded failure reports,
+measured runtime improvements, reviewed
 CI selection, and an explicit review of qualification validity and the blanket
 24-hour expiry. Existing acceptance requirements remain in force until any
 replacement policy is reviewed, implemented, and qualified.

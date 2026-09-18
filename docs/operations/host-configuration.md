@@ -269,14 +269,21 @@ host-agent change. This preserves a pinned forward transition from the live
 artifact to the next reproducible candidate instead of accepting an arbitrary
 installed artifact.
 
-The current production identity, selected by the 2026-09-12 M3.9 convergence
-from source revision `90b0353bd89328730e49c57babd8dc9d17d849aa`, is
-`4e32c4a88d729b371b8cd5da96e5fedbc9f30266acb0984599c1d645939bef85`.
+The current production identity, selected by the 2026-09-18 M3.10 convergence
+from source revision `22147a64e9b39e7965201cf2d96e07aeaa6d3ca1`, is
+`a7ae4afe77c1fe9077ae58c8750a33518b26f7c5dc42485626b1ef22cd192800`.
 The guarded runner passed its repeated preflight, idempotent second converge,
 host acceptance, encrypted-backup verification, and disposable restore. The
 operator reported the final acceptance recap as `ok=20`, `changed=0`,
-`unreachable=0`, and `failed=0`, and a subsequent read-only check confirmed
-the selected artifact path. Publication remained disabled.
+`unreachable=0`, and `failed=0`, followed by runner exit status `0`. Acceptance
+verified the selected artifact; the runner then recorded the exact source and
+artifact in its root-owned M3.10 completion marker. Publication remained disabled.
+The [M3.10 checkpoint](../threat-model/m3-10-evidence.md#production-checkpoint-2026-09-18)
+retains the live qualification report and release evidence. Subsequent
+configuration must follow the
+[completed-candidate rules](m3-10-convergence-preparation.md#closing-the-starting-gate),
+including the current exact-source requirement; this record does not authorize
+reusing that report for a later revision.
 
 The convergence command's internal preflight can also recover an interrupted
 immutable-Caddy bootstrap. This recovery mode accepts only a loaded service

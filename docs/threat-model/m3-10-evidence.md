@@ -1,12 +1,14 @@
-# M3.10 implementation evidence and remaining gates
+# M3.10 implementation evidence and production checkpoint
 
 Archive, restore, ordinary deletion, and separate root emergency deletion are
-implemented. Local and disposable installed qualification are complete through
-`36aa88e`. The convergence starting gate has not passed. Production publication
-remains disabled and no production convergence has occurred. The
+implemented. Live Spaces qualification and production convergence completed on
+2026-09-18 for merged source `22147a64e9b39e7965201cf2d96e07aeaa6d3ca1`.
+The [production checkpoint](#production-checkpoint-2026-09-18) records the final
+source, artifact, sanitized report, required CI, and operator acceptance.
+Production publication remains disabled. The
 [plan](../plans/milestone-3.10.md) and
 [preparation runbook](../operations/m3-10-convergence-preparation.md) define the
-remaining evidence and the established encrypted-state credential workflow.
+release requirements and the established encrypted-state credential workflow.
 
 ## Invariant traceability
 
@@ -383,20 +385,52 @@ and the production Ansible lint profile passed for 141 files. The installed
 credential suite also contains a direct socket-access probe using the ordinary
 reconciler's actual service policy.
 
-## Outstanding convergence gates
+## Production checkpoint: 2026-09-18
 
-1. Finish acceptance and required CI for every dependent PR, merge the reviewed
-   source, and build its reproducible artifact from clean, current `main`.
-2. On the secure workstation, use the
-   [M3.10 preparation runbook](../operations/m3-10-convergence-preparation.md)
-   to run read-only production preflight and the complete installed live Spaces
-   qualification. Return only the sanitized qualification report and digest.
-   Component tests and MinIO evidence do not substitute for this provider gate.
-3. Repeat production preflight and record independent recoverability of the
-   archive credential with the existing backup evidence. Assemble the exact
-   source/artifact/report convergence gate record, then stop before host
-   convergence and publication enablement.
+The operator completed the secure-workstation live qualification and then
+explicitly authorized and completed guarded production convergence. Credentials
+and private logs remained on the secure workstation. The repository retains only
+the allowlisted [qualification report](evidence/m3-10-2026-09-18/qualification.json)
+and its [SHA-256 file](evidence/m3-10-2026-09-18/qualification.sha256).
+The returned report bytes matched that checksum, and the repository verifier
+accepted its exact source/artifact binding and evidence age before convergence.
 
-Secure-workstation checks remain operator work. Their absence does not prevent
-code, local qualification, or review preparation, but the production convergence
-starting gate is not passed until their evidence is recorded.
+| Identity | Recorded value |
+| --- | --- |
+| Merged source | `22147a64e9b39e7965201cf2d96e07aeaa6d3ca1` |
+| Host-agent artifact SHA-256 | `a7ae4afe77c1fe9077ae58c8750a33518b26f7c5dc42485626b1ef22cd192800` |
+| Qualification report SHA-256 | `ad3dc6c314b3d2de0c3a599deba206576b7d0bfaf2d9bf5deda88b036be3ba5f` |
+| Oldest supporting evidence | `2026-09-18T05:34:35.137068Z` |
+| Final independent proof started | `2026-09-18T09:33:02.823995Z` |
+
+The final correction in [PR #149](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/149)
+passed review and all required checks. Its reviewed tree matched the squash
+merge exactly. Both [merged-source CI](https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35305647903)
+and [CodeQL](https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35305647759)
+passed. The live report records successful create, prepare, converge,
+idempotence, verify, and destroy phases. Final accounting had zero pending
+intents, intake, exports, or staging; no quarantine; and no remote versions,
+delete markers, or multipart uploads. The wrapper independently rechecked
+whole-bucket absence before retiring the disposable host.
+
+The operator's subsequent production preflight passed the exact preceding M3.9
+host identity, disabled publication and empty authoritative state, archive
+privacy/versioning/no-lifecycle policy, whole-bucket absence, both enforced
+edges, and the active reviewed firewall policy. The operator confirmed an
+independent secure backup of the current dedicated archive key ID and secret.
+
+Production convergence then passed its repeated gates and zero-change second
+configuration pass. Final host acceptance reported `ok=20`, `changed=0`,
+`unreachable=0`, `failed=0`, `skipped=3`, `rescued=0`, and `ignored=0`.
+Acceptance verified the selected artifact, disabled publication, encrypted
+backup repository, and disposable restore. The operator supplied `echo $?`
+immediately after the runner returned, with result `0`; its final step recorded
+the exact source and artifact in the root-owned completion marker. This records
+successful runner completion, not a separate readback of that marker.
+
+M3.10 is complete with production publication disabled. The
+[operational sustainability phase](../plans/m3-operational-sustainability.md)
+precedes M3.11 implementation. These files preserve historical release evidence;
+they do not qualify the closeout commit or a later candidate. The current
+24-hour and exact-source/artifact rules remain in force until a separately
+reviewed policy replaces them.

@@ -1,12 +1,20 @@
 # M3.10 convergence preparation
 
-Status: preparation only; the convergence starting gate has not passed.
-The [implementation plan](../plans/milestone-3.10.md) and
-[component evidence](../threat-model/m3-10-evidence.md) identify the implemented
-lifecycle and recovery paths. Local and disposable installed evidence is recorded
-by revision. Release CI and live provider evidence must match the final candidate;
-production preflight and the convergence gate remain outstanding.
-Publication remains `static_publication_enabled: false`.
+Status: live qualification, the starting gate, and production convergence
+completed on 2026-09-18 for source `22147a64e9b39e7965201cf2d96e07aeaa6d3ca1`
+and artifact
+`a7ae4afe77c1fe9077ae58c8750a33518b26f7c5dc42485626b1ef22cd192800`.
+The [production checkpoint](../threat-model/m3-10-evidence.md#production-checkpoint-2026-09-18)
+records the sanitized evidence, passing acceptance, and successful runner exit.
+Publication remains `static_publication_enabled: false`; the
+[implementation plan](../plans/milestone-3.10.md) defines the completed scope.
+
+The first-installation workflow below retains its exact preceding M3.9 host
+requirement. It is not a post-convergence health check. The guarded runner uses
+its completed-host path only for an unchanged source and artifact with a valid
+completion record. The recorded qualification is historical evidence for that
+release; a later source revision still needs the evidence required by the
+current policy.
 
 ## Secure-workstation workflow
 

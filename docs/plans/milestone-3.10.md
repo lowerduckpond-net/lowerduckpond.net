@@ -1,6 +1,6 @@
 # Milestone 3.10 implementation plan
 
-- Status: implemented; convergence starting gate pending
+- Status: completed; live qualification and production convergence passed 2026-09-18
 - Date: 2026-09-12
 - Base: `8d9adc1` on current `main`
 - Branch: `feat/m3.10-archive-restore-deletion`
@@ -51,9 +51,15 @@ automatic recovery. The complete transport/recovery group passed, including
 all six idempotent configuration overlaps and competing requests. Installed
 quarantine recovery passed at `36aa88e`. That qualification run ended with no pending
 intents, intake, exports, staging, quarantine, remote versions/markers, or
-multipart uploads. Live Spaces checks and the production starting gate remain
-outstanding.
-No production convergence or publication enablement has occurred.
+multipart uploads. Those development checkpoints preceded the final live Spaces
+qualification and production convergence, which completed on 2026-09-18 for
+merged source `22147a64e9b39e7965201cf2d96e07aeaa6d3ca1`. The
+[production checkpoint](../threat-model/m3-10-evidence.md#production-checkpoint-2026-09-18)
+records the exact artifact, sanitized report, required CI, final preflight,
+credential-backup confirmation, and successful production runner exit.
+Production publication remains disabled. The
+[operational sustainability phase](m3-operational-sustainability.md) is next,
+before M3.11 implementation.
 
 ## Installed execution boundary
 
@@ -190,8 +196,9 @@ the completeness of their proof obligation; keep all work on this branch.
 
 The [preparation runbook](../operations/m3-10-convergence-preparation.md)
 records the existing workstation input workflow and the evidence needed to
-reach this gate. Local and disposable acceptance are complete; live provider,
-production preflight, and reviewed-release evidence remain required.
+reach this gate. The gate passed on 2026-09-18 for the recorded production
+release. The requirements below remain the basis of that checkpoint; historical
+evidence does not authorize a different source or artifact.
 
 The requested stopping point is readiness for convergence, with no production
 tenant creation or publication enablement. Before declaring the gate passed:
