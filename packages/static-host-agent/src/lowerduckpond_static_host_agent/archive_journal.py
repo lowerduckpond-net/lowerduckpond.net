@@ -463,11 +463,11 @@ class ArchiveJournal:
             self.repository, self.spool, bucket=self.remote.bucket, hook=self.hook
         ).prepare(job_id, now=now)
 
-    def bound_versions(self) -> frozenset[RemoteVersion]:
+    def bound_versions(self, *, blocking: bool = False) -> frozenset[RemoteVersion]:
         """Charge every authoritative record, including incomplete local retirement."""
         self._require_lock()
         versions: set[RemoteVersion] = set()
-        with self.repository.transaction(mode=LockMode.EXCLUSIVE) as transaction:
+        with self.repository.transaction(mode=LockMode.EXCLUSIVE, blocking=blocking) as transaction:
             for tenant_id in transaction.measure_inventory().tenant_ids:
                 for deployment_id in transaction.tenant_archive_ids(tenant_id):
                     record = transaction.read(
