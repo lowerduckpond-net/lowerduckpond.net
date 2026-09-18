@@ -10,13 +10,57 @@ from lowerduckpond_static_host_agent.archive_remote import ArchiveRemoteError
 from lowerduckpond_static_host_agent.capacity import CapacityRejectedError, FilesystemCapacity
 from lowerduckpond_static_host_agent.delete_commit import DeleteCommitBoundary
 from lowerduckpond_static_host_agent.delete_publication import activate_delete_transition
+from lowerduckpond_static_host_agent.issuance import PublicationDisabledError
 from lowerduckpond_static_host_agent.repository import StateRecordPath
 from test_archive_handler import _host
-from test_archive_journal import _TENANT, capacity  # noqa: F401 - capacity fixture
+from test_archive_journal import _TENANT, OpenGate, capacity  # noqa: F401 - capacity fixture
 
 
 class InterruptedDeleteError(BaseException):
     pass
+
+
+def test_admitted_delete_defers_while_publication_is_closed_and_recovers_same_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with _host(tmp_path, deletion=True) as (executor, job_id, repository, remote, runtime, futures):
+        source = repository.read(StateRecordPath.tenant_desired(_TENANT))
+        versions = list(remote.versions)
+        remote_calls = list(remote.calls)
+        selected = runtime.active
+
+        def closed(_self: OpenGate) -> None:
+            raise PublicationDisabledError("publication_disabled")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(OpenGate, "require_enabled", closed)
+            for _ in range(2):
+                with pytest.raises(PublicationDisabledError, match="publication_disabled"):
+                    executor.execute(job_id)
+                job = repository.read(StateRecordPath.authorization_job(job_id)).document
+                assert job["phase"] == "claimed"
+                assert job["executionValidated"] is False
+                with pytest.raises(FileNotFoundError):
+                    repository.read(StateRecordPath.authorization_result(job_id))
+                assert not repository.measure_intent_records().records
+                assert remote.versions == versions
+                assert remote.calls == remote_calls
+                assert runtime.active == runtime.running == selected
+                assert (
+                    repository.read(StateRecordPath.tenant_desired(_TENANT)).revision
+                    == source.revision
+                )
+
+        outcome = executor.execute(job_id)
+        assert outcome.result["status"] == "succeeded"
+        assert outcome.result["operation"] == "delete"
+        completed = repository.read(StateRecordPath.authorization_job(job_id)).document
+        assert completed["phase"] == "completed"
+        assert completed["executionValidated"] is True
+        assert not remote.versions
+        assert not repository.measure_intent_records().records
+        for future in futures:
+            future.result(timeout=5)
 
 
 def test_delete_releases_unstarted_retirement_after_combined_capacity_refusal(

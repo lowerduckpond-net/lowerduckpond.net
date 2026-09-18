@@ -130,12 +130,27 @@ raise SystemExit('lifecycle worker did not wait for export capture')
             output, error = process.communicate(timeout=30)
             assert process.returncode == 0, error
             assert json.loads(output)["manifest"] == original
+            if ansible is not None:
+                # Convergence deliberately closes publication before draining
+                # workers. A delete released from export.lock may therefore
+                # defer until the complete play reopens publication. Observe
+                # that outcome before starting the ordinary result deadline.
+                reapplied = ansible.result(timeout=600)
+                assert reapplied.returncode == 0, reapplied.stdout + reapplied.stderr
+                opened = host.run("%s job-issuance", support.PUBLICATION_GATE)
+                assert opened.rc == 0, opened.stderr
+                reconciled = host.run(
+                    "systemctl start --wait lowerduckpond-static-reconcile.service"
+                )
+                assert reconciled.rc == 0, reconciled.stderr
             result = recovery._await_result(host, job)
             assert result["status"] == "succeeded", result
             recovery._await_authorization_quiescent(host, job)
-            if ansible is not None:
-                reapplied = ansible.result(timeout=600)
-                assert reapplied.returncode == 0, reapplied.stdout + reapplied.stderr
+            completed = support._read_state(
+                host, f"{support.STATE_ROOT}/authorization/jobs/{job}.json"
+            )
+            assert completed["phase"] == "completed", completed
+            assert completed["executionValidated"] is True, completed
         return result
     finally:
         if process.poll() is None:

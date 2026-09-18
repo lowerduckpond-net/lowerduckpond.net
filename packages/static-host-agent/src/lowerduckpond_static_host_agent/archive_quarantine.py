@@ -103,7 +103,9 @@ class ArchiveQuarantine:
         with self.locks.acquire(LockName.TENANT_STATE, mode=LockMode.EXCLUSIVE):
             self._record_locked(inventory)
 
-    def resolve(self, repository: StateRepository, remote: ArchiveRemoteStore) -> bool:
+    def resolve(
+        self, repository: StateRepository, remote: ArchiveRemoteStore, *, blocking: bool = False
+    ) -> bool:
         """Remove only quarantine proven resolved against locked current authority.
 
         Reconcile all journals and authorized cleanup first. A full version and
@@ -115,7 +117,7 @@ class ArchiveQuarantine:
         self.locks.require_held(LockName.EXPORT, mode=LockMode.EXCLUSIVE)
         if remote.bucket != self.bucket:
             raise ArchiveRemoteError("quarantine resolution selected another bucket")
-        with repository.transaction(mode=LockMode.EXCLUSIVE) as transaction:
+        with repository.transaction(mode=LockMode.EXCLUSIVE, blocking=blocking) as transaction:
             previous = self.read()
             if previous is None:
                 return False

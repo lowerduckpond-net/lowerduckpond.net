@@ -38,7 +38,9 @@ def verify_archive_source(journal: ArchiveJournal, job_id: str) -> dict[str, obj
     return {"status": "verified", "mode": "retained", "archiveRecord": record}
 
 
-def verify_archive_terminal(journal: ArchiveJournal, job_id: str) -> dict[str, object]:
+def verify_archive_terminal(
+    journal: ArchiveJournal, job_id: str, *, blocking: bool = False
+) -> dict[str, object]:
     """Recheck provider bytes or key absence even after a journal has been removed.
 
     A lost upload response has no version ID to put in an ArchiveRecord. For
@@ -46,8 +48,8 @@ def verify_archive_terminal(journal: ArchiveJournal, job_id: str) -> dict[str, o
     the absence of a fabricated record is never treated as remote evidence.
     """
     journal.spool.locks.require_held(LockName.EXPORT, mode=LockMode.EXCLUSIVE, innermost=True)
-    mode, archive = _terminal_authority(journal, validate_uuid7(job_id))
-    bound = journal.bound_versions()
+    mode, archive = _terminal_authority(journal, validate_uuid7(job_id), blocking=blocking)
+    bound = journal.bound_versions(blocking=blocking)
     if archive is None:
         inventory = journal.remote.inventory()
         if inventory.multipart_uploads or frozenset(inventory.versions) != bound:
@@ -79,9 +81,9 @@ def verify_archive_terminal(journal: ArchiveJournal, job_id: str) -> dict[str, o
 
 
 def _terminal_authority(
-    journal: ArchiveJournal, job_id: str
+    journal: ArchiveJournal, job_id: str, *, blocking: bool = False
 ) -> tuple[str, dict[str, object] | None]:
-    with journal.repository.transaction(mode=LockMode.EXCLUSIVE) as transaction:
+    with journal.repository.transaction(mode=LockMode.EXCLUSIVE, blocking=blocking) as transaction:
         job = transaction.read(StateRecordPath.authorization_job(job_id)).document
         result = transaction.read(StateRecordPath.authorization_result(job_id)).document
         request = cast(dict[str, object], job["request"])

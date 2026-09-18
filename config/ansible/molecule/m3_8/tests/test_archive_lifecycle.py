@@ -13,6 +13,7 @@ import test_export_import as exports
 import test_lifecycle as support
 import test_transport_recovery as recovery
 from lowerduckpond_static_host_agent.portable_bundle import inspect_portable_bundle
+from lowerduckpond_static_operator.client import OperatorClientError
 from testinfra.host import Host
 
 _CYCLES = 4
@@ -24,6 +25,48 @@ def _installed_python(host: Host, body: str) -> str:
     outcome = host.run("/usr/bin/python3 -I -B -c %s", exports._selected_python(host, body))
     assert outcome.rc == 0, outcome.stderr
     return outcome.stdout
+
+
+def _worker_diagnostics(host: Host, correlation_id: str) -> str:
+    return _installed_python(
+        host,
+        f"""
+import json
+import subprocess
+from pathlib import Path
+from lowerduckpond_static_contracts import validate_uuid7
+
+root = Path({support.STATE_ROOT!r})
+correlation = validate_uuid7({correlation_id!r})
+binding = json.loads((root / 'authorization/correlations' / (correlation + '.json')).read_bytes())
+job_id = validate_uuid7(binding['jobId'])
+job = json.loads((root / 'authorization/jobs' / (job_id + '.json')).read_bytes())
+result_path = root / 'authorization/results' / (job_id + '.json')
+result = json.loads(result_path.read_bytes()) if result_path.exists() else {{}}
+unit = subprocess.run(['/usr/bin/systemctl', 'show',
+    '--property=ActiveState,SubState,Result,ExecMainCode,ExecMainStatus,MemoryPeak,ExecMainStartTimestamp',
+    'lowerduckpond-static-worker@' + job_id + '.service'],
+    capture_output=True, text=True, timeout=10, check=False)
+journal = subprocess.run(['/usr/bin/journalctl', '--no-pager', '--output=short-iso', '--lines=8',
+    '--unit=lowerduckpond-archive-cleanup@request.service',
+    '--unit=lowerduckpond-archive-export@request.service',
+    '--unit=lowerduckpond-archive-construction@request.service',
+    '--grep=^archive_(construction|export|cleanup)_service_failed( |$)'],
+    capture_output=True, text=True, timeout=10, check=False)
+print(json.dumps({{
+    'jobId': job_id,
+    'operation': job['request']['operation'],
+    'phase': job['phase'],
+    'executionValidated': job.get('executionValidated'),
+    'resultStatus': result.get('status'),
+    'resultError': result.get('errorCode'),
+    'intents': sorted(path.name for path in (root / 'intents').iterdir())[:8],
+    'quarantine': (root / 'platform/archive-quarantine.json').exists(),
+    'unitStatus': unit.stdout[:4096],
+    'archiveFailureLabels': journal.stdout[:4096],
+}}))
+""",
+    )
 
 
 def test_installed_tls_storage_credentials_are_mutually_denied(host: Host) -> None:
@@ -325,4 +368,12 @@ def test_installed_archive_export_restore_rearchive_and_delete(host: Host, tmp_p
         # Export delivery is already acknowledged; historical requests return only results.
         if request["operation"] in {"deploy", "import"}:
             continue
-        assert support._submit(tmp_path, operator, identity, ssh, request) == result
+        try:
+            replayed = support._submit(tmp_path, operator, identity, ssh, request)
+        except OperatorClientError as error:
+            try:
+                diagnostics = _worker_diagnostics(host, str(request["correlationId"]))
+            except Exception:  # Keep the original failure if inspection also fails.
+                diagnostics = "worker diagnostics unavailable"
+            raise AssertionError(f"{error}\nWorker diagnostics: {diagnostics}") from error
+        assert replayed == result
