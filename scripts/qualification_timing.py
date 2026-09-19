@@ -61,7 +61,7 @@ KINDS = frozenset(
 MAX_EVENTS_BYTES = 8 * 1024 * 1024
 FORMAT = "lowerduckpond-qualification-timing-v1"
 MAX_CPU_COUNT = 4096
-POLICY = "production-admission-conservative-host-clock-v1"
+POLICY = "production-admission-host-history-pacing-v1"
 
 
 class Event(TypedDict):

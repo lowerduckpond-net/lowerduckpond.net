@@ -297,3 +297,7 @@ journey continues through the real production policy and authenticated operator.
 Component tests compare predicted boundaries with that unchanged policy across
 transport delays, variable operation duration, clock drift, rollback, exact
 retry, invalid history, and a stalled host clock. No faster test policy is used.
+Timing metadata identifies this harness strategy as
+`production-admission-host-history-pacing-v1`; the production admission limits
+are unchanged. Earlier reports labeled `conservative-host-clock` describe the
+preceding pacing strategy and must not be relabeled as new measurements.
