@@ -16,6 +16,7 @@ from scripts.qualification_case import (
     independent_storage_absence,
     owned_containers,
     private_document,
+    remove_owned_image,
 )
 from scripts.qualification_context import (
     ARCHIVE_ENV,
@@ -362,6 +363,7 @@ def retire(directory: Path) -> Path:
         bound = {key: str(value) for key, value in raw.items()}
         intent = removal_intent(directory, environment, bound, failed_create=failed_create)
         continue_removal(directory, environment, bound, intent, failed_create=failed_create)
+        remove_owned_image(environment)
         private_document(
             directory,
             "retirement.json",
@@ -376,12 +378,27 @@ def retire(directory: Path) -> Path:
     return directory / "retirement.json"
 
 
+def retire_image(directory: Path) -> None:
+    """Retry only tag cleanup after Molecule has already destroyed its containers."""
+    directory = directory.resolve(strict=True)
+    # Earlier baseline/complete runs did not create a lease; retries still
+    # serialize with retirement and every current qualification entry point.
+    lease = directory / "run.lock"
+    with run_lease(directory, create=not lease.exists()):
+        remove_owned_image(environment_for(directory))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("directory", type=Path)
+    parser.add_argument("--image-only", action="store_true")
     args = parser.parse_args()
     os.umask(0o077)
     try:
+        if args.image_only:
+            retire_image(args.directory)
+            print("Owned build image removed; private evidence is unchanged.")
+            return 0
         destination = retire(args.directory)
     except Exception:
         print("Fixture retirement did not complete; private evidence remains in the run directory.")

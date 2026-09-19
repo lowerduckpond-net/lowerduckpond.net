@@ -77,6 +77,7 @@ def test_only_a_complete_case_reaches_independent_proof_and_teardown(
         events.append("independent-proof")
 
     monkeypatch.setattr(case, "independent_storage_absence", proof)
+    monkeypatch.setattr(case, "remove_owned_image", lambda values: events.append("image-cleanup"))
 
     def local_proof(values: dict[str, str], host_id: str) -> str:
         assert host_id == HOST_ID
@@ -95,6 +96,7 @@ def test_only_a_complete_case_reaches_independent_proof_and_teardown(
         "independent-proof",
         "local-proof",
         "destroy",
+        "image-cleanup",
     ]
     assert events == (
         sequence if failed_phase is None else sequence[: sequence.index(failed_phase) + 1]

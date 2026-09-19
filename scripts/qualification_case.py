@@ -9,7 +9,14 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from scripts.qualification_context import ARCHIVE_ENV, HOST_ENV, RUN_ENV, host_name, run_lease
+from scripts.qualification_context import (
+    ARCHIVE_ENV,
+    HOST_ENV,
+    IMAGE_ENV,
+    RUN_ENV,
+    host_name,
+    run_lease,
+)
 from scripts.qualification_failure import record_phase
 from scripts.qualification_probe import bounded_command, document
 
@@ -100,6 +107,46 @@ def record_created_containers(
     if status == 0 and set(identities) != {HOST_ENV, ARCHIVE_ENV}:
         raise ValueError("successful creation did not produce both owned containers")
     return identities
+
+
+def remove_owned_image(environment: dict[str, str]) -> None:
+    """Untag only this run's Molecule build after its containers are absent."""
+    host_name(environment)
+    if not environment.get(RUN_ENV):
+        raise ValueError("image cleanup requires an owned qualification")
+    if owned_containers(environment, allow_missing=True):
+        raise ValueError("owned containers remain before image cleanup")
+    reference = f"molecule_local/{environment[IMAGE_ENV]}"
+
+    def present() -> bool:
+        output = bounded_command(
+            [
+                "docker",
+                "image",
+                "ls",
+                "--all",
+                "--no-trunc",
+                "--filter",
+                f"reference={reference}",
+                "--format",
+                "{{.ID}}",
+            ],
+            environment=environment,
+        )
+        if output is None:
+            raise ValueError("owned build image inventory is unavailable")
+        identity = output.decode("ascii").strip()
+        if identity and re.fullmatch(r"sha256:[0-9a-f]{64}", identity) is None:
+            raise ValueError("owned build image inventory is invalid")
+        return bool(identity)
+
+    if not present():
+        return
+    # A tag, never an image ID, --force, or a daemon-wide prune. Shared layers
+    # and other runs' tags remain protected by Docker's normal reference checks.
+    bounded_command(["docker", "image", "rm", reference], timeout=40, environment=environment)
+    if present():
+        raise ValueError("owned build image cleanup did not complete")
 
 
 def independent_storage_absence(environment: dict[str, str], archive_id: str) -> None:
@@ -228,6 +275,7 @@ def _run_full_size(directory: Path, environment: dict[str, str], uv: str) -> int
     status = phase(directory, environment, uv, "destroy")
     if status:
         return status
+    remove_owned_image(environment)
     with (directory / "case.json").open("x", encoding="ascii") as stream:
         json.dump(
             {

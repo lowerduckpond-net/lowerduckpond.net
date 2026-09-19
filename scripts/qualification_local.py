@@ -14,6 +14,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+from scripts.qualification_case import remove_owned_image  # noqa: E402
 from scripts.qualification_context import (  # noqa: E402 - standalone controller entry point
     ARCHIVE_ENV,
     ARTIFACT_ENV,
@@ -21,6 +22,7 @@ from scripts.qualification_context import (  # noqa: E402 - standalone controlle
     RESOURCE_ENV,
     RUN_ENV,
     resource_names,
+    run_lease,
 )
 from scripts.qualification_probe import bounded_command  # noqa: E402
 
@@ -132,11 +134,22 @@ def run(directory: Path, *, create_only: bool = False, case: str = "complete") -
         "--scenario-name",
         "default" if case == "baseline" else "m3_8",
     ]
-    return subprocess.call(  # noqa: S603 - same fixed qualification, with owned resources
-        command,
-        env=environment,
-        cwd=ROOT / "config/ansible",
-    )
+    with run_lease(directory, create=True):
+        status = subprocess.call(  # noqa: S603 - same fixed qualification, with owned resources
+            command,
+            env=environment,
+            cwd=ROOT / "config/ansible",
+        )
+        if not create_only:
+            try:
+                remove_owned_image(environment)
+            except Exception:
+                if status == 0:
+                    raise
+                # Failed Molecule tests may retain their containers. Never mask
+                # the original failure or remove a retained fixture's image.
+                print("Owned build image retained after unsuccessful qualification.", flush=True)
+    return status
 
 
 def main() -> int:

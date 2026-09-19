@@ -48,6 +48,7 @@ class DockerFixture:
 
 @pytest.fixture
 def docker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> DockerFixture:
+    monkeypatch.setattr(retirement, "remove_owned_image", lambda environment: None)
     monkeypatch.setenv("DOCKER_HOST", "unix:///owned/docker.sock")
     monkeypatch.delenv("DOCKER_CONTEXT", raising=False)
     monkeypatch.setenv("M3_10_ARCHIVE_BACKEND", "minio")
@@ -76,6 +77,27 @@ def docker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> DockerFixture:
     monkeypatch.setattr(subprocess, "run", value.execute)
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/docker")
     return value
+
+
+def test_image_cleanup_failure_can_resume_after_container_removal(
+    docker: DockerFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def unavailable(environment: dict[str, str]) -> None:
+        assert not docker.present
+        raise ValueError("image still in use")
+
+    monkeypatch.setattr(retirement, "remove_owned_image", unavailable)
+    with pytest.raises(ValueError, match="image still in use"):
+        retirement.retire(docker.directory)
+    assert not docker.present
+    assert not (docker.directory / "retirement.json").exists()
+    reads = docker.local_reads
+    removed: list[dict[str, str]] = []
+    monkeypatch.setattr(retirement, "remove_owned_image", removed.append)
+    retirement.retire(docker.directory)
+    assert len(removed) == 1
+    assert docker.local_reads == reads
+    assert (docker.directory / "failure.json").read_bytes() == b"original failure\n"
 
 
 @pytest.mark.parametrize("identity", [HOST_ID, ARCHIVE_ID])

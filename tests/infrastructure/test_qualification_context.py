@@ -236,5 +236,9 @@ def test_complete_and_baseline_commands_use_only_new_owned_contexts(
         return 0
 
     monkeypatch.setattr(subprocess, "call", invoke)
+    cleaned: list[dict[str, str]] = []
+    monkeypatch.setattr(local, "remove_owned_image", cleaned.append)
     assert local.run(tmp_path, case=case_name) == 0
     assert called[0][-1] == scenario
+    assert len(cleaned) == 1
+    assert cleaned[0][context.HOST_ENV] != context.LEGACY_HOST

@@ -259,3 +259,15 @@ authorizes only this owned fixture's interrupted destruction; ordinary diagnosti
 reports do not. The command cannot replace an artifact or apply to live Spaces
 fixtures. If checks cannot establish quiescence, resolve the reported operation
 through its existing recovery procedure before requesting retirement.
+
+After successful destruction or retirement, the controller removes only the
+run's `molecule_local/ldp-m3-…:ubuntu-2604` image tag. It requires both owned
+containers to be absent and uses neither forced image deletion nor a daemon-wide
+prune. Other runs' tags, shared layers, and downloaded base/MinIO images remain.
+If image removal fails after Molecule has already destroyed the containers, retry
+only that step with `uv run python -m scripts.qualification_retirement --image-only
+/absolute/path/to/the/run`. This checks the original manifest and Docker endpoint,
+refuses an active run or remaining containers, and does not reconstruct host
+proofs or issue a retirement/qualification report. Ordinary retirement can also
+retry image cleanup through its existing removal transaction. Failed tests keep
+their original failure status if optional post-failure image cleanup is unavailable.

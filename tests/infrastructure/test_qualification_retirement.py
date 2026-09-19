@@ -33,6 +33,7 @@ MIN_LOCAL_READS = 2
 
 @pytest.fixture
 def owned(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setattr(retirement, "remove_owned_image", lambda environment: None)
     monkeypatch.setenv("DOCKER_HOST", "unix:///owned/docker.sock")
     monkeypatch.delenv("DOCKER_CONTEXT", raising=False)
     monkeypatch.setenv("M3_10_ARCHIVE_BACKEND", "minio")
