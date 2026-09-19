@@ -54,7 +54,7 @@ def _issue_artifact_without_handoff(
 ) -> str:
     digest = hashlib.sha256(artifact).hexdigest()
     request["artifact"] = {"size": len(artifact), "sha256": digest}
-    new_correlation = support._pace_new_correlation(request)
+    support._pace_new_correlation(request)
     selected = host.run("readlink --canonicalize /opt/lowerduckpond/static-host-agent/current")
     assert selected.rc == 0, selected.stderr
     request_hex = canonical_json_bytes(request).hex()
@@ -103,10 +103,7 @@ with (
         lease.commit()
         print(issued.job_id)
 """
-    try:
-        result = host.run("/usr/bin/python3 -I -B -c %s", command)
-    finally:
-        support._complete_correlation_pacing(new_correlation)
+    result = host.run("/usr/bin/python3 -I -B -c %s", command)
     assert result.rc == 0, result.stderr
     return result.stdout.strip()
 
@@ -659,7 +656,7 @@ def test_installed_transport_and_admission_recovery(  # noqa: PLR0915 - ordered 
     support._initialize_namespace(host)
     support._ensure_disposable_publication(host)
     support._prepare_edge_probe(host)
-    support._await_persisted_admission_burst(host)
+    support._initialize_admission_pacing(host)
     operator_host, identity, ssh = support._operator_inputs(tmp_path)
     identities = support._ids()
     slug = f"m3-eight-transport-{str(uuid.uuid7()).replace('-', '')[-12:]}"
@@ -824,7 +821,7 @@ def test_installed_transport_and_admission_recovery(  # noqa: PLR0915 - ordered 
         next(identities),
         tenantId=tenant_id,
     )
-    new_correlation = support._pace_new_correlation(disconnect_request)
+    support._pace_new_correlation(disconnect_request)
     _install_worker_delay(host, seconds=10)
     process: subprocess.Popen[bytes] | None = None
     try:
@@ -843,7 +840,6 @@ def test_installed_transport_and_admission_recovery(  # noqa: PLR0915 - ordered 
             process.kill()
             process.wait(timeout=10)
         _remove_worker_delay(host)
-        support._complete_correlation_pacing(new_correlation)
     disconnected_result = _await_result(host, disconnect_job)
     _await_authorization_quiescent(host, disconnect_job)
     assert disconnected_result["status"] == "succeeded"

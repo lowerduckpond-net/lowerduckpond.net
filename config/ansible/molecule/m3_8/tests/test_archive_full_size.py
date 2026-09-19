@@ -25,7 +25,7 @@ def test_fresh_full_size_archive_restore(host: Host, tmp_path: Path) -> None:
     assert support._initialize_namespace(host), "the case must start on a fresh host"
     support._ensure_disposable_publication(host)
     support._prepare_edge_probe(host)
-    support._await_persisted_admission_burst(host)
+    support._initialize_admission_pacing(host)
     connection = support._operator_inputs(tmp_path)
     deployed, expected_digest = full_size.create(
         host, tmp_path, connection, slug=f"m3-full-{uuid.uuid7().hex[-12:]}"

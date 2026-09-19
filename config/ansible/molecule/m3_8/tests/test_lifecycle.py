@@ -16,7 +16,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from ansible_output import assert_reapply_result, plain_environment, plain_output
-from correlation_pacing import BURST_REFILL_SECONDS, CorrelationPacer, wait_for_host_time
+from correlation_pacing import CorrelationPacer
 from lowerduckpond_static_contracts import canonical_json_bytes, manifest_digest
 from lowerduckpond_static_operator import OperatorClientError, submit
 from testinfra.host import Host
@@ -110,39 +110,22 @@ def _prepare_edge_probe(host: Host) -> None:
     assert result.rc == 0, result.stderr
 
 
-def _await_persisted_admission_burst(host: Host) -> None:
+def _initialize_admission_pacing(host: Host) -> None:
     global _CORRELATION_PACER  # noqa: PLW0603 - one integration run
 
-    command = f"""
-import datetime
-import json
-import pathlib
+    source = Path(__file__).with_name("admission_probe.py").read_text(encoding="utf-8")
+    policy = host.run("/usr/bin/python3 -I -B -c %s --policy-check", source)
+    assert policy.rc == 0, policy.stderr
+    assert json.loads(policy.stdout) == {"installed_policy": "passed"}
 
-timestamps = []
-root = pathlib.Path({(STATE_ROOT + "/authorization/correlations")!r})
-for path in root.glob("*.json"):
-    document = json.loads(path.read_text(encoding="ascii"))
-    timestamps.append(
-        datetime.datetime.fromisoformat(
-            document["acceptedAt"].replace("Z", "+00:00")
-        )
-    )
-if timestamps:
-    print(max(timestamps).timestamp() + {BURST_REFILL_SECONDS!r})
-else:
-    print(0.0)
-"""
-    result = host.run("/usr/bin/python3 -I -B -c %s", command)
-    assert result.rc == 0, result.stderr
+    def observe(correlation_id: str) -> dict[str, object]:
+        result = host.run("/usr/bin/python3 -I -B -c %s %s", source, correlation_id)
+        assert result.rc == 0, result.stderr
+        value = json.loads(result.stdout)
+        assert isinstance(value, dict), "invalid installed admission observation"
+        return value
 
-    def host_clock() -> float:
-        sampled = host.run("/usr/bin/python3 -I -B -c %s", "import time; print(time.time())")
-        assert sampled.rc == 0, sampled.stderr
-        return float(sampled.stdout.strip())
-
-    with measure("pacing"):
-        wait_for_host_time(float(result.stdout.strip()), clock=host_clock)
-    _CORRELATION_PACER = CorrelationPacer(clock=host_clock)
+    _CORRELATION_PACER = CorrelationPacer(observe=observe)
 
 
 def _assert_route(
@@ -269,7 +252,7 @@ def _replace_state(host: Host, path: str, document: dict[str, object]) -> None:
 
 
 def _issue_without_handoff(host: Host, request: dict[str, object]) -> str:
-    new_correlation = _pace_new_correlation(request)
+    _pace_new_correlation(request)
     selected = host.run("readlink --canonicalize /opt/lowerduckpond/static-host-agent/current")
     assert selected.rc == 0, selected.stderr
     request_hex = canonical_json_bytes(request).hex()
@@ -311,11 +294,8 @@ with StateRepository(pathlib.Path({STATE_ROOT!r}), expected_owner=0) as reposito
             time.sleep({_BUSY_RETRY_SECONDS})
     print(issued.job_id)
 """
-    try:
-        with measure("operator"):
-            result = host.run("/usr/bin/python3 -I -B -c %s", command)
-    finally:
-        _complete_correlation_pacing(new_correlation)
+    with measure("operator"):
+        result = host.run("/usr/bin/python3 -I -B -c %s", command)
     assert result.rc == 0, result.stderr
     return result.stdout.strip()
 
@@ -512,7 +492,7 @@ def _submit(  # noqa: PLR0913
     artifact: bytes | None = None,
     export_path: Path | None = None,
 ) -> dict[str, object]:
-    new_correlation = _pace_new_correlation(request)
+    _pace_new_correlation(request)
     request_path = tmp_path / f"{request['correlationId']}.json"
     artifact_path = None
     if artifact is not None:
@@ -523,41 +503,35 @@ def _submit(  # noqa: PLR0913
         artifact_path.chmod(0o600)
     request_path.write_bytes(canonical_json_bytes(request))
     request_path.chmod(0o600)
-    try:
-        with measure("operator"):
-            for attempt in range(_BUSY_RETRY_ATTEMPTS):
-                try:
-                    return submit(
-                        host=host,
-                        identity_path=identity,
-                        request_path=request_path,
-                        artifact_path=artifact_path,
-                        export_path=export_path,
-                        ssh_executable=ssh,
-                    )
-                except OperatorClientError as error:
-                    if str(error) not in _RETRYABLE_BUSY or attempt == _BUSY_RETRY_ATTEMPTS - 1:
-                        raise
-                    time.sleep(_BUSY_RETRY_SECONDS)
-    finally:
-        _complete_correlation_pacing(new_correlation)
+    with measure("operator"):
+        for attempt in range(_BUSY_RETRY_ATTEMPTS):
+            try:
+                return submit(
+                    host=host,
+                    identity_path=identity,
+                    request_path=request_path,
+                    artifact_path=artifact_path,
+                    export_path=export_path,
+                    ssh_executable=ssh,
+                )
+            except OperatorClientError as error:
+                if str(error) not in _RETRYABLE_BUSY or attempt == _BUSY_RETRY_ATTEMPTS - 1:
+                    raise
+                time.sleep(_BUSY_RETRY_SECONDS)
     raise AssertionError(
         "busy retry loop exhausted without a terminal response"
     )  # pragma: no cover
 
 
-def _pace_new_correlation(request: dict[str, object]) -> bool:
+def _pace_new_correlation(request: dict[str, object]) -> None:
     record_submission(request)
-    assert _CORRELATION_PACER is not None, "wait for persisted admission before issuing requests"
+    assert _CORRELATION_PACER is not None, (
+        "initialize host admission pacing before issuing requests"
+    )
     correlation_id = request["correlationId"]
     assert type(correlation_id) is str
     with measure("pacing"):
-        return _CORRELATION_PACER.pace(correlation_id)
-
-
-def _complete_correlation_pacing(new_correlation: bool) -> None:
-    assert _CORRELATION_PACER is not None
-    _CORRELATION_PACER.complete(new_correlation)
+        _CORRELATION_PACER.pace(correlation_id)
 
 
 def _request(operation: str, correlation_id: str, **fields: object) -> dict[str, object]:
@@ -608,7 +582,7 @@ def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lif
     assert initially_closed.rc == _PUBLICATION_DISABLED_STATUS
     _ensure_disposable_publication(host)
     _prepare_edge_probe(host)
-    _await_persisted_admission_burst(host)
+    _initialize_admission_pacing(host)
     operator_host, identity, ssh = _operator_inputs(tmp_path)
     identities = _ids()
     slug = f"m3-eight-{str(uuid.uuid7()).replace('-', '')[-12:]}"

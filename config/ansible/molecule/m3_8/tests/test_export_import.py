@@ -34,7 +34,7 @@ def _assert_empty_spool(host: Host) -> None:
 
 
 def test_installed_full_size_export_import_round_trip(host: Host, tmp_path: Path) -> None:  # noqa: PLR0915
-    support._await_persisted_admission_burst(host)
+    support._initialize_admission_pacing(host)
     operator_host, identity, ssh = support._operator_inputs(tmp_path)
     slug = f"m3-nine-{str(uuid.uuid7()).replace('-', '')[-12:]}"
     deployed, _ = full_size.create(host, tmp_path, (operator_host, identity, ssh), slug=slug)
@@ -171,7 +171,7 @@ def _selected_python(host: Host, body: str) -> str:
 def test_installed_unacknowledged_retry_conflict_and_expiry(
     host: Host, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    support._await_persisted_admission_burst(host)
+    support._initialize_admission_pacing(host)
     operator_host, identity, ssh = support._operator_inputs(tmp_path)
     created = support._submit(
         tmp_path,
@@ -497,7 +497,7 @@ def _race_capture(
 def test_installed_capture_races_core_mutations_and_release_cleanup(
     host: Host, tmp_path: Path
 ) -> None:
-    support._await_persisted_admission_burst(host)
+    support._initialize_admission_pacing(host)
     operator_host, identity, ssh = support._operator_inputs(tmp_path)
     slug = f"m3-races-{str(uuid.uuid7())[-12:]}"
     created = support._submit(
