@@ -129,6 +129,7 @@ check-ansible-m3-8: _sync
 check-installed-group case: _sync
     #!/usr/bin/env bash
     set -euo pipefail
+    uv run ansible-galaxy collection install --no-deps --requirements-file config/ansible/requirements.yml
     uv run python -m scripts.qualification_timing run -- uv run python "$PWD/scripts/qualification_local.py" --case "$1"
 
 # Diagnose the full-size installed archive on a fresh owned local MinIO fixture.
