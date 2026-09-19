@@ -21,6 +21,7 @@ from lowerduckpond_static_contracts import canonical_json_bytes, manifest_digest
 from lowerduckpond_static_operator import OperatorClientError, submit
 from testinfra.host import Host
 
+from scripts.qualification_failure import record_submission
 from scripts.qualification_timing import measure
 
 CONTAINER = "lowerduckpond-ubuntu-2604"
@@ -540,6 +541,7 @@ def _submit(  # noqa: PLR0913
 
 
 def _pace_new_correlation(request: dict[str, object]) -> bool:
+    record_submission(request)
     assert _CORRELATION_PACER is not None, "wait for persisted admission before issuing requests"
     correlation_id = request["correlationId"]
     assert type(correlation_id) is str

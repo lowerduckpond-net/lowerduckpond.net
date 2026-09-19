@@ -60,11 +60,13 @@ failed() {
     uv run --quiet --no-sync --frozen python "${repository_root}/scripts/qualification_timing.py" \
         finish "${run_directory}" --status "${status}" || true
     if ((status != 0)); then
+        uv run --quiet --no-sync --frozen python "${repository_root}/scripts/qualification_failure.py" \
+            collect "${run_directory}" --status "${status}" --phase "${diagnostic_phase}" || true
         printf 'Qualification failed; no passing report was created.\n' >&2
-        printf 'Preserve the disposable host, its intents, and private logs at %s.\n' "${run_directory}" >&2
-        printf 'Do not purge archive objects or destroy unresolved recovery state.\n' >&2
+        printf 'Private run logs: %s\n' "${run_directory}" >&2
     fi
 }
+diagnostic_phase=state-inputs
 trap failed EXIT
 export LDP_QUALIFICATION_TIMING_EVENTS="${run_directory}/timing-events.jsonl"
 export LDP_QUALIFICATION_TIMING_GROUP=unclassified
@@ -77,10 +79,14 @@ uv run --quiet --no-sync --frozen python "${repository_root}/scripts/qualificati
 # State access and every provider secret stay in this process tree. Logs are
 # private operator diagnostics, not sanitized reports or uploadable artifacts.
 source "${repository_root}/scripts/lib/m3-10-production-state"
+diagnostic_phase=dependencies
 uv sync --all-packages --all-groups --frozen >"${run_directory}/dependencies.log" 2>&1
+diagnostic_phase=state-inputs
 uv run --quiet --frozen python -m scripts.production_qualification_inputs \
     --capture-run "${run_directory}" --source "${source_revision}"
+diagnostic_phase=provider-preflight
 uv run --quiet --frozen python -m scripts.check_m3_10_provider --storage-only
+diagnostic_phase=storage-acceptance
 uv run --quiet --frozen ldp-m3-archive acceptance \
     --backup-bucket "${SPACES_BACKUP_BUCKET}" --archive-bucket "${SPACES_ARCHIVE_BUCKET}" \
     --source-revision "${source_revision}" --region "${SPACES_REGION}" \
@@ -96,14 +102,19 @@ export ANSIBLE_CONFIG="${repository_root}/config/ansible/ansible.cfg"
 # no_log role. Inventory, generated artifacts, and fixtures contain no secrets.
 cd "${repository_root}/config/ansible"
 for phase in create prepare converge idempotence verify; do
+    diagnostic_phase=${phase}
     printf 'M3.10 installed Spaces qualification: %s\n' "${phase}"
     uv run --frozen molecule "${phase}" --scenario-name m3_8 \
         >"${run_directory}/${phase}.log" 2>&1
     printf '%s\n' passed >"${run_directory}/${phase}.passed"
+    if [[ ${phase} == create ]]; then
+        uv run --quiet --no-sync --frozen python "${repository_root}/scripts/qualification_failure.py" fixture || true
+    fi
 done
 cd "${repository_root}"
 # Record the start of the final independent proof conservatively, so pausing
 # before report packaging cannot refresh evidence that was already collected.
+diagnostic_phase=final-storage-proof
 date --utc +%Y-%m-%dT%H:%M:%S.%NZ >"${run_directory}/final-proof.started-at"
 uv run --quiet --frozen python -m scripts.check_m3_10_provider --storage-only
 if [[ $(git rev-parse HEAD) != "${source_revision}" || -n $(git status --porcelain) ]]; then
@@ -120,8 +131,10 @@ fi
 # Only a completed lifecycle and an independent empty-bucket proof permit
 # destruction. Failures retain the host that owns any remaining remote bytes.
 cd "${repository_root}/config/ansible"
+diagnostic_phase=destroy
 uv run --frozen molecule destroy --scenario-name m3_8 >"${run_directory}/destroy.log" 2>&1
 printf '%s\n' passed >"${run_directory}/destroy.passed"
 cd "${repository_root}"
+diagnostic_phase=package
 uv run --quiet --frozen python -m scripts.m3_10_qualification_report "${run_directory}"
 printf 'Share only qualification.json and qualification.sha256 from %s.\n' "${run_directory}"

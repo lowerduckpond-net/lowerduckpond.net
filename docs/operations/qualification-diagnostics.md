@@ -1,4 +1,4 @@
-# Qualification timing diagnostics
+# Qualification diagnostics
 
 `just check-ansible-m3-8` runs the existing full installed sequence and records
 monotonic timing observations. Its private timing directory is printed before
@@ -14,7 +14,92 @@ intermediate files private. Production credentials remain on that workstation.
 These commands retain the production admission policy, resource limits, full
 lifecycle order, existing cleanup behavior, and original exit status.
 
-## Reading the report
+## Collecting a failure
+
+An unsuccessful installed run writes `failure.json` beside its timing report
+and prints a short summary. CI retains this separate, allowlisted file as the
+`m3-8-failure` artifact. The live wrapper keeps raw logs private on the secure
+workstation. Share the JSON report when reporting a failure; it contains no raw
+exception, provider response, credential, bucket/key name, or tenant content.
+The first failed test and its submission context are retained even if later
+tests or teardown also fail. Later errors remain available in the private log.
+The console names the operation separately from its observed outcome. Known
+burst-limit and ordinary-deletion eligibility rejections receive fixed categories;
+unrecognized transport errors stay generic without copying private messages.
+
+To observe the retained run again, run this from its checkout, on the machine
+that owns the fixture, replacing the path with the printed run directory:
+
+```console
+uv run --frozen python -m scripts.qualification_failure collect /absolute/path/to/run
+```
+
+This is read-only against the fixture and provider. It writes a new
+`failure-observation-*.json` locally, retaining the original `failure.json` and
+original nonzero command status. Every observation has its own start/end time.
+It does not retry the operation, restart a worker, edit durable state, or delete
+anything. A later successful operation does not turn the original failed test
+or qualification into a pass.
+
+The report separates:
+
+- The failed phase, verification group, fixed failure category, allowlisted
+  test filename/line, original exit
+  status, source revision, backend, and observed selected artifact digest.
+- The last submission in the failed group, its bound job/result fields, and
+  recorded outcome: success, validated rollback, executor rejection before
+  execution, unresolved recovery, or unknown. The last submission is context;
+  an assertion can fail after an operation succeeds. A recorded validation
+  marker is historical evidence, not a new validation of every lifecycle
+  invariant. A missing marker or missing observation is never success.
+- Current counts of intents, intake, exports, staging and Caddy intents;
+  quarantine presence; and a whole-bucket inventory of versions/delete markers
+  and multipart uploads using the fixture's installed archive credential.
+  Provider failures leave inventory unknown, not zero. No object names leave
+  the fixture. These observations are not one locked transaction.
+- Recent fixed-label archive service diagnostics. These labels may come from
+  deliberate failure injections elsewhere in the fixture; they are explicitly
+  **not bound to the last submission** and do not establish the cause by
+  themselves.
+- Controller prerequisite presence for `docker`, `git`, `rsync`, `ssh` and `uv`.
+  Only fixed names and `present`/`missing`/`unknown` appear; paths and lookup
+  errors are omitted. Presence does not prove version compatibility or usability.
+- Docker credential-helper usability and controller/host filesystem types.
+  The helper check invokes only `list`, discards account names, and does not
+  prove registry authentication. `missing` or `unavailable` identifies the
+  workstation helper problem that can prevent fixture creation. No Docker
+  configuration is changed. Filesystem primitives are explicitly untested:
+  the existing platform qualification remains their authority. An unexpected
+  filesystem (production state expects ext4), or a different temporary mount,
+  requires that platform check rather than treating a test failure as a pass.
+  `controller_tmp_crosses_mount` compares actual Linux mount IDs: a separate
+  temporary mount can invalidate archive-sandbox component fixtures even when
+  both mounts report the same filesystem type. Use a temporary directory on
+  the required mount for those focused tests; do not relax the sandbox check.
+
+Collection binds to the container ID captured by that run. If it was not
+captured, the host stopped/disappeared, or the output is malformed, fields say
+`unknown` and collection is partial. An old directory never falls back to a
+new container with the same name. Earlier runs without this binding cannot
+retroactively acquire it through the read-only command. Ordinary reporter
+failures print a fixed message and preserve the original command result.
+Local Molecule currently destroys its fixture after a failed test. The outer
+Ansible callback captures a bounded observation before that existing teardown.
+If a fresh observation is unavailable, the report may include this snapshot,
+explicitly labeled `captured-before-teardown` with its original timestamps and
+the host's current unavailability. It cannot become fresh evidence by collecting
+it again. The live Spaces wrapper continues to retain failed fixtures.
+Individual commands have deadlines and a 64-KiB output cap; the host probe also
+has its own 45-second alarm. Collection normally completes within 90 seconds.
+
+This report grants **no cleanup authority**. Empty intents and no quarantine
+are insufficient. Cleanup still requires fresh authoritative local accounting
+and the existing independent operator storage proof; both are mandatory. The
+runtime-key inventory above does not replace that independent proof, which the
+report marks `not-collected`. Follow the M3.10 runbook for those checks. The
+passing-report validator rejects this diagnostic format and partial runs.
+
+## Reading the timing report
 
 - `elapsed_seconds` measures the timed entry point with the controller's
   monotonic clock. CI queue time, tool installation, and collection installation
@@ -30,7 +115,8 @@ lifecycle order, existing cleanup behavior, and original exit status.
   obtain wall time or runner minutes.**
 - `instrumented_union_seconds` counts time covered by any emitted span once.
   `outside_instrumentation_seconds` is the remaining entry-point elapsed time.
-  It includes orchestration and metadata collection. A missing child span can
+  It includes orchestration, metadata collection, and any failure snapshot
+  taken before teardown. A missing child span can
   still lie inside an observed parent; this field does not prove complete
   attribution. Abnormally killed processes can leave incomplete observations.
 - `failed` counts spans whose command/test raised or whose playbook failed.

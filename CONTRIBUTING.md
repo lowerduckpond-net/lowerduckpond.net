@@ -29,7 +29,8 @@ or update an ADR in `docs/adr/`.
 
 Installed qualification records monotonic timing diagnostics automatically.
 Read [qualification diagnostics](docs/operations/qualification-diagnostics.md)
-for report locations, overlapping categories, and comparison limits. Python
+for report locations, overlapping categories, comparison limits, and the single
+read-only command that summarizes a retained failure. Python
 checks also print their 20 slowest tests above one second.
 
 Record deployment closeouts under `docs/records/` with their original source,

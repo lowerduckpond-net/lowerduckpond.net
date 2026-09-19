@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import subprocess
+import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 
 import lowerduckpond_static_host_agent.archive_sandbox as archive_sandbox_module
@@ -61,6 +63,24 @@ _EXPECTED_SYSTEM_CALL_FILTERS = (
 _BOUND_PATH_COUNT = 3
 
 
+@pytest.fixture
+def sandbox_path(tmp_path: Path) -> Iterator[Path]:
+    # Positive path-policy tests require no mount crossing from /. Pytest's
+    # configured temporary root can itself be a bind mount in a development
+    # container; that is an intentional production rejection, not this fixture.
+    try:
+        archive_sandbox_module._validated_existing_path(tmp_path, label="fixture", directory=True)
+    except ArchiveSandboxError:
+        with tempfile.TemporaryDirectory(prefix="ldp-archive-unit-", dir="/var/tmp") as name:
+            candidate = Path(name)
+            archive_sandbox_module._validated_existing_path(
+                candidate, label="fixture", directory=True
+            )
+            yield candidate
+    else:
+        yield tmp_path
+
+
 def test_archive_sandbox_commits_exact_resource_and_isolation_backstops() -> None:
     properties = {
         name: value
@@ -89,13 +109,13 @@ def test_archive_sandbox_commits_exact_resource_and_isolation_backstops() -> Non
 
 
 def test_archive_sandbox_exposes_only_runtime_one_input_and_one_output_tree(
-    tmp_path: Path,
+    sandbox_path: Path,
 ) -> None:
-    runtime = tmp_path / "runtime"
+    runtime = sandbox_path / "runtime"
     runtime.mkdir()
-    artifact = tmp_path / "artifact.zip"
+    artifact = sandbox_path / "artifact.zip"
     artifact.write_bytes(b"")
-    staging = tmp_path / "staging"
+    staging = sandbox_path / "staging"
     staging.mkdir()
     policy = archive_sandbox_policy(
         runtime,
@@ -123,34 +143,34 @@ def test_archive_sandbox_exposes_only_runtime_one_input_and_one_output_tree(
     ],
 )
 def test_archive_sandbox_rejects_ambiguous_or_overlapping_paths(
-    tmp_path: Path,
+    sandbox_path: Path,
     artifact: str,
     staging: str,
 ) -> None:
-    runtime = tmp_path / "runtime"
+    runtime = sandbox_path / "runtime"
     runtime.mkdir()
     with pytest.raises(ArchiveSandboxError):
         archive_sandbox_policy(runtime, Path(artifact), Path(staging))
 
 
-def test_archive_sandbox_rejects_symlinked_path_components(tmp_path: Path) -> None:
-    runtime = tmp_path / "runtime"
+def test_archive_sandbox_rejects_symlinked_path_components(sandbox_path: Path) -> None:
+    runtime = sandbox_path / "runtime"
     runtime.mkdir()
-    artifact = tmp_path / "artifact.zip"
+    artifact = sandbox_path / "artifact.zip"
     artifact.write_bytes(b"")
-    staging = tmp_path / "staging"
+    staging = sandbox_path / "staging"
     staging.mkdir()
-    alias = tmp_path / "alias"
+    alias = sandbox_path / "alias"
     alias.symlink_to(staging, target_is_directory=True)
 
     with pytest.raises(ArchiveSandboxError, match=r"symbolic link|unavailable"):
         archive_sandbox_policy(runtime, artifact, alias)
 
 
-def test_archive_sandbox_rejects_runtime_or_artifact_aliases(tmp_path: Path) -> None:
-    runtime = tmp_path / "runtime"
+def test_archive_sandbox_rejects_runtime_or_artifact_aliases(sandbox_path: Path) -> None:
+    runtime = sandbox_path / "runtime"
     runtime.mkdir()
-    artifact = tmp_path / "artifact.zip"
+    artifact = sandbox_path / "artifact.zip"
     artifact.write_bytes(b"")
     staging = runtime / "staging"
     staging.mkdir()
@@ -160,14 +180,14 @@ def test_archive_sandbox_rejects_runtime_or_artifact_aliases(tmp_path: Path) -> 
 
 
 def test_archive_sandbox_rejects_a_mount_point_component(
-    tmp_path: Path,
+    sandbox_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    runtime = tmp_path / "runtime"
+    runtime = sandbox_path / "runtime"
     runtime.mkdir()
-    artifact = tmp_path / "artifact.zip"
+    artifact = sandbox_path / "artifact.zip"
     artifact.write_bytes(b"")
-    staging = tmp_path / "staging"
+    staging = sandbox_path / "staging"
     staging.mkdir()
     runtime_identity = (runtime.stat().st_dev, runtime.stat().st_ino)
     real_mount_id = archive_sandbox_module._mount_id
@@ -184,15 +204,15 @@ def test_archive_sandbox_rejects_a_mount_point_component(
         archive_sandbox_policy(runtime, artifact, staging)
 
 
-def test_archive_sandbox_properties_form_a_valid_systemd_unit(tmp_path: Path) -> None:
-    runtime = tmp_path / "runtime"
+def test_archive_sandbox_properties_form_a_valid_systemd_unit(sandbox_path: Path) -> None:
+    runtime = sandbox_path / "runtime"
     runtime.mkdir()
-    artifact = tmp_path / "artifact.zip"
+    artifact = sandbox_path / "artifact.zip"
     artifact.write_bytes(b"")
-    staging = tmp_path / "staging"
+    staging = sandbox_path / "staging"
     staging.mkdir()
     policy = archive_sandbox_policy(runtime, artifact, staging)
-    service = tmp_path / "lowerduckpond-archive-sandbox-test.service"
+    service = sandbox_path / "lowerduckpond-archive-sandbox-test.service"
     properties = "\n".join(f"{name}={value}" for name, value in policy.properties)
     service.write_text(
         "[Unit]\n"

@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from scripts.qualification_failure import TEST_FILES, capture_fixture, record_test_failure
 from scripts.qualification_timing import CONTEXT_ENV, capture_fixture_identity, record_span
 
 GROUPS = {
@@ -21,10 +22,17 @@ GROUPS = {
     "test_quarantine_recovery.py": "quarantine-recovery",
     "test_archive_completion.py": "accounting",
 }
+OPERATOR_FAILURES = {
+    "operator transport failed: correlation burst limit is exhausted": "admission-burst-exhausted",
+    "operator transport failed: tenant lifecycle is not eligible for ordinary deletion": (
+        "ordinary-delete-ineligible"
+    ),
+}
 
 
 def pytest_sessionstart(session: pytest.Session) -> None:
     capture_fixture_identity()
+    capture_fixture()
 
 
 @pytest.hookimpl(wrapper=True)
@@ -56,3 +64,32 @@ def pytest_runtest_protocol(
             os.environ.pop(CONTEXT_ENV, None)
         else:
             os.environ[CONTEXT_ENV] = previous
+
+
+def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[None]) -> None:
+    if call.excinfo is None or call.excinfo.errisinstance(
+        (pytest.skip.Exception, pytest.xfail.Exception)
+    ):
+        return
+    from lowerduckpond_static_operator.client import (  # noqa: PLC0415
+        OperatorClientError,
+    )
+
+    error = call.excinfo.value
+    if isinstance(error, OperatorClientError):
+        category = OPERATOR_FAILURES.get(str(error), "operator-transport")
+    else:
+        category = "assertion" if isinstance(error, AssertionError) else "test-error"
+    location = next(
+        (
+            entry
+            for entry in reversed(call.excinfo.traceback)
+            if Path(entry.path).name in TEST_FILES
+        ),
+        None,
+    )
+    record_test_failure(
+        category,
+        file=Path(location.path).name if location else "unknown",
+        line=location.lineno + 1 if location else "unknown",
+    )

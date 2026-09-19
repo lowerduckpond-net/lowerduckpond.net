@@ -466,6 +466,14 @@ def run_command(command: list[str], directory: Path | None) -> int:
                 finish_run(directory, status)
             except Exception:  # Timing diagnostics cannot replace the command result.
                 print("Qualification timing summary unavailable.", file=sys.stderr)
+            if status != 0:
+                try:
+                    sys.path.insert(0, str(ROOT))
+                    from scripts.qualification_failure import collect  # noqa: PLC0415
+
+                    collect(directory, status if status > 0 else 128 - status)
+                except Exception:
+                    print("Qualification failure diagnostics unavailable.", file=sys.stderr)
     return status if status >= 0 else 128 - status
 
 
