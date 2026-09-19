@@ -72,7 +72,7 @@ def run_group(directory: Path, environment: dict[str, str], uv: str, case: str) 
                 ],
             }
         ]
-        verify = directory / "group-verify.yml"
+        verify = directory / "verify.yml"
         with verify.open("x", encoding="ascii") as stream:
             json.dump(playbook, stream)
         with (directory / "case-base.yml").open("x", encoding="ascii") as stream:

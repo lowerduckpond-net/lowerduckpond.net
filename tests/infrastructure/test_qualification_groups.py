@@ -11,8 +11,10 @@ import pytest
 import yaml  # type: ignore[import-untyped]
 
 from scripts import qualification_case as primitives
+from scripts import qualification_failure as failure
 from scripts import qualification_group_case as case
 from scripts import qualification_group_runner as runner
+from scripts import qualification_timing as timing
 from scripts.qualification_context import (
     ARCHIVE_ENV,
     ARTIFACT_ENV,
@@ -242,6 +244,34 @@ def test_partial_group_report_is_never_production_qualification(tmp_path: Path) 
     )
     with pytest.raises(ValueError):
         verify_report(report, source="a" * 40, artifact="a" * 64)
+
+
+def test_generated_verifier_preserves_phase_for_failure_before_pytest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, environment: dict[str, str]
+) -> None:
+    monkeypatch.setattr(case, "phase", lambda *args: FAILURE_STATUS)
+    monkeypatch.setattr(case, "record_created_containers", lambda *args: {})
+    assert case.run_group(tmp_path, environment, "uv", "core") == FAILURE_STATUS
+    configuration = json.loads((tmp_path / "case-base.yml").read_text())
+    playbook = configuration["ansible"]["playbooks"]["verify"]
+    child = timing.child_environment(tmp_path)
+    child.update({RUN_ENV: "", "M3_10_ARCHIVE_BACKEND": "minio", "M3_10_INSTALLED_REPORT": ""})
+    result = subprocess.run(  # noqa: S603 - generated verifier stops before host access
+        [str(ROOT / ".venv/bin/ansible-playbook"), "-i", "localhost,", "-c", "local", playbook],
+        env=child,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "Require the owned local group entry point" in result.stdout
+    assert "Execute every declared installed test" not in result.stdout
+    assert not (tmp_path / "failure-test.json").exists()
+    report = json.loads(failure.collect(tmp_path, result.returncode).read_text())
+    assert report["phase"] == "verify"
+    assert report["original_exit_status"] == result.returncode
+    assert not (tmp_path / "case.json").exists()
 
 
 def test_ci_runs_every_group_alongside_the_complete_journey() -> None:

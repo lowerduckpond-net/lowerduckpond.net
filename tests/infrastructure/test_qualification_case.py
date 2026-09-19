@@ -138,7 +138,7 @@ def test_molecule_resolves_the_case_verifier_without_changing_the_complete_seque
     assert groups.run_group(tmp_path, environment, "uv", "core") == FAILURE_STATUS
     scenario = str(case.ROOT / "config/ansible/molecule/m3_8/molecule.yml")
     selected = Config(scenario, args={"base_config": [str(tmp_path / "case-base.yml")]})
-    assert selected.config_data["ansible"]["playbooks"]["verify"].endswith("/group-verify.yml")
+    assert selected.config_data["ansible"]["playbooks"]["verify"] == str(tmp_path / "verify.yml")
     complete = Config(scenario)
     assert complete.config_data["ansible"]["playbooks"]["verify"] == "verify.yml"
     assert (
