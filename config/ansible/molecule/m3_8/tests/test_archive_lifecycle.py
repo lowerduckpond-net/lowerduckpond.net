@@ -231,7 +231,13 @@ def controlled_recovery_timer(host: Host) -> Iterator[None]:
 
 
 @pytest.mark.usefixtures("controlled_recovery_timer")
-def test_installed_archive_export_restore_rearchive_and_delete(host: Host, tmp_path: Path) -> None:  # noqa: PLR0915 - one complete lifecycle proof
+def test_installed_archive_export_restore_rearchive_and_delete(host: Host, tmp_path: Path) -> None:
+    _exercise_archive_lifecycle(host, tmp_path, full_size_source=True)
+
+
+def _exercise_archive_lifecycle(  # noqa: PLR0915 - one complete archive lifecycle proof
+    host: Host, tmp_path: Path, *, full_size_source: bool
+) -> None:
     support._initialize_namespace(host)
     support._ensure_disposable_publication(host)
     support._prepare_edge_probe(host)
@@ -363,21 +369,22 @@ def test_installed_archive_export_restore_rearchive_and_delete(host: Host, tmp_p
     submit("delete", tenantId=target["tenantId"], mode="capture-ansible")
     assert not _remote_versions(host)
     assert not host.file(f"{support.STATE_ROOT}/tenants/{target['tenantId']}").exists
-    large_source = _full_size_source(host)
-    large_tenant = str(large_source["metadata"]["id"])
-    large_origin = str(large_source["metadata"]["canonicalOrigin"])
-    large_archive = submit("archive", tenantId=large_tenant)
-    exports._assert_worker_budget(host, large_archive)
-    assert support._lifecycle(large_archive) == "archived"
-    support._assert_route(host, large_origin, status=404)
-    large_restore = submit("restore", tenantId=large_tenant)
-    assert (
-        support._desired_deployment(large_restore)
-        != large_source["spec"]["desiredDeployment"]["id"]
-    )
-    exports._assert_worker_budget(host, large_restore)
-    support._assert_route(host, large_origin, status=200, body=exports._INDEX)
-    assert not _remote_versions(host)
+    if full_size_source:
+        large_source = _full_size_source(host)
+        large_tenant = str(large_source["metadata"]["id"])
+        large_origin = str(large_source["metadata"]["canonicalOrigin"])
+        large_archive = submit("archive", tenantId=large_tenant)
+        exports._assert_worker_budget(host, large_archive)
+        assert support._lifecycle(large_archive) == "archived"
+        support._assert_route(host, large_origin, status=404)
+        large_restore = submit("restore", tenantId=large_tenant)
+        assert (
+            support._desired_deployment(large_restore)
+            != large_source["spec"]["desiredDeployment"]["id"]
+        )
+        exports._assert_worker_budget(host, large_restore)
+        support._assert_route(host, large_origin, status=200, body=exports._INDEX)
+        assert not _remote_versions(host)
     for request, result in history:
         # Export delivery is already acknowledged; historical requests return only results.
         if request["operation"] in {"deploy", "import"}:

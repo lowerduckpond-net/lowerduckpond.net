@@ -7,7 +7,7 @@ import shlex
 import subprocess
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -648,11 +648,32 @@ def _assert_tenant_snapshot(
     )
 
 
-def test_installed_transport_and_admission_recovery(  # noqa: PLR0915 - ordered fault table
-    host: Host,
-    tmp_path: Path,
-    request: pytest.FixtureRequest,
+@dataclass(frozen=True, slots=True)
+class _RecoveryFixture:
+    host: Host
+    tmp_path: Path
+    connection: tuple[str, Path, Path]
+    identities: Iterator[str]
+    slug: str
+    tenant_id: str
+    canonical_origin: str
+    recovered_deploy: dict[str, object]
+
+
+def test_installed_transport_and_admission_recovery(
+    host: Host, tmp_path: Path, request: pytest.FixtureRequest
 ) -> None:
+    fixture = _exercise_admission_recovery(host, tmp_path, request)
+    _exercise_caddy_fault_matrix(fixture)
+    _exercise_ansible_deploy_rollback_suspend(fixture)
+    _exercise_ansible_resume_rename_reconcile(fixture)
+    _exercise_contested_jobs(fixture)
+    _assert_recovery_cleanup(host)
+
+
+def _exercise_admission_recovery(  # noqa: PLR0915 - ordered admission and worker faults
+    host: Host, tmp_path: Path, request: pytest.FixtureRequest
+) -> _RecoveryFixture:
     support._initialize_namespace(host)
     support._ensure_disposable_publication(host)
     support._prepare_edge_probe(host)
@@ -937,6 +958,24 @@ def test_installed_transport_and_admission_recovery(  # noqa: PLR0915 - ordered 
         assert remaining_intent.rc == 0, remaining_intent.stderr
         assert remaining_intent.stdout == ""
 
+    return _RecoveryFixture(
+        host,
+        tmp_path,
+        (operator_host, identity, ssh),
+        identities,
+        slug,
+        tenant_id,
+        canonical_origin,
+        recovered_deploy,
+    )
+
+
+def _exercise_caddy_fault_matrix(fixture: _RecoveryFixture) -> None:
+    host, tmp_path = fixture.host, fixture.tmp_path
+    operator_host, identity, ssh = fixture.connection
+    tenant_id, canonical_origin = fixture.tenant_id, fixture.canonical_origin
+    identities, recovered_deploy = fixture.identities, fixture.recovered_deploy
+    desired_path = f"{support.STATE_ROOT}/tenants/{tenant_id}/desired.json"
     observed_path = f"{support.STATE_ROOT}/tenants/{tenant_id}/observed.json"
     desired_before_fault_matrix = support._read_state(host, desired_path)
     observed_before_fault_matrix = support._read_state(host, observed_path)
@@ -1050,6 +1089,10 @@ def test_installed_transport_and_admission_recovery(  # noqa: PLR0915 - ordered 
         == manifest_digest(support._manifest(caddy_reconcile)).to_dict()
     )
 
+
+def _exercise_ansible_deploy_rollback_suspend(fixture: _RecoveryFixture) -> None:
+    host, tenant_id, canonical_origin = fixture.host, fixture.tenant_id, fixture.canonical_origin
+    identities, recovered_deploy = fixture.identities, fixture.recovered_deploy
     overlap_content = b"Ansible-overlapped M3.8 release\n"
     overlap_deploy = _exercise_ansible_worker_overlap(
         host,
@@ -1088,6 +1131,11 @@ def test_installed_transport_and_admission_recovery(  # noqa: PLR0915 - ordered 
     assert support._lifecycle(ansible_suspend) == "suspended"
     support._assert_route(host, canonical_origin, status=404)
 
+
+def _exercise_ansible_resume_rename_reconcile(fixture: _RecoveryFixture) -> None:
+    host, tenant_id, canonical_origin = fixture.host, fixture.tenant_id, fixture.canonical_origin
+    identities, slug = fixture.identities, fixture.slug
+    observed_path = f"{support.STATE_ROOT}/tenants/{tenant_id}/observed.json"
     ansible_resume = _exercise_ansible_worker_overlap(
         host,
         support._request("resume", next(identities), tenantId=tenant_id),
@@ -1133,6 +1181,11 @@ def test_installed_transport_and_admission_recovery(  # noqa: PLR0915 - ordered 
         body=b"bound artifact deployed only after recovery\n",
     )
 
+
+def _exercise_contested_jobs(fixture: _RecoveryFixture) -> None:
+    host, tmp_path = fixture.host, fixture.tmp_path
+    operator_host, identity, ssh = fixture.connection
+    identities, slug = fixture.identities, fixture.slug
     contested_slug = f"{slug}-contested"
     contested = [
         support._request(
@@ -1192,6 +1245,8 @@ def test_installed_transport_and_admission_recovery(  # noqa: PLR0915 - ordered 
     assert reconciled.rc == 0, reconciled.stderr
     assert [_await_result(host, job_id) for job_id in contested_jobs] == contested_results
 
+
+def _assert_recovery_cleanup(host: Host) -> None:
     assert host.run("systemctl is-active --quiet caddy.service").rc == 0
     _start_reconcile_timer(host)
     assert host.run("systemctl is-active --quiet lowerduckpond-static-reconcile.timer").rc == 0

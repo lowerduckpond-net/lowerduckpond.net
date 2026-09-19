@@ -573,8 +573,12 @@ def _ids() -> Iterator[str]:
         yield str(uuid.uuid7())
 
 
-def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lifecycle table
-    host: Host, tmp_path: Path
+def test_installed_core_lifecycle(host: Host, tmp_path: Path) -> None:
+    _exercise_core_lifecycle(host, tmp_path, configuration_checks=True)
+
+
+def _exercise_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lifecycle table
+    host: Host, tmp_path: Path, *, configuration_checks: bool
 ) -> None:
     _initialize_namespace(host)
     assert not _initialize_namespace(host)
@@ -646,27 +650,28 @@ def test_installed_core_lifecycle(  # noqa: PLR0915 - ordered installed-host lif
     assert selected_generation.rc == 0, selected_generation.stderr
     selected_generation_id = selected_generation.stdout.strip()
 
-    _reapply_ansible()
-    assert _read_state(host, first_manifest_path) == first_manifest
-    assert host.run("cat /etc/caddy/active").stdout.strip() == selected_generation_id
-    _assert_route(host, canonical_origin, status=200, body=first_content)
-    _assert_route(
-        host,
-        original_alias,
-        status=302,
-        redirect=f"https://{canonical_origin}/",
-    )
+    if configuration_checks:
+        _reapply_ansible()
+        assert _read_state(host, first_manifest_path) == first_manifest
+        assert host.run("cat /etc/caddy/active").stdout.strip() == selected_generation_id
+        _assert_route(host, canonical_origin, status=200, body=first_content)
+        _assert_route(
+            host,
+            original_alias,
+            status=302,
+            redirect=f"https://{canonical_origin}/",
+        )
 
-    _assert_ansible_refuses_publication_disable(host)
-    _assert_ansible_refuses_live_operator_boundary_drift(host)
-    _assert_ansible_refuses_generation_input_drift(host)
-    _assert_route(host, canonical_origin, status=200, body=first_content)
-    _assert_route(
-        host,
-        original_alias,
-        status=302,
-        redirect=f"https://{canonical_origin}/",
-    )
+        _assert_ansible_refuses_publication_disable(host)
+        _assert_ansible_refuses_live_operator_boundary_drift(host)
+        _assert_ansible_refuses_generation_input_drift(host)
+        _assert_route(host, canonical_origin, status=200, body=first_content)
+        _assert_route(
+            host,
+            original_alias,
+            status=302,
+            redirect=f"https://{canonical_origin}/",
+        )
 
     _restart_installed_services(host)
     assert _read_state(host, first_manifest_path) == first_manifest
