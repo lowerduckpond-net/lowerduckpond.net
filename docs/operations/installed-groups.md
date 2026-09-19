@@ -6,6 +6,8 @@ complete qualification, and checks idempotence before its tests. Production
 admission and service resource limits remain unchanged. The controller must
 reach the fixture's published SSH port. Run parallel cases on separate runners;
 the fixtures share a host kernel's loop-device pool even with distinct names.
+Molecule pipelines Ansible modules through its Docker connection to reduce
+per-task transfer overhead.
 
 The [fixed registry](../../scripts/qualification_groups.py) declares every test
 and parameter. It accepts no arbitrary test selector. These cases are currently
