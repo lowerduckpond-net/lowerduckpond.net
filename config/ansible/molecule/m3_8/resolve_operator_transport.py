@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from urllib.parse import SplitResult, urlsplit
 
 _ARGUMENT_COUNT = 2
+_MAX_PORT = 65535
 
 
 def _container_gateway(container: str) -> str:
@@ -24,6 +25,35 @@ def _container_gateway(container: str) -> str:
     if len(gateways) != 1:
         raise RuntimeError("M3.8 container gateway is ambiguous")
     return gateways.pop()
+
+
+def _published_ssh_port(container: str) -> str:
+    result = subprocess.run(  # noqa: S603 - fixed Docker metadata query for this fixture
+        [
+            "/usr/bin/docker",
+            "inspect",
+            "--format",
+            '{{json (index .NetworkSettings.Ports "22/tcp")}}',
+            container,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    bindings = json.loads(result.stdout)
+    if not isinstance(bindings, list) or not bindings:
+        raise RuntimeError("M3.8 container has no published SSH port")
+    ports = set()
+    for binding in bindings:
+        port = binding.get("HostPort") if isinstance(binding, dict) else None
+        if not isinstance(port, str) or not port.isascii() or not port.isdecimal():
+            raise RuntimeError("M3.8 container SSH port is invalid")
+        if not 1 <= int(port) <= _MAX_PORT:
+            raise RuntimeError("M3.8 container SSH port is invalid")
+        ports.add(str(int(port)))
+    if len(ports) != 1:
+        raise RuntimeError("M3.8 container SSH port is ambiguous")
+    return ports.pop()
 
 
 def _connected_addresses(host: str, port: int) -> tuple[str, str]:
@@ -82,10 +112,23 @@ def resolve_operator_transport(docker_host: str, container: str) -> dict[str, st
     source_address = ipaddress.ip_address(source)
     transport = {
         "sourceCidr": f"{source_address.compressed}/{source_address.max_prefixlen}",
+        "sshPort": _published_ssh_port(container),
     }
     if peer is not None:
         transport["peerAddress"] = ipaddress.ip_address(peer).compressed
     return transport
+
+
+def current_operator_transport(
+    docker_host: str, container: str, recorded: dict[str, str]
+) -> dict[str, str]:
+    """Refresh Docker's ephemeral port without accepting a changed access boundary."""
+    current = resolve_operator_transport(docker_host, container)
+    if {key: value for key, value in current.items() if key != "sshPort"} != {
+        key: value for key, value in recorded.items() if key != "sshPort"
+    }:
+        raise RuntimeError("M3.8 operator transport access boundary changed")
+    return current
 
 
 def main(arguments: Sequence[str] | None = None) -> int:

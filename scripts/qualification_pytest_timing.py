@@ -17,6 +17,7 @@ GROUPS = {
     "test_lifecycle.py": "core",
     "test_export_import.py": "export-import",
     "test_archive_lifecycle.py": "archive",
+    "test_archive_full_size.py": "full-size-archive",
     "test_deletion.py": "deletion",
     "test_transport_recovery.py": "transport-recovery",
     "test_quarantine_recovery.py": "quarantine-recovery",

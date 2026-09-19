@@ -96,6 +96,7 @@ def test_host_agent_artifact_is_locked_reproducible_and_installable(
             member.name == "artifact" or member.name.startswith("artifact/") for member in members
         )
         assert all(member.isdir() or member.isreg() for member in members)
+        assert all("__pycache__" not in Path(member.name).parts for member in members)
         assert all(member.uid == 0 and member.gid == 0 for member in members)
         assert all(
             member.mode == (ARCHIVE_ROOT_MODE if member.isdir() else ARCHIVE_FILE_MODE)

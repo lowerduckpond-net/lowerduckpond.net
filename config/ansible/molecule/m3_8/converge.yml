@@ -8,7 +8,8 @@
     m3_10_archive_backend: >-
       {{ lookup('ansible.builtin.env', 'M3_10_ARCHIVE_BACKEND') | default('minio', true) }}
     static_host_agent_molecule_artifact: >-
-      /tmp/lowerduckpond-static-host-agent-m3-8.tar
+      {{ lookup('ansible.builtin.env', 'LDP_QUALIFICATION_ARTIFACT') |
+         default('/tmp/lowerduckpond-static-host-agent-m3-8.tar', true) }}
     m3_8_origin_pull_ca_key: >-
       {{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY')
          }}/origin-pull-ca.key
@@ -202,7 +203,7 @@
           - -B
           - "{{ playbook_dir }}/resolve_operator_transport.py"
           - "{{ m3_8_docker_host }}"
-          - lowerduckpond-ubuntu-2604
+          - "{{ groups['hosting_nodes'] | first }}"
       register: m3_8_operator_transport_source
       changed_when: false
 
@@ -219,7 +220,7 @@
           - -I
           - -B
           - "{{ playbook_dir }}/prepare_archive_storage.py"
-          - lowerduckpond-m3-10-minio
+          - "{{ groups['archive_fixture'] | first }}"
           - "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/archive-tls"
       register: m3_10_archive_storage
       changed_when: false

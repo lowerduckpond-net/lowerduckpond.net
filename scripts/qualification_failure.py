@@ -15,6 +15,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+from scripts.qualification_context import host_name  # noqa: E402
 from scripts.qualification_probe import (  # noqa: E402 - standalone entry point import root
     DIGEST,
     OPERATIONS,
@@ -44,6 +45,7 @@ PHASES = frozenset(
         "converge",
         "idempotence",
         "verify",
+        "final-accounting",
         "final-storage-proof",
         "destroy",
         "package",
@@ -60,6 +62,7 @@ GROUPS = frozenset(
         "core",
         "export-import",
         "archive",
+        "full-size-archive",
         "deletion",
         "reboot-capture",
         "reboot-verify",
@@ -82,6 +85,8 @@ TEST_FILES = frozenset(
     {
         "test_lifecycle.py",
         "test_archive_lifecycle.py",
+        "test_archive_full_size.py",
+        "full_size_fixture.py",
         "test_archive_credentials.py",
         "test_export_import.py",
         "test_deletion.py",
@@ -182,7 +187,7 @@ def capture_fixture() -> None:
     if directory is None or (directory / "failure-fixture.json").exists():
         return
     try:
-        output = bounded_command(["docker", "inspect", "--format", "{{.Id}}", CONTAINER])
+        output = bounded_command(["docker", "inspect", "--format", "{{.Id}}", host_name()])
         identity = matching(output.decode("ascii").strip() if output else None, DIGEST)
         if identity != UNKNOWN:
             _write(directory / "failure-fixture.json", {"container_id": identity})

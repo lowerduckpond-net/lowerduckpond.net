@@ -5,13 +5,13 @@
   tasks:
     - name: Inspect the acceptance container state
       ansible.builtin.command:
-        cmd: docker inspect lowerduckpond-ubuntu-2604
+        argv: [docker, inspect, "{{ groups['hosting_nodes'] | first }}"]
       register: molecule_container_state
       changed_when: false
 
     - name: Read startup logs from a stopped container
       ansible.builtin.command:
-        cmd: docker logs lowerduckpond-ubuntu-2604
+        argv: [docker, logs, "{{ groups['hosting_nodes'] | first }}"]
       register: molecule_container_logs
       changed_when: false
       failed_when: false

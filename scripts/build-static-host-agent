@@ -143,7 +143,7 @@ uv run \
     --directory "${repository_root}" \
     --frozen \
     --python 3.14 \
-    python -I - "${site_packages}" <<'PY'
+    python -I -B - "${site_packages}" <<'PY'
 import pathlib
 import sys
 

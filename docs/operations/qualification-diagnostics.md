@@ -159,3 +159,115 @@ choose pacing and scheduling changes before making performance claims.
 
 `just check-python` also prints the 20 slowest tests lasting at least one second.
 This identifies fast-lane costs without rerunning the test suite for profiling.
+
+## Owned local fixtures
+
+`just check-ansible-m3-8` allocates a fresh local MinIO fixture for each run.
+`just check-ansible-static` also allocates its own baseline host, image tag,
+artifact, controller-source fixture, and Molecule state.
+The timing directory also contains a private `fixture.json` identifying its
+containers and Docker endpoint. Host and storage container names, host image
+tag, assigned SSH port, artifact path, and Molecule state are distinct for each
+run. The supported entry point does not reuse resources from ambient fixture
+variables or a previous run. Nested Ansible reapplication uses the same owned
+context throughout that run.
+
+The complete local sequence retains its existing Molecule cleanup behavior.
+Failure diagnostics bind to its concrete container ID and capture state before
+that cleanup. Private fixture metadata is not included in CI diagnostic
+artifacts. Live Spaces continues to use its serialized secure-workstation
+workflow; local resource overrides cannot redirect it.
+
+Separate resources do not provide additional machine capacity. In particular,
+privileged Docker fixtures share the host kernel's loop-device pool. This
+workspace's eight exposed loop-device nodes were insufficient to prepare two
+complete fixtures simultaneously. Concurrent systemd fixtures also caused
+disposable MinIO TLS startup to fail with `too many open files`; stopping the
+unused second host allowed the unchanged service to start. Serialize systemd
+fixtures on one daemon and use separate runners for parallel installed checks;
+do not detach another run's devices or prune shared Docker resources.
+
+After reboot, operator connections rediscover Docker's assigned SSH port while
+requiring the recorded source and peer addresses to remain unchanged. The
+reboot verifier also restores the captured disposable MinIO hostname mapping
+that Docker removes from `/etc/hosts`. These test-fixture repairs do not reapply
+the production configuration or accept a changed access boundary.
+
+## Independent full-size archive
+
+Use `just check-archive-full-size` after the normal `just setup` prerequisites.
+It requires a local MinIO backend and a Docker daemon that supports the existing
+privileged systemd/ext4 fixture. The operator SSH endpoint published by that
+daemon must be reachable from the controller. Live Spaces inputs are excluded.
+
+This command creates a fresh owned host, installs the current artifact, and
+checks idempotence. It then creates, deploys, and suspends a 100-MiB/5,000-file
+source through the supported operator interface. Archive and restore use the
+installed services and unchanged production resource/admission limits. The
+restored deployment must have a new identity and exactly the original filenames,
+lengths, and content hashes. The case finishes with the restored active tenant,
+as the complete archive journey does, then checks settled local accounting and
+installed artifact integrity before fixture teardown. Ordinary archived-tenant
+deletion remains covered by the complete archive journey.
+
+The command prints each phase and the private run directory. It writes readable
+per-phase logs there. A failed command, missing installed receipt, changed
+container identity, or unavailable/nonempty independent storage inventory stops
+without destroying the fixture. A passing case separately checks all versions,
+delete markers, and multipart uploads in both owned MinIO buckets with the
+fixture's root identity before teardown. Failure reports never grant teardown
+authority. A new invocation always gets a new fixture and correlation IDs; it
+does not resume an earlier job or replace a retained host's artifact.
+
+`case.json` is a diagnostic result, not a full M3.10 qualification report. Its
+format is rejected by the production qualification validator. Read `timing.json`
+alongside it for source revision, artifact/image identity, and measured runtime.
+The first CI runs establish the expected duration; the initial job limit is
+45 minutes, with the plan's 30-minute installed-case target still to be measured.
+The complete existing lifecycle journey remains required for the same selected
+changes, and CI runs the independent case on a separate runner.
+
+After diagnosing an unsuccessful independent archive case, use
+`just retire-archive-fixture /absolute/path/to/the/run` to remove its owned
+containers when their obligations are settled. This explicit command refuses an
+active controller, changed container IDs, unvalidated jobs, pending state,
+quarantine, archived tenants, or unknown/nonempty independent storage inventory.
+It verifies the installed artifact against the run's retained artifact and
+checks local accounting again after the storage observation. A failed setup
+before installation instead requires empty local state and independently empty
+storage. Existing failure reports are never cleanup authority.
+
+The create attempt records owned container IDs even if only part of creation
+succeeds. A failed create may retire just that recorded subset after fresh
+proof of its empty pre-installation state; a container that never started has
+not executed installation or accepted work. Unknown Docker inventory is not
+treated as absence, and a successful create must record both containers.
+
+Before removal, the command durably records a private transaction binding the
+exact IDs, installed artifact when present, fresh accounting, and each
+container's start identity. It force-removes the host, checks storage again,
+then force-removes storage. It never restarts a service or resumes an operation.
+If Docker or the controller fails during removal, repeat the same retirement
+command. Running containers require fresh checks; stopped containers may only
+continue the already authorized removal with the same recorded start identity.
+Already removed IDs are not recreated. Changed IDs, a restarted stopped
+container, or missing transaction evidence prevent this continuation.
+
+Private evidence and the artifact remain in the run directory, with a diagnostic
+`retirement.json` after successful removal. The private removal transaction
+authorizes only this owned fixture's interrupted destruction; ordinary diagnostic
+reports do not. The command cannot replace an artifact or apply to live Spaces
+fixtures. If checks cannot establish quiescence, resolve the reported operation
+through its existing recovery procedure before requesting retirement.
+
+After successful destruction or retirement, the controller removes only the
+run's `molecule_local/ldp-m3-…:ubuntu-2604` image tag. It requires both owned
+containers to be absent and uses neither forced image deletion nor a daemon-wide
+prune. Other runs' tags, shared layers, and downloaded base/MinIO images remain.
+If image removal fails after Molecule has already destroyed the containers, retry
+only that step with `uv run python -m scripts.qualification_retirement --image-only
+/absolute/path/to/the/run`. This checks the original manifest and Docker endpoint,
+refuses an active run or remaining containers, and does not reconstruct host
+proofs or issue a retirement/qualification report. Ordinary retirement can also
+retry image cleanup through its existing removal transaction. Failed tests keep
+their original failure status if optional post-failure image cleanup is unavailable.

@@ -13,6 +13,7 @@ import yaml
 from testinfra.host import Host
 
 from config.ansible.molecule.default.tests.test_host import _run_installed_boundary_probe
+from scripts.qualification_context import host_name
 
 
 def test_installed_ordinary_reconciler_cannot_connect_to_archive_services(host: Host) -> None:
@@ -61,7 +62,7 @@ def test_installed_reconciler_masks_entries_created_after_namespace_start(
             {
                 "all": {
                     "hosts": {
-                        "lowerduckpond-ubuntu-2604": {
+                        host_name(): {
                             "ansible_connection": "community.docker.docker",
                             "ansible_python_interpreter": "/usr/bin/python3",
                         }
@@ -373,7 +374,7 @@ while True:
             {
                 "all": {
                     "hosts": {
-                        "lowerduckpond-ubuntu-2604": {
+                        host_name(): {
                             "ansible_connection": "community.docker.docker",
                             "ansible_python_interpreter": "/usr/bin/python3",
                         }
@@ -433,7 +434,7 @@ def test_installed_empty_configuration_withdraws_existing_archive_credentials(
             {
                 "all": {
                     "hosts": {
-                        "lowerduckpond-ubuntu-2604": {
+                        host_name(): {
                             "ansible_connection": "community.docker.docker",
                             "ansible_python_interpreter": "/usr/bin/python3",
                         }
@@ -619,7 +620,7 @@ def test_installed_legacy_selection_disables_only_the_new_service_family(
             {
                 "all": {
                     "hosts": {
-                        "lowerduckpond-ubuntu-2604": {
+                        host_name(): {
                             "ansible_connection": "community.docker.docker",
                             "ansible_python_interpreter": "/usr/bin/python3",
                         }

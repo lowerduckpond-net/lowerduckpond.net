@@ -2,12 +2,14 @@
 - name: Run disposable M3.8 through M3.10 installed-host qualification
   hosts: localhost
   gather_facts: false
+  vars:
+    m3_8_qualification_host: "{{ groups['hosting_nodes'] | first }}"
   tasks:
     - name: Verify isolated storage credentials before the paced lifecycle groups
       ansible.builtin.command:
         cmd: >-
           python -m pytest --verbose
-          --hosts=docker://lowerduckpond-ubuntu-2604
+          --hosts=docker://{{ m3_8_qualification_host }}
           tests/test_archive_lifecycle.py::test_installed_tls_storage_credentials_are_mutually_denied
       args:
         chdir: >-
@@ -19,7 +21,7 @@
       ansible.builtin.command:
         cmd: >-
           python -m pytest --verbose
-          --hosts=docker://lowerduckpond-ubuntu-2604
+          --hosts=docker://{{ m3_8_qualification_host }}
           tests/test_archive_credentials.py
       args:
         chdir: >-
@@ -30,7 +32,7 @@
       ansible.builtin.command:
         cmd: >-
           python -m pytest --verbose
-          --hosts=docker://lowerduckpond-ubuntu-2604
+          --hosts=docker://{{ m3_8_qualification_host }}
           tests/test_lifecycle.py
       args:
         chdir: >-
@@ -41,7 +43,7 @@
       ansible.builtin.command:
         cmd: >-
           python -m pytest --verbose
-          --hosts=docker://lowerduckpond-ubuntu-2604
+          --hosts=docker://{{ m3_8_qualification_host }}
           tests/test_export_import.py
       args:
         chdir: >-
@@ -52,7 +54,7 @@
       ansible.builtin.command:
         cmd: >-
           python -m pytest --verbose
-          --hosts=docker://lowerduckpond-ubuntu-2604
+          --hosts=docker://{{ m3_8_qualification_host }}
           tests/test_archive_lifecycle.py::test_installed_archive_export_restore_rearchive_and_delete
       args:
         chdir: >-
@@ -63,7 +65,7 @@
       ansible.builtin.command:
         cmd: >-
           python -m pytest --verbose
-          --hosts=docker://lowerduckpond-ubuntu-2604
+          --hosts=docker://{{ m3_8_qualification_host }}
           tests/test_deletion.py
       args:
         chdir: >-
@@ -74,7 +76,7 @@
       ansible.builtin.command:
         cmd: >-
           python -m pytest --verbose
-          --hosts=docker://lowerduckpond-ubuntu-2604
+          --hosts=docker://{{ m3_8_qualification_host }}
           tests/test_reboot.py::test_capture_installed_reboot_state
       args:
         chdir: >-
@@ -84,7 +86,7 @@
     - name: Capture the pre-reboot reconciliation invocation
       ansible.builtin.command:
         cmd: >-
-          docker exec lowerduckpond-ubuntu-2604
+          docker exec {{ m3_8_qualification_host }}
           systemctl show --property=InvocationID --value
           lowerduckpond-static-reconcile.service
       register: m3_8_pre_reboot_reconcile_invocation
@@ -95,13 +97,13 @@
 
     - name: Reboot the disposable systemd host
       ansible.builtin.command:
-        cmd: docker restart --timeout 30 lowerduckpond-ubuntu-2604
+        cmd: docker restart --timeout 30 {{ m3_8_qualification_host }}
       changed_when: true
 
     - name: Wait for immutable Caddy to return after reboot
       ansible.builtin.command:
         cmd: >-
-          docker exec lowerduckpond-ubuntu-2604
+          docker exec {{ m3_8_qualification_host }}
           systemctl is-active --quiet caddy.service
       register: m3_8_reboot_caddy
       changed_when: false
@@ -112,7 +114,7 @@
     - name: Wait for startup reconciliation to complete after reboot
       ansible.builtin.command:
         cmd: >-
-          docker exec lowerduckpond-ubuntu-2604
+          docker exec {{ m3_8_qualification_host }}
           systemctl show
           --property=ActiveState
           --property=SubState
@@ -141,7 +143,7 @@
       ansible.builtin.command:
         cmd: >-
           python -m pytest --verbose
-          --hosts=docker://lowerduckpond-ubuntu-2604
+          --hosts=docker://{{ m3_8_qualification_host }}
           tests/test_reboot.py::test_verify_installed_reboot_state
       args:
         chdir: >-
@@ -152,7 +154,7 @@
       ansible.builtin.command:
         cmd: >-
           python -m pytest --verbose
-          --hosts=docker://lowerduckpond-ubuntu-2604
+          --hosts=docker://{{ m3_8_qualification_host }}
           tests/test_transport_recovery.py
       args:
         chdir: >-
@@ -163,7 +165,7 @@
       ansible.builtin.command:
         cmd: >-
           python -m pytest --verbose
-          --hosts=docker://lowerduckpond-ubuntu-2604
+          --hosts=docker://{{ m3_8_qualification_host }}
           tests/test_quarantine_recovery.py
       args:
         chdir: >-
@@ -174,7 +176,7 @@
       ansible.builtin.command:
         cmd: >-
           python -m pytest --verbose
-          --hosts=docker://lowerduckpond-ubuntu-2604
+          --hosts=docker://{{ m3_8_qualification_host }}
           tests/test_archive_completion.py
       args:
         chdir: >-

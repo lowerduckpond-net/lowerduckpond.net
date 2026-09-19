@@ -30,6 +30,7 @@ GROUPS = frozenset(
         "core",
         "export-import",
         "archive",
+        "full-size-archive",
         "deletion",
         "reboot-capture",
         "reboot-verify",
@@ -160,20 +161,22 @@ def _capture_fixture_identity() -> None:
     path = Path(destination).with_name("timing-fixture.json")
     if path.exists():
         return
+    sys.path.insert(0, str(ROOT))
+    from scripts.qualification_context import host_name  # noqa: PLC0415
+
+    container = host_name()
     selected = _tool_output(
         [
             "docker",
             "exec",
-            "lowerduckpond-ubuntu-2604",
+            container,
             "readlink",
             "--canonicalize-existing",
             "/opt/lowerduckpond/static-host-agent/current",
         ]
     )
     matched = re.fullmatch(r"/opt/lowerduckpond/static-host-agent/([0-9a-f]{64})", selected)
-    image = _tool_output(
-        ["docker", "inspect", "--format", "{{.Image}}", "lowerduckpond-ubuntu-2604"]
-    )
+    image = _tool_output(["docker", "inspect", "--format", "{{.Image}}", container])
     observed = {
         "artifact_sha256": matched[1] if matched else "unknown",
         "image_sha256": image[7:] if re.fullmatch(r"sha256:[0-9a-f]{64}", image) else "unknown",

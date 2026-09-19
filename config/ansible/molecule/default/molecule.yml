@@ -5,8 +5,10 @@ dependency:
 driver:
   name: docker
 platforms:
-  - name: lowerduckpond-ubuntu-2604
-    image: ubuntu:26.04
+  - name: "${LDP_QUALIFICATION_HOST:-lowerduckpond-ubuntu-2604}"
+    image: "${LDP_QUALIFICATION_IMAGE:-ubuntu:26.04}"
+    labels:
+      lowerduckpond.qualification.run: "${LDP_QUALIFICATION_RUN_ID:-legacy-default}"
     groups:
       - hosting_nodes
     dockerfile: Dockerfile.j2

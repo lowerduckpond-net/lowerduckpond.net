@@ -32,8 +32,13 @@ relevant_paths=(
     schemas/static-publication
     scripts/build-static-host-agent
     scripts/m3-8-ci-required
+    scripts/qualification_case.py
+    scripts/qualification_context.py
+    scripts/qualification_local.py
     scripts/qualification_failure.py
     scripts/qualification_probe.py
+    scripts/qualification_retirement.py
+    scripts/qualification_retirement_probe.py
     scripts/qualification_timing.py
     scripts/qualification_pytest_timing.py
     tools/static-operator
