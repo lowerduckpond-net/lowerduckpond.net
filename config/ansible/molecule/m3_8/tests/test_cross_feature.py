@@ -7,6 +7,7 @@ import os
 import uuid
 from pathlib import Path
 
+import full_size_fixture as full_size
 import test_archive_lifecycle as archives
 import test_lifecycle as support
 from independent_fixture import require_owned_fixture
@@ -14,7 +15,7 @@ from testinfra.host import Host
 
 from scripts.qualification_context import ARTIFACT_ENV, RUN_ENV
 
-_CONTENT = b"portable content survives archive, rename, suspension, and reboot\n"
+_CONTENT = full_size.INDEX
 
 
 def _context_path() -> Path:
@@ -47,22 +48,46 @@ def test_cross_feature_before_reboot(host: Host, tmp_path: Path) -> None:
         return result
 
     slug = f"m3-journey-{uuid.uuid7().hex[-12:]}"
-    source = submit("create", slug=slug, quotas={"storageMiB": 1, "entries": 10})
+    source = submit(
+        "create", slug=slug, quotas={"storageMiB": 100, "entries": full_size.ENTRY_COUNT}
+    )
     source_id, source_origin = str(source["tenantId"]), str(source["canonicalOrigin"])
-    deployed = submit("deploy", tenantId=source_id, artifact=support._deployment_zip(_CONTENT))
+    payload = full_size.deployment()
+    expected_digest = full_size.content_digest(payload)
+    deployed = submit("deploy", tenantId=source_id, artifact=payload)
+    full_size.assert_worker_budget(host, deployed)
+    assert (
+        full_size.installed_digest(host, source_id, support._desired_deployment(deployed))
+        == expected_digest
+    )
     bundle = tmp_path / "portable.zip"
     submit("export", tenantId=source_id, export=bundle)
-    copied = submit("create", slug=f"{slug}-copy", quotas={"storageMiB": 1, "entries": 10})
+    copied = submit(
+        "create",
+        slug=f"{slug}-copy",
+        quotas={"storageMiB": 100, "entries": full_size.ENTRY_COUNT},
+    )
     copy_id, copy_origin = str(copied["tenantId"]), str(copied["canonicalOrigin"])
     imported = submit("import", tenantId=copy_id, artifact=bundle.read_bytes())
     assert support._desired_deployment(imported) != support._desired_deployment(deployed)
+    full_size.assert_worker_budget(host, imported)
+    assert (
+        full_size.installed_digest(host, copy_id, support._desired_deployment(imported))
+        == expected_digest
+    )
     support._assert_route(host, copy_origin, status=200, body=_CONTENT)
     archived = submit("archive", tenantId=source_id)
     assert support._lifecycle(archived) == "archived"
+    full_size.assert_worker_budget(host, archived)
     assert len(archives._remote_versions(host)) == 1
     support._assert_route(host, source_origin, status=404)
     restored = submit("restore", tenantId=source_id)
     assert support._lifecycle(restored) == "active"
+    full_size.assert_worker_budget(host, restored)
+    assert (
+        full_size.installed_digest(host, source_id, support._desired_deployment(restored))
+        == expected_digest
+    )
     assert support._desired_deployment(restored) != support._desired_deployment(deployed)
     assert not archives._remote_versions(host)
     support._assert_route(host, source_origin, status=200, body=_CONTENT)
@@ -76,6 +101,9 @@ def test_cross_feature_before_reboot(host: Host, tmp_path: Path) -> None:
         json.dump(
             {
                 "run_id": os.environ[RUN_ENV],
+                "content_digest": expected_digest,
+                "source_deployment": support._desired_deployment(restored),
+                "copy_deployment": support._desired_deployment(imported),
                 "history": history,
                 "source_id": source_id,
                 "source_origin": source_origin,
@@ -105,6 +133,13 @@ def test_cross_feature_after_reboot(host: Host, tmp_path: Path) -> None:
                 host, f"{support.STATE_ROOT}/tenants/{context[prefix + '_id']}/desired.json"
             )
             == context[prefix + "_manifest"]
+        )
+    for prefix in ("source", "copy"):
+        assert (
+            full_size.installed_digest(
+                host, context[prefix + "_id"], context[prefix + "_deployment"]
+            )
+            == context["content_digest"]
         )
     support._assert_route(host, context["source_origin"], status=200, body=_CONTENT)
     support._assert_route(host, context["copy_origin"], status=404)
