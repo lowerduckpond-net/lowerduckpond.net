@@ -23,6 +23,29 @@ not supplied to the coder workspace. The coder task implements the tooling,
 completes local qualification, opens the dependent PRs, and iterates review.
 The operator runs the live steps below and returns sanitized evidence.
 
+### Qualifying a successor after completed M3.10
+
+After the successor's required reviews and CI pass and its code is merged,
+synchronize clean `main` and open the secure environment described below.
+Run the complete disposable-host qualification:
+
+```bash
+just m3-10-spaces-qualification
+```
+
+This command uses live Spaces with the existing empty-bucket starting condition
+and produces the candidate's sanitized report and checksum. It does not connect
+to or change the production host. Return `qualification.json` and
+`qualification.sha256` from its printed private run directory.
+
+The standalone `preflight-m3-10-production` is for first installation and requires
+the M3.9 predecessor; omit it for a completed M3.10 host. When successor convergence
+is separately authorized, `configure-production` performs its completed-host
+and fresh provider checks before any host mutation. Qualification alone does
+not deploy the successor.
+
+### First-installation preparation
+
 After the dependent reviews are accepted and merged, synchronize a clean `main`
 on the supported x86-64 Linux secure workstation. Use a local Unix-socket Docker
 daemon for the disposable installed-host qualification. The live wrapper refuses
