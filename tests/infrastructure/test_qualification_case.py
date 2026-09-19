@@ -67,7 +67,9 @@ def test_only_a_complete_case_reaches_independent_proof_and_teardown(
 
     monkeypatch.setattr(case, "phase", phase)
     monkeypatch.setattr(
-        case, "owned_containers", lambda values: {HOST_ENV: HOST_ID, ARCHIVE_ENV: ARCHIVE_ID}
+        case,
+        "owned_containers",
+        lambda values, **kwargs: {HOST_ENV: HOST_ID, ARCHIVE_ENV: ARCHIVE_ID},
     )
 
     def proof(values: dict[str, str], archive_id: str) -> None:
@@ -123,7 +125,7 @@ def test_unknown_or_changed_obligations_retain_the_case(
     monkeypatch.setattr(case, "phase", phase)
     calls = 0
 
-    def owned(values: dict[str, str]) -> dict[str, str]:
+    def owned(values: dict[str, str], **kwargs: object) -> dict[str, str]:
         nonlocal calls
         calls += 1
         return {
@@ -242,7 +244,9 @@ def test_a_successful_command_without_a_complete_installed_receipt_cannot_destro
 
     monkeypatch.setattr(case, "phase", phase)
     monkeypatch.setattr(
-        case, "owned_containers", lambda values: {HOST_ENV: HOST_ID, ARCHIVE_ENV: ARCHIVE_ID}
+        case,
+        "owned_containers",
+        lambda values, **kwargs: {HOST_ENV: HOST_ID, ARCHIVE_ENV: ARCHIVE_ID},
     )
     if problem != "missing":
         write_receipt(tmp_path, environment)
@@ -280,3 +284,31 @@ def test_molecule_resolves_the_case_verifier_without_changing_the_complete_seque
         complete.config_data["scenario"]["test_sequence"]
         == selected.config_data["scenario"]["test_sequence"]
     )
+
+
+@pytest.mark.parametrize("present", [[], [HOST_ENV], [ARCHIVE_ENV], [HOST_ENV, ARCHIVE_ENV]])
+def test_optional_inventory_proves_absence_without_adopting_other_owners(
+    monkeypatch: pytest.MonkeyPatch, environment: dict[str, str], present: list[str]
+) -> None:
+    identities = {HOST_ENV: HOST_ID, ARCHIVE_ENV: ARCHIVE_ID}
+
+    def query(command: list[str], **kwargs: object) -> bytes:
+        if command[1:3] == ["container", "ls"]:
+            key = next(key for key in identities if f"name=^/{environment[key]}$" in command)
+            return (identities[key] + "\n").encode() if key in present else b""
+        key = next(key for key in identities if command[-1] == environment[key])
+        return json.dumps({"id": identities[key], "owner": environment[RUN_ENV]}).encode()
+
+    monkeypatch.setattr(case, "bounded_command", query)
+    assert case.owned_containers(environment, allow_missing=True) == {
+        key: identities[key] for key in present
+    }
+
+
+@pytest.mark.parametrize("output", [None, b"not-an-id", (HOST_ID + "\n" + ARCHIVE_ID).encode()])
+def test_unknown_inventory_is_not_container_absence(
+    monkeypatch: pytest.MonkeyPatch, environment: dict[str, str], output: bytes | None
+) -> None:
+    monkeypatch.setattr(case, "bounded_command", lambda *args, **kwargs: output)
+    with pytest.raises(ValueError):
+        case.owned_containers(environment, allow_missing=True)

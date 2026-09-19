@@ -28,6 +28,7 @@ from scripts.qualification_context import ARCHIVE_ENV, ARTIFACT_ENV, HOST_ENV, r
 HOST_ID = "a" * 64
 ARCHIVE_ID = "b" * 64
 ROOT = Path(__file__).resolve().parents[2]
+MIN_LOCAL_READS = 2
 
 
 @pytest.fixture
@@ -35,7 +36,8 @@ def owned(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("DOCKER_HOST", "unix:///owned/docker.sock")
     monkeypatch.delenv("DOCKER_CONTEXT", raising=False)
     monkeypatch.setenv("M3_10_ARCHIVE_BACKEND", "minio")
-    local.create_environment(tmp_path)
+    environment = local.create_environment(tmp_path)
+    Path(environment[ARTIFACT_ENV]).write_bytes(b"retained fixture artifact")
     with run_lease(tmp_path, create=True):
         pass
     (tmp_path / "case-containers.json").write_text(
@@ -44,17 +46,33 @@ def owned(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
+@pytest.fixture
+def running_snapshots(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        retirement,
+        "snapshot",
+        lambda *args: {
+            "started_at": "2026-09-19T00:00:00Z",
+            "restarts": 0,
+            "running": True,
+            "status": "running",
+        },
+    )
+
+
 def test_retirement_uses_only_bound_ids_after_two_fresh_local_checks(
-    owned: Path, monkeypatch: pytest.MonkeyPatch
+    owned: Path, monkeypatch: pytest.MonkeyPatch, running_snapshots: None
 ) -> None:
     events: list[str] = []
     historical = owned / "failure.json"
     historical.write_bytes(b"original failure remains unchanged\n")
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/docker")
 
-    def containers(environment: dict[str, str]) -> dict[str, str]:
+    present = {HOST_ENV: HOST_ID, ARCHIVE_ENV: ARCHIVE_ID}
+
+    def containers(environment: dict[str, str], **kwargs: object) -> dict[str, str]:
         events.append("identity")
-        return {HOST_ENV: HOST_ID, ARCHIVE_ENV: ARCHIVE_ID}
+        return dict(present)
 
     def accounting(environment: dict[str, str], host_id: str) -> str:
         assert host_id == HOST_ID
@@ -67,7 +85,9 @@ def test_retirement_uses_only_bound_ids_after_two_fresh_local_checks(
 
     def execute(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         events.append(f"{command[1]}:{command[-1]}")
-        assert command[0] == "/usr/bin/docker"
+        assert command[:4] == ["/usr/bin/docker", "rm", "--force", "--volumes"]
+        key = next(key for key, identity in present.items() if identity == command[-1])
+        del present[key]
         return subprocess.CompletedProcess(command, 0)
 
     monkeypatch.setattr(retirement, "owned_containers", containers)
@@ -75,24 +95,19 @@ def test_retirement_uses_only_bound_ids_after_two_fresh_local_checks(
     monkeypatch.setattr(retirement, "independent_storage_absence", storage)
     monkeypatch.setattr(subprocess, "run", execute)
     destination = retirement.retire(owned)
-    assert events == [
-        "identity",
-        "local",
-        "remote",
-        "identity",
-        "local",
-        f"stop:{HOST_ID}",
-        f"rm:{HOST_ID}",
-        f"stop:{ARCHIVE_ID}",
-        f"rm:{ARCHIVE_ID}",
-    ]
+    mutations = [event for event in events if event.startswith("rm:")]
+    assert mutations == [f"rm:{HOST_ID}", f"rm:{ARCHIVE_ID}"]
+    host_removal, archive_removal = (events.index(event) for event in mutations)
+    assert events[:host_removal].count("local") >= MIN_LOCAL_READS
+    assert "remote" in events[:host_removal]
+    assert "remote" in events[host_removal + 1 : archive_removal]
     assert json.loads(destination.read_text())["authority"] == "diagnostic-only"
     assert historical.read_bytes() == b"original failure remains unchanged\n"
 
 
 @pytest.mark.parametrize("failure", ["identity", "local", "remote", "replacement", "changed"])
 def test_failed_or_changing_proofs_never_mutate_containers(
-    owned: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+    owned: Path, monkeypatch: pytest.MonkeyPatch, failure: str, running_snapshots: None
 ) -> None:
     identities = [{HOST_ENV: HOST_ID, ARCHIVE_ENV: ARCHIVE_ID}] * 2
     if failure in {"identity", "replacement"}:

@@ -92,6 +92,7 @@ files = [
   "scripts/qualification_retirement.py",
   "scripts/qualification_retirement_probe.py",
   "tests/infrastructure/test_qualification_retirement.py",
+  "tests/infrastructure/test_qualification_removal_recovery.py",
   "scripts/qualification_case.py",
   "tests/infrastructure/test_qualification_case.py",
   "scripts/qualification_context.py",

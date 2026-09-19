@@ -237,9 +237,25 @@ checks local accounting again after the storage observation. A failed setup
 before installation instead requires empty local state and independently empty
 storage. Existing failure reports are never cleanup authority.
 
-Only the two exact container IDs bound to that independent run are stopped and
-removed. Private evidence and the artifact remain in its run directory, with a
-diagnostic `retirement.json` after successful removal. This command does not
-resume work, retry failed operations, replace an artifact, or apply to live
-Spaces fixtures. If checks cannot establish quiescence, resolve the reported
-operation through its existing recovery procedure before requesting retirement.
+The create attempt records owned container IDs even if only part of creation
+succeeds. A failed create may retire just that recorded subset after fresh
+proof of its empty pre-installation state; a container that never started has
+not executed installation or accepted work. Unknown Docker inventory is not
+treated as absence, and a successful create must record both containers.
+
+Before removal, the command durably records a private transaction binding the
+exact IDs, installed artifact when present, fresh accounting, and each
+container's start identity. It force-removes the host, checks storage again,
+then force-removes storage. It never restarts a service or resumes an operation.
+If Docker or the controller fails during removal, repeat the same retirement
+command. Running containers require fresh checks; stopped containers may only
+continue the already authorized removal with the same recorded start identity.
+Already removed IDs are not recreated. Changed IDs, a restarted stopped
+container, or missing transaction evidence prevent this continuation.
+
+Private evidence and the artifact remain in the run directory, with a diagnostic
+`retirement.json` after successful removal. The private removal transaction
+authorizes only this owned fixture's interrupted destruction; ordinary diagnostic
+reports do not. The command cannot replace an artifact or apply to live Spaces
+fixtures. If checks cannot establish quiescence, resolve the reported operation
+through its existing recovery procedure before requesting retirement.

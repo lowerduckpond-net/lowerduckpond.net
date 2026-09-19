@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
+import tempfile
 from pathlib import Path
 
 from scripts.qualification_context import ARCHIVE_ENV, HOST_ENV, RUN_ENV, host_name, run_lease
@@ -18,10 +20,52 @@ CONTENT_BYTES = 100 * 1024 * 1024
 ENTRY_COUNT = 5000
 
 
-def owned_containers(environment: dict[str, str]) -> dict[str, str]:
+def private_document(directory: Path, name: str, value: object) -> None:
+    """Durably replace one controller-owned receipt while its run lease is held."""
+    descriptor, temporary = tempfile.mkstemp(prefix=".fixture-", dir=directory)
+    try:
+        with os.fdopen(descriptor, "w", encoding="ascii") as stream:
+            json.dump(value, stream, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        Path(temporary).replace(directory / name)
+        parent = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(parent)
+        finally:
+            os.close(parent)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
+def owned_containers(environment: dict[str, str], *, allow_missing: bool = False) -> dict[str, str]:
     host_name(environment)  # Reject partial or mixed ownership before querying Docker.
     identities = {}
     for key in (HOST_ENV, ARCHIVE_ENV):
+        found: str | None = None
+        if allow_missing:
+            inventory = bounded_command(
+                [
+                    "docker",
+                    "container",
+                    "ls",
+                    "--all",
+                    "--no-trunc",
+                    "--filter",
+                    f"name=^/{environment[key]}$",
+                    "--format",
+                    "{{.ID}}",
+                ],
+                environment=environment,
+            )
+            if inventory is None:
+                raise ValueError("owned fixture inventory is unavailable")
+            found = inventory.decode("ascii").strip()
+            if not found:
+                continue
+            if re.fullmatch(r"[0-9a-f]{64}", found) is None:
+                raise ValueError("owned fixture inventory is invalid")
         output = bounded_command(
             [
                 "docker",
@@ -40,9 +84,21 @@ def owned_containers(environment: dict[str, str]) -> dict[str, str]:
             not isinstance(data.get("id"), str)
             or re.fullmatch(r"[0-9a-f]{64}", data["id"]) is None
             or data.get("owner") != environment[RUN_ENV]
+            or (found is not None and data["id"] != found)
         ):
             raise ValueError("fixture ownership changed")
         identities[key] = data["id"]
+    return identities
+
+
+def record_created_containers(
+    directory: Path, environment: dict[str, str], status: int
+) -> dict[str, str]:
+    private_document(directory, "case-create.json", {"exit_status": status})
+    identities = owned_containers(environment, allow_missing=True)
+    private_document(directory, "case-containers.json", identities)
+    if status == 0 and set(identities) != {HOST_ENV, ARCHIVE_ENV}:
+        raise ValueError("successful creation did not produce both owned containers")
     return identities
 
 
@@ -145,12 +201,15 @@ def _run_full_size(directory: Path, environment: dict[str, str], uv: str) -> int
     identities: dict[str, str] = {}
     for name in ("create", "prepare", "converge", "idempotence", "verify"):
         status = phase(directory, environment, uv, name)
+        if name == "create":
+            try:
+                identities = record_created_containers(directory, environment, status)
+            except Exception:
+                if not status:
+                    raise
+                print("Created fixture ownership could not be fully recorded.", flush=True)
         if status:
             return status
-        if name == "create":
-            identities = owned_containers(environment)
-            with (directory / "case-containers.json").open("x", encoding="ascii") as stream:
-                json.dump(identities, stream)
     record_phase("final-accounting")
     receipt = installed_receipt(directory, environment)
     if owned_containers(environment) != identities:
