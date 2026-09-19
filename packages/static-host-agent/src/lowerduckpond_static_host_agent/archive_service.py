@@ -161,7 +161,7 @@ def _read_authority(
     operations: frozenset[str] = frozenset({"export"}),
     allow_retirement: bool = False,
 ) -> dict[str, object]:
-    with repository.transaction(mode=LockMode.EXCLUSIVE) as transaction:
+    with repository.transaction(mode=LockMode.EXCLUSIVE, blocking=True) as transaction:
         job = transaction.read(StateRecordPath.authorization_job(job_id)).document
         request = cast(dict[str, object], job["request"])
         expected = cast(dict[str, object], job["expectedSource"])
