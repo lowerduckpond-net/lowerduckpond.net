@@ -130,7 +130,9 @@ class ArchiveConstructionJournal:
         self.hook = hook
         self.capacity_limits = capacity_limits
 
-    def prepare(self, job_id: str, snapshot: ExportSnapshot, *, now: datetime) -> PreparedArchive:
+    def prepare(
+        self, job_id: str, snapshot: ExportSnapshot, *, now: datetime, blocking: bool = False
+    ) -> PreparedArchive:
         """Validate the complete local bundle and sync a unique prepared intent."""
         self._require_lock()
         self.require_quarantine_empty()
@@ -149,7 +151,7 @@ class ArchiveConstructionJournal:
             raise ArchiveJournalError(
                 "archive candidate changed fields outside lifecycle authority"
             )
-        with self.repository.transaction(mode=LockMode.EXCLUSIVE) as transaction:
+        with self.repository.transaction(mode=LockMode.EXCLUSIVE, blocking=blocking) as transaction:
             job = transaction.read(StateRecordPath.authorization_job(job_id))
             request = cast(dict[str, object], job.document["request"])
             expected = cast(dict[str, object], job.document["expectedSource"])
@@ -196,7 +198,7 @@ class ArchiveConstructionJournal:
         return PreparedArchive(stored, snapshot, inspection)
 
     def confirm(
-        self, prepared: PreparedArchive, verified: VerifiedArchiveUpload
+        self, prepared: PreparedArchive, verified: VerifiedArchiveUpload, *, blocking: bool = False
     ) -> UploadedArchive:
         """Bind the session's verified version without making another remote call."""
         self._require_lock()
@@ -210,7 +212,7 @@ class ArchiveConstructionJournal:
         intent.update(versionId=verified.version_id, phase="uploaded")
         record = _archive_record(intent, prepared.snapshot.deployment)
         require_archive_inspection(prepared.inspection, record, prepared.snapshot.manifest)
-        with self.repository.transaction(mode=LockMode.EXCLUSIVE) as transaction:
+        with self.repository.transaction(mode=LockMode.EXCLUSIVE, blocking=blocking) as transaction:
             job = transaction.read(StateRecordPath.authorization_job(intent["jobId"])).document
             if job["phase"] != "claimed":
                 raise ArchiveJournalError("construction authorization is no longer claimed")
@@ -246,10 +248,10 @@ class ArchiveRetirementJournal:
         self.bucket = bucket
         self.hook = hook
 
-    def prepare(self, job_id: str, *, now: datetime) -> StoredContract:
+    def prepare(self, job_id: str, *, now: datetime, blocking: bool = False) -> StoredContract:
         """Bind the complete current archive before restore or ordinary deletion."""
         self._require_lock()
-        with self.repository.transaction(mode=LockMode.EXCLUSIVE) as transaction:
+        with self.repository.transaction(mode=LockMode.EXCLUSIVE, blocking=blocking) as transaction:
             job = transaction.read(StateRecordPath.authorization_job(job_id)).document
             request = cast(dict[str, object], job["request"])
             expected = cast(dict[str, object], job["expectedSource"])
@@ -305,10 +307,12 @@ class ArchiveRetirementJournal:
         self._notify(ArchiveJournalBoundary.RETIREMENT_SYNC)
         return stored
 
-    def cancel_unstarted_retirement(self, job_id: str, retirement: StoredContract) -> bool:
+    def cancel_unstarted_retirement(
+        self, job_id: str, retirement: StoredContract, *, blocking: bool = False
+    ) -> bool:
         """Release a read-only preparation barrier while its archived source is intact."""
         self._require_lock()
-        with self.repository.transaction(mode=LockMode.EXCLUSIVE) as transaction:
+        with self.repository.transaction(mode=LockMode.EXCLUSIVE, blocking=blocking) as transaction:
             records = transaction.measure_intent_records().records
             documents = [transaction.read_intent(value.intent_id)[1] for value in records]
             if any(value.document["kind"] == "TransactionIntent" for value in documents):

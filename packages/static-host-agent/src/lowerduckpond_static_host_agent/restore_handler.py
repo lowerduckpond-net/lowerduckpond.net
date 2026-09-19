@@ -166,7 +166,7 @@ class RestoreLifecycleHandler:
                 job_id=job_id,
                 expected_owner=self._owner,
             )
-            retirement = retirement or journal.prepare(job_id, now=self._now())
+            retirement = retirement or journal.prepare(job_id, now=self._now(), blocking=blocking)
             return prepare_restore_transition(
                 self._repository,
                 self._spool,
@@ -183,7 +183,7 @@ class RestoreLifecycleHandler:
             )
         except Exception:
             if retirement is not None:
-                journal.cancel_unstarted_retirement(job_id, retirement)
+                journal.cancel_unstarted_retirement(job_id, retirement, blocking=blocking)
             raise
         finally:
             self._spool.discard_workspace()

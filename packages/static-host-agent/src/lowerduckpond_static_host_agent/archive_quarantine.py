@@ -98,9 +98,9 @@ class ArchiveQuarantine:
         _validate_entries(document)
         return document
 
-    def record(self, inventory: RemoteInventory | None) -> None:
+    def record(self, inventory: RemoteInventory | None, *, blocking: bool = False) -> None:
         self.locks.require_held(LockName.EXPORT, mode=LockMode.EXCLUSIVE)
-        with self.locks.acquire(LockName.TENANT_STATE, mode=LockMode.EXCLUSIVE):
+        with self.locks.acquire(LockName.TENANT_STATE, mode=LockMode.EXCLUSIVE, blocking=blocking):
             self._record_locked(inventory)
 
     def resolve(

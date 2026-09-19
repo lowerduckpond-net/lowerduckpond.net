@@ -115,7 +115,7 @@ class DeleteLifecycleHandler:
                         if retirement is None:
                             retirement = ArchiveRetirementJournal(
                                 self._repository, self._spool, bucket=str(archive["bucket"])
-                            ).prepare(canonical, now=self._now())
+                            ).prepare(canonical, now=self._now(), blocking=blocking)
                     prepared = prepare_delete_transition(
                         self._repository,
                         self._spool,
@@ -133,7 +133,7 @@ class DeleteLifecycleHandler:
                     if retirement is not None:
                         ArchiveRetirementJournal(
                             self._repository, self._spool, bucket=str(retirement.document["bucket"])
-                        ).cancel_unstarted_retirement(canonical, retirement)
+                        ).cancel_unstarted_retirement(canonical, retirement, blocking=blocking)
                     raise
             if type(archive) is dict and not audited:
                 self._cleanup.verify_source(canonical, archive)
