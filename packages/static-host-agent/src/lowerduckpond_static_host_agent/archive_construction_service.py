@@ -219,7 +219,9 @@ def serve_archive_construction(  # noqa: PLR0913 - explicit private service depe
                     or current.deployment.revision != authority.deployment.revision
                 ):
                     raise ArchiveRemoteError("archive construction source changed during session")
-                prepared = repository.read(StateRecordPath.archive_construction_intent(intent_id))
+                prepared = repository.read(
+                    StateRecordPath.archive_construction_intent(intent_id), blocking=True
+                )
                 _require_prepared(prepared, authority, bucket=remote.bucket)
                 quarantine.require_empty()
                 version = _upload(
@@ -249,7 +251,7 @@ def serve_archive_construction(  # noqa: PLR0913 - explicit private service depe
 def _read_authority(
     repository: StateRepository, job_id: str, *, intent_id: str | None
 ) -> _ConstructionAuthority:
-    with repository.transaction(mode=LockMode.EXCLUSIVE) as transaction:
+    with repository.transaction(mode=LockMode.EXCLUSIVE, blocking=True) as transaction:
         job = transaction.read(StateRecordPath.authorization_job(job_id))
         document = job.document
         request = cast(dict[str, object], document["request"])
@@ -378,10 +380,10 @@ def _transmit(  # noqa: PLR0913, PLR0917 - explicit authorization and remote dep
     inventory: RemoteInventory | None = None
     try:
         inventory = remote.inventory()
-        inventory.require_reservation(journal.bound_versions())
+        inventory.require_reservation(journal.bound_versions(blocking=True))
         remote.require_absent(key)
     except Exception:
-        quarantine.record(inventory)
+        quarantine.record(inventory, blocking=True)
         raise
     version: str | None = None
     try:
@@ -392,6 +394,7 @@ def _transmit(  # noqa: PLR0913, PLR0917 - explicit authorization and remote dep
         quarantine.record(
             None
             if version is None
-            else RemoteInventory((RemoteVersion(key, version, size, False),), ())
+            else RemoteInventory((RemoteVersion(key, version, size, False),), ()),
+            blocking=True,
         )
         raise

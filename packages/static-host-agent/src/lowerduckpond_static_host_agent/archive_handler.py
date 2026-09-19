@@ -237,14 +237,14 @@ class ArchiveLifecycleHandler:
                 require_quarantine_empty=quarantine.require_empty,
                 capacity_limits=self._limits,
             )
-            prepared = journal.prepare(job_id, snapshot, now=self._now())
+            prepared = journal.prepare(job_id, snapshot, now=self._now(), blocking=blocking)
             descriptor = os.open(
                 self._spool.workspace / EXPORT_WORKSPACE_BUNDLE_NAME,
                 os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
             )
             with os.fdopen(descriptor, "rb") as source:
                 receipt = session.upload(prepared, source)
-            return journal.confirm(prepared, receipt).construction
+            return journal.confirm(prepared, receipt, blocking=blocking).construction
 
     def _publish(
         self, job_id: str, construction: StoredContract, *, blocking: bool
