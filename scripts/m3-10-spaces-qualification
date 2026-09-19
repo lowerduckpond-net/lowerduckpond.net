@@ -57,6 +57,8 @@ printf 'Private M3.10 qualification run: %s\n' "${run_directory}"
 printf '%s\n' "${source_revision}" >"${run_directory}/source-revision"
 failed() {
     local status=$?
+    uv run --quiet --no-sync --frozen python "${repository_root}/scripts/qualification_timing.py" \
+        finish "${run_directory}" --status "${status}" || true
     if ((status != 0)); then
         printf 'Qualification failed; no passing report was created.\n' >&2
         printf 'Preserve the disposable host, its intents, and private logs at %s.\n' "${run_directory}" >&2
@@ -64,6 +66,13 @@ failed() {
     fi
 }
 trap failed EXIT
+export LDP_QUALIFICATION_TIMING_EVENTS="${run_directory}/timing-events.jsonl"
+export LDP_QUALIFICATION_TIMING_GROUP=unclassified
+export ANSIBLE_CALLBACK_PLUGINS="${repository_root}/config/ansible/plugins/callback"
+export ANSIBLE_CALLBACKS_ENABLED=ldp_timing
+# The stdlib-only reporter must not install dependencies before the logged sync.
+uv run --quiet --no-sync --frozen python "${repository_root}/scripts/qualification_timing.py" \
+    start "${run_directory}" --backend spaces || true
 
 # State access and every provider secret stay in this process tree. Logs are
 # private operator diagnostics, not sanitized reports or uploadable artifacts.
