@@ -24,7 +24,9 @@ from scripts.qualification_retirement import local_proof
 FORMAT = "lowerduckpond-installed-group-diagnostic-v1"
 
 
-def stage_receipts(directory: Path, environment: dict[str, str], case: str) -> None:
+def stage_receipts(
+    directory: Path, environment: dict[str, str], case: str
+) -> dict[str, object] | None:
     group = GROUPS[case]
     for stage in group.stages:
         expected = {
@@ -37,7 +39,8 @@ def stage_receipts(directory: Path, environment: dict[str, str], case: str) -> N
         if document(directory / f"group-{stage}.json") != expected:
             raise ValueError("the group did not pass every declared installed test")
     if case == "full-size-archive":
-        installed_receipt(directory, environment)
+        return installed_receipt(directory, environment)
+    return None
 
 
 def run_group(directory: Path, environment: dict[str, str], uv: str, case: str) -> int:
@@ -96,7 +99,7 @@ def run_group(directory: Path, environment: dict[str, str], uv: str, case: str) 
             if status:
                 return status
         record_phase("final-accounting")
-        stage_receipts(directory, environment, case)
+        installed = stage_receipts(directory, environment, case)
         if owned_containers(environment) != identities:
             raise ValueError("owned fixture changed before accounting")
         if local_proof(environment, identities[HOST_ENV]) != "quiescent-installed":
@@ -125,6 +128,7 @@ def run_group(directory: Path, environment: dict[str, str], uv: str, case: str) 
                     "local_accounting": "passed",
                     "independent_storage_absence": "passed",
                     "destroy": "passed",
+                    **({"installed": installed} if installed is not None else {}),
                 },
                 stream,
                 sort_keys=True,

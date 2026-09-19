@@ -124,6 +124,42 @@ def receipts(directory: Path, env: dict[str, str], name: str) -> None:
                 }
             )
         )
+    if name == "full-size-archive":
+        (directory / "case-installed.json").write_text(
+            json.dumps(
+                {
+                    "format": primitives.INSTALLED_FORMAT,
+                    "run_id": env[RUN_ENV],
+                    "artifact_sha256": "a" * 64,
+                    "content_sha256": "b" * 64,
+                    "entries": primitives.ENTRY_COUNT,
+                    "bytes": primitives.CONTENT_BYTES,
+                }
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "field", ["run_id", "artifact_sha256", "content_sha256", "entries", "bytes", "private"]
+)
+def test_full_size_stage_rejects_invalid_installed_evidence(
+    tmp_path: Path, environment: dict[str, str], field: str
+) -> None:
+    receipts(tmp_path, environment, "full-size-archive")
+    path = tmp_path / "case-installed.json"
+    receipt = json.loads(path.read_text())
+    receipt[field] = "invalid-private-canary"
+    path.write_text(json.dumps(receipt))
+    with pytest.raises(ValueError, match="complete receipt"):
+        case.stage_receipts(tmp_path, environment, "full-size-archive")
+
+
+def assert_retained_installed_evidence(directory: Path, name: str) -> None:
+    report = json.loads((directory / "case.json").read_text())
+    if name == "full-size-archive":
+        assert report["installed"] == json.loads((directory / "case-installed.json").read_text())
+    else:
+        assert "installed" not in report
 
 
 @pytest.mark.parametrize(
@@ -140,22 +176,23 @@ def receipts(directory: Path, env: dict[str, str], name: str) -> None:
         "image-cleanup",
     ],
 )
+@pytest.mark.parametrize("name", ["reboot-journey", "full-size-archive"])
 def test_group_teardown_requires_all_stages_and_fresh_accounting(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     environment: dict[str, str],
     fault: str | None,
+    name: str,
 ) -> None:
     phases: list[str] = []
     monkeypatch.setenv("LDP_QUALIFICATION_TIMING_EVENTS", str(tmp_path / "timing-events.jsonl"))
     checks: list[str] = []
-    name = "reboot-journey"
 
     def phase(directory: Path, env: dict[str, str], uv: str, current: str) -> int:
         phases.append(current)
         if current == "verify":
             receipts(directory, env, name)
-            path = directory / "group-after.json"
+            path = directory / f"group-{GROUPS[name].stages[-1]}.json"
             data = json.loads(path.read_text())
             if fault == "missing-stage":
                 path.unlink()
@@ -206,6 +243,8 @@ def test_group_teardown_requires_all_stages_and_fresh_accounting(
         assert ("destroy" in phases) is (fault == "image-cleanup")
     assert (tmp_path / "case.json").exists() is (fault is None)
     assert not (tmp_path / "qualification.json").exists()
+    if fault is None:
+        assert_retained_installed_evidence(tmp_path, name)
     if fault not in {None, "destroy"}:
         assert json.loads((tmp_path / "failure-phase.json").read_text())["phase"] == (
             "final-storage-proof" if fault == "remote" else "final-accounting"

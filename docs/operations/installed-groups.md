@@ -60,6 +60,11 @@ succeed. It is diagnostic evidence; the production qualification validator
 rejects it. The complete secure-workstation Spaces workflow retains its fixed
 verifier and receives no group-selection option.
 
+For `full-size-archive`, `case.json` also retains the validated installed receipt:
+the run identity, artifact and content hashes, entry count, and byte count.
+These allowlisted fields travel with the uploaded diagnostic result; private
+fixture logs and content do not.
+
 The engineering target is 30 minutes per case **including setup**. Runtime is
 not yet demonstrated for this grouping. Record actual setup, execution, pacing,
 configuration, wall time and total runner minutes from normal validation before
