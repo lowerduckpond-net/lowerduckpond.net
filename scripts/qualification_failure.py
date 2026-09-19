@@ -69,6 +69,11 @@ GROUPS = frozenset(
         "transport-recovery",
         "quarantine-recovery",
         "accounting",
+        "configuration-publication",
+        "configuration-generation",
+        "overlap-deployment",
+        "overlap-routing",
+        "cross-feature",
     }
 )
 FAILURES = frozenset(
@@ -84,6 +89,11 @@ FAILURES = frozenset(
 TEST_FILES = frozenset(
     {
         "test_lifecycle.py",
+        "test_core_independent.py",
+        "test_configuration_independent.py",
+        "test_recovery_independent.py",
+        "test_archive_independent.py",
+        "test_cross_feature.py",
         "test_archive_lifecycle.py",
         "test_archive_full_size.py",
         "full_size_fixture.py",

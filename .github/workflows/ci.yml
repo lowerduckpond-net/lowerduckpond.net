@@ -202,6 +202,54 @@ jobs:
             recipe: check-archive-full-size
             artifact: full-size-archive
             timeout: 45
+          - label: core
+            recipe: check-installed-group core
+            artifact: installed-core
+            timeout: 45
+          - label: configuration-publication
+            recipe: check-installed-group configuration-publication
+            artifact: installed-configuration-publication
+            timeout: 45
+          - label: configuration-generation
+            recipe: check-installed-group configuration-generation
+            artifact: installed-configuration-generation
+            timeout: 45
+          - label: export-roundtrip
+            recipe: check-installed-group export-roundtrip
+            artifact: installed-export-roundtrip
+            timeout: 45
+          - label: export-recovery
+            recipe: check-installed-group export-recovery
+            artifact: installed-export-recovery
+            timeout: 45
+          - label: archive-cycles
+            recipe: check-installed-group archive-cycles
+            artifact: installed-archive-cycles
+            timeout: 45
+          - label: deletion-quarantine
+            recipe: check-installed-group deletion-quarantine
+            artifact: installed-deletion-quarantine
+            timeout: 45
+          - label: transport-recovery
+            recipe: check-installed-group transport-recovery
+            artifact: installed-transport-recovery
+            timeout: 45
+          - label: overlap-deployment
+            recipe: check-installed-group overlap-deployment
+            artifact: installed-overlap-deployment
+            timeout: 45
+          - label: overlap-routing
+            recipe: check-installed-group overlap-routing
+            artifact: installed-overlap-routing
+            timeout: 45
+          - label: reboot-journey
+            recipe: check-installed-group reboot-journey
+            artifact: installed-reboot-journey
+            timeout: 45
+          - label: credentials
+            recipe: check-installed-group credentials
+            artifact: installed-credentials
+            timeout: 45
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

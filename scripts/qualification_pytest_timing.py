@@ -15,6 +15,10 @@ from scripts.qualification_timing import CONTEXT_ENV, capture_fixture_identity, 
 GROUPS = {
     "test_archive_credentials.py": "archive-credentials",
     "test_lifecycle.py": "core",
+    "test_core_independent.py": "core",
+    "test_archive_independent.py": "archive",
+    "test_cross_feature.py": "cross-feature",
+    "test_recovery_independent.py": "transport-recovery",
     "test_export_import.py": "export-import",
     "test_archive_lifecycle.py": "archive",
     "test_archive_full_size.py": "full-size-archive",
@@ -28,6 +32,15 @@ OPERATOR_FAILURES = {
     "operator transport failed: tenant lifecycle is not eligible for ordinary deletion": (
         "ordinary-delete-ineligible"
     ),
+}
+
+FUNCTION_GROUPS = {
+    "test_publication_and_operator_boundaries_preserve_the_live_tenant": (
+        "configuration-publication"
+    ),
+    "test_generation_input_and_idempotence_preserve_the_live_tenant": "configuration-generation",
+    "test_configuration_overlap_with_deploy_rollback_and_suspend": "overlap-deployment",
+    "test_configuration_overlap_with_resume_rename_and_reconcile": "overlap-routing",
 }
 
 
@@ -50,6 +63,7 @@ def pytest_runtest_protocol(
         group = "reboot-capture"
     elif getattr(item, "originalname", None) == "test_verify_installed_reboot_state":
         group = "reboot-verify"
+    group = FUNCTION_GROUPS.get(getattr(item, "originalname", ""), group)
     previous = os.environ.get(CONTEXT_ENV)
     os.environ[CONTEXT_ENV] = group
     start = time.monotonic_ns()

@@ -37,6 +37,11 @@ GROUPS = frozenset(
         "transport-recovery",
         "quarantine-recovery",
         "accounting",
+        "configuration-publication",
+        "configuration-generation",
+        "overlap-deployment",
+        "overlap-routing",
+        "cross-feature",
     }
 )
 KINDS = frozenset(

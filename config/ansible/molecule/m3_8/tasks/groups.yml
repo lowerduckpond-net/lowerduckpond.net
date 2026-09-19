@@ -1,0 +1,36 @@
+---
+- name: Require the owned local group entry point
+  ansible.builtin.assert:
+    that:
+      - lookup('ansible.builtin.env', 'LDP_QUALIFICATION_RUN_ID') | length == 32
+      - lookup('ansible.builtin.env', 'M3_10_ARCHIVE_BACKEND') == 'minio'
+      - lookup('ansible.builtin.env', 'M3_10_INSTALLED_REPORT') == ''
+
+- name: Execute every declared installed test before any reboot
+  ansible.builtin.command:
+    argv:
+      - python
+      - -m
+      - scripts.qualification_group_runner
+      - "{{ m3_8_group }}"
+      - "{{ 'before' if m3_8_group_reboots else 'run' }}"
+  args:
+    chdir: "{{ m3_8_group_root }}"
+  changed_when: false
+
+- name: Reboot the disposable installed host and verify startup services
+  ansible.builtin.include_tasks: reboot.yml
+  when: m3_8_group_reboots
+
+- name: Execute every declared installed test after reboot
+  ansible.builtin.command:
+    argv:
+      - python
+      - -m
+      - scripts.qualification_group_runner
+      - "{{ m3_8_group }}"
+      - after
+  args:
+    chdir: "{{ m3_8_group_root }}"
+  changed_when: false
+  when: m3_8_group_reboots

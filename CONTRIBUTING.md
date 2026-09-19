@@ -34,6 +34,9 @@ read-only command that summarizes a retained failure. Python
 checks also print their 20 slowest tests above one second.
 Use `just check-archive-full-size` for the fresh, independently runnable local
 100-MiB archive case; its diagnostic pass does not replace complete qualification.
+Use `just check-installed-group CASE` for the declared
+[independent installed checks](docs/operations/installed-groups.md), including
+configuration overlap and the cross-feature reboot journey.
 
 Record deployment closeouts under `docs/records/` with their original source,
 artifact, and evidence; recording completion does not require redeployment.

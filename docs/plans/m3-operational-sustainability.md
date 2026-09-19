@@ -201,6 +201,13 @@ remaining measured cost rather than introducing a test bypass.
 
 ### S5: Select and schedule the relevant installed checks
 
+The [independent installed groups](../operations/installed-groups.md) now declare
+fresh setup, exact test receipts, final accounting, and the cross-feature reboot
+journey. Initially CI requires every group alongside the complete journey for
+selected installed changes. This grouping step does not activate narrower
+selection or retire the original path. Measured group results and the reviewed
+change map remain prerequisites for that separate scheduling step.
+
 After S2-S4, split the remaining verifier into independently runnable core,
 export/import, archive/deletion, and reboot/recovery groups. Each declares its
 fixtures, dependencies, accounting, and covered invariants. Preserve explicit
