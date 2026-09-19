@@ -39,6 +39,10 @@ and overlap assertions moved out of independent core/transport cases remain
 explicitly required in the cases listed above. The reboot case preserves the
 existing PID-1, reconciliation-invocation, durable-tree and route observations;
 interrupted-operation fault injection remains in the transport/archive cases.
+After restart, the harness rediscovers Docker's assigned SSH port while requiring
+the recorded source and peer addresses to remain unchanged. It also restores the
+captured disposable MinIO host mapping that Docker removes from `/etc/hosts`.
+Neither restoration reapplies the production configuration.
 
 Each stage must collect exactly its declared tests, in order, and pass setup,
 call and teardown for every test. A skip, expected failure, missing test,
