@@ -10,7 +10,13 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
-from lowerduckpond_static_contracts import manifest_digest
+from lowerduckpond_static_contracts import (
+    archive_record_digest,
+    canonical_json_bytes,
+    manifest_digest,
+    result_digest,
+)
+from lowerduckpond_static_host_agent.audit import DEFAULT_AUDIT_LIMITS, AuditError
 from lowerduckpond_static_host_agent.job_runtime import RuntimeBoundaryError
 from lowerduckpond_static_host_agent.locks import LockManager, StateBusyError
 
@@ -221,6 +227,149 @@ def installed(tmp_path: Path) -> tuple[Path, Path, Path]:
 
 def test_terminal_validated_accounting_passes(installed: tuple[Path, Path, Path]) -> None:
     probe.installed(*installed, owner=os.geteuid())
+
+
+@pytest.fixture(params=(False, True), ids=("local", "archived"))
+def administrator_result(
+    installed: tuple[Path, Path, Path], request: pytest.FixtureRequest
+) -> tuple[Path, Path]:
+    state, _, _ = installed
+    for directory in (state, *(p for p in state.rglob("*") if p.is_dir())):
+        directory.chmod(0o700)
+    (state / "audit").mkdir(mode=0o700)
+    correlation = "0198d17f-6f4a-7000-8000-000000000077"
+    tenant = "0191e2c4-8f7a-7c3b-8d1e-5f62047a2199"
+    result = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "OperationResult",
+        "provenance": {
+            "kind": "emergency-administrator",
+            "operatorPrincipal": "ldp-admin",
+            "reason": "Installed administrator recovery",
+        },
+        "operation": "delete",
+        "status": "succeeded",
+        "correlationId": correlation,
+        "tenantId": tenant,
+        "canonicalOrigin": f"t-{tenant.replace('-', '')}.lowerduckpond.com",
+    }
+    path = state / "authorization/results" / f"{correlation}.json"
+    path.write_bytes(canonical_json_bytes(result))
+    path.chmod(0o600)
+    audit = json.loads(
+        (ROOT / "tests/static-publication/fixtures/accepted/audit-entry.json").read_text()
+    )
+    audit.update(
+        operation="delete",
+        operatorPrincipal="ldp-admin",
+        tenantId=tenant,
+        correlationId=correlation,
+        resultDigest=result_digest(result).to_dict(),
+        deletionEvidence={
+            "mode": "emergency",
+            "releasedSlugs": ["removed-tenant"],
+            "archiveRecordDigest": None,
+            "bucket": None,
+            "key": None,
+            "versionId": None,
+            "emergencyReason": "Installed administrator recovery",
+        },
+    )
+    if request.param:
+        archive = json.loads(
+            (ROOT / "tests/static-publication/fixtures/accepted/archive-record.json").read_text()
+        )
+        archive.update(tenantId=tenant, bucket="fixture-archives")
+        audit["deletionEvidence"].update(
+            mode="emergency-archived",
+            archiveRecordDigest=archive_record_digest(archive).to_dict(),
+            bucket=archive["bucket"],
+            key=archive["key"],
+            versionId=archive["versionId"],
+        )
+    segment = state / "audit/segment-00000000000000000000.jsonl"
+    segment.write_bytes(canonical_json_bytes(audit))
+    segment.chmod(0o600)
+    return path, segment
+
+
+@pytest.mark.parametrize(
+    "drift",
+    [
+        "none",
+        "missing-audit",
+        "digest",
+        "principal",
+        "reason",
+        "tenant",
+        "ordinary-orphan",
+        "name",
+        "remaining-tenant",
+        "ordinary-correlation",
+        "publication",
+        "chain",
+    ],
+)
+def test_administrator_deletion_requires_exact_audited_authority_without_mutation(
+    installed: tuple[Path, Path, Path], administrator_result: tuple[Path, Path], drift: str
+) -> None:
+    state, _, _ = installed
+    path, segment = administrator_result
+    result = json.loads(path.read_text())
+    audit = json.loads(segment.read_text())
+    changes: dict[str, tuple[tuple[str, ...], object]] = {
+        "digest": (("resultDigest", "value"), "f" * 64),
+        "principal": (("operatorPrincipal",), "different-admin"),
+        "reason": (("deletionEvidence", "emergencyReason"), "different reason"),
+        "tenant": (("tenantId",), "0191e2c4-8f7a-7c3b-8d1e-5f62047a2188"),
+        "chain": (("sequence",), 1),
+    }
+    if drift == "missing-audit":
+        segment.unlink()
+    elif drift in changes:
+        fields, value = changes[drift]
+        selected = audit
+        for field in fields[:-1]:
+            selected = selected[field]
+        selected[fields[-1]] = value
+        segment.write_bytes(canonical_json_bytes(audit))
+    elif drift == "ordinary-orphan":
+        result["provenance"] = json.loads(
+            (ROOT / "tests/static-publication/fixtures/accepted/operation-result.json").read_text()
+        )["provenance"]
+        path.write_bytes(canonical_json_bytes(result))
+    elif drift == "name":
+        path.rename(path.with_name("0198d17f-6f4a-7000-8000-000000000088.json"))
+    elif drift == "remaining-tenant":
+        (state / "tenants" / result["tenantId"]).mkdir()
+    elif drift == "ordinary-correlation":
+        (state / "authorization/correlations" / path.name).write_text("{}")
+    elif drift == "publication":
+        temporary = segment.with_name(".ldp-state-" + "a" * 32)
+        temporary.write_bytes(b"unfinished publication must remain intact\n")
+        temporary.chmod(0o600)
+    before = {p: p.read_bytes() for p in state.rglob("*") if p.is_file()}
+    if drift == "none":
+        probe.installed(*installed, owner=os.geteuid())
+    else:
+        with pytest.raises((ValueError, AuditError)):
+            probe.installed(*installed, owner=os.geteuid())
+    assert {p: p.read_bytes() for p in state.rglob("*") if p.is_file()} == before
+
+
+def test_administrator_audit_has_a_total_byte_bound_before_reading_segments(
+    installed: tuple[Path, Path, Path], administrator_result: tuple[Path, Path]
+) -> None:
+    _, segment = administrator_result
+    size = DEFAULT_AUDIT_LIMITS.maximum_segment_bytes
+    count = DEFAULT_AUDIT_LIMITS.maximum_administrator_bytes // size + 1
+    for number in range(count):
+        path = segment.with_name(f"segment-{number:020d}.jsonl")
+        with path.open("wb") as stream:
+            stream.truncate(size)
+        path.chmod(0o600)
+    with pytest.raises(ValueError, match="byte bound"):
+        probe.installed(*installed, owner=os.geteuid())
 
 
 @pytest.mark.parametrize("condition", ["active", "archived", "stale-observation", "archive-record"])

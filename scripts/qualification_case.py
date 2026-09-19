@@ -151,6 +151,7 @@ def _run_full_size(directory: Path, environment: dict[str, str], uv: str) -> int
             identities = owned_containers(environment)
             with (directory / "case-containers.json").open("x", encoding="ascii") as stream:
                 json.dump(identities, stream)
+    record_phase("final-accounting")
     receipt = installed_receipt(directory, environment)
     if owned_containers(environment) != identities:
         raise ValueError("fixture identity changed before final storage proof")
@@ -159,6 +160,7 @@ def _run_full_size(directory: Path, environment: dict[str, str], uv: str) -> int
     record_phase("final-storage-proof")
     print("Independent full-size archive: final storage proof", flush=True)
     independent_storage_absence(environment, identities[ARCHIVE_ENV])
+    record_phase("final-accounting")
     if (
         owned_containers(environment) != identities
         or local_proof(environment, identities[HOST_ENV]) != "quiescent-installed"

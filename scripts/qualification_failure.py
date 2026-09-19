@@ -45,6 +45,7 @@ PHASES = frozenset(
         "converge",
         "idempotence",
         "verify",
+        "final-accounting",
         "final-storage-proof",
         "destroy",
         "package",

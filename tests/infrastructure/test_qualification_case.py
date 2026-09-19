@@ -112,6 +112,7 @@ def test_unknown_or_changed_obligations_retain_the_case(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, environment: dict[str, str], problem: str
 ) -> None:
     phases: list[str] = []
+    monkeypatch.setenv("LDP_QUALIFICATION_TIMING_EVENTS", str(tmp_path / "timing-events.jsonl"))
 
     def phase(directory: Path, values: dict[str, str], uv: str, name: str) -> int:
         phases.append(name)
@@ -154,6 +155,9 @@ def test_unknown_or_changed_obligations_retain_the_case(
         case.run_full_size(tmp_path, environment, "uv")
     assert "destroy" not in phases
     assert not (tmp_path / "case.json").exists()
+    assert json.loads((tmp_path / "failure-phase.json").read_text())["phase"] == (
+        "final-storage-proof" if problem == "provider" else "final-accounting"
+    )
 
 
 def test_owned_container_queries_reject_another_run(
