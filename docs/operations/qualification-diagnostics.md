@@ -271,3 +271,33 @@ refuses an active run or remaining containers, and does not reconstruct host
 proofs or issue a retirement/qualification report. Ordinary retirement can also
 retry image cleanup through its existing removal transaction. Failed tests keep
 their original failure status if optional post-failure image cleanup is unavailable.
+
+## Admission pacing
+
+Installed tests read the fixture's immutable correlation history and host UTC
+before each submission. A read-only probe imports the selected installed
+artifact's admission function and finds the next legal timestamp using that
+unchanged function. Waiting is bounded by the controller's monotonic clock and
+rechecks the host after each sleep; unavailable or malformed observations fail.
+The probe does not acquire repository transaction locks, issue requests, retry
+rate denials, change timestamps, or rewrite records.
+Issuance remains sequential within each fixture, including cases that run the
+already admitted workers concurrently. Parallel cases use separate owned hosts.
+
+Real operation time therefore contributes to the production policy's existing
+refill. Starting another verification group no longer imposes a full five-token
+refill. Exact retained correlations need no new admission credit, including
+after a controller restart; the normal operator still validates request binding.
+The `pacing` timing category includes the host observations and waiting together.
+
+Each group also checks burst, rolling-hour, and backwards-clock denials against
+the selected installed function with synthetic timestamps. These checks never
+change the host clock or durable admission history. The complete installed
+journey continues through the real production policy and authenticated operator.
+Component tests compare predicted boundaries with that unchanged policy across
+transport delays, variable operation duration, clock drift, rollback, exact
+retry, invalid history, and a stalled host clock. No faster test policy is used.
+Timing metadata identifies this harness strategy as
+`production-admission-host-history-pacing-v1`; the production admission limits
+are unchanged. Earlier reports labeled `conservative-host-clock` describe the
+preceding pacing strategy and must not be relabeled as new measurements.

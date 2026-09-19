@@ -14,7 +14,7 @@ def test_installed_terminal_retry_reopens_only_proven_quarantine(
 ) -> None:
     support._initialize_namespace(host)
     support._ensure_disposable_publication(host)
-    support._await_persisted_admission_burst(host)
+    support._initialize_admission_pacing(host)
     operator, identity, ssh = support._operator_inputs(tmp_path)
     identifiers = support._ids()
     slug = f"m3-quarantine-{next(identifiers).replace('-', '')[-12:]}"

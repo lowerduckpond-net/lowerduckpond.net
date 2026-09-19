@@ -86,7 +86,7 @@ def test_installed_ordinary_and_emergency_deletion(host: Host, tmp_path: Path) -
     support._initialize_namespace(host)
     support._ensure_disposable_publication(host)
     support._prepare_edge_probe(host)
-    support._await_persisted_admission_burst(host)
+    support._initialize_admission_pacing(host)
     operator, identity, ssh = support._operator_inputs(tmp_path)
     identities = support._ids()
     slug = f"m3-delete-{next(identities).replace('-', '')[-12:]}"
@@ -138,7 +138,7 @@ def test_installed_ordinary_and_emergency_deletion(host: Host, tmp_path: Path) -
 def test_installed_emergency_recovery_retires_the_exact_archived_version(
     host: Host, tmp_path: Path
 ) -> None:
-    support._await_persisted_admission_burst(host)
+    support._initialize_admission_pacing(host)
     operator, identity, ssh = support._operator_inputs(tmp_path)
     identifiers = support._ids()
     created = support._submit(

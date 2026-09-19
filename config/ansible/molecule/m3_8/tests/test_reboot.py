@@ -283,7 +283,7 @@ def test_capture_installed_reboot_state(host: Host, tmp_path: Path) -> None:
     support._initialize_namespace(host)
     support._ensure_disposable_publication(host)
     support._prepare_edge_probe(host)
-    support._await_persisted_admission_burst(host)
+    support._initialize_admission_pacing(host)
     operator_host, identity, ssh = support._operator_inputs(tmp_path)
     slug = f"m3-eight-reboot-{str(uuid.uuid7()).replace('-', '')[-12:]}"
     created = support._submit(

@@ -235,7 +235,7 @@ def test_installed_archive_export_restore_rearchive_and_delete(host: Host, tmp_p
     support._initialize_namespace(host)
     support._ensure_disposable_publication(host)
     support._prepare_edge_probe(host)
-    support._await_persisted_admission_burst(host)
+    support._initialize_admission_pacing(host)
     operator, identity, ssh = support._operator_inputs(tmp_path)
     identities = support._ids()
     slug = f"m3-archive-{next(identities).replace('-', '')[-12:]}"
