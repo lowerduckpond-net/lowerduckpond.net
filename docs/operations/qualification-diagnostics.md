@@ -224,8 +224,9 @@ format is rejected by the production qualification validator. Read `timing.json`
 alongside it for source revision, artifact/image identity, and measured runtime.
 The first CI runs establish the expected duration; the initial job limit is
 45 minutes, with the plan's 30-minute installed-case target still to be measured.
-The complete existing lifecycle journey remains required for the same selected
-changes, and CI runs the independent case on a separate runner.
+CI runs each selected independent case on its own runner under the
+[reviewed selection policy](installed-selection.md). The complete journey remains
+mandatory for scheduled/manual qualification.
 
 After diagnosing an unsuccessful independent archive case, use
 `just retire-archive-fixture /absolute/path/to/the/run` to remove its owned

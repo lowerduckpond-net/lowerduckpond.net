@@ -1,0 +1,2501 @@
+{
+  "format": "lowerduckpond-grouping-eligibility-observations-v1",
+  "authority": "diagnostic-only",
+  "run_id": 35475224829,
+  "run_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35475224829",
+  "pr_head": "da2fac628cf3b21cc5bcfa35b038a9444cb4716f",
+  "tested_source": "337cc41bb85dc4d3f0b9f87853ba037c13a9deba",
+  "merged_source": "d249397ec2fc4499b29c9e2d2877f7ab2c2c9f11",
+  "artifact_sha256": "0b12b64e71007d107263454f2da5cac11d74b5dac3d53e459d5a0ad89b8ef3c2",
+  "workflow_started_at": "2026-09-19T23:07:23Z",
+  "workflow_elapsed_seconds": 7230.0,
+  "summed_ci_job_seconds": 24575.0,
+  "summed_group_job_seconds": 15744.0,
+  "maximum_group_job_seconds": 1693.0,
+  "observations": [
+    {
+      "case": "complete",
+      "job_id": 105983267159,
+      "job_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35475224829/job/105983267159",
+      "job_started_at": "2026-09-19T23:07:53Z",
+      "job_completed_at": "2026-09-20T01:07:42Z",
+      "job_seconds": 7189.0,
+      "workflow_start_to_job_seconds": 30.0,
+      "archive_id": 10595358486,
+      "archive_sha256": "1555c8f57499d89f429fbf8f1f01c2b446f16efd4ff91171b33eaa0d626c8c05",
+      "timing_sha256": "9fa364484bb04c5cae69dd330204696012449bb18167c10f2e4ce9f0ac03d30a",
+      "timing": {
+        "architecture": "x86_64",
+        "artifact_sha256": "0b12b64e71007d107263454f2da5cac11d74b5dac3d53e459d5a0ad89b8ef3c2",
+        "authority": "diagnostic-only",
+        "backend": "minio",
+        "cache_state": "unmeasured",
+        "categories": [
+          {
+            "count": 2,
+            "failed": 0,
+            "group": "archive",
+            "kind": "ansible-reapply",
+            "summed_seconds": 232.94241272,
+            "union_seconds": 232.94241272
+          },
+          {
+            "count": 8,
+            "failed": 0,
+            "group": "core",
+            "kind": "ansible-reapply",
+            "summed_seconds": 725.996766162,
+            "union_seconds": 725.996766162
+          },
+          {
+            "count": 6,
+            "failed": 0,
+            "group": "transport-recovery",
+            "kind": "ansible-reapply",
+            "summed_seconds": 721.233337515,
+            "union_seconds": 721.233337515
+          },
+          {
+            "count": 2,
+            "failed": 0,
+            "group": "archive",
+            "kind": "converge",
+            "summed_seconds": 229.889382033,
+            "union_seconds": 229.889382033
+          },
+          {
+            "count": 8,
+            "failed": 3,
+            "group": "core",
+            "kind": "converge",
+            "summed_seconds": 714.002427473,
+            "union_seconds": 714.002427473
+          },
+          {
+            "count": 6,
+            "failed": 0,
+            "group": "transport-recovery",
+            "kind": "converge",
+            "summed_seconds": 712.463953634,
+            "union_seconds": 712.463953634
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "converge",
+            "summed_seconds": 275.948043887,
+            "union_seconds": 275.948043887
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "create",
+            "summed_seconds": 34.68353597,
+            "union_seconds": 34.68353597
+          },
+          {
+            "count": 2,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "destroy",
+            "summed_seconds": 12.679875271,
+            "union_seconds": 12.679875271
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "accounting",
+            "kind": "group",
+            "summed_seconds": 1.76676919,
+            "union_seconds": 1.76676919
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "archive",
+            "kind": "group",
+            "summed_seconds": 1430.550215644,
+            "union_seconds": 1430.550215644
+          },
+          {
+            "count": 28,
+            "failed": 0,
+            "group": "archive-credentials",
+            "kind": "group",
+            "summed_seconds": 246.021922525,
+            "union_seconds": 246.021922525
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "core",
+            "kind": "group",
+            "summed_seconds": 1598.723003374,
+            "union_seconds": 1598.723003374
+          },
+          {
+            "count": 2,
+            "failed": 0,
+            "group": "deletion",
+            "kind": "group",
+            "summed_seconds": 211.936969762,
+            "union_seconds": 211.936969762
+          },
+          {
+            "count": 3,
+            "failed": 0,
+            "group": "export-import",
+            "kind": "group",
+            "summed_seconds": 1622.55646485,
+            "union_seconds": 1622.55646485
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "quarantine-recovery",
+            "kind": "group",
+            "summed_seconds": 53.633753616,
+            "union_seconds": 53.633753616
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "reboot-capture",
+            "kind": "group",
+            "summed_seconds": 105.362508493,
+            "union_seconds": 105.362508493
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "reboot-verify",
+            "kind": "group",
+            "summed_seconds": 2.245208457,
+            "union_seconds": 2.245208457
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "storage-credentials",
+            "kind": "group",
+            "summed_seconds": 0.603721395,
+            "union_seconds": 0.603721395
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "transport-recovery",
+            "kind": "group",
+            "summed_seconds": 1411.149379457,
+            "union_seconds": 1411.149379457
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "idempotence",
+            "summed_seconds": 109.496445527,
+            "union_seconds": 109.496445527
+          },
+          {
+            "count": 36,
+            "failed": 0,
+            "group": "archive",
+            "kind": "operator",
+            "summed_seconds": 236.575876872,
+            "union_seconds": 236.575876872
+          },
+          {
+            "count": 28,
+            "failed": 0,
+            "group": "core",
+            "kind": "operator",
+            "summed_seconds": 109.556856528,
+            "union_seconds": 109.556856528
+          },
+          {
+            "count": 11,
+            "failed": 0,
+            "group": "deletion",
+            "kind": "operator",
+            "summed_seconds": 82.85949085,
+            "union_seconds": 82.85949085
+          },
+          {
+            "count": 34,
+            "failed": 0,
+            "group": "export-import",
+            "kind": "operator",
+            "summed_seconds": 260.355308138,
+            "union_seconds": 260.355308138
+          },
+          {
+            "count": 4,
+            "failed": 0,
+            "group": "quarantine-recovery",
+            "kind": "operator",
+            "summed_seconds": 44.395056198,
+            "union_seconds": 44.395056198
+          },
+          {
+            "count": 2,
+            "failed": 0,
+            "group": "reboot-capture",
+            "kind": "operator",
+            "summed_seconds": 17.370526456,
+            "union_seconds": 17.370526456
+          },
+          {
+            "count": 20,
+            "failed": 0,
+            "group": "transport-recovery",
+            "kind": "operator",
+            "summed_seconds": 57.001368272,
+            "union_seconds": 57.001368272
+          },
+          {
+            "count": 18,
+            "failed": 0,
+            "group": "archive-credentials",
+            "kind": "other-playbook",
+            "summed_seconds": 223.802097413,
+            "union_seconds": 223.802097413
+          },
+          {
+            "count": 36,
+            "failed": 0,
+            "group": "archive",
+            "kind": "pacing",
+            "summed_seconds": 883.903117894,
+            "union_seconds": 883.903117894
+          },
+          {
+            "count": 28,
+            "failed": 0,
+            "group": "core",
+            "kind": "pacing",
+            "summed_seconds": 752.721171954,
+            "union_seconds": 752.721171954
+          },
+          {
+            "count": 11,
+            "failed": 0,
+            "group": "deletion",
+            "kind": "pacing",
+            "summed_seconds": 105.205834184,
+            "union_seconds": 105.205834184
+          },
+          {
+            "count": 35,
+            "failed": 0,
+            "group": "export-import",
+            "kind": "pacing",
+            "summed_seconds": 1303.254745645,
+            "union_seconds": 1303.254745645
+          },
+          {
+            "count": 4,
+            "failed": 0,
+            "group": "quarantine-recovery",
+            "kind": "pacing",
+            "summed_seconds": 3.511584886,
+            "union_seconds": 3.511584886
+          },
+          {
+            "count": 2,
+            "failed": 0,
+            "group": "reboot-capture",
+            "kind": "pacing",
+            "summed_seconds": 83.649958987,
+            "union_seconds": 83.649958987
+          },
+          {
+            "count": 24,
+            "failed": 0,
+            "group": "transport-recovery",
+            "kind": "pacing",
+            "summed_seconds": 474.747770264,
+            "union_seconds": 474.747770264
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "archive-credentials",
+            "kind": "prepare",
+            "summed_seconds": 0.26650426,
+            "union_seconds": 0.26650426
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "prepare",
+            "summed_seconds": 31.013681243,
+            "union_seconds": 31.013681243
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "reboot",
+            "summed_seconds": 0.91072933,
+            "union_seconds": 0.91072933
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "reboot-caddy",
+            "summed_seconds": 5.29284811,
+            "union_seconds": 5.29284811
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "reboot-reconcile",
+            "summed_seconds": 0.212253307,
+            "union_seconds": 0.212253307
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "verify",
+            "summed_seconds": 6699.764920211,
+            "union_seconds": 6699.764920211
+          }
+        ],
+        "cpu_count": 4,
+        "elapsed_seconds": 7171.271398829,
+        "event_count": 377,
+        "exit_status": 0,
+        "format": "lowerduckpond-qualification-timing-v1",
+        "image_sha256": "c472194c9b7bab31572b095cd7d3612c727b6743f4d6025551e54d132fb4d7e9",
+        "instrumented_union_seconds": 7163.586502109,
+        "kernel_version": "6.17.0",
+        "operator_interventions": null,
+        "outside_instrumentation_seconds": 7.68489672,
+        "policy": "production-admission-host-history-pacing-v1",
+        "queue_seconds": null,
+        "runner": "github-actions",
+        "scenario": "m3_8",
+        "source_revision": "337cc41bb85dc4d3f0b9f87853ba037c13a9deba",
+        "source_tree_state": "clean",
+        "tools": {
+          "ansible-core": "2.21.3",
+          "docker": "28.0.4",
+          "molecule": "26.8.0",
+          "molecule-plugins": "26.7.15",
+          "pytest": "9.1.1",
+          "pytest-testinfra": "10.2.2",
+          "python": "3.14.7",
+          "uv": "0.12.5"
+        }
+      }
+    },
+    {
+      "case": "core",
+      "job_id": 105983267243,
+      "job_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35475224829/job/105983267243",
+      "job_started_at": "2026-09-19T23:07:52Z",
+      "job_completed_at": "2026-09-19T23:34:03Z",
+      "job_seconds": 1571.0,
+      "workflow_start_to_job_seconds": 29.0,
+      "archive_id": 10594630988,
+      "archive_sha256": "2ffc83283391ec63a7d3ceab5cda54040fa3550c750836e9de87f5a0ca91ab23",
+      "timing_sha256": "93daa508cd3d242c66f10af442337b5961be73af7fa048aa891352a3214ad283",
+      "timing": {
+        "architecture": "x86_64",
+        "artifact_sha256": "0b12b64e71007d107263454f2da5cac11d74b5dac3d53e459d5a0ad89b8ef3c2",
+        "authority": "diagnostic-only",
+        "backend": "minio",
+        "cache_state": "unmeasured",
+        "categories": [
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "core",
+            "kind": "ansible-reapply",
+            "summed_seconds": 113.673086245,
+            "union_seconds": 113.673086245
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "core",
+            "kind": "converge",
+            "summed_seconds": 112.082828771,
+            "union_seconds": 112.082828771
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "converge",
+            "summed_seconds": 268.420913013,
+            "union_seconds": 268.420913013
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "create",
+            "summed_seconds": 34.851920042,
+            "union_seconds": 34.851920042
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "destroy",
+            "summed_seconds": 6.398694777,
+            "union_seconds": 6.398694777
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "accounting",
+            "kind": "group",
+            "summed_seconds": 1.615572975,
+            "union_seconds": 1.615572975
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "core",
+            "kind": "group",
+            "summed_seconds": 1084.764596266,
+            "union_seconds": 1084.764596266
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "idempotence",
+            "summed_seconds": 108.85834308,
+            "union_seconds": 108.85834308
+          },
+          {
+            "count": 28,
+            "failed": 0,
+            "group": "core",
+            "kind": "operator",
+            "summed_seconds": 108.701424931,
+            "union_seconds": 108.701424931
+          },
+          {
+            "count": 28,
+            "failed": 0,
+            "group": "core",
+            "kind": "pacing",
+            "summed_seconds": 852.905369428,
+            "union_seconds": 852.905369428
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "prepare",
+            "summed_seconds": 35.570179986,
+            "union_seconds": 35.570179986
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "verify",
+            "summed_seconds": 1088.304662001,
+            "union_seconds": 1088.304662001
+          }
+        ],
+        "cpu_count": 4,
+        "elapsed_seconds": 1555.152195819,
+        "event_count": 66,
+        "exit_status": 0,
+        "format": "lowerduckpond-qualification-timing-v1",
+        "image_sha256": "a033a5984adcf700699ec3818bc4efcf983b1d53d4694d0264ec5fca98f2afea",
+        "instrumented_union_seconds": 1542.404712899,
+        "kernel_version": "6.17.0",
+        "operator_interventions": null,
+        "outside_instrumentation_seconds": 12.74748292,
+        "policy": "production-admission-host-history-pacing-v1",
+        "queue_seconds": null,
+        "runner": "github-actions",
+        "scenario": "m3_8",
+        "source_revision": "337cc41bb85dc4d3f0b9f87853ba037c13a9deba",
+        "source_tree_state": "clean",
+        "tools": {
+          "ansible-core": "2.21.3",
+          "docker": "28.0.4",
+          "molecule": "26.8.0",
+          "molecule-plugins": "26.7.15",
+          "pytest": "9.1.1",
+          "pytest-testinfra": "10.2.2",
+          "python": "3.14.7",
+          "uv": "0.12.5"
+        }
+      },
+      "receipt": {
+        "authority": "diagnostic-only",
+        "backend": "minio",
+        "case": "core",
+        "destroy": "passed",
+        "format": "lowerduckpond-installed-group-diagnostic-v1",
+        "independent_storage_absence": "passed",
+        "local_accounting": "passed",
+        "run_id": "01a0bbed4e5d77da9177db50df72aeb6",
+        "status": "passed"
+      },
+      "receipt_sha256": "e946e2c0ae72dd582a77642a17a94d84b0fa92bd52a6bc14671e9a7d103c52bb"
+    },
+    {
+      "case": "configuration-publication",
+      "job_id": 105983267300,
+      "job_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35475224829/job/105983267300",
+      "job_started_at": "2026-09-19T23:07:57Z",
+      "job_completed_at": "2026-09-19T23:27:35Z",
+      "job_seconds": 1178.0,
+      "workflow_start_to_job_seconds": 34.0,
+      "archive_id": 10594580591,
+      "archive_sha256": "d47b6e15e41f5481629ee4bc2eefc09623b9b057579ebe5ce2cd65f8d49493a9",
+      "timing_sha256": "0bcc21d41b57e4f9870d9c5f3f9ad88a6b3659f43bb7b84527b7a627ad6ce4b8",
+      "timing": {
+        "architecture": "x86_64",
+        "artifact_sha256": "0b12b64e71007d107263454f2da5cac11d74b5dac3d53e459d5a0ad89b8ef3c2",
+        "authority": "diagnostic-only",
+        "backend": "minio",
+        "cache_state": "unmeasured",
+        "categories": [
+          {
+            "count": 5,
+            "failed": 0,
+            "group": "configuration-publication",
+            "kind": "ansible-reapply",
+            "summed_seconds": 573.393577948,
+            "union_seconds": 573.393577948
+          },
+          {
+            "count": 5,
+            "failed": 2,
+            "group": "configuration-publication",
+            "kind": "converge",
+            "summed_seconds": 563.546827709,
+            "union_seconds": 563.546827709
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "converge",
+            "summed_seconds": 326.020393132,
+            "union_seconds": 326.020393132
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "create",
+            "summed_seconds": 33.317516948,
+            "union_seconds": 33.317516948
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "destroy",
+            "summed_seconds": 6.880436392,
+            "union_seconds": 6.880436392
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "accounting",
+            "kind": "group",
+            "summed_seconds": 2.313267602,
+            "union_seconds": 2.313267602
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "configuration-publication",
+            "kind": "group",
+            "summed_seconds": 588.390836338,
+            "union_seconds": 588.390836338
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "idempotence",
+            "summed_seconds": 147.900068778,
+            "union_seconds": 147.900068778
+          },
+          {
+            "count": 2,
+            "failed": 0,
+            "group": "configuration-publication",
+            "kind": "operator",
+            "summed_seconds": 9.906361961,
+            "union_seconds": 9.906361961
+          },
+          {
+            "count": 2,
+            "failed": 0,
+            "group": "configuration-publication",
+            "kind": "pacing",
+            "summed_seconds": 1.801425907,
+            "union_seconds": 1.801425907
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "prepare",
+            "summed_seconds": 33.001872135,
+            "union_seconds": 33.001872135
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "verify",
+            "summed_seconds": 593.179960929,
+            "union_seconds": 593.179960929
+          }
+        ],
+        "cpu_count": 4,
+        "elapsed_seconds": 1156.845203638,
+        "event_count": 22,
+        "exit_status": 0,
+        "format": "lowerduckpond-qualification-timing-v1",
+        "image_sha256": "2902389bfda06b078913bb94428131505efbe167b2f9f93fc91e516f535573af",
+        "instrumented_union_seconds": 1140.300248314,
+        "kernel_version": "6.17.0",
+        "operator_interventions": null,
+        "outside_instrumentation_seconds": 16.544955324,
+        "policy": "production-admission-host-history-pacing-v1",
+        "queue_seconds": null,
+        "runner": "github-actions",
+        "scenario": "m3_8",
+        "source_revision": "337cc41bb85dc4d3f0b9f87853ba037c13a9deba",
+        "source_tree_state": "clean",
+        "tools": {
+          "ansible-core": "2.21.3",
+          "docker": "28.0.4",
+          "molecule": "26.8.0",
+          "molecule-plugins": "26.7.15",
+          "pytest": "9.1.1",
+          "pytest-testinfra": "10.2.2",
+          "python": "3.14.7",
+          "uv": "0.12.5"
+        }
+      },
+      "receipt": {
+        "authority": "diagnostic-only",
+        "backend": "minio",
+        "case": "configuration-publication",
+        "destroy": "passed",
+        "format": "lowerduckpond-installed-group-diagnostic-v1",
+        "independent_storage_absence": "passed",
+        "local_accounting": "passed",
+        "run_id": "01a0bbed6eee7214882563f0c079ec2e",
+        "status": "passed"
+      },
+      "receipt_sha256": "8f974f488a57e9e0e203172670fcee693bdc3e579ddff36ea46bff2d9401166b"
+    },
+    {
+      "case": "configuration-generation",
+      "job_id": 105983267211,
+      "job_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35475224829/job/105983267211",
+      "job_started_at": "2026-09-19T23:07:53Z",
+      "job_completed_at": "2026-09-19T23:27:45Z",
+      "job_seconds": 1192.0,
+      "workflow_start_to_job_seconds": 30.0,
+      "archive_id": 10593369143,
+      "archive_sha256": "700b3d512cfbb364b7f593adbdc59e7f80265602ccd606faecb2dd743dc90720",
+      "timing_sha256": "0e8c90ee13b71046a04d70063959315e19c2d1d241016c407a6bca5d47f8a542",
+      "timing": {
+        "architecture": "x86_64",
+        "artifact_sha256": "0b12b64e71007d107263454f2da5cac11d74b5dac3d53e459d5a0ad89b8ef3c2",
+        "authority": "diagnostic-only",
+        "backend": "minio",
+        "cache_state": "unmeasured",
+        "categories": [
+          {
+            "count": 4,
+            "failed": 0,
+            "group": "configuration-generation",
+            "kind": "ansible-reapply",
+            "summed_seconds": 560.585732025,
+            "union_seconds": 560.585732025
+          },
+          {
+            "count": 4,
+            "failed": 1,
+            "group": "configuration-generation",
+            "kind": "converge",
+            "summed_seconds": 552.342377573,
+            "union_seconds": 552.342377573
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "converge",
+            "summed_seconds": 341.515968819,
+            "union_seconds": 341.515968819
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "create",
+            "summed_seconds": 38.284965949,
+            "union_seconds": 38.284965949
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "destroy",
+            "summed_seconds": 6.835773301,
+            "union_seconds": 6.835773301
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "accounting",
+            "kind": "group",
+            "summed_seconds": 2.206680506,
+            "union_seconds": 2.206680506
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "configuration-generation",
+            "kind": "group",
+            "summed_seconds": 576.303244784,
+            "union_seconds": 576.303244784
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "idempotence",
+            "summed_seconds": 147.517838793,
+            "union_seconds": 147.517838793
+          },
+          {
+            "count": 2,
+            "failed": 0,
+            "group": "configuration-generation",
+            "kind": "operator",
+            "summed_seconds": 11.047994951,
+            "union_seconds": 11.047994951
+          },
+          {
+            "count": 2,
+            "failed": 0,
+            "group": "configuration-generation",
+            "kind": "pacing",
+            "summed_seconds": 1.75379678,
+            "union_seconds": 1.75379678
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "prepare",
+            "summed_seconds": 34.794078606,
+            "union_seconds": 34.794078606
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "verify",
+            "summed_seconds": 580.941705822,
+            "union_seconds": 580.941705822
+          }
+        ],
+        "cpu_count": 4,
+        "elapsed_seconds": 1166.66538304,
+        "event_count": 20,
+        "exit_status": 0,
+        "format": "lowerduckpond-qualification-timing-v1",
+        "image_sha256": "e9fb8f73c373d1bd88624a5b64ac57f993aa4deed3ac56e52efe7630b70aace8",
+        "instrumented_union_seconds": 1149.89033129,
+        "kernel_version": "6.17.0",
+        "operator_interventions": null,
+        "outside_instrumentation_seconds": 16.77505175,
+        "policy": "production-admission-host-history-pacing-v1",
+        "queue_seconds": null,
+        "runner": "github-actions",
+        "scenario": "m3_8",
+        "source_revision": "337cc41bb85dc4d3f0b9f87853ba037c13a9deba",
+        "source_tree_state": "clean",
+        "tools": {
+          "ansible-core": "2.21.3",
+          "docker": "28.0.4",
+          "molecule": "26.8.0",
+          "molecule-plugins": "26.7.15",
+          "pytest": "9.1.1",
+          "pytest-testinfra": "10.2.2",
+          "python": "3.14.7",
+          "uv": "0.12.5"
+        }
+      },
+      "receipt": {
+        "authority": "diagnostic-only",
+        "backend": "minio",
+        "case": "configuration-generation",
+        "destroy": "passed",
+        "format": "lowerduckpond-installed-group-diagnostic-v1",
+        "independent_storage_absence": "passed",
+        "local_accounting": "passed",
+        "run_id": "01a0bbed71757621979ad82e35778c7b",
+        "status": "passed"
+      },
+      "receipt_sha256": "3f58c2ad87946249aa9e5c9f13a369f2035bd2da71458bb7d3972d6ab8ddf15c"
+    },
+    {
+      "case": "export-roundtrip",
+      "job_id": 105983267203,
+      "job_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35475224829/job/105983267203",
+      "job_started_at": "2026-09-19T23:07:52Z",
+      "job_completed_at": "2026-09-19T23:27:28Z",
+      "job_seconds": 1176.0,
+      "workflow_start_to_job_seconds": 29.0,
+      "archive_id": 10594229569,
+      "archive_sha256": "1c8e63791723013585395edeb9d8bea0fb2397a47158682f5251b2afac32e0b0",
+      "timing_sha256": "924a69314a658a62059d5d7999e874ad30978cf8d9d608b8e4c3a72e8d4d54ca",
+      "timing": {
+        "architecture": "x86_64",
+        "artifact_sha256": "0b12b64e71007d107263454f2da5cac11d74b5dac3d53e459d5a0ad89b8ef3c2",
+        "authority": "diagnostic-only",
+        "backend": "minio",
+        "cache_state": "unmeasured",
+        "categories": [
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "export-import",
+            "kind": "ansible-reapply",
+            "summed_seconds": 153.111953912,
+            "union_seconds": 153.111953912
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "export-import",
+            "kind": "converge",
+            "summed_seconds": 151.082225615,
+            "union_seconds": 151.082225615
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "converge",
+            "summed_seconds": 325.723659092,
+            "union_seconds": 325.723659092
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "create",
+            "summed_seconds": 32.788902596,
+            "union_seconds": 32.788902596
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "destroy",
+            "summed_seconds": 6.956691115,
+            "union_seconds": 6.956691115
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "accounting",
+            "kind": "group",
+            "summed_seconds": 2.364001606,
+            "union_seconds": 2.364001606
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "export-import",
+            "kind": "group",
+            "summed_seconds": 595.313087163,
+            "union_seconds": 595.313087163
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "idempotence",
+            "summed_seconds": 147.164271994,
+            "union_seconds": 147.164271994
+          },
+          {
+            "count": 15,
+            "failed": 0,
+            "group": "export-import",
+            "kind": "operator",
+            "summed_seconds": 147.35752588,
+            "union_seconds": 147.35752588
+          },
+          {
+            "count": 15,
+            "failed": 0,
+            "group": "export-import",
+            "kind": "pacing",
+            "summed_seconds": 287.456549554,
+            "union_seconds": 287.456549554
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "prepare",
+            "summed_seconds": 30.694374255,
+            "union_seconds": 30.694374255
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "verify",
+            "summed_seconds": 600.175710444,
+            "union_seconds": 600.175710444
+          }
+        ],
+        "cpu_count": 4,
+        "elapsed_seconds": 1160.452590652,
+        "event_count": 40,
+        "exit_status": 0,
+        "format": "lowerduckpond-qualification-timing-v1",
+        "image_sha256": "6484f9f68c1b7b81a88ee3dabc66d4a5624f83d44838ed07412b93a6bdc1c492",
+        "instrumented_union_seconds": 1143.503609496,
+        "kernel_version": "6.17.0",
+        "operator_interventions": null,
+        "outside_instrumentation_seconds": 16.948981156,
+        "policy": "production-admission-host-history-pacing-v1",
+        "queue_seconds": null,
+        "runner": "github-actions",
+        "scenario": "m3_8",
+        "source_revision": "337cc41bb85dc4d3f0b9f87853ba037c13a9deba",
+        "source_tree_state": "clean",
+        "tools": {
+          "ansible-core": "2.21.3",
+          "docker": "28.0.4",
+          "molecule": "26.8.0",
+          "molecule-plugins": "26.7.15",
+          "pytest": "9.1.1",
+          "pytest-testinfra": "10.2.2",
+          "python": "3.14.7",
+          "uv": "0.12.5"
+        }
+      },
+      "receipt": {
+        "authority": "diagnostic-only",
+        "backend": "minio",
+        "case": "export-roundtrip",
+        "destroy": "passed",
+        "format": "lowerduckpond-installed-group-diagnostic-v1",
+        "independent_storage_absence": "passed",
+        "local_accounting": "passed",
+        "run_id": "01a0bbed49ea71a5b78ffb7a0a8c0d3c",
+        "status": "passed"
+      },
+      "receipt_sha256": "69aa9455c86955d5ccf498783423c716ea6238dee0d1059848e13304ea286c42"
+    },
+    {
+      "case": "export-recovery",
+      "job_id": 105983267308,
+      "job_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35475224829/job/105983267308",
+      "job_started_at": "2026-09-19T23:08:04Z",
+      "job_completed_at": "2026-09-19T23:30:31Z",
+      "job_seconds": 1347.0,
+      "workflow_start_to_job_seconds": 41.0,
+      "archive_id": 10593324302,
+      "archive_sha256": "a962d67c51911f5a98d70a8020b206c2950193ef753b02d64ac5ee2cef09b364",
+      "timing_sha256": "c794c8fd2736991d5c9529667d6411944d01b26d95892eab2a102a19ae310ec6",
+      "timing": {
+        "architecture": "x86_64",
+        "artifact_sha256": "0b12b64e71007d107263454f2da5cac11d74b5dac3d53e459d5a0ad89b8ef3c2",
+        "authority": "diagnostic-only",
+        "backend": "minio",
+        "cache_state": "unmeasured",
+        "categories": [
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "export-import",
+            "kind": "ansible-reapply",
+            "summed_seconds": 158.306112787,
+            "union_seconds": 158.306112787
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "export-import",
+            "kind": "converge",
+            "summed_seconds": 156.205541049,
+            "union_seconds": 156.205541049
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "converge",
+            "summed_seconds": 314.528081589,
+            "union_seconds": 314.528081589
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "create",
+            "summed_seconds": 30.981917227,
+            "union_seconds": 30.981917227
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "destroy",
+            "summed_seconds": 6.963268819,
+            "union_seconds": 6.963268819
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "accounting",
+            "kind": "group",
+            "summed_seconds": 2.428377025,
+            "union_seconds": 2.428377025
+          },
+          {
+            "count": 2,
+            "failed": 0,
+            "group": "export-import",
+            "kind": "group",
+            "summed_seconds": 773.275505183,
+            "union_seconds": 773.275505183
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "idempotence",
+            "summed_seconds": 150.911332472,
+            "union_seconds": 150.911332472
+          },
+          {
+            "count": 19,
+            "failed": 0,
+            "group": "export-import",
+            "kind": "operator",
+            "summed_seconds": 64.785032418,
+            "union_seconds": 64.785032418
+          },
+          {
+            "count": 20,
+            "failed": 0,
+            "group": "export-import",
+            "kind": "pacing",
+            "summed_seconds": 501.414176474,
+            "union_seconds": 501.414176474
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "prepare",
+            "summed_seconds": 33.146186011,
+            "union_seconds": 33.146186011
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "verify",
+            "summed_seconds": 778.27787207,
+            "union_seconds": 778.27787207
+          }
+        ],
+        "cpu_count": 4,
+        "elapsed_seconds": 1331.989048411,
+        "event_count": 50,
+        "exit_status": 0,
+        "format": "lowerduckpond-qualification-timing-v1",
+        "image_sha256": "83d0e8b0ce3771d36deccaf16d327889a44a147f1b2c0d4cbcd64801412f629d",
+        "instrumented_union_seconds": 1314.808658188,
+        "kernel_version": "6.17.0",
+        "operator_interventions": null,
+        "outside_instrumentation_seconds": 17.180390223,
+        "policy": "production-admission-host-history-pacing-v1",
+        "queue_seconds": null,
+        "runner": "github-actions",
+        "scenario": "m3_8",
+        "source_revision": "337cc41bb85dc4d3f0b9f87853ba037c13a9deba",
+        "source_tree_state": "clean",
+        "tools": {
+          "ansible-core": "2.21.3",
+          "docker": "28.0.4",
+          "molecule": "26.8.0",
+          "molecule-plugins": "26.7.15",
+          "pytest": "9.1.1",
+          "pytest-testinfra": "10.2.2",
+          "python": "3.14.7",
+          "uv": "0.12.5"
+        }
+      },
+      "receipt": {
+        "authority": "diagnostic-only",
+        "backend": "minio",
+        "case": "export-recovery",
+        "destroy": "passed",
+        "format": "lowerduckpond-installed-group-diagnostic-v1",
+        "independent_storage_absence": "passed",
+        "local_accounting": "passed",
+        "run_id": "01a0bbed782f770fae65e875f3977f35",
+        "status": "passed"
+      },
+      "receipt_sha256": "238376e0afc8cbad50abbe6c681fd95d7cbdff13e1d8be4b46f0d37230d59ee6"
+    },
+    {
+      "case": "archive-cycles",
+      "job_id": 105983267402,
+      "job_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35475224829/job/105983267402",
+      "job_started_at": "2026-09-19T23:08:32Z",
+      "job_completed_at": "2026-09-19T23:36:45Z",
+      "job_seconds": 1693.0,
+      "workflow_start_to_job_seconds": 69.0,
+      "archive_id": 10593419432,
+      "archive_sha256": "42be496b10a75018f99018b5dfc25d77d876d9a14866c38fb5ce0f30581179e8",
+      "timing_sha256": "035b623b86580098e176b6685d55cf18ccedd4495a2c2a000046cd75cb9ef77c",
+      "timing": {
+        "architecture": "x86_64",
+        "artifact_sha256": "0b12b64e71007d107263454f2da5cac11d74b5dac3d53e459d5a0ad89b8ef3c2",
+        "authority": "diagnostic-only",
+        "backend": "minio",
+        "cache_state": "unmeasured",
+        "categories": [
+          {
+            "count": 3,
+            "failed": 0,
+            "group": "archive",
+            "kind": "ansible-reapply",
+            "summed_seconds": 442.197312022,
+            "union_seconds": 442.197312022
+          },
+          {
+            "count": 3,
+            "failed": 0,
+            "group": "archive",
+            "kind": "converge",
+            "summed_seconds": 436.434723947,
+            "union_seconds": 436.434723947
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "converge",
+            "summed_seconds": 325.330897998,
+            "union_seconds": 325.330897998
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "create",
+            "summed_seconds": 37.976597165,
+            "union_seconds": 37.976597165
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "destroy",
+            "summed_seconds": 6.847314351,
+            "union_seconds": 6.847314351
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "accounting",
+            "kind": "group",
+            "summed_seconds": 2.093257899,
+            "union_seconds": 2.093257899
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "archive",
+            "kind": "group",
+            "summed_seconds": 1103.322462497,
+            "union_seconds": 1103.322462497
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "idempotence",
+            "summed_seconds": 142.021600136,
+            "union_seconds": 142.021600136
+          },
+          {
+            "count": 32,
+            "failed": 0,
+            "group": "archive",
+            "kind": "operator",
+            "summed_seconds": 151.362163594,
+            "union_seconds": 151.362163594
+          },
+          {
+            "count": 32,
+            "failed": 0,
+            "group": "archive",
+            "kind": "pacing",
+            "summed_seconds": 428.864254948,
+            "union_seconds": 428.864254948
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "prepare",
+            "summed_seconds": 33.410734826,
+            "union_seconds": 33.410734826
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "verify",
+            "summed_seconds": 1107.752343652,
+            "union_seconds": 1107.752343652
+          }
+        ],
+        "cpu_count": 4,
+        "elapsed_seconds": 1669.823660131,
+        "event_count": 78,
+        "exit_status": 0,
+        "format": "lowerduckpond-qualification-timing-v1",
+        "image_sha256": "6f8b6257010409517da4153abf0cc2e7dfe45035d3c6f8ee247d823172321d2b",
+        "instrumented_union_seconds": 1653.339488128,
+        "kernel_version": "6.17.0",
+        "operator_interventions": null,
+        "outside_instrumentation_seconds": 16.484172003,
+        "policy": "production-admission-host-history-pacing-v1",
+        "queue_seconds": null,
+        "runner": "github-actions",
+        "scenario": "m3_8",
+        "source_revision": "337cc41bb85dc4d3f0b9f87853ba037c13a9deba",
+        "source_tree_state": "clean",
+        "tools": {
+          "ansible-core": "2.21.3",
+          "docker": "28.0.4",
+          "molecule": "26.8.0",
+          "molecule-plugins": "26.7.15",
+          "pytest": "9.1.1",
+          "pytest-testinfra": "10.2.2",
+          "python": "3.14.7",
+          "uv": "0.12.5"
+        }
+      },
+      "receipt": {
+        "authority": "diagnostic-only",
+        "backend": "minio",
+        "case": "archive-cycles",
+        "destroy": "passed",
+        "format": "lowerduckpond-installed-group-diagnostic-v1",
+        "independent_storage_absence": "passed",
+        "local_accounting": "passed",
+        "run_id": "01a0bbedfd5176aab03f5fbe78454fa8",
+        "status": "passed"
+      },
+      "receipt_sha256": "186e758d1b86ff8a5684ed85365c32f3d53932a0cac3630ddffaeaeb461d665a"
+    },
+    {
+      "case": "full-size-archive",
+      "job_id": 105983267253,
+      "job_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35475224829/job/105983267253",
+      "job_started_at": "2026-09-19T23:07:54Z",
+      "job_completed_at": "2026-09-19T23:21:30Z",
+      "job_seconds": 816.0,
+      "workflow_start_to_job_seconds": 31.0,
+      "archive_id": 10594257080,
+      "archive_sha256": "febd3488b54ca27df40ea083f4a744796f6d41add1cb452ea1fb2bf2cb7637cd",
+      "timing_sha256": "e8610ad2da83e8a3a89fc9a62bf90feae418fe2ed8bac8b991ad392f7b8eaf87",
+      "timing": {
+        "architecture": "x86_64",
+        "artifact_sha256": "0b12b64e71007d107263454f2da5cac11d74b5dac3d53e459d5a0ad89b8ef3c2",
+        "authority": "diagnostic-only",
+        "backend": "minio",
+        "cache_state": "unmeasured",
+        "categories": [
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "full-size-archive",
+            "kind": "ansible-reapply",
+            "summed_seconds": 152.815150768,
+            "union_seconds": 152.815150768
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "full-size-archive",
+            "kind": "converge",
+            "summed_seconds": 150.658216175,
+            "union_seconds": 150.658216175
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "converge",
+            "summed_seconds": 320.7326918,
+            "union_seconds": 320.7326918
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "create",
+            "summed_seconds": 33.120226258,
+            "union_seconds": 33.120226258
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "destroy",
+            "summed_seconds": 6.93013984,
+            "union_seconds": 6.93013984
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "accounting",
+            "kind": "group",
+            "summed_seconds": 2.194537343,
+            "union_seconds": 2.194537343
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "full-size-archive",
+            "kind": "group",
+            "summed_seconds": 230.724423736,
+            "union_seconds": 230.724423736
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "idempotence",
+            "summed_seconds": 150.775938655,
+            "union_seconds": 150.775938655
+          },
+          {
+            "count": 5,
+            "failed": 0,
+            "group": "full-size-archive",
+            "kind": "operator",
+            "summed_seconds": 62.897504114,
+            "union_seconds": 62.897504114
+          },
+          {
+            "count": 5,
+            "failed": 0,
+            "group": "full-size-archive",
+            "kind": "pacing",
+            "summed_seconds": 4.772714682,
+            "union_seconds": 4.772714682
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "prepare",
+            "summed_seconds": 34.883779842,
+            "union_seconds": 34.883779842
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "verify",
+            "summed_seconds": 235.593585515,
+            "union_seconds": 235.593585515
+          }
+        ],
+        "cpu_count": 4,
+        "elapsed_seconds": 799.19809207,
+        "event_count": 20,
+        "exit_status": 0,
+        "format": "lowerduckpond-qualification-timing-v1",
+        "image_sha256": "2e7967374df5bb7e7fba1861af026f686830c478c17eb904263781868075fe9b",
+        "instrumented_union_seconds": 782.03636191,
+        "kernel_version": "6.17.0",
+        "operator_interventions": null,
+        "outside_instrumentation_seconds": 17.16173016,
+        "policy": "production-admission-host-history-pacing-v1",
+        "queue_seconds": null,
+        "runner": "github-actions",
+        "scenario": "m3_8",
+        "source_revision": "337cc41bb85dc4d3f0b9f87853ba037c13a9deba",
+        "source_tree_state": "clean",
+        "tools": {
+          "ansible-core": "2.21.3",
+          "docker": "28.0.4",
+          "molecule": "26.8.0",
+          "molecule-plugins": "26.7.15",
+          "pytest": "9.1.1",
+          "pytest-testinfra": "10.2.2",
+          "python": "3.14.7",
+          "uv": "0.12.5"
+        }
+      },
+      "receipt": {
+        "authority": "diagnostic-only",
+        "backend": "minio",
+        "case": "full-size-archive",
+        "destroy": "passed",
+        "format": "lowerduckpond-installed-group-diagnostic-v1",
+        "independent_storage_absence": "passed",
+        "installed": {
+          "artifact_sha256": "0b12b64e71007d107263454f2da5cac11d74b5dac3d53e459d5a0ad89b8ef3c2",
+          "bytes": 104857600,
+          "content_sha256": "0d569447af476ee6bf8ea286aaad90c3345ade1311945c1b70d7bbb78c4b69a2",
+          "entries": 5000,
+          "format": "lowerduckpond-full-size-archive-installed-v1",
+          "run_id": "01a0bbed5810708baa7ff2312acad5bf"
+        },
+        "local_accounting": "passed",
+        "run_id": "01a0bbed5810708baa7ff2312acad5bf",
+        "status": "passed"
+      },
+      "receipt_sha256": "87eb9b5736f5d37d712699d4ebd8d3ce384786fd90f6e587c64e0f0431562344"
+    },
+    {
+      "case": "deletion-quarantine",
+      "job_id": 105983267391,
+      "job_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35475224829/job/105983267391",
+      "job_started_at": "2026-09-19T23:08:50Z",
+      "job_completed_at": "2026-09-19T23:28:13Z",
+      "job_seconds": 1163.0,
+      "workflow_start_to_job_seconds": 87.0,
+      "archive_id": 10594326176,
+      "archive_sha256": "c81b5b1cef71ed46dbee2e7db95fa7c7205d705c5ade174c1c3f4769b620e7b5",
+      "timing_sha256": "be9e3bdd9b193a86b01a5ec1b4afaa467a8ab2d925f5996a47b4dfbab09d5e3c",
+      "timing": {
+        "architecture": "x86_64",
+        "artifact_sha256": "0b12b64e71007d107263454f2da5cac11d74b5dac3d53e459d5a0ad89b8ef3c2",
+        "authority": "diagnostic-only",
+        "backend": "minio",
+        "cache_state": "unmeasured",
+        "categories": [
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "deletion",
+            "kind": "ansible-reapply",
+            "summed_seconds": 154.436440125,
+            "union_seconds": 154.436440125
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "deletion",
+            "kind": "converge",
+            "summed_seconds": 152.399670022,
+            "union_seconds": 152.399670022
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "converge",
+            "summed_seconds": 317.650403498,
+            "union_seconds": 317.650403498
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "create",
+            "summed_seconds": 29.332569018,
+            "union_seconds": 29.332569018
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "destroy",
+            "summed_seconds": 6.956045496,
+            "union_seconds": 6.956045496
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "accounting",
+            "kind": "group",
+            "summed_seconds": 2.216692611,
+            "union_seconds": 2.216692611
+          },
+          {
+            "count": 2,
+            "failed": 0,
+            "group": "deletion",
+            "kind": "group",
+            "summed_seconds": 363.057058697,
+            "union_seconds": 363.057058697
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "quarantine-recovery",
+            "kind": "group",
+            "summed_seconds": 229.553682813,
+            "union_seconds": 229.553682813
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "idempotence",
+            "summed_seconds": 145.720871461,
+            "union_seconds": 145.720871461
+          },
+          {
+            "count": 11,
+            "failed": 0,
+            "group": "deletion",
+            "kind": "operator",
+            "summed_seconds": 56.156400793,
+            "union_seconds": 56.156400793
+          },
+          {
+            "count": 4,
+            "failed": 0,
+            "group": "quarantine-recovery",
+            "kind": "operator",
+            "summed_seconds": 30.648370935,
+            "union_seconds": 30.648370935
+          },
+          {
+            "count": 11,
+            "failed": 0,
+            "group": "deletion",
+            "kind": "pacing",
+            "summed_seconds": 131.777635257,
+            "union_seconds": 131.777635257
+          },
+          {
+            "count": 4,
+            "failed": 0,
+            "group": "quarantine-recovery",
+            "kind": "pacing",
+            "summed_seconds": 192.159537502,
+            "union_seconds": 192.159537502
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "prepare",
+            "summed_seconds": 32.606418403,
+            "union_seconds": 32.606418403
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "verify",
+            "summed_seconds": 597.309447067,
+            "union_seconds": 597.309447067
+          }
+        ],
+        "cpu_count": 4,
+        "elapsed_seconds": 1147.898222855,
+        "event_count": 42,
+        "exit_status": 0,
+        "format": "lowerduckpond-qualification-timing-v1",
+        "image_sha256": "fe99478f908213f6073124559deb00112e10c0f051e3802859d922e491f40607",
+        "instrumented_union_seconds": 1129.575754943,
+        "kernel_version": "6.17.0",
+        "operator_interventions": null,
+        "outside_instrumentation_seconds": 18.322467912,
+        "policy": "production-admission-host-history-pacing-v1",
+        "queue_seconds": null,
+        "runner": "github-actions",
+        "scenario": "m3_8",
+        "source_revision": "337cc41bb85dc4d3f0b9f87853ba037c13a9deba",
+        "source_tree_state": "clean",
+        "tools": {
+          "ansible-core": "2.21.3",
+          "docker": "28.0.4",
+          "molecule": "26.8.0",
+          "molecule-plugins": "26.7.15",
+          "pytest": "9.1.1",
+          "pytest-testinfra": "10.2.2",
+          "python": "3.14.7",
+          "uv": "0.12.5"
+        }
+      },
+      "receipt": {
+        "authority": "diagnostic-only",
+        "backend": "minio",
+        "case": "deletion-quarantine",
+        "destroy": "passed",
+        "format": "lowerduckpond-installed-group-diagnostic-v1",
+        "independent_storage_absence": "passed",
+        "local_accounting": "passed",
+        "run_id": "01a0bbee30b8758ca4d63f82ded7afaa",
+        "status": "passed"
+      },
+      "receipt_sha256": "e454730a1cd0f6e04c37e4e6ecd0f3d7b309c70c800ab9a9f2ddf13fdafc3ed4"
+    },
+    {
+      "case": "transport-recovery",
+      "job_id": 105983267345,
+      "job_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35475224829/job/105983267345",
+      "job_started_at": "2026-09-19T23:08:09Z",
+      "job_completed_at": "2026-09-19T23:27:29Z",
+      "job_seconds": 1160.0,
+      "workflow_start_to_job_seconds": 46.0,
+      "archive_id": 10593444143,
+      "archive_sha256": "13ccb659bfff45a56cff3963ae3c06afa9e9f25edc81a82b7f45d737b5cfe975",
+      "timing_sha256": "b3a6ac0e83b1630bdc5e782a81cbdb35a95d3eadc42e8025993d85163da2cad7",
+      "timing": {
+        "architecture": "x86_64",
+        "artifact_sha256": "0b12b64e71007d107263454f2da5cac11d74b5dac3d53e459d5a0ad89b8ef3c2",
+        "authority": "diagnostic-only",
+        "backend": "minio",
+        "cache_state": "unmeasured",
+        "categories": [
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "transport-recovery",
+            "kind": "ansible-reapply",
+            "summed_seconds": 149.455164667,
+            "union_seconds": 149.455164667
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "transport-recovery",
+            "kind": "converge",
+            "summed_seconds": 147.473712437,
+            "union_seconds": 147.473712437
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "converge",
+            "summed_seconds": 314.802633469,
+            "union_seconds": 314.802633469
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "create",
+            "summed_seconds": 32.665090275,
+            "union_seconds": 32.665090275
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "destroy",
+            "summed_seconds": 6.927164127,
+            "union_seconds": 6.927164127
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "accounting",
+            "kind": "group",
+            "summed_seconds": 2.355881432,
+            "union_seconds": 2.355881432
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "transport-recovery",
+            "kind": "group",
+            "summed_seconds": 592.784041089,
+            "union_seconds": 592.784041089
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "idempotence",
+            "summed_seconds": 146.018918743,
+            "union_seconds": 146.018918743
+          },
+          {
+            "count": 15,
+            "failed": 0,
+            "group": "transport-recovery",
+            "kind": "operator",
+            "summed_seconds": 36.823056291,
+            "union_seconds": 36.823056291
+          },
+          {
+            "count": 18,
+            "failed": 0,
+            "group": "transport-recovery",
+            "kind": "pacing",
+            "summed_seconds": 301.680328985,
+            "union_seconds": 301.680328985
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "prepare",
+            "summed_seconds": 29.476364101,
+            "union_seconds": 29.476364101
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "verify",
+            "summed_seconds": 597.536523763,
+            "union_seconds": 597.536523763
+          }
+        ],
+        "cpu_count": 4,
+        "elapsed_seconds": 1144.224826712,
+        "event_count": 43,
+        "exit_status": 0,
+        "format": "lowerduckpond-qualification-timing-v1",
+        "image_sha256": "cbe382a1d0bbda85e2952bc491b880a5a24e4971bfd3f7b1f1c4bcc1aaa4f08a",
+        "instrumented_union_seconds": 1127.426694478,
+        "kernel_version": "6.17.0",
+        "operator_interventions": null,
+        "outside_instrumentation_seconds": 16.798132234,
+        "policy": "production-admission-host-history-pacing-v1",
+        "queue_seconds": null,
+        "runner": "github-actions",
+        "scenario": "m3_8",
+        "source_revision": "337cc41bb85dc4d3f0b9f87853ba037c13a9deba",
+        "source_tree_state": "clean",
+        "tools": {
+          "ansible-core": "2.21.3",
+          "docker": "28.0.4",
+          "molecule": "26.8.0",
+          "molecule-plugins": "26.7.15",
+          "pytest": "9.1.1",
+          "pytest-testinfra": "10.2.2",
+          "python": "3.14.7",
+          "uv": "0.12.5"
+        }
+      },
+      "receipt": {
+        "authority": "diagnostic-only",
+        "backend": "minio",
+        "case": "transport-recovery",
+        "destroy": "passed",
+        "format": "lowerduckpond-installed-group-diagnostic-v1",
+        "independent_storage_absence": "passed",
+        "local_accounting": "passed",
+        "run_id": "01a0bbed8cd6773a901960726c9d6d94",
+        "status": "passed"
+      },
+      "receipt_sha256": "0ef3a33ce2a7fbb9ae9b4d7ad2fd422a302f71872d1a64922c8148287860f236"
+    },
+    {
+      "case": "overlap-deployment",
+      "job_id": 105983267287,
+      "job_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35475224829/job/105983267287",
+      "job_started_at": "2026-09-19T23:08:08Z",
+      "job_completed_at": "2026-09-19T23:25:41Z",
+      "job_seconds": 1053.0,
+      "workflow_start_to_job_seconds": 45.0,
+      "archive_id": 10594330989,
+      "archive_sha256": "2e0474363a16f1da222afe0280029c699f832cc11ae08e6a7a61a9d3654651f0",
+      "timing_sha256": "508cb435dc1527a59459de3f3d75ccd525443ec9a8741ec51f93fe308619bcbf",
+      "timing": {
+        "architecture": "x86_64",
+        "artifact_sha256": "0b12b64e71007d107263454f2da5cac11d74b5dac3d53e459d5a0ad89b8ef3c2",
+        "authority": "diagnostic-only",
+        "backend": "minio",
+        "cache_state": "unmeasured",
+        "categories": [
+          {
+            "count": 4,
+            "failed": 0,
+            "group": "overlap-deployment",
+            "kind": "ansible-reapply",
+            "summed_seconds": 482.593999688,
+            "union_seconds": 482.593999688
+          },
+          {
+            "count": 4,
+            "failed": 0,
+            "group": "overlap-deployment",
+            "kind": "converge",
+            "summed_seconds": 476.328469907,
+            "union_seconds": 476.328469907
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "converge",
+            "summed_seconds": 301.458685285,
+            "union_seconds": 301.458685285
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "create",
+            "summed_seconds": 50.080615204,
+            "union_seconds": 50.080615204
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "destroy",
+            "summed_seconds": 6.382339021,
+            "union_seconds": 6.382339021
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "accounting",
+            "kind": "group",
+            "summed_seconds": 1.681679204,
+            "union_seconds": 1.681679204
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "overlap-deployment",
+            "kind": "group",
+            "summed_seconds": 508.398853271,
+            "union_seconds": 508.398853271
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "idempotence",
+            "summed_seconds": 110.443926917,
+            "union_seconds": 110.443926917
+          },
+          {
+            "count": 4,
+            "failed": 0,
+            "group": "overlap-deployment",
+            "kind": "operator",
+            "summed_seconds": 13.286634454,
+            "union_seconds": 13.286634454
+          },
+          {
+            "count": 5,
+            "failed": 0,
+            "group": "overlap-deployment",
+            "kind": "pacing",
+            "summed_seconds": 3.606243562,
+            "union_seconds": 3.606243562
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "prepare",
+            "summed_seconds": 35.695753505,
+            "union_seconds": 35.695753505
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "verify",
+            "summed_seconds": 511.882987815,
+            "union_seconds": 511.882987815
+          }
+        ],
+        "cpu_count": 4,
+        "elapsed_seconds": 1034.597810101,
+        "event_count": 25,
+        "exit_status": 0,
+        "format": "lowerduckpond-qualification-timing-v1",
+        "image_sha256": "c42630a24413183ed3cd7b73ff8037a21377f810d36c2a9578eee39b9cdb0775",
+        "instrumented_union_seconds": 1015.944307747,
+        "kernel_version": "6.17.0",
+        "operator_interventions": null,
+        "outside_instrumentation_seconds": 18.653502354,
+        "policy": "production-admission-host-history-pacing-v1",
+        "queue_seconds": null,
+        "runner": "github-actions",
+        "scenario": "m3_8",
+        "source_revision": "337cc41bb85dc4d3f0b9f87853ba037c13a9deba",
+        "source_tree_state": "clean",
+        "tools": {
+          "ansible-core": "2.21.3",
+          "docker": "28.0.4",
+          "molecule": "26.8.0",
+          "molecule-plugins": "26.7.15",
+          "pytest": "9.1.1",
+          "pytest-testinfra": "10.2.2",
+          "python": "3.14.7",
+          "uv": "0.12.5"
+        }
+      },
+      "receipt": {
+        "authority": "diagnostic-only",
+        "backend": "minio",
+        "case": "overlap-deployment",
+        "destroy": "passed",
+        "format": "lowerduckpond-installed-group-diagnostic-v1",
+        "independent_storage_absence": "passed",
+        "local_accounting": "passed",
+        "run_id": "01a0bbed92b47463b5da9a7255701738",
+        "status": "passed"
+      },
+      "receipt_sha256": "0f2d4a9a2fc223ffcf92b28bcc739dc5944068dd9b8abf1a10d9f27cc4ddc4fb"
+    },
+    {
+      "case": "overlap-routing",
+      "job_id": 105983267314,
+      "job_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35475224829/job/105983267314",
+      "job_started_at": "2026-09-19T23:07:53Z",
+      "job_completed_at": "2026-09-19T23:28:34Z",
+      "job_seconds": 1241.0,
+      "workflow_start_to_job_seconds": 30.0,
+      "archive_id": 10593094676,
+      "archive_sha256": "a72e037c3b6b068ca6e837a7c9418eeb8aaf791d29a257459b5bc5695e12e11c",
+      "timing_sha256": "7b15b291ee87d0115964a810251b792d525f4eb0581060ea67a071fc900bb6b4",
+      "timing": {
+        "architecture": "x86_64",
+        "artifact_sha256": "0b12b64e71007d107263454f2da5cac11d74b5dac3d53e459d5a0ad89b8ef3c2",
+        "authority": "diagnostic-only",
+        "backend": "minio",
+        "cache_state": "unmeasured",
+        "categories": [
+          {
+            "count": 4,
+            "failed": 0,
+            "group": "overlap-routing",
+            "kind": "ansible-reapply",
+            "summed_seconds": 626.201250983,
+            "union_seconds": 626.201250983
+          },
+          {
+            "count": 4,
+            "failed": 0,
+            "group": "overlap-routing",
+            "kind": "converge",
+            "summed_seconds": 617.661772877,
+            "union_seconds": 617.661772877
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "converge",
+            "summed_seconds": 321.598786981,
+            "union_seconds": 321.598786981
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "create",
+            "summed_seconds": 31.589579767,
+            "union_seconds": 31.589579767
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "destroy",
+            "summed_seconds": 6.940445771,
+            "union_seconds": 6.940445771
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "accounting",
+            "kind": "group",
+            "summed_seconds": 2.421663925,
+            "union_seconds": 2.421663925
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "overlap-routing",
+            "kind": "group",
+            "summed_seconds": 662.207038668,
+            "union_seconds": 662.207038668
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "idempotence",
+            "summed_seconds": 144.348209152,
+            "union_seconds": 144.348209152
+          },
+          {
+            "count": 6,
+            "failed": 0,
+            "group": "overlap-routing",
+            "kind": "operator",
+            "summed_seconds": 18.787018877,
+            "union_seconds": 18.787018877
+          },
+          {
+            "count": 6,
+            "failed": 0,
+            "group": "overlap-routing",
+            "kind": "pacing",
+            "summed_seconds": 6.380083028,
+            "union_seconds": 6.380083028
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "prepare",
+            "summed_seconds": 32.026323126,
+            "union_seconds": 32.026323126
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "verify",
+            "summed_seconds": 667.081774819,
+            "union_seconds": 667.081774819
+          }
+        ],
+        "cpu_count": 4,
+        "elapsed_seconds": 1223.584662781,
+        "event_count": 28,
+        "exit_status": 0,
+        "format": "lowerduckpond-qualification-timing-v1",
+        "image_sha256": "38c2c628c010a658d6c3c442493aec918b76944bdcab0422a045e16b1f5228f8",
+        "instrumented_union_seconds": 1203.585119616,
+        "kernel_version": "6.17.0",
+        "operator_interventions": null,
+        "outside_instrumentation_seconds": 19.999543165,
+        "policy": "production-admission-host-history-pacing-v1",
+        "queue_seconds": null,
+        "runner": "github-actions",
+        "scenario": "m3_8",
+        "source_revision": "337cc41bb85dc4d3f0b9f87853ba037c13a9deba",
+        "source_tree_state": "clean",
+        "tools": {
+          "ansible-core": "2.21.3",
+          "docker": "28.0.4",
+          "molecule": "26.8.0",
+          "molecule-plugins": "26.7.15",
+          "pytest": "9.1.1",
+          "pytest-testinfra": "10.2.2",
+          "python": "3.14.7",
+          "uv": "0.12.5"
+        }
+      },
+      "receipt": {
+        "authority": "diagnostic-only",
+        "backend": "minio",
+        "case": "overlap-routing",
+        "destroy": "passed",
+        "format": "lowerduckpond-installed-group-diagnostic-v1",
+        "independent_storage_absence": "passed",
+        "local_accounting": "passed",
+        "run_id": "01a0bbed51a971838f48603238e37ad4",
+        "status": "passed"
+      },
+      "receipt_sha256": "e4a241e2341fd7277c08a19c81e1038c9f9a4f1e4e18c32d177e85b6777f401e"
+    },
+    {
+      "case": "reboot-journey",
+      "job_id": 105983267330,
+      "job_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35475224829/job/105983267330",
+      "job_started_at": "2026-09-19T23:08:03Z",
+      "job_completed_at": "2026-09-19T23:28:30Z",
+      "job_seconds": 1227.0,
+      "workflow_start_to_job_seconds": 40.0,
+      "archive_id": 10593454160,
+      "archive_sha256": "b3ae53e86c47422418b4d4babda1969361c764ad8b453e706b1062ecb894e8a1",
+      "timing_sha256": "3be5972d140d140152bad485714ab8e738fd18235c9b01630ee68c57ffdb7932",
+      "timing": {
+        "architecture": "x86_64",
+        "artifact_sha256": "0b12b64e71007d107263454f2da5cac11d74b5dac3d53e459d5a0ad89b8ef3c2",
+        "authority": "diagnostic-only",
+        "backend": "minio",
+        "cache_state": "unmeasured",
+        "categories": [
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "cross-feature",
+            "kind": "ansible-reapply",
+            "summed_seconds": 158.470286338,
+            "union_seconds": 158.470286338
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "cross-feature",
+            "kind": "converge",
+            "summed_seconds": 156.474402604,
+            "union_seconds": 156.474402604
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "converge",
+            "summed_seconds": 341.217600409,
+            "union_seconds": 341.217600409
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "create",
+            "summed_seconds": 35.620148782,
+            "union_seconds": 35.620148782
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "destroy",
+            "summed_seconds": 7.000946567,
+            "union_seconds": 7.000946567
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "accounting",
+            "kind": "group",
+            "summed_seconds": 2.498737182,
+            "union_seconds": 2.498737182
+          },
+          {
+            "count": 2,
+            "failed": 0,
+            "group": "cross-feature",
+            "kind": "group",
+            "summed_seconds": 461.627323929,
+            "union_seconds": 461.627323929
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "reboot-capture",
+            "kind": "group",
+            "summed_seconds": 123.370172532,
+            "union_seconds": 123.370172532
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "reboot-verify",
+            "kind": "group",
+            "summed_seconds": 3.363059347,
+            "union_seconds": 3.363059347
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "idempotence",
+            "summed_seconds": 160.380515934,
+            "union_seconds": 160.380515934
+          },
+          {
+            "count": 16,
+            "failed": 0,
+            "group": "cross-feature",
+            "kind": "operator",
+            "summed_seconds": 141.629464061,
+            "union_seconds": 141.629464061
+          },
+          {
+            "count": 2,
+            "failed": 0,
+            "group": "reboot-capture",
+            "kind": "operator",
+            "summed_seconds": 14.244590064,
+            "union_seconds": 14.244590064
+          },
+          {
+            "count": 16,
+            "failed": 0,
+            "group": "cross-feature",
+            "kind": "pacing",
+            "summed_seconds": 150.561370219,
+            "union_seconds": 150.561370219
+          },
+          {
+            "count": 2,
+            "failed": 0,
+            "group": "reboot-capture",
+            "kind": "pacing",
+            "summed_seconds": 104.378728596,
+            "union_seconds": 104.378728596
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "prepare",
+            "summed_seconds": 41.682207254,
+            "union_seconds": 41.682207254
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "reboot",
+            "summed_seconds": 0.96740219,
+            "union_seconds": 0.96740219
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "reboot-caddy",
+            "summed_seconds": 7.459049702,
+            "union_seconds": 7.459049702
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "reboot-reconcile",
+            "summed_seconds": 1.043561577,
+            "union_seconds": 1.043561577
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "verify",
+            "summed_seconds": 604.336488143,
+            "union_seconds": 604.336488143
+          }
+        ],
+        "cpu_count": 4,
+        "elapsed_seconds": 1207.578693587,
+        "event_count": 52,
+        "exit_status": 0,
+        "format": "lowerduckpond-qualification-timing-v1",
+        "image_sha256": "dbfdcb106a1c498a50b44fb1f352c0e36e57c3bda9c37e3d634725684ee1b525",
+        "instrumented_union_seconds": 1190.237907089,
+        "kernel_version": "6.17.0",
+        "operator_interventions": null,
+        "outside_instrumentation_seconds": 17.340786498,
+        "policy": "production-admission-host-history-pacing-v1",
+        "queue_seconds": null,
+        "runner": "github-actions",
+        "scenario": "m3_8",
+        "source_revision": "337cc41bb85dc4d3f0b9f87853ba037c13a9deba",
+        "source_tree_state": "clean",
+        "tools": {
+          "ansible-core": "2.21.3",
+          "docker": "28.0.4",
+          "molecule": "26.8.0",
+          "molecule-plugins": "26.7.15",
+          "pytest": "9.1.1",
+          "pytest-testinfra": "10.2.2",
+          "python": "3.14.7",
+          "uv": "0.12.5"
+        }
+      },
+      "receipt": {
+        "authority": "diagnostic-only",
+        "backend": "minio",
+        "case": "reboot-journey",
+        "destroy": "passed",
+        "format": "lowerduckpond-installed-group-diagnostic-v1",
+        "independent_storage_absence": "passed",
+        "local_accounting": "passed",
+        "run_id": "01a0bbed855f70078796797dfcb1489d",
+        "status": "passed"
+      },
+      "receipt_sha256": "aeb28de0c2a0b879b52c5f16c49ea6c7cf0a3e61a6e528e3278a548c6ecd3585"
+    },
+    {
+      "case": "credentials",
+      "job_id": 105983267245,
+      "job_url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35475224829/job/105983267245",
+      "job_started_at": "2026-09-19T23:07:53Z",
+      "job_completed_at": "2026-09-19T23:23:20Z",
+      "job_seconds": 927.0,
+      "workflow_start_to_job_seconds": 30.0,
+      "archive_id": 10594179748,
+      "archive_sha256": "22fab65427b92d0fd85aa876c268d6067408532d6144811e1c5fc721adcfd847",
+      "timing_sha256": "ed2a4a0c2f0f0b96a508a4bdcb4db901c1be6adb38d1314843dc0f35b68efb13",
+      "timing": {
+        "architecture": "x86_64",
+        "artifact_sha256": "0b12b64e71007d107263454f2da5cac11d74b5dac3d53e459d5a0ad89b8ef3c2",
+        "authority": "diagnostic-only",
+        "backend": "minio",
+        "cache_state": "unmeasured",
+        "categories": [
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "converge",
+            "summed_seconds": 322.282600592,
+            "union_seconds": 322.282600592
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "create",
+            "summed_seconds": 29.968134836,
+            "union_seconds": 29.968134836
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "destroy",
+            "summed_seconds": 6.91311018,
+            "union_seconds": 6.91311018
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "accounting",
+            "kind": "group",
+            "summed_seconds": 2.22616117,
+            "union_seconds": 2.22616117
+          },
+          {
+            "count": 28,
+            "failed": 0,
+            "group": "archive-credentials",
+            "kind": "group",
+            "summed_seconds": 349.425983372,
+            "union_seconds": 349.425983372
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "storage-credentials",
+            "kind": "group",
+            "summed_seconds": 0.80205298,
+            "union_seconds": 0.80205298
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "idempotence",
+            "summed_seconds": 147.8468074,
+            "union_seconds": 147.8468074
+          },
+          {
+            "count": 18,
+            "failed": 0,
+            "group": "archive-credentials",
+            "kind": "other-playbook",
+            "summed_seconds": 318.40289337,
+            "union_seconds": 318.40289337
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "archive-credentials",
+            "kind": "prepare",
+            "summed_seconds": 0.360187945,
+            "union_seconds": 0.360187945
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "prepare",
+            "summed_seconds": 32.639008573,
+            "union_seconds": 32.639008573
+          },
+          {
+            "count": 1,
+            "failed": 0,
+            "group": "unclassified",
+            "kind": "verify",
+            "summed_seconds": 355.103478502,
+            "union_seconds": 355.103478502
+          }
+        ],
+        "cpu_count": 4,
+        "elapsed_seconds": 911.617955684,
+        "event_count": 55,
+        "exit_status": 0,
+        "format": "lowerduckpond-qualification-timing-v1",
+        "image_sha256": "13656a4c65eda1b063a1ed321c14973e9c0bfbde869557e695d3408be829058d",
+        "instrumented_union_seconds": 894.753140083,
+        "kernel_version": "6.17.0",
+        "operator_interventions": null,
+        "outside_instrumentation_seconds": 16.864815601,
+        "policy": "production-admission-host-history-pacing-v1",
+        "queue_seconds": null,
+        "runner": "github-actions",
+        "scenario": "m3_8",
+        "source_revision": "337cc41bb85dc4d3f0b9f87853ba037c13a9deba",
+        "source_tree_state": "clean",
+        "tools": {
+          "ansible-core": "2.21.3",
+          "docker": "28.0.4",
+          "molecule": "26.8.0",
+          "molecule-plugins": "26.7.15",
+          "pytest": "9.1.1",
+          "pytest-testinfra": "10.2.2",
+          "python": "3.14.7",
+          "uv": "0.12.5"
+        }
+      },
+      "receipt": {
+        "authority": "diagnostic-only",
+        "backend": "minio",
+        "case": "credentials",
+        "destroy": "passed",
+        "format": "lowerduckpond-installed-group-diagnostic-v1",
+        "independent_storage_absence": "passed",
+        "local_accounting": "passed",
+        "run_id": "01a0bbed4b8a7727891202db2da1fd5e",
+        "status": "passed"
+      },
+      "receipt_sha256": "4d168d7ca0a8d1fa5577a304e7a1ec2b26cc79a24a1769839ec99fed53f99d2d"
+    }
+  ],
+  "limits": [
+    "One completed hosted matrix; three final comparable runs and secure-workstation qualification are still required.",
+    "Fresh independent fixtures on runners reporting4CPUs; cache state and isolated queue time unmeasured.",
+    "Category durations overlap; summed CI execution excludes other workflows and is not billing.",
+    "Original sanitized report bytes and digest-verified ZIPs retained; embedded objects preserve fields without refreshing provenance."
+  ]
+}

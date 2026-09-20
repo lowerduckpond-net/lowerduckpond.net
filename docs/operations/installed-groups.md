@@ -10,10 +10,10 @@ Molecule pipelines Ansible modules through its Docker connection to reduce
 per-task transfer overhead.
 
 The [fixed registry](../../scripts/qualification_groups.py) declares every test
-and parameter. It accepts no arbitrary test selector. These cases are currently
-additional diagnostic coverage: the existing complete installed journey remains
-required until the grouped harness and cross-feature journey pass and the
-selection policy is validated separately.
+and parameter. It accepts no arbitrary test selector. The [reviewed selection policy](installed-selection.md) chooses required groups.
+The complete installed journey remains available locally and is required on
+scheduled/manual workflows; each group result remains diagnostic evidence
+rather than a production qualification report.
 
 | Case | Preserved installed assertions and independent setup |
 | --- | --- |

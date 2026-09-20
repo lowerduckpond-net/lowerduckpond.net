@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+GROUP_REPORT_FORMAT = "lowerduckpond-installed-group-diagnostic-v1"
+
 ACCOUNTING = (
     "test_archive_completion.py::test_installed_archive_qualification_has_no_unresolved_accounting"
 )

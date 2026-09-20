@@ -186,114 +186,53 @@ jobs:
       - name: Check static and baseline Ansible behavior
         run: just check-ansible-static
 
-  ansible-m3-8:
-    name: Ansible ${{ matrix.label }}
+  installed-selection:
+    name: Installed check selection
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ matrix.timeout }}
+    timeout-minutes: 5
+    outputs:
+      selection: ${{ steps.plan.outputs.selection }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+      required: ${{ steps.plan.outputs.required }}
+      complete: ${{ steps.plan.outputs.complete }}
+    steps:
+      - name: Check out complete history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Install the pinned controller Python
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        env:
+          MISE_GITHUB_TOKEN: ${{ github.token }}
+        with:
+          github_token: ${{ github.token }}
+          version: 2026.8.8
+          install_args: python
+      - name: Select declared installed groups
+        id: plan
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REVISION: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          python -m scripts.qualification_ci plan --event "$EVENT_NAME" \
+            --base "$BASE_REVISION" --head "$HEAD_REVISION"
+
+  ansible-m3-8:
+    name: Ansible installed ${{ matrix.case }}
+    needs: [installed-selection, pre-commit, python]
+    if: needs.installed-selection.outputs.required == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - label: M3.8
-            recipe: check-ansible-m3-8
-            artifact: m3-8
-            timeout: 330
-          - label: full-size archive
-            recipe: check-archive-full-size
-            artifact: full-size-archive
-            timeout: 45
-          - label: core
-            recipe: check-installed-group core
-            artifact: installed-core
-            timeout: 45
-          - label: configuration-publication
-            recipe: check-installed-group configuration-publication
-            artifact: installed-configuration-publication
-            timeout: 45
-          - label: configuration-generation
-            recipe: check-installed-group configuration-generation
-            artifact: installed-configuration-generation
-            timeout: 45
-          - label: export-roundtrip
-            recipe: check-installed-group export-roundtrip
-            artifact: installed-export-roundtrip
-            timeout: 45
-          - label: export-recovery
-            recipe: check-installed-group export-recovery
-            artifact: installed-export-recovery
-            timeout: 45
-          - label: archive-cycles
-            recipe: check-installed-group archive-cycles
-            artifact: installed-archive-cycles
-            timeout: 45
-          - label: deletion-quarantine
-            recipe: check-installed-group deletion-quarantine
-            artifact: installed-deletion-quarantine
-            timeout: 45
-          - label: transport-recovery
-            recipe: check-installed-group transport-recovery
-            artifact: installed-transport-recovery
-            timeout: 45
-          - label: overlap-deployment
-            recipe: check-installed-group overlap-deployment
-            artifact: installed-overlap-deployment
-            timeout: 45
-          - label: overlap-routing
-            recipe: check-installed-group overlap-routing
-            artifact: installed-overlap-routing
-            timeout: 45
-          - label: reboot-journey
-            recipe: check-installed-group reboot-journey
-            artifact: installed-reboot-journey
-            timeout: 45
-          - label: credentials
-            recipe: check-installed-group credentials
-            artifact: installed-credentials
-            timeout: 45
+      matrix: ${{ fromJSON(needs.installed-selection.outputs.matrix) }}
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - name: Select installed-host qualification
-        id: selection
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          PR_BASE_REVISION: ${{ github.event.pull_request.base.sha }}
-          PR_HEAD_REVISION: ${{ github.event.pull_request.head.sha }}
-          PUSH_BASE_REVISION: ${{ github.event.before }}
-          PUSH_HEAD_REVISION: ${{ github.sha }}
-        run: |
-          case "${EVENT_NAME}" in
-            pull_request)
-              base_revision=${PR_BASE_REVISION}
-              head_revision=${PR_HEAD_REVISION}
-              ;;
-            push)
-              base_revision=${PUSH_BASE_REVISION}
-              head_revision=${PUSH_HEAD_REVISION}
-              ;;
-            *)
-              echo "required=true" >> "${GITHUB_OUTPUT}"
-              echo "A scheduled or manual run requires the full installed-host gate."
-              exit 0
-              ;;
-          esac
-          if required=$(scripts/m3-8-ci-required \
-            "${base_revision}" "${head_revision}"); then
-            :
-          else
-            echo "M3.8 CI selection failed; running the full gate." >&2
-            required=true
-          fi
-          echo "required=${required}" >> "${GITHUB_OUTPUT}"
-          if [[ "${required}" == true ]]; then
-            echo "Relevant files changed; the full installed-host gate is required."
-          else
-            echo "Installed-host inputs are unchanged; the full gate is not required."
-          fi
       - name: Install tools
-        if: steps.selection.outputs.required == 'true'
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         env:
           MISE_GITHUB_TOKEN: ${{ github.token }}
@@ -301,51 +240,104 @@ jobs:
           github_token: ${{ github.token }}
           version: 2026.8.8
           install_args: just python uv
-      - name: Check installed ${{ matrix.label }} behavior
-        if: steps.selection.outputs.required == 'true'
+      - name: Check the selected installed group
         env:
-          LDP_QUALIFICATION_TIMING_DIRECTORY: ${{ runner.temp }}/ldp-m3-8-timing
-        run: just ${{ matrix.recipe }}
-      - name: Retain allowlisted qualification timings
-        if: always() && steps.selection.outputs.required == 'true'
-        continue-on-error: true
+          QUALIFICATION_CASE: ${{ matrix.case }}
+          LDP_QUALIFICATION_TIMING_DIRECTORY: ${{ runner.temp }}/ldp-installed
+        run: just check-installed-group "$QUALIFICATION_CASE"
+      - name: Retain required installed completion receipt
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ matrix.artifact }}-timing
-          path: |
-            ${{ runner.temp }}/ldp-m3-8-timing/timing.json
-            ${{ runner.temp }}/ldp-m3-8-timing/timing.txt
-            ${{ runner.temp }}/ldp-m3-8-timing/case.json
-          if-no-files-found: warn
+          name: installed-result-${{ matrix.case }}
+          path: ${{ runner.temp }}/ldp-installed/case.json
+          if-no-files-found: error
           retention-days: 30
-      - name: Retain allowlisted qualification failure
-        if: always() && steps.selection.outputs.required == 'true'
+      - name: Retain allowlisted installed diagnostics
+        if: always()
         continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ matrix.artifact }}-failure
-          path: ${{ runner.temp }}/ldp-m3-8-timing/failure.json
+          name: installed-diagnostics-${{ matrix.case }}
+          path: |
+            ${{ runner.temp }}/ldp-installed/timing.json
+            ${{ runner.temp }}/ldp-installed/timing.txt
+            ${{ runner.temp }}/ldp-installed/failure.json
           if-no-files-found: ignore
           retention-days: 30
-      - name: Record the selective skip
-        if: steps.selection.outputs.required != 'true'
-        run: >-
-          echo "Ansible M3.8 skipped because its installed-host inputs did not change."
+
+  ansible-complete:
+    name: Ansible complete journey
+    needs: [installed-selection, pre-commit, python]
+    if: needs.installed-selection.outputs.complete == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Install tools
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        env:
+          MISE_GITHUB_TOKEN: ${{ github.token }}
+        with:
+          github_token: ${{ github.token }}
+          version: 2026.8.8
+          install_args: just python uv
+      - name: Check the complete production-policy journey
+        env:
+          LDP_QUALIFICATION_TIMING_DIRECTORY: ${{ runner.temp }}/ldp-complete
+        run: just check-ansible-m3-8
+      - name: Retain allowlisted complete-journey diagnostics
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: complete-journey-diagnostics
+          path: |
+            ${{ runner.temp }}/ldp-complete/timing.json
+            ${{ runner.temp }}/ldp-complete/timing.txt
+            ${{ runner.temp }}/ldp-complete/failure.json
+          if-no-files-found: ignore
+          retention-days: 30
 
   ansible:
     name: Ansible
     if: always()
-    needs: [ansible-static, ansible-m3-8]
+    needs: [ansible-static, installed-selection, ansible-m3-8, ansible-complete]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Require both Ansible validation lanes
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install the pinned controller Python
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         env:
+          MISE_GITHUB_TOKEN: ${{ github.token }}
+        with:
+          github_token: ${{ github.token }}
+          version: 2026.8.8
+          install_args: python
+      - name: Collect selected installed completion receipts
+        if: needs.installed-selection.outputs.required == 'true'
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: installed-result-*
+          path: ${{ runner.temp }}/installed-results
+      - name: Require every selected check and its completion receipt
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          SELECTION_RESULT: ${{ needs.installed-selection.result }}
+          INSTALLED_SELECTION: ${{ needs.installed-selection.outputs.selection }}
           STATIC_RESULT: ${{ needs.ansible-static.result }}
-          M3_8_RESULT: ${{ needs.ansible-m3-8.result }}
+          MATRIX_RESULT: ${{ needs.ansible-m3-8.result }}
+          COMPLETE_RESULT: ${{ needs.ansible-complete.result }}
+          RESULT_DIRECTORY: ${{ runner.temp }}/installed-results
         run: |
-          test "$STATIC_RESULT" = success
-          test "$M3_8_RESULT" = success
+          test "$SELECTION_RESULT" = success
+          python -m scripts.qualification_ci verify --event "$EVENT_NAME" \
+            --directory "$RESULT_DIRECTORY"
 
   actions:
     name: Actions

@@ -89,6 +89,10 @@ python_version = "3.14"
 strict = true
 warn_unreachable = true
 files = [
+  "scripts/qualification_ci.py",
+  "tests/infrastructure/test_qualification_ci.py",
+  "scripts/qualification_selection.py",
+  "tests/infrastructure/test_qualification_selection.py",
   "scripts/qualification_groups.py",
   "tests/infrastructure/test_qualification_groups.py",
   "scripts/qualification_group_runner.py",
