@@ -11,17 +11,34 @@ a fresh clone:
 ```console
 mise install
 just setup
-just check
 ```
 
 Use `just --list` to discover narrower commands. Use `just format` to apply
-formatters, then run `just check` before opening a pull request.
+formatters. Before opening a pull request, run the relevant component regressions
+and repository checks, then preview the installed groups CI will require using
+the reviewed selection policy below. Describe the checks run and any environment
+limitations in the pull request. Required CI must pass before merge.
 
-The installed-host M3.8 qualification is deliberately slow. Pull requests and
-`main` pushes run it only when its Ansible, lifecycle, artifact, protocol,
-toolchain, or dependency inputs change. Scheduled and manually dispatched CI
-runs always exercise the full gate; its stable `Ansible` aggregate check remains
-available to branch protection when the expensive lane is selectively skipped.
+After setup, run a focused component regression by selecting its test file:
+
+```console
+uv run --frozen pytest packages/static-host-agent/tests/test_archive_cleanup_contention.py -q
+```
+
+Append `::test_name` to select one test. This gives a short development loop;
+`just check-python` runs all component tests, lint and type checks. `just check`
+remains the full local validation entry point, including the complete installed
+journey. Run it when you need the complete local result.
+
+Installed checks run as [independent groups](docs/operations/installed-groups.md)
+on fresh fixtures. The [reviewed selection policy](docs/operations/installed-selection.md)
+selects affected groups for mapped changes and all groups for shared or unknown
+inputs. The stable `Ansible` check verifies every selected completion receipt.
+Scheduled and manual runs also require the original complete installed journey.
+A scheduled failure blocks release until corrected and requalified.
+Use `just plan-installed-checks BASE_COMMIT HEAD_COMMIT` with full commit IDs to
+preview the required groups for committed changes. Run a selected group locally
+to reproduce its failure or validate changes to its installed scenario.
 
 Create a focused branch, keep each pull request to one coherent change, and
 describe the behavior and validation performed. Architecture changes should add

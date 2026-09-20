@@ -167,12 +167,17 @@ def independent_storage_absence(environment: dict[str, str], archive_id: str) ->
 
 
 def installed_receipt(directory: Path, environment: dict[str, str]) -> dict[str, object]:
-    receipt = document(directory / "case-installed.json")
+    return validate_installed_receipt(
+        document(directory / "case-installed.json"), environment[RUN_ENV]
+    )
+
+
+def validate_installed_receipt(receipt: dict[str, object], run_id: str) -> dict[str, object]:
     if (
         set(receipt)
         != {"format", "run_id", "artifact_sha256", "content_sha256", "entries", "bytes"}
         or receipt.get("format") != INSTALLED_FORMAT
-        or receipt.get("run_id") != environment[RUN_ENV]
+        or receipt.get("run_id") != run_id
         or receipt.get("entries") != ENTRY_COUNT
         or receipt.get("bytes") != CONTENT_BYTES
         or any(

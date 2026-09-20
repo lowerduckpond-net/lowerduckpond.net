@@ -17,11 +17,11 @@ from scripts.qualification_case import (
 from scripts.qualification_context import ARCHIVE_ENV, HOST_ENV, RUN_ENV, host_name, run_lease
 from scripts.qualification_failure import record_phase
 from scripts.qualification_group_runner import FORMAT as STAGE_FORMAT
-from scripts.qualification_groups import GROUPS
+from scripts.qualification_groups import GROUP_REPORT_FORMAT, GROUPS
 from scripts.qualification_probe import document
 from scripts.qualification_retirement import local_proof
 
-FORMAT = "lowerduckpond-installed-group-diagnostic-v1"
+FORMAT = GROUP_REPORT_FORMAT
 
 
 def stage_receipts(

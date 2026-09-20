@@ -132,6 +132,10 @@ check-installed-group case: _sync
     uv run ansible-galaxy collection install --no-deps --requirements-file config/ansible/requirements.yml
     uv run python -m scripts.qualification_timing run -- uv run python "$PWD/scripts/qualification_local.py" --case "$1"
 
+# Preview required installed groups for two full committed revision IDs.
+plan-installed-checks base head: _sync
+    uv run python -m scripts.qualification_selection --base {{quote(base)}} --head {{quote(head)}}
+
 # Diagnose the full-size installed archive on a fresh owned local MinIO fixture.
 check-archive-full-size: _sync
     uv run ansible-galaxy collection install --no-deps --requirements-file config/ansible/requirements.yml

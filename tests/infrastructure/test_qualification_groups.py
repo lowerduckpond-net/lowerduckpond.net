@@ -313,14 +313,13 @@ def test_generated_verifier_preserves_phase_for_failure_before_pytest(
     assert not (tmp_path / "case.json").exists()
 
 
-def test_ci_runs_every_group_alongside_the_complete_journey() -> None:
+def test_ci_matrix_uses_declared_groups_and_preserves_the_complete_journey() -> None:
     workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
-    matrix = workflow["jobs"]["ansible-m3-8"]["strategy"]["matrix"]["include"]
-    recipes = {row["recipe"] for row in matrix}
-    assert recipes == {
-        "check-ansible-m3-8",
-        "check-archive-full-size",
-        *(f"check-installed-group {name}" for name in GROUPS if name != "full-size-archive"),
-    }
-    assert len({row["artifact"] for row in matrix}) == len(matrix)
-    assert workflow["jobs"]["ansible-m3-8"]["strategy"]["fail-fast"] is False
+    jobs = workflow["jobs"]
+    assert jobs["ansible-m3-8"]["strategy"]["matrix"] == (
+        "${{ fromJSON(needs.installed-selection.outputs.matrix) }}"
+    )
+    assert jobs["ansible-m3-8"]["strategy"]["fail-fast"] is False
+    assert any(
+        step.get("run") == "just check-ansible-m3-8" for step in jobs["ansible-complete"]["steps"]
+    )
