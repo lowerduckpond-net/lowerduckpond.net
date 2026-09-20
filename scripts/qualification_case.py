@@ -1,4 +1,4 @@
-"""Run one fresh installed archive diagnostic, retaining every unsuccessful fixture."""
+"""Shared phase, ownership and storage proofs for owned installed cases."""
 
 from __future__ import annotations
 
@@ -9,15 +9,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from scripts.qualification_context import (
-    ARCHIVE_ENV,
-    HOST_ENV,
-    IMAGE_ENV,
-    RUN_ENV,
-    host_name,
-    run_lease,
-)
-from scripts.qualification_failure import record_phase
+from scripts.qualification_context import ARCHIVE_ENV, HOST_ENV, IMAGE_ENV, RUN_ENV, host_name
 from scripts.qualification_probe import bounded_command, document
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -194,7 +186,7 @@ def installed_receipt(directory: Path, environment: dict[str, str]) -> dict[str,
 
 
 def phase(directory: Path, environment: dict[str, str], uv: str, name: str) -> int:
-    print(f"Independent full-size archive: {name}", flush=True)
+    print(f"Owned installed fixture: {name}", flush=True)
     with (directory / f"{name}.log").open("xb") as stream:
         result = subprocess.run(  # noqa: S603 - fixed phase command and owned private context
             [
@@ -215,83 +207,3 @@ def phase(directory: Path, environment: dict[str, str], uv: str, name: str) -> i
             check=False,
         )
     return result.returncode if result.returncode >= 0 else 128 - result.returncode
-
-
-def run_full_size(directory: Path, environment: dict[str, str], uv: str) -> int:
-    with run_lease(directory, create=True):
-        return _run_full_size(directory, environment, uv)
-
-
-def _run_full_size(directory: Path, environment: dict[str, str], uv: str) -> int:
-    """Only this named case's completed tests and fresh storage proof permit teardown."""
-    # Retirement shares these case primitives; defer the import to avoid a cycle.
-    from scripts.qualification_retirement import local_proof  # noqa: PLC0415
-
-    environment = {
-        **environment,
-        "NO_COLOR": "1",
-        "PY_COLORS": "0",
-        "ANSIBLE_FORCE_COLOR": "0",
-        "ANSIBLE_NOCOLOR": "1",
-    }
-    base = {
-        "scenario": {"create_sequence": ["dependency", "create"]},
-        "ansible": {
-            "playbooks": {
-                "verify": str(ROOT / "config/ansible/molecule/m3_8/verify_full_size_archive.yml")
-            }
-        },
-    }
-    with (directory / "case-base.yml").open("x", encoding="ascii") as stream:
-        # JSON is also valid YAML and avoids introducing a controller dependency.
-        json.dump(base, stream)
-    identities: dict[str, str] = {}
-    for name in ("create", "prepare", "converge", "idempotence", "verify"):
-        status = phase(directory, environment, uv, name)
-        if name == "create":
-            try:
-                identities = record_created_containers(directory, environment, status)
-            except Exception:
-                if not status:
-                    raise
-                print("Created fixture ownership could not be fully recorded.", flush=True)
-        if status:
-            return status
-    record_phase("final-accounting")
-    receipt = installed_receipt(directory, environment)
-    if owned_containers(environment) != identities:
-        raise ValueError("fixture identity changed before final storage proof")
-    if local_proof(environment, identities[HOST_ENV]) != "quiescent-installed":
-        raise ValueError("installed case accounting is incomplete")
-    record_phase("final-storage-proof")
-    print("Independent full-size archive: final storage proof", flush=True)
-    independent_storage_absence(environment, identities[ARCHIVE_ENV])
-    record_phase("final-accounting")
-    if (
-        owned_containers(environment) != identities
-        or local_proof(environment, identities[HOST_ENV]) != "quiescent-installed"
-    ):
-        raise ValueError("fixture changed before teardown")
-    status = phase(directory, environment, uv, "destroy")
-    if status:
-        return status
-    remove_owned_image(environment)
-    with (directory / "case.json").open("x", encoding="ascii") as stream:
-        json.dump(
-            {
-                "format": FORMAT,
-                "authority": "diagnostic-only",
-                "case": "full-size-archive",
-                "installed": receipt,
-                "backend": "minio",
-                "status": "passed",
-                "local_accounting": "passed",
-                "independent_storage_absence": "passed",
-                "destroy": "passed",
-            },
-            stream,
-            sort_keys=True,
-        )
-        stream.write("\n")
-    print(f"Full-size archive diagnostic passed: {directory / 'case.json'}", flush=True)
-    return 0

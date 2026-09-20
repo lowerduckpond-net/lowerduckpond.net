@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from scripts import qualification_case as case
+from scripts import qualification_group_case as groups
 from scripts import qualification_local as local
 from scripts import qualification_retirement as retirement
 from scripts.qualification_context import ARCHIVE_ENV, ARTIFACT_ENV, HOST_ENV, run_lease
@@ -214,9 +215,9 @@ def test_create_failure_records_partial_ids_and_preserves_original_status(
         calls.append(args[-1])
         return CREATE_FAILURE
 
-    monkeypatch.setattr(case, "phase", phase)
+    monkeypatch.setattr(groups, "phase", phase)
     monkeypatch.setattr(case, "owned_containers", lambda *args, **kwargs: identities)
-    assert case.run_full_size(tmp_path, {}, "uv") == CREATE_FAILURE
+    assert groups.run_group(tmp_path, {}, "uv", "core") == CREATE_FAILURE
     assert calls == ["create"]
     assert json.loads((tmp_path / "case-containers.json").read_text()) == identities
     assert json.loads((tmp_path / "case-create.json").read_text()) == {"exit_status": 17}
@@ -226,13 +227,13 @@ def test_create_failure_records_partial_ids_and_preserves_original_status(
 def test_failed_ownership_collection_does_not_mask_create_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(case, "phase", lambda *args: CREATE_FAILURE)
+    monkeypatch.setattr(groups, "phase", lambda *args: CREATE_FAILURE)
 
     def unavailable(*args: object, **kwargs: object) -> dict[str, str]:
         raise ValueError("Docker unavailable")
 
     monkeypatch.setattr(case, "owned_containers", unavailable)
-    assert case.run_full_size(tmp_path, {}, "uv") == CREATE_FAILURE
+    assert groups.run_group(tmp_path, {}, "uv", "core") == CREATE_FAILURE
     assert not (tmp_path / "case-containers.json").exists()
 
 

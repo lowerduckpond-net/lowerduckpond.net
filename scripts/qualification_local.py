@@ -24,6 +24,7 @@ from scripts.qualification_context import (  # noqa: E402 - standalone controlle
     resource_names,
     run_lease,
 )
+from scripts.qualification_groups import GROUPS  # noqa: E402
 from scripts.qualification_probe import bounded_command  # noqa: E402
 
 FORMAT = "lowerduckpond-local-qualification-fixture-v1"
@@ -92,9 +93,7 @@ def create_environment(directory: Path) -> dict[str, str]:
 
 
 def run(directory: Path, *, create_only: bool = False, case: str = "complete") -> int:
-    if case not in {"complete", "full-size-archive", "baseline"} or (
-        create_only and case != "complete"
-    ):
+    if case not in {"complete", "baseline", *GROUPS} or (create_only and case != "complete"):
         raise ValueError("unsupported qualification case")
     environment = create_environment(directory)
     docker = shutil.which("docker")
@@ -121,10 +120,10 @@ def run(directory: Path, *, create_only: bool = False, case: str = "complete") -
         if existing.returncode == 0:
             raise ValueError("generated qualification name already exists")
     print(f"Owned local fixture: {environment[HOST_ENV]}", flush=True)
-    if case == "full-size-archive":
-        from scripts.qualification_case import run_full_size  # noqa: PLC0415
+    if case in GROUPS:
+        from scripts.qualification_group_case import run_group  # noqa: PLC0415
 
-        return run_full_size(directory, environment, uv)
+        return run_group(directory, environment, uv, case)
     command = [
         uv,
         "run",
@@ -155,9 +154,7 @@ def run(directory: Path, *, create_only: bool = False, case: str = "complete") -
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--create-only", action="store_true")
-    parser.add_argument(
-        "--case", choices=("complete", "full-size-archive", "baseline"), default="complete"
-    )
+    parser.add_argument("--case", choices=("complete", "baseline", *GROUPS), default="complete")
     args = parser.parse_args()
     try:
         events = os.environ.get("LDP_QUALIFICATION_TIMING_EVENTS")

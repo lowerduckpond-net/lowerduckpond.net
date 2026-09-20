@@ -32,6 +32,9 @@ relevant_paths=(
     schemas/static-publication
     scripts/build-static-host-agent
     scripts/m3-8-ci-required
+    scripts/qualification_groups.py
+    scripts/qualification_group_runner.py
+    scripts/qualification_group_case.py
     scripts/qualification_case.py
     scripts/qualification_context.py
     scripts/qualification_local.py

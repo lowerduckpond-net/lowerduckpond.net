@@ -38,6 +38,8 @@ platforms:
 provisioner:
   name: ansible
   config_options:
+    connection:
+      pipelining: true
     defaults:
       roles_path: ${MOLECULE_PROJECT_DIRECTORY}/roles
       remote_tmp: /tmp/.ansible-molecule
