@@ -41,6 +41,9 @@ GROUPS = {
     "backup-coherence": Group(
         (node("backup_coherence", "installed_coherent_backup_restore_and_writer_exclusion"),)
     ),
+    "backup-mutation-overlap": Group(
+        (node("backup_coherence", "installed_backup_capture_races_mutations"),)
+    ),
     "backup-identity": Group(
         (node("backup_identity", "installed_backup_identity_migration_and_repository_fencing"),)
     ),

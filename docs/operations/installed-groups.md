@@ -18,7 +18,8 @@ rather than a production qualification report.
 | Case | Preserved installed assertions and independent setup |
 | --- | --- |
 | `backup-identity` | Fresh supported tenant history; real Restic config/full snapshot IDs and restore, permanent repository genesis before local commit, refusal after both local identity records are lost, retention exclusion, audit-prefix verification, repository/selection/state lock exclusion, wrong repository identity and root-only command boundaries. |
-| `backup-coherence` | Own active/suspended/archived/undeployed tenants; explicit migration/idempotence, installed service failure/health and privilege bounds, real Restic capture/descriptor readback/restore/tree measurement versus all lifecycle mutations, authorization repair, retained-release cleanup, Caddy restart and guarded Ansible file writes; exclusion canaries. |
+| `backup-coherence` | Own active/suspended/archived/undeployed tenants; explicit migration over existing history and idempotence, installed service failure/health and privilege bounds, real Restic capture/descriptor readback/restore/tree measurement, Caddy restart and guarded Ansible file writes; exclusion canaries. |
+| `backup-mutation-overlap` | Own source and import target with empty-lineage initialization; real Restic capture/restore/tree measurement versus create/deploy/import/rollback/rename/suspend/resume/archive/restore/delete/export/emergency/reconcile, authorization repair and retained-release cleanup. |
 | `core` | Creates its tenants; lifecycle results, exact retries, isolation, routing, rename, and deployment history. Configuration guards move to the two cases below. |
 | `configuration-publication` | Creates an active tenant; publication-disable and operator-boundary drift refusal, restoration, unchanged tenant and routes. |
 | `configuration-generation` | Creates an active tenant; unchanged reapplication and generation-input drift refusal/restoration, unchanged tenant and routes. |
@@ -73,3 +74,12 @@ configuration, wall time and total runner minutes from normal validation before
 claiming the target. A matrix can lower wall time while increasing runner cost.
 `just check` remains the full local entry point; it does not silently substitute
 these groups for complete qualification.
+
+The original combined backup case passed in [CI run 35563599873](https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35563599873)
+but took 39.35 minutes including setup, exceeding the target. Its timing report
+recorded 13.91 minutes of admission pacing across 31 spans and 8.48 minutes across
+three Ansible reapplications. These categories overlap other measurements and
+must not be summed. The two independent backup cases preserve its assertions
+while separating configuration work from mutation contention. Measure their
+fresh runs before claiming either meets the target; the original report remains
+evidence of the combined case's cost.

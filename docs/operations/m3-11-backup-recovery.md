@@ -211,12 +211,19 @@ Kernel lock creation precedes artifact selection. This 0700 interpreter accepts
 privileged Ansible modules; it grants no ordinary-user command capability.
 
 Run `just check-installed-group backup-coherence` for its independently owned
-fixture. It creates active, suspended, archived and undeployed tenants, migrates
-explicitly, verifies idempotence and service failure/health boundaries, and uses
-real Restic capture/restore while writers contend. It covers create/deploy/import/
-rollback/rename/suspend/resume/archive/restore/delete/export/emergency/reconcile,
-authorization repair, release cleanup, Caddy restart and Ansible writes. Every
-restored tree is measured against its descriptor. Exclusion canaries and a
-temporary-looking authoritative file check the actual source policy. Accounting
-and teardown remain mandatory. Results are diagnostic local/MinIO evidence;
-live Spaces and host reconstruction require later qualification.
+active, suspended, archived and undeployed tenants. It migrates over existing
+history, verifies mode-on idempotence and service failure/health boundaries, and
+uses real Restic capture/restore during Caddy restart and guarded Ansible writes.
+Exclusion canaries and a temporary-looking authoritative file check the actual
+source policy.
+
+Run `just check-installed-group backup-mutation-overlap` for a separate fresh
+fixture initialized with an empty audit lineage. A single normal convergence
+enables disposable publication and coherent backups before its own tenant
+history. It races capture against create/deploy/import/rollback/rename/suspend/
+resume/archive/restore/delete/export/emergency/reconcile, authorization repair
+and release cleanup. Every restored tree in both cases is measured against its
+descriptor. Accounting and teardown remain mandatory. The [installed group
+guide](installed-groups.md) retains the measured cost that motivated this split.
+Results are diagnostic local/MinIO evidence; live Spaces and host reconstruction
+require later qualification.

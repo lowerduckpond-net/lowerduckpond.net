@@ -191,9 +191,7 @@ with StateRepository(Path({support.STATE_ROOT!r}), expected_owner=0) as reposito
     recovery._await_authorization_quiescent(host, job)
 
 
-def test_installed_coherent_backup_restore_and_writer_exclusion(  # noqa: PLR0915
-    host: Host, tmp_path: Path
-) -> None:
+def test_installed_coherent_backup_restore_and_writer_exclusion(host: Host, tmp_path: Path) -> None:
     require_owned_fixture()
     assert host.file("/srv/lowerduckpond/lost+found").is_directory
     assert support._initialize_namespace(host)
@@ -224,22 +222,13 @@ def test_installed_coherent_backup_restore_and_writer_exclusion(  # noqa: PLR091
         )
         for _ in range(4)
     ]
-    active, suspended, archived, undeployed = tenants
-    first = submit("deploy", tenantId=active, artifact=support._deployment_zip(b"first"))
-    first_deployment = support._desired_deployment(first)
+    active, suspended, archived, _undeployed = tenants
+    submit("deploy", tenantId=active, artifact=support._deployment_zip(b"first"))
     submit("deploy", tenantId=active, artifact=support._deployment_zip(b"second"))
     for tenant in (suspended, archived):
         submit("deploy", tenantId=tenant, artifact=support._deployment_zip(b"other tenant"))
     submit("suspend", tenantId=suspended)
     submit("archive", tenantId=archived)
-    portable = tmp_path / "source.zip"
-    exported = support._submit(
-        tmp_path,
-        *connection,
-        support._request("export", str(uuid.uuid7()), tenantId=active),
-        export_path=portable,
-    )
-    assert exported["status"] == "succeeded"
     assert host.run("systemctl start %s", identity.UNIT).rc == 0
     # Exactly the command, source-scope configuration and first matching backup change.
     support._assert_ansible_reapply_result(
@@ -255,6 +244,87 @@ def test_installed_coherent_backup_restore_and_writer_exclusion(  # noqa: PLR091
     try:
         recovery._await_authorization_quiescent(host)
         _source_exclusion_canaries(host)
+        _ansible_fixture_write(host, tmp_path)
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            starts = []
+
+            def restart_caddy() -> None:
+                starts.append(executor.submit(host.run, "systemctl restart caddy.service"))
+
+            captures.race(host, restart_caddy, lock="publication")
+            started = starts[0].result(timeout=90)
+            assert started.rc == 0, started.stderr
+        assert host.service("caddy").is_running
+        for tenant in tenants:
+            manifest = support._read_state(
+                host, f"{support.STATE_ROOT}/tenants/{tenant}/desired.json"
+            )
+            if (
+                manifest["spec"].get("desiredDeployment") is not None
+                and manifest["spec"]["desiredState"] != "archived"
+            ):
+                submit("archive", tenantId=tenant)
+            submit("delete", tenantId=tenant)
+        exports._assert_empty_spool(host)
+        _start_backup(host)
+        assert captures.restore_and_measure(host, _latest(host))["tenants"] == []
+    finally:
+        recovery._start_reconcile_timer(host)
+
+
+def test_installed_backup_capture_races_mutations(  # noqa: PLR0915 - complete contention sequence
+    host: Host, tmp_path: Path
+) -> None:
+    require_owned_fixture()
+    assert support._initialize_namespace(host)
+    # This independent fixture starts with the supported empty audit lineage.
+    # Activate publication and coherent capture in one reviewed convergence;
+    # the other case covers migration over history and mode-on idempotence.
+    assert host.run("systemctl start %s", identity.UNIT).rc == 0
+    support._assert_ansible_reapply_result(
+        support._run_ansible_reapply(backup_recovery_enabled=True), expected_changes=4
+    )
+    support._prepare_edge_probe(host)
+    support._initialize_admission_pacing(host)
+    connection = support._operator_inputs(tmp_path)
+
+    def submit(
+        operation: str, *, artifact: bytes | None = None, **fields: object
+    ) -> dict[str, object]:
+        result = support._submit(
+            tmp_path,
+            *connection,
+            support._request(operation, str(uuid.uuid7()), **fields),
+            artifact=artifact,
+        )
+        assert result["status"] == "succeeded", result
+        return result
+
+    active, target = (
+        str(
+            submit(
+                "create",
+                slug=f"m3-backup-races-{uuid.uuid7().hex[-12:]}",
+                quotas={"storageMiB": 1, "entries": 10},
+            )["tenantId"]
+        )
+        for _ in range(2)
+    )
+    first = submit("deploy", tenantId=active, artifact=support._deployment_zip(b"first"))
+    first_deployment = support._desired_deployment(first)
+    submit("deploy", tenantId=active, artifact=support._deployment_zip(b"second"))
+    portable = tmp_path / "source.zip"
+    exported = support._submit(
+        tmp_path,
+        *connection,
+        support._request("export", str(uuid.uuid7()), tenantId=active),
+        export_path=portable,
+    )
+    assert exported["status"] == "succeeded"
+    assert host.run("systemctl stop lowerduckpond-static-reconcile.timer").rc == 0
+    try:
+        recovery._await_authorization_quiescent(host)
 
         def race(
             operation: str, *, artifact: bytes | None = None, **fields: object
@@ -280,7 +350,6 @@ def test_installed_coherent_backup_restore_and_writer_exclusion(  # noqa: PLR091
             slug=f"m3-backup-race-{uuid.uuid7().hex[-12:]}",
             quotas={"storageMiB": 1, "entries": 10},
         )
-        tenants.append(str(created["tenantId"]))
         third = race("deploy", tenantId=active, artifact=support._deployment_zip(b"third"))
         fourth = race("deploy", tenantId=active, artifact=support._deployment_zip(b"fourth"))
         assert not host.file(f"{support.RELEASE_ROOT}/{active}/releases/{first_deployment}").exists
@@ -295,44 +364,24 @@ def test_installed_coherent_backup_restore_and_writer_exclusion(  # noqa: PLR091
                 else {}
             )
             race(operation, tenantId=active, **fields)
-        race("import", tenantId=undeployed, artifact=portable.read_bytes())
+        race("import", tenantId=target, artifact=portable.read_bytes())
         race("archive", tenantId=active)
         race("restore", tenantId=active)
-        race("delete", tenantId=archived)
-        tenants.remove(archived)
+        request = support._request("reconcile", str(uuid.uuid7()), tenantId=active)
+        job = support._issue_without_handoff(host, request)
+        _repair_overlap(host, request, job)
+        race("archive", tenantId=active)
+        race("delete", tenantId=active)
+        submit("suspend", tenantId=target)
         with ThreadPoolExecutor(max_workers=1) as executor:
             work = []
 
             def emergency() -> None:
-                work.append(
-                    executor.submit(deletion._emergency, host, suspended, str(uuid.uuid7()))
-                )
+                work.append(executor.submit(deletion._emergency, host, target, str(uuid.uuid7())))
 
             captures.race(host, emergency, lock="publication")
             assert work[0].result(timeout=90)["status"] == "succeeded"
-        tenants.remove(suspended)
-        request = support._request("reconcile", str(uuid.uuid7()), tenantId=active)
-        job = support._issue_without_handoff(host, request)
-        _repair_overlap(host, request, job)
-        _ansible_fixture_write(host, tmp_path)
-
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            starts = []
-
-            def restart_caddy() -> None:
-                starts.append(executor.submit(host.run, "systemctl restart caddy.service"))
-
-            captures.race(host, restart_caddy, lock="publication")
-            started = starts[0].result(timeout=90)
-            assert started.rc == 0, started.stderr
-        assert host.service("caddy").is_running
-        for tenant in tenants:
-            manifest = support._read_state(
-                host, f"{support.STATE_ROOT}/tenants/{tenant}/desired.json"
-            )
-            if manifest["spec"].get("desiredDeployment") is not None:
-                submit("archive", tenantId=tenant)
-            submit("delete", tenantId=tenant)
+        submit("delete", tenantId=created["tenantId"])
         exports._assert_empty_spool(host)
         _start_backup(host)
         assert captures.restore_and_measure(host, _latest(host))["tenants"] == []
