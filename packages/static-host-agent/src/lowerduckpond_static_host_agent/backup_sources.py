@@ -149,7 +149,10 @@ class _Walk:
             if directory
             else {0o600}
         )
-        groups = {self.owner, self.content_group} if content else {self.owner}
+        # Root executors run with primary group caddy for publication. Their
+        # private state remains root-only through 0700/0600 modes; preserve the
+        # actual root/caddy GID rather than rejecting ordinary durable writes.
+        groups = {self.owner, self.content_group}
         if (
             metadata.st_dev != device
             or metadata.st_uid != self.owner

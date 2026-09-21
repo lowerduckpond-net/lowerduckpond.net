@@ -15,7 +15,7 @@ from scripts.qualification_groups import GROUPS
 FORMAT = "lowerduckpond-installed-selection-v1"
 ALL = tuple(GROUPS)
 _TESTS = "config/ansible/molecule/m3_8/tests/"
-_EMERGENCY = ("deletion-quarantine", "credentials", "reboot-journey")
+_EMERGENCY = ("backup-coherence", "deletion-quarantine", "credentials", "reboot-journey")
 # Only leaf modules with reviewed consumers are narrowed. Everything else,
 # including shared fixtures, schemas, authorization and deployment policy, is full.
 DEPENDENCIES = {
@@ -35,7 +35,6 @@ DEPENDENCIES = {
     ),
     _TESTS + "test_archive_independent.py": ("archive-cycles", "reboot-journey"),
     _TESTS + "test_archive_full_size.py": ("full-size-archive", "reboot-journey"),
-    _TESTS + "test_deletion.py": ("deletion-quarantine", "reboot-journey"),
     _TESTS + "test_quarantine_recovery.py": ("deletion-quarantine", "reboot-journey"),
     _TESTS + "test_archive_credentials.py": ("credentials", "reboot-journey"),
     _TESTS + "test_reboot.py": ("reboot-journey",),

@@ -26,7 +26,7 @@ from lowerduckpond_static_host_agent.backup_identity import (
 )
 
 MAX_SNAPSHOT_BYTES = 16 * 1024 * 1024
-MAX_SNAPSHOTS = 16_384
+MAX_SNAPSHOTS = 8_192
 METADATA_TIMEOUT_SECONDS = 300
 LINEAGE_TAG = "lowerduckpond-audit-lineage"
 LINEAGE_FILE = "audit-lineage-genesis.json"

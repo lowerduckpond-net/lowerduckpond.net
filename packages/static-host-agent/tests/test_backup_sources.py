@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import stat
+from io import BytesIO
 from pathlib import Path
 
 import pytest
@@ -9,6 +11,27 @@ from lowerduckpond_static_host_agent import backup_sources as sources
 from lowerduckpond_static_host_agent.backup_identity import BackupIdentityError
 from lowerduckpond_static_host_agent.capacity import CapacityRejectedError, FilesystemCapacity
 from lowerduckpond_static_host_agent.locks import LockOrderError
+
+
+@pytest.mark.parametrize("directory", [False, True])
+def test_private_state_accepts_executor_group_without_granting_group_access(
+    directory: bool,
+) -> None:
+    walker = sources._Walk(owner=0, content_group=991, stream=BytesIO())
+    kind = stat.S_IFDIR if directory else stat.S_IFREG
+    mode = 0o700 if directory else 0o600
+
+    def metadata(group: int, permissions: int) -> os.stat_result:
+        return os.stat_result((kind | permissions, 1, 10, 1, 0, group, 0, 0, 0, 0))
+
+    for group in (0, 991):
+        walker.validate(metadata(group, mode), ("state", "record"), directory=directory, device=10)
+    with pytest.raises(BackupIdentityError, match="unsafe"):
+        walker.validate(metadata(992, mode), ("state", "record"), directory=directory, device=10)
+    with pytest.raises(BackupIdentityError, match="unsafe"):
+        walker.validate(
+            metadata(991, mode | 0o040), ("state", "record"), directory=directory, device=10
+        )
 
 
 @pytest.fixture

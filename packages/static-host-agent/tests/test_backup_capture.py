@@ -11,6 +11,7 @@ from lowerduckpond_static_host_agent.backup_capture import build_capture_descrip
 from lowerduckpond_static_host_agent.backup_descriptor import decode_backup_descriptor
 from lowerduckpond_static_host_agent.backup_identity import BackupIdentityError
 from lowerduckpond_static_host_agent.capacity import FilesystemCapacity
+from lowerduckpond_static_host_agent.durable import StatePathError
 from lowerduckpond_static_host_agent.locks import LockManager, LockMode, LockName
 from lowerduckpond_static_host_agent.release_store import ReleaseStoreError
 from lowerduckpond_static_host_agent.release_tree import measure_release_tree
@@ -126,6 +127,20 @@ def test_excluded_delivery_and_intake_changes_do_not_change_captured_authority(
     release = capture.roots["content"] / "sites" / TENANT / "releases" / DEPLOYMENT
     (release / "index.html").write_bytes(b"unrecorded release change")
     with pytest.raises(BackupIdentityError, match="release digest"):
+        capture.descriptor()
+
+
+def test_capture_preserves_and_excludes_safe_recovery_publication_temporary(
+    capture: Capture,
+) -> None:
+    original = capture.descriptor()
+    path = capture.roots["recovery"] / (".ldp-state-" + "a" * 32)
+    path.write_bytes(b"uncommitted recovery evidence")
+    path.chmod(0o600)
+    assert capture.descriptor() == original
+    assert path.read_bytes() == b"uncommitted recovery evidence"
+    path.chmod(0o644)
+    with pytest.raises(StatePathError, match="unsafe inode"):
         capture.descriptor()
 
 

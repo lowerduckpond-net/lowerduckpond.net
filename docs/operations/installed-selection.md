@@ -24,12 +24,12 @@ The initial narrow map is deliberately small:
 | Changed input | Required installed groups | Dependency basis |
 | --- | --- | --- |
 | Regular, nonexecutable Markdown under `docs/`, root README/CONTRIBUTING, or record JSON/checksums under the existing evidence directories | None; normal fast and repository-hygiene lanes remain. | These paths are not imported by installation/runtime code. This does not change the separate production qualification-input fingerprint. |
-| `emergency_plan.py` and its component regression `test_emergency_delete.py` | Deletion/quarantine, credentials, reboot journey. | The plan is imported only by `emergency_delete.py`. Installed deletion exercises root authority and exact archive retirement; credentials exercises the isolated emergency recovery entry point; the journey retains the real admission/restart policy. |
+| `emergency_plan.py` and its component regression `test_emergency_delete.py` | Backup coherence, deletion/quarantine, credentials, reboot journey. | The plan is imported only by `emergency_delete.py`. Backup coherence covers capture overlap with emergency deletion; installed deletion exercises root authority and exact archive retirement; credentials exercises isolated recovery; the journey retains admission/restart policy. |
 | Independent core wrapper | Core and reboot journey. | No other installed module imports this wrapper. |
 | Independent configuration wrapper | Both configuration cases and reboot journey. | The file contains both guards, each with a fresh active tenant. |
 | Independent recovery wrapper | Transport recovery, both overlap cases and reboot journey. | The file contains all three independent entry points. |
 | Independent archive wrapper / full-size archive test | Its archive case and reboot journey. | Each is an unimported test entry point; shared archive helpers remain full-matrix inputs. |
-| Deletion / quarantine / credential test module | Its declared group and reboot journey. | These test modules have no consumers in other installed modules. |
+| Quarantine / credential test module | Its declared group and reboot journey. | These test modules have no consumers in other installed modules. Deletion helpers are shared with backup coherence and therefore select the complete matrix. |
 | Reboot or cross-feature test | Reboot journey. | Both stages are required together, including the actual restart. |
 | Every other path | Complete installed matrix. | Unknown mappings never exempt coverage. This includes shared test helpers, authorization, persistence, recovery, schemas, units, Ansible roles, packaging, lockfiles, selectors, workflows and other test infrastructure. |
 

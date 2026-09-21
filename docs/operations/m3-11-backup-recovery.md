@@ -1,7 +1,7 @@
 # M3.11 backup and recovery operations
 
 M3.11 implementation is in progress. The accepted [plan](../plans/milestone-3.11.md)
-defines the complete qualification and production handoff. These P2a commands
+defines the complete qualification and production handoff. These P2 commands
 are preparation and verification tooling; production convergence remains an
 explicit later operator step after the final M3.11 qualification. M3.12 is
 unstarted and production publication stays disabled.
@@ -80,7 +80,7 @@ or network access is added to ordinary workers or the provisioner.
 The service is manual, has no timer and is not started by convergence in P2a.
 Its bounds are 30 minutes, 512 MiB, no swap, 32 tasks and one CPU; each Restic
 operation has a five-minute deadline. Snapshot discovery is limited to 16 MiB
-and 16,384 complete-ID records. Genesis content is limited to 16 KiB, with 32 KiB
+and 8,192 complete-ID records. Genesis content is limited to 16 KiB, with 32 KiB
 bounds on tree listings and write-command output. Oversized, duplicate or
 malformed metadata fails without displaying provider output. The only write is
 the dedicated genesis snapshot; the command never runs forget, prune, unlock,
@@ -98,3 +98,121 @@ unchanged until the dependent slices and recovery qualification are complete.
 Run its independent installed proof with `just check-installed-group backup-identity`.
 The case uses real Restic on an owned local repository and supported tenant
 operations. Local evidence does not qualify Spaces or restored-host service.
+
+## Coherent scheduled capture
+
+P2b installs the coherent capture path behind the explicit Ansible boolean
+`backup_static_recovery_enabled`, default `false`. It requires immutable Caddy
+generations, the verified selected artifact, a canonical namespace and the P2a
+repository-backed lineage. Enabling it verifies existing lineage; convergence
+does not initialize or rebind identity. Production activation remains part of
+the final M3.11 handoff, after reconstruction and cold-certificate qualification.
+No operator production action is required by this implementation slice.
+
+The policy captures `/srv/lowerduckpond`, `/var/lib/lowerduckpond/static`,
+`/var/lib/lowerduckpond/recovery`, a consistent compressed MariaDB logical dump,
+and the staged recovery descriptor. It excludes static intake/export delivery,
+release staging, validated abandoned state/recovery publication temporaries,
+generated Caddy configuration/environment and certificate/ACME storage.
+Temporary-looking **content** filenames remain authoritative and are included.
+The source-policy digest and backup health scope change with this policy.
+Existing snapshots remain in the repository under their original scope.
+
+The outer command takes the repository lock and stages SQL with the existing
+least-privilege database identity. It proves the selected artifact under its
+shared selection lease, then verifies the unique permanent repository genesis
+before acquiring shared publication followed by shared tenant-state. It measures
+the complete classified tree, stages a private descriptor outside the source
+roots, invokes fixed-source Restic, checks the full snapshot ID and unique capture
+tag, and independently dumps the descriptor for exact byte comparison. Both
+static leases remain held until all those steps finish. Restic inherits the
+exact locked descriptors, so parent death cannot release exclusion while a
+surviving reader runs. Names/inodes are revalidated after blocking and before
+success. Shared capture never reconciles state or removes its temporaries.
+
+On an explicitly migrated owned host, the fixed manual invocation is:
+
+```console
+sudo systemctl start lowerduckpond-backup.service
+sudo systemctl show lowerduckpond-backup.service --property=Result,ExecMainStatus
+sudo journalctl --unit lowerduckpond-backup.service --no-pager --lines=20
+```
+
+Success emits `backup_static_verified FULL_SNAPSHOT_ID` and updates the private,
+scope-bound success status. Failure emits `backup_static_unverified`, or
+`backup_static_artifact_unverified` before selected code runs, and updates failure
+status without refreshing success. SQL staging is removed on exit; the last
+descriptor remains private diagnostic evidence. In this mode convergence reuses
+only a matching local success status or runs a new verified capture. Repository
+tags alone cannot reconstruct a success status. A partial Restic exit, lost
+response, duplicate capture tag, changed source/inode, unsafe metadata, unknown
+record, oversized input or failed readback fails without retry, deletion,
+retagging or fallback. Preserve the repository and private descriptor for diagnosis.
+
+Capture/readback does not authorize serving a restored host. P5 supplies audit,
+exact-version archive, unfinished-operation, trusted runtime and TLS recovery.
+
+### Descriptor and limits
+
+`/var/cache/lowerduckpond-backup/staging/static-recovery.json` is canonical JSON
+plus LF, root-owned mode 0600, at most 256 KiB, with schema
+`lowerduckpond-static-backup-v1`. It binds the root-generated UUIDv7/time, source
+policy, selected artifact, lineage, namespace, optional launch record, audit
+head/counts, complete authority-tree digest/counts, sorted tenant and retained
+release inventories, unfinished intents, and non-secret Caddy generation/start
+evidence. Caddy evidence includes active/candidate/previous references, selected
+target and exact invocation-fenced start intent. It contains no environment,
+adapted configuration, credentials, tenant content or audit events.
+
+Existing contract digests retain their original formats. New backup digests use
+ADR 0030's domain-separated unsigned 64-bit length framing. Existing artifact
+and manifest hashes have explicit format names. The snapshot ID is external;
+the `capture-UUID` tag binds readback. Scheduled snapshots also carry the bound
+scope, lineage, repository and `lowerduckpond-static-backup` tags.
+
+Bounds include 25 tenants, four retained/candidate records and releases per
+tenant, two intents, and the existing authorization/release allocation limits.
+A fourth release is accepted only as a named interrupted candidate; admission
+limits do not increase. The complete tree is limited to 800,000 entries, 12 GiB,
+32-MiB individual files and depth 40; its inventory streams through a private,
+at-most-1-GiB temporary file. Capacity reservations retain the existing
+5-GiB/10-percent and 100,000-inode/10-percent free floors. Special files, symlinks,
+hardlinks, nested mounts, extended attributes and unsafe ownership/modes fail.
+The recovery root currently admits only an empty committed namespace; P5 adds
+exact journal/receipt schemas. Safe publication temporaries are ignored intact.
+
+The whole backup service has a 30-minute deadline, 512 MiB, no swap, 32 tasks,
+1,024 descriptors and one CPU. Capture has a 30-minute Restic deadline within
+that service envelope; metadata/readback calls retain five-minute bounds.
+Output is bounded; provider stderr is not copied into diagnostics. Archive
+credentials remain masked. The provisioner gains no source or backup access.
+
+### Source writer inventory
+
+| Authority | Writers and exclusion |
+| --- | --- |
+| Namespace, launch, tenant manifests/observations, deployment/archive records, operation results, authorization pairs, intents, quarantine, audit | Repository transactions and repair/replay use exclusive tenant-state; runtime/release transitions also hold exclusive publication in the established order. Backup takes both shared. |
+| Published releases, retained history and retired release cleanup | Release-store mutation and lifecycle recovery require exclusive publication; capture measures under shared publication/state and refuses nonempty staging or unclassified retired names. |
+| Non-secret Caddy generation/start evidence | Generation publication, reload/start target and invocation evidence use exclusive publication. Capture verifies referenced immutable payloads under its shared lease. Secret-bearing bytes never enter the descriptor. |
+| Content parent, fixture, state/release directory metadata and Caddy generation/intent directories | Scoped root-only `configure-static-python` acquires publication then tenant-state exclusively before the actual Ansible file/template module writes. Each module releases both on exit; no synchronous service wait runs inside the wrapper. |
+| Recovery directory metadata | The same guarded Ansible task creates/maintains it. No committed recovery records are accepted until P5 defines their writers and schemas. |
+| SQL and descriptor staging | Root backup command under the exclusive repository lease; neither staging path belongs to the static authority tree. SQL retains the consistent database dump protocol. |
+
+The Ansible wrapper validates all four existing kernel lock inodes and never
+replaces them. First bootstrap is allowed only before any selected artifact,
+backup configuration, genesis or authoritative history exists, allowing the
+original create-only-missing lock tasks to finish. An existing host with missing,
+linked, nonempty, misowned or incorrectly protected locks refuses convergence.
+Kernel lock creation precedes artifact selection. This 0700 interpreter accepts
+privileged Ansible modules; it grants no ordinary-user command capability.
+
+Run `just check-installed-group backup-coherence` for its independently owned
+fixture. It creates active, suspended, archived and undeployed tenants, migrates
+explicitly, verifies idempotence and service failure/health boundaries, and uses
+real Restic capture/restore while writers contend. It covers create/deploy/import/
+rollback/rename/suspend/resume/archive/restore/delete/export/emergency/reconcile,
+authorization repair, release cleanup, Caddy restart and Ansible writes. Every
+restored tree is measured against its descriptor. Exclusion canaries and a
+temporary-looking authoritative file check the actual source policy. Accounting
+and teardown remain mandatory. Results are diagnostic local/MinIO evidence;
+live Spaces and host reconstruction require later qualification.

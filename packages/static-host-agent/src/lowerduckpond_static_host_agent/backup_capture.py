@@ -172,10 +172,13 @@ def _require_source_layout(roots: Mapping[str, Path], owner: int) -> None:
         expected_owner=owner,
         expected_directory_mode=0o700,
     ) as recovery:
+        temporaries = recovery.publication_temporaries(
+            expected_owner=owner, expected_mode=0o600, maximum_entries=64
+        )
         descriptor = recovery.duplicate_descriptor()
         try:
             with os.scandir(descriptor) as entries:
-                if next(entries, None) is not None:
+                if any(entry.name not in temporaries for entry in entries):
                     raise BackupIdentityError("backup recovery provenance is unclassified")
         finally:
             os.close(descriptor)

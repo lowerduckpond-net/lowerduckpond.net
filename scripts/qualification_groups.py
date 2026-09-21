@@ -38,6 +38,9 @@ class Group:
 
 _CREDENTIALS = "archive_credentials"
 GROUPS = {
+    "backup-coherence": Group(
+        (node("backup_coherence", "installed_coherent_backup_restore_and_writer_exclusion"),)
+    ),
     "backup-identity": Group(
         (node("backup_identity", "installed_backup_identity_migration_and_repository_fencing"),)
     ),
