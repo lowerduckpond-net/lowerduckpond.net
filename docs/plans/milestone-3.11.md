@@ -21,8 +21,9 @@ ADRs [0017](../adr/0017-atomically-activate-static-releases.md),
 [0025](../adr/0025-separate-tenant-archives-from-platform-backups.md),
 [0027](../adr/0027-gate-production-static-publication.md), and
 [0029](../adr/0029-bind-qualification-to-inputs-and-live-observations.md)
-remain authoritative. Section 3 identifies the narrow contract amendment that
-must be reviewed with this plan. Implementation cannot silently amend an ADR.
+remain authoritative. [ADR 0030](../adr/0030-reconstruct-static-hosts-from-bound-backups.md)
+is the explicit amendment reviewed with this plan. Implementation cannot
+silently amend an ADR.
 
 This phase includes component tests, independent installed cases, complete
 disposable reconstruction, live storage qualification, usable operator tooling,
@@ -67,7 +68,8 @@ repository and backup credential, separate from the tenant archive Space:
 | Source | Included authority and recovery treatment |
 | --- | --- |
 | `/srv/lowerduckpond` | Platform fixture and every retained immutable tenant release. Remeasure each restored release against its deployment record; reject extra releases except staging explicitly authorized by an intent. |
-| `/var/lib/lowerduckpond/static` | Namespace and launch records; tenant desired/observed state, deployment/archive records; complete authorization/correlation/result/phase and emergency evidence; lifecycle/construction/retirement intents and quarantine; local audit, protected index/witnesses, restore journal, and recovery cursor. |
+| `/var/lib/lowerduckpond/static` | Namespace and launch records; tenant desired/observed state, deployment/archive records; complete authorization/correlation/result/phase and emergency evidence; lifecycle/construction/retirement intents and quarantine; local audit, protected index/witnesses and recovery cursor. |
+| `/var/lib/lowerduckpond/recovery` | Restore journal, original backup descriptor and immutable generation-mapping receipts. This root is outside the trees it installs and is included in subsequent backups as recovery provenance. |
 | `/var/lib/caddy` | Existing certificate/ACME state; restore privately with validated ownership. This does not supply runtime configuration authority. |
 | Staged `mariadb.sql.gz` | Existing consistent logical database dump. M3 tenant authority is filesystem state; no cross-database transaction is claimed. |
 | Staged `static-recovery.json` | New versioned, canonical recovery descriptor captured under both static locks. Includes non-secret Caddy selection/start-intent evidence that lives outside the static tree. |
@@ -182,7 +184,9 @@ segments form a contiguous prefix. A closed segment has a durable successor;
 never force-close or remove the current tail to manufacture rotation capacity.
 
 Create one dedicated snapshot of an isolated, sealed directory containing only
-`descriptor.json` and `segment.jsonl`. Its required tags are
+`descriptor.json` and `segment.jsonl`, at the fixed source
+`/var/cache/lowerduckpond-backup/audit/snapshot`. Restic's structural parent
+directories are permitted; extra payloads are not. Its required tags are
 `lowerduckpond-audit-archive`, `lineage-<uuid>`, `rotation-<uuid>`, and
 `repository-<binding digest>`, with the bound node host. It must not have
 `scheduled`. Verify the complete snapshot tree, paths, safe types, byte lengths,
@@ -235,6 +239,10 @@ also remains. A later index expansion/compaction requires reviewed migration.
 
 Rotation defaults off until retention protection and restored-state consumers
 are installed and qualified. Process at most one closed segment per invocation.
+Once enabled, an hourly timer rotates the oldest eligible closed segment;
+ordinary audit usage at 64 MiB raises a warning before the 128-MiB ceiling.
+Admission reserves witness/index headroom, so reaching the ordinary ceiling
+cannot authorize borrowing the administrator reserve for rotation.
 At every durable write use file sync, rename and parent sync; removals require
 parent sync. Compare revisions before each transition. Tests inject termination
 on both sides of every primitive, not just at named phase boundaries.
@@ -367,12 +375,20 @@ the scheduled snapshot's exact terminal sequence/hash. Remote descriptors can
 postdate the backup: use only the identical prefix through that boundary,
 including an identical overlap with a locally backed-up segment. Preserve later
 evidence separately; never replay a future audit entry into old tenant state.
-A descriptor crossing the snapshot terminal requires exact prefix verification,
-with its future suffix retained as history, not active-chain authority. A fork,
-unknown lineage, missing required segment or unequal overlap blocks service.
+A descriptor crossing the snapshot terminal requires exact prefix verification
+for diagnosis, but its future suffix proves a later timeline and blocks automated
+restoration. The same applies to a wholly later descriptor. Preserve all that
+evidence and select a newer coherent backup or obtain a separately reviewed
+recovery decision; never extend the old prefix into a competing history under
+the same lineage. A fork, unknown lineage, missing required segment or unequal
+overlap also blocks service.
 
 The restore journal `lowerduckpond-host-restore-v1` is canonical, root-owned and
-at most 256 KiB. It binds restore UUIDv7, snapshot/capture/repository/lineage IDs,
+at most 256 KiB, at `/var/lib/lowerduckpond/recovery/host-restore.json`.
+The fixed coordinator lock and restore gate also live outside replaced roots;
+restored journals are inspected as prior provenance, never installed over the
+current coordinator's journal or gate. It binds restore UUIDv7,
+snapshot/capture/repository/lineage IDs,
 original artifact and input digests, destination identity, trusted new input
 digest, phase, exact inventory digests, chosen lifecycle recovery outcomes,
 old-to-new Caddy generation bindings, and verification receipts. Each phase
@@ -444,6 +460,11 @@ gate closed. Record old/new root identities before each rename, sync parents,
 and resume only that transaction. Never merge unknown destination files into the
 restored tree. Preserve the original snapshot and prior destination until the
 new host passes verification; do not double-count available free capacity.
+No ordinary worker may hold a state lock during installation. The coordinator
+holds its separate fixed lock, discards restored kernel-lock files as inert
+input, creates/validates fresh static lock inodes after installing the roots,
+and only then permits a service to acquire them. Preserve the validated durable
+recovery cursor separately from those recreated lock files.
 
 Build complete Caddy generations from trusted reviewed binary/base/credentials
 and reconciled tenant state. Record old-to-new runtime IDs and route-state
