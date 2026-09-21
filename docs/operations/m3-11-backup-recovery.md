@@ -298,7 +298,9 @@ and protected-content checks; it does not blindly repeat pruning. No command
 unlocks, repairs, retags or expires protected history. Any failed proof preserves
 the remaining evidence and records a failure without refreshing success.
 Maintenance has a 30-minute, 512-MiB, no-swap, 32-task, 1,024-descriptor, one-CPU
-service envelope. Timeout is failure; do not raise limits to qualify a run.
+service envelope. Forget, prune and integrity checking each use that operation
+deadline within the same overall service envelope; metadata requests retain a
+five-minute bound. Timeout is failure; do not raise limits to qualify a run.
 
 The reviewed [legacy compatibility amendment](../plans/milestone-3.11.md#p3-activation-and-legacy-compatibility-amendment)
 permits ordinary maintenance only before **any** M3.11 local or remote authority

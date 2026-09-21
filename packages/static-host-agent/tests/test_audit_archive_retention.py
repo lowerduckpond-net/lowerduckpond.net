@@ -175,9 +175,8 @@ def test_no_removals_is_still_a_complete_inventory(monkeypatch: pytest.MonkeyPat
 def test_destructive_phases_use_disjoint_fixed_commands(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[str, ...]] = []
 
-    def restic(arguments: tuple[str, ...], _environment: Mapping[str, str], _limit: int) -> bytes:
-        calls.append(arguments)
-        return b""
+    def restic(_arguments: tuple[str, ...], _environment: Mapping[str, str], _limit: int) -> bytes:
+        pytest.fail("destructive maintenance must not use the shorter metadata deadline")
 
     def run(
         arguments: tuple[str, ...],
@@ -188,6 +187,7 @@ def test_destructive_phases_use_disjoint_fixed_commands(monkeypatch: pytest.Monk
         timeout_seconds: int,
     ) -> bytes:
         assert source is None and timeout_seconds == adapter.MAINTENANCE_TIMEOUT_SECONDS
+        assert _limit == 32 * 1024
         calls.append(arguments)
         return b""
 

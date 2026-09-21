@@ -315,7 +315,13 @@ def forget_exact_ids(ids: tuple[str, ...], environment: Mapping[str, str]) -> No
     if ids:
         for snapshot_id in ids:
             formats.full_snapshot_id(snapshot_id)
-        _restic(("forget", "--quiet", *ids), environment, 32 * 1024)
+        _run_restic(
+            ("forget", "--quiet", *ids),
+            environment,
+            32 * 1024,
+            None,
+            timeout_seconds=MAINTENANCE_TIMEOUT_SECONDS,
+        )
 
 
 def prune_repository(environment: Mapping[str, str]) -> None:
