@@ -12,6 +12,7 @@ from testinfra.host import Host
 
 COMMAND = "/usr/local/libexec/lowerduckpond/backup-state-identity"
 LINEAGE = f"{support.STATE_ROOT}/platform/audit-lineage.json"
+GENESIS = f"{support.STATE_ROOT}/locks/audit-lineage-genesis.json"
 UNIT = "lowerduckpond-backup-identity.service"
 PRIVATE_MODE = 0o600
 
@@ -59,11 +60,30 @@ def test_installed_backup_identity_migration_and_repository_fencing(
     assert initialized.rc == 0, host.run("journalctl -u %s --no-pager -n 20", UNIT).stdout
     original = host.file(LINEAGE).content
     record = json.loads(original)
+    assert host.file(GENESIS).content == original
     assert record["initialEntryCount"] > 0
     assert host.file(LINEAGE).user == "root" and host.file(LINEAGE).mode == PRIVATE_MODE
     assert host.run("%s --verify", COMMAND).rc == 0
     assert host.run("systemctl start %s", UNIT).rc == 0
     assert host.file(LINEAGE).content == original
+    # This is before any lineage-tagged snapshot. Losing the primary must
+    # resume the original genesis, never create another UUID over tenant history.
+    _run(
+        host,
+        f"""
+from pathlib import Path
+import subprocess
+primary, genesis = Path({LINEAGE!r}), Path({GENESIS!r})
+original = primary.read_bytes()
+anchor = genesis.stat().st_ino
+primary.unlink()
+assert subprocess.run([{COMMAND!r}, '--verify'], capture_output=True).returncode != 0
+assert not primary.exists()
+assert subprocess.run([{COMMAND!r}, '--initialize'], capture_output=True).returncode == 0
+assert primary.read_bytes() == genesis.read_bytes() == original
+assert genesis.stat().st_ino == anchor
+""",
+    )
     denied = host.run("runuser -u ldp-provisioner -- %s --initialize", COMMAND)
     assert denied.rc != 0
     assert host.run("/usr/local/libexec/lowerduckpond/backup-identity-agent --initialize").rc != 0
@@ -87,7 +107,7 @@ def test_installed_backup_identity_migration_and_repository_fencing(
         host,
         f"backup --json --host {record['repository']['nodeName']} "
         f"--tag lineage-{record['lineageId']} "
-        f"--tag repository-{record['repositoryBinding']['value']} {LINEAGE}",
+        f"--tag repository-{record['repositoryBinding']['value']} {LINEAGE} {GENESIS}",
     )
     summary = json.loads(output.splitlines()[-1])
     snapshot = summary["snapshot_id"]
@@ -97,21 +117,28 @@ def test_installed_backup_identity_migration_and_repository_fencing(
     restore = destination.stdout.strip()
     _restic(host, f"restore {snapshot} --target {restore}")
     assert host.file(restore + LINEAGE).content == original
+    assert host.file(restore + GENESIS).content == original
     _run(
         host,
         f"""
 from pathlib import Path
 path = Path({LINEAGE!r})
+genesis = Path({GENESIS!r})
 saved = path.read_bytes()
+anchor = genesis.read_bytes()
 path.unlink()
+genesis.unlink()
 try:
     import subprocess
     result = subprocess.run([{COMMAND!r}, '--initialize'], capture_output=True)
     assert result.returncode != 0
     assert not path.exists()
+    assert not genesis.exists()
 finally:
     path.write_bytes(saved)
     path.chmod(0o600)
+    genesis.write_bytes(anchor)
+    genesis.chmod(0o600)
 """,
     )
     assert host.run("%s --verify", COMMAND).rc == 0

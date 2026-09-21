@@ -20,6 +20,7 @@ from lowerduckpond_static_domain import generate_uuid7
 
 from lowerduckpond_static_host_agent.audit import AuditState, inspect_audit
 from lowerduckpond_static_host_agent.backup_identity import (
+    GENESIS_PATH,
     LINEAGE_PATH,
     LINEAGE_SCHEMA,
     MAX_IDENTITY_BYTES,
@@ -71,6 +72,7 @@ def lineage_for_repository(  # noqa: PLR0913 - explicit privilege and failure bo
     initialize: bool,
     expected_owner: int,
     failure_hook: FailureHook | None = None,
+    genesis_failure_hook: FailureHook | None = None,
 ) -> dict[str, object]:
     """Caller holds repository serialization and the selected artifact lease.
 
@@ -96,28 +98,34 @@ def lineage_for_repository(  # noqa: PLR0913 - explicit privilege and failure bo
         if canonical_json_bytes(namespace) != namespace_raw:
             raise BackupIdentityError("platform namespace is not canonical")
         namespace_digest = platform_state_digest(namespace).to_dict()
-        try:
-            lineage = decode_lineage(_read(root, LINEAGE_PATH, expected_owner, MAX_IDENTITY_BYTES))
-        except FileNotFoundError:
-            if not initialize:
-                raise BackupIdentityError("audit lineage has not been initialized") from None
-            lineage = None
-        _require_snapshot_history(snapshot_tags, identity, lineage)
+        genesis = _optional_lineage(root, GENESIS_PATH, expected_owner)
+        published = _optional_lineage(root, LINEAGE_PATH, expected_owner)
+        if published is not None and (genesis is None or published != genesis):
+            raise BackupIdentityError("audit lineage genesis is missing or inconsistent")
+        if published is None and not initialize:
+            raise BackupIdentityError("audit lineage has not been initialized")
+        _require_snapshot_history(snapshot_tags, identity, genesis)
         audit = inspect_audit(
             root,
             expected_owner=expected_owner,
             expected_directory_mode=0o700,
             expected_record_mode=0o600,
         )
-        if lineage is not None:
+        if genesis is not None:
             if (
-                lineage["repository"] != identity.document()
-                or lineage["namespaceDigest"] != namespace_digest
+                genesis["repository"] != identity.document()
+                or genesis["namespaceDigest"] != namespace_digest
             ):
                 raise BackupIdentityError("audit lineage binding changed")
-            _require_initial_prefix(root, expected_owner, lineage, audit)
-            _sync_platform(root)
-            return lineage
+            _require_initial_prefix(root, expected_owner, genesis, audit)
+            # This immutable independent anchor is published and synced first.
+            # Missing primary bytes can only be copied from this exact identity.
+            _sync_directory(root, "locks")
+            if published is None:
+                _publish_primary(root, genesis, expected_owner, failure_hook)
+            else:
+                _sync_directory(root, "platform")
+            return genesis
         # Inspection above validates the complete pre-migration chain. An archive
         # directory/index is rejected by that reader rather than authorizing a
         # new lineage over a missing prefix. No audit bytes are rewritten.
@@ -136,14 +144,40 @@ def lineage_for_repository(  # noqa: PLR0913 - explicit privilege and failure bo
                 "initialTerminalEntryDigest": audit.terminal_digest,
             }
         )
-        with root.open_descendant(("platform",)) as platform:
-            platform.remove_abandoned_publication_temporaries(
-                expected_owner=expected_owner, expected_mode=0o600, maximum_entries=64
-            )
+        _remove_temporaries(root, "locks", expected_owner)
         root.create_immutable(
-            LINEAGE_PATH, canonical_json_bytes(lineage), mode=0o600, failure_hook=failure_hook
+            GENESIS_PATH,
+            canonical_json_bytes(lineage),
+            mode=0o600,
+            failure_hook=genesis_failure_hook,
         )
+        _publish_primary(root, lineage, expected_owner, failure_hook)
         return lineage
+
+
+def _optional_lineage(
+    root: DurableDirectory, path: tuple[str, ...], owner: int
+) -> dict[str, object] | None:
+    try:
+        return decode_lineage(_read(root, path, owner, MAX_IDENTITY_BYTES))
+    except FileNotFoundError:
+        return None
+
+
+def _remove_temporaries(root: DurableDirectory, name: str, owner: int) -> None:
+    with root.open_descendant((name,)) as directory:
+        directory.remove_abandoned_publication_temporaries(
+            expected_owner=owner, expected_mode=0o600, maximum_entries=64
+        )
+
+
+def _publish_primary(
+    root: DurableDirectory, lineage: dict[str, object], owner: int, failure_hook: FailureHook | None
+) -> None:
+    _remove_temporaries(root, "platform", owner)
+    root.create_immutable(
+        LINEAGE_PATH, canonical_json_bytes(lineage), mode=0o600, failure_hook=failure_hook
+    )
 
 
 def _require_current_state_lease(
@@ -174,11 +208,11 @@ def _require_current_state_lease(
         os.close(parent)
 
 
-def _sync_platform(root: DurableDirectory) -> None:
+def _sync_directory(root: DurableDirectory, name: str) -> None:
     # A previous process may have died after immutable rename but before the
     # directory sync. Re-observation must close that durability gap before use.
-    with root.open_descendant(("platform",)) as platform:
-        descriptor = platform.duplicate_descriptor()
+    with root.open_descendant((name,)) as directory:
+        descriptor = directory.duplicate_descriptor()
         try:
             os.fsync(descriptor)
         finally:

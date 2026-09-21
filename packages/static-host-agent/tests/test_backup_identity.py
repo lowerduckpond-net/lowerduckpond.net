@@ -12,6 +12,7 @@ from lowerduckpond_static_host_agent import DurabilityBoundary, LockManager, Sta
 from lowerduckpond_static_host_agent.audit import AuditError
 from lowerduckpond_static_host_agent.backup_identity import (
     BINDING_FORMAT,
+    GENESIS_PATH,
     LINEAGE_PATH,
     MAX_IDENTITY_BYTES,
     BackupIdentityError,
@@ -176,8 +177,9 @@ def test_identity_changes_never_rebind_existing_lineage(state: Path, field: str)
     ],
 )
 @pytest.mark.parametrize("process_exit", [False, True])
+@pytest.mark.parametrize("phase", ["genesis", "primary"])
 def test_every_initialization_interruption_resumes_one_published_identity(
-    state: Path, boundary: DurabilityBoundary, process_exit: bool
+    state: Path, boundary: DurabilityBoundary, process_exit: bool, phase: str
 ) -> None:
     path = state.joinpath(*LINEAGE_PATH)
 
@@ -194,7 +196,8 @@ def test_every_initialization_interruption_resumes_one_published_identity(
             snapshot_tags=(),
             initialize=True,
             expected_owner=os.geteuid(),
-            failure_hook=interrupt,
+            failure_hook=interrupt if phase == "primary" else None,
+            genesis_failure_hook=interrupt if phase == "genesis" else None,
         )
 
     if process_exit:
@@ -207,12 +210,17 @@ def test_every_initialization_interruption_resumes_one_published_identity(
         with pytest.raises(InterruptedError):
             attempt()
     published = path.read_bytes() if path.exists() else None
+    anchor = state.joinpath(*GENESIS_PATH)
+    genesis = anchor.read_bytes() if anchor.exists() else None
     recovered = _lineage(state)
     assert recovered["initialEntryCount"] == 1
     assert _lineage(state, initialize=False) == recovered
     if published is not None:
         assert path.read_bytes() == published
+    if genesis is not None:
+        assert anchor.read_bytes() == path.read_bytes() == genesis
     assert not list((state / "platform").glob(".ldp-state-*"))
+    assert not list((state / "locks").glob(".ldp-state-*"))
 
 
 @pytest.mark.parametrize(
@@ -334,3 +342,63 @@ def test_hostile_lineage_bytes_or_inode_never_authorize_reinitialization(
         path.write_bytes(canonical_json_bytes(document))
     with pytest.raises((BackupIdentityError, StatePathError)):
         _lineage(state)
+
+
+def test_missing_primary_before_any_snapshot_resumes_the_original_genesis(state: Path) -> None:
+    original = _lineage(state)
+    primary = state.joinpath(*LINEAGE_PATH)
+    anchor = state.joinpath(*GENESIS_PATH)
+    raw = primary.read_bytes()
+    assert anchor.read_bytes() == raw
+    inode = anchor.stat().st_ino
+    primary.unlink()
+    with pytest.raises(BackupIdentityError, match="not been initialized"):
+        _lineage(state, initialize=False)
+    assert not primary.exists()
+    _append(state, 1)
+    assert _lineage(state) == original
+    assert primary.read_bytes() == anchor.read_bytes() == raw
+    assert anchor.stat().st_ino == inode
+
+
+@pytest.mark.parametrize("damage", ["missing", "corrupt", "conflict", "symlink", "mode"])
+def test_missing_or_inconsistent_genesis_never_rebinds_primary(state: Path, damage: str) -> None:
+    _lineage(state)
+    primary = state.joinpath(*LINEAGE_PATH)
+    original = primary.read_bytes()
+    anchor = state.joinpath(*GENESIS_PATH)
+    if damage == "missing":
+        anchor.unlink()
+    elif damage == "corrupt":
+        anchor.write_bytes(b"{}\n")
+    elif damage == "conflict":
+        record = json.loads(anchor.read_bytes())
+        record["lineageId"] = "0198d17f-6f4a-7000-8000-111111111111"
+        anchor.write_bytes(canonical_json_bytes(record))
+    elif damage == "symlink":
+        anchor.unlink()
+        anchor.symlink_to(primary)
+    elif damage == "mode":
+        anchor.chmod(0o644)
+    with pytest.raises((BackupIdentityError, StatePathError)):
+        _lineage(state)
+    assert primary.read_bytes() == original
+
+
+def test_repository_history_prevents_reset_when_both_local_identity_records_are_lost(
+    state: Path,
+) -> None:
+    original = _lineage(state)
+    state.joinpath(*LINEAGE_PATH).unlink()
+    state.joinpath(*GENESIS_PATH).unlink()
+    tags = (f"lineage-{original['lineageId']}", f"repository-{IDENTITY.binding()['value']}")
+    with pytest.raises(BackupIdentityError, match="existing audit lineage"):
+        lineage_for_repository(
+            state,
+            IDENTITY,
+            snapshot_tags=((IDENTITY.node_name, tags),),
+            initialize=True,
+            expected_owner=os.geteuid(),
+        )
+    assert not state.joinpath(*LINEAGE_PATH).exists()
+    assert not state.joinpath(*GENESIS_PATH).exists()

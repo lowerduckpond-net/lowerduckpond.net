@@ -22,14 +22,21 @@ sudo systemctl start lowerduckpond-backup-identity.service
 sudo /usr/local/libexec/lowerduckpond/backup-state-identity --verify
 ```
 
-The service explicitly initializes a missing lineage once. Subsequent service
-invocations verify the existing record unchanged. `--verify` refuses a missing
-record and never initializes one. Both require the original namespace and
-repository binding and verify the complete local audit chain, including its
+The service explicitly initializes a missing lineage once. It first publishes
+and syncs an independent immutable genesis record under
+`static/locks/audit-lineage-genesis.json`, then publishes the exact same canonical
+bytes under `static/platform/audit-lineage.json`. Subsequent invocations preserve
+the original identity. If the primary record is lost, `--initialize` can only
+restore those original bytes from the validated genesis record, even before any
+tagged snapshot exists. It cannot allocate another UUID. `--verify` refuses a
+missing primary and never repairs or initializes it. Both require the original
+namespace and repository binding and verify the complete local audit chain, including its
 recorded initialization prefix. A missing or corrupt record is not permission
-to regenerate identity. Existing protected or lineage-tagged repository history
-blocks initialization without the original lineage. Never delete that record,
-an index or a snapshot to make initialization succeed.
+to regenerate identity. A primary without its genesis, a corrupt record or
+disagreement between the records fails closed. Existing protected or
+lineage-tagged repository history also blocks initialization when both local
+records are missing. Never delete either record, an index or a snapshot to make
+initialization succeed.
 
 Successful verification emits only `backup_identity_verified`. Failure emits
 `backup_identity_unverified`, or `backup_identity_lock_unverified` when the fixed
@@ -40,8 +47,8 @@ sudo systemctl show lowerduckpond-backup-identity.service --property=Result,Exec
 sudo journalctl --unit lowerduckpond-backup-identity.service --no-pager --lines=20
 ```
 
-The private, immutable `static/platform/audit-lineage.json` record is canonical
-JSON plus LF, at most 16 KiB, root-owned mode 0600. It contains the versioned
+Both private, immutable records are canonical JSON plus LF, at most 16 KiB each,
+root-owned mode 0600. They contain the versioned
 repository identity (full config ID, node and canonical location), its digest,
 root-generated UUIDv7, namespace digest, initialization time, original audit
 entry count and terminal digest. Repository binding uses ADR 0030's domain and
@@ -54,8 +61,9 @@ fail. Changing credentials/cache/retention does not change repository identity.
 The command serializes repository access before leasing the selected artifact
 and taking exclusive tenant-state. Restic config and snapshot metadata reads
 complete before the state lock is acquired. Initialization validates the whole
-pre-migration chain before publishing an immutable record with file and parent
-directory sync; interruption after rename resumes that same identity. It does
+pre-migration chain before publishing genesis with file and parent-directory
+sync, then publishing the primary with its own file and parent-directory sync.
+Interruption after either rename resumes that same identity. It does
 not renumber or rewrite audit entries. An abandoned pre-publication temporary
 does not grant authority. No network access or backup credential is added to
 ordinary workers or the provisioner.
@@ -68,8 +76,10 @@ fails closed without displaying provider output. It never runs forget, prune,
 unlock, repair or retagging. P3 supplies protected-content verification and
 retention enforcement; metadata discovery here does not establish those proofs.
 
-Reapplying or reverting P2a tooling leaves the immutable record and original
-audit untouched. Keep the record in all subsequent platform backups. A changed
+Reapplying or reverting P2a tooling leaves the immutable records and original
+audit untouched. Keep both records in all subsequent platform backups. Genesis
+is authoritative metadata, not a kernel lock: recreating lock inodes during host
+reconstruction must preserve this record and the recovery cursor. A changed
 repository/location/node needs an explicit reviewed migration; there is no
 automatic rebind switch. Scheduled source policy and production rotation remain
 unchanged until the dependent slices and recovery qualification are complete.

@@ -21,6 +21,7 @@ IDENTITY_SCHEMA: Final = "lowerduckpond-backup-repository-v1"
 BINDING_FORMAT: Final = "lowerduckpond-backup-repository-binding-v1"
 LINEAGE_SCHEMA: Final = "lowerduckpond-audit-lineage-v1"
 LINEAGE_PATH: Final = ("platform", "audit-lineage.json")
+GENESIS_PATH: Final = ("locks", "audit-lineage-genesis.json")
 MAX_IDENTITY_BYTES: Final = 16 * 1024
 MAX_LINEAGE_ENTRIES: Final = (1 << 53) - 1
 _HEX: Final = re.compile(r"[0-9a-f]{64}", re.ASCII)
