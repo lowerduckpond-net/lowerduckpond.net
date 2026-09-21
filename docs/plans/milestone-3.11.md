@@ -569,7 +569,8 @@ share code; assertions cannot depend on another group's leftover tenants.
 
 | Group | Independent setup and required invariants |
 | --- | --- |
-| `backup-coherence` | Supported active/suspended/archived/undeployed fixtures; snapshot versus create/deploy/import/rollback/rename/suspend/resume/archive/restore/delete/emergency/reconcile, authorization repair, release cleanup and Caddy/Ansible overlap. Restored descriptor/state/releases are one recoverable boundary; excludes contain no canary secrets. |
+| `backup-coherence` | Own active/suspended/archived/undeployed fixtures; migration over existing history, idempotence, service failure/health/privilege bounds and Caddy/Ansible overlap. Restored descriptor/state/releases are one recoverable boundary; excludes contain no canary secrets. |
+| `backup-mutation-overlap` | Own source/import-target fixtures and empty-lineage initialization; snapshot versus create/deploy/import/rollback/rename/suspend/resume/archive/restore/delete/export/emergency/reconcile, authorization repair and release cleanup. Each captured descriptor/state/release tree is restored and measured. |
 | `audit-protection` | Own Restic repository and closed-segment fixture; descriptor/schema/repository/tag failures, wrong full ID, aged ordinary snapshots, duplicate/orphan discovery, missing witness/index, real restore verification, interrupted forget/prune and indefinite protection. Rotation still disabled during the first implementation slice. |
 | `audit-rotation` | Supported tenant history spanning a closed segment; interrupt every snapshot/index/witness/head/unlink/sync phase, retry and reboot. Original correlations/results, deletion and later-transition authority survive local removal; ordinary cap/admin reserve/provisioner denial are enforced. |
 | `restore-reconstruction` | Fresh source and second fresh host, exact scheduled snapshot and archive versions; all four tenant states, retained release digests, archived prefix/local tail, excluded intake/export outcomes, intent recovery and trusted Caddy regeneration. Start fails at every inconsistent intermediate state; reboot and result replay pass. |
@@ -699,7 +700,7 @@ authority safeguards. Publication false is not a later tenant shutdown switch.
 | PR | Prerequisite and reviewable result |
 | --- | --- |
 | P1: plan and explicit ADR amendment | This document is the first commit. Settle locking, reconstruction authority, formats, failure cases and scope; merge before implementation. |
-| P2: coherent backup and recovery descriptor | P1. Complete source/writer inventory, repository binding and lineage schema/validated initialization before the first descriptor, exact capture authority, bounded units and `backup-coherence` coverage. No rotation. |
+| P2: coherent backup and recovery descriptor | P1. Complete source/writer inventory, repository binding and lineage schema/validated initialization before the first descriptor, exact capture authority, bounded units, `backup-coherence` and `backup-mutation-overlap` coverage. No rotation. |
 | P3: protected audit verification and maintenance | P2. Descriptor/index/witness schemas and readers, empty-index initialization against the existing P2 lineage, orphan discovery, retention guard, health and `audit-protection`. Rotation remains off. |
 | P4: durable rotation and historical consumers | P3. Snapshot/verify/index/remove state machine, all lookup consumers, resource/reserve boundaries and `audit-rotation`. Keep production feature off. |
 | P5: restored-host reconstruction | P4. Gated bootstrap including cold TLS storage, exact-version and timeline checks, missing-input decisions, generation mappings, independently runnable positive/negative/TLS recovery groups and operator restore instructions. |
@@ -716,9 +717,14 @@ completed decisions, next slice and required operator actions.
 P2 is split at its prerequisite boundary for review: P2a installs repository
 binding and explicit, durable lineage initialization, with the independent
 `backup-identity` case. P2b consumes that identity in the recovery descriptor,
-finishes the source/writer inventory and coherence changes, and adds the full
-`backup-coherence` case. Both must merge before P3. P2a does not change scheduled
-backup sources, enable rotation, or constitute a reconstruction qualification.
+finishes the source/writer inventory and coherence changes, and adds the combined
+`backup-coherence` case. Its passing [CI run 35563599873](https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35563599873)
+measured 39.35 minutes including setup against the 30-minute target. P2c separates
+that case into the two independent backup fixtures above, retaining assertions,
+production limits, accounting and the original timing evidence. Measure both
+new cases through normal validation; no deadline is extended. All three slices
+must merge before P3. P2a does not change scheduled backup sources, enable
+rotation, or constitute a reconstruction qualification.
 
 Completion requires all five implementation objectives to have passing mapped
 evidence, the final complete secure-workstation qualification, usable and
