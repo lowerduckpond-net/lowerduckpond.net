@@ -11,14 +11,13 @@ from pathlib import Path
 from lowerduckpond_static_contracts import (
     MAX_CANONICAL_BYTES,
     ContractKind,
-    audit_entry_digest,
     canonical_json_bytes,
     decode_contract,
     platform_state_digest,
 )
 from lowerduckpond_static_domain import generate_uuid7
 
-from lowerduckpond_static_host_agent.audit import AuditState, inspect_audit
+from lowerduckpond_static_host_agent.audit import AuditState, audit_prefix_terminal, inspect_audit
 from lowerduckpond_static_host_agent.backup_identity import (
     GENESIS_PATH,
     LINEAGE_PATH,
@@ -51,17 +50,11 @@ def require_initial_lineage_prefix(
         raise BackupIdentityError("audit history predates its lineage boundary")
     if not count:
         return
-    sequence = 0
-    for number in range(audit.segment_count):
-        raw = _read(root, ("audit", f"segment-{number:020d}.jsonl"), owner, 8 * 1024 * 1024)
-        for line in raw.splitlines(keepends=True):
-            sequence += 1
-            if sequence == count:
-                document = decode_contract(line, expected_kind=ContractKind.AUDIT_ENTRY)
-                if audit_entry_digest(document).to_dict() != lineage["initialTerminalEntryDigest"]:
-                    raise BackupIdentityError("audit history forks its lineage boundary")
-                return
-    raise BackupIdentityError("audit lineage boundary is unavailable")
+    terminal = audit_prefix_terminal(
+        root, count, expected_owner=owner, expected_directory_mode=0o700, expected_record_mode=0o600
+    )
+    if terminal != lineage["initialTerminalEntryDigest"]:
+        raise BackupIdentityError("audit history forks its lineage boundary")
 
 
 def lineage_for_repository(  # noqa: PLR0913 - explicit privilege and failure boundaries

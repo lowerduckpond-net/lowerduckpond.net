@@ -20,6 +20,18 @@ from lowerduckpond_static_contracts import (
     validate_uuid7,
 )
 
+from lowerduckpond_static_host_agent.audit_archive_admission import (
+    AuditArchiveCapacityError,
+    AuditProtectionError,
+    admit_archive_append,
+)
+from lowerduckpond_static_host_agent.audit_archive_formats import (
+    segment_from_witness,
+    validate_rotation,
+    verify_segment,
+)
+from lowerduckpond_static_host_agent.audit_archive_store import ArchivePrefix, read_archive_prefix
+from lowerduckpond_static_host_agent.backup_identity import BackupIdentityError
 from lowerduckpond_static_host_agent.durable import (
     DurableDirectory,
     FailureHook,
@@ -154,8 +166,19 @@ class AuditAppend:
 class _Segment:
     number: int
     name: str
-    data: bytes
+    payload: bytes
     allocated_bytes: int
+    archived: bool = False
+
+    @property
+    def data(self) -> bytes:
+        return segment_from_witness(self.payload) if self.archived else self.payload
+
+
+class _Segments(list[_Segment]):
+    def __init__(self, archive: ArchivePrefix) -> None:
+        super().__init__()
+        self.archive = archive
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,6 +209,7 @@ def admit_audit_append(  # noqa: PLR0913 - keep every security boundary explicit
     try:
         segments = _read_segments(
             audit_directory,
+            root=root,
             expected_owner=expected_owner,
             expected_directory_mode=expected_directory_mode,
             expected_record_mode=expected_record_mode,
@@ -217,6 +241,7 @@ def inspect_audit(
     try:
         segments = _read_segments(
             audit_directory,
+            root=root,
             expected_owner=expected_owner,
             expected_directory_mode=expected_directory_mode,
             expected_record_mode=expected_record_mode,
@@ -241,6 +266,7 @@ def inspect_audit_readonly(
     try:
         segments = _read_segments(
             audit_directory,
+            root=root,
             expected_owner=expected_owner,
             expected_directory_mode=expected_directory_mode,
             expected_record_mode=expected_record_mode,
@@ -268,6 +294,7 @@ def tenant_has_deployment_audit_history(  # noqa: PLR0913 - storage contract is 
     try:
         segments = _read_segments(
             audit_directory,
+            root=root,
             expected_owner=expected_owner,
             expected_directory_mode=expected_directory_mode,
             expected_record_mode=expected_record_mode,
@@ -302,6 +329,7 @@ def deployment_audit_history_tenant_ids(  # noqa: PLR0913
     try:
         segments = _read_segments(
             audit_directory,
+            root=root,
             expected_owner=expected_owner,
             expected_directory_mode=expected_directory_mode,
             expected_record_mode=expected_record_mode,
@@ -336,6 +364,7 @@ def tenant_has_creation_audit_history(  # noqa: PLR0913 - complete trusted audit
     try:
         segments = _read_segments(
             directory,
+            root=root,
             expected_owner=expected_owner,
             expected_directory_mode=expected_directory_mode,
             expected_record_mode=expected_record_mode,
@@ -371,6 +400,7 @@ def tenant_has_identity_audit_history(  # noqa: PLR0913 - storage contract is ex
     try:
         segments = _read_segments(
             audit_directory,
+            root=root,
             expected_owner=expected_owner,
             expected_directory_mode=expected_directory_mode,
             expected_record_mode=expected_record_mode,
@@ -401,6 +431,7 @@ def inspect_audit_correlation(  # noqa: PLR0913 - keep every audit boundary expl
     try:
         segments = _read_segments(
             audit_directory,
+            root=root,
             expected_owner=expected_owner,
             expected_directory_mode=expected_directory_mode,
             expected_record_mode=expected_record_mode,
@@ -452,6 +483,7 @@ def inspect_later_audit_transitions(  # noqa: PLR0913 - storage contract is expl
     try:
         segments = _read_segments(
             audit_directory,
+            root=root,
             expected_owner=expected_owner,
             expected_directory_mode=expected_directory_mode,
             expected_record_mode=expected_record_mode,
@@ -498,6 +530,7 @@ def append_audit(  # noqa: PLR0913 - keep every security boundary explicit
     try:
         segments = _read_segments(
             audit_directory,
+            root=root,
             expected_owner=expected_owner,
             expected_directory_mode=expected_directory_mode,
             expected_record_mode=expected_record_mode,
@@ -528,6 +561,7 @@ def append_audit(  # noqa: PLR0913 - keep every security boundary explicit
 
         resulting_segments = _read_segments(
             audit_directory,
+            root=root,
             expected_owner=expected_owner,
             expected_directory_mode=expected_directory_mode,
             expected_record_mode=expected_record_mode,
@@ -560,7 +594,7 @@ def _canonical_audit_entry(
 
 def _plan_audit_append(  # noqa: PLR0913 - projection inputs stay explicit
     audit_directory: DurableDirectory,
-    segments: list[_Segment],
+    segments: _Segments,
     candidate: dict[str, object],
     canonical: bytes,
     *,
@@ -589,19 +623,33 @@ def _plan_audit_append(  # noqa: PLR0913 - projection inputs stay explicit
         + audit_directory.allocation_upper_bound(len(payload))
         + audit_directory.namespace_allocation_upper_bound(1)
     )
+    if not administrator:
+        try:
+            projected += admit_archive_append(
+                audit_directory, segments.archive, projected - state.allocated_bytes
+            )
+        except AuditArchiveCapacityError as error:
+            raise AuditCapacityError(str(error)) from error
+        except AuditProtectionError as error:
+            raise AuditError(str(error)) from error
     _admit_capacity(projected, administrator=administrator, limits=limits)
     return _AuditAppendPlan(state, target_name, payload, replace)
 
 
-def _read_segments(  # noqa: PLR0913 - explicit read mode and storage boundaries
+def _read_segments(  # noqa: PLR0912,PLR0913,PLR0915 - one bounded inode and chain inventory
     directory: DurableDirectory,
     *,
+    root: DurableDirectory,
     expected_owner: int,
     expected_directory_mode: int,
     expected_record_mode: int,
     limits: AuditLimits,
     read_only: bool = False,
-) -> list[_Segment]:
+) -> _Segments:
+    try:
+        archive = read_archive_prefix(root, expected_owner=expected_owner)
+    except (BackupIdentityError, FileNotFoundError) as error:
+        raise AuditError("audit archive prefix is invalid or incomplete") from error
     if read_only:
         temporaries = directory.publication_temporaries(
             expected_owner=expected_owner,
@@ -631,11 +679,24 @@ def _read_segments(  # noqa: PLR0913 - explicit read mode and storage boundaries
         if _metadata_generation(before) != _metadata_generation(after):
             raise AuditError("audit directory changed while it was inventoried")
 
-        segments: list[_Segment] = []
-        for expected_number, name in enumerate(names):
+        segments = _Segments(archive)
+        for number, archived in enumerate(archive.segments):
+            segments.append(
+                _Segment(number, f"segment-{number:020d}.jsonl", archived.witness, 0, True)
+            )
+        logical_bytes = archive.allocated_bytes
+        allocated_bytes = archive.allocated_bytes
+        previous_number: int | None = None
+        for name in names:
             match = _SEGMENT_PATTERN.fullmatch(name)
-            if match is None or int(match.group(1)) != expected_number:
+            if match is None:
                 raise AuditError("audit segment names are not one contiguous sequence")
+            number = int(match.group(1))
+            if number > len(segments) or (
+                previous_number is not None and number != previous_number + 1
+            ):
+                raise AuditError("audit local suffix has a gap or an unindexed predecessor")
+            previous_number = number
             metadata = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
             _validate_segment_metadata(
                 metadata,
@@ -643,6 +704,10 @@ def _read_segments(  # noqa: PLR0913 - explicit read mode and storage boundaries
                 expected_mode=expected_record_mode,
                 maximum_bytes=limits.maximum_segment_bytes,
             )
+            logical_bytes += metadata.st_size
+            allocated_bytes += metadata.st_blocks * _BLOCK_BYTES
+            if max(logical_bytes, allocated_bytes) > limits.maximum_administrator_bytes:
+                raise AuditCapacityError("audit inventory exceeds its absolute byte ceiling")
             data = directory.read_regular(
                 (name,),
                 expected_owner=expected_owner,
@@ -652,14 +717,16 @@ def _read_segments(  # noqa: PLR0913 - explicit read mode and storage boundaries
             current = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
             if _metadata_generation(metadata) != _metadata_generation(current):
                 raise AuditError("audit segment changed while it was read")
-            segments.append(
-                _Segment(
-                    number=expected_number,
-                    name=name,
-                    data=data,
-                    allocated_bytes=metadata.st_blocks * _BLOCK_BYTES,
-                )
-            )
+            segment = _Segment(number, name, data, metadata.st_blocks * _BLOCK_BYTES)
+            if number < len(archive.segments):
+                if data != segments[number].data:
+                    raise AuditError("audit local overlap disagrees with its archived segment")
+                segments[number] = segment
+            else:
+                segments.append(segment)
+        if archive.segments and len(segments) == len(archive.segments):
+            raise AuditError("audit archive prefix lacks its unarchived current tail")
+        _require_pending_local_segment(segments)
         final_names = _segment_names(descriptor, temporaries, limits.maximum_segments)
         final = validate_state_directory(
             descriptor,
@@ -674,7 +741,7 @@ def _read_segments(  # noqa: PLR0913 - explicit read mode and storage boundaries
 
 
 def _segment_names(descriptor: int, temporaries: tuple[str, ...], maximum: int) -> list[str]:
-    excluded = frozenset(temporaries)
+    excluded = frozenset((*temporaries, "archive"))
     names: list[str] = []
     with os.scandir(descriptor) as iterator:
         for entry in iterator:
@@ -686,8 +753,25 @@ def _segment_names(descriptor: int, temporaries: tuple[str, ...], maximum: int) 
     return sorted(names)
 
 
+def _require_pending_local_segment(segments: _Segments) -> None:
+    intent = segments.archive.rotation_intent
+    if intent is None:
+        return
+    descriptor = validate_rotation(intent["descriptor"])
+    number = descriptor["segmentNumber"]
+    assert type(number) is int  # noqa: S101 - decoded descriptor
+    if number < len(segments.archive.segments):
+        return
+    if number + 1 >= len(segments) or segments[number].archived:
+        raise AuditError("pending audit rotation lacks its closed local segment and successor")
+    try:
+        verify_segment(descriptor, segments[number].data)
+    except BackupIdentityError as error:
+        raise AuditError("pending audit rotation disagrees with its local authority") from error
+
+
 def _validate_chain(
-    segments: list[_Segment],
+    segments: _Segments,
     *,
     limits: AuditLimits,
 ) -> AuditState:
@@ -707,8 +791,43 @@ def _validate_chain(
     return state
 
 
+def audit_prefix_terminal(  # noqa: PLR0913 - shared and exclusive caller boundaries
+    root: DurableDirectory,
+    entry_count: int,
+    *,
+    expected_owner: int,
+    expected_directory_mode: int,
+    expected_record_mode: int,
+    limits: AuditLimits = DEFAULT_AUDIT_LIMITS,
+) -> dict[str, str] | None:
+    """Read the original entry at a lineage boundary across archived/local history."""
+    with root.open_descendant(("audit",)) as directory:
+        segments = _read_segments(
+            directory,
+            root=root,
+            expected_owner=expected_owner,
+            expected_directory_mode=expected_directory_mode,
+            expected_record_mode=expected_record_mode,
+            limits=limits,
+            read_only=True,
+        )
+    state = _validate_chain(segments, limits=limits)
+    if type(entry_count) is not int or not 0 <= entry_count <= state.entry_count:
+        raise AuditError("audit prefix lies outside the verified chain")
+    if not entry_count:
+        return None
+    for segment in segments:
+        for line in segment.data.splitlines(keepends=True):
+            document = decode_contract(line, expected_kind=ContractKind.AUDIT_ENTRY)
+            if document["sequence"] == entry_count - 1:
+                return audit_entry_digest(document).to_dict()
+    raise AuditError(
+        "audit prefix boundary is unavailable"
+    )  # pragma: no cover - chain proves count
+
+
 def _tenant_audit_history(
-    segments: list[_Segment],
+    segments: _Segments,
     *,
     limits: AuditLimits,
     tenant_id: str,
@@ -731,8 +850,8 @@ def _tenant_audit_history(
     return has_tenant_history, has_deployment_history
 
 
-def _validate_chain_records(  # noqa: PLR0912,PLR0913 - one bounded validation pass
-    segments: list[_Segment],
+def _validate_chain_records(  # noqa: PLR0912,PLR0913,PLR0915 - one bounded validation pass
+    segments: _Segments,
     *,
     limits: AuditLimits,
     correlation_id: str | None,
@@ -751,17 +870,19 @@ def _validate_chain_records(  # noqa: PLR0912,PLR0913 - one bounded validation p
         raise ValueError("deployment-history projection requires candidates and matches")
     sequence = 0
     terminal: dict[str, str] | None = None
-    allocated = 0
+    allocated = segments.archive.allocated_bytes
     previous_segment_bytes: int | None = None
     matching_entry: dict[str, object] | None = None
     has_later_tenant_state_transition = False
     has_tenant_history = False
     has_deployment_history = False
+    archived_correlations: set[str] = set()
     for segment in segments:
-        if not segment.data or not segment.data.endswith(b"\n"):
+        data = segment.data
+        if not data or not data.endswith(b"\n"):
             raise AuditError("audit segment is not nonempty canonical JSON lines")
         allocated += segment.allocated_bytes
-        lines = segment.data.splitlines(keepends=True)
+        lines = data.splitlines(keepends=True)
         if (
             previous_segment_bytes is not None
             and previous_segment_bytes + len(lines[0]) <= limits.maximum_segment_bytes
@@ -784,6 +905,13 @@ def _validate_chain_records(  # noqa: PLR0912,PLR0913 - one bounded validation p
                 raise AuditError("audit entry sequence is not contiguous")
             if document["previousEntryDigest"] != terminal:
                 raise AuditError("audit entry predecessor breaks the chain")
+            if segments.archive.head is not None:
+                correlation = validate_uuid7(document["correlationId"])
+                if correlation in archived_correlations:
+                    raise AuditError(
+                        "audit correlation appears multiple times across archived/local history"
+                    )
+                archived_correlations.add(correlation)
             if correlation_id is not None and document["correlationId"] == correlation_id:
                 if matching_entry is not None:
                     raise AuditError("audit correlation appears multiple times")
@@ -820,7 +948,7 @@ def _validate_chain_records(  # noqa: PLR0912,PLR0913 - one bounded validation p
                 deployment_history_matches.add(tenant_id)
             terminal = audit_entry_digest(document).to_dict()
             sequence += 1
-        previous_segment_bytes = len(segment.data)
+        previous_segment_bytes = len(data)
     if allocated > limits.maximum_administrator_bytes:
         raise AuditCapacityError("audit allocation exceeds its absolute ceiling")
     previous_tenant_state_transition = _previous_tenant_state_transition(
@@ -843,7 +971,7 @@ def _validate_chain_records(  # noqa: PLR0912,PLR0913 - one bounded validation p
 
 
 def _previous_tenant_state_transition(
-    segments: list[_Segment],
+    segments: _Segments,
     matching_entry: dict[str, object] | None,
 ) -> dict[str, object] | None:
     """Find one predecessor without retaining a map of every tenant identity."""
@@ -872,7 +1000,7 @@ def _previous_tenant_state_transition(
 
 
 def _later_audit_transitions(
-    segments: list[_Segment],
+    segments: _Segments,
     *,
     matching_entry: dict[str, object] | None,
     maximum_transitions: int,
