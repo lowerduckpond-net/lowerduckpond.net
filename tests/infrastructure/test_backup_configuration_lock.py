@@ -145,3 +145,18 @@ def test_backup_configuration_interpreter_remains_root_only(
     monkeypatch.setattr(os, "geteuid", lambda: 1000)
     with pytest.raises(SystemExit, match="backup_configuration_root_required"):
         helper.main()
+
+
+def test_legacy_status_preserves_the_existing_repository_lease(helper: ModuleType) -> None:
+    descriptor = helper._acquire()
+    os.close(descriptor)
+    path = helper.CACHE / "repository.lock"
+    before = path.stat().st_ino
+    helper.STATUS.mkdir(mode=0o700)
+    status = helper.STATUS / "maintenance-last-success"
+    status.write_bytes(b"1 " + b"a" * 64 + b"\n")
+    previous = status.read_bytes()
+    descriptor = helper._acquire()
+    os.close(descriptor)
+    assert path.stat().st_ino == before
+    assert status.read_bytes() == previous

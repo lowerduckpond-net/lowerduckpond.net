@@ -138,6 +138,17 @@
           mode: "0711"
         - path: /var/lib/lowerduckpond/backup-status
           mode: "0700"
+        - path: /var/cache/lowerduckpond-backup
+          mode: "0700"
+
+    - name: Seed the existing repository lease for the legacy backup fixture
+      ansible.builtin.copy:
+        content: ""
+        dest: /var/cache/lowerduckpond-backup/repository.lock
+        owner: root
+        group: root
+        mode: "0600"
+        force: false
 
     - name: Seed maintenance success for a different backup scope
       ansible.builtin.copy:
