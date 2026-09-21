@@ -2,6 +2,7 @@
 
 - Status: accepted
 - Date: 2026-08-22
+- Backup and restored-host recovery amendment: [ADR 0030](0030-reconstruct-static-hosts-from-bound-backups.md)
 
 ## Context
 
