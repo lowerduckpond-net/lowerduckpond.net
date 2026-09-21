@@ -277,3 +277,36 @@ def test_empty_head_has_no_fabricated_terminal_or_index() -> None:
     ):
         with pytest.raises(BackupIdentityError):
             formats.decode_head(canonical_json_bytes({**head, key: value}))
+
+
+def test_cached_segment_evidence_cannot_be_changed_through_returned_digest_objects() -> None:
+    first = entry(1, audit_entry_digest(entry()).to_dict())
+    raw = canonical_json_bytes(first)
+    expected = formats.inspect_segment(raw)
+    changed = formats.inspect_segment(raw)
+    assert changed.predecessor is not None
+    changed.predecessor["value"] = "0" * 64
+    changed.terminal["value"] = "0" * 64
+    assert formats.inspect_segment(raw) == expected
+
+
+def test_witness_cache_never_grants_authority_to_changed_bytes() -> None:
+    raw = canonical_json_bytes(entry())
+    witness = formats.inspect_segment(raw).witness
+    assert formats.segment_from_witness(witness) == raw
+    rows = json.loads(witness)
+    rows[0][0] = 1  # Sequence disagrees with the initial predecessor.
+    modified = canonical_json_bytes(rows, maximum_bytes=formats.MAX_SEGMENT_BYTES)
+    with pytest.raises(BackupIdentityError):
+        formats.segment_from_witness(modified)
+    assert formats.segment_from_witness(witness) == raw
+
+
+def test_segment_cache_never_reuses_a_previous_chain_proof_for_changed_bytes() -> None:
+    raw = canonical_json_bytes(entry())
+    expected = formats.inspect_segment(raw)
+    changed = entry()
+    changed["correlationId"] = "0198d17f-6f4a-7000-8000-000000000088"
+    current = formats.inspect_segment(canonical_json_bytes(changed))
+    assert current.terminal != expected.terminal
+    assert current.witness != expected.witness

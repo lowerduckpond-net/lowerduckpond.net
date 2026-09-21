@@ -6,6 +6,7 @@ import hashlib
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import lru_cache
 from typing import Final
 
 from lowerduckpond_static_contracts import (
@@ -181,7 +182,22 @@ class SegmentEvidence:
 
 
 def inspect_segment(raw: bytes) -> SegmentEvidence:
-    """Validate one exact canonical segment, preserving all original entry fields."""
+    """Validate exact bytes; callers cannot mutate the cached digest objects."""
+    result = _inspect_segment(raw)
+    return SegmentEvidence(
+        result.first_sequence,
+        result.entry_count,
+        None if result.predecessor is None else dict(result.predecessor),
+        dict(result.terminal),
+        result.witness,
+    )
+
+
+@lru_cache(maxsize=1)
+def _inspect_segment(raw: bytes) -> SegmentEvidence:
+    # One immutable byte key and one witness, each <=8 MiB. Files, permissions,
+    # source generation, descriptor binding and remote contents are still read
+    # and checked on every invocation; no path/inode/status is cached.
     if not raw or len(raw) > MAX_SEGMENT_BYTES or not raw.endswith(b"\n"):
         raise BackupIdentityError("audit archive segment exceeds its byte boundary")
     rows: list[list[object]] = []
@@ -221,6 +237,7 @@ def inspect_segment(raw: bytes) -> SegmentEvidence:
     return SegmentEvidence(first, len(rows), predecessor, terminal, witness)
 
 
+@lru_cache(maxsize=1)
 def segment_from_witness(raw: bytes) -> bytes:
     """Expand the fixed-order rows without inventing or dropping historical fields."""
     if len(raw) > MAX_SEGMENT_BYTES:
