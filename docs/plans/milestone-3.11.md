@@ -697,6 +697,13 @@ and operator behavior; P6 integrates them rather than postponing correctness
 testing. Keep durable private task notes with current PR/head, checks/review,
 completed decisions, next slice and required operator actions.
 
+P2 is split at its prerequisite boundary for review: P2a installs repository
+binding and explicit, durable lineage initialization, with the independent
+`backup-identity` case. P2b consumes that identity in the recovery descriptor,
+finishes the source/writer inventory and coherence changes, and adds the full
+`backup-coherence` case. Both must merge before P3. P2a does not change scheduled
+backup sources, enable rotation, or constitute a reconstruction qualification.
+
 Completion requires all five implementation objectives to have passing mapped
 evidence, the final complete secure-workstation qualification, usable and
 reviewed production instructions, the explicit operator production outcome,

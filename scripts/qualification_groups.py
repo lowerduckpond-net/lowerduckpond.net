@@ -38,6 +38,9 @@ class Group:
 
 _CREDENTIALS = "archive_credentials"
 GROUPS = {
+    "backup-identity": Group(
+        (node("backup_identity", "installed_backup_identity_migration_and_repository_fencing"),)
+    ),
     "core": Group(
         (node("core_independent", "core_lifecycle_without_configuration_guard_repetition"),)
     ),
@@ -125,6 +128,7 @@ GROUPS = {
                 for unit in (
                     "lowerduckpond-backup.service",
                     "lowerduckpond-backup-maintenance.service",
+                    "lowerduckpond-backup-identity.service",
                     "lowerduckpond-static-reconcile.service",
                     "lowerduckpond-static-worker@.service",
                 )
@@ -144,6 +148,7 @@ GROUPS = {
                 for unit in (
                     "lowerduckpond-backup.service",
                     "lowerduckpond-backup-maintenance.service",
+                    "lowerduckpond-backup-identity.service",
                     "lowerduckpond-static-reconcile.service",
                 )
             ),

@@ -157,6 +157,17 @@
     - src: restore-smoke-test.j2
       dest: restore-smoke-test
 
+- name: Install root-only backup identity migration commands
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/usr/local/libexec/lowerduckpond/{{ item }}"
+    owner: root
+    group: root
+    mode: "0700"
+  loop:
+    - backup-state-identity
+    - backup-identity-agent
+
 - name: Install backup systemd units
   ansible.builtin.template:
     src: "{{ item }}.j2"
@@ -169,6 +180,7 @@
     - lowerduckpond-backup.timer
     - lowerduckpond-backup-maintenance.service
     - lowerduckpond-backup-maintenance.timer
+    - lowerduckpond-backup-identity.service
   notify: Reload systemd for backups
 
 - name: Flush backup unit handlers
