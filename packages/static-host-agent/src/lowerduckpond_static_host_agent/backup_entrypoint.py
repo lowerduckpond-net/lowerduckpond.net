@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import grp
 import os
 import sys
 from collections.abc import Mapping
@@ -10,27 +11,52 @@ from pathlib import Path
 from lowerduckpond_static_contracts import ContractError
 
 from lowerduckpond_static_host_agent.audit import AuditError
+from lowerduckpond_static_host_agent.backup_coordinator import CapturePaths, capture_backup
 from lowerduckpond_static_host_agent.backup_identity import BackupIdentityError
 from lowerduckpond_static_host_agent.backup_lineage import lineage_for_repository
 from lowerduckpond_static_host_agent.backup_restic import (
     discover_repository,
+    inherit_restic_leases,
     publish_repository_genesis,
     repository_genesis,
 )
 from lowerduckpond_static_host_agent.durable import FailureHook, StatePathError
 
 
-def identity_main() -> int:
+def capture_main(selection_descriptor: int, artifact_sha256: str) -> int:
+    if os.geteuid() != 0 or sys.argv[1:]:
+        print("backup_static_invalid_invocation", file=sys.stderr)
+        return 1
+    try:
+        with inherit_restic_leases((9, selection_descriptor)):
+            snapshot_id = capture_backup(
+                CapturePaths(),
+                os.environ,
+                artifact_sha256=artifact_sha256,
+                expected_owner=0,
+                content_group=grp.getgrnam("caddy").gr_gid,
+            )
+    except Exception:
+        # No contract, provider response, private source path or credential is
+        # interpolated into command diagnostics. The outer unit records failure.
+        print("backup_static_unverified", file=sys.stderr)
+        return 1
+    print(f"backup_static_verified {snapshot_id}")
+    return 0
+
+
+def identity_main(selection_descriptor: int) -> int:
     if os.geteuid() != 0 or sys.argv[1:] not in [["--initialize"], ["--verify"]]:
         print("backup_identity_invalid_invocation", file=sys.stderr)
         return 1
     try:
-        ensure_lineage(
-            Path("/var/lib/lowerduckpond/static"),
-            os.environ,
-            initialize=sys.argv[1] == "--initialize",
-            expected_owner=0,
-        )
+        with inherit_restic_leases((9, selection_descriptor)):
+            ensure_lineage(
+                Path("/var/lib/lowerduckpond/static"),
+                os.environ,
+                initialize=sys.argv[1] == "--initialize",
+                expected_owner=0,
+            )
     except BackupIdentityError, AuditError, ContractError, StatePathError, OSError:
         # Private repository coordinates, audit entries and credentials never
         # become shareable command diagnostics, even through subprocess errors.

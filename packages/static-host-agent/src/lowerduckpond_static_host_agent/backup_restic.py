@@ -8,7 +8,9 @@ import selectors
 import subprocess
 import tempfile
 import time
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
@@ -37,6 +39,27 @@ _ENVIRONMENT = (
     "RESTIC_REPOSITORY",
     "RESTIC_CACHE_DIR",
 )
+_LEASE_DESCRIPTORS: ContextVar[tuple[int, ...]] = ContextVar("restic_backup_leases", default=())
+
+
+@contextmanager
+def inherit_restic_leases(descriptors: tuple[int, ...]) -> Iterator[None]:
+    """Keep caller-validated lease inodes held if the coordinating process dies.
+
+    The caller owns the descriptors and retains them until every child is reaped.
+    Nested capture adds its static leases to repository/selection exclusion.
+    """
+
+    inherited = (*_LEASE_DESCRIPTORS.get(), *descriptors)
+    if len(set(inherited)) != len(inherited):
+        raise BackupIdentityError("backup lease descriptors are ambiguous")
+    for descriptor in descriptors:
+        os.fstat(descriptor)
+    token = _LEASE_DESCRIPTORS.set(inherited)
+    try:
+        yield
+    finally:
+        _LEASE_DESCRIPTORS.reset(token)
 
 
 @dataclass(frozen=True)
@@ -69,13 +92,19 @@ def _restic(
 
 
 def _run_restic(
-    arguments: tuple[str, ...], environment: Mapping[str, str], limit: int, source: BinaryIO | None
+    arguments: tuple[str, ...],
+    environment: Mapping[str, str],
+    limit: int,
+    source: BinaryIO | None,
+    *,
+    timeout_seconds: int | None = None,
 ) -> bytes:
     with subprocess.Popen(  # noqa: S603 - fixed executable and validated internal arguments
         ("/usr/bin/restic", *arguments),
         stdin=source if source is not None else subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
+        pass_fds=_LEASE_DESCRIPTORS.get(),
         env={
             "PATH": "/usr/bin:/bin",
             **{key: environment[key] for key in _ENVIRONMENT if key in environment},
@@ -85,7 +114,9 @@ def _run_restic(
         descriptor = process.stdout.fileno()
         os.set_blocking(descriptor, False)
         output = bytearray()
-        deadline = time.monotonic() + METADATA_TIMEOUT_SECONDS
+        deadline = time.monotonic() + (
+            METADATA_TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds
+        )
         try:
             with selectors.DefaultSelector() as selector:
                 selector.register(descriptor, selectors.EVENT_READ)

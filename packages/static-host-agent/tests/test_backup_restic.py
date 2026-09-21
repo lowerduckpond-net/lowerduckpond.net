@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from collections.abc import Mapping
+from pathlib import Path
 from typing import cast
 
 import pytest
@@ -14,6 +16,37 @@ ENVIRONMENT = {
     "RESTIC_REPOSITORY": "s3:https://nyc3.example.test/backups/m3",
     "LOWERDUCKPOND_BACKUP_NODE_NAME": "node",
 }
+
+
+def test_restic_child_inherits_only_explicit_nested_backup_leases(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spawn = subprocess.Popen
+    with (
+        (tmp_path / "repository.lock").open("wb") as outer,
+        (tmp_path / "static.lock").open("wb") as inner,
+    ):
+        descriptors = outer.fileno(), inner.fileno()
+        expected = [os.fstat(descriptor).st_ino for descriptor in descriptors]
+        code = (
+            f"import json, os; print(json.dumps([os.fstat(fd).st_ino for fd in {descriptors!r}]))"
+        )
+
+        def process(*_args: object, **kwargs: object) -> subprocess.Popen[bytes]:
+            child = spawn([sys.executable, "-I", "-c", code], **kwargs)  # type: ignore[call-overload]
+            return cast("subprocess.Popen[bytes]", child)
+
+        monkeypatch.setattr(subprocess, "Popen", process)
+        with restic.inherit_restic_leases((outer.fileno(),)):
+            with restic.inherit_restic_leases((inner.fileno(),)):
+                raw = restic.restic_metadata(("cat", "config"), ENVIRONMENT, 4096)
+                assert json.loads(raw) == expected
+            with pytest.raises(BackupIdentityError):
+                restic.restic_metadata(("cat", "config"), ENVIRONMENT, 4096)
+        with pytest.raises(BackupIdentityError):
+            restic.restic_metadata(("cat", "config"), ENVIRONMENT, 4096)
+        assert not any(os.get_inheritable(descriptor) for descriptor in descriptors)
 
 
 def _responses(

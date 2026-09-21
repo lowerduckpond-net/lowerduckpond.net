@@ -230,6 +230,36 @@ class LockManager:
         )
         return os.dup(held.descriptor)
 
+    def duplicate_backup_descriptors(self) -> tuple[int, int]:
+        """Lend the exact two shared capture leases to the bounded Restic child.
+
+        Revalidate current names after potentially blocking acquisition. Caller
+        closes these duplicates only after the child has finished; never unlocks
+        them separately. Ordinary mutation and export lending stay unchanged.
+        """
+
+        self.require_held(LockName.PUBLICATION, mode=LockMode.SHARED)
+        self.require_held(LockName.TENANT_STATE, mode=LockMode.SHARED, innermost=True)
+        descriptors: list[int] = []
+        try:
+            for name in (LockName.PUBLICATION, LockName.TENANT_STATE):
+                current = self._open_verified_lock(name)
+                try:
+                    self.require_held(name, mode=LockMode.SHARED, descriptor=current)
+                finally:
+                    os.close(current)
+                held = next(
+                    lock
+                    for lock in self._held()
+                    if lock.manager_token is self._token and lock.name is name
+                )
+                descriptors.append(os.dup(held.descriptor))
+            return descriptors[0], descriptors[1]
+        except BaseException:
+            for descriptor in descriptors:
+                os.close(descriptor)
+            raise
+
     @contextmanager
     def borrow_export_descriptor(self, descriptor: int) -> Iterator[None]:
         """Register a verified already-exclusive lease without unlocking it.
