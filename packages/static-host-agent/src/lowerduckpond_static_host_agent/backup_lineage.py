@@ -28,8 +28,13 @@ from lowerduckpond_static_host_agent.backup_identity import (
     decode_lineage,
     validate_lineage,
 )
-from lowerduckpond_static_host_agent.durable import DurableDirectory, FailureHook
-from lowerduckpond_static_host_agent.locks import LockManager, LockMode, LockName
+from lowerduckpond_static_host_agent.durable import (
+    DurableDirectory,
+    FailureHook,
+    StatePathError,
+    validate_regular_state_file,
+)
+from lowerduckpond_static_host_agent.locks import LockManager, LockMode, LockName, LockOrderError
 
 
 def _read(root: DurableDirectory, path: tuple[str, ...], owner: int, limit: int) -> bytes:
@@ -83,6 +88,7 @@ def lineage_for_repository(  # noqa: PLR0913 - explicit privilege and failure bo
         ) as locks,
         locks.acquire(LockName.TENANT_STATE, mode=LockMode.EXCLUSIVE, blocking=True),
     ):
+        _require_current_state_lease(directory, locks, expected_owner)
         namespace_raw = _read(
             root, ("platform", "namespace.json"), expected_owner, MAX_CANONICAL_BYTES
         )
@@ -138,6 +144,34 @@ def lineage_for_repository(  # noqa: PLR0913 - explicit privilege and failure bo
             LINEAGE_PATH, canonical_json_bytes(lineage), mode=0o600, failure_hook=failure_hook
         )
         return lineage
+
+
+def _require_current_state_lease(
+    directory: DurableDirectory, locks: LockManager, owner: int
+) -> None:
+    # A blocking acquisition can finish on the old inode after its name was
+    # replaced. Prove that the current no-follow inode is the one actually held
+    # before trusting any state or publishing lineage.
+    parent = directory.duplicate_descriptor()
+    try:
+        current = os.open(
+            LockName.TENANT_STATE.filename,
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK,
+            dir_fd=parent,
+        )
+        try:
+            metadata = validate_regular_state_file(
+                current, expected_owner=owner, expected_mode=0o600
+            )
+            if metadata.st_size != 0:
+                raise StatePathError("audit lineage state lock is not empty")
+            locks.require_held(LockName.TENANT_STATE, mode=LockMode.EXCLUSIVE, descriptor=current)
+        except LockOrderError as error:
+            raise StatePathError("audit lineage state lock identity changed") from error
+        finally:
+            os.close(current)
+    finally:
+        os.close(parent)
 
 
 def _sync_platform(root: DurableDirectory) -> None:

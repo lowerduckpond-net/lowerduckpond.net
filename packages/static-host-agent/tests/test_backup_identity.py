@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
@@ -128,6 +129,25 @@ def test_init_preserves_audit_and_reapplication_keeps_original_identity(state: P
 def test_verify_does_not_initialize_missing_identity(state: Path) -> None:
     with pytest.raises(BackupIdentityError, match="not been initialized"):
         _lineage(state, initialize=False)
+    assert not state.joinpath(*LINEAGE_PATH).exists()
+
+
+def test_state_lock_replaced_during_acquisition_never_publishes_lineage(
+    state: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = fcntl.flock
+    path = state / "locks/tenant-state.lock"
+
+    def replace_after_lock(descriptor: int, operation: int) -> None:
+        original(descriptor, operation)
+        if operation == fcntl.LOCK_EX:
+            path.rename(path.with_suffix(".old"))
+            path.write_bytes(b"")
+            path.chmod(0o600)
+
+    monkeypatch.setattr(fcntl, "flock", replace_after_lock)
+    with pytest.raises(StatePathError, match="lock identity changed"):
+        _lineage(state)
     assert not state.joinpath(*LINEAGE_PATH).exists()
 
 
