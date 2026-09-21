@@ -35,7 +35,4 @@ Accepted decisions:
 - [0027: Gate production static publication](0027-gate-production-static-publication.md)
 - [0028: Use Cloudflare as the public web edge](0028-use-cloudflare-as-the-public-web-edge.md)
 - [0029: Bind qualification to inputs and live observations](0029-bind-qualification-to-inputs-and-live-observations.md)
-
-Proposed with the M3.11 plan:
-
 - [0030: Reconstruct static hosts from bound backups](0030-reconstruct-static-hosts-from-bound-backups.md)

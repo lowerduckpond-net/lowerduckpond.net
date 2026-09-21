@@ -1,6 +1,6 @@
 # 0030: Reconstruct static hosts from bound backups
 
-- Status: proposed; acceptance occurs with the M3.11 plan PR
+- Status: accepted
 - Date: 2026-09-21
 - Amends: [ADR 0017](0017-atomically-activate-static-releases.md)
 - Implementation and qualification: [M3.11 plan](../plans/milestone-3.11.md)
@@ -45,12 +45,33 @@ adapted configuration or environment bytes. The M3.11 plan defines its exact
 identity and validation bounds. Transient inputs remain excluded; tenant
 archive bundles remain exclusively in their separate Space under ADR 0025.
 
+Remove `/var/lib/caddy` from the M3.11 backup sources and explicitly exclude it.
+Caddy's live certificate/ACME storage is reconstructible, and its automatic
+writes do not take static host locks. Do not claim those locks make a copy of
+that store coherent or stop the public service for each scheduled backup.
+Restore creates fresh correctly owned Caddy storage and uses trusted DNS-01
+configuration to obtain new origin certificates. Keep public web ingress closed
+by a durable, boot-ordered restore firewall gate until the fully reconciled
+runtime and actual presented certificates pass verification. Administrative SSH
+and the reviewed outbound policy remain available. A failed or rate-limited
+issuance leaves ingress closed; it cannot authorize a timeout extension,
+attempt reset or production self-signed fallback. Preserve newly acquired state
+across retries. Existing workstation origin-pull CA backups remain required.
+
+The cold-storage path requires separate installed and real DNS-01/public-CA
+qualification on owned disposable names before changing production sources.
+Earlier snapshots are preserved under their existing retention policy; their
+possibly inconsistent Caddy store is not a dependency of the new restore gate.
+
 ### Audit consumers after rotation
 
-Retain a bounded local lookup witness for each archived segment, generated from
-its restore-verified bytes and cryptographically bound by its protected
-descriptor/index. Its fixed-order rows reconstruct the original canonical audit
-entries needed by every existing lifecycle query. Constant schema fields are
+Retain a bounded local lookup witness for each archived segment. Generate its
+deterministic provisional bytes from the validated local segment before sealing
+the descriptor and snapshot; this copy grants no authority. Independently
+regenerate and compare it from the restore-verified segment before installing
+the witness/index, without changing the protected descriptor. Its fixed-order
+rows reconstruct the original canonical audit entries needed by every existing
+lifecycle query. Constant schema fields are
 defined by its version; no audit authority is inferred from a lossy summary.
 Remote snapshots remain the complete archival evidence. Ordinary workers gain
 neither backup credentials nor a network capability.
