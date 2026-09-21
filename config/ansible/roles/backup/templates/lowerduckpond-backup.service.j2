@@ -6,6 +6,12 @@ After=network-online.target mariadb.service caddy.service
 [Service]
 Type=oneshot
 ExecStart=/usr/local/libexec/lowerduckpond/backup
+TimeoutStartSec=30min
+MemoryMax=512M
+MemorySwapMax=0
+TasksMax=32
+LimitNOFILE=1024
+CPUQuota=100%
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7

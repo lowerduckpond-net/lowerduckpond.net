@@ -7,8 +7,8 @@ import fcntl
 import os
 import pathlib
 import re
-import subprocess
 import stat
+import subprocess
 import sys
 
 sys.dont_write_bytecode = True
@@ -68,7 +68,7 @@ def selected_artifact() -> pathlib.Path:
         or metadata.st_nlink != 1
     ):
         raise ValueError("unsafe artifact selector")
-    selected = pathlib.Path(os.readlink(selector))
+    selected = selector.readlink()
     if selected.parent != ARTIFACT_ROOT or re.fullmatch(r"[0-9a-f]{64}", selected.name) is None:
         raise ValueError("unbound artifact identity")
     subprocess.run(  # noqa: S603 - fixed verifier and selected immutable artifact

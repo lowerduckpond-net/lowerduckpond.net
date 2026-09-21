@@ -14,6 +14,8 @@
     create_home: false
 
 - name: Create the root-owned content parent
+  vars:
+    ansible_python_interpreter: /usr/local/libexec/lowerduckpond/configure-static-python
   ansible.builtin.file:
     path: "{{ provisioner_content_root }}"
     state: directory

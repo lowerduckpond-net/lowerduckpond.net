@@ -1,4 +1,11 @@
 ---
+- name: Require explicit coherent backup migration configuration
+  ansible.builtin.assert:
+    that:
+      - backup_static_recovery_enabled is boolean
+      - not backup_static_recovery_enabled or caddy_generation_enabled | default(false) | bool
+    fail_msg: Coherent backup requires explicit enablement and immutable Caddy generations.
+
 - name: Install backup packages
   ansible.builtin.apt:
     name:
@@ -16,6 +23,8 @@
   changed_when: false
 
 - name: Create backup directories
+  vars:
+    ansible_python_interpreter: /usr/local/libexec/lowerduckpond/configure-static-python
   ansible.builtin.file:
     path: "{{ item.path }}"
     state: directory
@@ -27,12 +36,18 @@
       mode: "0700"
     - path: /var/cache/lowerduckpond-backup
       mode: "0700"
+    - path: /var/cache/lowerduckpond-backup/staging
+      mode: "0700"
+    - path: /var/cache/lowerduckpond-backup/workspace
+      mode: "0700"
     - path: /var/lib/lowerduckpond
       # Service-specific children own their own access policy. The shared parent
       # must remain searchable so non-root service accounts can reach them,
       # while omitting read permission prevents directory enumeration.
       mode: "0711"
     - path: /var/lib/lowerduckpond/backup-status
+      mode: "0700"
+    - path: /var/lib/lowerduckpond/recovery
       mode: "0700"
 
 - name: Resolve a configured local Restic repository
@@ -157,7 +172,7 @@
     - src: restore-smoke-test.j2
       dest: restore-smoke-test
 
-- name: Install root-only backup identity migration commands
+- name: Install root-only backup agent commands
   ansible.builtin.template:
     src: "{{ item }}.j2"
     dest: "/usr/local/libexec/lowerduckpond/{{ item }}"
@@ -167,6 +182,7 @@
   loop:
     - backup-state-identity
     - backup-identity-agent
+    - backup-capture-agent
 
 - name: Install backup systemd units
   ansible.builtin.template:
@@ -217,6 +233,14 @@
   changed_when: true
   no_log: true
 
+- name: Verify the explicitly initialized coherent backup lineage
+  ansible.builtin.command:
+    argv:
+      - /usr/local/libexec/lowerduckpond/backup-state-identity
+      - --verify
+  changed_when: false
+  when: backup_static_recovery_enabled | bool
+
 - name: Inspect the backup repository for this node
   ansible.builtin.command:
     cmd: /usr/local/libexec/lowerduckpond/latest-backup-snapshot
@@ -224,6 +248,7 @@
   failed_when: backup_latest_snapshot.rc not in [0, 1]
   changed_when: false
   no_log: true
+  when: not (backup_static_recovery_enabled | bool)
 
 - name: Inspect the local backup health status
   ansible.builtin.slurp:
@@ -240,6 +265,7 @@
     group: root
     mode: "0600"
   when:
+    - not (backup_static_recovery_enabled | bool)
     - backup_latest_snapshot.rc == 0
     - >-
       (backup_local_health_status.content | default('') |
@@ -252,7 +278,13 @@
     state: started
   when:
     - backup_run_initial
-    - backup_latest_snapshot.rc == 1
+    - >-
+      ((backup_static_recovery_enabled | bool) and
+       (backup_local_health_status.content | default('') |
+        ansible.builtin.b64decode | trim) is not ansible.builtin.match(
+        '^[0-9]+ ' ~ backup_status_scope ~ '$')) or
+      (not (backup_static_recovery_enabled | bool) and
+       (backup_latest_snapshot.rc | default(2)) == 1)
   changed_when: true
   no_log: true
 
