@@ -227,6 +227,31 @@ def inspect_audit(
     return _validate_chain(segments, limits=limits)
 
 
+def inspect_audit_readonly(
+    root: DurableDirectory,
+    *,
+    expected_owner: int,
+    expected_directory_mode: int,
+    expected_record_mode: int,
+    limits: AuditLimits = DEFAULT_AUDIT_LIMITS,
+) -> AuditState:
+    """Capture the validated chain under a shared state lease without cleanup."""
+
+    audit_directory = root.open_descendant(("audit",))
+    try:
+        segments = _read_segments(
+            audit_directory,
+            expected_owner=expected_owner,
+            expected_directory_mode=expected_directory_mode,
+            expected_record_mode=expected_record_mode,
+            limits=limits,
+            read_only=True,
+        )
+    finally:
+        audit_directory.close()
+    return _validate_chain(segments, limits=limits)
+
+
 def tenant_has_deployment_audit_history(  # noqa: PLR0913 - storage contract is explicit
     root: DurableDirectory,
     tenant_id: object,
@@ -568,19 +593,28 @@ def _plan_audit_append(  # noqa: PLR0913 - projection inputs stay explicit
     return _AuditAppendPlan(state, target_name, payload, replace)
 
 
-def _read_segments(
+def _read_segments(  # noqa: PLR0913 - explicit read mode and storage boundaries
     directory: DurableDirectory,
     *,
     expected_owner: int,
     expected_directory_mode: int,
     expected_record_mode: int,
     limits: AuditLimits,
+    read_only: bool = False,
 ) -> list[_Segment]:
-    directory.remove_abandoned_publication_temporaries(
-        expected_owner=expected_owner,
-        expected_mode=expected_record_mode,
-        maximum_entries=limits.maximum_segments + _DIRECTORY_SCAN_MARGIN,
-    )
+    if read_only:
+        temporaries = directory.publication_temporaries(
+            expected_owner=expected_owner,
+            expected_mode=expected_record_mode,
+            maximum_entries=limits.maximum_segments + _DIRECTORY_SCAN_MARGIN,
+        )
+    else:
+        directory.remove_abandoned_publication_temporaries(
+            expected_owner=expected_owner,
+            expected_mode=expected_record_mode,
+            maximum_entries=limits.maximum_segments + _DIRECTORY_SCAN_MARGIN,
+        )
+        temporaries = ()
     descriptor = directory.duplicate_descriptor()
     try:
         before = validate_state_directory(
@@ -588,13 +622,7 @@ def _read_segments(
             expected_owner=expected_owner,
             expected_mode=expected_directory_mode,
         )
-        names: list[str] = []
-        with os.scandir(descriptor) as iterator:
-            for entry in iterator:
-                names.append(entry.name)
-                if len(names) > limits.maximum_segments:
-                    raise AuditCapacityError("audit directory exceeds its segment ceiling")
-        names.sort()
+        names = _segment_names(descriptor, temporaries, limits.maximum_segments)
         after = validate_state_directory(
             descriptor,
             expected_owner=expected_owner,
@@ -632,13 +660,7 @@ def _read_segments(
                     allocated_bytes=metadata.st_blocks * _BLOCK_BYTES,
                 )
             )
-        final_names: list[str] = []
-        with os.scandir(descriptor) as iterator:
-            for entry in iterator:
-                final_names.append(entry.name)
-                if len(final_names) > limits.maximum_segments:
-                    raise AuditCapacityError("audit directory exceeds its segment ceiling")
-        final_names.sort()
+        final_names = _segment_names(descriptor, temporaries, limits.maximum_segments)
         final = validate_state_directory(
             descriptor,
             expected_owner=expected_owner,
@@ -649,6 +671,19 @@ def _read_segments(
         return segments
     finally:
         os.close(descriptor)
+
+
+def _segment_names(descriptor: int, temporaries: tuple[str, ...], maximum: int) -> list[str]:
+    excluded = frozenset(temporaries)
+    names: list[str] = []
+    with os.scandir(descriptor) as iterator:
+        for entry in iterator:
+            if entry.name in excluded:
+                continue
+            names.append(entry.name)
+            if len(names) > maximum:
+                raise AuditCapacityError("audit directory exceeds its segment ceiling")
+    return sorted(names)
 
 
 def _validate_chain(

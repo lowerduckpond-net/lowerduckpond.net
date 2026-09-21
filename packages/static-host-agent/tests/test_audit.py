@@ -17,8 +17,11 @@ from lowerduckpond_static_host_agent import (
     DurabilityBoundary,
     LockManager,
     LockMode,
+    LockName,
     StateRepository,
 )
+from lowerduckpond_static_host_agent.audit import inspect_audit_readonly
+from lowerduckpond_static_host_agent.durable import DurableDirectory, StatePathError
 
 _FIXTURE = Path(__file__).parents[3] / "tests/static-publication/fixtures/accepted/audit-entry.json"
 _DIRECTORY_MODE = 0o700
@@ -411,3 +414,68 @@ def test_public_limits_cannot_weaken_committed_boundaries(
 ) -> None:
     with pytest.raises(ValueError, match="cannot weaken"):
         AuditLimits(**overrides)
+
+
+def test_shared_audit_capture_keeps_abandoned_temporary_and_chain_unchanged(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    with _repository(root) as repository:
+        expected = repository.append_audit(_entry(0, None)).state
+    temporary = root / "audit" / (".ldp-state-" + "a" * 32)
+    temporary.write_bytes(b"interrupted unpublished bytes")
+    temporary.chmod(_RECORD_MODE)
+    segment = root / "audit/segment-00000000000000000000.jsonl"
+    original = segment.read_bytes()
+    metadata = temporary.stat()
+    with (
+        LockManager(root / "locks", expected_owner=os.geteuid()) as locks,
+        locks.acquire(LockName.TENANT_STATE, mode=LockMode.SHARED),
+        DurableDirectory.open(
+            root, expected_owner=os.geteuid(), expected_directory_mode=_DIRECTORY_MODE
+        ) as directory,
+    ):
+        captured = inspect_audit_readonly(
+            directory,
+            expected_owner=os.geteuid(),
+            expected_directory_mode=_DIRECTORY_MODE,
+            expected_record_mode=_RECORD_MODE,
+        )
+    assert captured == expected
+    assert segment.read_bytes() == original
+    assert temporary.read_bytes() == b"interrupted unpublished bytes"
+    assert temporary.stat().st_ino == metadata.st_ino
+    assert temporary.stat().st_mtime_ns == metadata.st_mtime_ns
+    # Existing exclusive worker inspection still performs its safe cleanup.
+    with _repository(root) as repository:
+        assert repository.inspect_audit() == expected
+    assert not temporary.exists()
+
+
+@pytest.mark.parametrize("damage", ["symlink", "hardlink", "mode", "name"])
+def test_shared_audit_capture_refuses_unsafe_temporary_without_removing_it(
+    tmp_path: Path,
+    damage: str,
+) -> None:
+    root = _state_root(tmp_path)
+    with _repository(root) as repository:
+        repository.append_audit(_entry(0, None))
+    temporary = root / "audit" / (".ldp-state-" + ("invalid" if damage == "name" else "a" * 32))
+    if damage == "symlink":
+        temporary.symlink_to(root / "audit/segment-00000000000000000000.jsonl")
+    else:
+        temporary.write_bytes(b"interrupted")
+        temporary.chmod(0o644 if damage == "mode" else _RECORD_MODE)
+        if damage == "hardlink":
+            (root / "linked").hardlink_to(temporary)
+    with (
+        DurableDirectory.open(
+            root, expected_owner=os.geteuid(), expected_directory_mode=_DIRECTORY_MODE
+        ) as directory,
+        pytest.raises(StatePathError),
+    ):
+        inspect_audit_readonly(
+            directory,
+            expected_owner=os.geteuid(),
+            expected_directory_mode=_DIRECTORY_MODE,
+            expected_record_mode=_RECORD_MODE,
+        )
+    assert temporary.exists()
