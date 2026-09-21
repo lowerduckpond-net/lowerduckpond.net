@@ -85,17 +85,9 @@ class ArchiveQuarantine:
                 )
             except FileNotFoundError:
                 return None
-        document = decode_json_object(raw, maximum_bytes=_MAXIMUM_BYTES)
-        if (
-            set(document)
-            != {"format", "bucket", "discoveryIncomplete", "versions", "multipartUploads"}
-            or document["format"] != _FORMAT
-            or document["bucket"] != self.bucket
-            or type(document["discoveryIncomplete"]) is not bool
-            or canonical_json_bytes(document, maximum_bytes=_MAXIMUM_BYTES) != raw
-        ):
+        document = decode_archive_quarantine(raw)
+        if document["bucket"] != self.bucket:
             raise ArchiveRemoteError("archive quarantine metadata is inconsistent")
-        _validate_entries(document)
         return document
 
     def record(self, inventory: RemoteInventory | None, *, blocking: bool = False) -> None:
@@ -210,6 +202,23 @@ class ArchiveQuarantine:
             finally:
                 os.close(descriptor)
             root.replace(_PATH, raw, mode=0o600)
+
+
+def decode_archive_quarantine(raw: bytes) -> dict[str, object]:
+    """Validate captured quarantine without loading credentials or changing closure."""
+
+    document = decode_json_object(raw, maximum_bytes=_MAXIMUM_BYTES)
+    if (
+        set(document) != {"format", "bucket", "discoveryIncomplete", "versions", "multipartUploads"}
+        or document["format"] != _FORMAT
+        or type(document["bucket"]) is not str
+        or not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,61}[a-z0-9]", document["bucket"])
+        or type(document["discoveryIncomplete"]) is not bool
+        or canonical_json_bytes(document, maximum_bytes=_MAXIMUM_BYTES) != raw
+    ):
+        raise ArchiveRemoteError("archive quarantine metadata is inconsistent")
+    _validate_entries(document)
+    return document
 
 
 def _validate_entries(document: dict[str, object]) -> None:

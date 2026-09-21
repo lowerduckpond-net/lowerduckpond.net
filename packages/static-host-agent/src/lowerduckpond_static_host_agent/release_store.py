@@ -387,7 +387,8 @@ class DeploymentReleaseStore:
     ) -> ReleaseTreeMeasurement:
         """Remeasure one published release while publication is excluded."""
 
-        self._require_locked(publication_lock)
+        self._require_open()
+        publication_lock.require_held(LockName.PUBLICATION)
         tenant = validate_uuid7(tenant_id)
         deployment = validate_uuid7(deployment_id)
         return measure_release_tree(
@@ -404,6 +405,30 @@ class DeploymentReleaseStore:
         """Enumerate the complete bounded published release namespace."""
 
         self._require_locked(publication_lock)
+        return self._published_inventory({})
+
+    def capture_published_inventory(
+        self,
+        *,
+        publication_lock: PublicationLockProof,
+        transition_candidates: Mapping[str, str],
+    ) -> PublishedReleaseInventory:
+        """Read complete releases under backup leases, never removing staging."""
+
+        self._require_open()
+        publication_lock.require_held(LockName.PUBLICATION, mode=LockMode.SHARED)
+        publication_lock.require_held(LockName.TENANT_STATE, mode=LockMode.SHARED)
+        candidates = {
+            validate_uuid7(tenant): validate_uuid7(deployment)
+            for tenant, deployment in transition_candidates.items()
+        }
+        _scan_names(self._staging_fd, maximum=0, label="backup release staging")
+        return self._published_inventory(candidates)
+
+    def _published_inventory(
+        self,
+        transition_candidates: Mapping[str, str],
+    ) -> PublishedReleaseInventory:
         names = _scan_names(
             self._release_fd,
             maximum=DEFAULT_STATE_INVENTORY_LIMITS.maximum_tenants + 1,
@@ -454,9 +479,13 @@ class DeploymentReleaseStore:
                     namespace_allocations.append(_inode_allocation(os.fstat(releases_fd)))
                     release_names = _scan_names(
                         releases_fd,
-                        maximum=_MAXIMUM_TENANT_RELEASES,
+                        maximum=_MAXIMUM_TENANT_RELEASES + int(tenant_id in transition_candidates),
                         label="tenant release history",
                     )
+                    if len(release_names) > _MAXIMUM_TENANT_RELEASES and release_names[
+                        -1
+                    ] != transition_candidates.get(tenant_id):
+                        raise ReleaseStoreError("release history exceeds its transition candidate")
                     deployment_ids: list[str] = []
                     for release_name in release_names:
                         try:

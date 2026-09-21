@@ -29,6 +29,10 @@ SOURCE_PATHS: Final = {
     "state": "/var/lib/lowerduckpond/static",
     "recovery": "/var/lib/lowerduckpond/recovery",
 }
+STAGED_PATHS: Final = {
+    "database": "/var/cache/lowerduckpond-backup/staging/mariadb.sql.gz",
+    "descriptor": "/var/cache/lowerduckpond-backup/staging/static-recovery.json",
+}
 EXCLUDE_PATHS: Final = (
     "/var/lib/lowerduckpond/static/intake",
     "/var/lib/lowerduckpond/static/exports",
@@ -57,7 +61,13 @@ _EXCLUDED: Final = {("state", "intake"), ("state", "exports"), ("content", "site
 def source_policy_digest() -> dict[str, str]:
     return framed_digest(
         POLICY_FORMAT,
-        canonical_json_bytes({"sources": SOURCE_PATHS, "exclusions": list(EXCLUDE_PATHS)}),
+        canonical_json_bytes(
+            {
+                "sources": SOURCE_PATHS,
+                "stagedFiles": STAGED_PATHS,
+                "exclusions": list(EXCLUDE_PATHS),
+            }
+        ),
     )
 
 

@@ -42,7 +42,7 @@ def _read(root: DurableDirectory, path: tuple[str, ...], owner: int, limit: int)
     return root.read_regular(path, expected_owner=owner, expected_mode=0o600, maximum_bytes=limit)
 
 
-def _require_initial_prefix(
+def require_initial_lineage_prefix(
     root: DurableDirectory, owner: int, lineage: dict[str, object], audit: AuditState
 ) -> None:
     count = lineage["initialEntryCount"]
@@ -127,7 +127,7 @@ def lineage_for_repository(  # noqa: PLR0913 - explicit privilege and failure bo
                 or genesis["namespaceDigest"] != namespace_digest
             ):
                 raise BackupIdentityError("audit lineage binding changed")
-            _require_initial_prefix(root, expected_owner, genesis, audit)
+            require_initial_lineage_prefix(root, expected_owner, genesis, audit)
             # This immutable independent anchor is published and synced first.
             # Missing primary bytes can only be copied from this exact identity.
             _sync_directory(root, "locks")
