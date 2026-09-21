@@ -138,6 +138,8 @@
     create_home: false
 
 - name: Create Caddy build and runtime directories
+  vars:
+    ansible_python_interpreter: /usr/local/libexec/lowerduckpond/configure-static-python
   ansible.builtin.file:
     path: "{{ item.path }}"
     state: directory
@@ -255,6 +257,8 @@
     mode: "0755"
 
 - name: Install the known static fixture
+  vars:
+    ansible_python_interpreter: /usr/local/libexec/lowerduckpond/configure-static-python
   ansible.builtin.template:
     src: index.html.j2
     dest: "{{ caddy_fixture_root }}/index.html"

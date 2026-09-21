@@ -83,7 +83,7 @@ with (
     ArtifactIntake(pathlib.Path({support.STATE_ROOT!r}), expected_owner=0) as intake,
 ):
     with intake.admit(
-        operation="deploy",
+        operation={request["operation"]!r},
         correlation_id={request["correlationId"]!r},
         declared=declared,
         read=BytesIO(payload).read,

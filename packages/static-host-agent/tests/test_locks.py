@@ -77,6 +77,57 @@ def test_initialize_is_idempotent_but_validates_on_acquisition(tmp_path: Path) -
         pass
 
 
+def test_backup_lends_exact_shared_inodes_without_releasing_them(tmp_path: Path) -> None:
+    with (
+        LockManager.initialize(tmp_path, expected_owner=os.geteuid()) as manager,
+        manager.acquire(LockName.PUBLICATION, mode=LockMode.SHARED),
+        manager.acquire(LockName.TENANT_STATE, mode=LockMode.SHARED),
+    ):
+        duplicates = manager.duplicate_backup_descriptors()
+        try:
+            for name, descriptor in zip(
+                (LockName.PUBLICATION, LockName.TENANT_STATE), duplicates, strict=True
+            ):
+                assert not os.get_inheritable(descriptor)
+                assert os.fstat(descriptor).st_ino == (tmp_path / name.filename).stat().st_ino
+                contender = os.open(tmp_path / name.filename, os.O_RDWR)
+                try:
+                    with pytest.raises(BlockingIOError):
+                        fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                finally:
+                    os.close(contender)
+        finally:
+            for descriptor in duplicates:
+                os.close(descriptor)
+        manager.require_held(LockName.PUBLICATION, mode=LockMode.SHARED)
+        manager.require_held(LockName.TENANT_STATE, mode=LockMode.SHARED)
+
+
+@pytest.mark.parametrize("name", [LockName.PUBLICATION, LockName.TENANT_STATE])
+def test_backup_lending_refuses_replaced_lock_name(tmp_path: Path, name: LockName) -> None:
+    with (
+        LockManager.initialize(tmp_path, expected_owner=os.geteuid()) as manager,
+        manager.acquire(LockName.PUBLICATION, mode=LockMode.SHARED),
+        manager.acquire(LockName.TENANT_STATE, mode=LockMode.SHARED),
+    ):
+        path = tmp_path / name.filename
+        path.rename(path.with_suffix(".old"))
+        path.write_bytes(b"")
+        path.chmod(0o600)
+        with pytest.raises(LockOrderError):
+            manager.duplicate_backup_descriptors()
+
+
+@pytest.mark.parametrize("mode", [LockMode.EXCLUSIVE, LockMode.SHARED])
+def test_backup_lending_requires_both_shared_leases(tmp_path: Path, mode: LockMode) -> None:
+    with (
+        LockManager.initialize(tmp_path, expected_owner=os.geteuid()) as manager,
+        manager.acquire(LockName.PUBLICATION, mode=mode),
+        pytest.raises(LockOrderError),
+    ):
+        manager.duplicate_backup_descriptors()
+
+
 def test_initialize_rejects_an_existing_untrusted_lock_inode(tmp_path: Path) -> None:
     (tmp_path / "publication.lock").write_bytes(b"")
     (tmp_path / "publication.lock").chmod(0o640)

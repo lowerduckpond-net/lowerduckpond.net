@@ -212,20 +212,19 @@ class DurableDirectory:
             raise StatePathError("state directory changed while reopening its descriptor")
         return descriptor
 
-    def remove_abandoned_publication_temporaries(
+    def publication_temporaries(
         self,
         *,
         expected_owner: int,
         expected_mode: int,
         maximum_entries: int,
-    ) -> int:
-        """Remove only safely shaped temporaries left by an interrupted writer."""
+    ) -> tuple[str, ...]:
+        """Validate and list crash-left temporaries without changing the directory."""
 
         self._require_open()
         if type(maximum_entries) is not int or maximum_entries < 0:
             raise ValueError("temporary scan bound must be a nonnegative integer")
         descriptor = self.duplicate_descriptor()
-        removed = 0
         try:
             names: list[str] = []
             with os.scandir(descriptor) as iterator:
@@ -248,12 +247,31 @@ class DurableDirectory:
                     or metadata.st_nlink != 1
                 ):
                     raise StatePathError("reserved temporary has an unsafe inode shape")
+            return tuple(names)
+        finally:
+            os.close(descriptor)
+
+    def remove_abandoned_publication_temporaries(
+        self,
+        *,
+        expected_owner: int,
+        expected_mode: int,
+        maximum_entries: int,
+    ) -> int:
+        """Remove only safely shaped temporaries left by an interrupted writer."""
+
+        names = self.publication_temporaries(
+            expected_owner=expected_owner,
+            expected_mode=expected_mode,
+            maximum_entries=maximum_entries,
+        )
+        descriptor = self.duplicate_descriptor()
+        try:
             for name in names:
                 os.unlink(name, dir_fd=descriptor)
-                removed += 1
-            if removed:
+            if names:
                 os.fsync(descriptor)
-            return removed
+            return len(names)
         finally:
             os.close(descriptor)
 

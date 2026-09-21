@@ -14,6 +14,14 @@
     group: root
     mode: "0755"
 
+- name: Install the root static configuration interpreter
+  ansible.builtin.copy:
+    src: configure-static-python
+    dest: /usr/local/libexec/lowerduckpond/configure-static-python
+    owner: root
+    group: root
+    mode: "0700"
+
 - name: Install the public TCP listener classifier
   ansible.builtin.copy:
     src: public-tcp-listeners

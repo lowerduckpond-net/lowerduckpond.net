@@ -383,6 +383,8 @@
     mode: "0400"
 
 - name: Create the root-owned static state layout before artifact selection
+  vars:
+    ansible_python_interpreter: /usr/local/libexec/lowerduckpond/configure-static-python
   ansible.builtin.file:
     path: "{{ item }}"
     state: directory
@@ -403,7 +405,53 @@
     - "{{ static_host_agent_state_root }}/audit"
     - "{{ static_host_agent_state_root }}/locks"
 
+- name: Inspect the fixed static state lock inodes
+  ansible.builtin.stat:
+    path: "{{ static_host_agent_state_root }}/locks/{{ item }}"
+    follow: false
+  loop:
+    - intake.lock
+    - export.lock
+    - publication.lock
+    - tenant-state.lock
+  register: static_host_agent_lock_inodes
+
+- name: Refuse unsafe static state lock inodes
+  ansible.builtin.assert:
+    that:
+      - >-
+        not item.stat.exists or
+        (item.stat.isreg and
+         not item.stat.islnk and
+         item.stat.uid == 0 and
+         item.stat.gid == 0 and
+         item.stat.mode == '0600' and
+         item.stat.nlink == 1 and
+         item.stat.size == 0)
+    quiet: true
+  loop: "{{ static_host_agent_lock_inodes.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Create the fixed static state lock inodes
+  vars:
+    ansible_python_interpreter: /usr/local/libexec/lowerduckpond/configure-static-python
+  ansible.builtin.file:
+    path: "{{ static_host_agent_state_root }}/locks/{{ item.item }}"
+    state: touch
+    owner: root
+    group: root
+    mode: "0600"
+    access_time: preserve
+    modification_time: preserve
+  loop: "{{ static_host_agent_lock_inodes.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: not item.stat.exists
+
 - name: Create the unpublished release root
+  vars:
+    ansible_python_interpreter: /usr/local/libexec/lowerduckpond/configure-static-python
   ansible.builtin.file:
     path: "{{ static_host_agent_release_root }}"
     state: directory
@@ -412,6 +460,8 @@
     mode: "0710"
 
 - name: Create private release staging on the release filesystem
+  vars:
+    ansible_python_interpreter: /usr/local/libexec/lowerduckpond/configure-static-python
   ansible.builtin.file:
     path: "{{ static_host_agent_release_staging_root }}"
     state: directory
@@ -571,48 +621,6 @@
   when: item.stat.exists
   changed_when: true
 
-- name: Inspect the fixed static state lock inodes
-  ansible.builtin.stat:
-    path: "{{ static_host_agent_state_root }}/locks/{{ item }}"
-    follow: false
-  loop:
-    - intake.lock
-    - export.lock
-    - publication.lock
-    - tenant-state.lock
-  register: static_host_agent_lock_inodes
-
-- name: Refuse unsafe static state lock inodes
-  ansible.builtin.assert:
-    that:
-      - >-
-        not item.stat.exists or
-        (item.stat.isreg and
-         not item.stat.islnk and
-         item.stat.uid == 0 and
-         item.stat.gid == 0 and
-         item.stat.mode == '0600' and
-         item.stat.nlink == 1 and
-         item.stat.size == 0)
-    quiet: true
-  loop: "{{ static_host_agent_lock_inodes.results }}"
-  loop_control:
-    label: "{{ item.item }}"
-
-- name: Create the fixed static state lock inodes
-  ansible.builtin.file:
-    path: "{{ static_host_agent_state_root }}/locks/{{ item.item }}"
-    state: touch
-    owner: root
-    group: root
-    mode: "0600"
-    access_time: preserve
-    modification_time: preserve
-  loop: "{{ static_host_agent_lock_inodes.results }}"
-  loop_control:
-    label: "{{ item.item }}"
-  when: not item.stat.exists
-
 - name: Create the protected platform configuration directory
   ansible.builtin.file:
     path: /etc/lowerduckpond
@@ -766,6 +774,8 @@
   when: not static_publication_enabled | bool
 
 - name: Create inert Caddy generation storage
+  vars:
+    ansible_python_interpreter: /usr/local/libexec/lowerduckpond/configure-static-python
   ansible.builtin.file:
     path: "{{ item.path }}"
     state: directory

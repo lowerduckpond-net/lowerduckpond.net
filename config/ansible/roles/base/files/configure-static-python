@@ -1,0 +1,145 @@
+#!/usr/bin/python3 -I
+"""Run root Ansible file/template modules under static writer exclusion."""
+
+from __future__ import annotations
+
+import fcntl
+import os
+import signal
+import stat
+import sys
+from pathlib import Path
+from types import FrameType
+
+ROOT = Path("/var/lib/lowerduckpond/static")
+LOCKS = (ROOT / "locks/publication.lock", ROOT / "locks/tenant-state.lock")
+ALL_LOCKS = (ROOT / "locks/intake.lock", ROOT / "locks/export.lock", *LOCKS)
+ARTIFACT_SELECTOR = Path("/opt/lowerduckpond/static-host-agent/current")
+BACKUP_CONFIGURATION = Path("/etc/lowerduckpond/backup.env")
+OWNER_UID = 0
+OWNER_GID = 0
+MODE = 0o600
+DIRECTORY_MODE = 0o700
+WAIT_SECONDS = 30 * 60
+
+
+def _timeout(_signal: int, _frame: FrameType | None) -> None:
+    raise TimeoutError("static configuration lock wait expired")
+
+
+def _fresh_bootstrap() -> bool:
+    for path in (
+        ARTIFACT_SELECTOR,
+        BACKUP_CONFIGURATION,
+        ROOT / "locks/audit-lineage-genesis.json",
+    ):
+        if path.exists() or path.is_symlink():
+            return False
+    for path in (ROOT, ROOT / "locks", ROOT / "authorization"):
+        try:
+            metadata = path.stat(follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != OWNER_UID
+            or metadata.st_gid != OWNER_GID
+            or stat.S_IMODE(metadata.st_mode) != DIRECTORY_MODE
+        ):
+            return False
+    for relative in (
+        "platform",
+        "tenants",
+        "audit",
+        "intents",
+        "authorization/jobs",
+        "authorization/results",
+        "authorization/correlations",
+    ):
+        path = ROOT / relative
+        try:
+            metadata = path.stat(follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != OWNER_UID
+            or metadata.st_gid != OWNER_GID
+            or stat.S_IMODE(metadata.st_mode) != DIRECTORY_MODE
+        ):
+            return False
+        with os.scandir(path) as entries:
+            if next(entries, None) is not None:
+                return False
+    return True
+
+
+def _validate(path: Path, descriptor: int) -> None:
+    metadata = os.fstat(descriptor)
+    named = path.stat(follow_symlinks=False)
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_uid != OWNER_UID
+        or metadata.st_gid != OWNER_GID
+        or stat.S_IMODE(metadata.st_mode) != MODE
+        or metadata.st_nlink != 1
+        or metadata.st_size != 0
+        or (metadata.st_dev, metadata.st_ino) != (named.st_dev, named.st_ino)
+    ):
+        raise ValueError("static configuration lock is unsafe")
+
+
+def _acquire() -> tuple[int, ...]:
+    descriptors: dict[Path, int] = {}
+    try:
+        for path in ALL_LOCKS:
+            try:
+                descriptor = os.open(path, os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+            except FileNotFoundError:
+                continue
+            descriptors[path] = descriptor
+            _validate(path, descriptor)
+        if len(descriptors) != len(ALL_LOCKS):
+            for descriptor in descriptors.values():
+                os.close(descriptor)
+            descriptors.clear()
+            # First convergence precedes lock creation and artifact selection.
+            # A damaged/restored existing host never takes this bootstrap path.
+            if _fresh_bootstrap():
+                return ()
+            raise ValueError("existing static host has missing lock authority")
+        for path in LOCKS:
+            descriptor = descriptors[path]
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            _validate(path, descriptor)
+            os.set_inheritable(descriptor, True)
+        for path, descriptor in descriptors.items():
+            _validate(path, descriptor)
+        for path in ALL_LOCKS:
+            if path not in LOCKS:
+                os.close(descriptors.pop(path))
+        return tuple(descriptors[path] for path in LOCKS)
+    except BaseException:
+        for descriptor in descriptors.values():
+            os.close(descriptor)
+        raise
+
+
+def main() -> None:
+    if os.geteuid() != 0:
+        raise SystemExit("static_configuration_root_required")
+    try:
+        signal.signal(signal.SIGALRM, _timeout)
+        signal.alarm(WAIT_SECONDS)
+        _acquire()
+        signal.alarm(0)
+    except OSError, ValueError:
+        raise SystemExit("static_configuration_lock_unverified") from None
+    # The installed helper is 0700. Arguments are root Ansible's Python module
+    # invocation; it grants no command capability to ordinary service accounts.
+    # Apply it only to file/template tasks, never synchronous service operations.
+    os.execv("/usr/bin/python3", ["/usr/bin/python3", *sys.argv[1:]])  # noqa: S606
+
+
+if __name__ == "__main__":
+    main()

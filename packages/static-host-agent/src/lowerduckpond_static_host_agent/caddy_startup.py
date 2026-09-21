@@ -211,7 +211,29 @@ class CaddyStartupStore:
             )
         except FileNotFoundError:
             return None
-        return _decode_intent(data)
+        return decode_caddy_start_intent(data)
+
+    def read_for_backup(self) -> CaddyStartIntent | None:
+        """Validate the complete namespace without cleanup under publication SH."""
+
+        temporaries = self._directory.publication_temporaries(
+            expected_owner=self._owner,
+            expected_mode=CADDY_START_INTENT_MODE,
+            maximum_entries=MAX_CADDY_START_INTENT_ENTRIES,
+        )
+        descriptor = self._directory.duplicate_descriptor()
+        try:
+            count = 0
+            with os.scandir(descriptor) as iterator:
+                for entry in iterator:
+                    count += 1
+                    if count > MAX_CADDY_START_INTENT_ENTRIES:
+                        raise CaddyStartupError("startup intent namespace exceeds its bound")
+                    if entry.name != CADDY_START_INTENT_NAME and entry.name not in temporaries:
+                        raise CaddyStartupError("startup intent namespace is not recognized")
+            return self.read()
+        finally:
+            os.close(descriptor)
 
     def reconcile_temporaries(self) -> int:
         """Remove only bounded, safely shaped crash-left intent writes."""
@@ -443,7 +465,9 @@ def _count_matches(value: int, expected: int | range) -> bool:
     return value in expected if isinstance(expected, range) else value == expected
 
 
-def _decode_intent(data: bytes) -> CaddyStartIntent:
+def decode_caddy_start_intent(data: bytes) -> CaddyStartIntent:
+    """Decode exact non-secret startup evidence, including its attempt fences."""
+
     try:
         document = decode_json_object(data, maximum_bytes=MAX_CADDY_START_INTENT_BYTES)
         if canonical_json_bytes(document) != data:

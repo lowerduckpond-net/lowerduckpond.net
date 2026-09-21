@@ -42,7 +42,7 @@ def _read(root: DurableDirectory, path: tuple[str, ...], owner: int, limit: int)
     return root.read_regular(path, expected_owner=owner, expected_mode=0o600, maximum_bytes=limit)
 
 
-def _require_initial_prefix(
+def require_initial_lineage_prefix(
     root: DurableDirectory, owner: int, lineage: dict[str, object], audit: AuditState
 ) -> None:
     count = lineage["initialEntryCount"]
@@ -108,7 +108,7 @@ def lineage_for_repository(  # noqa: PLR0913 - explicit privilege and failure bo
             raise BackupIdentityError("audit lineage genesis is missing or inconsistent")
         if published is None and not initialize:
             raise BackupIdentityError("audit lineage has not been initialized")
-        _require_snapshot_history(snapshot_tags, identity, genesis)
+        require_repository_history(snapshot_tags, identity, genesis)
         if repository_genesis is not None:
             validate_lineage(repository_genesis)
             if genesis != repository_genesis:
@@ -127,7 +127,7 @@ def lineage_for_repository(  # noqa: PLR0913 - explicit privilege and failure bo
                 or genesis["namespaceDigest"] != namespace_digest
             ):
                 raise BackupIdentityError("audit lineage binding changed")
-            _require_initial_prefix(root, expected_owner, genesis, audit)
+            require_initial_lineage_prefix(root, expected_owner, genesis, audit)
             # This immutable independent anchor is published and synced first.
             # Missing primary bytes can only be copied from this exact identity.
             _sync_directory(root, "locks")
@@ -232,7 +232,7 @@ def _entropy(length: int) -> bytes:
     return secrets.token_bytes(length)
 
 
-def _require_snapshot_history(
+def require_repository_history(
     snapshots: tuple[tuple[str, tuple[str, ...]], ...],
     identity: RepositoryIdentity,
     lineage: dict[str, object] | None,

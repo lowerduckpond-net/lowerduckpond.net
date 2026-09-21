@@ -6,14 +6,17 @@ from __future__ import annotations
 import fcntl
 import os
 import pathlib
+import re
 import stat
+import subprocess
 import sys
 
 sys.dont_write_bytecode = True
 
 REPOSITORY_LOCK = pathlib.Path("/var/cache/lowerduckpond-backup/repository.lock")
 SELECTION_LOCK = pathlib.Path("/opt/lowerduckpond/static-host-agent/selection.lock")
-SITE_PACKAGES = pathlib.Path("/opt/lowerduckpond/static-host-agent/current/site-packages")
+ARTIFACT_ROOT = pathlib.Path("/opt/lowerduckpond/static-host-agent")
+VERIFIER = "/usr/local/libexec/lowerduckpond/verify-static-host-agent-artifact"
 LOCK_MODE = 0o600
 
 
@@ -55,12 +58,40 @@ def acquire_selection() -> int:
     return descriptor
 
 
+def selected_artifact() -> pathlib.Path:
+    selector = ARTIFACT_ROOT / "current"
+    metadata = selector.stat(follow_symlinks=False)
+    if (
+        not stat.S_ISLNK(metadata.st_mode)
+        or metadata.st_uid != 0
+        or metadata.st_gid != 0
+        or metadata.st_nlink != 1
+    ):
+        raise ValueError("unsafe artifact selector")
+    selected = selector.readlink()
+    if selected.parent != ARTIFACT_ROOT or re.fullmatch(r"[0-9a-f]{64}", selected.name) is None:
+        raise ValueError("unbound artifact identity")
+    subprocess.run(  # noqa: S603 - fixed verifier and selected immutable artifact
+        [VERIFIER, str(selected)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env={"PATH": "/usr/bin:/bin"},
+        timeout=60,
+        check=True,
+    )
+    return selected
+
+
 try:
+    if sys.argv[1:]:
+        raise ValueError("fixed capture command accepts no arguments")
     _SELECTION_LOCK_FD = acquire_selection()
-except (OSError, ValueError):
-    raise SystemExit("backup_identity_lock_unverified") from None
-sys.path.insert(0, str(SITE_PACKAGES))
+    _ARTIFACT = selected_artifact()
+except (OSError, ValueError, subprocess.SubprocessError):
+    raise SystemExit("backup_static_artifact_unverified") from None
+sys.path.insert(0, str(_ARTIFACT / "site-packages"))
 
-from lowerduckpond_static_host_agent.backup_entrypoint import identity_main  # noqa: E402
+from lowerduckpond_static_host_agent.backup_entrypoint import capture_main  # noqa: E402
 
-raise SystemExit(identity_main(_SELECTION_LOCK_FD))
+raise SystemExit(capture_main(_SELECTION_LOCK_FD, _ARTIFACT.name))

@@ -9,13 +9,35 @@ backup_maintenance_status_scope: >-
   {{ [backup_repository, backup_node_name,
       backup_keep_daily | string, backup_keep_weekly | string,
       backup_keep_monthly | string] | to_json | hash('sha256') }}
-backup_source_paths:
+backup_source_paths: >-
+  {{ backup_recovery_source_paths if backup_static_recovery_enabled | bool
+     else backup_legacy_source_paths }}
+backup_exclude_paths: >-
+  {{ backup_recovery_exclude_paths if backup_static_recovery_enabled | bool
+     else backup_legacy_exclude_paths }}
+backup_legacy_source_paths:
   - /srv/lowerduckpond
   - /var/lib/caddy
   - /var/lib/lowerduckpond/static
-backup_exclude_paths:
+backup_legacy_exclude_paths:
   - /var/lib/lowerduckpond/static/intake
   - /srv/lowerduckpond/sites/.staging
   - /var/lib/lowerduckpond/static/exports
   - /etc/caddy/generations
   - /etc/caddy/environment
+backup_recovery_source_paths:
+  - /srv/lowerduckpond
+  - /var/lib/lowerduckpond/static
+  - /var/lib/lowerduckpond/recovery
+  - /var/cache/lowerduckpond-backup/staging/mariadb.sql.gz
+  - /var/cache/lowerduckpond-backup/staging/static-recovery.json
+backup_recovery_exclude_paths:
+  - /var/lib/lowerduckpond/static/intake
+  - /var/lib/lowerduckpond/static/exports
+  - /srv/lowerduckpond/sites/.staging
+  - /srv/lowerduckpond/lost+found
+  - /etc/caddy/generations
+  - /etc/caddy/environment
+  - /var/lib/caddy
+  - /var/lib/lowerduckpond/static/**/.ldp-state-*
+  - /var/lib/lowerduckpond/recovery/**/.ldp-state-*

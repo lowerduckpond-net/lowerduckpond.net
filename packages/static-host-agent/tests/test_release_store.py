@@ -72,6 +72,68 @@ def _binding(payload: bytes) -> VerifiedArtifact:
     return VerifiedArtifact(len(payload), hashlib.sha256(payload).hexdigest())
 
 
+@pytest.mark.parametrize(
+    "damage", [None, "staging", "unnamed-fourth", "wrong-candidate", "fifth", "retired"]
+)
+def test_backup_inventory_accepts_only_complete_intent_bound_transition_release(
+    tmp_path: Path,
+    damage: str | None,
+) -> None:
+    state = _state_root(tmp_path)
+    root = _release_root(tmp_path)
+    _mkdir(root / _TENANT_ID, 0o755)
+    releases = root / _TENANT_ID / "releases"
+    _mkdir(releases, 0o755)
+    identifiers = tuple(f"0198d17f-6f4a-7000-8000-{number:012x}" for number in range(4))
+    for identifier in identifiers:
+        _mkdir(releases / identifier, 0o755)
+        content = releases / identifier / "index.html"
+        content.write_bytes(b"complete release")
+        content.chmod(0o644)
+    candidates = {_TENANT_ID: identifiers[-1]}
+    if damage == "staging":
+        (root / ".staging/pending").write_bytes(b"unfinished bytes")
+    elif damage == "unnamed-fourth":
+        candidates = {}
+    elif damage == "wrong-candidate":
+        candidates[_TENANT_ID] = identifiers[0]
+    elif damage == "fifth":
+        _mkdir(releases / "0198d17f-6f4a-7000-8000-000000000005", 0o755)
+    elif damage == "retired":
+        (releases / identifiers[0]).rename(
+            releases / (".retired-" + identifiers[0] + "-" + "a" * 64)
+        )
+    with (
+        DeploymentReleaseStore(
+            root,
+            root / ".staging",
+            expected_owner=os.geteuid(),
+            expected_release_group=os.getegid(),
+            expected_staging_group=os.getegid(),
+        ) as store,
+        LockManager(state / "locks", expected_owner=os.geteuid()) as locks,
+        locks.acquire(LockName.PUBLICATION, mode=LockMode.SHARED),
+        locks.acquire(LockName.TENANT_STATE, mode=LockMode.SHARED),
+    ):
+        if damage is not None:
+            with pytest.raises(ReleaseStoreError):
+                store.capture_published_inventory(
+                    publication_lock=locks, transition_candidates=candidates
+                )
+        else:
+            captured = store.capture_published_inventory(
+                publication_lock=locks, transition_candidates=candidates
+            )
+            assert captured.tenant_releases == ((_TENANT_ID, identifiers),)
+            assert store.measure(
+                _TENANT_ID, identifiers[-1], publication_lock=locks
+            ).logical_content_bytes == len(b"complete release")
+            with pytest.raises(LockOrderError):
+                store.published_inventory(publication_lock=locks)
+    if damage == "staging":
+        assert (root / ".staging/pending").read_bytes() == b"unfinished bytes"
+
+
 @pytest.fixture(autouse=True)
 def _reported_capacity(monkeypatch: pytest.MonkeyPatch) -> None:
     def measure(descriptor: int) -> FilesystemCapacity:
