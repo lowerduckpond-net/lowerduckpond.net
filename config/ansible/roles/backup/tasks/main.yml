@@ -3,9 +3,9 @@
   ansible.builtin.assert:
     that:
       - backup_static_recovery_enabled is boolean
-      - backup_keep_daily | int == 7
-      - backup_keep_weekly | int == 5
-      - backup_keep_monthly | int == 12
+      - backup_keep_daily | string == '7'
+      - backup_keep_weekly | string == '5'
+      - backup_keep_monthly | string == '12'
       - not backup_static_recovery_enabled or caddy_generation_enabled | default(false) | bool
     fail_msg: Backup requires the qualified 7/5/12 policy; coherent mode requires immutable Caddy generations.
 

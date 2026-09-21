@@ -145,9 +145,11 @@ def ordinary_snapshot(host: Host, node: str, timestamp: str) -> str:
     return str(json.loads(output.splitlines()[-1])["snapshot_id"])
 
 
-def interrupt_after_forget(host: Host) -> None:
-    # Exercise real Restic and actual durable writes, with a test-process exit
-    # immediately after the forgotten phase is renamed. It is not a CLI option.
+def interrupt_maintenance(host: Host, *, phase: str) -> None:
+    # Exercise actual durable writes with a test-process exit after forget,
+    # or after durable pruning intent but before launching prune. No CLI option.
+    assert phase in {"forgotten", "pruning"}
+    boundary = "RENAME" if phase == "forgotten" else "DIRECTORY_SYNC"
     root_agent(
         host,
         f"""
@@ -158,9 +160,9 @@ from lowerduckpond_static_host_agent.durable import DurabilityBoundary
 pid = os.fork()
 if pid == 0:
     def terminate(name, boundary):
-        if name == 'maintenance-intent.json' and boundary == DurabilityBoundary.RENAME:
+        if name == 'maintenance-intent.json' and boundary == DurabilityBoundary.{boundary}:
             intent = json.loads(Path({PREFIX + "/maintenance-intent.json"!r}).read_bytes())
-            if intent['phase'] == 'forgotten':
+            if intent['phase'] == {phase!r}:
                 os._exit(73)
     try:
         with inherit_restic_leases((9, selection)):
@@ -171,7 +173,7 @@ if pid == 0:
     os._exit(75)
 _, status = os.waitpid(pid, 0)
 assert os.waitstatus_to_exitcode(status) == 73
-print('interrupted-after-forget')
+print('interrupted-' + {phase!r})
 """,
     )
 

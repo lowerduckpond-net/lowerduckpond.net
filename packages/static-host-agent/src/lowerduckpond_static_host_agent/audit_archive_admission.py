@@ -79,7 +79,7 @@ def rotation_reservation(directory: DurableDirectory) -> CapacityReservation:
 
 
 def admit_archive_append(
-    directory: DurableDirectory, prefix: ArchivePrefix, append_allocation: int
+    directory: DurableDirectory, prefix: ArchivePrefix, append_allocation: int, *, entry_count: int
 ) -> int:
     """Return additional ordinary-audit headroom after proving all free floors."""
     if prefix.head is None:
@@ -91,7 +91,7 @@ def admit_archive_append(
         prefix.allocated_bytes + reservation.allocated_bytes > formats.MAX_ARCHIVE_METADATA_BYTES
         or prefix.inodes + reservation.unique_inodes > formats.MAX_ARCHIVE_METADATA_INODES
         or head["indexCount"] == formats.MAX_ARCHIVED_SEGMENTS
-        or head["entryCount"] == formats.MAX_WITNESSED_ENTRIES
+        or entry_count >= formats.MAX_WITNESSED_ENTRIES
     ):
         raise AuditArchiveCapacityError(
             "ordinary work cannot reserve bounded audit archive metadata"

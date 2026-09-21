@@ -224,12 +224,15 @@ def test_installed_audit_protection_reconciles_orphans_and_preserves_retention( 
         _failed_proof_preserves_ordinary_ids_and_index(host, selected, ordinary[1])
         _scheduled_retag_cannot_make_indexed_evidence_ordinary(host, selected, ordinary[1])
 
-        audits.interrupt_after_forget(host)
+        audits.interrupt_maintenance(host, phase="forgotten")
         intent = json.loads(host.file(f"{audits.PREFIX}/maintenance-intent.json").content)
         assert intent["phase"] == "forgotten" and intent["removeIds"] == [ordinary[1]]
         assert ordinary[1] not in audits.snapshots(host)
         # Newly eligible work cannot expand the durable remove set after restart.
         additional = audits.ordinary_snapshot(host, str(metadata["node"]), "2020-01-01 02:30:00")
+        audits.interrupt_maintenance(host, phase="pruning")
+        intent = json.loads(host.file(f"{audits.PREFIX}/maintenance-intent.json").content)
+        assert intent["phase"] == "pruning" and intent["removeIds"] == [ordinary[1]]
         audits.run_unit(host, audits.MAINTENANCE_UNIT)
         remaining = audits.snapshots(host)
         assert {first, second, ordinary[0], ordinary[2], additional} <= set(remaining)

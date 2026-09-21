@@ -301,8 +301,17 @@ def _maintain(
         intent = {**intent, "phase": "pruning"}
         _publish_intent(paths, verified, intent, owner, failure_hook)
         prune_repository(environment)
-    # A resumed pruning/checked intent repeats integrity and content proof; it
-    # never invokes prune again after an interrupted destructive child.
+    elif intent["phase"] == "pruning":
+        # The durable phase precedes child launch, so it cannot prove prune ran.
+        # After an ambiguous interruption, integrity plus a new protected proof
+        # must authorize one bounded prune before maintenance can report success.
+        check_repository(environment)
+        verified = _verify(paths, environment, owner, group, failure_hook=failure_hook)
+        _require_maintenance_proof(intent, verified)
+        _require_removed(intent, verified)
+        prune_repository(environment)
+    # A checked intent already proves a completed prune and its postconditions;
+    # only integrity/content revalidation is needed before removing that journal.
     check_repository(environment)
     verified = _verify(paths, environment, owner, group, failure_hook=failure_hook)
     _require_maintenance_proof(intent, verified)

@@ -14,9 +14,12 @@ from lowerduckpond_static_contracts import (
     archive_record_digest,
     canonical_json_bytes,
     manifest_digest,
+    platform_state_digest,
     result_digest,
 )
 from lowerduckpond_static_host_agent.audit import DEFAULT_AUDIT_LIMITS, AuditError
+from lowerduckpond_static_host_agent.audit_archive_store import head_for_indexes
+from lowerduckpond_static_host_agent.backup_identity import LINEAGE_SCHEMA, RepositoryIdentity
 from lowerduckpond_static_host_agent.job_runtime import RuntimeBoundaryError
 from lowerduckpond_static_host_agent.locks import LockManager, StateBusyError
 
@@ -366,6 +369,53 @@ def test_administrator_deletion_requires_exact_audited_authority_without_mutatio
         temporary.chmod(0o600)
     before = {p: p.read_bytes() for p in state.rglob("*") if p.is_file()}
     if drift == "none":
+        probe.installed(*installed, owner=os.geteuid())
+    else:
+        with pytest.raises((ValueError, AuditError)):
+            probe.installed(*installed, owner=os.geteuid())
+    assert {p: p.read_bytes() for p in state.rglob("*") if p.is_file()} == before
+
+
+@pytest.mark.parametrize("fault", [None, "missing-head", "corrupt-head", "publication"])
+def test_administrator_accounting_validates_protected_audit_metadata(
+    installed: tuple[Path, Path, Path], administrator_result: tuple[Path, Path], fault: str | None
+) -> None:
+    state, _, _ = installed
+    namespace = json.loads(
+        (ROOT / "tests/static-publication/fixtures/accepted/platform-namespace.json").read_bytes()
+    )
+    identity = RepositoryIdentity("a" * 64, "test-node", "/fixture-restic")
+    lineage = {
+        "schema": LINEAGE_SCHEMA,
+        "lineageId": "0198d17f-6f4a-7000-8000-000000000010",
+        "repository": identity.document(),
+        "repositoryBinding": identity.binding(),
+        "namespaceDigest": platform_state_digest(namespace).to_dict(),
+        "initializedAt": "2026-09-21T12:00:00Z",
+        "initialEntryCount": 0,
+        "initialTerminalEntryDigest": None,
+    }
+    (state / "audit/archive").mkdir(mode=0o700)
+    for name, value in (
+        ("platform/namespace.json", namespace),
+        ("platform/audit-lineage.json", lineage),
+        ("locks/audit-lineage-genesis.json", lineage),
+        ("audit/archive/head.json", head_for_indexes(lineage, ())),
+    ):
+        path = state / name
+        path.write_bytes(canonical_json_bytes(value))
+        path.chmod(0o600)
+    head = state / "audit/archive/head.json"
+    if fault == "missing-head":
+        head.unlink()
+    elif fault == "corrupt-head":
+        head.write_bytes(b"{}\n")
+    elif fault == "publication":
+        path = state / "audit" / (".ldp-state-" + "b" * 32)
+        path.write_bytes(b"retain unfinished publication")
+        path.chmod(0o600)
+    before = {p: p.read_bytes() for p in state.rglob("*") if p.is_file()}
+    if fault is None:
         probe.installed(*installed, owner=os.geteuid())
     else:
         with pytest.raises((ValueError, AuditError)):

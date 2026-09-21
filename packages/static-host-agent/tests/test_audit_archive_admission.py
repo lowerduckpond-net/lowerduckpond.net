@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from lowerduckpond_static_contracts import canonical_json_bytes
+from lowerduckpond_static_contracts import audit_entry_digest, canonical_json_bytes
 from lowerduckpond_static_host_agent import AuditError, LockManager, StateRepository
 from lowerduckpond_static_host_agent import audit_archive_admission as admission
 from lowerduckpond_static_host_agent import audit_archive_formats as formats
@@ -95,7 +95,7 @@ def test_freshness_boundary_and_headroom_preserve_fixed_production_limits(
         reservation = admission.rotation_reservation(directory)
         assert reservation.allocated_bytes > formats.MAX_SEGMENT_BYTES
         assert (
-            admission.admit_archive_append(directory, read(state), 4096)
+            admission.admit_archive_append(directory, read(state), 4096, entry_count=0)
             == reservation.allocated_bytes
         )
 
@@ -132,7 +132,7 @@ def test_rotation_headroom_cannot_cross_existing_filesystem_free_floors(
 
         monkeypatch.setattr(admission, "measure_filesystem_capacity_descriptor", tight_capacity)
         with pytest.raises(admission.AuditArchiveCapacityError, match="free floors"):
-            admission.admit_archive_append(directory, read(state), 4096)
+            admission.admit_archive_append(directory, read(state), 4096, entry_count=0)
 
 
 def test_missing_remote_proof_closes_ordinary_append_but_preserves_administrator_reserve(
@@ -149,3 +149,49 @@ def test_missing_remote_proof_closes_ordinary_append_but_preserves_administrator
     assert (
         state / "audit/segment-00000000000000000000.jsonl"
     ).read_bytes() == canonical_json_bytes(entry())
+
+
+@pytest.mark.parametrize("count", [65535, 65536, 65537])
+def test_complete_entry_count_boundary_applies_even_to_an_empty_archived_head(
+    state: Path, monkeypatch: pytest.MonkeyPatch, count: int
+) -> None:
+    monkeypatch.setattr(time, "time", lambda: NOW)
+    monkeypatch.setattr(admission, "measure_filesystem_capacity_descriptor", available_capacity)
+    grant_protection(state)
+    prefix = read(state)
+    assert prefix.head is not None and prefix.head["entryCount"] == 0
+    with DurableDirectory.open(
+        state / "audit", expected_owner=os.geteuid(), expected_directory_mode=0o700
+    ) as directory:
+        if count < formats.MAX_WITNESSED_ENTRIES:
+            assert admission.admit_archive_append(directory, prefix, 4096, entry_count=count) > 0
+        else:
+            with pytest.raises(admission.AuditArchiveCapacityError):
+                admission.admit_archive_append(directory, prefix, 4096, entry_count=count)
+
+
+def test_append_counts_the_unarchived_suffix_and_preserves_administrator_reserve(
+    state: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Exercise the public append path with a small component ceiling, leaving
+    # the installed 65,536-entry production limit unchanged.
+    ceiling = 3
+    monkeypatch.setattr(formats, "MAX_WITNESSED_ENTRIES", ceiling)
+    monkeypatch.setattr(time, "time", lambda: NOW)
+    monkeypatch.setattr(admission, "measure_filesystem_capacity_descriptor", available_capacity)
+    grant_protection(state)
+    with LockManager.initialize(state / "locks", expected_owner=os.geteuid()):
+        pass
+    previous = None
+    with StateRepository(state, expected_owner=os.geteuid()) as repository:
+        for sequence in range(ceiling):
+            document = entry(sequence, previous)
+            repository.append_audit(document)
+            previous = audit_entry_digest(document).to_dict()
+        path = state / "audit/segment-00000000000000000000.jsonl"
+        before = path.read_bytes()
+        with pytest.raises(AuditError, match="reserve bounded"):
+            repository.append_audit(entry(ceiling, previous))
+        assert path.read_bytes() == before
+        appended = repository.append_audit(entry(ceiling, previous), administrator=True)
+        assert appended.state.entry_count == ceiling + 1

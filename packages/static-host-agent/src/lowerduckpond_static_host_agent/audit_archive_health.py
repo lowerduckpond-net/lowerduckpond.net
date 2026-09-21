@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Final
 
 from lowerduckpond_static_host_agent import audit_archive_store as store
+from lowerduckpond_static_host_agent.audit import inspect_audit_readonly
 from lowerduckpond_static_host_agent.audit_archive_admission import (
     AuditArchiveCapacityError,
     AuditProtectionError,
@@ -76,8 +77,14 @@ def inspect_protection_health(  # noqa: PLR0911 - fixed fail-closed categories
                 return ProtectionHealth("protection")
             if status["category"] in CATEGORIES:
                 return ProtectionHealth(str(status["category"]))
+            audit = inspect_audit_readonly(
+                root,
+                expected_owner=expected_owner,
+                expected_directory_mode=0o700,
+                expected_record_mode=0o600,
+            )
             with root.open_descendant(("audit",)) as directory:
-                admit_archive_append(directory, prefix, 0)
+                admit_archive_append(directory, prefix, 0, entry_count=audit.entry_count)
             count, size = status["protectedSnapshotCount"], status["protectedBytes"]
             assert type(count) is int and type(size) is int  # noqa: S101 - validated status
             return ProtectionHealth(None, count, size, prefix.rotation_intent is not None)

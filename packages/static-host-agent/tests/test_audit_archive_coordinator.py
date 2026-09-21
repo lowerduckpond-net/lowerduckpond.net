@@ -253,7 +253,7 @@ def test_resumed_forget_uses_saved_ids_without_new_retention_selection(
 
 
 @pytest.mark.parametrize("fault", ["prune", "check"])
-def test_interrupted_prune_recovery_repeats_check_and_proof_without_another_prune(
+def test_interrupted_prune_recovery_revalidates_before_resuming_prune(
     remote: Repository, fault: str
 ) -> None:
     remote.fault = fault
@@ -268,6 +268,11 @@ def test_interrupted_prune_recovery_repeats_check_and_proof_without_another_prun
         "discover",
         "genesis",
         "proof",
+        "check",
+        "discover",
+        "genesis",
+        "proof",
+        "prune",
         "check",
         "discover",
         "genesis",
@@ -329,8 +334,23 @@ def test_every_maintenance_intent_publication_resumes_safely(
         remote.maintain(interrupt)
     assert observed == occurrence
     assert GENESIS in remote.snapshots and KEEP in remote.snapshots
+    prior_prunes = remote.events.count("prune")
     remote.events.clear()
     remote.maintain()
+    assert prior_prunes + remote.events.count("prune") >= 1
+    pruning_publication, checked_publication = 3, 4
+    if occurrence == pruning_publication and boundary in {
+        DurabilityBoundary.RENAME,
+        DurabilityBoundary.DIRECTORY_SYNC,
+    }:
+        # Pruning intent is durable, but the child has never started.
+        assert prior_prunes == 0 and remote.events.count("prune") == 1
+    if occurrence == checked_publication and boundary in {
+        DurabilityBoundary.RENAME,
+        DurabilityBoundary.DIRECTORY_SYNC,
+    }:
+        # Checked proves that prune and its postconditions completed already.
+        assert prior_prunes == 1 and "prune" not in remote.events
     assert read(remote.root).maintenance_intent is None
     assert REMOVE not in remote.snapshots
 
@@ -357,3 +377,19 @@ def test_explicit_empty_initialization_must_complete_full_proof(remote: Reposito
     verified = remote.verify(initialize=True)
     assert verified.local.prefix.protection_status is not None
     assert verified.local.prefix.protection_status["category"] == "verified"
+
+
+@pytest.mark.parametrize("fault", ["check", "check-loses-proof"])
+def test_resumed_prune_requires_integrity_and_fresh_protection_before_launch(
+    remote: Repository, fault: str
+) -> None:
+    remote.fault = "prune"
+    with pytest.raises(RuntimeError):
+        remote.maintain()
+    remote.fault = fault
+    remote.events.clear()
+    with pytest.raises((RuntimeError, BackupIdentityError)):
+        remote.maintain()
+    assert "prune" not in remote.events and "forget" not in remote.events
+    intent = read(remote.root).maintenance_intent
+    assert intent is not None and intent["phase"] == "pruning"

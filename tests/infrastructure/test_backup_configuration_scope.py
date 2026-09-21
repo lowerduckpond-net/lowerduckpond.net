@@ -6,6 +6,8 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml  # type: ignore[import-untyped]
+from ansible.template import Templar, trust_as_template  # type: ignore[import-untyped]
 
 TEMPLATES = Path(__file__).parents[2] / "config/ansible/roles/backup/templates"
 COMMANDS = (
@@ -94,3 +96,41 @@ def test_current_command_requires_existing_lock_and_never_truncates_it(
     assert (tmp_path / "repository.lock").stat().st_ino == before
     assert (tmp_path / "repository.lock").read_bytes() == b"existing inode bytes"
     assert (tmp_path / "repository.lock").stat().st_nlink == 1
+
+
+@pytest.mark.parametrize(
+    "counts,accepted",
+    [
+        ((7, 5, 12), True),
+        (("7", "5", "12"), True),
+        (("07", 5, 12), False),
+        ((7.0, 5, 12), False),
+        ((7, "05", 12), False),
+        ((7, 5.0, 12), False),
+        ((7, 5, "012"), False),
+        ((7, 5, 12.0), False),
+        ((True, 5, 12), False),
+    ],
+)
+def test_activation_requires_the_same_canonical_retention_values_as_the_runtime(
+    counts: tuple[object, object, object], accepted: bool
+) -> None:
+    tasks = yaml.safe_load((TEMPLATES.parent / "tasks/main.yml").read_text())
+    conditions = tasks[0]["ansible.builtin.assert"]["that"]
+    values = dict(
+        zip(("backup_keep_daily", "backup_keep_weekly", "backup_keep_monthly"), counts, strict=True)
+    )
+    values["backup_static_recovery_enabled"] = False
+    templar = Templar(variables=values)
+    assert (
+        all(templar.evaluate_conditional(trust_as_template(item)) for item in conditions)
+        is accepted
+    )
+    if accepted:
+        lines = (TEMPLATES / "backup.env.j2").read_text().splitlines()
+        rendered = [
+            templar.template(trust_as_template(line))
+            for line in lines
+            if line.startswith("LOWERDUCKPOND_BACKUP_KEEP_")
+        ]
+        assert tuple(shlex.split(line.split("=", 1)[1])[0] for line in rendered) == ("7", "5", "12")

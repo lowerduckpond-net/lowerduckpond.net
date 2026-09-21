@@ -294,9 +294,11 @@ remain indefinitely, even when older than every ordinary retention window.
 
 After interruption, rerun the same service. The journal's remove set cannot
 expand to newly eligible snapshots. An interrupted prune resumes with integrity
-and protected-content checks; it does not blindly repeat pruning. No command
-unlocks, repairs, retags or expires protected history. Any failed proof preserves
-the remaining evidence and records a failure without refreshing success.
+and protected-content checks before one bounded prune and its final checks.
+This also covers interruption after publishing `pruning` but before child launch;
+a durable `checked` phase needs only final revalidation before journal removal.
+No command unlocks, repairs, retags or expires protected history. Any failed
+proof preserves the remaining evidence and records a failure without refreshing success.
 Maintenance has a 30-minute, 512-MiB, no-swap, 32-task, 1,024-descriptor, one-CPU
 service envelope. Forget, prune and integrity checking each use that operation
 deadline within the same overall service envelope; metadata requests retain a
@@ -325,9 +327,11 @@ snapshot count/bytes, rotation-pending state and fixed failure categories:
 local witness/index and scoped proof cache. It receives no backup or tenant
 archive credentials and makes no network call. Missing, wrong-scope, future or
 older-than-24-hour proof closes ordinary audit admission. Administrator reserve
-remains available for evidence-preserving diagnosis. Existing traffic need not
-stop solely for this backup health failure; restored-host service remains a
-separate P5 gate.
+remains available for evidence-preserving diagnosis. The ordinary 65,536-entry
+ceiling counts the complete verified chain, including the local suffix, before
+a new entry is admitted; the archived head alone cannot supply that count.
+Existing traffic need not stop solely for this backup health failure;
+restored-host service remains a separate P5 gate.
 
 Run `just check-installed-group audit-protection` on its fresh owned fixture.
 It uses the unchanged 8-MiB production segment bound, actual Restic snapshots

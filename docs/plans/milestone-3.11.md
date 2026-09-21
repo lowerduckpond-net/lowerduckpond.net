@@ -265,9 +265,10 @@ disagrees. During recovery, regenerate a missing witness only from the exact
 verified protected snapshot; do not accept a digest without its entries.
 
 Witnesses plus index metadata have a 32-MiB/8,192-inode sublimit, at most 4,096
-archived segments and 65,536 witnessed entries. These are additional limits,
-not an expansion: count their allocated blocks, directories and temporary
-replacements within the existing 128-MiB ordinary audit allowance. The separate
+archived segments and 65,536 witnessed entries. Ordinary admission counts the
+complete verified chain, including unarchived entries, against that entry ceiling.
+These are additional limits, not an expansion: count their allocated blocks,
+directories and temporary replacements within the existing 128-MiB ordinary audit allowance. The separate
 8-MiB administrator reserve remains unavailable to ordinary work and rotation.
 Reserve worst-case metadata/witness allocation before starting. Exhaustion
 closes rotation/new ordinary admission; it does not evict witnesses, reset
@@ -331,9 +332,11 @@ indefinitely, including snapshots older than every daily/weekly/monthly window.
 After interruption during forget, reconcile the fixed ID set with present
 snapshots; already absent ordinary IDs are completed work. Before any resumed
 prune repeat the protected proof. After interrupted prune require Restic
-integrity and protected-content validation; failure leaves maintenance critical
-and needs operator investigation. Never automatically unlock/repair a repository
-or call `forget` to eliminate a failed proof. The supported Restic 0.18.x
+integrity and protected-content validation before resuming one bounded prune.
+Publishing a pruning intent alone cannot prove the child started; only a durable
+checked phase proves completed pruning and its postconditions. Failure leaves
+maintenance critical and needs operator investigation. Never automatically
+unlock/repair a repository or call `forget` to eliminate a failed proof. The supported Restic 0.18.x
 [retention semantics](https://restic.readthedocs.io/en/v0.18.1/060_forget.html)
 separate snapshot removal and data pruning; tests exercise both independently.
 

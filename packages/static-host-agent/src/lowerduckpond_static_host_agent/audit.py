@@ -16,6 +16,7 @@ from lowerduckpond_static_contracts import (
     audit_entry_digest,
     canonical_json_bytes,
     decode_contract,
+    decode_json_object,
     validate_contract,
     validate_uuid7,
 )
@@ -26,12 +27,13 @@ from lowerduckpond_static_host_agent.audit_archive_admission import (
     admit_archive_append,
 )
 from lowerduckpond_static_host_agent.audit_archive_formats import (
+    AUDIT_ENTRY_FORMAT,
     segment_from_witness,
     validate_rotation,
     verify_segment,
 )
 from lowerduckpond_static_host_agent.audit_archive_store import ArchivePrefix, read_archive_prefix
-from lowerduckpond_static_host_agent.backup_identity import BackupIdentityError
+from lowerduckpond_static_host_agent.backup_identity import BackupIdentityError, require_digest
 from lowerduckpond_static_host_agent.durable import (
     DurableDirectory,
     FailureHook,
@@ -377,7 +379,7 @@ def tenant_has_creation_audit_history(  # noqa: PLR0913 - complete trusted audit
     deleted = False
     for segment in segments:
         for line in segment.data.splitlines(keepends=True):
-            document = decode_contract(line, expected_kind=ContractKind.AUDIT_ENTRY)
+            document = decode_json_object(line, maximum_bytes=MAX_CANONICAL_BYTES)
             if document["tenantId"] == canonical and document["resultStatus"] == "succeeded":
                 creations += int(document["operation"] == "create")
                 deleted = deleted or document["operation"] == "delete"
@@ -423,6 +425,7 @@ def inspect_audit_correlation(  # noqa: PLR0913 - keep every audit boundary expl
     expected_directory_mode: int,
     expected_record_mode: int,
     limits: AuditLimits = DEFAULT_AUDIT_LIMITS,
+    read_only: bool = False,
 ) -> AuditCorrelationSnapshot:
     """Validate the complete chain and return at most one exact correlation."""
 
@@ -436,6 +439,7 @@ def inspect_audit_correlation(  # noqa: PLR0913 - keep every audit boundary expl
             expected_directory_mode=expected_directory_mode,
             expected_record_mode=expected_record_mode,
             limits=limits,
+            read_only=read_only,
         )
     finally:
         audit_directory.close()
@@ -626,7 +630,10 @@ def _plan_audit_append(  # noqa: PLR0913 - projection inputs stay explicit
     if not administrator:
         try:
             projected += admit_archive_append(
-                audit_directory, segments.archive, projected - state.allocated_bytes
+                audit_directory,
+                segments.archive,
+                projected - state.allocated_bytes,
+                entry_count=state.entry_count,
             )
         except AuditArchiveCapacityError as error:
             raise AuditCapacityError(str(error)) from error
@@ -818,7 +825,7 @@ def audit_prefix_terminal(  # noqa: PLR0913 - shared and exclusive caller bounda
         return None
     for segment in segments:
         for line in segment.data.splitlines(keepends=True):
-            document = decode_contract(line, expected_kind=ContractKind.AUDIT_ENTRY)
+            document = decode_json_object(line, maximum_bytes=MAX_CANONICAL_BYTES)
             if document["sequence"] == entry_count - 1:
                 return audit_entry_digest(document).to_dict()
     raise AuditError(
@@ -888,23 +895,40 @@ def _validate_chain_records(  # noqa: PLR0912,PLR0913,PLR0915 - one bounded vali
             and previous_segment_bytes + len(lines[0]) <= limits.maximum_segment_bytes
         ):
             raise AuditError("audit segment rotation is not canonically packed")
+        archived = (
+            segments.archive.segments[segment.number].descriptor
+            if segment.number < len(segments.archive.segments)
+            else None
+        )
+        # read_archive_prefix validated every canonical witness and descriptor;
+        # _read_segments also proved any local overlap is byte-identical. Reuse
+        # that proof for these exact captured bytes while projecting each row.
+        if archived is not None and (
+            archived["firstSequence"] != sequence or archived["predecessorEntryDigest"] != terminal
+        ):
+            raise AuditError("archived audit segment breaks the complete chain")
         for line in lines:
             if len(line) > MAX_CANONICAL_BYTES:
                 raise AuditError("audit entry exceeds its canonical byte ceiling")
             try:
-                document = decode_contract(
-                    line,
-                    expected_kind=ContractKind.AUDIT_ENTRY,
-                    maximum_raw_bytes=MAX_CANONICAL_BYTES,
+                document = (
+                    decode_json_object(line, maximum_bytes=MAX_CANONICAL_BYTES)
+                    if archived is not None
+                    else decode_contract(
+                        line,
+                        expected_kind=ContractKind.AUDIT_ENTRY,
+                        maximum_raw_bytes=MAX_CANONICAL_BYTES,
+                    )
                 )
             except ContractError as error:
                 raise AuditError("audit segment contains an invalid entry") from error
-            if canonical_json_bytes(document) != line:
-                raise AuditError("audit entry is not its exact canonical representation")
-            if document["sequence"] != sequence:
-                raise AuditError("audit entry sequence is not contiguous")
-            if document["previousEntryDigest"] != terminal:
-                raise AuditError("audit entry predecessor breaks the chain")
+            if archived is None:
+                if canonical_json_bytes(document) != line:
+                    raise AuditError("audit entry is not its exact canonical representation")
+                if document["sequence"] != sequence:
+                    raise AuditError("audit entry sequence is not contiguous")
+                if document["previousEntryDigest"] != terminal:
+                    raise AuditError("audit entry predecessor breaks the chain")
             if segments.archive.head is not None:
                 correlation = validate_uuid7(document["correlationId"])
                 if correlation in archived_correlations:
@@ -946,8 +970,11 @@ def _validate_chain_records(  # noqa: PLR0912,PLR0913,PLR0915 - one bounded vali
                 and tenant_id in deployment_history_candidates
             ):
                 deployment_history_matches.add(tenant_id)
-            terminal = audit_entry_digest(document).to_dict()
+            if archived is None:
+                terminal = audit_entry_digest(document).to_dict()
             sequence += 1
+        if archived is not None:
+            terminal = require_digest(archived["terminalEntryDigest"], AUDIT_ENTRY_FORMAT)
         previous_segment_bytes = len(data)
     if allocated > limits.maximum_administrator_bytes:
         raise AuditCapacityError("audit allocation exceeds its absolute ceiling")
@@ -983,11 +1010,9 @@ def _previous_tenant_state_transition(
     previous: dict[str, object] | None = None
     for segment in segments:
         for line in segment.data.splitlines(keepends=True):
-            document = decode_contract(
-                line,
-                expected_kind=ContractKind.AUDIT_ENTRY,
-                maximum_raw_bytes=MAX_CANONICAL_BYTES,
-            )
+            # The caller already proved the complete captured chain; parse
+            # its exact bytes only to obtain this bounded lookup projection.
+            document = decode_json_object(line, maximum_bytes=MAX_CANONICAL_BYTES)
             if document["sequence"] == matching_sequence:
                 return previous
             if (
@@ -1016,11 +1041,9 @@ def _later_audit_transitions(
     transition_correlations: set[str] = set()
     for segment in segments:
         for line in segment.data.splitlines(keepends=True):
-            document = decode_contract(
-                line,
-                expected_kind=ContractKind.AUDIT_ENTRY,
-                maximum_raw_bytes=MAX_CANONICAL_BYTES,
-            )
+            # The caller already proved the complete captured chain; parse
+            # its exact bytes only to obtain this bounded lookup projection.
+            document = decode_json_object(line, maximum_bytes=MAX_CANONICAL_BYTES)
             sequence = document["sequence"]
             correlation_id = document["correlationId"]
             if type(sequence) is not int or type(correlation_id) is not str:

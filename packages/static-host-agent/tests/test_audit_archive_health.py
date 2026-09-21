@@ -6,13 +6,14 @@ import time
 from pathlib import Path
 
 import pytest
+from lowerduckpond_static_contracts import audit_entry_digest, canonical_json_bytes
 from lowerduckpond_static_host_agent import LockManager
 from lowerduckpond_static_host_agent import audit_archive_admission as admission
 from lowerduckpond_static_host_agent import audit_archive_formats as formats
 from lowerduckpond_static_host_agent import audit_archive_health as health
 from lowerduckpond_static_host_agent.backup_identity import framed_digest
 from test_audit_archive_admission import NOW, available_capacity, grant_protection
-from test_audit_archive_formats import IDENTITY
+from test_audit_archive_formats import IDENTITY, entry
 from test_audit_archive_store import put
 from test_audit_archive_store import state as state  # noqa: PLC0414 - private local fixture
 
@@ -108,3 +109,18 @@ def test_health_does_not_wait_for_state_mutation_or_touch_any_authority(protecte
     assert before == {
         path.name: path.read_bytes() for path in (protected / "audit/archive").iterdir()
     }
+
+
+def test_health_reports_complete_unarchived_entry_ceiling(
+    protected: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ceiling = 3
+    monkeypatch.setattr(formats, "MAX_WITNESSED_ENTRIES", ceiling)
+    previous = None
+    segment = bytearray()
+    for sequence in range(ceiling):
+        document = entry(sequence, previous)
+        segment.extend(canonical_json_bytes(document))
+        previous = audit_entry_digest(document).to_dict()
+    put(protected, "audit/segment-00000000000000000000.jsonl", bytes(segment))
+    assert inspect(protected).category == "resource-exhaustion"

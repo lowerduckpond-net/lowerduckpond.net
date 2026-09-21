@@ -19,9 +19,10 @@ from lowerduckpond_static_host_agent import (
     audit,
 )
 from lowerduckpond_static_host_agent import audit_archive_admission as admission
+from lowerduckpond_static_host_agent import audit_archive_formats as formats
 from lowerduckpond_static_host_agent.audit_archive_formats import inspect_segment
 from lowerduckpond_static_host_agent.audit_archive_store import head_for_indexes
-from lowerduckpond_static_host_agent.durable import DurableDirectory
+from lowerduckpond_static_host_agent.durable import DurableDirectory, StatePathError
 from test_audit_archive_admission import NOW, available_capacity, grant_protection
 from test_audit_archive_formats import descriptor, entry, index_record
 from test_audit_archive_store import lineage, put
@@ -151,6 +152,7 @@ def test_append_continues_local_tail_after_archived_prefix(
 def test_archive_join_rejects_inconsistent_local_authority(state: Path, fault: str) -> None:
     records = history(state)
     archive_first(state, remove=fault != "overlap-fork")
+    projection(state, records)  # Prime exact-byte proofs before altering local authority.
     if fault == "missing-tail":
         (state / TAIL_SEGMENT).unlink()
     elif fault == "gap":
@@ -183,3 +185,79 @@ def test_archive_metadata_allocation_is_charged_to_ordinary_audit_capacity(state
     metadata = sum(path.stat().st_blocks * 512 for path in (state / "audit/archive").iterdir())
     metadata += (state / "audit/archive").stat().st_blocks * 512
     assert observed.allocated_bytes == metadata + (state / TAIL_SEGMENT).stat().st_blocks * 512
+
+
+@pytest.mark.parametrize("keep_local_overlap", [False, True])
+def test_admission_entry_ceiling_includes_archived_history_and_local_tail_once(
+    state: Path, monkeypatch: pytest.MonkeyPatch, keep_local_overlap: bool
+) -> None:
+    records = history(state)
+    archive_first(state, remove=not keep_local_overlap)
+    grant_protection(state)
+    monkeypatch.setattr(time, "time", lambda: NOW)
+    monkeypatch.setattr(admission, "measure_filesystem_capacity_descriptor", available_capacity)
+    monkeypatch.setattr(formats, "MAX_WITNESSED_ENTRIES", len(records) + 1)
+    candidate = entry(len(records), audit_entry_digest(records[-1]).to_dict())
+    with StateRepository(state, expected_owner=os.geteuid()) as repository:
+        allowed = repository.append_audit(candidate, limits=LIMITS)
+        assert allowed.state.entry_count == len(records) + 1
+        next_entry = entry(len(records) + 1, audit_entry_digest(candidate).to_dict())
+        with pytest.raises(AuditError, match="reserve bounded"):
+            repository.append_audit(next_entry, limits=LIMITS)
+
+
+@pytest.mark.parametrize("fault", ["witness", "descriptor", "head", "mode", "unknown"])
+def test_historical_lookup_rechecks_archive_authority_after_a_successful_read(
+    state: Path, fault: str
+) -> None:
+    records = history(state)
+    archive_first(state)
+    assert projection(state, records)["creation"]
+    witness = state / "audit/archive/witness-00000000000000000000.json"
+    if fault == "witness":
+        put(
+            state,
+            str(witness.relative_to(state)),
+            witness.read_bytes().replace(b"operator@example.test", b"attacker@example.test"),
+        )
+    elif fault == "descriptor":
+        index = state / "audit/archive/index-00000000000000000000.json"
+        put(
+            state,
+            str(index.relative_to(state)),
+            index.read_bytes().replace(b'"firstSequence":0', b'"firstSequence":1'),
+        )
+    elif fault == "head":
+        (state / "audit/archive/head.json").unlink()
+    elif fault == "mode":
+        witness.chmod(0o644)
+    else:
+        put(state, "audit/archive/unknown-authority", b"preserve this evidence")
+    before = {path: path.read_bytes() for path in state.rglob("*") if path.is_file()}
+    with (
+        StateRepository(state, expected_owner=os.geteuid()) as repository,
+        pytest.raises((AuditError, StatePathError)),
+    ):
+        repository.inspect_audit_correlation(records[0]["correlationId"], limits=LIMITS)
+    assert {path: path.read_bytes() for path in state.rglob("*") if path.is_file()} == before
+
+
+def test_readonly_correlation_lookup_preserves_abandoned_publication(state: Path) -> None:
+    records = history(state)
+    archive_first(state)
+    temporary = state / "audit" / (".ldp-state-" + "a" * 32)
+    put(state, str(temporary.relative_to(state)), b"retained publication")
+    with DurableDirectory.open(
+        state, expected_owner=os.geteuid(), expected_directory_mode=0o700
+    ) as directory:
+        found = audit.inspect_audit_correlation(
+            directory,
+            records[0]["correlationId"],
+            expected_owner=os.geteuid(),
+            expected_directory_mode=0o700,
+            expected_record_mode=0o600,
+            limits=LIMITS,
+            read_only=True,
+        )
+    assert found.entry == records[0]
+    assert temporary.read_bytes() == b"retained publication"
