@@ -1,0 +1,66 @@
+#!/usr/bin/python3 -I
+"""Lease the selected artifact after proving repository serialization."""
+
+from __future__ import annotations
+
+import fcntl
+import os
+import pathlib
+import stat
+import sys
+
+sys.dont_write_bytecode = True
+
+REPOSITORY_LOCK = pathlib.Path("/var/cache/lowerduckpond-backup/repository.lock")
+SELECTION_LOCK = pathlib.Path("/opt/lowerduckpond/static-host-agent/selection.lock")
+SITE_PACKAGES = pathlib.Path("/opt/lowerduckpond/static-host-agent/current/site-packages")
+LOCK_MODE = 0o600
+
+
+def require_lock(path: pathlib.Path, descriptor: int) -> None:
+    metadata = os.fstat(descriptor)
+    named = path.stat(follow_symlinks=False)
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or stat.S_IMODE(metadata.st_mode) != LOCK_MODE
+        or metadata.st_uid != 0
+        or metadata.st_gid != 0
+        or metadata.st_nlink != 1
+        or metadata.st_size != 0
+        or (metadata.st_dev, metadata.st_ino) != (named.st_dev, named.st_ino)
+    ):
+        raise ValueError("unsafe lock")
+
+
+def acquire_selection() -> int:
+    if os.geteuid() != 0:
+        raise ValueError("root required")
+    require_lock(REPOSITORY_LOCK, 9)
+    with pathlib.Path("/proc/self/fdinfo/9").open("rb") as stream:
+        raw = stream.read(4097)
+    if len(raw) > 4096:  # noqa: PLR2004
+        raise ValueError("oversized lock metadata")
+    locks = [line.split() for line in raw.splitlines() if line.startswith(b"lock:")]
+    if (
+        len(locks) != 1
+        or locks[0][2:5] != [b"FLOCK", b"ADVISORY", b"WRITE"]
+        or locks[0][7:] != [b"0", b"EOF"]
+    ):
+        raise ValueError("repository lease missing")
+    descriptor = os.open(SELECTION_LOCK, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    require_lock(SELECTION_LOCK, descriptor)
+    fcntl.flock(descriptor, fcntl.LOCK_SH)
+    require_lock(SELECTION_LOCK, descriptor)
+    require_lock(REPOSITORY_LOCK, 9)
+    return descriptor
+
+
+try:
+    _SELECTION_LOCK_FD = acquire_selection()
+except (OSError, ValueError):
+    raise SystemExit("backup_identity_lock_unverified") from None
+sys.path.insert(0, str(SITE_PACKAGES))
+
+from lowerduckpond_static_host_agent.backup_entrypoint import identity_main  # noqa: E402
+
+raise SystemExit(identity_main())

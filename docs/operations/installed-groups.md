@@ -17,6 +17,7 @@ rather than a production qualification report.
 
 | Case | Preserved installed assertions and independent setup |
 | --- | --- |
+| `backup-identity` | Fresh supported tenant history; real Restic config/full snapshot IDs and restore, permanent repository genesis before local commit, refusal after both local identity records are lost, retention exclusion, audit-prefix verification, repository/selection/state lock exclusion, wrong repository identity and root-only command boundaries. This is P2a coverage; the full backup-coherence case follows in P2b. |
 | `core` | Creates its tenants; lifecycle results, exact retries, isolation, routing, rename, and deployment history. Configuration guards move to the two cases below. |
 | `configuration-publication` | Creates an active tenant; publication-disable and operator-boundary drift refusal, restoration, unchanged tenant and routes. |
 | `configuration-generation` | Creates an active tenant; unchanged reapplication and generation-input drift refusal/restoration, unchanged tenant and routes. |
