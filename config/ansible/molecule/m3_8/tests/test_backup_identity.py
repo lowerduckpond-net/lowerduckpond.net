@@ -56,6 +56,8 @@ def test_installed_backup_identity_migration_and_repository_fencing(
     assert created["status"] == "succeeded"
     assert not host.file(LINEAGE).exists
     assert host.run("%s --verify", COMMAND).rc != 0
+    # Simulate a scheduled backup from before the migration.
+    _restic(host, f"backup --host identity-old --tag scheduled {support.STATE_ROOT}/platform")
     initialized = host.run("systemctl start %s", UNIT)
     assert initialized.rc == 0, host.run("journalctl -u %s --no-pager -n 20", UNIT).stdout
     original = host.file(LINEAGE).content
@@ -66,8 +68,18 @@ def test_installed_backup_identity_migration_and_repository_fencing(
     assert host.run("%s --verify", COMMAND).rc == 0
     assert host.run("systemctl start %s", UNIT).rc == 0
     assert host.file(LINEAGE).content == original
-    # This is before any lineage-tagged snapshot. Losing the primary must
-    # resume the original genesis, never create another UUID over tenant history.
+    anchors = [
+        entry
+        for entry in json.loads(_restic(host, "snapshots --json"))
+        if "lowerduckpond-audit-lineage" in entry.get("tags", [])
+    ]
+    assert len(anchors) == 1
+    anchor_id = anchors[0]["id"]
+    assert "scheduled" not in anchors[0]["tags"]
+    assert _restic(host, f"dump {anchor_id} /audit-lineage-genesis.json").encode() == original
+    _assert_both_local_records_lost(host)
+    # The permanent repository snapshot already exists. Losing only the primary
+    # must resume the original genesis, never create another UUID over history.
     _run(
         host,
         f"""
@@ -118,6 +130,18 @@ assert genesis.stat().st_ino == anchor
     _restic(host, f"restore {snapshot} --target {restore}")
     assert host.file(restore + LINEAGE).content == original
     assert host.file(restore + GENESIS).content == original
+    # Ordinary retention cannot collect the permanent lineage anchor.
+    _restic(host, "forget --tag scheduled --keep-last 1 --prune")
+    assert _restic(host, f"dump {anchor_id} /audit-lineage-genesis.json").encode() == original
+    anchors_after = [
+        entry
+        for entry in json.loads(_restic(host, "snapshots --json"))
+        if "lowerduckpond-audit-lineage" in entry.get("tags", [])
+    ]
+    assert [entry["id"] for entry in anchors_after] == [anchor_id]
+
+
+def _assert_both_local_records_lost(host: Host) -> None:
     _run(
         host,
         f"""

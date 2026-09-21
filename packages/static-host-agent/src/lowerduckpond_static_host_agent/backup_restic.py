@@ -1,4 +1,4 @@
-"""Bounded read-only Restic metadata, under the backup repository lock."""
+"""Bounded Restic discovery and one immutable repository lineage anchor."""
 
 from __future__ import annotations
 
@@ -6,21 +6,28 @@ import os
 import re
 import selectors
 import subprocess
+import tempfile
 import time
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
+from typing import BinaryIO
 
-from lowerduckpond_static_contracts import ContractError, decode_json_object
+from lowerduckpond_static_contracts import ContractError, canonical_json_bytes, decode_json_object
 
 from lowerduckpond_static_host_agent.backup_identity import (
+    MAX_IDENTITY_BYTES,
     BackupIdentityError,
     RepositoryIdentity,
     canonical_locator,
+    decode_lineage,
 )
 
 MAX_SNAPSHOT_BYTES = 16 * 1024 * 1024
 MAX_SNAPSHOTS = 16_384
 METADATA_TIMEOUT_SECONDS = 300
+LINEAGE_TAG = "lowerduckpond-audit-lineage"
+LINEAGE_FILE = "audit-lineage-genesis.json"
 _HEX = re.compile(r"[0-9a-f]{64}", re.ASCII)
 _ENVIRONMENT = (
     "AWS_ACCESS_KEY_ID",
@@ -32,15 +39,41 @@ _ENVIRONMENT = (
 )
 
 
+@dataclass(frozen=True)
+class RepositorySnapshot:
+    snapshot_id: str
+    hostname: str
+    tags: tuple[str, ...]
+
+
 def restic_metadata(
     arguments: tuple[str, ...], environment: Mapping[str, str], limit: int
 ) -> bytes:
     """Only fixed config/snapshot reads; never leak provider output into logs."""
     if arguments not in {("cat", "config"), ("snapshots", "--json")}:
         raise BackupIdentityError("unsupported repository discovery operation")
-    with subprocess.Popen(  # noqa: S603 - fixed executable and allowlisted read-only arguments
+    return _restic(arguments, environment, limit)
+
+
+def _restic(
+    arguments: tuple[str, ...],
+    environment: Mapping[str, str],
+    limit: int,
+    payload: bytes | None = None,
+) -> bytes:
+    with tempfile.TemporaryFile() as source:
+        if payload is not None:
+            source.write(payload)
+            source.seek(0)
+        return _run_restic(arguments, environment, limit, source if payload is not None else None)
+
+
+def _run_restic(
+    arguments: tuple[str, ...], environment: Mapping[str, str], limit: int, source: BinaryIO | None
+) -> bytes:
+    with subprocess.Popen(  # noqa: S603 - fixed executable and validated internal arguments
         ("/usr/bin/restic", *arguments),
-        stdin=subprocess.DEVNULL,
+        stdin=source if source is not None else subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         env={
@@ -82,7 +115,7 @@ def restic_metadata(
 
 def discover_repository(
     environment: Mapping[str, str],
-) -> tuple[RepositoryIdentity, tuple[tuple[str, tuple[str, ...]], ...]]:
+) -> tuple[RepositoryIdentity, tuple[RepositorySnapshot, ...]]:
     try:
         config = decode_json_object(restic_metadata(("cat", "config"), environment, 16 * 1024))
         locator = environment["RESTIC_REPOSITORY"]
@@ -105,7 +138,7 @@ def discover_repository(
         entries = document["snapshots"]
         if type(entries) is not list or len(entries) > MAX_SNAPSHOTS:
             raise BackupIdentityError("repository snapshot inventory exceeds its bound")
-        snapshots: list[tuple[str, tuple[str, ...]]] = []
+        snapshots: list[RepositorySnapshot] = []
         seen: set[str] = set()
         for entry in entries:
             if type(entry) is not dict:
@@ -125,7 +158,89 @@ def discover_repository(
             ):
                 raise BackupIdentityError("invalid repository snapshot metadata")
             seen.add(snapshot_id)
-            snapshots.append((hostname, tuple(tags)))
+            snapshots.append(RepositorySnapshot(snapshot_id, hostname, tuple(tags)))
         return identity, tuple(snapshots)
     except (ContractError, KeyError, TypeError, ValueError, OSError) as error:
         raise BackupIdentityError("repository discovery is unavailable or malformed") from error
+
+
+def repository_genesis(
+    identity: RepositoryIdentity,
+    snapshots: tuple[RepositorySnapshot, ...],
+    environment: Mapping[str, str],
+) -> dict[str, object] | None:
+    """Verify the unique permanent anchor, not just its existence or tags."""
+    candidates = [snapshot for snapshot in snapshots if LINEAGE_TAG in snapshot.tags]
+    if not candidates:
+        return None
+    if len(candidates) != 1:
+        raise BackupIdentityError("repository lineage evidence is ambiguous")
+    snapshot = candidates[0]
+    raw = _restic(
+        ("dump", snapshot.snapshot_id, "/" + LINEAGE_FILE), environment, MAX_IDENTITY_BYTES
+    )
+    record = decode_lineage(raw)
+    if (
+        record["repository"] != identity.document()
+        or snapshot.hostname != identity.node_name
+        or set(snapshot.tags) != set(lineage_tags(record))
+    ):
+        raise BackupIdentityError("repository lineage binding changed")
+    listing = _restic(("ls", "--json", snapshot.snapshot_id), environment, 32 * 1024)
+    entries = [decode_json_object(line) for line in listing.splitlines()]
+    if len(entries) != 2:  # noqa: PLR2004 - snapshot header and one file
+        raise BackupIdentityError("repository lineage tree is invalid")
+    header, node = entries
+    if (
+        header.get("struct_type") != "snapshot"
+        or header.get("id") != snapshot.snapshot_id
+        or node.get("struct_type") != "node"
+        or node.get("path") != "/" + LINEAGE_FILE
+        or node.get("type") != "file"
+        or type(node.get("size")) is not int
+        or node["size"] != len(raw)
+    ):
+        raise BackupIdentityError("repository lineage tree is invalid")
+    return record
+
+
+def lineage_tags(record: dict[str, object]) -> tuple[str, ...]:
+    binding = record["repositoryBinding"]
+    assert isinstance(binding, dict)  # noqa: S101 - validated canonical record
+    return LINEAGE_TAG, f"lineage-{record['lineageId']}", f"repository-{binding['value']}"
+
+
+def publish_repository_genesis(
+    identity: RepositoryIdentity, record: dict[str, object], environment: Mapping[str, str]
+) -> tuple[dict[str, object], tuple[RepositorySnapshot, ...]]:
+    """Caller discovered no anchor while holding repository serialization.
+
+    A lost response fails this attempt. The next invocation discovers and
+    verifies the committed snapshot before considering another write.
+    """
+    raw = canonical_json_bytes(record)
+    if decode_lineage(raw)["repository"] != identity.document():
+        raise BackupIdentityError("repository lineage binding changed")
+    tags = tuple(argument for tag in lineage_tags(record) for argument in ("--tag", tag))
+    _restic(
+        (
+            "backup",
+            "--json",
+            "--stdin",
+            "--stdin-filename",
+            LINEAGE_FILE,
+            "--host",
+            identity.node_name,
+            *tags,
+        ),
+        environment,
+        32 * 1024,
+        raw,
+    )
+    observed, snapshots = discover_repository(environment)
+    if observed != identity:
+        raise BackupIdentityError("repository identity changed during initialization")
+    restored = repository_genesis(identity, snapshots, environment)
+    if restored != record:
+        raise BackupIdentityError("repository lineage publication was not verified")
+    return restored, snapshots

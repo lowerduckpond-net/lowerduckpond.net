@@ -22,7 +22,7 @@ from lowerduckpond_static_host_agent.backup_identity import (
     framed_digest,
 )
 from lowerduckpond_static_host_agent.backup_lineage import lineage_for_repository
-from lowerduckpond_static_host_agent.durable import StatePathError
+from lowerduckpond_static_host_agent.durable import FailureHook, StatePathError
 
 FIXTURES = Path(__file__).parents[3] / "tests/static-publication/fixtures/accepted"
 IDENTITY = RepositoryIdentity("a" * 64, "source-node", "s3:https://nyc3.example.test/backups/m3")
@@ -55,11 +55,42 @@ def _append(root: Path, sequence: int) -> None:
         repository.append_audit(entry)
 
 
+def _remote(root: Path) -> dict[str, object] | None:
+    path = root.parent / "repository-genesis.json"
+    return decode_lineage(path.read_bytes()) if path.exists() else None
+
+
 def _lineage(
-    root: Path, *, initialize: bool = True, identity: RepositoryIdentity = IDENTITY
+    root: Path,
+    *,
+    initialize: bool = True,
+    identity: RepositoryIdentity = IDENTITY,
+    failure_hook: FailureHook | None = None,
+    genesis_failure_hook: FailureHook | None = None,
 ) -> dict[str, object]:
+    # State-layer tests use a separate durable repository stand-in. Real Restic
+    # and the coordinator are covered independently; it survives local tree loss.
+    remote = _remote(root)
+    if remote is None and initialize:
+        remote = lineage_for_repository(
+            root,
+            identity,
+            snapshot_tags=(),
+            initialize=True,
+            expected_owner=os.geteuid(),
+            repository_genesis=None,
+            commit=False,
+            genesis_failure_hook=genesis_failure_hook,
+        )
+        (root.parent / "repository-genesis.json").write_bytes(canonical_json_bytes(remote))
     return lineage_for_repository(
-        root, identity, snapshot_tags=(), initialize=initialize, expected_owner=os.geteuid()
+        root,
+        identity,
+        snapshot_tags=(),
+        initialize=initialize,
+        expected_owner=os.geteuid(),
+        repository_genesis=remote,
+        failure_hook=failure_hook,
     )
 
 
@@ -190,12 +221,8 @@ def test_every_initialization_interruption_resumes_one_published_identity(
             raise InterruptedError("injected failure")
 
     def attempt() -> None:
-        lineage_for_repository(
+        _lineage(
             state,
-            IDENTITY,
-            snapshot_tags=(),
-            initialize=True,
-            expected_owner=os.geteuid(),
             failure_hook=interrupt if phase == "primary" else None,
             genesis_failure_hook=interrupt if phase == "genesis" else None,
         )
@@ -237,6 +264,7 @@ def test_repository_history_forbids_initializing_a_replacement_lineage(
             snapshot_tags=(("source-node", (tag,)),),
             initialize=True,
             expected_owner=os.geteuid(),
+            repository_genesis=_remote(state),
         )
     assert not state.joinpath(*LINEAGE_PATH).exists()
 
@@ -255,6 +283,7 @@ def test_existing_lineage_requires_exact_repository_and_node_tags(state: Path) -
             snapshot_tags=(("source-node", tags),),
             initialize=False,
             expected_owner=os.geteuid(),
+            repository_genesis=_remote(state),
         )
         == record
     )
@@ -270,6 +299,7 @@ def test_existing_lineage_requires_exact_repository_and_node_tags(state: Path) -
                 snapshot_tags=((host, changed),),
                 initialize=True,
                 expected_owner=os.geteuid(),
+                repository_genesis=_remote(state),
             )
 
 
@@ -399,6 +429,43 @@ def test_repository_history_prevents_reset_when_both_local_identity_records_are_
             snapshot_tags=((IDENTITY.node_name, tags),),
             initialize=True,
             expected_owner=os.geteuid(),
+            repository_genesis=_remote(state),
         )
     assert not state.joinpath(*LINEAGE_PATH).exists()
     assert not state.joinpath(*GENESIS_PATH).exists()
+
+
+def test_old_scheduled_restore_without_both_records_cannot_create_new_genesis(state: Path) -> None:
+    original = _lineage(state)
+    state.joinpath(*LINEAGE_PATH).unlink()
+    state.joinpath(*GENESIS_PATH).unlink()
+    with pytest.raises(BackupIdentityError, match="existing audit lineage"):
+        _lineage(state)
+    assert _remote(state) == original
+    assert not state.joinpath(*LINEAGE_PATH).exists()
+    assert not state.joinpath(*GENESIS_PATH).exists()
+
+
+def test_primary_publication_requires_restored_repository_evidence(state: Path) -> None:
+    candidate = lineage_for_repository(
+        state,
+        IDENTITY,
+        snapshot_tags=(),
+        initialize=True,
+        expected_owner=os.geteuid(),
+        repository_genesis=None,
+        commit=False,
+    )
+    assert state.joinpath(*GENESIS_PATH).exists()
+    assert not state.joinpath(*LINEAGE_PATH).exists()
+    with pytest.raises(BackupIdentityError, match="repository lineage evidence is missing"):
+        lineage_for_repository(
+            state,
+            IDENTITY,
+            snapshot_tags=(),
+            initialize=True,
+            expected_owner=os.geteuid(),
+            repository_genesis=None,
+        )
+    assert not state.joinpath(*LINEAGE_PATH).exists()
+    assert candidate == decode_lineage(state.joinpath(*GENESIS_PATH).read_bytes())

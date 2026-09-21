@@ -170,6 +170,22 @@ and repository binding; preserve it through host reconstruction. A host name
 alone is not chain identity. An empty new installation may initialize a new
 lineage; an index, archived history or tenant history cannot authorize reset.
 
+P2a initializes in three durable stages: local immutable candidate under
+`static/locks/audit-lineage-genesis.json`; a dedicated repository snapshot of
+those exact bytes; and the matching primary `static/platform/audit-lineage.json`.
+The repository snapshot contains only `/audit-lineage-genesis.json`, carries
+`lowerduckpond-audit-lineage`, lineage and repository tags, and never `scheduled`.
+Retain it indefinitely outside ordinary retention. Read back and verify its
+complete tree, bytes and bindings before committing the primary. Repository
+serialization and the selection lease span all stages; release tenant-state
+for network I/O and revalidate namespace/audit continuity after reacquisition.
+A lost snapshot response requires discovery and verification, never a blind
+second write. Missing or duplicate repository evidence blocks verification.
+Restoring a pre-migration platform tree that omits both local records still
+encounters this permanent repository evidence and cannot initialize a new
+lineage. P2a refuses that incomplete restore; P5 reconstructs the original records
+from the verified snapshot. Recreating kernel locks must preserve local genesis.
+
 Repository binding is a versioned digest over canonical JSON containing the
 Restic config ID, configured node identity, and canonical repository locator.
 For S3 the locator includes endpoint, bucket and repository prefix; for local

@@ -43,7 +43,7 @@ def test_discovery_binds_full_config_id_but_not_credentials(
     )
     identity, tags = restic.discover_repository(ENVIRONMENT)
     assert identity.config_id == "a" * 64
-    assert tags == (("node", ("scheduled",)),)
+    assert tags == (restic.RepositorySnapshot("b" * 64, "node", ("scheduled",)),)
     changed, _ = restic.discover_repository(
         {**ENVIRONMENT, "RESTIC_PASSWORD": "fake-other-password", "AWS_ACCESS_KEY_ID": "fake-key"}
     )

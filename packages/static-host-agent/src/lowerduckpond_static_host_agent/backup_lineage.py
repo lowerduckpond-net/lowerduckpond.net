@@ -71,6 +71,8 @@ def lineage_for_repository(  # noqa: PLR0913 - explicit privilege and failure bo
     snapshot_tags: tuple[tuple[str, tuple[str, ...]], ...],
     initialize: bool,
     expected_owner: int,
+    repository_genesis: dict[str, object] | None,
+    commit: bool = True,
     failure_hook: FailureHook | None = None,
     genesis_failure_hook: FailureHook | None = None,
 ) -> dict[str, object]:
@@ -78,7 +80,9 @@ def lineage_for_repository(  # noqa: PLR0913 - explicit privilege and failure bo
 
     Network inventory is obtained before this exclusive state transaction.
     Initialization is an explicit migration action, never a missing-file repair
-    performed by verification. An existing record always wins unchanged.
+    performed by verification. Preparation persists only the local candidate;
+    commit requires independently restored repository evidence. Network I/O
+    belongs between those transactions, never under tenant-state.
     """
     with (
         DurableDirectory.open(
@@ -105,6 +109,12 @@ def lineage_for_repository(  # noqa: PLR0913 - explicit privilege and failure bo
         if published is None and not initialize:
             raise BackupIdentityError("audit lineage has not been initialized")
         _require_snapshot_history(snapshot_tags, identity, genesis)
+        if repository_genesis is not None:
+            validate_lineage(repository_genesis)
+            if genesis != repository_genesis:
+                raise BackupIdentityError("repository history requires the existing audit lineage")
+        elif published is not None or commit:
+            raise BackupIdentityError("repository lineage evidence is missing")
         audit = inspect_audit(
             root,
             expected_owner=expected_owner,
@@ -121,7 +131,7 @@ def lineage_for_repository(  # noqa: PLR0913 - explicit privilege and failure bo
             # This immutable independent anchor is published and synced first.
             # Missing primary bytes can only be copied from this exact identity.
             _sync_directory(root, "locks")
-            if published is None:
+            if published is None and commit:
                 _publish_primary(root, genesis, expected_owner, failure_hook)
             else:
                 _sync_directory(root, "platform")
@@ -151,7 +161,6 @@ def lineage_for_repository(  # noqa: PLR0913 - explicit privilege and failure bo
             mode=0o600,
             failure_hook=genesis_failure_hook,
         )
-        _publish_primary(root, lineage, expected_owner, failure_hook)
         return lineage
 
 
@@ -234,7 +243,7 @@ def _require_snapshot_history(
             for tag in tags
             if tag.startswith(("lineage-", "repository-", "rotation-", "capture-"))
         )
-        protected = "lowerduckpond-audit-archive" in tags
+        protected = bool({"lowerduckpond-audit-archive", "lowerduckpond-audit-lineage"} & set(tags))
         if not reserved and not protected:
             continue  # Unmodified pre-M3.11 scheduled/diagnostic backups.
         if lineage is None:
