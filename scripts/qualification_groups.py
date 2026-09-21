@@ -38,6 +38,14 @@ class Group:
 
 _CREDENTIALS = "archive_credentials"
 GROUPS = {
+    "audit-protection": Group(
+        (
+            node(
+                "audit_protection",
+                "installed_audit_protection_reconciles_orphans_and_preserves_retention",
+            ),
+        )
+    ),
     "backup-coherence": Group(
         (node("backup_coherence", "installed_coherent_backup_restore_and_writer_exclusion"),)
     ),
@@ -135,6 +143,8 @@ GROUPS = {
                     "lowerduckpond-backup.service",
                     "lowerduckpond-backup-maintenance.service",
                     "lowerduckpond-backup-identity.service",
+                    "lowerduckpond-audit-initialize.service",
+                    "lowerduckpond-audit-verify.service",
                     "lowerduckpond-static-reconcile.service",
                     "lowerduckpond-static-worker@.service",
                 )
@@ -155,6 +165,8 @@ GROUPS = {
                     "lowerduckpond-backup.service",
                     "lowerduckpond-backup-maintenance.service",
                     "lowerduckpond-backup-identity.service",
+                    "lowerduckpond-audit-initialize.service",
+                    "lowerduckpond-audit-verify.service",
                     "lowerduckpond-static-reconcile.service",
                 )
             ),

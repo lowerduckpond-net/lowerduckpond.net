@@ -141,6 +141,17 @@ if (( maintenance_failure > maintenance_success )); then
     failure_count=$((failure_count + 1))
 fi
 
+audit_metrics=
+if [[ "${LOWERDUCKPOND_BACKUP_STATIC_RECOVERY_ENABLED:-}" == true ]]; then
+    if ! audit_metrics=$(/usr/bin/env --ignore-environment PATH=/usr/bin:/bin \
+        RESTIC_REPOSITORY="${RESTIC_REPOSITORY}" \
+        LOWERDUCKPOND_BACKUP_NODE_NAME="${LOWERDUCKPOND_BACKUP_NODE_NAME}" \
+        /usr/local/libexec/lowerduckpond/check-audit-protection); then
+        printf 'health check failed: protected audit proof is unavailable or invalid\n' >&2
+        failure_count=$((failure_count + 1))
+    fi
+fi
+
 cat > "${temporary_file}" <<METRICS
 # HELP lowerduckpond_health_failures Number of failed local hosting-node checks.
 # TYPE lowerduckpond_health_failures gauge
@@ -158,6 +169,9 @@ lowerduckpond_backup_maintenance_last_success_unixtime ${maintenance_success}
 # TYPE lowerduckpond_backup_maintenance_last_failure_unixtime gauge
 lowerduckpond_backup_maintenance_last_failure_unixtime ${maintenance_failure}
 METRICS
+if [[ -n "${audit_metrics}" ]]; then
+    printf '%s\n' "${audit_metrics}" >> "${temporary_file}"
+fi
 chown root:prometheus "${temporary_file}"
 chmod 0644 "${temporary_file}"
 mv "${temporary_file}" "${metric_file}"

@@ -5,11 +5,15 @@ umask 077
 status_directory=/var/lib/lowerduckpond/backup-status
 staging_directory=/var/cache/lowerduckpond-backup/staging
 lock_path=/var/cache/lowerduckpond-backup/repository.lock
-exec 9>"${lock_path}"
+exec 9<"${lock_path}"
 flock --exclusive 9
 
 # shellcheck disable=SC1091
 source /etc/lowerduckpond/backup.env
+if [[ "${LOWERDUCKPOND_BACKUP_ACTIVATION_SCOPE:-}" != {{ backup_activation_scope | quote }} ]]; then
+    echo backup_configuration_scope_changed >&2
+    exit 1
+fi
 export -n AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION
 export -n RESTIC_PASSWORD RESTIC_REPOSITORY RESTIC_CACHE_DIR
 status_scope=${LOWERDUCKPOND_BACKUP_STATUS_SCOPE:-}

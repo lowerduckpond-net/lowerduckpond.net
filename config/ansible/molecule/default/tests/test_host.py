@@ -698,9 +698,9 @@ def test_backup_configuration_is_atomic_and_sandboxed(host: Host) -> None:
     assert read_backup_scope(host) != read_maintenance_scope(host)
     assert not backup_script.contains(BACKUP_SCOPE_PATH)
     assert not maintenance_script.contains(BACKUP_SCOPE_PATH)
-    restic_index = maintenance_script.content_string.index("restic forget")
+    restic_index = maintenance_script.content_string.index("backup-audit-agent --maintain")
     assert maintenance_lock_index < restic_index
-    assert maintenance_script.contains("--tag scheduled")
+    assert maintenance_script.contains("LOWERDUCKPOND_BACKUP_STATIC_RECOVERY_ENABLED")
     for helper_name, restic_command in (
         ("restic-check", "restic check"),
         ("latest-backup-snapshot", "restic snapshots"),

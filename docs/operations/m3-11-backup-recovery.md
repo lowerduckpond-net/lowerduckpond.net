@@ -1,7 +1,7 @@
 # M3.11 backup and recovery operations
 
 M3.11 implementation is in progress. The accepted [plan](../plans/milestone-3.11.md)
-defines the complete qualification and production handoff. These P2 commands
+defines the complete qualification and production handoff. These P2/P3 commands
 are preparation and verification tooling; production convergence remains an
 explicit later operator step after the final M3.11 qualification. M3.12 is
 unstarted and production publication stays disabled.
@@ -84,7 +84,7 @@ and 8,192 complete-ID records. Genesis content is limited to 16 KiB, with 32 KiB
 bounds on tree listings and write-command output. Oversized, duplicate or
 malformed metadata fails without displaying provider output. The only write is
 the dedicated genesis snapshot; the command never runs forget, prune, unlock,
-repair or retagging. P3 supplies protected audit-segment verification and guarded
+repair or retagging. P3 adds protected audit-segment verification and guarded
 maintenance; this small lineage snapshot does not qualify audit archival.
 
 Reapplying or reverting P2a tooling leaves the immutable records and original
@@ -104,8 +104,8 @@ operations. Local evidence does not qualify Spaces or restored-host service.
 P2b installs the coherent capture path behind the explicit Ansible boolean
 `backup_static_recovery_enabled`, default `false`. It requires immutable Caddy
 generations, the verified selected artifact, a canonical namespace and the P2a
-repository-backed lineage. Enabling it verifies existing lineage; convergence
-does not initialize or rebind identity. Production activation remains part of
+repository-backed lineage. Enabling it verifies existing lineage and explicitly initializes/verifies the
+P3 protected audit index; convergence does not initialize or rebind identity. Production activation remains part of
 the final M3.11 handoff, after reconstruction and cold-certificate qualification.
 No operator production action is required by this implementation slice.
 
@@ -227,3 +227,124 @@ descriptor. Accounting and teardown remain mandatory. The [installed group
 guide](installed-groups.md) retains the measured cost that motivated this split.
 Results are diagnostic local/MinIO evidence; live Spaces and host reconstruction
 require later qualification.
+
+## Protected audit verification and maintenance
+
+P3 installs the protected readers and maintenance guard with rotation disabled.
+There is no rotation timer and no local segment removal in this slice. Complete
+P2 lineage initialization before enabling `backup_static_recovery_enabled` on
+an owned disposable host. Convergence starts the explicit index initializer,
+then enables verification at boot and daily:
+
+```console
+sudo systemctl start lowerduckpond-audit-initialize.service
+sudo systemctl start lowerduckpond-audit-verify.service
+sudo systemctl show lowerduckpond-audit-verify.service --property=Result,ExecMainStatus
+sudo journalctl --unit lowerduckpond-audit-verify.service --no-pager --lines=20
+```
+
+The initializer requires the existing unique repository-backed genesis and
+identical local records. It may create an empty head only when no committed
+index or remote rotation exists. Verification never recreates a lost head,
+lineage, index or witness. Missing or corrupt authority requires diagnosis and
+the later recovery workflow. Do not remove metadata to permit initialization.
+
+Every proof inventories the repository and verifies all referenced and discovered
+protected snapshots by their full IDs, exact tags, node, repository and lineage.
+It reads the stored Restic trees, checks the exact two-file payload and metadata,
+restores one bounded segment into a fresh private workspace, then reconstructs
+its canonical witness and checks the complete digest chain. Local immutable
+indexes and witnesses commit only after a second state transaction proves the
+same authority, closed source bytes and durable successor. Equivalent snapshots
+remain protected duplicates; an existing selected ID is preserved. Missing,
+retagged, conflicting or corrupt evidence refuses the proof. A lost creation
+response can be reconciled from equivalent repository evidence without repeating
+snapshot creation or deleting a duplicate.
+
+Local audit readers join the archived witness prefix to the contiguous local
+suffix, requiring exact bytes wherever they overlap. Correlation lookup, retry,
+replay, historical deployment and deletion evidence use that same chain. Ordinary
+workers read these local witnesses without backup credentials or network access.
+P3 preserves every local segment even after a verified index is committed.
+
+The verifier and initializer run for at most five minutes with 256 MiB, no swap,
+32 tasks, 256 descriptors and one CPU. The private verification workspace admits
+at most 32 MiB and 128 inodes; metadata under the audit archive admits at most
+32 MiB and 8,192 inodes. Unsafe or unknown workspace entries are preserved and
+refused. The shared 5-GiB/10-percent block and 100,000/10-percent inode free floors
+and 8-MiB administrator audit reserve remain enforced. Root commands are 0700;
+all backup units mask tenant archive credentials and sockets.
+
+### Retention and interruption
+
+```console
+sudo systemctl start lowerduckpond-backup-maintenance.service
+sudo systemctl show lowerduckpond-backup-maintenance.service --property=Result,ExecMainStatus
+sudo journalctl --unit lowerduckpond-backup-maintenance.service --no-pager --lines=20
+```
+
+Maintenance performs fresh protected verification before selecting ordinary
+`scheduled` snapshots for the configured node, grouped by host and source paths.
+The fixed policy is 7 daily, 5 weekly and 12 monthly. It writes a durable intent
+binding the exact ordinary remove IDs and current protected proof, forgets those
+IDs, verifies their absence and every protected snapshot, then separately prunes,
+checks repository integrity and proves protection again. Restic's oldest-snapshot
+fallback is preserved. Protected genesis, audit snapshots and duplicate copies
+remain indefinitely, even when older than every ordinary retention window.
+
+After interruption, rerun the same service. The journal's remove set cannot
+expand to newly eligible snapshots. An interrupted prune resumes with integrity
+and protected-content checks; it does not blindly repeat pruning. No command
+unlocks, repairs, retags or expires protected history. Any failed proof preserves
+the remaining evidence and records a failure without refreshing success.
+Maintenance has a 30-minute, 512-MiB, no-swap, 32-task, 1,024-descriptor, one-CPU
+service envelope. Timeout is failure; do not raise limits to qualify a run.
+
+The reviewed [legacy compatibility amendment](../plans/milestone-3.11.md#p3-activation-and-legacy-compatibility-amendment)
+permits ordinary maintenance only before **any** M3.11 local or remote authority
+exists. That path checks the complete archive-free precondition before explicit
+ordinary-ID forget and separate prune; it never initializes a lineage or journal.
+Once P2 identity exists, legacy maintenance refuses until coherent mode is
+activated. Disabling coherent mode cannot bypass protected retention. Do not
+roll back to older unguarded maintenance after protected history exists.
+
+Backup configuration writes serialize under the repository lock, followed by
+publication and tenant-state locks. An activation digest rejects older queued
+commands after policy changes. Configuration modules release all locks before
+service/network work. Upgrading from pre-P3 commands requires draining the older
+backup and maintenance processes in the final P6 handoff.
+
+### Health and evidence
+
+Existing textfile health adds `lowerduckpond_audit_protection_verified`, protected
+snapshot count/bytes, rotation-pending state and fixed failure categories:
+`protection`, `rotation-pending`, `index-corruption`, `archive-unavailable` and
+`resource-exhaustion`. The root health reader uses only the selected artifact,
+local witness/index and scoped proof cache. It receives no backup or tenant
+archive credentials and makes no network call. Missing, wrong-scope, future or
+older-than-24-hour proof closes ordinary audit admission. Administrator reserve
+remains available for evidence-preserving diagnosis. Existing traffic need not
+stop solely for this backup health failure; restored-host service remains a
+separate P5 gate.
+
+Run `just check-installed-group audit-protection` on its fresh owned fixture.
+It uses the unchanged 8-MiB production segment bound, actual Restic snapshots
+with ancient timestamps, equivalent duplicates, missing/corrupt/retagged indexed
+evidence, and process exit immediately after durable forget completion. A newly
+eligible ordinary snapshot added after interruption proves the resumed remove
+set stays fixed. Fault restoration touches only known encrypted snapshot objects
+inside the explicitly owned local fixture; it is not a production repair tool.
+The case also checks historical lookup, privilege/resource limits, health,
+accounting and teardown. Its result is diagnostic local/MinIO evidence, not a
+live-provider or restored-host qualification.
+
+| Obligation | Component evidence | Installed evidence |
+| --- | --- | --- |
+| Strict schemas, witness reconstruction and complete historical readers | `test_audit_archive_formats.py`, `test_audit_archive_store.py`, `test_audit_archived_history.py` | Production-size segment, duplicate proof, indexed overlap and supported tenant deletion |
+| Exact Restic trees, bounded workspace and ordinary-only 7/5/12 selection | `test_audit_archive_restic.py`, `test_audit_archive_workspace.py`, `test_audit_archive_inventory.py` | Actual Restic restoration, ancient duplicates and aged ordinary snapshots |
+| Crash-safe index publication and fixed maintenance phases | `test_audit_archive_local.py`, `test_audit_archive_coordinator.py` | Orphan adoption and hard exit after forget; original remove set on resume |
+| Admission reserve, health and activation serialization | `test_audit_archive_admission.py`, `test_audit_archive_health.py`, `test_backup_configuration_lock.py`, `test_backup_configuration_scope.py` | Installed service bounds, provisioner denial, health and coherent-mode reapplication |
+| Legacy migration refusal and fixed root entrypoints | `test_backup_legacy_retention.py`, `test_backup_audit_entrypoint.py` | Baseline legacy maintenance plus explicit mode-on migration |
+
+Rotation/removal, full reconstruction, live storage, production execution and the
+records-only closeout remain later M3.11 deliverables.

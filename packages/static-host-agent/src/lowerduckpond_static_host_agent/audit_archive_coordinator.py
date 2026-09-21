@@ -15,6 +15,8 @@ from lowerduckpond_static_domain import generate_uuid7
 from lowerduckpond_static_host_agent import audit_archive_journal as journal
 from lowerduckpond_static_host_agent import audit_archive_local as local
 from lowerduckpond_static_host_agent import audit_archive_store as store
+from lowerduckpond_static_host_agent.audit import AuditError
+from lowerduckpond_static_host_agent.audit_archive_admission import AuditArchiveCapacityError
 from lowerduckpond_static_host_agent.audit_archive_inventory import (
     ProtectedProof,
     is_audit_snapshot,
@@ -30,9 +32,12 @@ from lowerduckpond_static_host_agent.backup_identity import BackupIdentityError,
 from lowerduckpond_static_host_agent.backup_restic import (
     LINEAGE_TAG,
     RepositorySnapshot,
+    RepositoryUnavailableError,
     discover_repository,
     repository_genesis,
 )
+from lowerduckpond_static_host_agent.capacity import CapacityError
+from lowerduckpond_static_host_agent.durable import StatePathError
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,7 +100,18 @@ def _verify(  # noqa: PLR0913 - explicit repository, privilege and failure bound
     return VerifiedArchive(identity, snapshots, committed, proof)
 
 
-def _record_failure(paths: ProtectionPaths, owner: int) -> None:
+def _record_failure(paths: ProtectionPaths, owner: int, error: Exception) -> None:
+    category = (
+        "rotation-pending"
+        if isinstance(error, local.AuditRotationPendingError)
+        else "resource-exhaustion"
+        if isinstance(error, (CapacityError, AuditArchiveCapacityError))
+        else "index-corruption"
+        if isinstance(error, (AuditError, StatePathError))
+        else "archive-unavailable"
+        if isinstance(error, RepositoryUnavailableError)
+        else "protection"
+    )
     # Preserve the primary failure if corrupt authority or exhausted storage also
     # prevents a status update. Those conditions independently close admission.
     try:
@@ -113,7 +129,7 @@ def _record_failure(paths: ProtectionPaths, owner: int) -> None:
                         "protectedInventoryDigest": None,
                         "protectedSnapshotCount": 0,
                         "protectedBytes": 0,
-                        "category": "protection",
+                        "category": category,
                     }
                 )
             )
@@ -146,8 +162,8 @@ def verify_archive(  # noqa: PLR0913 - public fixed root command boundaries
             initialize=initialize,
             failure_hook=failure_hook,
         )
-    except Exception:
-        _record_failure(paths, expected_owner)
+    except Exception as error:
+        _record_failure(paths, expected_owner, error)
         raise
 
 
@@ -223,8 +239,8 @@ def maintain_archive(
     """Never combines forget/prune, recomputes a resumed remove set, or repairs Restic."""
     try:
         return _maintain(paths, environment, expected_owner, expected_group, failure_hook)
-    except Exception:
-        _record_failure(paths, expected_owner)
+    except Exception as error:
+        _record_failure(paths, expected_owner, error)
         raise
 
 

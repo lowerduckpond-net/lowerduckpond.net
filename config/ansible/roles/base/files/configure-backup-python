@@ -1,0 +1,143 @@
+#!/usr/bin/python3 -I
+"""Serialize root Ansible backup activation before static writer exclusion."""
+
+from __future__ import annotations
+
+import fcntl
+import os
+import signal
+import stat
+import sys
+from pathlib import Path
+from types import FrameType
+
+CACHE = Path("/var/cache/lowerduckpond-backup")
+CONFIGURATION = Path("/etc/lowerduckpond/backup.env")
+STATUS = Path("/var/lib/lowerduckpond/backup-status")
+STATIC = Path("/var/lib/lowerduckpond/static")
+OWNER_UID = 0
+OWNER_GID = 0
+DIRECTORY_MODE = 0o700
+LOCK_MODE = 0o600
+WAIT_SECONDS = 30 * 60
+
+
+def _timeout(_signal: int, _frame: FrameType | None) -> None:
+    raise TimeoutError("backup configuration lock wait expired")
+
+
+def _private_directory(path: Path) -> None:
+    metadata = path.stat(follow_symlinks=False)
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != OWNER_UID
+        or metadata.st_gid != OWNER_GID
+        or stat.S_IMODE(metadata.st_mode) != DIRECTORY_MODE
+    ):
+        raise ValueError("backup configuration directory is unsafe")
+
+
+def _fresh_bootstrap() -> bool:
+    for path in (
+        CONFIGURATION,
+        STATIC / "locks/audit-lineage-genesis.json",
+        STATIC / "platform/audit-lineage.json",
+    ):
+        if path.exists() or path.is_symlink():
+            return False
+    for path in (STATUS, STATIC / "audit", STATIC / "tenants", CACHE):
+        try:
+            _private_directory(path)
+        except FileNotFoundError:
+            continue
+        with os.scandir(path) as entries:
+            if next(entries, None) is not None:
+                return False
+    return True
+
+
+def _validate(parent: int, descriptor: int) -> None:
+    metadata = os.fstat(descriptor)
+    named = os.stat("repository.lock", dir_fd=parent, follow_symlinks=False)
+    opened = os.fstat(parent)
+    current = CACHE.stat(follow_symlinks=False)
+    _private_directory(CACHE)
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_uid != OWNER_UID
+        or metadata.st_gid != OWNER_GID
+        or stat.S_IMODE(metadata.st_mode) != LOCK_MODE
+        or metadata.st_nlink != 1
+        or metadata.st_size != 0
+        or (metadata.st_dev, metadata.st_ino) != (named.st_dev, named.st_ino)
+        or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)
+    ):
+        raise ValueError("backup configuration lock is unsafe")
+
+
+def _acquire() -> int:
+    try:
+        _private_directory(CACHE)
+    except FileNotFoundError:
+        if not _fresh_bootstrap():
+            raise ValueError("existing backup host has missing lock authority") from None
+        CACHE.mkdir(mode=DIRECTORY_MODE)
+        parent = os.open(CACHE.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(parent)
+        finally:
+            os.close(parent)
+    parent = os.open(CACHE, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    descriptor: int | None = None
+    try:
+        try:
+            descriptor = os.open(
+                "repository.lock",
+                os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK,
+                dir_fd=parent,
+            )
+        except FileNotFoundError:
+            if not _fresh_bootstrap():
+                raise ValueError("existing backup host has missing lock authority") from None
+            descriptor = os.open(
+                "repository.lock",
+                os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                LOCK_MODE,
+                dir_fd=parent,
+            )
+            os.fchmod(descriptor, LOCK_MODE)
+            os.fsync(descriptor)
+            os.fsync(parent)
+        _validate(parent, descriptor)
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        _validate(parent, descriptor)
+        os.set_inheritable(descriptor, True)
+        return descriptor
+    except BaseException:
+        if descriptor is not None:
+            os.close(descriptor)
+        raise
+    finally:
+        os.close(parent)
+
+
+def main() -> None:
+    if os.geteuid() != 0:
+        raise SystemExit("backup_configuration_root_required")
+    try:
+        signal.signal(signal.SIGALRM, _timeout)
+        signal.alarm(WAIT_SECONDS)
+        _acquire()
+        signal.alarm(0)
+    except OSError, ValueError:
+        raise SystemExit("backup_configuration_lock_unverified") from None
+    # Repository EX precedes publication EX then tenant-state EX. Only root
+    # file/template modules use this interpreter; no service/network waits.
+    os.execv(  # noqa: S606 - fixed root-only configuration interpreter
+        "/usr/local/libexec/lowerduckpond/configure-static-python",
+        ["/usr/local/libexec/lowerduckpond/configure-static-python", *sys.argv[1:]],
+    )
+
+
+if __name__ == "__main__":
+    main()

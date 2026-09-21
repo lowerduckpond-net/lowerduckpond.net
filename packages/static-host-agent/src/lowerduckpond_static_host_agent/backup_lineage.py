@@ -183,7 +183,11 @@ def _publish_primary(
 
 
 def _require_current_state_lease(
-    directory: DurableDirectory, locks: LockManager, owner: int
+    directory: DurableDirectory,
+    locks: LockManager,
+    owner: int,
+    *,
+    mode: LockMode = LockMode.EXCLUSIVE,
 ) -> None:
     # A blocking acquisition can finish on the old inode after its name was
     # replaced. Prove that the current no-follow inode is the one actually held
@@ -201,7 +205,7 @@ def _require_current_state_lease(
             )
             if metadata.st_size != 0:
                 raise StatePathError("audit lineage state lock is not empty")
-            locks.require_held(LockName.TENANT_STATE, mode=LockMode.EXCLUSIVE, descriptor=current)
+            locks.require_held(LockName.TENANT_STATE, mode=mode, descriptor=current)
         except LockOrderError as error:
             raise StatePathError("audit lineage state lock identity changed") from error
         finally:

@@ -25,6 +25,7 @@ from lowerduckpond_static_host_agent.audit import (
     AuditState,
     inspect_audit_readonly,
 )
+from lowerduckpond_static_host_agent.audit_archive_admission import AuditArchiveCapacityError
 from lowerduckpond_static_host_agent.audit_archive_inventory import (
     ProtectedProof,
     is_audit_snapshot,
@@ -52,6 +53,10 @@ from lowerduckpond_static_host_agent.locks import LockManager, LockMode, LockNam
 ArchiveFailureHook = Callable[[str, DurabilityBoundary], None]
 
 
+class AuditRotationPendingError(BackupIdentityError):
+    """A durable prepared attempt has no verified snapshot to adopt yet."""
+
+
 @dataclass(frozen=True, slots=True)
 class LocalArchive:
     lineage: dict[str, object]
@@ -60,15 +65,17 @@ class LocalArchive:
 
 
 @contextmanager
-def archive_transaction(path: Path, owner: int) -> Iterator[DurableDirectory]:
+def archive_transaction(
+    path: Path, owner: int, *, mode: LockMode = LockMode.EXCLUSIVE, blocking: bool = True
+) -> Iterator[DurableDirectory]:
     with (
         DurableDirectory.open(path, expected_owner=owner, expected_directory_mode=0o700) as root,
         root.open_descendant(("locks",)) as directory,
         LockManager(directory, expected_owner=owner, expected_directory_mode=0o700) as locks,
-        locks.acquire(LockName.TENANT_STATE, mode=LockMode.EXCLUSIVE, blocking=True),
+        locks.acquire(LockName.TENANT_STATE, mode=mode, blocking=blocking),
     ):
         _require_current_root(root, path)
-        _require_current_state_lease(directory, locks, owner)
+        _require_current_state_lease(directory, locks, owner, mode=mode)
         yield root
 
 
@@ -196,7 +203,9 @@ def reserve_records(
         or inodes + count > formats.MAX_ARCHIVE_METADATA_INODES
         or audit_bytes + allocation > DEFAULT_AUDIT_LIMITS.maximum_ordinary_bytes
     ):
-        raise BackupIdentityError("protected audit metadata cannot preserve ordinary capacity")
+        raise AuditArchiveCapacityError(
+            "protected audit metadata cannot preserve ordinary capacity"
+        )
     descriptor = directory.duplicate_descriptor()
     try:
         admit_release_capacity(
@@ -363,7 +372,7 @@ def commit_protected_proof(  # noqa: PLR0913 - state proof and failure boundarie
         and proof.orphan is None
         and formats.validate_rotation(intent["descriptor"])["segmentNumber"] == len(indexes)
     ):
-        raise BackupIdentityError("pending audit rotation lacks a verified snapshot")
+        raise AuditRotationPendingError("pending audit rotation lacks a verified snapshot")
     if proof.orphan is not None:
         if current.prefix.maintenance_intent is not None:
             raise BackupIdentityError("unindexed rotation appeared during maintenance")

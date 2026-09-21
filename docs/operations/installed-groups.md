@@ -17,6 +17,7 @@ rather than a production qualification report.
 
 | Case | Preserved installed assertions and independent setup |
 | --- | --- |
+| `audit-protection` | Own explicitly migrated lineage; production-size closed audit segment, real ancient Restic copies and orphan adoption, exact index/witness and historical lookup, missing/corrupt/retagged protected evidence refusal before ordinary removal, journaled forget interruption and fixed-ID resume, service limits and credential-free health. Rotation and local removal remain disabled. |
 | `backup-identity` | Fresh supported tenant history; real Restic config/full snapshot IDs and restore, permanent repository genesis before local commit, refusal after both local identity records are lost, retention exclusion, audit-prefix verification, repository/selection/state lock exclusion, wrong repository identity and root-only command boundaries. |
 | `backup-coherence` | Own active/suspended/archived/undeployed tenants; explicit migration over existing history and idempotence, installed service failure/health and privilege bounds, real Restic capture/descriptor readback/restore/tree measurement, Caddy restart and guarded Ansible file writes; exclusion canaries. |
 | `backup-mutation-overlap` | Own source and import target with empty-lineage initialization; real Restic capture/restore/tree measurement versus create/deploy/import/rollback/rename/suspend/resume/archive/restore/delete/export/emergency/reconcile, authorization repair and retained-release cleanup. |

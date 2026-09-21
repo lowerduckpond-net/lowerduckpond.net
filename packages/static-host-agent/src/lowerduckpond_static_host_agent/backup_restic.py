@@ -43,6 +43,10 @@ _ENVIRONMENT = (
 _LEASE_DESCRIPTORS: ContextVar[tuple[int, ...]] = ContextVar("restic_backup_leases", default=())
 
 
+class RepositoryUnavailableError(BackupIdentityError):
+    """A bounded repository child failed or exceeded its transport deadline."""
+
+
 @contextmanager
 def inherit_restic_leases(descriptors: tuple[int, ...]) -> Iterator[None]:
     """Keep caller-validated lease inodes held if the coordinating process dies.
@@ -125,7 +129,9 @@ def _run_restic(
                 while True:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0 or not selector.select(remaining):
-                        raise BackupIdentityError("repository discovery exceeded its deadline")
+                        raise RepositoryUnavailableError(
+                            "repository discovery exceeded its deadline"
+                        )
                     try:
                         chunk = os.read(descriptor, min(65536, limit + 1 - len(output)))
                     except BlockingIOError:
@@ -136,10 +142,12 @@ def _run_restic(
                     if len(output) > limit:
                         raise BackupIdentityError("repository discovery exceeds its output bound")
             if process.wait(timeout=max(0.0, deadline - time.monotonic())):
-                raise BackupIdentityError("repository discovery failed")
+                raise RepositoryUnavailableError("repository discovery failed")
             return bytes(output)
         except subprocess.TimeoutExpired as error:
-            raise BackupIdentityError("repository discovery exceeded its deadline") from error
+            raise RepositoryUnavailableError(
+                "repository discovery exceeded its deadline"
+            ) from error
         finally:
             if process.poll() is None:
                 process.kill()

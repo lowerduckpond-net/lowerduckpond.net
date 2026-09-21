@@ -1,16 +1,16 @@
 [Unit]
-Description=Apply Lower Duck Pond backup retention
+Description=Verify protected Lower Duck Pond audit evidence
 Wants=network-online.target
 After=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/libexec/lowerduckpond/backup-maintenance
-TimeoutStartSec=30min
-MemoryMax=512M
+ExecStart=/usr/local/libexec/lowerduckpond/backup-audit-protection --verify
+TimeoutStartSec=5min
+MemoryMax=256M
 MemorySwapMax=0
 TasksMax=32
-LimitNOFILE=1024
+LimitNOFILE=256
 CPUQuota=100%
 Nice=15
 IOSchedulingClass=best-effort

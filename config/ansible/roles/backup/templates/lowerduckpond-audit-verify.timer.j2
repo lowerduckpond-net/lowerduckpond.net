@@ -1,0 +1,11 @@
+[Unit]
+Description=Verify protected Lower Duck Pond audit evidence at boot and daily
+
+[Timer]
+OnBootSec=2min
+OnCalendar=daily
+Persistent=true
+Unit=lowerduckpond-audit-verify.service
+
+[Install]
+WantedBy=timers.target

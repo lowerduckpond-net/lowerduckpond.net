@@ -8,7 +8,14 @@ backup_status_scope: >-
 backup_maintenance_status_scope: >-
   {{ [backup_repository, backup_node_name,
       backup_keep_daily | string, backup_keep_weekly | string,
-      backup_keep_monthly | string] | to_json | hash('sha256') }}
+      backup_keep_monthly | string, backup_static_recovery_enabled | bool,
+      'audit-protection-v1'] | to_json | hash('sha256') }}
+# Every queued command carries the policy that rendered it. Configuration is
+# activated last under repository EX, and old commands reject the new scope.
+backup_activation_scope: >-
+  {{ [backup_status_scope, backup_maintenance_status_scope,
+      backup_static_recovery_enabled | bool, 'audit-protection-v1'] |
+      to_json | hash('sha256') }}
 backup_source_paths: >-
   {{ backup_recovery_source_paths if backup_static_recovery_enabled | bool
      else backup_legacy_source_paths }}

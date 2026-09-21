@@ -168,6 +168,8 @@ def test_installed_archive_credentials_stay_inside_the_network_boundary(
         "lowerduckpond-backup.service",
         "lowerduckpond-backup-maintenance.service",
         "lowerduckpond-backup-identity.service",
+        "lowerduckpond-audit-initialize.service",
+        "lowerduckpond-audit-verify.service",
         "lowerduckpond-static-reconcile.service",
         "lowerduckpond-static-worker@.service",
     ],
@@ -232,6 +234,8 @@ def test_installed_idle_emergency_recovery_needs_no_archive_credentials(host: Ho
         "lowerduckpond-backup.service",
         "lowerduckpond-backup-maintenance.service",
         "lowerduckpond-backup-identity.service",
+        "lowerduckpond-audit-initialize.service",
+        "lowerduckpond-audit-verify.service",
         "lowerduckpond-static-reconcile.service",
     ],
 )
@@ -388,6 +392,7 @@ while True:
     timers = [
         "lowerduckpond-backup.timer",
         "lowerduckpond-backup-maintenance.timer",
+        "lowerduckpond-audit-verify.timer",
         "lowerduckpond-static-reconcile.timer",
     ]
     active = [
@@ -399,7 +404,8 @@ while True:
                 "systemctl stop lowerduckpond-backup.timer "
                 "lowerduckpond-backup-maintenance.timer lowerduckpond-backup.service "
                 "lowerduckpond-backup-maintenance.service lowerduckpond-static-reconcile.timer "
-                "lowerduckpond-static-reconcile.service"
+                "lowerduckpond-static-reconcile.service lowerduckpond-audit-verify.timer "
+                "lowerduckpond-audit-verify.service lowerduckpond-audit-initialize.service"
             ).rc
             == 0
         )
