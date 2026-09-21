@@ -113,6 +113,12 @@ def test_invalid_or_unsupported_repository_config_fails_closed(
         ("tags", ["scheduled", "scheduled"]),
         ("tags", "scheduled"),
         ("tags", ["x" * 257]),
+        ("paths", [1]),
+        ("paths", ["/a", "/a"]),
+        ("paths", "/a"),
+        ("paths", [""]),
+        ("paths", ["x" * 4097]),
+        ("paths", ["/a\0b"]),
     ],
 )
 def test_invalid_snapshot_metadata_is_not_silently_skipped(

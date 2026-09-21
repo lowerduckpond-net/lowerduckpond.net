@@ -27,6 +27,7 @@ from lowerduckpond_static_host_agent.backup_identity import (
 
 MAX_SNAPSHOT_BYTES = 16 * 1024 * 1024
 MAX_SNAPSHOTS = 8_192
+MAX_SNAPSHOT_PATH_BYTES = 4096
 METADATA_TIMEOUT_SECONDS = 300
 LINEAGE_TAG = "lowerduckpond-audit-lineage"
 LINEAGE_FILE = "audit-lineage-genesis.json"
@@ -40,6 +41,10 @@ _ENVIRONMENT = (
     "RESTIC_CACHE_DIR",
 )
 _LEASE_DESCRIPTORS: ContextVar[tuple[int, ...]] = ContextVar("restic_backup_leases", default=())
+
+
+class RepositoryUnavailableError(BackupIdentityError):
+    """A bounded repository child failed or exceeded its transport deadline."""
 
 
 @contextmanager
@@ -67,6 +72,7 @@ class RepositorySnapshot:
     snapshot_id: str
     hostname: str
     tags: tuple[str, ...]
+    paths: tuple[str, ...] = ()
 
 
 def restic_metadata(
@@ -123,7 +129,9 @@ def _run_restic(
                 while True:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0 or not selector.select(remaining):
-                        raise BackupIdentityError("repository discovery exceeded its deadline")
+                        raise RepositoryUnavailableError(
+                            "repository discovery exceeded its deadline"
+                        )
                     try:
                         chunk = os.read(descriptor, min(65536, limit + 1 - len(output)))
                     except BlockingIOError:
@@ -134,10 +142,12 @@ def _run_restic(
                     if len(output) > limit:
                         raise BackupIdentityError("repository discovery exceeds its output bound")
             if process.wait(timeout=max(0.0, deadline - time.monotonic())):
-                raise BackupIdentityError("repository discovery failed")
+                raise RepositoryUnavailableError("repository discovery failed")
             return bytes(output)
         except subprocess.TimeoutExpired as error:
-            raise BackupIdentityError("repository discovery exceeded its deadline") from error
+            raise RepositoryUnavailableError(
+                "repository discovery exceeded its deadline"
+            ) from error
         finally:
             if process.poll() is None:
                 process.kill()
@@ -177,6 +187,7 @@ def discover_repository(
             snapshot_id = entry.get("id")
             hostname = entry.get("hostname")
             tags = entry.get("tags", [])
+            paths = entry.get("paths", [])
             if (
                 type(snapshot_id) is not str
                 or _HEX.fullmatch(snapshot_id) is None
@@ -186,10 +197,20 @@ def discover_repository(
                 or len(tags) > 64  # noqa: PLR2004
                 or any(type(tag) is not str or len(tag) > 256 for tag in tags)  # noqa: PLR2004
                 or len(tags) != len(set(tags))
+                or type(paths) is not list
+                or len(paths) > 64  # noqa: PLR2004 - bounded supported source inventory
+                or any(
+                    type(path) is not str
+                    or not path
+                    or len(path) > MAX_SNAPSHOT_PATH_BYTES
+                    or "\0" in path
+                    for path in paths
+                )
+                or len(paths) != len(set(paths))
             ):
                 raise BackupIdentityError("invalid repository snapshot metadata")
             seen.add(snapshot_id)
-            snapshots.append(RepositorySnapshot(snapshot_id, hostname, tuple(tags)))
+            snapshots.append(RepositorySnapshot(snapshot_id, hostname, tuple(tags), tuple(paths)))
         return identity, tuple(snapshots)
     except (ContractError, KeyError, TypeError, ValueError, OSError) as error:
         raise BackupIdentityError("repository discovery is unavailable or malformed") from error

@@ -3,8 +3,11 @@
   ansible.builtin.assert:
     that:
       - backup_static_recovery_enabled is boolean
+      - backup_keep_daily | string == '7'
+      - backup_keep_weekly | string == '5'
+      - backup_keep_monthly | string == '12'
       - not backup_static_recovery_enabled or caddy_generation_enabled | default(false) | bool
-    fail_msg: Coherent backup requires explicit enablement and immutable Caddy generations.
+    fail_msg: Backup requires the qualified 7/5/12 policy; coherent mode requires immutable Caddy generations.
 
 - name: Install backup packages
   ansible.builtin.apt:
@@ -24,7 +27,7 @@
 
 - name: Create backup directories
   vars:
-    ansible_python_interpreter: /usr/local/libexec/lowerduckpond/configure-static-python
+    ansible_python_interpreter: /usr/local/libexec/lowerduckpond/configure-backup-python
   ansible.builtin.file:
     path: "{{ item.path }}"
     state: directory
@@ -39,6 +42,12 @@
     - path: /var/cache/lowerduckpond-backup/staging
       mode: "0700"
     - path: /var/cache/lowerduckpond-backup/workspace
+      mode: "0700"
+    - path: /var/cache/lowerduckpond-backup/audit
+      mode: "0700"
+    - path: /var/cache/lowerduckpond-backup/audit/verification
+      mode: "0700"
+    - path: /var/cache/lowerduckpond-backup/audit/snapshot
       mode: "0700"
     - path: /var/lib/lowerduckpond
       # Service-specific children own their own access policy. The shared parent
@@ -141,6 +150,8 @@
   when: backup_repository is ansible.builtin.match('^/')
 
 - name: Create a new local Restic repository when requested
+  vars:
+    ansible_python_interpreter: /usr/local/libexec/lowerduckpond/configure-backup-python
   ansible.builtin.file:
     path: "{{ backup_repository }}"
     state: directory
@@ -152,6 +163,8 @@
     - not (backup_local_repository_stat.stat.exists | default(false))
 
 - name: Install backup and recovery commands
+  vars:
+    ansible_python_interpreter: /usr/local/libexec/lowerduckpond/configure-backup-python
   ansible.builtin.template:
     src: "{{ item.src }}"
     dest: "/usr/local/libexec/lowerduckpond/{{ item.dest }}"
@@ -173,6 +186,8 @@
       dest: restore-smoke-test
 
 - name: Install root-only backup agent commands
+  vars:
+    ansible_python_interpreter: /usr/local/libexec/lowerduckpond/configure-backup-python
   ansible.builtin.template:
     src: "{{ item }}.j2"
     dest: "/usr/local/libexec/lowerduckpond/{{ item }}"
@@ -183,8 +198,13 @@
     - backup-state-identity
     - backup-identity-agent
     - backup-capture-agent
+    - backup-audit-agent
+    - backup-audit-protection
+    - check-audit-protection
 
 - name: Install backup systemd units
+  vars:
+    ansible_python_interpreter: /usr/local/libexec/lowerduckpond/configure-backup-python
   ansible.builtin.template:
     src: "{{ item }}.j2"
     dest: "/etc/systemd/system/{{ item }}"
@@ -197,12 +217,17 @@
     - lowerduckpond-backup-maintenance.service
     - lowerduckpond-backup-maintenance.timer
     - lowerduckpond-backup-identity.service
+    - lowerduckpond-audit-initialize.service
+    - lowerduckpond-audit-verify.service
+    - lowerduckpond-audit-verify.timer
   notify: Reload systemd for backups
 
 - name: Flush backup unit handlers
   ansible.builtin.meta: flush_handlers
 
 - name: Activate the protected backup configuration atomically
+  vars:
+    ansible_python_interpreter: /usr/local/libexec/lowerduckpond/configure-backup-python
   ansible.builtin.template:
     src: backup.env.j2
     dest: /etc/lowerduckpond/backup.env
@@ -222,10 +247,11 @@
 - name: Initialize the encrypted Restic repository
   ansible.builtin.shell:
     cmd: >-
-      exec 9>/var/cache/lowerduckpond-backup/repository.lock &&
+      exec 9</var/cache/lowerduckpond-backup/repository.lock &&
       flock --exclusive 9 &&
       set -o allexport &&
       source /etc/lowerduckpond/backup.env &&
+      test "${LOWERDUCKPOND_BACKUP_ACTIVATION_SCOPE:-}" = {{ backup_activation_scope | quote }} &&
       set +o allexport &&
       exec /usr/bin/restic init
     executable: /bin/bash
@@ -233,13 +259,25 @@
   changed_when: true
   no_log: true
 
-- name: Verify the explicitly initialized coherent backup lineage
-  ansible.builtin.command:
-    argv:
-      - /usr/local/libexec/lowerduckpond/backup-state-identity
-      - --verify
-  changed_when: false
+- name: Inspect the protected audit index migration
+  ansible.builtin.stat:
+    path: /var/lib/lowerduckpond/static/audit/archive/head.json
+    follow: false
+  register: backup_audit_head
   when: backup_static_recovery_enabled | bool
+
+- name: Initialize and verify protection for the explicitly initialized lineage
+  ansible.builtin.systemd_service:
+    name: lowerduckpond-audit-initialize.service
+    state: started
+  changed_when: not (backup_audit_head.stat.exists | default(false))
+  when: backup_static_recovery_enabled | bool
+
+- name: Configure protected audit verification at boot and daily
+  ansible.builtin.systemd_service:
+    name: lowerduckpond-audit-verify.timer
+    enabled: "{{ backup_static_recovery_enabled | bool }}"
+    state: "{{ 'started' if backup_static_recovery_enabled | bool else 'stopped' }}"
 
 - name: Inspect the backup repository for this node
   ansible.builtin.command:

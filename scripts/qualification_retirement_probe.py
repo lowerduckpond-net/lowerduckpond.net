@@ -106,10 +106,10 @@ def administrator_result_is_terminal(state: Path, path: Path, *, owner: int) -> 
         or os.path.lexists(state / "tenants" / str(result["tenantId"]))
     ):
         raise ValueError("fixture has an orphaned or incomplete administrator result")
-    # The installed audit reader can retire abandoned publication copies. Refuse
-    # every non-segment entry first, under the caller's shared locks, so this
-    # inspection cannot recover or remove anything from the retained fixture.
-    segments = entries(state / "audit")
+    # Refuse unfinished local publication, and let the shared read-only reader
+    # validate the bounded archive directory and its historical witnesses.
+    # This inspection never recovers or removes retained fixture state.
+    segments = [path for path in entries(state / "audit") if path.name != "archive"]
     if any(re.fullmatch(r"segment-[0-9]{20}\.jsonl", p.name) is None for p in segments):
         raise ValueError("fixture audit publication is incomplete")
     if sum(p.lstat().st_size for p in segments) > DEFAULT_AUDIT_LIMITS.maximum_administrator_bytes:
@@ -121,6 +121,7 @@ def administrator_result_is_terminal(state: Path, path: Path, *, owner: int) -> 
             expected_owner=owner,
             expected_directory_mode=0o700,
             expected_record_mode=0o600,
+            read_only=True,
         ).entry
     evidence = audit.get("deletionEvidence") if audit is not None else None
     if (

@@ -1,0 +1,34 @@
+[Unit]
+Description=Verify protected Lower Duck Pond audit evidence
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/lowerduckpond/backup-audit-protection --verify
+TimeoutStartSec=5min
+MemoryMax=256M
+MemorySwapMax=0
+TasksMax=32
+LimitNOFILE=256
+CPUQuota=100%
+Nice=15
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+PrivateTmp=true
+ProtectSystem=strict
+InaccessiblePaths=-/etc/lowerduckpond/archive
+InaccessiblePaths=-/run/lowerduckpond-archive
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+NoNewPrivileges=true
+RestrictSUIDSGID=true
+LockPersonality=true
+IPAddressDeny=169.254.169.254/32
+ReadWritePaths=/var/cache/lowerduckpond-backup /var/lib/lowerduckpond /var/lib/caddy
+{% if backup_repository.startswith('/') %}
+ReadWritePaths={{ backup_repository | to_json }}
+{% endif %}

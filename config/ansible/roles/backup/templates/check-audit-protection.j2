@@ -1,0 +1,83 @@
+#!/usr/bin/python3 -I
+"""Lease the selected artifact for credential-free local health inspection."""
+
+from __future__ import annotations
+
+import fcntl
+import os
+import pathlib
+import re
+import stat
+import subprocess
+import sys
+
+sys.dont_write_bytecode = True
+
+SELECTION_LOCK = pathlib.Path("/opt/lowerduckpond/static-host-agent/selection.lock")
+ARTIFACT_ROOT = pathlib.Path("/opt/lowerduckpond/static-host-agent")
+VERIFIER = "/usr/local/libexec/lowerduckpond/verify-static-host-agent-artifact"
+LOCK_MODE = 0o600
+
+
+def require_lock(path: pathlib.Path, descriptor: int) -> None:
+    metadata = os.fstat(descriptor)
+    named = path.stat(follow_symlinks=False)
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or stat.S_IMODE(metadata.st_mode) != LOCK_MODE
+        or metadata.st_uid != 0
+        or metadata.st_gid != 0
+        or metadata.st_nlink != 1
+        or metadata.st_size != 0
+        or (metadata.st_dev, metadata.st_ino) != (named.st_dev, named.st_ino)
+    ):
+        raise ValueError("unsafe lock")
+
+
+def acquire_selection() -> int:
+    if os.geteuid() != 0:
+        raise ValueError("root required")
+    descriptor = os.open(SELECTION_LOCK, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    require_lock(SELECTION_LOCK, descriptor)
+    fcntl.flock(descriptor, fcntl.LOCK_SH)
+    require_lock(SELECTION_LOCK, descriptor)
+    return descriptor
+
+
+def selected_artifact() -> pathlib.Path:
+    selector = ARTIFACT_ROOT / "current"
+    metadata = selector.stat(follow_symlinks=False)
+    if (
+        not stat.S_ISLNK(metadata.st_mode)
+        or metadata.st_uid != 0
+        or metadata.st_gid != 0
+        or metadata.st_nlink != 1
+    ):
+        raise ValueError("unsafe artifact selector")
+    selected = selector.readlink()
+    if selected.parent != ARTIFACT_ROOT or re.fullmatch(r"[0-9a-f]{64}", selected.name) is None:
+        raise ValueError("unbound artifact identity")
+    subprocess.run(  # noqa: S603 - fixed verifier and selected immutable artifact
+        [VERIFIER, str(selected)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env={"PATH": "/usr/bin:/bin"},
+        timeout=60,
+        check=True,
+    )
+    return selected
+
+
+try:
+    if sys.argv[1:]:
+        raise ValueError("fixed local health command accepts no arguments")
+    _SELECTION_LOCK_FD = acquire_selection()
+    _ARTIFACT = selected_artifact()
+except (OSError, ValueError, subprocess.SubprocessError):
+    raise SystemExit("backup_audit_artifact_unverified") from None
+sys.path.insert(0, str(_ARTIFACT / "site-packages"))
+
+from lowerduckpond_static_host_agent.audit_archive_health import health_main  # noqa: E402
+
+raise SystemExit(health_main())

@@ -265,9 +265,10 @@ disagrees. During recovery, regenerate a missing witness only from the exact
 verified protected snapshot; do not accept a digest without its entries.
 
 Witnesses plus index metadata have a 32-MiB/8,192-inode sublimit, at most 4,096
-archived segments and 65,536 witnessed entries. These are additional limits,
-not an expansion: count their allocated blocks, directories and temporary
-replacements within the existing 128-MiB ordinary audit allowance. The separate
+archived segments and 65,536 witnessed entries. Ordinary admission counts the
+complete verified chain, including unarchived entries, against that entry ceiling.
+These are additional limits, not an expansion: count their allocated blocks,
+directories and temporary replacements within the existing 128-MiB ordinary audit allowance. The separate
 8-MiB administrator reserve remains unavailable to ordinary work and rotation.
 Reserve worst-case metadata/witness allocation before starting. Exhaustion
 closes rotation/new ordinary admission; it does not evict witnesses, reset
@@ -331,9 +332,11 @@ indefinitely, including snapshots older than every daily/weekly/monthly window.
 After interruption during forget, reconcile the fixed ID set with present
 snapshots; already absent ordinary IDs are completed work. Before any resumed
 prune repeat the protected proof. After interrupted prune require Restic
-integrity and protected-content validation; failure leaves maintenance critical
-and needs operator investigation. Never automatically unlock/repair a repository
-or call `forget` to eliminate a failed proof. The supported Restic 0.18.x
+integrity and protected-content validation before resuming one bounded prune.
+Publishing a pruning intent alone cannot prove the child started; only a durable
+checked phase proves completed pruning and its postconditions. Failure leaves
+maintenance critical and needs operator investigation. Never automatically
+unlock/repair a repository or call `forget` to eliminate a failed proof. The supported Restic 0.18.x
 [retention semantics](https://restic.readthedocs.io/en/v0.18.1/060_forget.html)
 separate snapshot removal and data pruning; tests exercise both independently.
 
@@ -342,6 +345,34 @@ configuration activation; Restic's own locks remain enabled. Out-of-band root
 retagging/deletion is not made safe by this lock and is detected by subsequent
 verification. During M3 there is no protected-snapshot expiry command or
 provisioner capability to forget, prune, retag, truncate, rotate or use reserve.
+
+### P3 activation and legacy compatibility amendment
+
+P3 activates protected maintenance with the existing explicit
+`backup_static_recovery_enabled` mode. After P2 lineage initialization, convergence
+explicitly initializes the empty index and proves the permanent genesis before
+admission can use its cache. Reapplication verifies the existing index; it never
+recreates a missing head over committed metadata. Rotation remains absent in P3.
+
+Before any M3.11 identity exists, legacy hosts still need ordinary maintenance.
+This compatibility path requires no local lineage candidate, primary or archive
+namespace, and no reserved lineage, rotation, repository or capture tag anywhere
+in the complete remote inventory. It validates the local audit chain, checks the
+repository, selects explicit 7/5/12 ordinary IDs, forgets only those IDs, proves
+their absence and repeats the archive-free inventory before separate prune,
+then checks again before success. It cannot create lineage or an index and
+cannot fall back from protected mode. It has no lineage-bound maintenance
+journal; an interrupted legacy run repeats selection only while that complete
+archive-free precondition still holds. Once P2 identity exists, the legacy path
+refuses and the operator must finish coherent-mode activation. Protected
+maintenance always follows the durable fixed-ID protocol above.
+
+All backup configuration modules acquire repository exclusion before publication
+and tenant-state exclusion. Configuration is activated after the fixed commands
+are installed. Every waiting P3 command compares its baked activation digest to
+the configuration read after repository locking; an old queued command refuses a
+new policy. No service/network wait holds the configuration module locks. The
+P6 upgrade must drain pre-P3 processes, whose older commands lack this fence.
 
 ### Bounds, privileges, and failures
 

@@ -6,6 +6,12 @@ After=network-online.target
 [Service]
 Type=oneshot
 ExecStart=/usr/local/libexec/lowerduckpond/backup-maintenance
+TimeoutStartSec=30min
+MemoryMax=512M
+MemorySwapMax=0
+TasksMax=32
+LimitNOFILE=1024
+CPUQuota=100%
 Nice=15
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
