@@ -184,7 +184,8 @@ with (DurableDirectory.open(roots['state'] / 'locks', expected_owner=0,
     assert document['authority'] == {{'treeDigest': tree.digest, 'entryCount': tree.entries,
                                      'contentBytes': tree.content_bytes}}
 for excluded in ('var/lib/lowerduckpond/static/intake', 'var/lib/lowerduckpond/static/exports',
-                 'srv/lowerduckpond/sites/.staging', 'etc/caddy', 'var/lib/caddy'):
+                 'srv/lowerduckpond/sites/.staging', 'srv/lowerduckpond/lost+found',
+                 'etc/caddy', 'var/lib/caddy'):
     assert not (destination / excluded).exists(), excluded
 assert not list(roots['state'].rglob('.ldp-state-*'))
 assert not list(roots['recovery'].rglob('.ldp-state-*'))

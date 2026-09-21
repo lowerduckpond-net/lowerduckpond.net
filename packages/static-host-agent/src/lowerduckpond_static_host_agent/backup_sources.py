@@ -37,6 +37,7 @@ EXCLUDE_PATHS: Final = (
     "/var/lib/lowerduckpond/static/intake",
     "/var/lib/lowerduckpond/static/exports",
     "/srv/lowerduckpond/sites/.staging",
+    "/srv/lowerduckpond/lost+found",
     "/etc/caddy/generations",
     "/etc/caddy/environment",
     "/var/lib/caddy",
@@ -110,7 +111,7 @@ class _Walk:
                     raise BackupIdentityError("backup authority exceeds its inode bound")
         for name in sorted(names):
             child = (*path, name)
-            if child in _EXCLUDED:
+            if self.excluded(descriptor, child, device):
                 continue
             metadata = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
             if _ignored_temporary(child, metadata, self.owner):
@@ -135,6 +136,36 @@ class _Walk:
                 os.close(opened)
         if _generation(before) != _generation(os.fstat(descriptor)):
             raise BackupIdentityError("backup authority directory changed while reading")
+
+    def excluded(self, parent: int, path: tuple[str, ...], device: int) -> bool:
+        if path == ("content", "lost+found"):
+            self.empty_filesystem_directory(parent, path[-1], device)
+            return True
+        return path in _EXCLUDED
+
+    def empty_filesystem_directory(self, parent: int, name: str, device: int) -> None:
+        """Exclude only verified empty ext4 housekeeping at the content root."""
+        descriptor = os.open(name, _DIRECTORY_FLAGS, dir_fd=parent)
+        try:
+            metadata = os.fstat(descriptor)
+            if (
+                metadata.st_dev != device
+                or metadata.st_uid != self.owner
+                or metadata.st_gid != self.owner
+                or stat.S_IMODE(metadata.st_mode) != 0o700  # noqa: PLR2004 - root-private directory
+            ):
+                raise BackupIdentityError("backup filesystem directory is unsafe")
+            _require_no_attributes(descriptor)
+            with os.scandir(descriptor) as entries:
+                if next(entries, None) is not None:
+                    raise BackupIdentityError("backup filesystem directory is not empty")
+            named = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            if _generation(metadata) != _generation(named) or _generation(metadata) != _generation(
+                os.fstat(descriptor)
+            ):
+                raise BackupIdentityError("backup filesystem directory changed while reading")
+        finally:
+            os.close(descriptor)
 
     def validate(
         self, metadata: os.stat_result, path: tuple[str, ...], *, directory: bool, device: int

@@ -114,6 +114,10 @@ The policy captures `/srv/lowerduckpond`, `/var/lib/lowerduckpond/static`,
 and the staged recovery descriptor. It excludes static intake/export delivery,
 release staging, validated abandoned state/recovery publication temporaries,
 generated Caddy configuration/environment and certificate/ACME storage.
+An ext4 content volume's `lost+found` is excluded only after verifying an empty,
+root-owned mode-0700 directory on the content filesystem. Recovered files,
+symlinks, unsafe ownership/mode, extended attributes or a changed inode fail
+capture; no recovered content is silently discarded.
 Temporary-looking **content** filenames remain authoritative and are included.
 The source-policy digest and backup health scope change with this policy.
 Existing snapshots remain in the repository under their original scope.

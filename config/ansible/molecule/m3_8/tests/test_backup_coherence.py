@@ -53,16 +53,20 @@ def _service_boundaries(host: Host) -> None:
     assert host.run("runuser -u ldp-provisioner -- cat /etc/lowerduckpond/backup.env").rc != 0
     success = "/var/lib/lowerduckpond/backup-status/backup-last-success"
     original = host.file(success).content
-    path = f"{support.STATE_ROOT}/platform/unknown-backup-authority.json"
-    created = host.run("install -m 0600 /dev/null %s", path)
-    assert created.rc == 0
-    try:
-        _start_backup(host, succeeds=False)
-        assert host.file(success).content == original
-        assert host.file("/var/lib/lowerduckpond/backup-status/backup-last-failure").exists
-        assert not host.file("/var/cache/lowerduckpond-backup/staging/mariadb.sql.gz").exists
-    finally:
-        assert host.run("rm -- %s", path).rc == 0
+    for path in (
+        f"{support.STATE_ROOT}/platform/unknown-backup-authority.json",
+        "/srv/lowerduckpond/lost+found/recovered-inode-canary",
+    ):
+        created = host.run("install -m 0600 /dev/null %s", path)
+        assert created.rc == 0
+        try:
+            _start_backup(host, succeeds=False)
+            assert host.file(success).content == original
+            assert host.file("/var/lib/lowerduckpond/backup-status/backup-last-failure").exists
+            assert not host.file("/var/cache/lowerduckpond-backup/staging/mariadb.sql.gz").exists
+            assert host.file(path).exists
+        finally:
+            assert host.run("rm -- %s", path).rc == 0
     _start_backup(host)
     assert host.file(success).content != original
 
@@ -191,6 +195,7 @@ def test_installed_coherent_backup_restore_and_writer_exclusion(  # noqa: PLR091
     host: Host, tmp_path: Path
 ) -> None:
     require_owned_fixture()
+    assert host.file("/srv/lowerduckpond/lost+found").is_directory
     assert support._initialize_namespace(host)
     support._ensure_disposable_publication(host)
     support._prepare_edge_probe(host)

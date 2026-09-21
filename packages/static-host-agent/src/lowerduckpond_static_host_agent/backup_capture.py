@@ -192,10 +192,10 @@ def _require_source_layout(roots: Mapping[str, Path], owner: int) -> None:
             names = set()
             with os.scandir(descriptor) as entries:
                 for entry in entries:
-                    if entry.name not in {"fixture", "sites"}:
+                    if entry.name not in {"fixture", "sites", "lost+found"}:
                         raise BackupIdentityError("backup content source is unclassified")
                     names.add(entry.name)
-            if names != {"fixture", "sites"}:
+            if names - {"lost+found"} != {"fixture", "sites"}:
                 raise BackupIdentityError("backup content source is incomplete")
         finally:
             os.close(descriptor)

@@ -144,6 +144,33 @@ def test_capture_preserves_and_excludes_safe_recovery_publication_temporary(
         capture.descriptor()
 
 
+def test_capture_accepts_and_excludes_empty_ext4_filesystem_directory(capture: Capture) -> None:
+    original = capture.descriptor()
+    path = capture.roots["content"] / "lost+found"
+    path.mkdir(mode=0o700)
+    inode = path.stat().st_ino
+    assert capture.descriptor() == original
+    assert path.stat().st_ino == inode
+    (path / "recovered-inode").write_bytes(b"unclassified recovered content")
+    with pytest.raises(BackupIdentityError, match="not empty"):
+        capture.descriptor()
+
+
+@pytest.mark.parametrize("damage", ["symlink", "file", "mode"])
+def test_filesystem_directory_exclusion_never_hides_unsafe_entries(
+    capture: Capture, damage: str
+) -> None:
+    path = capture.roots["content"] / "lost+found"
+    if damage == "symlink":
+        path.symlink_to(capture.roots["recovery"], target_is_directory=True)
+    elif damage == "file":
+        path.write_bytes(b"unclassified content")
+    else:
+        path.mkdir(mode=0o755)
+    with pytest.raises((OSError, BackupIdentityError)):
+        capture.descriptor()
+
+
 @pytest.mark.parametrize(
     "damage", ["unknown-content", "recovery-record", "unknown-tenant", "unbound-release", "staging"]
 )

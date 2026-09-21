@@ -35,6 +35,7 @@ backup_recovery_exclude_paths:
   - /var/lib/lowerduckpond/static/intake
   - /var/lib/lowerduckpond/static/exports
   - /srv/lowerduckpond/sites/.staging
+  - /srv/lowerduckpond/lost+found
   - /etc/caddy/generations
   - /etc/caddy/environment
   - /var/lib/caddy
