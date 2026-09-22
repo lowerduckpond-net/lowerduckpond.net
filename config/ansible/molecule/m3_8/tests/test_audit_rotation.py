@@ -152,6 +152,8 @@ def test_installed_rotation_reboot_and_second_full_segment(host: Host, tmp_path:
     created = expected["created"]
     assert type(first) is dict and type(request) is dict and type(created) is dict
     _assert_completed_rotation(host, [str(first["sha256"])], set(before))
+    # The post-reboot stage runs in a fresh pytest process with no pacer.
+    support._initialize_admission_pacing(host)
     connection = support._operator_inputs(tmp_path)
     assert support._submit(tmp_path, *connection, request) == created
     deletion_request = support._request("delete", str(uuid.uuid7()), tenantId=created["tenantId"])
