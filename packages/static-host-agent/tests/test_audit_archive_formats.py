@@ -6,7 +6,12 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
-from lowerduckpond_static_contracts import audit_entry_digest, canonical_json_bytes
+from lowerduckpond_static_contracts import (
+    ContractKind,
+    audit_entry_digest,
+    canonical_json_bytes,
+    decode_contract,
+)
 from lowerduckpond_static_host_agent import audit_archive_formats as formats
 from lowerduckpond_static_host_agent.backup_identity import (
     BackupIdentityError,
@@ -310,3 +315,37 @@ def test_segment_cache_never_reuses_a_previous_chain_proof_for_changed_bytes() -
     current = formats.inspect_segment(canonical_json_bytes(changed))
     assert current.terminal != expected.terminal
     assert current.witness != expected.witness
+
+
+def test_adjacent_exact_byte_proofs_share_both_directions_with_bounded_retention(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[bytes] = []
+
+    def decode(
+        raw: bytes, *, expected_kind: ContractKind, maximum_raw_bytes: int
+    ) -> dict[str, object]:
+        calls.append(raw)
+        return decode_contract(
+            raw, expected_kind=expected_kind, maximum_raw_bytes=maximum_raw_bytes
+        )
+
+    with formats._PROOF_CACHE_LOCK:
+        formats._PROOF_CACHE.clear()
+    monkeypatch.setattr(formats, "decode_contract", decode)
+    first = entry()
+    second = entry(1, audit_entry_digest(first).to_dict())
+    raw = (canonical_json_bytes(first), canonical_json_bytes(second))
+    witnesses = tuple(formats.inspect_segment(value).witness for value in raw)
+    assert calls == list(raw)
+    for _ in range(3):
+        for value, witness in zip(raw, witnesses, strict=True):
+            assert formats.inspect_segment(bytes(bytearray(value))).witness == witness
+            assert formats.segment_from_witness(bytes(bytearray(witness))) == value
+    assert calls == list(raw)
+    third = canonical_json_bytes(entry(2, audit_entry_digest(second).to_dict()))
+    formats.inspect_segment(third)
+    # Only two pairs survive; a third segment cannot grow an unbounded history
+    # cache, and re-reading an evicted pair performs full validation again.
+    formats.inspect_segment(raw[0])
+    assert calls == [*raw, third, raw[0]]

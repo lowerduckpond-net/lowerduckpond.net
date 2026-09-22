@@ -230,8 +230,8 @@ require later qualification.
 
 ## Protected audit verification and maintenance
 
-P3 installs the protected readers and maintenance guard with rotation disabled.
-There is no rotation timer and no local segment removal in this slice. Complete
+The protected readers and maintenance guard operate with rotation disabled.
+P4 installs a separate hourly rotation timer, disabled by default. Complete
 P2 lineage initialization before enabling `backup_static_recovery_enabled` on
 an owned disposable host. Convergence starts the explicit index initializer,
 then enables verification at boot and daily:
@@ -265,7 +265,8 @@ Local audit readers join the archived witness prefix to the contiguous local
 suffix, requiring exact bytes wherever they overlap. Correlation lookup, retry,
 replay, historical deployment and deletion evidence use that same chain. Ordinary
 workers read these local witnesses without backup credentials or network access.
-P3 preserves every local segment even after a verified index is committed.
+The verifier preserves every local segment even after a verified index commits.
+Only the explicitly enabled rotator may remove an indexed closed source.
 
 The verifier and initializer run for at most five minutes with 256 MiB, no swap,
 32 tasks, 256 descriptors and one CPU. The private verification workspace admits
@@ -352,5 +353,75 @@ live-provider or restored-host qualification.
 | Admission reserve, health and activation serialization | `test_audit_archive_admission.py`, `test_audit_archive_health.py`, `test_backup_configuration_lock.py`, `test_backup_configuration_scope.py` | Installed service bounds, provisioner denial, health and coherent-mode reapplication |
 | Legacy migration refusal and fixed root entrypoints | `test_backup_legacy_retention.py`, `test_backup_audit_entrypoint.py` | Baseline legacy maintenance plus explicit mode-on migration |
 
-Rotation/removal, full reconstruction, live storage, production execution and the
-records-only closeout remain later M3.11 deliverables.
+## Audit rotation
+
+`backup_audit_rotation_enabled` defaults to `false`. P4 installs the machinery;
+production activation still requires P5 recovery consumers and the P6 complete
+qualification and operator handoff. The independent owned-fixture case enables
+both `backup_static_recovery_enabled` and `backup_audit_rotation_enabled` after
+explicit namespace and repository-backed lineage initialization. Rotation without
+coherent backup mode is rejected. The activation digest binds both flags, so an
+older queued command cannot use a newly activated policy.
+
+On that explicitly activated host, the persistent hourly
+`lowerduckpond-audit-rotate.timer` processes at most one oldest closed segment
+per invocation. It never closes the current tail merely to reclaim space. Use
+the same bounded service for a manual invocation or interrupted-attempt resume:
+
+```console
+sudo systemctl start lowerduckpond-audit-rotate.service
+sudo systemctl show lowerduckpond-audit-rotate.service --property=Result,ExecMainStatus,MemoryPeak
+sudo journalctl --unit lowerduckpond-audit-rotate.service --no-pager --lines=20
+```
+
+The service holds the repository and selected-artifact leases. Short local
+transactions validate the complete audit chain and exact source generation;
+network work releases tenant-state exclusion. A durable prepared intent seals
+the descriptor before snapshot creation. Fresh repository discovery precedes
+every creation attempt, including retries after a lost response. Matching remote
+copies are restore-verified and adopted without another backup request. The
+full snapshot ID, exact restored bytes, witness, immutable index and committed
+head must agree before removal. Staging is classified and cleaned before the
+local source is unlinked; each removal syncs its parent directory.
+
+After interruption, rerun the service. Even when the source is already absent,
+the indexed attempt needs fresh remote proof before directory synchronization
+and intent cleanup. Missing remote evidence, changed source generation, absent
+witnesses, conflicting copies or unknown staging preserve the remaining evidence
+and fail. Do not delete a pending intent, stage, witness or index to permit a
+retry. A pending uncreated attempt can be completed only by the rotator; generic
+verification and maintenance continue to refuse that unfinished state. Existing
+selected snapshot IDs and every equivalent protected copy remain retained.
+
+The service retains the verifier's five-minute, 256-MiB, no-swap, 32-task,
+256-descriptor and one-CPU limits. Its sealed two-file snapshot input has a
+32-MiB/128-inode staging ceiling; admission also reserves the complete independent
+verification workspace and metadata publication. Rotation cannot borrow the
+8-MiB administrator reserve or cross the filesystem free floors. Local ordinary
+audit allocation at 64 MiB sets `lowerduckpond_audit_rotation_warning 1`, before
+the 128-MiB ordinary ceiling. A warning does not itself mark protected evidence
+invalid. The existing pending/failure metrics still report unfinished work.
+
+Run `just check-installed-group audit-rotation` for the fresh independent case.
+It keeps the production segment bound: two successive real 8-MiB closures span
+supported tenant creation and deletion. Hard process exits cover prepared intent,
+lost snapshot response, witness/index/head publication and local unlink. An
+actual host reboot separates unlink from cleanup. The second complete rotation
+runs through the unmodified bounded service with the first archived prefix
+already present. Exact historical replies, deletion authority, subsequent tenant
+operations, protection health, service limits, account denial and final fixture
+accounting remain required. All original ordinary snapshot IDs are preserved.
+
+| Obligation | Component evidence | Installed evidence |
+| --- | --- | --- |
+| Sealed attempt, lost reply, no duplicate creation and no network under state exclusion | `test_audit_rotation.py` | Actual Restic capture, full-ID inventory before/after each hard exit |
+| Every write/sync/rename/unlink boundary resumes with fresh proof | `test_audit_rotation.py`, `test_audit_archive_local.py` | Publication exits, unlink exit, real reboot and service-driven cleanup |
+| Strict staging, source generation, free floors and administrator reserve | `test_audit_rotation_stage.py`, `test_audit_archive_admission.py` | Installed fixed service limits, mode gate and both ordinary accounts denied |
+| Exact history with a sealed pending source and after local removal | `test_audit_rotation.py`, `test_audit_archived_history.py`, `test_audit_archive_formats.py` | Two full segments, original create/delete replays and new supported operations |
+
+The local component and MinIO cases do not establish live-provider behavior or
+full reconstruction. Those qualifications, production execution and records-only
+closeout remain later M3.11 deliverables. Before local removal, rollback may use
+the compatible protected reader with rotation disabled. After removal, preserve
+the working archived-history reader and use forward repair or the reviewed
+restored-host workflow; older local-only readers cannot serve this state.

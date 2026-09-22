@@ -73,12 +73,16 @@ def test_ambient_local_resources_and_live_inputs_do_not_carry_forward(
         "CLOUDFLARE_API_TOKEN",
         "M3_8_ARCHIVE_CONFIGURATION_JSON",
         "M3_8_STATIC_PUBLICATION_ENABLED",
+        "M3_11_BACKUP_RECOVERY_ENABLED",
+        "M3_11_AUDIT_ROTATION_ENABLED",
     ):
         monkeypatch.setenv(key, CANARY)
     environment = local.create_environment(tmp_path)
     assert CANARY not in json.dumps(environment)
     assert CANARY not in (tmp_path / "fixture.json").read_text()
     assert environment["M3_8_STATIC_PUBLICATION_ENABLED"] == "false"
+    assert environment["M3_11_BACKUP_RECOVERY_ENABLED"] == "false"
+    assert environment["M3_11_AUDIT_ROTATION_ENABLED"] == "false"
     assert environment["M3_10_ARCHIVE_BACKEND"] == "minio"
 
 

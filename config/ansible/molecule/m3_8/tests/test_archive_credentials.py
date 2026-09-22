@@ -170,6 +170,7 @@ def test_installed_archive_credentials_stay_inside_the_network_boundary(
         "lowerduckpond-backup-identity.service",
         "lowerduckpond-audit-initialize.service",
         "lowerduckpond-audit-verify.service",
+        "lowerduckpond-audit-rotate.service",
         "lowerduckpond-static-reconcile.service",
         "lowerduckpond-static-worker@.service",
     ],
@@ -236,6 +237,7 @@ def test_installed_idle_emergency_recovery_needs_no_archive_credentials(host: Ho
         "lowerduckpond-backup-identity.service",
         "lowerduckpond-audit-initialize.service",
         "lowerduckpond-audit-verify.service",
+        "lowerduckpond-audit-rotate.service",
         "lowerduckpond-static-reconcile.service",
     ],
 )

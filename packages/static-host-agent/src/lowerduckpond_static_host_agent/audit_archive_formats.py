@@ -6,7 +6,7 @@ import hashlib
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from functools import lru_cache
+from threading import Lock
 from typing import Final
 
 from lowerduckpond_static_contracts import (
@@ -181,6 +181,30 @@ class SegmentEvidence:
     witness: bytes
 
 
+# Share the two directions of the same exact-byte proof. Two pairs retain at
+# most 32 MiB (two segments and two witnesses, each bounded at 8 MiB), matching
+# the previous combined bound. Keeping both directions in one entry avoids
+# evicting/rebuilding an entire proof while alternating adjacent segments.
+_PROOF_CACHE: list[tuple[bytes, SegmentEvidence]] = []
+_PROOF_CACHE_LOCK = Lock()
+
+
+def _cached_proof(raw: bytes, *, witness: bool = False) -> tuple[bytes, SegmentEvidence] | None:
+    with _PROOF_CACHE_LOCK:
+        for position, pair in enumerate(_PROOF_CACHE):
+            if (pair[1].witness if witness else pair[0]) == raw:
+                _PROOF_CACHE.insert(0, _PROOF_CACHE.pop(position))
+                return pair
+    return None
+
+
+def _remember_proof(raw: bytes, evidence: SegmentEvidence) -> None:
+    with _PROOF_CACHE_LOCK:
+        _PROOF_CACHE[:] = [pair for pair in _PROOF_CACHE if pair[0] != raw]
+        _PROOF_CACHE.insert(0, (raw, evidence))
+        del _PROOF_CACHE[2:]
+
+
 def inspect_segment(raw: bytes) -> SegmentEvidence:
     """Validate exact bytes; callers cannot mutate the cached digest objects."""
     result = _inspect_segment(raw)
@@ -193,11 +217,12 @@ def inspect_segment(raw: bytes) -> SegmentEvidence:
     )
 
 
-@lru_cache(maxsize=1)
 def _inspect_segment(raw: bytes) -> SegmentEvidence:
-    # One immutable byte key and one witness, each <=8 MiB. Files, permissions,
-    # source generation, descriptor binding and remote contents are still read
-    # and checked on every invocation; no path/inode/status is cached.
+    # Files, permissions, source generation, descriptor binding and remote
+    # contents are read and checked on every invocation; no path is cached.
+    cached = _cached_proof(raw)
+    if cached is not None:
+        return cached[1]
     if not raw or len(raw) > MAX_SEGMENT_BYTES or not raw.endswith(b"\n"):
         raise BackupIdentityError("audit archive segment exceeds its byte boundary")
     rows: list[list[object]] = []
@@ -234,12 +259,16 @@ def _inspect_segment(raw: bytes) -> SegmentEvidence:
     except ContractError as error:
         raise BackupIdentityError("audit archive contains an invalid entry") from error
     assert terminal is not None  # noqa: S101 - nonempty validated segment
-    return SegmentEvidence(first, len(rows), predecessor, terminal, witness)
+    result = SegmentEvidence(first, len(rows), predecessor, terminal, witness)
+    _remember_proof(raw, result)
+    return result
 
 
-@lru_cache(maxsize=1)
 def segment_from_witness(raw: bytes) -> bytes:
     """Expand the fixed-order rows without inventing or dropping historical fields."""
+    cached = _cached_proof(raw, witness=True)
+    if cached is not None:
+        return cached[0]
     if len(raw) > MAX_SEGMENT_BYTES:
         raise BackupIdentityError("audit archive witness exceeds its byte boundary")
     try:

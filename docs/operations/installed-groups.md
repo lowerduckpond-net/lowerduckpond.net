@@ -17,6 +17,7 @@ rather than a production qualification report.
 
 | Case | Preserved installed assertions and independent setup |
 | --- | --- |
+| `audit-rotation` | Own explicit lineage and combined publication/coherent-backup/rotation activation; two production-size closed segments. Hard exits after prepare, lost snapshot reply, witness/index/head publication and unlink; actual reboot, fresh remote proof and bounded service completion. Exact create/delete replays, subsequent mutation, unchanged ordinary snapshots, protected counts, privilege/resource limits and final accounting. |
 | `audit-protection` | Own explicitly initialized empty lineage; publication and coherent backup activate together before supported tenant creation. Production-size closed audit segment, real ancient Restic copies and orphan adoption, exact index/witness and historical lookup, missing/corrupt/retagged protected evidence refusal before ordinary removal, journaled forget interruption and fixed-ID resume, service limits and credential-free health. Rotation and local removal remain disabled. |
 | `backup-identity` | Fresh supported tenant history; real Restic config/full snapshot IDs and restore, permanent repository genesis before local commit, refusal after both local identity records are lost, retention exclusion, audit-prefix verification, repository/selection/state lock exclusion, wrong repository identity and root-only command boundaries. |
 | `backup-coherence` | Own active/suspended/archived/undeployed tenants; explicit migration over existing history and idempotence, installed service failure/health and privilege bounds, real Restic capture/descriptor readback/restore/tree measurement, Caddy restart and guarded Ansible file writes; exclusion canaries. |
@@ -51,7 +52,7 @@ Neither restoration reapplies the production configuration.
 Each stage must collect exactly its declared tests, in order, and pass setup,
 call and teardown for every test. A skip, expected failure, missing test,
 collection failure, or zero exit with incomplete execution produces no passing
-stage receipt. The reboot journey needs both before/after receipts. Every final
+stage receipt. Both reboot cases need before/after receipts. Every final
 stage also runs the existing artifact-integrity and archive-accounting check.
 Before teardown, the controller obtains fresh validated local accounting bound
 to the run's artifact, independent root-identity whole-bucket absence for both
@@ -101,3 +102,13 @@ issue open through the next required matrix. A later passing measurement must
 not relabel the overrun or imply a budget exception was approved. Resolve any
 remaining budget gap through fixture separation or explicit review before
 milestone closeout; production pacing and timeouts cannot be relaxed.
+
+The fixture follow-up [PR #168](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/168)
+passed all 17 groups in [CI run 35654060891](https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35654060891)
+at head `ecb6a736add8127cbb0fe13901f68f6a5421011c`. Audit protection took
+27.94 minutes including setup, with one 212.47-second reapplication. Archive
+cycles took 29.68 minutes; backup mutation overlap took 29.78 and core 29.92.
+Every group met the target on that run, with narrow margins in those cases.
+These measurements preserve the earlier overruns as separate results. The new
+eighteenth `audit-rotation` case still needs its own installed timing; the
+component full-size measurement cannot substitute for it.

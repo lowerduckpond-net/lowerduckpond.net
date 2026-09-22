@@ -315,6 +315,7 @@ def _run_ansible_reapply(
     cloudflare_api_token: str | None = None,
     static_publication_enabled: bool = True,
     backup_recovery_enabled: bool = False,
+    audit_rotation_enabled: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     project = Path(__file__).resolve().parents[3]
     uv = shutil.which("uv")
@@ -322,6 +323,7 @@ def _run_ansible_reapply(
     environment = reapply_environment(os.environ)
     environment["M3_8_STATIC_PUBLICATION_ENABLED"] = str(static_publication_enabled).lower()
     environment["M3_11_BACKUP_RECOVERY_ENABLED"] = str(backup_recovery_enabled).lower()
+    environment["M3_11_AUDIT_ROTATION_ENABLED"] = str(audit_rotation_enabled).lower()
     if cloudflare_api_token is not None:
         environment["M3_8_CLOUDFLARE_API_TOKEN"] = cloudflare_api_token
     with measure("ansible-reapply"):

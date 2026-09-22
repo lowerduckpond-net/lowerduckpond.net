@@ -10,17 +10,30 @@ from lowerduckpond_static_host_agent.audit_archive_coordinator import (
     maintain_archive,
     verify_archive,
 )
+from lowerduckpond_static_host_agent.audit_rotation_coordinator import RotationPaths, rotate_archive
 from lowerduckpond_static_host_agent.backup_legacy_retention import maintain_archive_free_repository
 from lowerduckpond_static_host_agent.backup_restic import inherit_restic_leases
 
 
 def audit_main(selection_descriptor: int) -> int:
-    if os.geteuid() != 0 or sys.argv[1:] not in [["--initialize"], ["--verify"], ["--maintain"]]:
+    if os.geteuid() != 0 or sys.argv[1:] not in [
+        ["--initialize"],
+        ["--verify"],
+        ["--maintain"],
+        ["--rotate"],
+    ]:
         print("backup_audit_invalid_invocation", file=sys.stderr)
         return 1
     try:
         with inherit_restic_leases((9, selection_descriptor)):
-            if sys.argv[1] == "--maintain":
+            if sys.argv[1] == "--rotate":
+                if (
+                    os.environ.get("LOWERDUCKPOND_BACKUP_STATIC_RECOVERY_ENABLED") != "true"
+                    or os.environ.get("LOWERDUCKPOND_AUDIT_ROTATION_ENABLED") != "true"
+                ):
+                    raise ValueError("audit rotation requires explicit qualified activation")
+                rotate_archive(RotationPaths(), os.environ, expected_owner=0, expected_group=0)
+            elif sys.argv[1] == "--maintain":
                 if tuple(
                     os.environ.get("LOWERDUCKPOND_BACKUP_KEEP_" + name)
                     for name in ("DAILY", "WEEKLY", "MONTHLY")

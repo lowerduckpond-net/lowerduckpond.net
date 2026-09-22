@@ -3,11 +3,13 @@
   ansible.builtin.assert:
     that:
       - backup_static_recovery_enabled is boolean
+      - backup_audit_rotation_enabled is boolean
+      - not backup_audit_rotation_enabled or backup_static_recovery_enabled
       - backup_keep_daily | string == '7'
       - backup_keep_weekly | string == '5'
       - backup_keep_monthly | string == '12'
       - not backup_static_recovery_enabled or caddy_generation_enabled | default(false) | bool
-    fail_msg: Backup requires the qualified 7/5/12 policy; coherent mode requires immutable Caddy generations.
+    fail_msg: Backup requires the qualified 7/5/12 policy; coherent mode requires immutable Caddy generations and rotation requires coherent mode.
 
 - name: Install backup packages
   ansible.builtin.apt:
@@ -220,6 +222,8 @@
     - lowerduckpond-audit-initialize.service
     - lowerduckpond-audit-verify.service
     - lowerduckpond-audit-verify.timer
+    - lowerduckpond-audit-rotate.service
+    - lowerduckpond-audit-rotate.timer
   notify: Reload systemd for backups
 
 - name: Flush backup unit handlers
@@ -278,6 +282,12 @@
     name: lowerduckpond-audit-verify.timer
     enabled: "{{ backup_static_recovery_enabled | bool }}"
     state: "{{ 'started' if backup_static_recovery_enabled | bool else 'stopped' }}"
+
+- name: Configure explicitly qualified hourly audit rotation
+  ansible.builtin.systemd_service:
+    name: lowerduckpond-audit-rotate.timer
+    enabled: "{{ backup_audit_rotation_enabled | bool }}"
+    state: "{{ 'started' if backup_audit_rotation_enabled | bool else 'stopped' }}"
 
 - name: Inspect the backup repository for this node
   ansible.builtin.command:
