@@ -9,6 +9,35 @@ from testinfra.host import Host
 
 UNIT = "lowerduckpond-audit-rotate.service"
 TIMER = "lowerduckpond-audit-rotate.timer"
+_RESOURCE_MESSAGE = "ae8f7b866b0347b9af31fe1c80b127c0"
+
+
+def run_bounded_rotation(host: Host) -> None:
+    # The inactive unit may be garbage-collected before a later MemoryPeak
+    # property read. Keep the actual invocation's PID-1 resource record instead;
+    # the installed command and its service limits remain unchanged.
+    latest = host.run("journalctl --no-pager --output=json --lines=1")
+    assert latest.rc == 0
+    cursor = json.loads(latest.stdout)["__CURSOR"]
+    assert type(cursor) is str and cursor
+    audits.run_unit(host, UNIT)
+    assert host.run("journalctl --sync").rc == 0
+    outcome = host.run(
+        "journalctl --no-pager --output=json --lines=2 "
+        "--output-fields=UNIT,MESSAGE_ID,MEMORY_PEAK,_PID "
+        "--after-cursor=%s UNIT=%s MESSAGE_ID=%s _PID=1",
+        cursor,
+        UNIT,
+        _RESOURCE_MESSAGE,
+    )
+    assert outcome.rc == 0
+    records = [json.loads(line) for line in outcome.stdout.splitlines()]
+    assert len(records) == 1, "rotation invocation lacks unique resource accounting"
+    record = records[0]
+    assert record["UNIT"] == UNIT and record["MESSAGE_ID"] == _RESOURCE_MESSAGE
+    assert record["_PID"] == "1"
+    peak = record["MEMORY_PEAK"]
+    assert type(peak) is str and peak.isdigit() and 0 < int(peak) <= 256 * 1024 * 1024
 
 
 def close_full_segment(host: Host) -> dict[str, object]:

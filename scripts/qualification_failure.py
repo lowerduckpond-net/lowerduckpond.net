@@ -74,6 +74,8 @@ GROUPS = frozenset(
         "overlap-deployment",
         "overlap-routing",
         "cross-feature",
+        "audit-protection",
+        "audit-rotation",
     }
 )
 FAILURES = frozenset(
@@ -104,6 +106,10 @@ TEST_FILES = frozenset(
         "test_transport_recovery.py",
         "test_quarantine_recovery.py",
         "test_archive_completion.py",
+        "test_audit_protection.py",
+        "audit_protection_support.py",
+        "test_audit_rotation.py",
+        "audit_rotation_support.py",
     }
 )
 MAX_SOURCE_LINE = 100000

@@ -163,10 +163,8 @@ def test_installed_rotation_reboot_and_second_full_segment(host: Host, tmp_path:
     assert second["number"] == 1
     # A fresh bounded service performs every phase with an existing archived
     # prefix and another real 8-MiB closed source. No test callback is involved.
-    audits.run_unit(host, rotation.UNIT)
+    rotation.run_bounded_rotation(host)
     _assert_completed_rotation(host, [str(first["sha256"]), str(second["sha256"])], set(before))
-    peak = host.run("systemctl show --property=MemoryPeak --value %s", rotation.UNIT).stdout.strip()
-    assert peak.isdigit() and int(peak) <= 256 * 1024 * 1024
     assert support._submit(tmp_path, *connection, request) == created
     assert support._submit(tmp_path, *connection, deletion_request) == deleted
     later = support._submit(

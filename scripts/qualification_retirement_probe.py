@@ -193,7 +193,9 @@ def authorization_is_terminal(state: Path, *, owner: int) -> None:
         raise ValueError("fixture authorization indexes are incomplete")
 
 
-def installed(state: Path, caddy: Path, sites: Path, *, owner: int = 0) -> None:
+def installed(
+    state: Path, caddy: Path, sites: Path, *, owner: int = 0, blocking: bool = False
+) -> None:
     # Imports resolve from the selected, integrity-checked installed artifact.
     from lowerduckpond_static_contracts import (  # noqa: PLC0415
         ContractKind,
@@ -209,7 +211,7 @@ def installed(state: Path, caddy: Path, sites: Path, *, owner: int = 0) -> None:
 
     with LockManager(state / "locks", expected_owner=owner) as locks, ExitStack() as held:
         for name in LockName:
-            held.enter_context(locks.acquire(name, mode=LockMode.SHARED))
+            held.enter_context(locks.acquire(name, mode=LockMode.SHARED, blocking=blocking))
         for path in [*(state / name for name in PENDING), caddy / "intents", sites / ".staging"]:
             if entries(path):
                 raise ValueError("fixture has pending local accounting")
@@ -257,7 +259,10 @@ def main() -> int:
             timeout=10,
         )
         sys.path.insert(0, str(selected / "site-packages"))
-        installed(state, caddy, sites)
+        # A scheduled reconciler can hold a lease after the installed tests
+        # settle. Wait for one consistent read within the existing 30s alarm;
+        # never retry an operation, reconcile state, or accept a busy snapshot.
+        installed(state, caddy, sites, blocking=True)
         print(json.dumps({"state": "quiescent-installed", "artifact_sha256": selected.name}))
         return 0
     except Exception:

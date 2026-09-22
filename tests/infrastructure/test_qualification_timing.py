@@ -296,6 +296,48 @@ def test_secondary_failure():
     assert CANARY not in report_text(run_directory)
 
 
+@pytest.mark.parametrize("case", ["protection", "rotation"])
+def test_audit_helper_failures_keep_their_allowlisted_group_and_source_location(
+    run_directory: Path, tmp_path: Path, case: str
+) -> None:
+    scenario = tmp_path / "audit-scenario"
+    scenario.mkdir()
+    (scenario / "conftest.py").write_bytes(
+        (ROOT / "config/ansible/molecule/m3_8/tests/conftest.py").read_bytes()
+    )
+    helper = f"audit_{case}_support"
+    (scenario / f"{helper}.py").write_text(f"def fail():\n    raise AssertionError({CANARY!r})\n")
+    (scenario / f"test_audit_{case}.py").write_text(
+        f"from {helper} import fail\n\ndef test_failure():\n    fail()\n"
+    )
+    commands = tmp_path / "audit-commands"
+    commands.mkdir()
+    docker = commands / "docker"
+    docker.write_text("#!/bin/sh\nexit 1\n")
+    docker.chmod(0o755)
+    environment = timing.child_environment(run_directory)
+    environment.update(PYTHONPATH=str(ROOT), PATH=str(commands) + ":" + os.environ["PATH"])
+    result = subprocess.run(  # noqa: S603 - owned failed test; Docker is a non-network stub
+        [sys.executable, "-m", "pytest", "-q", str(scenario)],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 1
+    location = json.loads((run_directory / "failure-test.json").read_text())
+    assert location["file"] == f"{helper}.py" and location["line"] == 2  # noqa: PLR2004
+    assert location["group"] == f"audit-{case}"
+    assert location["category"] == "assertion" and CANARY not in json.dumps(location)
+    timing.finish_run(run_directory, result.returncode)
+    report = json.loads((run_directory / "timing.json").read_text())
+    assert report["categories"] == [
+        {**report["categories"][0], "group": f"audit-{case}", "kind": "group", "failed": 1}
+    ]
+    assert CANARY not in report_text(run_directory)
+
+
 @pytest.mark.parametrize("exit_status", [0, FAILURE_STATUS])
 def test_failed_summary_does_not_replace_command_result(
     tmp_path: Path,
