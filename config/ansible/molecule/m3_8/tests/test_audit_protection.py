@@ -160,7 +160,14 @@ def test_installed_audit_protection_reconciles_orphans_and_preserves_retention( 
 ) -> None:
     require_owned_fixture()
     assert support._initialize_namespace(host)
-    support._ensure_disposable_publication(host)
+    # Bootstrap the supported empty lineage, then activate publication and
+    # coherent backup together. Nonempty-lineage migration is independently
+    # qualified by backup-coherence; the real tenant history below still spans
+    # the archived prefix and its local successor.
+    audits.run_unit(host, identity.UNIT)
+    support._assert_ansible_reapply_result(
+        support._run_ansible_reapply(backup_recovery_enabled=True), expected_changes=8
+    )
     support._initialize_admission_pacing(host)
     connection = support._operator_inputs(tmp_path)
     created = support._submit(
@@ -174,10 +181,6 @@ def test_installed_audit_protection_reconciles_orphans_and_preserves_retention( 
         ),
     )
     assert created["status"] == "succeeded"
-    audits.run_unit(host, identity.UNIT)
-    support._assert_ansible_reapply_result(
-        support._run_ansible_reapply(backup_recovery_enabled=True), expected_changes=7
-    )
     _boundaries(host)
     assert host.service("lowerduckpond-audit-verify.timer").is_enabled
     assert host.run(f"systemctl stop {TIMERS} {audits.VERIFY_UNIT}").rc == 0

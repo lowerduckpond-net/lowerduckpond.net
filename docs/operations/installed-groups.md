@@ -17,7 +17,7 @@ rather than a production qualification report.
 
 | Case | Preserved installed assertions and independent setup |
 | --- | --- |
-| `audit-protection` | Own explicitly migrated lineage; production-size closed audit segment, real ancient Restic copies and orphan adoption, exact index/witness and historical lookup, missing/corrupt/retagged protected evidence refusal before ordinary removal, journaled forget interruption and fixed-ID resume, service limits and credential-free health. Rotation and local removal remain disabled. |
+| `audit-protection` | Own explicitly initialized empty lineage; publication and coherent backup activate together before supported tenant creation. Production-size closed audit segment, real ancient Restic copies and orphan adoption, exact index/witness and historical lookup, missing/corrupt/retagged protected evidence refusal before ordinary removal, journaled forget interruption and fixed-ID resume, service limits and credential-free health. Rotation and local removal remain disabled. |
 | `backup-identity` | Fresh supported tenant history; real Restic config/full snapshot IDs and restore, permanent repository genesis before local commit, refusal after both local identity records are lost, retention exclusion, audit-prefix verification, repository/selection/state lock exclusion, wrong repository identity and root-only command boundaries. |
 | `backup-coherence` | Own active/suspended/archived/undeployed tenants; explicit migration over existing history and idempotence, installed service failure/health and privilege bounds, real Restic capture/descriptor readback/restore/tree measurement, Caddy restart and guarded Ansible file writes; exclusion canaries. |
 | `backup-mutation-overlap` | Own source and import target with empty-lineage initialization; real Restic capture/restore/tree measurement versus create/deploy/import/rollback/rename/suspend/resume/archive/restore/delete/export/emergency/reconcile, authorization repair and retained-release cleanup. |
@@ -84,3 +84,20 @@ must not be summed. The two independent backup cases preserve its assertions
 while separating configuration work from mutation contention. Measure their
 fresh runs before claiming either meets the target; the original report remains
 evidence of the combined case's cost.
+
+The first protected-audit implementation passed all 17 groups in
+[CI run 35648859891](https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35648859891).
+Audit protection took 31.80 minutes including setup, with two full Ansible
+reapplications taking 391.97 seconds. Its fixture now initializes the supported
+empty lineage and activates publication plus coherent backup together before
+creating the supported tenant, removing one setup convergence. Nonempty-lineage
+migration remains covered by `backup-coherence`. The full-size history, failure
+injections, maintenance recovery and accounting assertions remain in this case.
+Measure the revised case before claiming the runtime target.
+
+That run's `archive-cycles` took 30.48 minutes, also above the target; the prior
+run measured 29.79 minutes. Preserve both original reports and keep this timing
+issue open through the next required matrix. A later passing measurement must
+not relabel the overrun or imply a budget exception was approved. Resolve any
+remaining budget gap through fixture separation or explicit review before
+milestone closeout; production pacing and timeouts cannot be relaxed.

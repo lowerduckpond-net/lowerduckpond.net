@@ -602,7 +602,7 @@ share code; assertions cannot depend on another group's leftover tenants.
 | --- | --- |
 | `backup-coherence` | Own active/suspended/archived/undeployed fixtures; migration over existing history, idempotence, service failure/health/privilege bounds and Caddy/Ansible overlap. Restored descriptor/state/releases are one recoverable boundary; excludes contain no canary secrets. |
 | `backup-mutation-overlap` | Own source/import-target fixtures and empty-lineage initialization; snapshot versus create/deploy/import/rollback/rename/suspend/resume/archive/restore/delete/export/emergency/reconcile, authorization repair and release cleanup. Each captured descriptor/state/release tree is restored and measured. |
-| `audit-protection` | Own Restic repository and closed-segment fixture; descriptor/schema/repository/tag failures, wrong full ID, aged ordinary snapshots, duplicate/orphan discovery, missing witness/index, real restore verification, interrupted forget/prune and indefinite protection. Rotation still disabled during the first implementation slice. |
+| `audit-protection` | Own Restic repository, empty lineage and closed-segment fixture; publication/coherent-backup activation in one convergence before supported tenant history; descriptor/schema/repository/tag failures, wrong full ID, aged ordinary snapshots, duplicate/orphan discovery, missing witness/index, real restore verification, interrupted forget/prune and indefinite protection. Rotation still disabled during the first implementation slice. |
 | `audit-rotation` | Supported tenant history spanning a closed segment; interrupt every snapshot/index/witness/head/unlink/sync phase, retry and reboot. Original correlations/results, deletion and later-transition authority survive local removal; ordinary cap/admin reserve/provisioner denial are enforced. |
 | `restore-reconstruction` | Fresh source and second fresh host, exact scheduled snapshot and archive versions; all four tenant states, retained release digests, archived prefix/local tail, excluded intake/export outcomes, intent recovery and trusted Caddy regeneration. Start fails at every inconsistent intermediate state; reboot and result replay pass. |
 | `restore-tls-bootstrap` | Own restored fixture with empty Caddy storage; cold certificate generation, readiness versus process health, interrupted issuance, reboot and durable web-ingress gating. Local controlled issuance covers deterministic faults; the final live drill separately proves public-CA DNS-01 on owned disposable names. |
@@ -756,6 +756,17 @@ production limits, accounting and the original timing evidence. Measure both
 new cases through normal validation; no deadline is extended. All three slices
 must merge before P3. P2a does not change scheduled backup sources, enable
 rotation, or constitute a reconstruction qualification.
+
+P3's protected verification/maintenance implementation merged in
+[PR #167](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/167) after
+all 17 groups passed in [CI run 35648859891](https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35648859891).
+Its audit case measured 31.80 minutes including setup. P3's fixture-efficiency
+follow-up combines publication and coherent-backup activation over the supported
+empty lineage before creating tenant history, avoiding one full setup convergence.
+The independent nonempty migration case and every audit-protection assertion stay
+required. That run also measured archive cycles at 30.48 minutes; retain that
+open timing issue alongside its previous 29.79-minute result and remeasure in the
+required matrix. This is no budget exception or replacement for full qualification.
 
 Completion requires all five implementation objectives to have passing mapped
 evidence, the final complete secure-workstation qualification, usable and
