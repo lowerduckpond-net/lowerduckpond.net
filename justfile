@@ -31,11 +31,22 @@ check-links:
     lychee --config .lychee.toml "**/*.md" "*.md"
 
 # Format-check, lint, type-check, and test Python workspace packages.
-check-python: _sync
+check-python: check-python-static
+    uv run pytest --durations=20 --durations-min=1
+
+# Format-check, lint, and type-check every Python workspace package.
+check-python-static: _sync
     uv run ruff format --check .
     uv run ruff check .
     uv run mypy
-    uv run pytest --durations=20 --durations-min=1
+
+# Keep ordinary component coverage in its existing bounded CI job.
+check-python-core: check-python-static
+    uv run pytest --durations=20 --durations-min=1 --ignore-glob='packages/static-host-agent/tests/test_host_restore*.py'
+
+# Independently run the host-reconstruction component suite.
+check-python-recovery: _sync
+    uv run pytest --durations=20 --durations-min=1 packages/static-host-agent/tests/test_host_restore*.py
 
 # Prove the standalone M3.2 contract wheel carries and loads every strict schema.
 check-m3-static-contracts: _sync

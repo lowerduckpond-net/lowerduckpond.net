@@ -308,7 +308,7 @@ def _run_installed_boundary_probe(
     *,
     replacements: dict[str, str] | None = None,
 ) -> None:
-    """Keep the installed security policy while replacing its entry point and test I/O."""
+    """Keep the unit and drop-in policy while replacing its entry point and test I/O."""
     probe_unit = "lowerduckpond-installed-boundary-probe.service"
     probe_path = f"/run/systemd/system/{probe_unit}"
     edits = {
@@ -318,8 +318,9 @@ def _run_installed_boundary_probe(
         **(replacements or {}),
     }
     install_probe = (
-        "from pathlib import Path;"
-        f"source=Path({('/etc/systemd/system/' + template)!r}).read_text();"
+        "from pathlib import Path;import subprocess;"
+        f"source=subprocess.run(['systemctl','cat','--',{template!r}],"
+        "check=True,capture_output=True,text=True).stdout;"
         f"edits={edits!r};"
         "source='\\n'.join(edits.get(line,line) for line in source.splitlines());"
         f"command={('ExecStart=/usr/bin/python3 -I -B -c ' + json.dumps(probe))!r};"
@@ -1410,7 +1411,8 @@ def assert_static_worker_execution(host: Host) -> None:
         "static"
     )
     instance = "lowerduckpond-static-worker@0198d17f-6f4a-7000-8000-000000000001.service"
-    host.run_expect([0], f"systemctl start {instance}")
+    started = host.run("systemctl start %s", instance)
+    assert started.rc == 0, host.run("systemctl status --no-pager --full %s", instance).stdout
     host.run_expect(
         [0],
         f"timeout 5s bash -c 'until systemctl is-failed --quiet {instance}; do sleep 0.05; done'",
@@ -1631,10 +1633,10 @@ def test_archive_socket_and_credentials_are_private(host: Host, operation: str) 
         f"until journalctl --unit='lowerduckpond-archive-{operation}@*' --output=cat --no-pager | "
         f"grep --fixed-strings --quiet archive_{operation}_service_failed; do sleep 0.1; done",
     )
-    assert logged.rc == 0
     journal = host.run(
         f"journalctl --unit='lowerduckpond-archive-{operation}@*' --output=cat --no-pager"
     ).stdout
+    assert logged.rc == 0, journal
     assert "molecule-dedicated-archive" not in journal
 
 

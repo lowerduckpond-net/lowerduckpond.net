@@ -74,7 +74,25 @@ jobs:
           version: 2026.8.8
           install_args: just python uv
       - name: Check Python
-        run: just check-python
+        run: just check-python-core
+
+  python-recovery:
+    name: Python recovery
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install tools
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        env:
+          MISE_GITHUB_TOKEN: ${{ github.token }}
+        with:
+          github_token: ${{ github.token }}
+          version: 2026.8.8
+          install_args: just python uv
+      - name: Check host-reconstruction components
+        run: just check-python-recovery
 
   m3-qualification:
     name: M3 qualification (local)
@@ -220,7 +238,7 @@ jobs:
 
   ansible-m3-8:
     name: Ansible installed ${{ matrix.case }}
-    needs: [installed-selection, pre-commit, python]
+    needs: [installed-selection, pre-commit, python, python-recovery]
     if: needs.installed-selection.outputs.required == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -267,7 +285,7 @@ jobs:
 
   ansible-complete:
     name: Ansible complete journey
-    needs: [installed-selection, pre-commit, python]
+    needs: [installed-selection, pre-commit, python, python-recovery]
     if: needs.installed-selection.outputs.complete == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 330
@@ -380,7 +398,7 @@ jobs:
   gate:
     name: Gate
     if: always()
-    needs: [pre-commit, links, python, m3-contract-spine, m3-qualification, m3-archive-storage, cloudflare-networks, opentofu, ansible, actions, secrets]
+    needs: [pre-commit, links, python, python-recovery, m3-contract-spine, m3-qualification, m3-archive-storage, cloudflare-networks, opentofu, ansible, actions, secrets]
     runs-on: ubuntu-24.04
     steps:
       - name: Require every validation job
