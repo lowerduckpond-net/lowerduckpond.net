@@ -73,6 +73,8 @@ def create_environment(directory: Path) -> dict[str, str]:
             "MOLECULE_EPHEMERAL_DIRECTORY": str(owned / "molecule"),
             "M3_10_ARCHIVE_BACKEND": "minio",
             "M3_8_STATIC_PUBLICATION_ENABLED": "false",
+            "M3_11_BACKUP_RECOVERY_ENABLED": "false",
+            "M3_11_AUDIT_ROTATION_ENABLED": "false",
         }
     )
     manifest = {

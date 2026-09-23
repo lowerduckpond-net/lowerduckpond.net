@@ -17,3 +17,5 @@ backup_run_initial: true
 backup_run_initial_maintenance: true
 # Explicit migration after namespace/lineage initialization and qualification.
 backup_static_recovery_enabled: false
+# Enable only through the reviewed M3.11 recovery/qualification handoff.
+backup_audit_rotation_enabled: false

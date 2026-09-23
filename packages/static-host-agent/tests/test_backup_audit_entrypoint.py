@@ -8,6 +8,7 @@ from contextlib import contextmanager
 import pytest
 from lowerduckpond_static_host_agent import backup_audit_entrypoint as entrypoint
 from lowerduckpond_static_host_agent.audit_archive_coordinator import ProtectionPaths
+from lowerduckpond_static_host_agent.audit_rotation_coordinator import RotationPaths
 
 
 @pytest.mark.parametrize(
@@ -22,11 +23,12 @@ def test_root_command_has_no_arbitrary_destructive_or_path_arguments(
     assert capsys.readouterr().err == "backup_audit_invalid_invocation\n"
 
 
+@pytest.mark.parametrize("argument", ["--maintain", "--rotate"])
 def test_provisioner_cannot_invoke_even_fixed_arguments(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], argument: str
 ) -> None:
     monkeypatch.setattr(os, "geteuid", lambda: 1234)
-    monkeypatch.setattr(sys, "argv", ["backup-audit-agent", "--maintain"])
+    monkeypatch.setattr(sys, "argv", ["backup-audit-agent", argument])
     assert entrypoint.audit_main(-1) == 1
     assert capsys.readouterr().err == "backup_audit_invalid_invocation\n"
 
@@ -76,6 +78,34 @@ def calls(monkeypatch: pytest.MonkeyPatch) -> list[object]:
     monkeypatch.setattr(entrypoint, "maintain_archive", protected)
     monkeypatch.setattr(entrypoint, "verify_archive", verify)
     return observed
+
+
+@pytest.mark.parametrize("coherent", ["true", "false", "unknown"])
+@pytest.mark.parametrize("rotation", ["true", "false", "TRUE", None])
+def test_rotation_requires_both_explicit_modes_and_fixed_root_paths(
+    calls: list[object], monkeypatch: pytest.MonkeyPatch, coherent: str, rotation: str | None
+) -> None:
+    def rotate(
+        paths: RotationPaths,
+        _environment: Mapping[str, str],
+        *,
+        expected_owner: int,
+        expected_group: int,
+    ) -> bool:
+        assert paths == RotationPaths() and expected_owner == expected_group == 0
+        calls.append("rotate")
+        return True
+
+    monkeypatch.setattr(entrypoint, "rotate_archive", rotate)
+    monkeypatch.setattr(sys, "argv", ["backup-audit-agent", "--rotate"])
+    monkeypatch.setenv("LOWERDUCKPOND_BACKUP_STATIC_RECOVERY_ENABLED", coherent)
+    if rotation is None:
+        monkeypatch.delenv("LOWERDUCKPOND_AUDIT_ROTATION_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("LOWERDUCKPOND_AUDIT_ROTATION_ENABLED", rotation)
+    accepted = coherent == rotation == "true"
+    assert entrypoint.audit_main(10) == (0 if accepted else 1)
+    assert calls == ([(9, 10), "rotate"] if accepted else [(9, 10)])
 
 
 @pytest.mark.parametrize("mode", ["true", "false", "unknown"])

@@ -181,7 +181,14 @@ print('interrupted-' + {phase!r})
 def health(host: Host, *, succeeds: bool) -> str:
     result = host.run(
         "/bin/bash -c %s",
-        "set -euo pipefail; source /etc/lowerduckpond/backup.env; "
+        # The production reader deliberately refuses a busy state lock. Take
+        # shared leases in the installed order for this settled-state assertion
+        # so a periodic reconciler cannot create a false unhealthy observation.
+        "set -euo pipefail; "
+        "exec 8</opt/lowerduckpond/static-host-agent/selection.lock; "
+        "flock --shared --timeout 30 8; "
+        f"exec 9<{ROOT}/locks/tenant-state.lock; flock --shared --timeout 30 9; "
+        "source /etc/lowerduckpond/backup.env; "
         "/usr/bin/env --ignore-environment PATH=/usr/bin:/bin "
         'RESTIC_REPOSITORY="${RESTIC_REPOSITORY}" '
         'LOWERDUCKPOND_BACKUP_NODE_NAME="${LOWERDUCKPOND_BACKUP_NODE_NAME}" '

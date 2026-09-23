@@ -1,0 +1,10 @@
+[Unit]
+Description=Rotate one protected Lower Duck Pond audit segment hourly
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+Unit=lowerduckpond-audit-rotate.service
+
+[Install]
+WantedBy=timers.target

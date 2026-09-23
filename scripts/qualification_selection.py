@@ -37,7 +37,6 @@ DEPENDENCIES = {
     _TESTS + "test_archive_full_size.py": ("full-size-archive", "reboot-journey"),
     _TESTS + "test_quarantine_recovery.py": ("deletion-quarantine", "reboot-journey"),
     _TESTS + "test_archive_credentials.py": ("credentials", "reboot-journey"),
-    _TESTS + "test_reboot.py": ("reboot-journey",),
     _TESTS + "test_cross_feature.py": ("reboot-journey",),
 }
 MAX_DIFF_BYTES = 1024 * 1024

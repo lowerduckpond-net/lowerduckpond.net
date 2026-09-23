@@ -38,6 +38,10 @@ class Group:
 
 _CREDENTIALS = "archive_credentials"
 GROUPS = {
+    "audit-rotation": Group(
+        (node("audit_rotation", "installed_rotation_interruptions_before_reboot"),),
+        after_reboot=(node("audit_rotation", "installed_rotation_reboot_and_second_full_segment"),),
+    ),
     "audit-protection": Group(
         (
             node(
@@ -145,6 +149,7 @@ GROUPS = {
                     "lowerduckpond-backup-identity.service",
                     "lowerduckpond-audit-initialize.service",
                     "lowerduckpond-audit-verify.service",
+                    "lowerduckpond-audit-rotate.service",
                     "lowerduckpond-static-reconcile.service",
                     "lowerduckpond-static-worker@.service",
                 )
@@ -167,6 +172,7 @@ GROUPS = {
                     "lowerduckpond-backup-identity.service",
                     "lowerduckpond-audit-initialize.service",
                     "lowerduckpond-audit-verify.service",
+                    "lowerduckpond-audit-rotate.service",
                     "lowerduckpond-static-reconcile.service",
                 )
             ),

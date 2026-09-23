@@ -84,7 +84,7 @@ def selected_artifact() -> pathlib.Path:
 
 
 try:
-    if sys.argv[1:] not in [["--initialize"], ["--verify"], ["--maintain"]]:
+    if sys.argv[1:] not in [["--initialize"], ["--verify"], ["--maintain"], ["--rotate"]]:
         raise ValueError("fixed audit command arguments required")
     _SELECTION_LOCK_FD = acquire_selection()
     _ARTIFACT = selected_artifact()

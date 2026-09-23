@@ -30,7 +30,8 @@ The initial narrow map is deliberately small:
 | Independent recovery wrapper | Transport recovery, both overlap cases and reboot journey. | The file contains all three independent entry points. |
 | Independent archive wrapper / full-size archive test | Its archive case and reboot journey. | Each is an unimported test entry point; shared archive helpers remain full-matrix inputs. |
 | Quarantine / credential test module | Its declared group and reboot journey. | These test modules have no consumers in other installed modules. Deletion helpers are shared with backup mutation overlap and therefore select the complete matrix. |
-| Reboot or cross-feature test | Reboot journey. | Both stages are required together, including the actual restart. |
+| Cross-feature test | Reboot journey. | Both stages are required together, including the actual restart. |
+| Reboot test/helpers | Complete installed matrix. | Audit rotation also consumes the restart evidence, volatile-key and captured endpoint helpers; this module is no longer an unimported leaf. |
 | Every other path | Complete installed matrix. | Unknown mappings never exempt coverage. This includes shared test helpers, authorization, persistence, recovery, schemas, units, Ansible roles, packaging, lockfiles, selectors, workflows and other test infrastructure. |
 
 Adding/removing/renaming mapped code, executable or nonregular inputs, empty or

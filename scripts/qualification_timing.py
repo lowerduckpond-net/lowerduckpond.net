@@ -42,6 +42,8 @@ GROUPS = frozenset(
         "overlap-deployment",
         "overlap-routing",
         "cross-feature",
+        "audit-protection",
+        "audit-rotation",
     }
 )
 KINDS = frozenset(

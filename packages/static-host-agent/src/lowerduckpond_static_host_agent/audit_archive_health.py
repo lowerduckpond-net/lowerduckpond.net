@@ -28,6 +28,7 @@ CATEGORIES: Final = (
     "archive-unavailable",
     "resource-exhaustion",
 )
+ROTATION_WARNING_BYTES: Final = 64 * 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +37,7 @@ class ProtectionHealth:
     snapshot_count: int = 0
     protected_bytes: int = 0
     rotation_pending: bool = False
+    rotation_warning: bool = False
 
     def metrics(self) -> str:
         lines = [
@@ -43,6 +45,7 @@ class ProtectionHealth:
             f"lowerduckpond_audit_protected_snapshots {self.snapshot_count}",
             f"lowerduckpond_audit_protected_bytes {self.protected_bytes}",
             f"lowerduckpond_audit_rotation_pending {int(self.rotation_pending)}",
+            f"lowerduckpond_audit_rotation_warning {int(self.rotation_warning)}",
         ]
         lines.extend(
             f'lowerduckpond_audit_failure{{category="{name}"}} {int(self.category == name)}'
@@ -87,7 +90,13 @@ def inspect_protection_health(  # noqa: PLR0911 - fixed fail-closed categories
                 admit_archive_append(directory, prefix, 0, entry_count=audit.entry_count)
             count, size = status["protectedSnapshotCount"], status["protectedBytes"]
             assert type(count) is int and type(size) is int  # noqa: S101 - validated status
-            return ProtectionHealth(None, count, size, prefix.rotation_intent is not None)
+            return ProtectionHealth(
+                None,
+                count,
+                size,
+                prefix.rotation_intent is not None,
+                audit.allocated_bytes >= ROTATION_WARNING_BYTES,
+            )
     except StateBusyError:
         return ProtectionHealth("protection")
     except AuditArchiveCapacityError, CapacityError:

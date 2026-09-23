@@ -768,6 +768,27 @@ required. That run also measured archive cycles at 30.48 minutes; retain that
 open timing issue alongside its previous 29.79-minute result and remeasure in the
 required matrix. This is no budget exception or replacement for full qualification.
 
+The follow-up [PR #168](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/168)
+passed all 17 groups in [CI run 35654060891](https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35654060891).
+Its exact head was `ecb6a736add8127cbb0fe13901f68f6a5421011c`; audit protection
+measured 27.94 minutes including setup, archive cycles 29.68, backup mutation
+overlap 29.78 and core 29.92. All groups met the target in that run. Preserve
+the original overrun reports and keep observing the narrow margins through
+later required matrices. This is MinIO diagnostic evidence, not live-provider
+qualification or production deployment.
+
+P4 adds the default-off hourly rotator and independent eighteenth
+`audit-rotation` case. It uses the P3 proof/index primitives before source
+removal; a resumed uncreated prepared intent is handled only by the rotator.
+Historical consumers reuse an exact-byte proof for a sealed pending source,
+while every read still checks the current bytes, descriptor and local authority.
+The two-direction segment/witness cache retains at most two pairs (32 MiB),
+without caching paths, inode generations or remote availability. Installed
+qualification must cover two consecutive real 8-MiB segments, the second in a
+fresh bounded service with an existing archived prefix. No production timeout,
+memory limit, pacing or administrator reserve is increased. Production rotation
+remains disabled pending P5/P6 and the explicit operator handoff.
+
 Completion requires all five implementation objectives to have passing mapped
 evidence, the final complete secure-workstation qualification, usable and
 reviewed production instructions, the explicit operator production outcome,

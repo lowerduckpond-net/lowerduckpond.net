@@ -121,6 +121,7 @@ def test_activation_requires_the_same_canonical_retention_values_as_the_runtime(
         zip(("backup_keep_daily", "backup_keep_weekly", "backup_keep_monthly"), counts, strict=True)
     )
     values["backup_static_recovery_enabled"] = False
+    values["backup_audit_rotation_enabled"] = False
     templar = Templar(variables=values)
     assert (
         all(templar.evaluate_conditional(trust_as_template(item)) for item in conditions)

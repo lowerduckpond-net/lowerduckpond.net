@@ -40,6 +40,9 @@
     m3_11_backup_recovery_enabled: >-
       {{ lookup('ansible.builtin.env', 'M3_11_BACKUP_RECOVERY_ENABLED') |
          default('false', true) | bool }}
+    m3_11_audit_rotation_enabled: >-
+      {{ lookup('ansible.builtin.env', 'M3_11_AUDIT_ROTATION_ENABLED') |
+         default('false', true) | bool }}
     m3_8_cloudflare_api_token: >-
       {{ lookup('ansible.builtin.env', 'M3_8_CLOUDFLARE_API_TOKEN') |
          default('0000000000000000000000000000000000000000', true) }}
@@ -243,6 +246,8 @@
           {{ m3_8_static_publication_enabled }}
         backup_static_recovery_enabled: >-
           {{ m3_11_backup_recovery_enabled }}
+        backup_audit_rotation_enabled: >-
+          {{ m3_11_audit_rotation_enabled }}
         caddy_cloudflare_api_token: >-
           {{ m3_8_cloudflare_api_token }}
         firewall_admin_source_cidrs:

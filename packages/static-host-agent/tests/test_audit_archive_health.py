@@ -3,6 +3,7 @@ from __future__ import annotations
 import fcntl
 import os
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -11,7 +12,9 @@ from lowerduckpond_static_host_agent import LockManager
 from lowerduckpond_static_host_agent import audit_archive_admission as admission
 from lowerduckpond_static_host_agent import audit_archive_formats as formats
 from lowerduckpond_static_host_agent import audit_archive_health as health
+from lowerduckpond_static_host_agent.audit import AuditState, inspect_audit_readonly
 from lowerduckpond_static_host_agent.backup_identity import framed_digest
+from lowerduckpond_static_host_agent.durable import DurableDirectory
 from test_audit_archive_admission import NOW, available_capacity, grant_protection
 from test_audit_archive_formats import IDENTITY, entry
 from test_audit_archive_store import put
@@ -46,6 +49,35 @@ def test_local_fresh_bound_proof_exports_only_fixed_counts_and_categories(protec
     assert IDENTITY.locator not in result.metrics()
     assert "test-node" not in result.metrics()
     assert all(f'category="{name}"}} 0' in result.metrics() for name in health.CATEGORIES)
+
+
+@pytest.mark.parametrize(
+    "allocated,warning", [(64 * 1024 * 1024 - 1, False), (64 * 1024 * 1024, True)]
+)
+def test_rotation_warning_precedes_ordinary_ceiling_without_critical_failure(
+    protected: Path, monkeypatch: pytest.MonkeyPatch, allocated: int, warning: bool
+) -> None:
+    original = inspect_audit_readonly
+
+    def inspect_audit(
+        root: DurableDirectory,
+        *,
+        expected_owner: int,
+        expected_directory_mode: int,
+        expected_record_mode: int,
+    ) -> AuditState:
+        state = original(
+            root,
+            expected_owner=expected_owner,
+            expected_directory_mode=expected_directory_mode,
+            expected_record_mode=expected_record_mode,
+        )
+        return replace(state, allocated_bytes=allocated)
+
+    monkeypatch.setattr(health, "inspect_audit_readonly", inspect_audit)
+    result = inspect(protected)
+    assert result.category is None and result.rotation_warning is warning
+    assert f"lowerduckpond_audit_rotation_warning {int(warning)}\n" in result.metrics()
 
 
 @pytest.mark.parametrize(

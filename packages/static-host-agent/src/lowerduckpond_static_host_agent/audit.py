@@ -900,9 +900,17 @@ def _validate_chain_records(  # noqa: PLR0912,PLR0913,PLR0915 - one bounded vali
             if segment.number < len(segments.archive.segments)
             else None
         )
+        intent = segments.archive.rotation_intent
+        if archived is None and intent is not None:
+            pending = validate_rotation(intent["descriptor"])
+            if pending["segmentNumber"] == segment.number:
+                # _require_pending_local_segment already fully validated
+                # these exact captured local bytes against the sealed
+                # descriptor. Reuse only that same byte proof for projection.
+                archived = pending
         # read_archive_prefix validated every canonical witness and descriptor;
         # _read_segments also proved any local overlap is byte-identical. Reuse
-        # that proof for these exact captured bytes while projecting each row.
+        # those proofs (including a sealed pending source) while projecting rows.
         if archived is not None and (
             archived["firstSequence"] != sequence or archived["predecessorEntryDigest"] != terminal
         ):

@@ -21,6 +21,7 @@ TIMERS = (
 def _boundaries(host: Host) -> None:
     for unit, timeout, memory, descriptors in (
         (audits.VERIFY_UNIT, "5min", "256M", "256"),
+        ("lowerduckpond-audit-rotate.service", "5min", "256M", "256"),
         (audits.MAINTENANCE_UNIT, "30min", "512M", "1024"),
     ):
         contents = host.run("systemctl cat %s", unit).stdout
@@ -42,7 +43,9 @@ def _boundaries(host: Host) -> None:
         assert host.run("runuser -u ldp-provisioner -- %s --verify", path).rc != 0
     assert host.run("/usr/local/libexec/lowerduckpond/backup-audit-agent --maintain").rc != 0
     assert host.run("/usr/local/libexec/lowerduckpond/backup-audit-protection --prune").rc != 0
-    assert not host.file("/etc/systemd/system/lowerduckpond-audit-rotate.timer").exists
+    assert host.file("/etc/systemd/system/lowerduckpond-audit-rotate.timer").exists
+    assert not host.service("lowerduckpond-audit-rotate.timer").is_enabled
+    assert host.run("/usr/local/libexec/lowerduckpond/backup-audit-protection --rotate").rc != 0
 
 
 def _snapshot_file_fault(host: Host, snapshot: str, *, missing: bool | None) -> None:

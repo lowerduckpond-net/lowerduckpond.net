@@ -26,6 +26,8 @@ GROUPS = {
     "test_transport_recovery.py": "transport-recovery",
     "test_quarantine_recovery.py": "quarantine-recovery",
     "test_archive_completion.py": "accounting",
+    "test_audit_protection.py": "audit-protection",
+    "test_audit_rotation.py": "audit-rotation",
 }
 OPERATOR_FAILURES = {
     "operator transport failed: correlation burst limit is exhausted": "admission-burst-exhausted",

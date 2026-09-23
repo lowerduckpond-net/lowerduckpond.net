@@ -5,7 +5,9 @@ import hashlib
 import json
 import os
 import shutil
+import signal
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -509,6 +511,39 @@ def test_unfinished_or_inconsistent_accounting_blocks_retirement(
         ).touch()
     with pytest.raises((ValueError, RuntimeBoundaryError)):
         probe.installed(*installed, owner=os.geteuid())
+
+
+@pytest.mark.parametrize("release", [True, False])
+def test_bounded_accounting_waits_for_one_consistent_read_without_mutation(
+    installed: tuple[Path, Path, Path], release: bool
+) -> None:
+    state, _, _ = installed
+    before = {path: path.read_bytes() for path in state.rglob("*") if path.is_file()}
+    script = """
+import os, signal, sys
+from pathlib import Path
+from scripts.qualification_retirement_probe import installed
+signal.alarm(1)
+print('ready', flush=True)
+installed(*(Path(value) for value in sys.argv[1:]), owner=os.geteuid(), blocking=True)
+print('proven', flush=True)
+"""
+    with (state / "locks/tenant-state.lock").open("rb") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        with subprocess.Popen(  # noqa: S603 - fixed read-only probe on owned test paths
+            [sys.executable, "-c", script, *(str(path) for path in installed)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        ) as process:
+            assert process.stdout is not None and process.stdout.readline() == "ready\n"
+            assert process.poll() is None
+            if release:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+            stdout, stderr = process.communicate(timeout=5)
+            assert process.returncode == (0 if release else -signal.SIGALRM), stderr
+            assert stdout == ("proven\n" if release else "")
+    assert {path: path.read_bytes() for path in state.rglob("*") if path.is_file()} == before
 
 
 def test_uninstalled_proof_rejects_retained_state_and_symlink_ancestors(tmp_path: Path) -> None:
