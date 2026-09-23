@@ -1,0 +1,238 @@
+---
+- name: Require an explicit recovery bootstrap identity
+  ansible.builtin.assert:
+    that:
+      - host_recovery_bootstrap_enabled is boolean
+      - not host_recovery_bootstrap_enabled or caddy_generation_enabled | bool
+      - not host_recovery_bootstrap_enabled or backup_static_recovery_enabled | bool
+      - not host_recovery_bootstrap_enabled or not (static_publication_enabled | bool)
+      - not host_recovery_bootstrap_enabled or host_recovery_input_directory is match('^/')
+      - >-
+        not host_recovery_bootstrap_enabled or
+        host_recovery_restore_id is match(
+        '^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$')
+    quiet: true
+
+- name: Prove source fencing and reviewed destination inputs before any mutation
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - -I
+      - -m
+      - lowerduckpond_static_host_agent.host_restore_bootstrap
+      - --directory
+      - "{{ host_recovery_input_directory }}"
+      - --destination
+      - "{{ ansible_facts.machine_id }}"
+      - --restore-id
+      - "{{ host_recovery_restore_id }}"
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  register: host_recovery_bootstrap_inputs
+  when: host_recovery_bootstrap_enabled
+  no_log: true
+
+- name: Inspect the durable recovery gate before any ordinary host mutation
+  ansible.builtin.stat:
+    path: /var/lib/lowerduckpond/recovery/restore-gate.json
+    follow: false
+  register: host_recovery_existing_gate
+
+- name: Inspect existing recovery provenance
+  ansible.builtin.stat:
+    path: /var/lib/lowerduckpond/recovery/host-restore.json
+    follow: false
+  register: host_recovery_existing_journal
+
+- name: Refuse ordinary bootstrap over unfinished recovery
+  ansible.builtin.assert:
+    that:
+      - host_recovery_bootstrap_enabled or not host_recovery_existing_gate.stat.exists
+      - not host_recovery_bootstrap_enabled or not host_recovery_existing_journal.stat.exists
+    fail_msg: Resume the journaled restore command; ordinary convergence cannot bypass its gate.
+    quiet: true
+
+- name: Validate completed recovery before ordinary convergence
+  ansible.builtin.command:
+    argv:
+      - /usr/local/libexec/lowerduckpond/host-restore-gate
+      - --ordinary
+  changed_when: false
+  when: host_recovery_existing_journal.stat.exists
+
+- name: Refuse unsafe or mismatched existing bootstrap gates
+  ansible.builtin.assert:
+    that:
+      - host_recovery_existing_gate.stat.isreg | default(false)
+      - host_recovery_existing_gate.stat.uid == 0
+      - host_recovery_existing_gate.stat.gid == 0
+      - host_recovery_existing_gate.stat.mode == '0600'
+      - host_recovery_existing_gate.stat.nlink == 1
+      - host_recovery_existing_gate.stat.size <= 256
+    quiet: true
+  when: host_recovery_existing_gate.stat.exists
+
+- name: Read an existing recovery bootstrap identity
+  ansible.builtin.slurp:
+    src: /var/lib/lowerduckpond/recovery/restore-gate.json
+  register: host_recovery_gate_identity
+  when: host_recovery_existing_gate.stat.exists
+
+- name: Require the same durable bootstrap identity on resume
+  ansible.builtin.assert:
+    that:
+      - >-
+        host_recovery_gate_identity.content | b64decode ==
+        ({'restoreId': host_recovery_restore_id, 'schema': 'lowerduckpond-host-restore-gate-v1'} |
+         to_json(sort_keys=true, separators=[',', ':'])) ~ '\n'
+    quiet: true
+  when: host_recovery_existing_gate.stat.exists
+
+- name: Inspect destinations before starting a fresh recovery bootstrap
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+  loop:
+    - /var/lib/lowerduckpond/static
+    - /srv/lowerduckpond
+    - /etc/caddy
+    - /var/lib/caddy
+  register: host_recovery_fresh_destinations
+  when:
+    - host_recovery_bootstrap_enabled
+    - not host_recovery_existing_gate.stat.exists
+
+- name: Refuse to turn an existing ordinary host into a recovery destination
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists
+    fail_msg: Recovery bootstrap requires a fresh destination or its own existing closed gate.
+    quiet: true
+  loop: "{{ host_recovery_fresh_destinations.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item | default('destination') }}"
+  when:
+    - host_recovery_bootstrap_enabled
+    - not host_recovery_existing_gate.stat.exists
+
+- name: Inspect active publication services before gated bootstrap mutation
+  ansible.builtin.command:
+    argv: >-
+      {{ ['/usr/bin/systemctl', 'list-units', '--no-pager', '--no-legend', '--plain',
+          '--state=active,activating,reloading,deactivating,refreshing,maintenance'] +
+         (host_recovery_guarded_units | map('replace', '@.', '@*.') | list) }}
+  changed_when: false
+  register: host_recovery_active_units
+  when: host_recovery_bootstrap_enabled
+
+- name: Require quiescent destination before gated bootstrap mutation
+  ansible.builtin.assert:
+    that:
+      - host_recovery_active_units.stdout | trim | length == 0
+    fail_msg: Preserve the closed recovery gate and stop the unexpectedly active publication services.
+    quiet: true
+  when: host_recovery_bootstrap_enabled
+
+- name: Create root recovery gate and command directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - {path: /var/lib/lowerduckpond/recovery, mode: "0700"}
+    - {path: /usr/local/libexec/lowerduckpond, mode: "0755"}
+    - {path: /usr/local/share/lowerduckpond, mode: "0755"}
+
+- name: Install the bootstrap-independent root recovery gate
+  ansible.builtin.copy:
+    src: host-restore-gate
+    dest: /usr/local/libexec/lowerduckpond/host-restore-gate
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the independent restore-only firewall table
+  ansible.builtin.copy:
+    src: restore-gate.nft
+    dest: /usr/local/share/lowerduckpond/restore-gate.nft
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install nftables before closing recovery ingress
+  ansible.builtin.apt:
+    name: nftables
+    state: present
+  when: host_recovery_bootstrap_enabled
+
+- name: Persist the gate before preparing recovered state
+  ansible.builtin.copy:
+    content: |
+      {{ {'restoreId': host_recovery_restore_id, 'schema': 'lowerduckpond-host-restore-gate-v1'} | to_json(sort_keys=true, separators=[',', ':']) }}
+    dest: /var/lib/lowerduckpond/recovery/restore-gate.json
+    owner: root
+    group: root
+    mode: "0600"
+    force: false
+  when: host_recovery_bootstrap_enabled
+
+- name: Close public web ingress before installing any recovery service
+  ansible.builtin.command:
+    argv:
+      - /usr/local/libexec/lowerduckpond/host-restore-gate
+      - --boot
+  changed_when: true
+  when: host_recovery_bootstrap_enabled
+
+- name: Install boot ordering for the persistent recovery gate
+  ansible.builtin.copy:
+    src: lowerduckpond-restore-gate.service
+    dest: /etc/systemd/system/lowerduckpond-restore-gate.service
+    owner: root
+    group: root
+    mode: "0644"
+  register: host_recovery_gate_unit
+
+- name: Create recovery admission drop-in directories
+  ansible.builtin.file:
+    path: "/etc/systemd/system/{{ item }}.d"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop: "{{ host_recovery_guarded_units + ['nftables.service'] }}"
+
+- name: Require recovery admission before any ordinary service starts
+  ansible.builtin.template:
+    src: restore-admission.conf.j2
+    dest: "/etc/systemd/system/{{ item }}.d/restore-admission.conf"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ host_recovery_guarded_units }}"
+  register: host_recovery_admission_units
+
+- name: Preserve the recovery gate across ordinary firewall restarts
+  ansible.builtin.copy:
+    src: restore-firewall.conf
+    dest: /etc/systemd/system/nftables.service.d/restore-firewall.conf
+    owner: root
+    group: root
+    mode: "0644"
+  register: host_recovery_firewall_unit
+
+- name: Load recovery admission ordering
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: >-
+    host_recovery_gate_unit.changed or host_recovery_admission_units.changed or
+    host_recovery_firewall_unit.changed
+
+- name: Enable the recovery gate for every boot
+  ansible.builtin.systemd_service:
+    name: lowerduckpond-restore-gate.service
+    enabled: true
+    state: started

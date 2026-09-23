@@ -90,7 +90,12 @@ explicitly labeled `captured-before-teardown` with its original timestamps and
 the host's current unavailability. It cannot become fresh evidence by collecting
 it again. The live Spaces wrapper continues to retain failed fixtures.
 Individual commands have deadlines and a 64-KiB output cap; the host probe also
-has its own 45-second alarm. Collection normally completes within 90 seconds.
+has its own 45-second alarm. Collection normally completes within 90 seconds. Reconstruction cases also
+observe the recorded source, destination and controlled ACME container IDs with
+separate bounded read-only probes (at most 20 seconds each). Their optional
+`reconstruction` section contains only phase, gate presence and fixed service
+state/result/exit-status fields. Missing or changed identities remain `unknown`;
+no DNS records, keys, object coordinates or tenant bytes are included.
 
 This report grants **no cleanup authority**. Empty intents and no quarantine
 are insufficient. Cleanup still requires fresh authoritative local accounting

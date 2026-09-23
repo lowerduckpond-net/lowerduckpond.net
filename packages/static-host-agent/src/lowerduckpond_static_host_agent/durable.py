@@ -101,7 +101,9 @@ def _read_bounded(file_descriptor: int, *, maximum_bytes: int, expected_size: in
     return data
 
 
-def _rename_noreplace(directory_fd: int, source: str, destination: str) -> None:
+def _rename_noreplace(
+    directory_fd: int, source: str, destination: str, *, destination_fd: int | None = None
+) -> None:
     try:
         renameat2 = ctypes.CDLL(None, use_errno=True).renameat2
     except AttributeError as error:  # pragma: no cover - the host contract is Linux/glibc
@@ -117,7 +119,7 @@ def _rename_noreplace(directory_fd: int, source: str, destination: str) -> None:
     result = renameat2(
         directory_fd,
         os.fsencode(source),
-        directory_fd,
+        directory_fd if destination_fd is None else destination_fd,
         os.fsencode(destination),
         _RENAME_NOREPLACE,
     )

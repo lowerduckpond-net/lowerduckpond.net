@@ -76,6 +76,9 @@ GROUPS = frozenset(
         "cross-feature",
         "audit-protection",
         "audit-rotation",
+        "restore-reconstruction",
+        "restore-negative",
+        "restore-tls-bootstrap",
     }
 )
 FAILURES = frozenset(
@@ -110,6 +113,13 @@ TEST_FILES = frozenset(
         "audit_protection_support.py",
         "test_audit_rotation.py",
         "audit_rotation_support.py",
+        "test_restore_reconstruction.py",
+        "test_restore_negative.py",
+        "test_restore_tls_bootstrap.py",
+        "test_restore_accounting.py",
+        "restore_fixture.py",
+        "restore_scenarios.py",
+        "restore_negative_faults.py",
     }
 )
 MAX_SOURCE_LINE = 100000
@@ -394,7 +404,9 @@ def local_obligations(observation: dict[str, object]) -> str:
     return UNKNOWN if UNKNOWN in local.values() else "none-observed"
 
 
-def collect(directory: Path, status: int | None = None, phase: str | None = None) -> Path:
+def collect(  # noqa: PLR0912,PLR0915 - preserve original status with bounded optional observations
+    directory: Path, status: int | None = None, phase: str | None = None
+) -> Path:
     directory = directory.resolve(strict=True)
     original = _optional(directory / "failure-exit.json")
     if status is None:
@@ -483,6 +495,14 @@ def collect(directory: Path, status: int | None = None, phase: str | None = None
             "filesystem_primitives": "not-tested-read-only",
         },
     }
+    if (directory / "restore").exists():
+        from scripts.qualification_restore import observations  # noqa: PLC0415
+        from scripts.qualification_retirement import environment_for  # noqa: PLC0415
+
+        try:
+            report["reconstruction"] = observations(environment_for(directory))
+        except Exception:
+            report["reconstruction"] = "unknown"
     destination = directory / "failure.json"
     if destination.exists():
         destination = directory / (

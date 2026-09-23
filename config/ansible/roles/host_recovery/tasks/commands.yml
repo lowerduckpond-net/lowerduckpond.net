@@ -1,0 +1,82 @@
+---
+- name: Create protected administrative recovery workspaces
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  loop:
+    - /etc/lowerduckpond/host-restore
+    - /var/cache/lowerduckpond-host-restore
+
+- name: Install only the preflighted private recovery policy and public trust inputs
+  ansible.builtin.copy:
+    src: "{{ host_recovery_input_directory }}/{{ item }}"
+    dest: "/etc/lowerduckpond/host-restore/{{ item }}"
+    owner: root
+    group: root
+    mode: "0600"
+  loop: >-
+    {{ ['target.json', 'source-fence-' ~ host_recovery_restore_id ~ '.json'] +
+       (range((host_recovery_bootstrap_inputs.stdout | default('{"originalCaCount":0}') |
+        from_json).originalCaCount) |
+        map('string') | map('regex_replace', '^(.*)$', 'original-origin-pull-ca-\1.pem') | list) }}
+  when: host_recovery_bootstrap_enabled
+  no_log: true
+
+- name: Install verified selected-artifact recovery launchers
+  ansible.builtin.template:
+    src: host-restore-agent.j2
+    dest: "{{ item.path }}"
+    owner: root
+    group: root
+    mode: "0700"
+  loop:
+    - {mode: cli, function: restore_cli_main, path: /usr/local/sbin/restore-static-host}
+    - {mode: source, function: source_fence_main, path: /usr/local/libexec/lowerduckpond/host-restore-source}
+    - {mode: coordinator, function: restore_coordinator_main, path: /usr/local/libexec/lowerduckpond/host-restore-coordinator}
+    - {mode: archive-private, path: /usr/local/libexec/lowerduckpond/host-restore-archive-private}
+    - {mode: archive-installed, path: /usr/local/libexec/lowerduckpond/host-restore-archive-installed}
+  loop_control:
+    label: "{{ item.mode }}"
+
+- name: Install repository-serialized administrative commands
+  ansible.builtin.template:
+    src: host-restore-with-backup.j2
+    dest: "{{ item.path }}"
+    owner: root
+    group: root
+    mode: "0700"
+  loop:
+    - {agent: host-restore-source, path: /usr/local/sbin/fence-static-host}
+    - {agent: host-restore-coordinator, path: /usr/local/libexec/lowerduckpond/host-restore-run}
+
+- name: Install the bounded host restore coordinator
+  ansible.builtin.template:
+    src: lowerduckpond-host-restore.service.j2
+    dest: /etc/systemd/system/lowerduckpond-host-restore.service
+    owner: root
+    group: root
+    mode: "0644"
+  register: host_recovery_coordinator_unit
+
+- name: Install credential-isolated helpers for this bootstrap transaction
+  ansible.builtin.template:
+    src: lowerduckpond-host-restore-archive.service.j2
+    dest: "/etc/systemd/system/lowerduckpond-host-restore-archive-{{ item.mode }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - mode: private
+      state: "/var/lib/lowerduckpond/.restore-{{ host_recovery_restore_id }}-state/candidate"
+    - mode: installed
+      state: /var/lib/lowerduckpond/static
+  when: host_recovery_bootstrap_enabled
+  register: host_recovery_archive_units
+
+- name: Load administrative recovery units
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: host_recovery_coordinator_unit.changed or host_recovery_archive_units.changed

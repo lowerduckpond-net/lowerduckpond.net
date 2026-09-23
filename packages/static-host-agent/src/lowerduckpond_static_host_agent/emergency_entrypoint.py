@@ -20,6 +20,7 @@ from lowerduckpond_static_host_agent.emergency_remote import (
     verify_emergency_terminal,
 )
 from lowerduckpond_static_host_agent.export_spool import ExportSpool
+from lowerduckpond_static_host_agent.host_restore_gate import require_restore_admission
 from lowerduckpond_static_host_agent.intents import IntentDiscovery
 from lowerduckpond_static_host_agent.locks import LockName
 from lowerduckpond_static_host_agent.repository import StateRepository
@@ -32,6 +33,7 @@ _MAXIMUM_REASON_LENGTH = 1024
 def emergency_delete_main(arguments: list[str] | None = None) -> int:
     values = sys.argv[1:] if arguments is None else arguments
     try:
+        require_restore_admission()
         recovering = values == ["--recover"]
         if (
             os.geteuid() != 0

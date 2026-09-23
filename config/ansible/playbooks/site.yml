@@ -56,6 +56,7 @@
       no_log: true
 
   roles:
+    - role: host_recovery
     - role: base
     - role: firewall
     - role: podman
@@ -68,6 +69,12 @@
     - role: monitoring
 
   post_tasks:
+    - name: Install administrative backup reconstruction commands
+      ansible.builtin.include_role:
+        name: host_recovery
+        tasks_from: commands
+      when: backup_static_recovery_enabled | bool
+
     - name: Remove the retired mutable Caddy configuration
       ansible.builtin.file:
         path: /etc/caddy/Caddyfile

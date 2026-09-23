@@ -601,6 +601,7 @@
     caddy_generation_check.rc != 0 or
     caddy_generation_check.stdout | trim not in ['changed', 'pending', 'unchanged']
   when:
+    - not (host_recovery_bootstrap_enabled | default(false) | bool)
     - caddy_generation_enabled | bool
     - not caddy_preserve_selected_generation | bool
     - >-
@@ -777,6 +778,7 @@
     caddy_generation_bootstrap.rc != 0 or
     caddy_generation_bootstrap.stdout | trim not in ['changed', 'unchanged']
   when:
+    - not (host_recovery_bootstrap_enabled | default(false) | bool)
     - caddy_generation_enabled | bool
     - caddy_generation_bootstrap_required | bool
 
@@ -789,7 +791,9 @@
       - caddy.service
   register: caddy_generation_unmask
   changed_when: caddy_generation_unmask.stdout | trim != ''
-  when: caddy_generation_enabled | bool
+  when:
+    - not (host_recovery_bootstrap_enabled | default(false) | bool)
+    - caddy_generation_enabled | bool
 
 - name: Reload systemd after removing the immutable-bootstrap runtime mask
   ansible.builtin.systemd_service:
@@ -807,6 +811,7 @@
       - caddy-recovery.service
   changed_when: true
   when:
+    - not (host_recovery_bootstrap_enabled | default(false) | bool)
     - caddy_generation_enabled | bool
     - caddy_generation_bootstrap_required | bool
     - caddy_generation_existing_unit.stdout | trim == 'loaded'
@@ -816,4 +821,6 @@
     name: caddy.service
     enabled: true
     state: started
-  when: caddy_generation_enabled | bool
+  when:
+    - not (host_recovery_bootstrap_enabled | default(false) | bool)
+    - caddy_generation_enabled | bool

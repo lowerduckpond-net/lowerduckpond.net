@@ -189,18 +189,23 @@ def _assert_unauthenticated_route_rejected(host: Host, origin: str) -> None:
     assert result.stdout == "000"
 
 
-def _operator_inputs(tmp_path: Path) -> tuple[str, Path, Path]:
+def _operator_inputs(
+    tmp_path: Path, *, container: str = CONTAINER, transport_path: Path | None = None
+) -> tuple[str, Path, Path]:
     identity = tmp_path / "operator-key"
     identity.write_text(
-        _run(["docker", "exec", CONTAINER, "/usr/bin/cat", OPERATOR_KEY]) + "\n",
+        _run(["docker", "exec", container, "/usr/bin/cat", OPERATOR_KEY]) + "\n",
         encoding="ascii",
     )
     identity.chmod(0o600)
     host = urlsplit(os.environ.get("DOCKER_HOST", "")).hostname or "127.0.0.1"
-    transport_path = Path(os.environ["MOLECULE_EPHEMERAL_DIRECTORY"]) / "operator-transport.json"
+    if transport_path is None:
+        transport_path = (
+            Path(os.environ["MOLECULE_EPHEMERAL_DIRECTORY"]) / "operator-transport.json"
+        )
     transport = current_operator_transport(
         os.environ.get("DOCKER_HOST", ""),
-        CONTAINER,
+        container,
         json.loads(transport_path.read_text(encoding="ascii")),
     )
     port = int(transport["sshPort"])

@@ -56,6 +56,22 @@ _DISABLED_STATUS = 78
 _USAGE_STATUS = 64
 
 
+class UnrestoredRuntime:
+    @staticmethod
+    def restored_runtime_request(
+        _manifest: dict[str, object],
+        observed: dict[str, object] | None,
+        generation_id: str | None,
+    ) -> tuple[str | None, dict[str, object] | None]:
+        return generation_id, observed
+
+    @staticmethod
+    def validate_restored_observation(
+        _manifest: dict[str, object], _observed: dict[str, object]
+    ) -> None:
+        pass
+
+
 def test_executor_entrypoint_registers_the_available_lifecycle_handlers(  # noqa: PLR0915 - complete installed executor wiring
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -890,7 +906,7 @@ def test_selected_tenant_runtime_binds_the_active_verified_snapshot(  # noqa: PL
             assert requested == self.active_generation_id
             return SimpleNamespace(platform_namespace={}, tenants=(self.tenant,))
 
-    class Transaction:
+    class Transaction(UnrestoredRuntime):
         @staticmethod
         def read(path: StateRecordPath) -> SimpleNamespace:
             assert path.tenant_id == tenant_id
@@ -1137,7 +1153,7 @@ def test_selected_tenant_runtime_accepts_validated_archived_route_omission(
             assert requested == generation_id
             return SimpleNamespace(platform_namespace={}, tenants=())
 
-    class Transaction:
+    class Transaction(UnrestoredRuntime):
         @staticmethod
         def read(path: StateRecordPath) -> SimpleNamespace:
             if path == StateRecordPath.tenant_desired(tenant_id):
@@ -1232,7 +1248,7 @@ def test_selected_tenant_runtime_accepts_only_bound_reconcile_source_drift(
             assert requested == generation_id
             return selected
 
-    class Transaction:
+    class Transaction(UnrestoredRuntime):
         @staticmethod
         def read(path: StateRecordPath) -> SimpleNamespace:
             if path == StateRecordPath.tenant_desired(tenant_id):
@@ -1585,6 +1601,10 @@ def test_caddy_pre_start_gate_uses_the_control_lock_path(
             return 0
 
         @staticmethod
+        def read() -> None:
+            return None
+
+        @staticmethod
         def prepare_start(*, active: object, invocation_id: str) -> None:
             prepared.append((active, invocation_id))
 
@@ -1612,7 +1632,13 @@ def test_caddy_post_start_verifier_uses_the_control_lock_path(
 ) -> None:
     generation_id = "0198d17f-6f4a-7000-8000-000000000001"
     invocation_id = "b" * 32
-    intent = object()
+    intent = CaddyStartIntent(
+        CaddyStartMode.ORDINARY,
+        CaddyStartPhase.ORDINARY_STARTING,
+        start_target(generation_id, b"manifest"),
+        candidate_invocations=(invocation_id,),
+        invocation_id=invocation_id,
+    )
     events: list[object] = []
 
     class Manifest:

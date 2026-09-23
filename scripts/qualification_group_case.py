@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from scripts import qualification_restore as restore
 from scripts.qualification_case import (
     ROOT,
     independent_storage_absence,
@@ -102,16 +103,23 @@ def run_group(directory: Path, environment: dict[str, str], uv: str, case: str) 
         installed = stage_receipts(directory, environment, case)
         if owned_containers(environment) != identities:
             raise ValueError("owned fixture changed before accounting")
-        if local_proof(environment, identities[HOST_ENV]) != "quiescent-installed":
+        pair = restore.paired_proof(environment) if group.reconstruction else None
+        if (
+            not group.reconstruction
+            and local_proof(environment, identities[HOST_ENV]) != "quiescent-installed"
+        ):
             raise ValueError("installed group accounting is incomplete")
         record_phase("final-storage-proof")
         independent_storage_absence(environment, identities[ARCHIVE_ENV])
         record_phase("final-accounting")
-        if (
-            owned_containers(environment) != identities
-            or local_proof(environment, identities[HOST_ENV]) != "quiescent-installed"
+        if owned_containers(environment) != identities or (
+            restore.paired_proof(environment) != pair
+            if group.reconstruction
+            else local_proof(environment, identities[HOST_ENV]) != "quiescent-installed"
         ):
             raise ValueError("owned fixture changed before teardown")
+        if pair is not None:
+            restore.remove_pair(environment, pair)
         status = phase(directory, environment, uv, "destroy")
         if status:
             return status

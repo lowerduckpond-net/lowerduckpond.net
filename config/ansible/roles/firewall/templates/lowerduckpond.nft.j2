@@ -1,6 +1,8 @@
 #!/usr/sbin/nft -f
 
-flush ruleset
+# Replace only the ordinary policy; the independent restore ingress gate must
+# survive an ordinary reload or restart while certificate acquisition runs.
+destroy table inet lowerduckpond
 
 table inet lowerduckpond {
 {% set admin_ipv4 = firewall_admin_source_cidrs | reject('search', ':') | list %}

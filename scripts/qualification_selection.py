@@ -15,7 +15,15 @@ from scripts.qualification_groups import GROUPS
 FORMAT = "lowerduckpond-installed-selection-v1"
 ALL = tuple(GROUPS)
 _TESTS = "config/ansible/molecule/m3_8/tests/"
-_EMERGENCY = ("backup-mutation-overlap", "deletion-quarantine", "credentials", "reboot-journey")
+_EMERGENCY = (
+    "backup-mutation-overlap",
+    "deletion-quarantine",
+    "credentials",
+    "reboot-journey",
+    "restore-reconstruction",
+    "restore-negative",
+    "restore-tls-bootstrap",
+)
 # Only leaf modules with reviewed consumers are narrowed. Everything else,
 # including shared fixtures, schemas, authorization and deployment policy, is full.
 DEPENDENCIES = {

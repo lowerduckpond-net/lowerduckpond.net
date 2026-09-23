@@ -186,7 +186,7 @@ def test_mapping_covers_only_existing_leaf_test_modules() -> None:
     assert all(set(cases) <= set(policy.ALL) for cases in policy.DEPENDENCIES.values())
 
 
-def test_narrow_runtime_plan_has_only_the_reviewed_emergency_consumer() -> None:
+def test_narrow_runtime_plan_has_only_the_reviewed_emergency_consumers() -> None:
     package = ROOT / "packages/static-host-agent/src/lowerduckpond_static_host_agent"
     consumers = []
     for path in package.glob("*.py"):
@@ -196,7 +196,10 @@ def test_narrow_runtime_plan_has_only_the_reviewed_emergency_consumer() -> None:
                 and node.module == "lowerduckpond_static_host_agent.emergency_plan"
             ):
                 consumers.append(path.name)  # noqa: PERF401 - retain import-site diagnostics
-    assert consumers == ["emergency_delete.py"]
+    assert sorted(consumers) == ["emergency_delete.py", "host_restore_emergency.py"]
+    assert {"restore-reconstruction", "restore-negative", "restore-tls-bootstrap"} <= set(
+        policy._EMERGENCY
+    )
 
 
 def test_all_changed_paths_contribute_and_unknown_dominates() -> None:

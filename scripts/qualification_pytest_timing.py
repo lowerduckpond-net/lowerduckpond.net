@@ -13,6 +13,10 @@ from scripts.qualification_failure import TEST_FILES, capture_fixture, record_te
 from scripts.qualification_timing import CONTEXT_ENV, capture_fixture_identity, record_span
 
 GROUPS = {
+    "test_restore_reconstruction.py": "restore-reconstruction",
+    "test_restore_negative.py": "restore-negative",
+    "test_restore_tls_bootstrap.py": "restore-tls-bootstrap",
+    "test_restore_accounting.py": "accounting",
     "test_archive_credentials.py": "archive-credentials",
     "test_lifecycle.py": "core",
     "test_core_independent.py": "core",
@@ -37,6 +41,10 @@ OPERATOR_FAILURES = {
 }
 
 FUNCTION_GROUPS = {
+    "test_restore_reconstruction.py": "restore-reconstruction",
+    "test_restore_negative.py": "restore-negative",
+    "test_restore_tls_bootstrap.py": "restore-tls-bootstrap",
+    "test_restore_accounting.py": "accounting",
     "test_publication_and_operator_boundaries_preserve_the_live_tenant": (
         "configuration-publication"
     ),

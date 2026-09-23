@@ -1,0 +1,16 @@
+[Unit]
+Description=Close public web ingress for an unfinished host restore
+DefaultDependencies=no
+After=local-fs.target
+Before=network-pre.target nftables.service caddy.service
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/lowerduckpond/host-restore-gate --boot
+RemainAfterExit=yes
+TimeoutStartSec=30s
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

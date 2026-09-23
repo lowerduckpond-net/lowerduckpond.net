@@ -115,6 +115,21 @@ class JobHandoff(Protocol):
 class ExecutionTransaction(Protocol):
     def read(self, path: StateRecordPath) -> StoredContract: ...
 
+    def restored_runtime_request(
+        self,
+        manifest: dict[str, object],
+        observed: dict[str, object] | None,
+        generation_id: str | None,
+    ) -> tuple[str | None, dict[str, object] | None]: ...
+
+    def validate_restored_observation(
+        self, manifest: dict[str, object], observed: dict[str, object]
+    ) -> None: ...
+
+    def restored_export_retired(
+        self, job: dict[str, object], result: dict[str, object]
+    ) -> bool: ...
+
     def tenant_has_deployment_history(self, tenant_id: object) -> bool: ...
 
     def tenant_archive_ids(self, tenant_id: object) -> tuple[str, ...]: ...
@@ -3260,6 +3275,8 @@ def _validate_export_bundle(
         if job.get("executionValidated") is not True or job["phase"] != "completed":
             raise ExecutionError("retired export has no executor validation")
         return
+    if transaction.restored_export_retired(job, result):
+        return
     source_manifest = authority.source_manifest
     release_tree_digest = authority.source_release_tree_digest
     if source_manifest is None:
@@ -3395,8 +3412,11 @@ def _validate_observed_state(
         or observed["activeDeploymentId"] != active_deployment_id
     ):
         raise ExecutionError("successful lifecycle observed state is not authoritative")
-    if expected is not None and observed != expected:
-        raise ExecutionError("successful lifecycle observed state exceeds runtime authority")
+    transaction.validate_restored_observation(manifest, observed)
+    if expected is not None:
+        _, expected = transaction.restored_runtime_request(manifest, expected, None)
+        if observed != expected:
+            raise ExecutionError("successful lifecycle observed state exceeds runtime authority")
 
 
 def _validate_selected_deployment_state(  # noqa: PLR0912 - explicit operation matrix

@@ -232,7 +232,7 @@ def test_installed_coherent_backup_restore_and_writer_exclusion(host: Host, tmp_
     assert host.run("systemctl start %s", identity.UNIT).rc == 0
     # Activation also initializes protection, its timer, root commands and maintenance scope.
     support._assert_ansible_reapply_result(
-        support._run_ansible_reapply(backup_recovery_enabled=True), expected_changes=7
+        support._run_ansible_reapply(backup_recovery_enabled=True), expected_changes=12
     )
     support._assert_ansible_reapply_result(
         support._run_ansible_reapply(backup_recovery_enabled=True)
@@ -283,7 +283,7 @@ def test_installed_backup_capture_races_mutations(  # noqa: PLR0915 - complete c
     # the other case covers migration over history and mode-on idempotence.
     assert host.run("systemctl start %s", identity.UNIT).rc == 0
     support._assert_ansible_reapply_result(
-        support._run_ansible_reapply(backup_recovery_enabled=True), expected_changes=8
+        support._run_ansible_reapply(backup_recovery_enabled=True), expected_changes=13
     )
     support._prepare_edge_probe(host)
     support._initialize_admission_pacing(host)

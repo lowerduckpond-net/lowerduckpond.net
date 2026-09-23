@@ -410,6 +410,39 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "errorCode": {
+            "const": "restore_input_unavailable"
+          }
+        },
+        "required": [
+          "errorCode"
+        ]
+      },
+      "then": {
+        "properties": {
+          "operation": {
+            "enum": [
+              "deploy",
+              "import"
+            ]
+          },
+          "status": {
+            "const": "failed"
+          },
+          "failurePublisher": {
+            "const": "authorization-executor"
+          }
+        },
+        "required": [
+          "failurePublisher",
+          "failureAuditSequence",
+          "failureAuditPredecessorDigest"
+        ]
+      }
     }
   ],
   "$defs": {
@@ -585,6 +618,7 @@
         "not_found",
         "not_implemented",
         "publication_disabled",
+        "restore_input_unavailable",
         "state_drift",
         "unavailable"
       ],

@@ -339,6 +339,11 @@ def continue_removal(  # noqa: PLR0912 - explicit two-resource removal recovery
 
 
 def retire(directory: Path) -> Path:
+    if (directory / "restore").exists():
+        raise ValueError(
+            "retained reconstruction owns a fenced source, destination and ACME fixture; "
+            "use paired reconstruction accounting before retirement"
+        )
     directory = directory.resolve(strict=True)
     with run_lease(directory):
         print("Owned fixture retirement: verify ownership and removal progress", flush=True)

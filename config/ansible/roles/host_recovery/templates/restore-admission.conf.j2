@@ -1,0 +1,15 @@
+[Unit]
+Requires=lowerduckpond-restore-gate.service
+After=lowerduckpond-restore-gate.service
+{% if item.endswith('.timer') or item.endswith('.socket') %}
+ConditionPathExists=|!/var/lib/lowerduckpond/recovery/restore-gate.json
+ConditionPathExists=|/run/lowerduckpond-host-restore/schedules-ready
+{% elif item != 'caddy.service' %}
+ConditionPathExists=!/var/lib/lowerduckpond/recovery/restore-gate.json
+{% endif %}
+
+{% if item.endswith('.service') %}
+[Service]
+BindReadOnlyPaths=/var/lib/lowerduckpond/recovery
+ExecStartPre=+/usr/local/libexec/lowerduckpond/host-restore-gate {{ '--caddy' if item == 'caddy.service' else '--ordinary' }}
+{% endif %}

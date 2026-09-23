@@ -169,7 +169,7 @@ def test_installed_audit_protection_reconciles_orphans_and_preserves_retention( 
     # the archived prefix and its local successor.
     audits.run_unit(host, identity.UNIT)
     support._assert_ansible_reapply_result(
-        support._run_ansible_reapply(backup_recovery_enabled=True), expected_changes=8
+        support._run_ansible_reapply(backup_recovery_enabled=True), expected_changes=13
     )
     support._initialize_admission_pacing(host)
     connection = support._operator_inputs(tmp_path)

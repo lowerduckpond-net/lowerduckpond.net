@@ -165,23 +165,18 @@ def _tenant_row(tenant: BackupTenant, releases: list[dict[str, object]]) -> dict
 
 
 def _require_source_layout(roots: Mapping[str, Path], owner: int) -> None:
-    # Recovery provenance has no writers before P5 introduces its exact journal
-    # and receipt schemas. Unknown records must not acquire backup authority.
-    with DurableDirectory.open(
-        roots["recovery"],
-        expected_owner=owner,
-        expected_directory_mode=0o700,
-    ) as recovery:
-        temporaries = recovery.publication_temporaries(
-            expected_owner=owner, expected_mode=0o600, maximum_entries=64
-        )
-        descriptor = recovery.duplicate_descriptor()
-        try:
-            with os.scandir(descriptor) as entries:
-                if any(entry.name not in temporaries for entry in entries):
-                    raise BackupIdentityError("backup recovery provenance is unclassified")
-        finally:
-            os.close(descriptor)
+    # Imported lazily: restore runtime proofs reuse the backup descriptor types.
+    from lowerduckpond_static_host_agent.host_restore_history import (  # noqa: PLC0415
+        require_backup_provenance,
+    )
+    from lowerduckpond_static_host_agent.host_restore_journal import (  # noqa: PLC0415
+        HostRestoreError,
+    )
+
+    try:
+        require_backup_provenance(roots["recovery"], owner=owner)
+    except HostRestoreError as error:
+        raise BackupIdentityError("backup recovery provenance is invalid") from error
     with DurableDirectory.open(
         roots["content"],
         expected_owner=owner,
@@ -216,6 +211,53 @@ def build_capture_descriptor(  # noqa: PLR0913 - explicit input and privilege bi
 ) -> bytes:
     """The caller must retain these same leases until Restic has completed."""
 
+    authority = describe_backup_authority(
+        roots,
+        workspace,
+        locks=locks,
+        expected_owner=expected_owner,
+        content_group=content_group,
+        repository_genesis=repository_genesis,
+    )
+    caddy = capture_caddy_evidence(
+        caddy_root,
+        locks=locks,
+        expected_owner=expected_owner,
+        expected_group=content_group,
+    )
+    return encode_backup_descriptor(
+        {
+            **authority,
+            "schema": BACKUP_SCHEMA,
+            "captureId": capture_id,
+            "capturedAt": captured_at,
+            "sourcePolicyDigest": source_policy_digest(),
+            "artifactDigest": {
+                "format": ARTIFACT_DIGEST_FORMAT,
+                "algorithm": "sha256",
+                "value": artifact_sha256,
+            },
+            "caddy": caddy.to_dict(),
+        }
+    )
+
+
+def describe_backup_authority(  # noqa: PLR0913 - original and restored boundary use identical checks
+    roots: Mapping[str, Path],
+    workspace: Path,
+    *,
+    locks: LockManager,
+    expected_owner: int,
+    content_group: int,
+    repository_genesis: dict[str, object],
+) -> dict[str, object]:
+    """Measure only snapshot authority; never infer excluded runtime payloads.
+
+    Recovery compares this complete observation with the original descriptor
+    BEFORE changing any restored bytes. The same implementation used for capture
+    checks types, schemas, audit, retained releases, namespace and tree digests.
+    """
+
     locks.require_held(LockName.PUBLICATION, mode=LockMode.SHARED)
     locks.require_held(LockName.TENANT_STATE, mode=LockMode.SHARED)
     _require_source_layout(roots, expected_owner)
@@ -226,12 +268,6 @@ def build_capture_descriptor(  # noqa: PLR0913 - explicit input and privilege bi
         repository_genesis=repository_genesis,
     )
     releases = _releases(roots["content"], state, locks, expected_owner, content_group)
-    caddy = capture_caddy_evidence(
-        caddy_root,
-        locks=locks,
-        expected_owner=expected_owner,
-        expected_group=content_group,
-    )
     tree = measure_backup_sources(
         roots,
         workspace,
@@ -244,45 +280,33 @@ def build_capture_descriptor(  # noqa: PLR0913 - explicit input and privilege bi
         # An emergency intent can remain after its tenant directory is removed.
         # Preserve its surviving release evidence and explicit record absence.
         tenants[tenant_id] = BackupTenant(tenant_id, None, None, (), ())
-    return encode_backup_descriptor(
-        {
-            "schema": BACKUP_SCHEMA,
-            "captureId": capture_id,
-            "capturedAt": captured_at,
-            "sourcePolicyDigest": source_policy_digest(),
-            "artifactDigest": {
-                "format": ARTIFACT_DIGEST_FORMAT,
-                "algorithm": "sha256",
-                "value": artifact_sha256,
-            },
-            "lineage": state.lineage,
-            "namespaceDigest": platform_state_digest(state.namespace).to_dict(),
-            "launchDigest": None
-            if state.launch is None
-            else framed_digest(LAUNCH_DIGEST_FORMAT, canonical_json_bytes(state.launch)),
-            "audit": {
-                "entryCount": state.audit.entry_count,
-                "segmentCount": state.audit.segment_count,
-                "terminalEntryDigest": state.audit.terminal_digest,
-            },
-            "authority": {
-                "treeDigest": tree.digest,
-                "entryCount": tree.entries,
-                "contentBytes": tree.content_bytes,
-            },
-            "tenants": [
-                _tenant_row(tenants[identifier], releases.get(identifier, []))
-                for identifier in sorted(tenants)
-            ],
-            "intents": [
-                {
-                    "intentId": intent["intentId"],
-                    "tenantId": intent["tenantId"],
-                    "kind": intent["kind"],
-                    "digest": framed_digest(INTENT_DIGEST_FORMAT, canonical_json_bytes(intent)),
-                }
-                for intent in state.intents
-            ],
-            "caddy": caddy.to_dict(),
-        }
-    )
+    return {
+        "lineage": state.lineage,
+        "namespaceDigest": platform_state_digest(state.namespace).to_dict(),
+        "launchDigest": None
+        if state.launch is None
+        else framed_digest(LAUNCH_DIGEST_FORMAT, canonical_json_bytes(state.launch)),
+        "audit": {
+            "entryCount": state.audit.entry_count,
+            "segmentCount": state.audit.segment_count,
+            "terminalEntryDigest": state.audit.terminal_digest,
+        },
+        "authority": {
+            "treeDigest": tree.digest,
+            "entryCount": tree.entries,
+            "contentBytes": tree.content_bytes,
+        },
+        "tenants": [
+            _tenant_row(tenants[identifier], releases.get(identifier, []))
+            for identifier in sorted(tenants)
+        ],
+        "intents": [
+            {
+                "intentId": intent["intentId"],
+                "tenantId": intent["tenantId"],
+                "kind": intent["kind"],
+                "digest": framed_digest(INTENT_DIGEST_FORMAT, canonical_json_bytes(intent)),
+            }
+            for intent in state.intents
+        ],
+    }

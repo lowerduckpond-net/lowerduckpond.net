@@ -1,7 +1,7 @@
 # M3.11 backup and recovery operations
 
 M3.11 implementation is in progress. The accepted [plan](../plans/milestone-3.11.md)
-defines the complete qualification and production handoff. These P2/P3 commands
+defines the complete qualification and production handoff. These P2–P5 commands
 are preparation and verification tooling; production convergence remains an
 explicit later operator step after the final M3.11 qualification. M3.12 is
 unstarted and production publication stays disabled.
@@ -182,8 +182,8 @@ limits do not increase. The complete tree is limited to 800,000 entries, 12 GiB,
 at-most-1-GiB temporary file. Capacity reservations retain the existing
 5-GiB/10-percent and 100,000-inode/10-percent free floors. Special files, symlinks,
 hardlinks, nested mounts, extended attributes and unsafe ownership/modes fail.
-The recovery root currently admits only an empty committed namespace; P5 adds
-exact journal/receipt schemas. Safe publication temporaries are ignored intact.
+The recovery root admits only the classified P5 journal, receipt and provenance
+schemas, with explicit bounds. Safe publication temporaries are ignored intact.
 
 The whole backup service has a 30-minute deadline, 512 MiB, no swap, 32 tasks,
 1,024 descriptors and one CPU. Capture has a 30-minute Restic deadline within
@@ -199,7 +199,7 @@ credentials remain masked. The provisioner gains no source or backup access.
 | Published releases, retained history and retired release cleanup | Release-store mutation and lifecycle recovery require exclusive publication; capture measures under shared publication/state and refuses nonempty staging or unclassified retired names. |
 | Non-secret Caddy generation/start evidence | Generation publication, reload/start target and invocation evidence use exclusive publication. Capture verifies referenced immutable payloads under its shared lease. Secret-bearing bytes never enter the descriptor. |
 | Content parent, fixture, state/release directory metadata and Caddy generation/intent directories | Scoped root-only `configure-static-python` acquires publication then tenant-state exclusively before the actual Ansible file/template module writes. Each module releases both on exit; no synchronous service wait runs inside the wrapper. |
-| Recovery directory metadata | The same guarded Ansible task creates/maintains it. No committed recovery records are accepted until P5 defines their writers and schemas. |
+| Recovery journal, receipts, provenance and directory metadata | Guarded Ansible creates the directory. Root source fencing and reconstruction hold the repository lease, selected-artifact lease and separate coordinator exclusion; coherent backup uses that same repository exclusion. Only classified P5 records are capturable. |
 | SQL and descriptor staging | Root backup command under the exclusive repository lease; neither staging path belongs to the static authority tree. SQL retains the consistent database dump protocol. |
 
 The Ansible wrapper validates all four existing kernel lock inodes and never
@@ -425,3 +425,289 @@ closeout remain later M3.11 deliverables. Before local removal, rollback may use
 the compatible protected reader with rotation disabled. After removal, preserve
 the working archived-history reader and use forward repair or the reviewed
 restored-host workflow; older local-only readers cannot serve this state.
+
+## Gated host reconstruction (P5)
+
+`restore-static-host` reconstructs static authority on a distinct, explicitly
+bootstrapped destination. It requires a coherent snapshot made with the **same
+P5-capable artifact** installed at the destination. P4 and older artifacts are
+not silently upgraded during a restore. Keep those snapshots; first install the
+reviewed P5 artifact, take a new coherent backup and qualify its reconstruction.
+Publication and rotation remain off in production until the separately reviewed
+M3.11 handoff. The commands below describe disaster recovery and owned drills;
+they do not authorize a production reconstruction or start M3.12.
+
+The source must be fenced before creating or changing the destination. The
+installed root command closes the persistent web gate, drains the repository
+and artifact-selection leases, stops ordinary work and records the exact source
+identity/snapshot. Its receipt has no automatic expiry. Keep the source fenced
+through verification and retirement; there is no automatic un-fence command.
+An absent or unverified source receipt blocks this workflow. A source that
+cannot provide the receipt requires a separately reviewed fencing decision;
+removing the receipt check or fabricating a successful source command is not a
+recovery procedure.
+
+Use the secure workstation's existing private environment file/disposable shell
+from [production preparation](m3-10-convergence-preparation.md), verified SSH host
+keys and administrator identity. Keep the original report, selected artifact,
+namespace/launch policy, old public origin-pull CA certificates, new reviewed
+Caddy binary/environment/current CA inputs and original repository/node/storage
+target available. Do not source an environment file from the restored snapshot.
+The archive credential belongs to its separate installed helper; backup and
+Caddy credentials remain in their existing private configuration domains.
+
+Set the following nonsecret values in that shell. SSH aliases must refer to the
+reviewed source and **distinct fresh destination**, never a load-balanced name.
+The full snapshot ID comes from the retained coherent-backup evidence.
+
+```bash
+umask 077
+export LDP_RECOVERY=/absolute/private/reconstruction
+export LDP_SOURCE_SSH=reviewed-source-alias
+export LDP_DESTINATION_SSH=reviewed-destination-alias
+export LDP_SNAPSHOT_ID=REPLACE_WITH_64_LOWERCASE_HEX_DIGITS
+export LDP_RESTORE_ID=$(uv run --frozen python -c 'import uuid; print(uuid.uuid7())')
+mkdir -m 0700 "$LDP_RECOVERY"
+ssh "$LDP_SOURCE_SSH" sudo /usr/local/sbin/fence-static-host \
+  --snapshot "$LDP_SNAPSHOT_ID" --restore-id "$LDP_RESTORE_ID"
+ssh "$LDP_SOURCE_SSH" sudo cat \
+  "/var/lib/lowerduckpond/recovery/source-fence-$LDP_RESTORE_ID.json" \
+  > "$LDP_RECOVERY/source-fence.json"
+```
+
+Expect `restore_source_fenced` and the same restore UUID. Source fencing fails
+if the snapshot, artifact or repository authority does not verify. A failure
+may already have closed the source gate; inspect it privately and resume the
+same command/UUID. Do not allocate a new identity to bypass retained evidence.
+
+Prepare a fresh supported Ubuntu destination with the ordinary administrator
+SSH boundary and required storage capacity. State/content/Caddy installation
+roots must be absent; their **parents** must permit same-filesystem renames.
+A mount directly at `/etc/caddy` or `/srv/lowerduckpond` cannot be renamed by
+this workflow. Preserve at least the normal 5-GiB/100,000-inode/10% free floors
+*after* reserving restored candidates, generated runtime, verification workspace
+and retained prior roots. The coordinator independently calculates admission
+from the full Restic tree; a capacity refusal does not permit reducing floors.
+
+Before bootstrap, stage the reviewed public OS trust bundle and pinned Caddy
+binary through the administrator's ordinary baseline preparation. Obtain the
+actual destination machine ID and trust bundle over verified SSH. Keep a private
+workstation copy of the exact reviewed binary; its installed absolute path must
+match the pinned Caddy path selected by the Ansible role. Prepare canonical
+`namespace.json` and optional `launch.json` from the independently reviewed
+platform policy, plus the original and current public origin-pull certificates.
+Do not copy source Caddy certificate/account storage to the destination.
+
+Restic and the original descriptor preserve numeric file ownership. Reserve the
+original source Caddy **group ID** on the fresh destination before baseline
+packages allocate other accounts; do not renumber an occupied group. The
+destination Caddy user can have a new UID because its certificate storage is
+new. Create that account without a home directory so bootstrap can prove empty
+storage. A GID mismatch fails descriptor/content validation rather than silently
+rewriting captured metadata.
+
+```bash
+export LDP_CADDY_GID=$(ssh "$LDP_SOURCE_SSH" getent group caddy | cut -d: -f3)
+ssh "$LDP_DESTINATION_SSH" sudo groupadd --system --gid "$LDP_CADDY_GID" caddy
+ssh "$LDP_DESTINATION_SSH" sudo useradd --system --gid caddy \
+  --home-dir /var/lib/caddy --shell /usr/sbin/nologin --no-create-home caddy
+```
+
+```bash
+export LDP_DESTINATION_ID=$(ssh "$LDP_DESTINATION_SSH" cat /etc/machine-id)
+ssh "$LDP_DESTINATION_SSH" cat /etc/ssl/certs/ca-certificates.crt \
+  > "$LDP_RECOVERY/destination-trust.pem"
+export LDP_CADDY_BINARY_PATH=/usr/local/lib/lowerduckpond/REPLACE_WITH_PINNED_CADDY_NAME
+uv run --frozen python - <<'PY'
+import os
+import re
+from pathlib import Path
+root = Path(os.environ['LDP_RECOVERY'])
+token = os.environ['CADDY_CLOUDFLARE_API_TOKEN']
+assert re.fullmatch(r'[A-Za-z0-9_-]{20,256}', token)
+path = root / 'reviewed-caddy-environment'
+with path.open('x', encoding='ascii') as stream:
+    stream.write('CLOUDFLARE_API_TOKEN=' + token + '\n'
+                 'XDG_CONFIG_HOME=/etc/caddy\nXDG_DATA_HOME=/var/lib/caddy\n')
+path.chmod(0o600)
+PY
+uv run --frozen python -I -m lowerduckpond_static_host_agent.host_restore_prepare \
+  --fence "$LDP_RECOVERY/source-fence.json" \
+  --namespace "$LDP_RECOVERY/namespace.json" \
+  --destination-id "$LDP_DESTINATION_ID" \
+  --binary "$LDP_RECOVERY/reviewed-caddy-binary" \
+  --binary-path "$LDP_CADDY_BINARY_PATH" \
+  --environment "$LDP_RECOVERY/reviewed-caddy-environment" \
+  --ca "$LDP_RECOVERY/current-origin-pull-ca.pem" \
+  --original-ca "$LDP_RECOVERY/original-origin-pull-ca.pem" \
+  --trust-bundle "$LDP_RECOVERY/destination-trust.pem" \
+  --archive-region "$SPACES_REGION" --archive-bucket "$SPACES_ARCHIVE_BUCKET" \
+  --output "$LDP_RECOVERY/target"
+```
+
+Add `--launch "$LDP_RECOVERY/launch.json"` when the captured platform has a
+launch record. Supply each `--ca`/`--original-ca` twice, in reviewed order, for
+dual trust. Public CA inputs contain certificates only. Preparation creates a
+new directory exclusively, defaults publication and rotation to **false**, and
+writes only canonical policy, source fencing and original public trust. Tokens,
+private keys and repository credentials are not copied into that output. Review
+`target/target.json` privately. `--publication-enabled` and
+`--audit-rotation-enabled` express a separately reviewed activation policy;
+neither is part of M3.11 dark-production rollout by default.
+
+Create a private single-host inventory named `destination.yml` with the
+`hosting_nodes` group, verified destination SSH alias/address, administrator
+user/key and the **original** `backup_node_name`. Reuse the existing production
+input mapping through `--extra-vars` below, with the retained artifact path and
+SHA256 in `STATIC_HOST_AGENT_ARTIFACT_PATH` and
+`STATIC_HOST_AGENT_ARTIFACT_SHA256`. They must match `originalArtifactSha256` in
+the prepared policy. `BACKUP_REPOSITORY` must select the original repository and
+canonical location; a freshly initialized or unrelated repository is refused.
+For a local repository, an independently preserved exact copy must be at that
+same canonical path. The destination must have its dedicated archive credential
+for the reviewed region/bucket.
+
+For example, adapt this inventory privately using the original backup node name
+and an SSH alias already verified on the secure workstation:
+
+```yaml
+all:
+  children:
+    hosting_nodes:
+      hosts:
+        recovery-destination:
+          ansible_host: reviewed-destination-ssh-alias
+          ansible_user: ldp-admin
+          backup_node_name: lowerduckpond-production-01
+```
+
+```bash
+uv run --frozen python - <<'PY'
+import json
+import os
+from pathlib import Path
+root = Path(os.environ['LDP_RECOVERY'])
+value = {
+    'host_recovery_bootstrap_enabled': True,
+    'host_recovery_restore_id': os.environ['LDP_RESTORE_ID'],
+    'host_recovery_input_directory': str(root / 'target'),
+    'backup_static_recovery_enabled': True,
+    'backup_audit_rotation_enabled': False,
+    'static_publication_enabled': False,
+}
+with (root / 'bootstrap.json').open('x') as stream:
+    json.dump(value, stream)
+    stream.write('\n')
+PY
+uv run --frozen python -I -m lowerduckpond_static_host_agent.host_restore_bootstrap \
+  --directory "$LDP_RECOVERY/target" --destination "$LDP_DESTINATION_ID" \
+  --restore-id "$LDP_RESTORE_ID"
+ANSIBLE_CONFIG=config/ansible/ansible.cfg uv run --frozen ansible-playbook \
+  -i "$LDP_RECOVERY/destination.yml" \
+  --extra-vars @config/ansible/inventories/production/group_vars/hosting_nodes.yml \
+  --extra-vars "@$LDP_RECOVERY/bootstrap.json" config/ansible/playbooks/site.yml
+ssh "$LDP_DESTINATION_SSH" sudo /usr/local/sbin/restore-static-host \
+  --snapshot "$LDP_SNAPSHOT_ID"
+ssh "$LDP_DESTINATION_SSH" sudo /usr/local/sbin/restore-static-host --status
+```
+
+Bootstrap validates source fencing and reviewed destination inputs before its
+mutating tasks. It installs the durable gate before ordinary services, keeps
+Caddy/mutation/retention inactive and leaves certificate storage empty. It never
+selects a normal empty generation over restored tenant state. A plain converge
+cannot bypass an unfinished journal. Bootstrap may resume its own gate before
+journal creation; once the journal exists, use the restore command.
+
+### Resume, readiness and failure
+
+`--status` is read-only and reports restore/snapshot identity, durable phase and
+`activationPending`. The phase sequence is `prepared`, `restored`, `validated`,
+`reconciled`, `runtime-prepared`, `installed`, `verified`, `complete`. Before
+`installed`, changes remain in private trees. The coordinator records root
+inode identities before each same-filesystem rename, retains prior roots and
+recreates the four kernel lock files while preserving the recovery cursor.
+A partial root installation resumes only its original transaction.
+
+Repeat the **same** full-ID command after resolving an external cause. It does
+not accept another repository, path, credential, issuer, snapshot alias or
+restore identity. `verified` and activation-pending `complete` obtain fresh
+remote/state/runtime/TLS proof before opening ingress. Once a completed gate is
+open, a repeated command leaves later ordinary tenant work alone. Reboot cannot
+open an unfinished gate, even if runtime masks disappeared.
+
+Actual Caddy DNS-01 issuance must produce trusted current certificate/key pairs
+for both apex/wildcard pairs, and the certificates presented on loopback must
+match. Native process/admin health alone is insufficient. Authenticated origin
+pulls remain required; no HTTP application probe or internal/self-signed issuer
+fallback is used. Keep acquired Caddy account/certificate storage on retry.
+Do not reset startup attempts or extend service/coordinator deadlines.
+
+`complete` is durable before activation. The coordinator clears its startup
+transaction, restores reviewed publication/schedules, removes only the
+restore-specific nftables table, then clears the durable gate last. A crash in
+that sequence stays closed and resumes idempotently. The volatile schedule
+activation token disappears at reboot and cannot authorize ordinary mutation
+while the gate remains. Other firewall tables and SSH/outbound access stay in
+place.
+
+The coordinator retains 30 minutes, 512 MiB, no swap, 32 tasks and one CPU.
+The archive helper retains five minutes, 128 MiB, no swap, 16 tasks, one CPU and
+120 CPU seconds. It receives the actual coordinator/artifact leases over a
+root-only socket and only fixed state aliases/public recovery policy. It cannot
+read the backup password, Caddy token or tenant content. The coordinator cannot
+read the archive credential. Required exact versions are downloaded and parsed
+under the archive boundary; unknown versions, delete markers, multipart work,
+ambiguous audit history or changed inventories keep the whole host closed.
+
+For a failure, retain the original source, full snapshot, candidate/prior roots,
+restore history and Caddy storage. Inspect bounded diagnostics privately:
+
+```console
+sudo /usr/local/sbin/restore-static-host --status
+sudo systemctl show lowerduckpond-host-restore.service --property=Result,ExecMainStatus,MemoryPeak
+sudo journalctl --unit lowerduckpond-host-restore.service --no-pager --lines=30
+sudo journalctl --unit lowerduckpond-host-restore-archive-private.service --unit lowerduckpond-host-restore-archive-installed.service --no-pager --lines=30
+sudo nft list table inet lowerduckpond_restore
+```
+
+Fixed labels distinguish required archive absence, ambiguity/later timelines,
+changed trust and TLS failures when those categories are established. Provider
+failures retain the existing allowlisted archive diagnostics. Raw records,
+coordinates and tenant data stay private; the journal and its immutable local
+receipts identify the affected transaction. For unavailable exact versions,
+choose a newer coherent backup on a fresh reviewed destination, independently
+recover identical version evidence, or obtain a separately reviewed data-loss
+recovery decision. There is no automatic tenant drop or replacement upload.
+A source-selected emergency deletion with no existing authorized failure outcome
+also stays closed; recovery does not invent an emergency result.
+
+### P5 evidence and compatibility
+
+| Invariant | Component checks | Installed group |
+| --- | --- | --- |
+| Original descriptor, repository/namespace/launch/artifact and authorization joins | `test_host_restore_snapshot`, `test_host_restore_validation`, `test_host_restore_verification` | `restore-reconstruction`, `restore-negative` |
+| Source fence, cold bootstrap, durable gate, root/lock identity and phase resume | `test_host_restore_fence`, `test_host_restore_bootstrap`, `test_host_restore_journal`, `test_host_restore_install`, `test_host_restore_locks`, `test_host_restore_activation` | All three restore groups |
+| Independent audit discovery, exact captured prefix, existing intent finalizers and immutable results | `test_host_restore_audit*`, operation-specific `test_host_restore_*`, `test_host_restore_local`, `test_host_restore_pending`, `test_host_restore_exports` | `restore-reconstruction` |
+| Exact archive download/parse/full inventory and credential separation | `test_host_restore_archives`, `test_host_restore_archive_authority`, `test_host_restore_remote`, `test_host_restore_ipc`, `test_host_restore_units` | `restore-negative`, native reconstruction helper |
+| Independent trusted generation, ordinary result replay and new bounded startup | `test_host_restore_mapping`, `test_host_restore_history`, `test_host_restore_runtime`, `test_caddy_startup` | `restore-reconstruction` |
+| Empty certificate storage, real presented TLS, interrupted readiness and reboot | `test_host_restore_tls`, `test_host_restore_cold_storage`, `test_host_restore_coordinator` | `restore-tls-bootstrap` |
+
+Run the three fixed cases with `just check-installed-group restore-reconstruction`,
+`restore-negative` and `restore-tls-bootstrap`. Each owns a fenced source, second
+fresh Ubuntu/ext4/systemd destination, MinIO service and controlled ACME/DNS
+service. The pinned [Pebble](https://github.com/letsencrypt/pebble/releases/tag/v2.10.1)
+fixture performs actual DNS-01 validation; validation bypass flags are not used.
+Its private issuer/trust and endpoint routing exist only in those containers.
+The negative case deliberately leaves recovery blocked and proves unchanged
+installed roots, quiescent services, source fencing and independently empty
+owned storage before whole-fixture retirement. It never reports a completed
+restore. An unexpected failure retains all run-owned resources.
+
+These local reports are diagnostic and do not qualify live Spaces/public-CA
+behavior. P6 supplies the complete live combined drill, versioned report envelope,
+production preflight/handoff and measured budget evidence. No local fixture or
+component pass substitutes for that step. Restored provenance remains part of
+future coherent backups. Keep the compatible reader and original artifact;
+after reconstruction, older binaries lacking the runtime/history mapping cannot
+safely replay restored results. Do not roll back by deleting provenance or
+repointing `current` to such a binary.

@@ -1,0 +1,46 @@
+[Unit]
+Description=Reconstruct a fenced Lower Duck Pond host from exact backup authority
+Wants=network-online.target
+Requires=lowerduckpond-restore-gate.service
+After=network-online.target lowerduckpond-restore-gate.service
+ConditionPathExists=/etc/lowerduckpond/host-restore/target.json
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+ExecStart=/usr/local/libexec/lowerduckpond/host-restore-run
+TimeoutStartSec=30min
+TimeoutStopSec=15s
+MemoryMax=512M
+MemorySwapMax=0
+TasksMax=32
+LimitNOFILE=1024
+LimitCORE=0
+CPUQuota=100%
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+RuntimeDirectory=lowerduckpond-host-restore
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+PrivateTmp=true
+ProtectSystem=strict
+# Root renames require writable parents; retained roots remain private siblings.
+ReadWritePaths=/etc /srv /var/lib/lowerduckpond /var/lib/caddy
+ReadWritePaths=/var/cache/lowerduckpond-host-restore /var/cache/lowerduckpond-backup
+{% if backup_repository.startswith('/') %}
+ReadWritePaths={{ backup_repository | to_json }}
+{% endif %}
+# Archive credentials are exclusively available to the separate fixed helper.
+InaccessiblePaths=-/etc/lowerduckpond/archive -/run/lowerduckpond-archive
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+NoNewPrivileges=true
+RestrictSUIDSGID=true
+LockPersonality=true
+IPAddressDeny=169.254.169.254/32

@@ -9,6 +9,10 @@ the fixtures share a host kernel's loop-device pool even with distinct names.
 Molecule pipelines Ansible modules through its Docker connection to reduce
 per-task transfer overhead.
 
+The three reconstruction cases also create a second fresh destination and a
+run-owned ACME service after fencing the source. Their private provider mappings
+survive destination restart; they do not contact the public ACME or DNS API.
+
 The [fixed registry](../../scripts/qualification_groups.py) declares every test
 and parameter. It accepts no arbitrary test selector. The [reviewed selection policy](installed-selection.md) chooses required groups.
 The complete installed journey remains available locally and is required on
@@ -17,6 +21,9 @@ rather than a production qualification report.
 
 | Case | Preserved installed assertions and independent setup |
 | --- | --- |
+| `restore-reconstruction` | Own fenced source plus second fresh Ubuntu/ext4 destination; full-ID Restic restore, four tenant states, protected audit prefix/local tail, excluded upload/export decisions, exact archive proof, cold Caddy generation, immutable result replay and reboot. |
+| `restore-negative` | Own source/destination; invalid target/source bindings, unknown later object, denied/corrupted exact-version downloads, rehashed audit fork, mixed roots, corrupt trusted environment/retained content and retired exact VersionId. Gated failure, unchanged installed roots and independent remote absence are mandatory. |
+| `restore-tls-bootstrap` | Empty certificate storage, native DNS-01 issuance through pinned Pebble, actual DNS/CA rejection, process health insufficient for readiness, interrupted coordinator and destination restart with durable ingress gating. |
 | `audit-rotation` | Own explicit lineage and combined publication/coherent-backup/rotation activation; two production-size closed segments. Hard exits after prepare, lost snapshot reply, witness/index/head publication and unlink; actual reboot, fresh remote proof and bounded service completion. Exact create/delete replays, subsequent mutation, unchanged ordinary snapshots, protected counts, privilege/resource limits and final accounting. |
 | `audit-protection` | Own explicitly initialized empty lineage; publication and coherent backup activate together before supported tenant creation. Production-size closed audit segment, real ancient Restic copies and orphan adoption, exact index/witness and historical lookup, missing/corrupt/retagged protected evidence refusal before ordinary removal, journaled forget interruption and fixed-ID resume, service limits and credential-free health. Rotation and local removal remain disabled. |
 | `backup-identity` | Fresh supported tenant history; real Restic config/full snapshot IDs and restore, permanent repository genesis before local commit, refusal after both local identity records are lost, retention exclusion, audit-prefix verification, repository/selection/state lock exclusion, wrong repository identity and root-only command boundaries. |
@@ -53,7 +60,14 @@ Each stage must collect exactly its declared tests, in order, and pass setup,
 call and teardown for every test. A skip, expected failure, missing test,
 collection failure, or zero exit with incomplete execution produces no passing
 stage receipt. Both reboot cases need before/after receipts. Every final
-stage also runs the existing artifact-integrity and archive-accounting check.
+stage also runs the existing artifact-integrity and archive-accounting check,
+or the paired reconstruction accounting check for restore groups. Those groups
+retain the source fence and independently bind the destination and controlled
+ACME service to recorded container IDs. The negative case must remain blocked
+with unchanged installed roots; it never supplies a completed-restore receipt.
+Successful reconstruction must finish ordinary destination accounting and all
+DNS challenge cleanup. The ordinary two-resource retirement command refuses a
+retained reconstruction fixture rather than orphaning its extra resources.
 Before teardown, the controller obtains fresh validated local accounting bound
 to the run's artifact, independent root-identity whole-bucket absence for both
 MinIO buckets, then rechecks container identities and local accounting.
