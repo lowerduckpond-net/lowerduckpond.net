@@ -24,6 +24,11 @@ from scripts.qualification_context import (  # noqa: E402 - standalone controlle
     resource_names,
     run_lease,
 )
+from scripts.qualification_failure import (  # noqa: E402
+    record_controller_failure,
+    record_controller_stage,
+    record_phase,
+)
 from scripts.qualification_groups import GROUPS  # noqa: E402
 from scripts.qualification_probe import bounded_command  # noqa: E402
 
@@ -97,11 +102,14 @@ def create_environment(directory: Path) -> dict[str, str]:
 def run(directory: Path, *, create_only: bool = False, case: str = "complete") -> int:
     if case not in {"complete", "baseline", *GROUPS} or (create_only and case != "complete"):
         raise ValueError("unsupported qualification case")
+    record_phase("dependencies")
+    record_controller_stage("docker-endpoint")
     environment = create_environment(directory)
     docker = shutil.which("docker")
     uv = shutil.which("uv")
     if docker is None or uv is None:
         raise ValueError("local qualification tools are unavailable")
+    record_controller_stage("docker-daemon")
     subprocess.run(  # noqa: S603 - checked Docker endpoint; fixed read-only check
         [docker, "info"],
         env=environment,
@@ -110,6 +118,7 @@ def run(directory: Path, *, create_only: bool = False, case: str = "complete") -
         stderr=subprocess.DEVNULL,
         timeout=10,
     )
+    record_controller_stage("resource-collision")
     for key in (HOST_ENV, ARCHIVE_ENV):
         existing = subprocess.run(  # noqa: S603 - generated owned name, fixed metadata query
             [docker, "inspect", environment[key]],
@@ -170,7 +179,8 @@ def main() -> int:
             directory = Path(tempfile.mkdtemp(prefix="local-", dir=root))
         print(f"Private local qualification run: {directory}", flush=True)
         return run(directory, create_only=args.create_only, case=args.case)
-    except Exception:
+    except Exception as error:
+        record_controller_failure(error)
         print(
             "Owned local qualification did not complete; private run context retained.",
             file=sys.stderr,
