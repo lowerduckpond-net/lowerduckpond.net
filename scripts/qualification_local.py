@@ -42,9 +42,8 @@ def docker_endpoint(environment: dict[str, str]) -> str:
         if context:
             arguments.append(context)
         arguments.extend(("--format", "{{.Endpoints.docker.Host}}"))
-        output = bounded_command(arguments)
-        if output is None:
-            raise ValueError("Docker context is unavailable")
+        output = bounded_command(arguments, check=True)
+        assert output is not None  # noqa: S101 - checked mode returns bytes or raises
         endpoint = output.decode("ascii").strip()
     else:
         endpoint = environment["DOCKER_HOST"]
@@ -103,33 +102,39 @@ def run(directory: Path, *, create_only: bool = False, case: str = "complete") -
     if case not in {"complete", "baseline", *GROUPS} or (create_only and case != "complete"):
         raise ValueError("unsupported qualification case")
     record_phase("dependencies")
-    record_controller_stage("docker-endpoint")
-    environment = create_environment(directory)
-    docker = shutil.which("docker")
-    uv = shutil.which("uv")
-    if docker is None or uv is None:
-        raise ValueError("local qualification tools are unavailable")
-    record_controller_stage("docker-daemon")
-    subprocess.run(  # noqa: S603 - checked Docker endpoint; fixed read-only check
-        [docker, "info"],
-        env=environment,
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        timeout=10,
-    )
-    record_controller_stage("resource-collision")
-    for key in (HOST_ENV, ARCHIVE_ENV):
-        existing = subprocess.run(  # noqa: S603 - generated owned name, fixed metadata query
-            [docker, "inspect", environment[key]],
+    try:
+        record_controller_stage("docker-endpoint")
+        environment = create_environment(directory)
+        docker = shutil.which("docker")
+        uv = shutil.which("uv")
+        if docker is None:
+            raise FileNotFoundError("docker")
+        if uv is None:
+            raise FileNotFoundError("uv")
+        record_controller_stage("docker-daemon")
+        subprocess.run(  # noqa: S603 - checked Docker endpoint; fixed read-only check
+            [docker, "info"],
             env=environment,
-            check=False,
+            check=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=10,
         )
-        if existing.returncode == 0:
-            raise ValueError("generated qualification name already exists")
+        record_controller_stage("resource-collision")
+        for key in (HOST_ENV, ARCHIVE_ENV):
+            existing = subprocess.run(  # noqa: S603 - generated name, fixed metadata query
+                [docker, "inspect", environment[key]],
+                env=environment,
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+            )
+            if existing.returncode == 0:
+                raise ValueError("generated qualification name already exists")
+    except Exception as error:
+        record_controller_failure(error)
+        raise
     print(f"Owned local fixture: {environment[HOST_ENV]}", flush=True)
     if case in GROUPS:
         from scripts.qualification_group_case import run_group  # noqa: PLC0415
@@ -179,8 +184,7 @@ def main() -> int:
             directory = Path(tempfile.mkdtemp(prefix="local-", dir=root))
         print(f"Private local qualification run: {directory}", flush=True)
         return run(directory, create_only=args.create_only, case=args.case)
-    except Exception as error:
-        record_controller_failure(error)
+    except Exception:
         print(
             "Owned local qualification did not complete; private run context retained.",
             file=sys.stderr,

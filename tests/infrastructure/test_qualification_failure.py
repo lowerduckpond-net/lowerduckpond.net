@@ -20,6 +20,7 @@ from scripts.m3_10_qualification_report import verify_report
 
 FAILURE_STATUS = 2
 COMMAND_DEADLINE_TEST_SECONDS = 3
+COMMAND_FAILURE_STATUS = 7
 CANARY = "private-credential-object-name-exception-canary"
 CORRELATION = "01a0b11c-8fe8-7781-b277-81e5e4c813ba"
 JOB = "01a0b11d-7e30-754f-8ad5-44c8a329494d"
@@ -212,6 +213,27 @@ def test_capacity_preflight_failure_has_a_fixed_ansible_category(directory: Path
         outcome="failed",
     )
     assert failure.ansible_failure(directory)["category"] == "capacity-prerequisite"
+
+
+@pytest.mark.parametrize(
+    ("message", "category"),
+    [
+        ("Temporary failure resolving package.invalid", "name-resolution"),
+        ("Connection timed out", "timeout"),
+        ("Permission denied", "permission-denied"),
+        ("unclassified transport failure", "connection-refused"),
+    ],
+)
+def test_unreachable_prefers_specific_failure_category(
+    directory: Path, message: str, category: str
+) -> None:
+    failure.record_ansible_failure(
+        "ansible.builtin.command",
+        f"{failure.ROOT / 'config/ansible/playbooks/site.yml'}:17",
+        {"msg": message},
+        outcome="unreachable",
+    )
+    assert failure.ansible_failure(directory)["category"] == category
 
 
 def test_capture_retains_original_container_identity(
@@ -416,6 +438,20 @@ def test_command_time_and_output_limits_apply_to_real_processes() -> None:
     assert probe.bounded_command([sys.executable, "-c", "print('x' * 100000)"]) is None
     assert probe.bounded_command([sys.executable, "-c", "print('bounded')"]) == b"bounded\n"
     assert probe.bounded_command([sys.executable, "-c", "raise SystemExit(7)"]) is None
+
+
+def test_checked_bounded_command_preserves_failure_type() -> None:
+    with pytest.raises(FileNotFoundError):
+        probe.bounded_command(["lowerduckpond-command-does-not-exist"], check=True)
+    with pytest.raises(subprocess.TimeoutExpired):
+        probe.bounded_command(
+            [sys.executable, "-c", "import time; time.sleep(30)"], timeout=0.1, check=True
+        )
+    with pytest.raises(subprocess.CalledProcessError) as error:
+        probe.bounded_command(
+            [sys.executable, "-c", f"raise SystemExit({COMMAND_FAILURE_STATUS})"], check=True
+        )
+    assert error.value.returncode == COMMAND_FAILURE_STATUS
 
 
 def test_host_deadline_terminates_even_when_optional_probe_swallows_exceptions() -> None:

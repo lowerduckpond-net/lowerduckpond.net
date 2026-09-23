@@ -226,8 +226,6 @@ def record_controller_failure(error: BaseException) -> None:
 
 
 def _ansible_category(action: str, result: dict[str, object], outcome: str) -> str:
-    if outcome == "unreachable":
-        return "connection-refused"
     if action in {"ansible.builtin.assert", "assert"}:
         return "assertion"
     text = " ".join(
@@ -249,6 +247,8 @@ def _ansible_category(action: str, result: dict[str, object], outcome: str) -> s
     )
     if category:
         return category
+    if outcome == "unreachable":
+        return "connection-refused"
     return "module-exception" if "exception" in result else "module-failed"
 
 
