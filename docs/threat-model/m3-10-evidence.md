@@ -132,7 +132,7 @@ release artifact before production preparation.
   switch and restoration; the fresh complete installed rerun passed all 45 checks.
 - The pinned MinIO fixture requires `s3:DeleteObject` in addition to the
   version action for exact-version deletion, as its
-  [authorization implementation](https://github.com/minio/minio/blob/RELEASE.2025-09-07T16-13-09Z/cmd/auth-handler.go#L430-L457)
+  [authorization implementation](https://github.com/minio/minio/blob/07c3a429bfed433e49018cb0f78a52145d4bedeb/cmd/auth-handler.go#L465-L489)
   demonstrates. `6df7ec0` adds that permission only to the disposable archive
   policy. The initial failure retained the known credential-proof objects and
   closed archive admission; those exact fixture versions were verified and
