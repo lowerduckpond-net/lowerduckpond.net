@@ -262,6 +262,7 @@ def main() -> None:
         threading.Thread(target=control.serve_forever, daemon=True).start()
         server = ThreadingHTTPServer(("0.0.0.0", 443), Handler)  # noqa: S104 - isolated fixture
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.load_cert_chain(str(ROOT / "proxy.crt"), str(ROOT / "proxy.key"))
         server.socket = context.wrap_socket(server.socket, server_side=True)
         server.serve_forever()

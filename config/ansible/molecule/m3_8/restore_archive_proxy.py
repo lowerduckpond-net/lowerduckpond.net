@@ -95,6 +95,7 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> None:
     server = ThreadingHTTPServer(("0.0.0.0", 8443), Handler)  # noqa: S104 - owned container
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.load_cert_chain(str(ROOT / "public.crt"), str(ROOT / "private.key"))
     server.socket = context.wrap_socket(server.socket, server_side=True)
     server.serve_forever()
