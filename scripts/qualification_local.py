@@ -105,6 +105,7 @@ def run(directory: Path, *, create_only: bool = False, case: str = "complete") -
     try:
         record_controller_stage("docker-endpoint")
         environment = create_environment(directory)
+        record_controller_stage("dependencies")
         docker = shutil.which("docker")
         uv = shutil.which("uv")
         if docker is None:

@@ -69,6 +69,14 @@ def _assert_completed_rotation(host: Host, expected: list[str], before: set[str]
     _assert_snapshot_inventory(host, before, len(expected))
 
 
+def _restore_timers_after_verification(host: Host) -> None:
+    assert host.run(f"systemctl enable --now {_TIMERS}").rc == 0
+    # OnBootSec has elapsed across the real reboot, so activating the persistent
+    # verify timer can start a proof asynchronously. Join that fixed read-only
+    # unit before the outer quiescent-accounting lock is acquired.
+    audits.run_unit(host, audits.VERIFY_UNIT)
+
+
 def test_installed_rotation_interruptions_before_reboot(host: Host, tmp_path: Path) -> None:
     require_owned_fixture()
     assert support._initialize_namespace(host)
@@ -187,4 +195,4 @@ def test_installed_rotation_reboot_and_second_full_segment(host: Host, tmp_path:
     assert "lowerduckpond_audit_protected_snapshots 3" in audits.health(host, succeeds=True)
     # Re-enable the configured owned timers only after all injections and
     # historical replays complete; final accounting still runs independently.
-    assert host.run(f"systemctl enable --now {_TIMERS}").rc == 0
+    _restore_timers_after_verification(host)

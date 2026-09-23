@@ -150,6 +150,18 @@ def test_controller_timeout_records_only_allowlisted_stage_and_category(
     assert CANARY not in json.dumps(report)
 
 
+def test_outer_accounting_context_is_fixed_and_restores_the_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(timing.EVENT_ENV, str(tmp_path / "timing-events.jsonl"))
+    failure.record_accounting_check("audit-rotation", "local-before-storage")
+    assert failure.accounting_check(tmp_path) == "local-before-storage"
+    assert failure._last_submission(tmp_path) == ("audit-rotation", {}, "unknown")
+    failure.record_accounting_check(CANARY, CANARY)
+    assert failure.accounting_check(tmp_path) == "unknown"
+    assert CANARY not in (tmp_path / "failure-accounting-check.json").read_text()
+
+
 def test_ansible_failure_records_source_and_classification_without_module_output(
     directory: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -219,6 +231,10 @@ def test_capacity_preflight_failure_has_a_fixed_ansible_category(directory: Path
     ("message", "category"),
     [
         ("Temporary failure resolving package.invalid", "name-resolution"),
+        (
+            "Could not resolve hostname node: Temporary failure in name resolution",
+            "name-resolution",
+        ),
         ("Connection timed out", "timeout"),
         ("Permission denied", "permission-denied"),
         ("unclassified transport failure", "connection-refused"),

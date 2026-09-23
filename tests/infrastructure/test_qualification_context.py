@@ -215,6 +215,29 @@ def test_missing_docker_context_command_is_classified(
     }
 
 
+@pytest.mark.parametrize(("missing", "category"), [(True, "missing-command"), (False, "os-error")])
+def test_missing_uv_is_classified_as_a_dependency_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, missing: bool, category: str
+) -> None:
+    monkeypatch.setenv(timing.EVENT_ENV, str(tmp_path / "timing-events.jsonl"))
+
+    def lookup(name: str) -> str | None:
+        if name == "docker":
+            return "/usr/bin/docker"
+        if missing:
+            return None
+        raise OSError("PATH lookup unavailable")
+
+    monkeypatch.setattr(shutil, "which", lookup)
+    with pytest.raises(FileNotFoundError if missing else OSError):
+        local.run(tmp_path)
+    assert json.loads((tmp_path / "failure-controller.json").read_text()) == {
+        "stage": "dependencies",
+        "category": category,
+        "return_code": "unknown",
+    }
+
+
 def test_post_preflight_failure_is_not_reported_as_a_controller_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
