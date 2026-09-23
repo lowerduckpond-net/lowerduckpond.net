@@ -130,16 +130,17 @@ def test_rotation_memory_evidence_is_fresh_unique_and_within_the_original_limit(
     assert query[1:] == ("before-this-invocation", UNIT, MESSAGE)
 
 
-def test_rotation_timer_restore_joins_the_persistent_verifier() -> None:
+def test_rotation_timer_restore_remains_quiescent_for_outer_accounting() -> None:
     host = Mock()
     host.run.return_value = SimpleNamespace(rc=0)
-    audits = SimpleNamespace(run_unit=Mock(), VERIFY_UNIT="lowerduckpond-audit-verify.service")
     restore = load_function(
         "test_audit_rotation",
-        "_restore_timers_after_verification",
+        "_restore_timer_enablement_for_teardown",
         _TIMERS="owned.timer other.timer",
-        audits=audits,
     )
     restore(host)
-    host.run.assert_called_once_with("systemctl enable --now owned.timer other.timer")
-    audits.run_unit.assert_called_once_with(host, audits.VERIFY_UNIT)
+    assert [call.args for call in host.run.call_args_list] == [
+        ("systemctl enable owned.timer other.timer",),
+        ("systemctl is-enabled --quiet %s", "owned.timer"),
+        ("systemctl is-enabled --quiet %s", "other.timer"),
+    ]
