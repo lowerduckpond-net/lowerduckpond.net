@@ -149,6 +149,24 @@ def test_roles_keep_shared_parent_searchable_without_listing_and_recovery_privat
     assert directories["ansible.builtin.file"]["group"] == "root"
 
 
+@pytest.mark.parametrize("bootstrap", [None, False, True])
+def test_initial_health_requires_live_services_only_outside_recovery_bootstrap(
+    bootstrap: bool | None,
+) -> None:
+    tasks = yaml.safe_load((ROLE.parent / "monitoring/tasks/main.yml").read_text())
+    health = next(
+        task
+        for task in tasks
+        if task.get("ansible.builtin.command", {}).get("cmd")
+        == "/usr/local/libexec/lowerduckpond/health-check"
+    )
+    variables = {} if bootstrap is None else {"host_recovery_bootstrap_enabled": bootstrap}
+    enabled = Templar(variables=variables).template(
+        trust_as_template("{{ " + health.get("when", "true") + " }}")
+    )
+    assert enabled is (bootstrap is not True)
+
+
 def test_bootstrap_replaces_package_flush_ruleset_before_installing_boot_guard() -> None:
     tasks = yaml.safe_load((ROLE / "tasks/main.yml").read_text())
     policy = next(
