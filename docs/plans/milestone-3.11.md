@@ -745,6 +745,29 @@ and operator behavior; P6 integrates them rather than postponing correctness
 testing. Keep durable private task notes with current PR/head, checks/review,
 completed decisions, next slice and required operator actions.
 
+P6 is split at its evidence boundary. P6a extends the existing qualification
+report entry point with the strict
+[combined evidence envelope](../operations/m3-11-qualification-evidence.md),
+explicit milestone selection, original identity/chronology checks and hostile
+report coverage. P6b supplies the combined installed/live producer and production
+handoff that consume that envelope. P6a does not make the planned operator
+commands available, qualify a rollout or change the existing production gate.
+Both slices must merge before requesting final secure-workstation qualification.
+
+P5 merged in [PR #171](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/171)
+after all 21 installed groups passed on exact head `eb6849b58ea24f193708a46e96a8e52ea9f663f3`
+in [CI run 36049726922](https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/36049726922)
+and the requested review had no findings. Original diagnostic reports identify
+the tested merge tree `af110ad1d84a235e7f46be69ee8991a3c31a57c9` and artifact
+`816b3ac58e78473541d920451c90480bc9b7a559d02dcb70063a5587c591ffd5`.
+Reconstruction measured 36.84 minutes including setup and TLS bootstrap 36.92;
+archive cycles measured 33.25, backup mutation overlap 32.16 and core 30.92.
+The 21 scenarios consumed 520.60 minutes and their CI jobs 531.67 runner minutes
+in total. These passing results retain five open 30-minute target overruns;
+they are no budget exception. Address them through measured fixture changes or
+an explicitly reviewed exception before closeout. Original earlier failures
+remain failures, and local/MinIO results remain distinct from live qualification.
+
 P2 is split at its prerequisite boundary for review: P2a installs repository
 binding and explicit, durable lineage initialization, with the independent
 `backup-identity` case. P2b consumes that identity in the recovery descriptor,
