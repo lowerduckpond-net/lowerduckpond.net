@@ -2,7 +2,7 @@
 
 Use `just check-installed-group CASE` after `just setup`. Each case creates a
 fresh owned systemd host and MinIO service, installs the same artifact as the
-complete qualification, and checks idempotence before its tests. Production
+complete qualification, and checks idempotence on its source configuration. Production
 admission and service resource limits remain unchanged. The controller must
 reach the fixture's published SSH port. Run parallel cases on separate runners;
 the fixtures share a host kernel's loop-device pool even with distinct names.
@@ -73,6 +73,12 @@ or the paired reconstruction accounting check for restore groups. Those groups
 retain the source fence and independently bind the destination and controlled
 ACME service to recorded container IDs. The negative case must remain blocked
 with unchanged installed roots; it never supplies a completed-restore receipt.
+Reconstruction groups check source idempotence after enabling publication and
+recovery (and rotation for `restore-reconstruction`), instead of repeating the
+initial dark-source configuration. They still run two full Ansible convergences:
+activation, then a zero-change reapply. Only that successful reapply writes the
+required receipt, bound to the run, source container, image, artifact and enabled
+features. Missing or mismatched receipts prevent completion and retirement.
 Successful reconstruction must finish ordinary destination accounting and all
 DNS challenge cleanup. The ordinary two-resource retirement command refuses a
 retained reconstruction fixture rather than orphaning its extra resources.

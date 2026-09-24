@@ -14,6 +14,7 @@ from scripts import qualification_case as primitives
 from scripts import qualification_failure as failure
 from scripts import qualification_group_case as case
 from scripts import qualification_group_runner as runner
+from scripts import qualification_restore as restore
 from scripts import qualification_timing as timing
 from scripts.qualification_context import (
     ARCHIVE_ENV,
@@ -272,6 +273,72 @@ def test_failed_phase_cannot_reach_a_later_phase_or_cleanup(
     sequence = ["create", "prepare", "converge", "idempotence", "verify"]
     assert observed == sequence[: sequence.index(failed) + 1]
     assert not (tmp_path / "case.json").exists()
+
+
+@pytest.mark.parametrize("name", [name for name, group in GROUPS.items() if group.reconstruction])
+@pytest.mark.parametrize("fault", [None, "missing", "rotation", "before-teardown"])
+def test_reconstruction_requires_final_source_idempotence_before_completion_or_teardown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    environment: dict[str, str],
+    name: str,
+    fault: str | None,
+) -> None:
+    artifact = Path(environment[ARTIFACT_ENV])
+    artifact.parent.mkdir()
+    artifact.write_bytes(b"selected artifact")
+    source = {
+        "id": "a" * 64,
+        "name": "/" + environment[HOST_ENV],
+        "owner": environment[RUN_ENV],
+        "image": "sha256:" + "c" * 64,
+    }
+    monkeypatch.setattr(restore, "inspect", lambda *_: source)
+    phases = []
+    proof = tmp_path / "source-idempotence.json"
+
+    def phase(directory: Path, env: dict[str, str], uv: str, current: str) -> int:
+        phases.append(current)
+        if current == "verify":
+            receipts(directory, env, name)
+            receipt = restore.source_idempotence_receipt(
+                env, archived_prefix=name == "restore-reconstruction"
+            )
+            if fault == "rotation":
+                receipt["rotation"] = not receipt["rotation"]
+            if fault != "missing":
+                proof.write_text(json.dumps(receipt))
+        return 0
+
+    def remote(*_: object) -> None:
+        if fault == "before-teardown":
+            proof.unlink()
+
+    pair = {"destination": "d" * 64, "acme": "e" * 64}
+
+    def paired(env: dict[str, str]) -> dict[str, str]:
+        restore.require_source_idempotence(env)
+        return pair
+
+    monkeypatch.setattr(case, "phase", phase)
+    for module in (case, primitives):
+        monkeypatch.setattr(
+            module,
+            "owned_containers",
+            lambda *args, **kwargs: {HOST_ENV: "a" * 64, ARCHIVE_ENV: "b" * 64},
+        )
+    monkeypatch.setattr(case, "independent_storage_absence", remote)
+    monkeypatch.setattr(restore, "paired_proof", paired)
+    monkeypatch.setattr(restore, "remove_pair", lambda *_: phases.append("remove-pair"))
+    monkeypatch.setattr(case, "remove_owned_image", lambda *_: None)
+    if fault is None:
+        assert case.run_group(tmp_path, environment, "uv", name) == 0
+        assert phases == ["create", "prepare", "converge", "verify", "remove-pair", "destroy"]
+    else:
+        with pytest.raises((ValueError, FileNotFoundError)):
+            case.run_group(tmp_path, environment, "uv", name)
+        assert phases == ["create", "prepare", "converge", "verify"]
+    assert (tmp_path / "case.json").exists() is (fault is None)
 
 
 def test_partial_group_report_is_never_production_qualification(tmp_path: Path) -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time
 import uuid
 from pathlib import Path
@@ -27,10 +28,8 @@ from scripts import qualification_restore as owned
 from scripts.qualification_case import private_document
 
 
-def source(
-    host: Host, tmp_path: Path, *, archived_prefix: bool = False, full_history: bool = True
-) -> tuple[Fixture, list[str], dict[str, object]]:
-    require_owned_fixture()
+def activate_source(host: Host, *, archived_prefix: bool) -> None:
+    """Require full source convergence and idempotence on its final configuration."""
     assert support._initialize_namespace(host)
     assert host.run("systemctl start %s", identity.UNIT).rc == 0
     reapplied = support._run_ansible_reapply(
@@ -44,6 +43,19 @@ def source(
             backup_recovery_enabled=True, audit_rotation_enabled=archived_prefix
         )
     )
+    environment = dict(os.environ)
+    receipt = owned.source_idempotence_receipt(environment, archived_prefix=archived_prefix)
+    path = owned.directory(environment).parent / "source-idempotence.json"
+    with path.open("x", encoding="ascii") as stream:
+        json.dump(receipt, stream, sort_keys=True)
+        stream.write("\n")
+
+
+def source(
+    host: Host, tmp_path: Path, *, archived_prefix: bool = False, full_history: bool = True
+) -> tuple[Fixture, list[str], dict[str, object]]:
+    require_owned_fixture()
+    activate_source(host, archived_prefix=archived_prefix)
     support._prepare_edge_probe(host)
     support._initialize_admission_pacing(host)
     connection = support._operator_inputs(tmp_path)

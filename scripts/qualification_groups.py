@@ -21,6 +21,13 @@ class Group:
     after_reboot: tuple[str, ...] = ()
     reconstruction: bool = False
 
+    @property
+    def phases(self) -> tuple[str, ...]:
+        # Reconstruction checks the fully activated source inside verify and
+        # requires its bound receipt. Other groups check initial idempotence.
+        idempotence = () if self.reconstruction else ("idempotence",)
+        return ("create", "prepare", "converge", *idempotence, "verify")
+
     def nodes(self, stage: str, host: str) -> tuple[str, ...]:
         accounting = (
             node("restore_accounting", "installed_restore_paired_accounting")

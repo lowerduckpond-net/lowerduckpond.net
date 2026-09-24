@@ -82,6 +82,41 @@ def inspect(environment: dict[str, str], identity: str) -> dict[str, object]:
     return value
 
 
+def source_idempotence_receipt(
+    environment: dict[str, str], *, archived_prefix: bool
+) -> dict[str, object]:
+    from scripts.qualification_retirement import artifact_digest  # noqa: PLC0415
+
+    source = inspect(environment, host_name(environment))
+    return {
+        "format": "lowerduckpond-restore-source-idempotence-v1",
+        "run_id": environment[RUN_ENV],
+        "source": {key: source[key] for key in ("id", "name", "owner", "image")},
+        "artifact_sha256": artifact_digest(Path(environment[ARTIFACT_ENV])),
+        "publication": True,
+        "recovery": True,
+        "rotation": archived_prefix,
+        "changed": 0,
+        "unreachable": 0,
+        "failed": 0,
+    }
+
+
+def require_source_idempotence(
+    environment: dict[str, str], *, archived_prefix: bool | None = None
+) -> None:
+    receipt = document(directory(environment).parent / "source-idempotence.json")
+    rotation = receipt.get("rotation")
+    if (
+        not isinstance(rotation, bool)
+        or any(type(receipt.get(key)) is not int for key in ("changed", "unreachable", "failed"))
+        or any(receipt.get(key) is not True for key in ("publication", "recovery"))
+        or (archived_prefix is not None and rotation is not archived_prefix)
+        or receipt != source_idempotence_receipt(environment, archived_prefix=rotation)
+    ):
+        raise ValueError("source lacks its configured idempotence proof")
+
+
 def identities(environment: dict[str, str]) -> dict[str, str]:
     result = {}
     for kind in KINDS:
@@ -196,6 +231,7 @@ assert value['deleted'] == value['created'] and value['remaining'] == 0
 def paired_proof(environment: dict[str, str]) -> dict[str, str]:
     from scripts.qualification_retirement import local_proof  # noqa: PLC0415
 
+    require_source_idempotence(environment)
     pair = identities(environment)
     receipt = document(directory(environment) / "completed.json")
     if receipt.get("identities") != pair or receipt.get("status") != "passed":

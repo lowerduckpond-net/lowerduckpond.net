@@ -41,6 +41,10 @@ def stage_receipts(
             raise ValueError("the group did not pass every declared installed test")
     if case == "full-size-archive":
         return installed_receipt(directory, environment)
+    if group.reconstruction:
+        restore.require_source_idempotence(
+            environment, archived_prefix=case == "restore-reconstruction"
+        )
     return None
 
 
@@ -88,7 +92,7 @@ def run_group(directory: Path, environment: dict[str, str], uv: str, case: str) 
                 stream,
             )
         identities: dict[str, str] = {}
-        for name in ("create", "prepare", "converge", "idempotence", "verify"):
+        for name in group.phases:
             status = phase(directory, environment, uv, name)
             if name == "create":
                 try:
