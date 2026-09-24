@@ -9,8 +9,9 @@ import secrets
 import socket
 import stat
 import struct
+import subprocess
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
 from typing import cast
 
@@ -23,7 +24,6 @@ from lowerduckpond_static_host_agent.host_restore_journal import (
     RestoreStore,
     exact_object,
 )
-from lowerduckpond_static_host_agent.host_restore_process import require_command
 
 SOCKET_PATH = Path("/run/lowerduckpond-host-restore/archive.sock")
 SELECTION_LOCK = Path("/opt/lowerduckpond/static-host-agent/selection.lock")
@@ -114,16 +114,32 @@ def receive_message(
     return document, tuple(rights)
 
 
-def _start(action: str) -> None:
+@contextmanager
+def _archive_service(action: str) -> Iterator[None]:
     unit = (
         "lowerduckpond-host-restore-archive-installed.service"
         if action == "verify-installed"
         else "lowerduckpond-host-restore-archive-private.service"
     )
-    require_command(
-        ("/usr/bin/systemctl", "start", "--no-block", unit),
-        failure="restore_archive_helper_start_failed",
-    )
+    # A reply precedes helper exit. Keep the blocking start job until the
+    # oneshot finishes, so the next request cannot coalesce with this one.
+    with subprocess.Popen(  # noqa: S603 - fixed root-owned service names
+        ("/usr/bin/systemctl", "start", unit),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env={"PATH": "/usr/bin:/bin", "LC_ALL": "C"},
+    ) as process:
+        try:
+            yield
+            if process.wait(timeout=30):
+                raise HostRestoreError("restore_archive_helper_start_failed")
+        except subprocess.TimeoutExpired as error:
+            raise HostRestoreError("restore_archive_helper_completion_deadline") from error
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.wait()
 
 
 @contextmanager
@@ -170,7 +186,7 @@ def request_archive(  # noqa: PLR0913 - exact authority, action and separate hel
     recovery: Path,
     path: Path = SOCKET_PATH,
     selection: Path = SELECTION_LOCK,
-    start: Callable[[str], None] = _start,
+    start: Callable[[str], AbstractContextManager[None]] = _archive_service,
 ) -> dict[str, object]:
     if store.lease_descriptor is None:
         raise HostRestoreError("restore_helper_coordinator_lease_missing")
@@ -194,8 +210,7 @@ def request_archive(  # noqa: PLR0913 - exact authority, action and separate hel
         "journalDigest": current.digest,
         "artifactSha256": artifact,
     }
-    with _listener(path, store.owner) as listener:
-        start(action)
+    with _listener(path, store.owner) as listener, start(action):
         connection, _address = listener.accept()
         with connection:
             _peer(connection, store.owner)

@@ -3,10 +3,15 @@ from __future__ import annotations
 import fcntl
 import os
 import socket
+import subprocess
+import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 from lowerduckpond_static_contracts import canonical_json_bytes
+from lowerduckpond_static_host_agent import host_restore_ipc as ipc
 from lowerduckpond_static_host_agent.durable import DurableDirectory
 from lowerduckpond_static_host_agent.host_restore_ipc import (
     REPLY_SCHEMA,
@@ -42,10 +47,17 @@ def test_root_socket_transfers_real_continuously_held_leases(  # noqa: PLR0915 -
             begin(store, journal)
             assert store.lease_descriptor is not None
 
-            def start(action: str) -> None:
+            @contextmanager
+            def start(action: str) -> Iterator[None]:
                 nonlocal child
                 child = os.fork()
                 if child != 0:
+                    try:
+                        yield
+                    finally:
+                        _, status = os.waitpid(child, 0)
+                        child = -1
+                        assert os.waitstatus_to_exitcode(status) == 0
                     return
                 # Model a separate systemd process, which has neither inherited
                 # descriptor. Only SCM_RIGHTS grants these shared open-file leases.
@@ -124,9 +136,7 @@ def test_root_socket_transfers_real_continuously_held_leases(  # noqa: PLR0915 -
                         selection=selected,
                         start=start,
                     )
-            _, status = os.waitpid(child, 0)
-            child = -1
-            assert os.waitstatus_to_exitcode(status) == 0
+            assert child == -1
             require_lease(root / LOCK, store.lease_descriptor, exclusive=True, owner=os.geteuid())
             assert not address.exists()
     finally:
@@ -158,3 +168,57 @@ def test_unheld_or_replaced_lease_and_unsolicited_descriptors_are_rejected(tmp_p
             require_lease(path, descriptor, exclusive=True, owner=os.geteuid())
     finally:
         os.close(descriptor)
+
+
+@pytest.mark.parametrize("outcome", ["success", "failure", "timeout"])
+def test_service_completion_after_reply_is_required_and_client_is_reaped(
+    monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    original = subprocess.Popen
+    clients: list[subprocess.Popen[bytes]] = []
+
+    def start(command: tuple[str, ...], **kwargs: object) -> subprocess.Popen[bytes]:
+        assert command == (
+            "/usr/bin/systemctl",
+            "start",
+            "lowerduckpond-host-restore-archive-private.service",
+        )
+        # A real child models the start job which outlives the archive reply.
+        # Native installed tests exercise the actual oneshot service.
+        status = 1 if outcome == "failure" else 0
+        code = f"import sys; sys.stdin.buffer.read(1); raise SystemExit({status})"
+        process = original(
+            (sys.executable, "-I", "-c", code),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        clients.append(process)
+        if outcome == "timeout":
+            wait = process.wait
+
+            def shortened_wait(timeout: float | None = None) -> int:
+                return wait(timeout=0.01 if timeout is not None else timeout)
+
+            monkeypatch.setattr(process, "wait", shortened_wait)
+        return process
+
+    monkeypatch.setattr(subprocess, "Popen", start)
+
+    def request() -> None:
+        with ipc._archive_service("verify"):
+            assert clients[0].poll() is None  # Reply received while start job is pending.
+            if outcome != "timeout":
+                assert clients[0].stdin is not None
+                clients[0].stdin.write(b"x")
+                clients[0].stdin.flush()
+
+    if outcome == "success":
+        request()
+        assert clients[0].returncode == 0
+    else:
+        category = "start_failed" if outcome == "failure" else "completion_deadline"
+        with pytest.raises(HostRestoreError, match=category):
+            request()
+        assert clients[0].returncode != 0
+    assert clients[0].poll() is not None
