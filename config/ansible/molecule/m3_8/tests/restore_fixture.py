@@ -21,6 +21,7 @@ from lowerduckpond_static_host_agent.backup_identity import framed_digest
 from lowerduckpond_static_host_agent.host_restore_inputs import INPUT_SCHEMA, ISSUER, SUBJECTS
 from testinfra.host import Host
 
+from config.ansible.molecule.m3_8 import restore_convergence
 from scripts import qualification_restore as owned
 from scripts.qualification_case import private_document
 from scripts.qualification_context import ARTIFACT_ENV, HOST_ENV
@@ -293,19 +294,21 @@ with urllib.request.urlopen('https://localhost:15000/roots/0', context=ctx, time
     def _prepare_destination(self) -> None:
         # Mount parents, not install roots: the actual recovery uses same-FS
         # rename. A mount at /etc/caddy would incorrectly make rename impossible.
+        # Workspaces also require real inode capacity; some Docker backing
+        # filesystems report zero inodes for the unmounted overlay cache.
         result = self.destination.run(
             "/bin/bash -c %s",
             """
 set -euo pipefail
 install -d -m 0700 /root/restore-disks
-for name in etc srv var-lib; do
+for name in etc srv var-lib var-cache; do
     target=/${name//-/\\/}
     truncate --size=8G /root/restore-disks/$name.ext4
     mkfs.ext4 -F -q -m 0 /root/restore-disks/$name.ext4
     printf '%s %s ext4 loop,nodev,nosuid 0 0\n' \
         /root/restore-disks/$name.ext4 "$target" >> /etc/fstab
 done
-for name in etc srv var-lib; do
+for name in etc srv var-lib var-cache; do
     target=/${name//-/\\/}
     install -d /mnt/restore-copy
     mount -o loop,nodev,nosuid /root/restore-disks/$name.ext4 /mnt/restore-copy
@@ -515,7 +518,7 @@ WantedBy=multi-user.target
         uv = shutil.which("uv")
         assert uv is not None
         with (self.root / f"converge-{uuid.uuid7().hex}.log").open("xb") as log:
-            result = subprocess.run(  # noqa: S603 - fixed local playbook/owned inventory
+            status = restore_convergence.run(
                 [
                     uv,
                     "run",
@@ -525,18 +528,13 @@ WantedBy=multi-user.target
                     str(REPO / "config/ansible/playbooks/site.yml"),
                 ],
                 cwd=REPO,
-                env={
+                environment={
                     **self.environment,
                     "ANSIBLE_CONFIG": str(REPO / "config/ansible/ansible.cfg"),
                 },
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                timeout=600,
-                check=False,
+                log=log,
             )
-        assert (result.returncode == 0) is succeeds, (
-            "destination converge: see retained private log"
-        )
+        assert (status == 0) is succeeds, "destination converge: see retained private log"
 
     def status(self) -> dict[str, object]:
         result = self.destination.run("/usr/local/sbin/restore-static-host --status")
@@ -586,7 +584,7 @@ with urllib.request.urlopen(request, timeout=10) as response:
                 assert (
                     self.destination.file("/proc/1/stat").content_string.split()[21] != before_pid
                 )
-                for path in ("/etc", "/srv", "/var/lib"):
+                for path in ("/etc", "/srv", "/var/lib", "/var/cache"):
                     assert (
                         self.destination.run(
                             "findmnt -n -o FSTYPE --target %s", path
