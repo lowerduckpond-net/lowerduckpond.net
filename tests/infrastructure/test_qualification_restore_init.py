@@ -26,7 +26,7 @@ def test_fixture_machine_identity_is_reset_only_before_first_boot(tmp_path: Path
     assert dbus.read_text() == "first-boot-id"
 
 
-def test_private_device_nodes_cover_kernel_pool_and_three_new_mounts(
+def test_private_device_nodes_cover_kernel_pool_and_four_new_mounts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     block = tmp_path / "sys/block"
@@ -38,8 +38,8 @@ def test_private_device_nodes_cover_kernel_pool_and_three_new_mounts(
         os, "mknod", lambda path, mode, device: nodes.update({path: (mode, device)})
     )
     boot.loop_nodes(tmp_path)
-    assert set(nodes) == {tmp_path / f"dev/loop{index}" for index in range(12)}
-    for index in range(12):
+    assert set(nodes) == {tmp_path / f"dev/loop{index}" for index in range(13)}
+    for index in range(13):
         mode, device = nodes[tmp_path / f"dev/loop{index}"]
         assert stat.S_ISBLK(mode) and stat.S_IMODE(mode) == 0o600  # noqa: PLR2004
         assert os.major(device) == 7 and os.minor(device) == index  # noqa: PLR2004
