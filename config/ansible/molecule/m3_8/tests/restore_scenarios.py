@@ -7,6 +7,7 @@ import json
 import os
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import patch
 
@@ -65,6 +66,25 @@ def source(
     else:
         live_storage.require_source(os.environ)
     activate_source(host, archived_prefix=archived_prefix)
+    history = prepare_history(host, tmp_path, full_history=full_history)
+    if archived_prefix:
+        rotation.close_full_segment(host)
+        rotation.run_bounded_rotation(host)
+        assert not host.file(
+            f"{support.STATE_ROOT}/audit/segment-00000000000000000000.jsonl"
+        ).exists
+    return capture_source(host, tmp_path, history, live_storage=live_storage)
+
+
+@dataclass
+class SourceHistory:
+    tenants: list[str]
+    replay: dict[str, object]
+    connection: tuple[str, Path, Path]
+
+
+def prepare_history(host: Host, tmp_path: Path, *, full_history: bool = True) -> SourceHistory:
+    """Prepare the same real tenant states for local and combined reconstruction."""
     support._prepare_edge_probe(host)
     support._initialize_admission_pacing(host)
     connection = support._operator_inputs(tmp_path)
@@ -107,12 +127,18 @@ def source(
     assert host.run("systemctl stop lowerduckpond-static-reconcile.timer").rc == 0
     assert host.run("systemctl stop lowerduckpond-audit-rotate.timer").rc == 0
     recovery._await_authorization_quiescent(host)
-    if archived_prefix:
-        rotation.close_full_segment(host)
-        rotation.run_bounded_rotation(host)
-        assert not host.file(
-            f"{support.STATE_ROOT}/audit/segment-00000000000000000000.jsonl"
-        ).exists
+    return SourceHistory(tenants, replay, connection)
+
+
+def capture_source(
+    host: Host,
+    tmp_path: Path,
+    history: SourceHistory,
+    *,
+    live_storage: LiveStorage | None = None,
+) -> tuple[Fixture, list[str], dict[str, object]]:
+    """Capture excluded pending work, then fence and bootstrap the destination."""
+    tenants, replay, connection = history.tenants, history.replay, history.connection
     export_request = support._request("export", str(uuid.uuid7()), tenantId=tenants[0])
     with patch.object(client, "acknowledge_export", return_value=None):
         exported = support._submit(
