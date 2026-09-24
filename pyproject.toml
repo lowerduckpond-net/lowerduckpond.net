@@ -143,6 +143,8 @@ files = [
   "tests/infrastructure/test_m3_11_backup_fixture.py",
   "scripts/m3_11_live_storage.py",
   "scripts/m3_11_private_inputs.py",
+  "scripts/m3_11_combined_inputs.py",
+  "tests/infrastructure/test_m3_11_combined_inputs.py",
   "scripts/m3_11_restore_reservation.py",
   "tests/infrastructure/test_m3_11_live_storage.py",
   "tests/infrastructure/test_m3_11_qualification_report.py",

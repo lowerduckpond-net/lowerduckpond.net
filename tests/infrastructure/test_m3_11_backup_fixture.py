@@ -27,6 +27,8 @@ def binding(target: Target) -> dict[str, object]:
         "input_policy": POLICY,
         "qualification_inputs_sha256": "c" * 64,
         "storage_target_sha256": target.storage_target_sha256,
+        "storage_run_id": str(uuid.uuid7()),
+        "storage_report_sha256": "d" * 64,
     }
 
 

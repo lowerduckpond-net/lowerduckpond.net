@@ -19,7 +19,13 @@ from lowerduckpond_m3_archive.storage import (
     list_versions,
 )
 
-from scripts.m3_11_qualification_evidence import canonical_bytes, digest, fields, uuid7
+from scripts.m3_11_qualification_evidence import (
+    BINDING_FIELDS,
+    canonical_bytes,
+    digest,
+    fields,
+    uuid7,
+)
 from scripts.production_qualification_inputs import POLICY, revision
 
 FORMAT = "lowerduckpond-m3-11-backup-fixture-v1"
@@ -83,18 +89,15 @@ class Target:
         return hashlib.sha256(raw).hexdigest()
 
     def manifest(self, binding: dict[str, object]) -> dict[str, object]:
-        fields(
-            binding,
-            {
-                "source_revision",
-                "artifact_sha256",
-                "input_policy",
-                "qualification_inputs_sha256",
-                "storage_target_sha256",
-            },
-        )
+        fields(binding, BINDING_FIELDS)
         revision(binding["source_revision"])
-        for key in ("artifact_sha256", "qualification_inputs_sha256", "storage_target_sha256"):
+        uuid7(binding["storage_run_id"])
+        for key in (
+            "artifact_sha256",
+            "qualification_inputs_sha256",
+            "storage_target_sha256",
+            "storage_report_sha256",
+        ):
             digest(binding[key])
         if (
             binding["input_policy"] != POLICY

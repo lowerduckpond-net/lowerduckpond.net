@@ -13,7 +13,7 @@ from pathlib import Path
 
 from scripts.m3_11_backup_fixture import Target
 from scripts.m3_11_private_inputs import read_private, write_private
-from scripts.m3_11_qualification_evidence import fields, uuid7
+from scripts.m3_11_qualification_evidence import BINDING_FIELDS, fields, uuid7
 from scripts.qualification_context import ARTIFACT_ENV, RUN_ENV, host_name
 from scripts.qualification_retirement import artifact_digest
 
@@ -75,16 +75,7 @@ class LiveStorage:
             strings["backup_bucket"],
             strings["archive_bucket"],
         )
-        binding = fields(
-            document["binding"],
-            {
-                "source_revision",
-                "artifact_sha256",
-                "input_policy",
-                "qualification_inputs_sha256",
-                "storage_target_sha256",
-            },
-        )
+        binding = fields(document["binding"], BINDING_FIELDS)
         result = cls(
             target, binding, strings["owner_version"], environment, strings["restic_password"]
         )

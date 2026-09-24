@@ -36,6 +36,8 @@ def storage(tmp_path: Path) -> LiveStorage:
         "input_policy": POLICY,
         "qualification_inputs_sha256": "b" * 64,
         "storage_target_sha256": target.storage_target_sha256,
+        "storage_run_id": str(uuid.uuid7()),
+        "storage_report_sha256": "d" * 64,
     }
     environment = {
         **resource_names(run_id.hex),
