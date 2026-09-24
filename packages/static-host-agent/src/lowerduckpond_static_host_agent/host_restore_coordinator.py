@@ -23,7 +23,7 @@ from lowerduckpond_static_host_agent.capacity import (
 from lowerduckpond_static_host_agent.export_spool import ExportSpool
 from lowerduckpond_static_host_agent.host_restore_activation import (
     activate_completed_restore,
-    activation_pending,
+    finish_public_ingress,
 )
 from lowerduckpond_static_host_agent.host_restore_audit_reconcile import (
     reconstruct_audit,
@@ -33,7 +33,7 @@ from lowerduckpond_static_host_agent.host_restore_authority import begin_restore
 from lowerduckpond_static_host_agent.host_restore_cold_storage import require_cold_storage
 from lowerduckpond_static_host_agent.host_restore_decisions import seal_decisions
 from lowerduckpond_static_host_agent.host_restore_fence import require_source_fence
-from lowerduckpond_static_host_agent.host_restore_gate import close_gate
+from lowerduckpond_static_host_agent.host_restore_gate import close_gate, gate_pending
 from lowerduckpond_static_host_agent.host_restore_history import (
     import_prior_provenance,
     seal_provenance,
@@ -163,7 +163,8 @@ class HostRestore:
             # Still compare all original bindings, without re-closing a finished
             # host whose ordinary tenant authority may already have advanced.
             current = self._begin()
-            if not activation_pending(self.store):
+            if not gate_pending(self.store):
+                finish_public_ingress(self.store)
                 return current
         close_gate(self.store, self.inputs.restore_id)
         services.close_public_ingress()

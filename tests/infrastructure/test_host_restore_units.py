@@ -127,3 +127,25 @@ def test_ordinary_activation_can_resolve_skipped_bootstrap_copy_loop() -> None:
         }
     ).template(trust_as_template(task["loop"]))
     assert value == ["target.json", "source-fence-.json"]
+
+
+def test_bootstrap_replaces_package_flush_ruleset_before_installing_boot_guard() -> None:
+    tasks = yaml.safe_load((ROLE / "tasks/main.yml").read_text())
+    policy = next(
+        index
+        for index, task in enumerate(tasks)
+        if task.get("ansible.builtin.template", {}).get("dest") == "/etc/nftables.conf"
+    )
+    guard = next(
+        index
+        for index, task in enumerate(tasks)
+        if task.get("ansible.builtin.copy", {}).get("src") == "lowerduckpond-restore-gate.service"
+    )
+    assert policy < guard
+    assert tasks[policy]["when"] == "host_recovery_bootstrap_enabled"
+    configuration = tasks[policy]["ansible.builtin.template"]
+    assert configuration["src"] == "{{ role_path }}/../firewall/templates/lowerduckpond.nft.j2"
+    assert configuration["validate"] == "/usr/sbin/nft --check --file %s"
+    policy_text = (ROLE.parent / "firewall/templates/lowerduckpond.nft.j2").read_text()
+    assert "flush ruleset" not in policy_text
+    assert "destroy table inet lowerduckpond\n" in policy_text

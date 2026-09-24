@@ -12,7 +12,9 @@ from lowerduckpond_static_contracts import canonical_json_bytes
 from lowerduckpond_static_host_agent import host_restore_coordinator as coordinator
 from lowerduckpond_static_host_agent import host_restore_services as services
 from lowerduckpond_static_host_agent.host_restore_gate import (
+    INGRESS,
     close_gate,
+    ingress_record,
     open_gate,
     restore_admission,
 )
@@ -159,12 +161,15 @@ def test_resume_reverifies_before_activation_and_never_reopens_completed_work(  
     monkeypatch.setattr(coordinator.HostRestore, "_verify", verify)
     monkeypatch.setattr(coordinator, "seal_provenance", seal)
     monkeypatch.setattr(coordinator, "activate_completed_restore", activate)
+    monkeypatch.setattr(services, "remove_public_gate", lambda: events.append("firewall"))
     with RestoreStore.locked(root, owner=os.geteuid()) as store:
         store.begin(journal)
         for next_phase in PHASES[1 : PHASES.index(phase) + 1]:
             journal = store.advance(journal, next_phase, {})
         if gated:
             close_gate(store, journal.restore_id)
+        elif phase is RestorePhase.COMPLETE:
+            store.immutable(INGRESS[0], ingress_record(store))
         result = coordinator.HostRestore(
             store,
             restic[0],
@@ -180,7 +185,7 @@ def test_resume_reverifies_before_activation_and_never_reopens_completed_work(  
         ).run()
         assert result.phase is RestorePhase.COMPLETE
     if phase is RestorePhase.COMPLETE and not gated:
-        assert not events
+        assert events == ["firewall"]
     else:
         assert events == ["closed", "quiescent", "fresh-proof", "activation"]
     assert restore_admission(root, owner=os.geteuid())

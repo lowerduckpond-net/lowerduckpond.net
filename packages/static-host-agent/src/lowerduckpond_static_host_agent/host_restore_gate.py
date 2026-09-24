@@ -23,6 +23,8 @@ from lowerduckpond_static_host_agent.host_restore_journal import (
 
 RECOVERY_ROOT: Final = Path("/var/lib/lowerduckpond/recovery")
 GATE_SCHEMA: Final = "lowerduckpond-host-restore-gate-v1"
+INGRESS: Final = ("ingress-pending.json",)
+INGRESS_SCHEMA: Final = "lowerduckpond-host-restore-ingress-v1"
 
 
 def close_gate(store: RestoreStore, restore_id: str) -> None:
@@ -39,7 +41,41 @@ def _read(directory: DurableDirectory, path: tuple[str, ...], owner: int) -> byt
     )
 
 
-def restore_admission(root: Path = RECOVERY_ROOT, *, owner: int = 0, caddy: bool = False) -> bool:
+def gate_pending(store: RestoreStore) -> bool:
+    try:
+        raw = store.read_bytes(GATE[0])
+    except FileNotFoundError:
+        return False
+    journal = store.read()
+    if journal is None or raw != canonical_json_bytes(
+        {"schema": GATE_SCHEMA, "restoreId": journal.restore_id}
+    ):
+        raise HostRestoreError("restore gate belongs to another transaction")
+    return True
+
+
+def ingress_record(store: RestoreStore) -> bytes:
+    journal = store.read()
+    if journal is None or journal.phase is not RestorePhase.COMPLETE:
+        raise HostRestoreError("restore ingress requires durable completion")
+    return canonical_json_bytes(
+        {"schema": INGRESS_SCHEMA, "completedJournalDigest": journal.digest}
+    )
+
+
+def ingress_pending(store: RestoreStore) -> bool:
+    try:
+        raw = store.read_bytes(INGRESS[0])
+    except FileNotFoundError:
+        return False
+    if raw != ingress_record(store):
+        raise HostRestoreError("restore ingress authorization changed")
+    return True
+
+
+def restore_admission(
+    root: Path = RECOVERY_ROOT, *, owner: int = 0, caddy: bool = False, boot: bool = False
+) -> bool:
     """Return permission only from a complete, canonical root-owned transaction.
 
     An incomplete gate may precede the first journal. Caddy alone is permitted
@@ -78,7 +114,8 @@ def restore_admission(root: Path = RECOVERY_ROOT, *, owner: int = 0, caddy: bool
         if RestoreStore(directory, owner).read() != journal:
             raise HostRestoreError("restore provenance changed while reading")
         if gate is None:
-            return journal.phase is RestorePhase.COMPLETE
+            pending = ingress_pending(RestoreStore(directory, owner))
+            return journal.phase is RestorePhase.COMPLETE and not (boot and pending)
         if gate["restoreId"] != journal.restore_id:
             raise HostRestoreError("restore gate belongs to another transaction")
         return caddy and journal.phase in {
@@ -97,6 +134,6 @@ def open_gate(store: RestoreStore) -> None:
     journal = store.read()
     if journal is None or journal.phase is not RestorePhase.COMPLETE:
         raise HostRestoreError("restore completion is not durable")
-    # This is the last activation step, after durable completion, restored
-    # schedules and removal of only the restore-specific nftables table.
+    # Commit ordinary admission before opening public ingress. A separate
+    # durable intent keeps unfinished firewall cleanup resumable across reboot.
     store.directory.remove(GATE, missing_ok=True)

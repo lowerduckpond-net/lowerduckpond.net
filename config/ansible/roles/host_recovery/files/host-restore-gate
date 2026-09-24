@@ -140,7 +140,7 @@ def main() -> int:  # noqa: PLR0911, PLR0912 - explicit boot and admission failu
                 restore_admission,
             )
 
-            admitted = restore_admission(caddy=sys.argv[1] == "--caddy")
+            admitted = restore_admission(caddy=sys.argv[1] == "--caddy", boot=boot)
             if not admitted and boot:
                 close_firewall()
                 return 0

@@ -630,10 +630,11 @@ A partial root installation resumes only its original transaction.
 
 Repeat the **same** full-ID command after resolving an external cause. It does
 not accept another repository, path, credential, issuer, snapshot alias or
-restore identity. `verified` and activation-pending `complete` obtain fresh
-remote/state/runtime/TLS proof before opening ingress. Once a completed gate is
-open, a repeated command leaves later ordinary tenant work alone. Reboot cannot
-open an unfinished gate, even if runtime masks disappeared.
+restore identity. `verified` and `complete` with ordinary admission still gated
+obtain fresh remote/state/runtime/TLS proof before activation. Once ordinary
+admission commits, a repeated command finishes only pending firewall cleanup
+and leaves later tenant work alone. Reboot cannot open an unfinished gate,
+even if runtime masks disappeared.
 
 Actual Caddy DNS-01 issuance must produce trusted current certificate/key pairs
 for both apex/wildcard pairs, and the certificates presented on loopback must
@@ -643,12 +644,18 @@ fallback is used. Keep acquired Caddy account/certificate storage on retry.
 Do not reset startup attempts or extend service/coordinator deadlines.
 
 `complete` is durable before activation. The coordinator clears its startup
-transaction, restores reviewed publication/schedules, removes only the
-restore-specific nftables table, then clears the durable gate last. A crash in
-that sequence stays closed and resumes idempotently. The volatile schedule
-activation token disappears at reboot and cannot authorize ordinary mutation
-while the gate remains. Other firewall tables and SSH/outbound access stay in
-place.
+transaction and restores reviewed publication/schedules. It records a durable
+`ingress-pending.json` bound to the completed journal, clears the ordinary
+admission gate while public ingress remains closed, then removes only the
+restore-specific nftables table and clears the ingress intent. `activationPending`
+remains true until both commits finish. A crash before admission commits leaves
+public traffic closed; a later retry finishes firewall cleanup without replaying
+tenant-state checks. Boot reinstalls the firewall gate while the ingress intent
+remains. Backups refuse unfinished ingress activation. The volatile schedule
+token cannot authorize ordinary mutation while the admission gate remains.
+Bootstrap installs the gate-preserving ordinary firewall configuration before
+enabling its boot guard, so a partially bootstrapped reboot cannot flush the
+restore table. Other firewall tables and SSH/outbound access stay in place.
 
 The coordinator retains 30 minutes, 512 MiB, no swap, 32 tasks and one CPU.
 The archive helper retains five minutes, 128 MiB, no swap, 16 tasks, one CPU and

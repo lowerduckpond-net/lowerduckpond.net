@@ -12,7 +12,12 @@ from lowerduckpond_static_host_agent.host_restore_decisions import (
     read_decision,
     seal_decisions,
 )
-from lowerduckpond_static_host_agent.host_restore_gate import close_gate, open_gate
+from lowerduckpond_static_host_agent.host_restore_gate import (
+    INGRESS,
+    close_gate,
+    ingress_record,
+    open_gate,
+)
 from lowerduckpond_static_host_agent.host_restore_history import (
     INVENTORY_NAME,
     MAX_HISTORY,
@@ -104,6 +109,7 @@ def test_prior_rename_resumes_every_durability_boundary_without_rewriting_origin
         "hardlink",
         "symlink",
         "gate",
+        "ingress",
         "inventory",
         "unjournaled",
     ],
@@ -133,6 +139,9 @@ def test_backup_rejects_incomplete_unknown_or_changed_recovery_provenance(
     elif fault == "gate":
         with RestoreStore.locked(source, owner=os.geteuid()) as store:
             close_gate(store, journal.restore_id)
+    elif fault == "ingress":
+        with RestoreStore.locked(source, owner=os.geteuid()) as store:
+            store.immutable(INGRESS[0], ingress_record(store))
     elif fault == "inventory":
         (source / INVENTORY_NAME).write_bytes(canonical_json_bytes({"files": []}))
     elif fault == "unjournaled":

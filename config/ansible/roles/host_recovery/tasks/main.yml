@@ -187,6 +187,16 @@
   changed_when: true
   when: host_recovery_bootstrap_enabled
 
+- name: Preserve the restore table before enabling boot recovery
+  ansible.builtin.template:
+    src: "{{ role_path }}/../firewall/templates/lowerduckpond.nft.j2"
+    dest: /etc/nftables.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: /usr/sbin/nft --check --file %s
+  when: host_recovery_bootstrap_enabled
+
 - name: Install boot ordering for the persistent recovery gate
   ansible.builtin.copy:
     src: lowerduckpond-restore-gate.service

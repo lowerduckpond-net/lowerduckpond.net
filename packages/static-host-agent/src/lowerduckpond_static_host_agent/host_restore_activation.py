@@ -10,10 +10,15 @@ from lowerduckpond_static_contracts import canonical_json_bytes, decode_json_obj
 from lowerduckpond_static_host_agent import host_restore_services as services
 from lowerduckpond_static_host_agent.caddy_startup import CaddyStartupStore
 from lowerduckpond_static_host_agent.durable import DurableDirectory
-from lowerduckpond_static_host_agent.host_restore_gate import close_gate, open_gate
+from lowerduckpond_static_host_agent.host_restore_gate import (
+    INGRESS,
+    gate_pending,
+    ingress_pending,
+    ingress_record,
+    open_gate,
+)
 from lowerduckpond_static_host_agent.host_restore_inputs import RestoreInputs
 from lowerduckpond_static_host_agent.host_restore_journal import (
-    GATE,
     HostRestoreError,
     RestorePhase,
     RestoreStore,
@@ -28,12 +33,21 @@ def activation_pending(store: RestoreStore) -> bool:
     journal = store.read()
     if journal is None or journal.phase is not RestorePhase.COMPLETE:
         raise HostRestoreError("restore_activation_requires_complete")
-    try:
-        store.read_bytes(GATE[0])
-    except FileNotFoundError:
-        return False
-    close_gate(store, journal.restore_id)  # Recheck canonical identity without replacing it.
-    return True
+    return gate_pending(store) or ingress_pending(store)
+
+
+def finish_public_ingress(
+    store: RestoreStore, *, failure_hook: Callable[[str], None] = lambda _boundary: None
+) -> None:
+    """Finish only the committed ingress change; ordinary state may have advanced."""
+    ingress_record(store)  # Require durable completion even after cleanup committed.
+    if gate_pending(store):
+        raise HostRestoreError("restore_ingress_requires_admission_commit")
+    if ingress_pending(store):
+        services.remove_public_gate()
+        failure_hook("firewall")
+        store.directory.remove(INGRESS, missing_ok=True)
+        failure_hook("ingress")
 
 
 def _publication(path: Path, enabled: bool, owner: int) -> None:
@@ -66,10 +80,11 @@ def activate_completed_restore(  # noqa: PLR0913 - fixed inputs and interruption
     """Caller freshly verified runtime/TLS on this invocation before activation.
 
     Services still require the durable gate to be absent. Only timers and
-    sockets can start under the volatile token, after COMPLETE. Removing the
-    durable gate last means every interrupted activation is resumable. After
-    that removal, another invocation must not replay checks against historical
-    tenant authority that ordinary work may already have advanced.
+    sockets can start under the volatile token, after COMPLETE. Commit ordinary
+    admission while ingress remains closed, then remove the firewall table.
+    The separate ingress intent survives a crash or reboot until cleanup ends.
+    After admission commit, retry never replays checks against tenant authority
+    that ordinary work may already have advanced.
     """
     if not activation_pending(store):
         return
@@ -77,6 +92,9 @@ def activate_completed_restore(  # noqa: PLR0913 - fixed inputs and interruption
     assert journal is not None  # noqa: S101 - activation_pending requires it
     if inputs.digest != journal.bindings["trustedInputs"]:
         raise HostRestoreError("restore_activation_policy_unbound")
+    if not gate_pending(store):
+        finish_public_ingress(store, failure_hook=failure_hook)
+        return
     with CaddyStartupStore.open(caddy / "intents", expected_owner=store.owner) as startup:
         intent = startup.read()
         if intent is not None:
@@ -92,7 +110,8 @@ def activate_completed_restore(  # noqa: PLR0913 - fixed inputs and interruption
     failure_hook("schedules-ready")
     services.restore_schedules(audit_rotation=bool(inputs.document["auditRotationEnabled"]))
     failure_hook("schedules")
-    services.remove_public_gate()
-    failure_hook("firewall")
+    store.immutable(INGRESS[0], ingress_record(store))
+    failure_hook("ingress-ready")
     open_gate(store)
     failure_hook("gate")
+    finish_public_ingress(store, failure_hook=failure_hook)

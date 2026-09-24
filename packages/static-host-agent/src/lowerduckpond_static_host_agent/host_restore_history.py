@@ -15,6 +15,7 @@ from lowerduckpond_static_contracts import canonical_json_bytes, decode_json_obj
 
 from lowerduckpond_static_host_agent.backup_identity import framed_digest, require_digest
 from lowerduckpond_static_host_agent.durable import DurableDirectory, _rename_noreplace
+from lowerduckpond_static_host_agent.host_restore_gate import INGRESS, ingress_pending
 from lowerduckpond_static_host_agent.host_restore_journal import (
     GATE,
     JOURNAL,
@@ -119,6 +120,9 @@ def _names(  # noqa: PLR0912 - closed set of provenance inode classes
                         raise HostRestoreError("restore_provenance_lock_nonempty")
                     continue
                 if entry.name == GATE[0] and gate_allowed:
+                    continue
+                if entry.name == INGRESS[0] and gate_allowed:
+                    ingress_pending(store)
                     continue
                 if not _classified(entry.name):
                     raise HostRestoreError("restore_provenance_unclassified")
@@ -339,12 +343,13 @@ def require_backup_provenance(root: Path, *, owner: int) -> None:
         root, expected_owner=owner, expected_directory_mode=0o700
     ) as directory:
         store = RestoreStore(directory, owner)
-        try:
-            store.read_bytes(GATE[0])
-        except FileNotFoundError:
-            pass
-        else:
-            raise HostRestoreError("backup_restore_provenance_gated")
+        for marker in (GATE, INGRESS):
+            try:
+                store.read_bytes(marker[0])
+            except FileNotFoundError:
+                pass
+            else:
+                raise HostRestoreError("backup_restore_provenance_gated")
         journal = store.read()
         if journal is not None and journal.phase is not RestorePhase.COMPLETE:
             raise HostRestoreError("backup_restore_provenance_incomplete")

@@ -13,7 +13,10 @@ from lowerduckpond_static_contracts import canonical_json_bytes, validate_uuid7
 
 from lowerduckpond_static_host_agent.backup_restic import inherit_restic_leases
 from lowerduckpond_static_host_agent.durable import DurableDirectory
-from lowerduckpond_static_host_agent.host_restore_activation import activation_pending
+from lowerduckpond_static_host_agent.host_restore_activation import (
+    activation_pending,
+    finish_public_ingress,
+)
 from lowerduckpond_static_host_agent.host_restore_authority import require_saved_authority
 from lowerduckpond_static_host_agent.host_restore_coordinator import (
     COORDINATOR_SECONDS,
@@ -21,7 +24,7 @@ from lowerduckpond_static_host_agent.host_restore_coordinator import (
 )
 from lowerduckpond_static_host_agent.host_restore_diagnostics import diagnostic
 from lowerduckpond_static_host_agent.host_restore_fence import source_fence_receipt
-from lowerduckpond_static_host_agent.host_restore_gate import RECOVERY_ROOT
+from lowerduckpond_static_host_agent.host_restore_gate import RECOVERY_ROOT, gate_pending
 from lowerduckpond_static_host_agent.host_restore_inputs import (
     INPUT_ROOT,
     RestoreInputs,
@@ -92,11 +95,12 @@ def restore_coordinator_main(selection_descriptor: int, artifact: str) -> int:
             if (
                 current is not None
                 and current.phase is RestorePhase.COMPLETE
-                and not activation_pending(store)
+                and not gate_pending(store)
             ):
                 saved, _ = require_saved_authority(store)
                 if saved != inputs:
                     raise ValueError("restore_completed_target_changed")
+                finish_public_ingress(store)
                 return 0
             snapshot = select_restore_snapshot(inputs.snapshot_id, os.environ)
             with DurableDirectory.open(
