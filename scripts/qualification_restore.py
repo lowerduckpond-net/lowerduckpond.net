@@ -18,6 +18,7 @@ from scripts.qualification_probe import bounded_command, document
 
 KINDS = ("destination", "acme")
 GATE = "/var/lib/lowerduckpond/recovery/restore-gate.json"
+MIN_READY_REQUESTS = 2
 
 
 def observations(environment: dict[str, str]) -> dict[str, object]:
@@ -169,6 +170,14 @@ require_quiescent()
 
 
 def acme_accounting(environment: dict[str, str], identity: str, *, negative: bool = False) -> None:
+    readiness = document(directory(environment) / "acme-readiness.json")
+    baseline = readiness.get("acmeRequests")
+    if (
+        readiness.get("identity") != identity
+        or type(baseline) is not int
+        or baseline < MIN_READY_REQUESTS
+    ):
+        raise ValueError("unbound ACME readiness accounting")
     code = """
 import json, urllib.request
 with urllib.request.urlopen('http://127.0.0.1:8056/status', timeout=10) as response:
@@ -177,9 +186,9 @@ assert value['fault'] == 'none'
 assert value['deleted'] == value['created'] and value['remaining'] == 0
 """
     code += (
-        "assert value['created'] == 0 and value['acmeRequests'] == 0\n"
+        f"assert value['created'] == 0 and value['acmeRequests'] == {baseline}\n"
         if negative
-        else "assert value['created'] >= 4 and value['acmeRequests'] > 0\n"
+        else f"assert value['created'] >= 4 and value['acmeRequests'] > {baseline}\n"
     )
     command(environment, "docker", "exec", identity, "python3", "-I", "-B", "-c", code)
 

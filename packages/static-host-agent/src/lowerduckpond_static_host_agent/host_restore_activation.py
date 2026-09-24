@@ -52,7 +52,7 @@ def finish_public_ingress(
 
 def _publication(path: Path, enabled: bool, owner: int) -> None:
     with DurableDirectory.open(
-        path.parent, expected_owner=owner, expected_directory_mode=0o755
+        path.parent, expected_owner=owner, expected_directory_mode=0o700
     ) as directory:
         previous = decode_json_object(
             directory.read_regular(

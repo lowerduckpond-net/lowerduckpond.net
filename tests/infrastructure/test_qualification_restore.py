@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import io
 import json
+import urllib.request
 import uuid
 from pathlib import Path
 
@@ -19,6 +21,51 @@ def environment(tmp_path: Path) -> dict[str, str]:
     }
     restore.directory(values).mkdir(mode=0o700)
     return values
+
+
+@pytest.mark.parametrize("negative", [False, True])
+@pytest.mark.parametrize("destination_requests", [0, 1])
+def test_acme_accounting_distinguishes_startup_probes_from_destination_requests(
+    environment: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    negative: bool,
+    destination_requests: int,
+) -> None:
+    baseline = 6  # Successful startup may include a retried directory probe.
+    identity = "a" * 64
+    (restore.directory(environment) / "acme-readiness.json").write_text(
+        json.dumps(
+            {
+                "identity": identity,
+                "acmeRequests": baseline,
+            }
+        )
+    )
+    status = {
+        "fault": "none",
+        "created": 0 if negative else 4,
+        "deleted": 0 if negative else 4,
+        "remaining": 0,
+        "acmeRequests": baseline + destination_requests,
+    }
+    monkeypatch.setattr(
+        urllib.request, "urlopen", lambda *a, **kw: io.BytesIO(json.dumps(status).encode())
+    )
+
+    def command(_: object, *args: str) -> bytes:
+        assert args[:3] == ("docker", "exec", identity)
+        exec(args[-1], {})  # noqa: S102 - execute the fixed native accounting probe
+        return b""
+
+    monkeypatch.setattr(restore, "command", command)
+    if negative == (destination_requests == 0):
+        restore.acme_accounting(environment, identity, negative=negative)
+    else:
+        with pytest.raises(AssertionError):
+            restore.acme_accounting(environment, identity, negative=negative)
+    with pytest.raises(ValueError, match="unbound"):
+        restore.acme_accounting(environment, "b" * 64, negative=negative)
 
 
 @pytest.mark.parametrize("fault", ["none", "source", "local", "activation", "acme", "receipt"])

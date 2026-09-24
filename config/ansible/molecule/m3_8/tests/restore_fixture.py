@@ -302,11 +302,24 @@ assert len(reply) >= 12 and reply[:2] == packet[:2]
 flags = struct.unpack('!H', reply[2:4])[0]
 assert flags & 0x8000 and flags & 0x000f == 0
 with urllib.request.urlopen('https://localhost:15000/roots/0', context=ctx, timeout=5) as response:
-    print(response.read().decode(), end='')
+    issuer_root = response.read().decode()
+with urllib.request.urlopen('http://127.0.0.1:8056/status', timeout=2) as response:
+    accounting = json.load(response)
+assert accounting['created'] == accounting['deleted'] == accounting['remaining'] == 0
+print(json.dumps({'issuerRoot': issuer_root, 'acmeRequests': accounting['acmeRequests']}))
 """,
             )
             if result.rc == 0:
-                private(root / "issuer-root.crt", result.stdout.encode())
+                readiness = json.loads(result.stdout)
+                private(root / "issuer-root.crt", readiness["issuerRoot"].encode())
+                private_document(
+                    self.root,
+                    "acme-readiness.json",
+                    {
+                        "identity": self.acme_id,
+                        "acmeRequests": readiness["acmeRequests"],
+                    },
+                )
                 return
             time.sleep(0.25)
         raise AssertionError("controlled ACME fixture did not start")
@@ -639,8 +652,9 @@ with urllib.request.urlopen('http://127.0.0.1:8056/status', timeout=5) as respon
 """,
                 )
             )
-            if value[name] > 0:
-                assert self.destination.service("caddy").is_running
+            # DNS requests can precede systemd's Type=notify readiness. Require
+            # both observations within this same bound before testing the gate.
+            if value[name] > 0 and self.destination.service("caddy").is_running:
                 return
             time.sleep(0.5)
         raise AssertionError("native Caddy did not observe the injected provider failure")

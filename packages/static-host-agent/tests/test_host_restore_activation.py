@@ -55,7 +55,7 @@ def test_hard_exit_activation_keeps_ingress_closed_until_admission_commits(  # n
     caddy.mkdir(mode=0o750)
     (caddy / "intents").mkdir(mode=0o700)
     policy = tmp_path / "configuration"
-    policy.mkdir(mode=0o755)
+    policy.mkdir(mode=0o700)
     policy = policy / "static-publication.json"
     policy.write_bytes(
         canonical_json_bytes(

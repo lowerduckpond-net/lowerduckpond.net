@@ -272,3 +272,37 @@ def test_acme_proxy_preserves_client_headers_and_issuer_urls(
                 for thread in threads:
                     thread.join(timeout=5)
                     assert not thread.is_alive()
+
+
+@pytest.mark.parametrize("becomes_ready", [False, True])
+def test_provider_fault_waits_for_systemd_readiness_within_the_existing_bound(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    becomes_ready: bool,
+) -> None:
+    monkeypatch.syspath_prepend(str(ROOT / "tests"))
+    fixture_module = module("tests/restore_fixture")
+    running = iter((False, becomes_ready))
+    observations: list[str] = []
+
+    def service(name: str) -> SimpleNamespace:
+        observations.append(name)
+        return SimpleNamespace(is_running=next(running))
+
+    fixture = SimpleNamespace(acme=object(), destination=SimpleNamespace(service=service))
+    monkeypatch.setattr(fixture_module, "checked", lambda host, code: '{"deniedDns": 1}')
+    clock = iter((0, 1, 2, 121))
+    monkeypatch.setattr(
+        fixture_module,
+        "time",
+        SimpleNamespace(
+            monotonic=lambda: next(clock),
+            sleep=lambda seconds: None,
+        ),
+    )
+    if becomes_ready:
+        fixture_module.Fixture.fault_observed(fixture, "deniedDns")
+    else:
+        with pytest.raises(AssertionError, match="native Caddy did not observe"):
+            fixture_module.Fixture.fault_observed(fixture, "deniedDns")
+    assert observations == ["caddy", "caddy"]
