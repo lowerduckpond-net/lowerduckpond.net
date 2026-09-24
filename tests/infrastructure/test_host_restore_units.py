@@ -129,8 +129,11 @@ def test_ordinary_activation_can_resolve_skipped_bootstrap_copy_loop() -> None:
     assert value == ["target.json", "source-fence-.json"]
 
 
-def test_fresh_bootstrap_keeps_shared_parent_traversable_and_recovery_private() -> None:
-    tasks = yaml.safe_load((ROLE / "tasks/main.yml").read_text())
+@pytest.mark.parametrize("role", ["host_recovery", "backup"])
+def test_roles_keep_shared_parent_searchable_without_listing_and_recovery_private(
+    role: str,
+) -> None:
+    tasks = yaml.safe_load((ROLE.parent / role / "tasks/main.yml").read_text())
     directories = next(
         task
         for task in tasks
@@ -138,7 +141,8 @@ def test_fresh_bootstrap_keeps_shared_parent_traversable_and_recovery_private() 
         and {"path": "/var/lib/lowerduckpond/recovery", "mode": "0700"} in task["loop"]
     )
     entries = directories["loop"]
-    shared = {"path": "/var/lib/lowerduckpond", "mode": "0755"}
+    # Both roles must agree so a second convergence cannot toggle permissions.
+    shared = {"path": "/var/lib/lowerduckpond", "mode": "0711"}
     private = {"path": "/var/lib/lowerduckpond/recovery", "mode": "0700"}
     assert entries.index(shared) < entries.index(private)
     assert directories["ansible.builtin.file"]["owner"] == "root"
