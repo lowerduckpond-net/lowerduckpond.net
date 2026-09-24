@@ -142,6 +142,9 @@
     group: root
     mode: "{{ item.mode }}"
   loop:
+    # Otherwise Ansible creates this missing parent with recovery's 0700 mode,
+    # preventing the rootless runtime account from reaching its own home.
+    - {path: /var/lib/lowerduckpond, mode: "0755"}
     - {path: /var/lib/lowerduckpond/recovery, mode: "0700"}
     - {path: /usr/local/libexec/lowerduckpond, mode: "0755"}
     - {path: /usr/local/share/lowerduckpond, mode: "0755"}

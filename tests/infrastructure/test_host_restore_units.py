@@ -129,6 +129,22 @@ def test_ordinary_activation_can_resolve_skipped_bootstrap_copy_loop() -> None:
     assert value == ["target.json", "source-fence-.json"]
 
 
+def test_fresh_bootstrap_keeps_shared_parent_traversable_and_recovery_private() -> None:
+    tasks = yaml.safe_load((ROLE / "tasks/main.yml").read_text())
+    directories = next(
+        task
+        for task in tasks
+        if isinstance(task.get("loop"), list)
+        and {"path": "/var/lib/lowerduckpond/recovery", "mode": "0700"} in task["loop"]
+    )
+    entries = directories["loop"]
+    shared = {"path": "/var/lib/lowerduckpond", "mode": "0755"}
+    private = {"path": "/var/lib/lowerduckpond/recovery", "mode": "0700"}
+    assert entries.index(shared) < entries.index(private)
+    assert directories["ansible.builtin.file"]["owner"] == "root"
+    assert directories["ansible.builtin.file"]["group"] == "root"
+
+
 def test_bootstrap_replaces_package_flush_ruleset_before_installing_boot_guard() -> None:
     tasks = yaml.safe_load((ROLE / "tasks/main.yml").read_text())
     policy = next(
