@@ -23,7 +23,7 @@ platforms:
       - /run/lock
       - /tmp
   - name: "${LDP_QUALIFICATION_ARCHIVE:-lowerduckpond-m3-10-minio}"
-    image: quay.io/minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    image: ldp-minio-fixture:e3ab1ecec9ced98cdd9e3b0c4a6ae68feb2d5976a9bd22afaaf684db92459aa2
     labels:
       lowerduckpond.qualification.run: "${LDP_QUALIFICATION_RUN_ID:-legacy-m3-8}"
     groups:

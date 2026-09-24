@@ -131,7 +131,7 @@ TEST_FILES = frozenset(
 )
 MAX_SOURCE_LINE = 100000
 CONTROLLER_STAGES = frozenset(
-    {"docker-endpoint", "dependencies", "docker-daemon", "resource-collision"}
+    {"docker-endpoint", "dependencies", "docker-daemon", "resource-collision", "fixture-image"}
 )
 CONTROLLER_FAILURES = frozenset(
     {"missing-command", "nonzero-exit", "timeout", "validation", "os-error", "unknown"}

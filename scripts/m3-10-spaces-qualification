@@ -85,6 +85,8 @@ uv run --quiet --no-sync --frozen python "${repository_root}/scripts/qualificati
 source "${repository_root}/scripts/lib/m3-10-production-state"
 diagnostic_phase=dependencies
 uv sync --all-packages --all-groups --frozen >"${run_directory}/dependencies.log" 2>&1
+uv run --quiet --frozen python -m scripts.qualification_minio \
+    >"${run_directory}/local-storage-fixture.log" 2>&1
 diagnostic_phase=state-inputs
 uv run --quiet --frozen python -m scripts.production_qualification_inputs \
     --capture-run "${run_directory}" --source "${source_revision}"

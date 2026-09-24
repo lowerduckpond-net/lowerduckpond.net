@@ -30,6 +30,7 @@ def clean_context(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DOCKER_CONTEXT", raising=False)
     monkeypatch.setenv("DOCKER_HOST", "unix:///disposable/docker.sock")
     monkeypatch.setenv("M3_10_ARCHIVE_BACKEND", "minio")
+    monkeypatch.setattr(local, "ensure_image", lambda _environment: "fixture-image")
 
 
 def test_distinct_runs_own_all_mutable_resources(tmp_path: Path) -> None:

@@ -147,6 +147,18 @@ jobs:
           install_args: just python uv
       - name: Check versioned archive storage behavior
         run: just check-m3-archive-storage
+      - name: Export the tested local storage fixture
+        run: |
+          fixture_image=$(uv run --quiet --frozen python -m scripts.qualification_minio)
+          docker image save --output "$RUNNER_TEMP/minio-fixture.tar" "$fixture_image"
+      - name: Share the tested fixture within this run
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: minio-fixture
+          path: ${{ runner.temp }}/minio-fixture.tar
+          if-no-files-found: error
+          compression-level: 1
+          retention-days: 1
 
   cloudflare-networks:
     name: Cloudflare networks
@@ -238,7 +250,7 @@ jobs:
 
   ansible-m3-8:
     name: Ansible installed ${{ matrix.case }}
-    needs: [installed-selection, pre-commit, python, python-recovery]
+    needs: [installed-selection, pre-commit, python, python-recovery, m3-archive-storage]
     if: needs.installed-selection.outputs.required == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -258,6 +270,13 @@ jobs:
           github_token: ${{ github.token }}
           version: 2026.8.8
           install_args: just python uv
+      - name: Load the tested local storage fixture
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: minio-fixture
+          path: ${{ runner.temp }}/minio-fixture
+      - name: Import the fixture image
+        run: docker image load --input "$RUNNER_TEMP/minio-fixture/minio-fixture.tar"
       - name: Check the selected installed group
         env:
           QUALIFICATION_CASE: ${{ matrix.case }}
@@ -285,7 +304,7 @@ jobs:
 
   ansible-complete:
     name: Ansible complete journey
-    needs: [installed-selection, pre-commit, python, python-recovery]
+    needs: [installed-selection, pre-commit, python, python-recovery, m3-archive-storage]
     if: needs.installed-selection.outputs.complete == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 330
@@ -302,6 +321,13 @@ jobs:
           github_token: ${{ github.token }}
           version: 2026.8.8
           install_args: just python uv
+      - name: Load the tested local storage fixture
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: minio-fixture
+          path: ${{ runner.temp }}/minio-fixture
+      - name: Import the fixture image
+        run: docker image load --input "$RUNNER_TEMP/minio-fixture/minio-fixture.tar"
       - name: Check the complete production-policy journey
         env:
           LDP_QUALIFICATION_TIMING_DIRECTORY: ${{ runner.temp }}/ldp-complete

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import json
 import subprocess
@@ -110,8 +111,10 @@ def prepare(container: str, root: Path) -> dict[str, str]:
     inspection = json.loads(_run(["docker", "inspect", container]))[0]
     if (
         inspection["Config"]["Image"] != _IMAGE
-        or f"MINIO_ROOT_USER={_ROOT_USER}" not in inspection["Config"]["Env"]
-    ):
+        and inspection["Config"]["Image"]
+        != "ldp-minio-fixture:"
+        + hashlib.sha256(Path(__file__).with_name("Dockerfile.minio.j2").read_bytes()).hexdigest()
+    ) or f"MINIO_ROOT_USER={_ROOT_USER}" not in inspection["Config"]["Env"]:
         raise RuntimeError("archive fixture is not the expected disposable MinIO instance")
     addresses = {
         network["IPAddress"]

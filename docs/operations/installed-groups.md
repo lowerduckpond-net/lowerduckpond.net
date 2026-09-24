@@ -9,6 +9,14 @@ the fixtures share a host kernel's loop-device pool even with distinct names.
 Molecule pipelines Ansible modules through its Docker connection to reduce
 per-task transfer overhead.
 
+The local MinIO fixture builds from fixed server and client commits with a pinned
+Go compiler. Its image tag and build receipt bind the complete
+[recipe](../../config/ansible/molecule/m3_8/Dockerfile.minio.j2). Matching local
+builds are reused; an unrelated image at that tag is rejected. CI runs the
+archive-storage checks first and shares the tested image within that workflow
+run, so installed groups do not each compile it. This replaces the retired
+upstream binary image without changing the fixture's server or client revision.
+
 The three reconstruction cases also create a second fresh destination and a
 run-owned ACME service after fencing the source. Their private provider mappings
 survive destination restart; they do not contact the public ACME or DNS API.
