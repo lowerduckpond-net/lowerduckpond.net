@@ -23,6 +23,8 @@ from testinfra.host import Host
 
 from config.ansible.molecule.m3_8 import restore_convergence
 from scripts import qualification_restore as owned
+from scripts.m3_11_live_storage import LiveStorage
+from scripts.m3_11_restore_reservation import adopt
 from scripts.qualification_case import private_document
 from scripts.qualification_context import ARTIFACT_ENV, HOST_ENV
 
@@ -58,8 +60,15 @@ def wait_systemd(host: Host) -> None:
 
 
 class Fixture:
-    def __init__(self, source: Host, snapshot: str) -> None:
+    def __init__(
+        self, source: Host, snapshot: str, *, live_storage: LiveStorage | None = None
+    ) -> None:
         self.environment = dict(os.environ)
+        self.live_storage = live_storage
+        if live_storage is not None:
+            live_storage.require_source(self.environment)
+        elif self.environment.get("M3_10_ARCHIVE_BACKEND", "minio") != "minio":
+            raise ValueError("Spaces reconstruction requires its explicit owned storage inputs")
         self.source = source
         self.snapshot = snapshot
         self.restore_id = str(uuid.uuid7())
@@ -84,7 +93,11 @@ class Fixture:
         self.acme_id = owned.create(self.environment, "acme")
         self.acme = testinfra.get_host(f"docker://{self.acme_id}")
         self._prepare_acme()
-        self.destination_id = owned.create(self.environment, "destination")
+        self.destination_id = (
+            owned.create(self.environment, "destination")
+            if live_storage is None
+            else adopt(live_storage)
+        )
         self.destination = testinfra.get_host(f"docker://{self.destination_id}")
         wait_systemd(self.destination)
         self._prepare_destination()
@@ -369,19 +382,21 @@ done
                 self.destination_id,
                 f"/usr/local/share/ca-certificates/restore-{name}",
             )
-        self.copy_in(
-            self.ephemeral / "archive-tls/ca.crt",
-            self.destination_id,
-            "/usr/local/share/ca-certificates/restore-archive.crt",
-        )
-        archive_address = self.source.run(
-            "getent hosts ams3.digitaloceanspaces.com"
-        ).stdout.split()[0]
+        archive_hosts = ""
+        if self.live_storage is None:
+            self.copy_in(
+                self.ephemeral / "archive-tls/ca.crt",
+                self.destination_id,
+                "/usr/local/share/ca-certificates/restore-archive.crt",
+            )
+            archive_address = self.source.run(
+                "getent hosts ams3.digitaloceanspaces.com"
+            ).stdout.split()[0]
+            archive_hosts = f"{archive_address} ams3.digitaloceanspaces.com\n"
         self.acme_address = self.address(self.acme_id)
         hosts = (
             f"{self.acme_address} acme-v02.api.letsencrypt.org "
-            "acme-staging-v02.api.letsencrypt.org api.cloudflare.com\n"
-            f"{archive_address} ams3.digitaloceanspaces.com\n"
+            "acme-staging-v02.api.letsencrypt.org api.cloudflare.com\n" + archive_hosts
         )
         checked(
             self.destination,
@@ -427,9 +442,14 @@ WantedBy=multi-user.target
         assert started.rc == 0, self.destination.run(
             "journalctl --unit=restore-fixture-dns.service --no-pager --output=cat -n 30"
         ).stdout
-        # Copy the fenced local Restic repository intact. Neither source history
-        # nor its snapshots are pruned. Live-provider reconstruction remains P6.
-        self.copy_root_between("/mnt/lowerduckpond-restic-test", "/mnt/lowerduckpond-restic-test")
+        # Local diagnostics copy the fenced repository without pruning it.
+        # The live pair instead reads the original run-owned provider prefix.
+        if self.live_storage is None:
+            self.copy_root_between(
+                "/mnt/lowerduckpond-restic-test", "/mnt/lowerduckpond-restic-test"
+            )
+        else:
+            self.live_storage.require_owner()
         self.copy_operator_inputs()
         self.binary = self.source.run("readlink -f /usr/local/bin/caddy").stdout.strip()
         assert self.binary.startswith("/usr/local/lib/lowerduckpond/caddy-")
@@ -463,7 +483,14 @@ WantedBy=multi-user.target
             ),
             "namespace": namespace,
             "launch": json.loads(launch_path.content) if launch_path.exists else None,
-            "archiveTarget": {"region": "ams3", "bucket": "molecule-tenant-archives"},
+            "archiveTarget": (
+                {"region": "ams3", "bucket": "molecule-tenant-archives"}
+                if self.live_storage is None
+                else {
+                    "region": self.live_storage.target.region,
+                    "bucket": self.live_storage.target.archive_bucket,
+                }
+            ),
             "caddy": {
                 "binaryPath": self.binary,
                 "binarySha256": self.source.run("sha256sum %s", self.binary).stdout.split()[0],
@@ -527,6 +554,8 @@ WantedBy=multi-user.target
             "host_recovery_restore_id": self.restore_id,
             "host_recovery_input_directory": str(self.inputs),
         }
+        if self.live_storage is not None:
+            variables.update(self.live_storage.variables())
         inventory = {
             "all": {
                 "children": {

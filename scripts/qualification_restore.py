@@ -140,6 +140,25 @@ def create(environment: dict[str, str], kind: str) -> str:
         raise ValueError("a restore resource cannot be recreated")
     # A source fence is proved before docker creates any destination resource.
     source_fenced(environment)
+    current = create_stopped(environment, kind)
+    identity = str(current["id"])
+    private_document(root, f"{kind}.json", current)
+    # The controlled ACME service starts directly after its fixed inputs are
+    # copied. It needs neither systemd nor the destination's mount privileges.
+    if kind == "destination":
+        command(environment, "docker", "start", identity)
+    return identity
+
+
+def create_stopped(environment: dict[str, str], kind: str) -> dict[str, object]:
+    """Allocate an empty owned container without starting PID 1 or copying inputs.
+
+    The combined producer reserves the destination identity before its first
+    phase. Its adoption path must prove source fencing before any startup.
+    """
+    host_name(environment)
+    if kind not in KINDS or not environment.get(RUN_ENV):
+        raise ValueError("unknown or unowned restore fixture resource")
     source = inspect(environment, environment[HOST_ENV])
     name = f"ldp-m3-{environment[RUN_ENV]}-{kind}"
     identity = (
@@ -175,12 +194,13 @@ def create(environment: dict[str, str], kind: str) -> str:
         .strip()
     )
     current = inspect(environment, identity)
-    private_document(root, f"{kind}.json", current)
-    # The controlled ACME service starts directly after its fixed inputs are
-    # copied. It needs neither systemd nor the destination's mount privileges.
-    if kind == "destination":
-        command(environment, "docker", "start", identity)
-    return identity
+    if (
+        current.get("name") != "/" + name
+        or current.get("image") != source["image"]
+        or current.get("running") is not False
+    ):
+        raise ValueError("new restore fixture is not the expected stopped image")
+    return current
 
 
 def source_fenced(environment: dict[str, str]) -> None:

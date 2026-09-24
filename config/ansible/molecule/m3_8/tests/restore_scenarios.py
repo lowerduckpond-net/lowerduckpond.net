@@ -25,6 +25,7 @@ from testinfra.host import Host
 
 from config.ansible.molecule.default.tests.test_host import _run_installed_boundary_probe
 from scripts import qualification_restore as owned
+from scripts.m3_11_live_storage import LiveStorage
 from scripts.qualification_case import private_document
 
 
@@ -52,9 +53,17 @@ def activate_source(host: Host, *, archived_prefix: bool) -> None:
 
 
 def source(
-    host: Host, tmp_path: Path, *, archived_prefix: bool = False, full_history: bool = True
+    host: Host,
+    tmp_path: Path,
+    *,
+    archived_prefix: bool = False,
+    full_history: bool = True,
+    live_storage: LiveStorage | None = None,
 ) -> tuple[Fixture, list[str], dict[str, object]]:
-    require_owned_fixture()
+    if live_storage is None:
+        require_owned_fixture()
+    else:
+        live_storage.require_source(os.environ)
     activate_source(host, archived_prefix=archived_prefix)
     support._prepare_edge_probe(host)
     support._initialize_admission_pacing(host)
@@ -119,7 +128,7 @@ def source(
     snapshot = backups._latest(host)
     descriptor = captures.restore_and_measure(host, snapshot)
     assert {item["tenantId"] for item in descriptor["tenants"]} == set(tenants)
-    fixture = Fixture(host, snapshot)
+    fixture = Fixture(host, snapshot, live_storage=live_storage)
     replay["missingJob"] = missing_job
     replay["missingCorrelation"] = missing["correlationId"]
     replay["descriptor"] = descriptor
