@@ -6,7 +6,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from ansible.plugins.callback import CallbackBase  # type: ignore[import-untyped]
 
@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 from scripts.qualification_failure import (
     capture_failure_observation,
     capture_fixture,
+    record_ansible_failure,
     record_phase,
 )
 from scripts.qualification_timing import EVENT_ENV, record_span
@@ -23,6 +24,12 @@ if TYPE_CHECKING:
     from ansible.executor.stats import AggregateStats  # type: ignore[import-untyped]
     from ansible.playbook import Playbook  # type: ignore[import-untyped]
     from ansible.playbook.task import Task  # type: ignore[import-untyped]
+
+
+class CallbackResult(Protocol):
+    _task: Task
+    _result: dict[str, object]
+
 
 DOCUMENTATION = """
 name: ldp_timing
@@ -74,14 +81,27 @@ class CallbackModule(CallbackBase):  # type: ignore[misc]
     def v2_runner_on_ok(self, result: object) -> None:
         self._finish_reboot("completed")
 
-    def v2_runner_on_failed(self, result: object, ignore_errors: bool = False) -> None:
+    def v2_runner_on_failed(self, result: CallbackResult, ignore_errors: bool = False) -> None:
         self._finish_reboot("failed")
+        if not ignore_errors:
+            record_ansible_failure(
+                result._task.action,
+                result._task.get_path(),
+                result._result,
+                outcome="failed",
+            )
 
     def v2_runner_on_skipped(self, result: object) -> None:
         self._reboot_timing = None
 
-    def v2_runner_on_unreachable(self, result: object) -> None:
+    def v2_runner_on_unreachable(self, result: CallbackResult) -> None:
         self._finish_reboot("failed")
+        record_ansible_failure(
+            result._task.action,
+            result._task.get_path(),
+            result._result,
+            outcome="unreachable",
+        )
 
     def v2_playbook_on_stats(self, stats: AggregateStats) -> None:
         if self._timing_phase == "create":

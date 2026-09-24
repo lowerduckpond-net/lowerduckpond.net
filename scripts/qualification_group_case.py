@@ -15,7 +15,7 @@ from scripts.qualification_case import (
     remove_owned_image,
 )
 from scripts.qualification_context import ARCHIVE_ENV, HOST_ENV, RUN_ENV, host_name, run_lease
-from scripts.qualification_failure import record_phase
+from scripts.qualification_failure import record_accounting_check, record_phase
 from scripts.qualification_group_runner import FORMAT as STAGE_FORMAT
 from scripts.qualification_groups import GROUP_REPORT_FORMAT, GROUPS
 from scripts.qualification_probe import document
@@ -99,22 +99,29 @@ def run_group(directory: Path, environment: dict[str, str], uv: str, case: str) 
             if status:
                 return status
         record_phase("final-accounting")
+        record_accounting_check(case, "stage-receipts")
         installed = stage_receipts(directory, environment, case)
+        record_accounting_check(case, "fixture-identity-before-storage")
         if owned_containers(environment) != identities:
             raise ValueError("owned fixture changed before accounting")
+        record_accounting_check(case, "local-before-storage")
         if local_proof(environment, identities[HOST_ENV]) != "quiescent-installed":
             raise ValueError("installed group accounting is incomplete")
         record_phase("final-storage-proof")
+        record_accounting_check(case, "storage-absence")
         independent_storage_absence(environment, identities[ARCHIVE_ENV])
         record_phase("final-accounting")
-        if (
-            owned_containers(environment) != identities
-            or local_proof(environment, identities[HOST_ENV]) != "quiescent-installed"
-        ):
+        record_accounting_check(case, "fixture-identity-before-teardown")
+        if owned_containers(environment) != identities:
             raise ValueError("owned fixture changed before teardown")
+        record_accounting_check(case, "local-before-teardown")
+        if local_proof(environment, identities[HOST_ENV]) != "quiescent-installed":
+            raise ValueError("installed group accounting changed before teardown")
+        record_accounting_check(case, "destroy")
         status = phase(directory, environment, uv, "destroy")
         if status:
             return status
+        record_accounting_check(case, "image-cleanup")
         remove_owned_image(environment)
         with (directory / "case.json").open("x", encoding="ascii") as stream:
             json.dump(

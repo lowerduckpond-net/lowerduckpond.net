@@ -20,6 +20,7 @@ from scripts.m3_10_qualification_report import verify_report
 
 FAILURE_STATUS = 2
 COMMAND_DEADLINE_TEST_SECONDS = 3
+COMMAND_FAILURE_STATUS = 7
 CANARY = "private-credential-object-name-exception-canary"
 CORRELATION = "01a0b11c-8fe8-7781-b277-81e5e4c813ba"
 JOB = "01a0b11d-7e30-754f-8ad5-44c8a329494d"
@@ -130,6 +131,125 @@ def test_unbound_run_does_not_inspect_a_replacement_fixture(
     monkeypatch.setattr(failure, "bounded_command", unexpected)
     report = json.loads(failure.collect(directory, 2).read_text())
     assert report["host_observation"] == "unbound"
+
+
+def test_controller_timeout_records_only_allowlisted_stage_and_category(
+    directory: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(failure, "bounded_command", lambda *args, **kwargs: None)
+    failure.record_controller_stage("docker-daemon")
+    failure.record_controller_failure(
+        subprocess.TimeoutExpired([CANARY, "info"], 10, output=CANARY, stderr=CANARY)
+    )
+    report = json.loads(failure.collect(directory, 2).read_text())
+    assert report["controller_failure"] == {
+        "stage": "docker-daemon",
+        "category": "timeout",
+        "return_code": "unknown",
+    }
+    assert CANARY not in json.dumps(report)
+
+
+def test_outer_accounting_context_is_fixed_and_restores_the_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(timing.EVENT_ENV, str(tmp_path / "timing-events.jsonl"))
+    failure.record_accounting_check("audit-rotation", "local-before-storage")
+    assert failure.accounting_check(tmp_path) == "local-before-storage"
+    assert failure._last_submission(tmp_path) == ("audit-rotation", {}, "unknown")
+    failure.record_accounting_check(CANARY, CANARY)
+    assert failure.accounting_check(tmp_path) == "unknown"
+    assert CANARY not in (tmp_path / "failure-accounting-check.json").read_text()
+
+
+def test_ansible_failure_records_source_and_classification_without_module_output(
+    directory: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(failure, "bounded_command", lambda *args, **kwargs: None)
+    source = failure.ROOT / "config/ansible/playbooks/site.yml"
+    failure.record_ansible_failure(
+        "ansible.builtin.apt",
+        f"{source}:17",
+        {
+            "rc": 100,
+            "msg": f"Failed to update apt cache: {CANARY}",
+            "stdout": CANARY,
+            "stderr": CANARY,
+        },
+        outcome="failed",
+    )
+    failure.record_ansible_failure(
+        "ansible.builtin.command",
+        f"{source}:99",
+        {"msg": CANARY, "stderr": CANARY},
+        outcome="failed",
+    )
+    report = json.loads(failure.collect(directory, 2).read_text())
+    assert report["ansible_failure"] == {
+        "outcome": "failed",
+        "action": "ansible.builtin.apt",
+        "source": {"path": "config/ansible/playbooks/site.yml", "line": 17},
+        "category": "package-manager",
+        "return_code": 100,
+        "no_log": False,
+    }
+    assert CANARY not in json.dumps(report)
+
+
+def test_ansible_failure_rejects_unowned_source_and_dynamic_action(
+    directory: Path,
+) -> None:
+    unowned = directory.parent / f"{CANARY}.yml"
+    failure.record_ansible_failure(
+        f"unsafe-{CANARY}",
+        f"{unowned}:3",
+        {"msg": CANARY, "_ansible_no_log": True},
+        outcome="failed",
+    )
+    assert failure.ansible_failure(directory) == {
+        "outcome": "failed",
+        "action": "unknown",
+        "source": {"path": "unknown", "line": "unknown"},
+        "category": "module-failed",
+        "return_code": "unknown",
+        "no_log": True,
+    }
+    assert CANARY not in (directory / "failure-ansible.json").read_text()
+
+
+def test_capacity_preflight_failure_has_a_fixed_ansible_category(directory: Path) -> None:
+    failure.record_ansible_failure(
+        "ansible.builtin.script",
+        f"{failure.ROOT / 'config/ansible/molecule/m3_8/prepare.yml'}:107",
+        {"msg": "command failed", "stderr": "qualification_capacity_prerequisite_failed"},
+        outcome="failed",
+    )
+    assert failure.ansible_failure(directory)["category"] == "capacity-prerequisite"
+
+
+@pytest.mark.parametrize(
+    ("message", "category"),
+    [
+        ("Temporary failure resolving package.invalid", "name-resolution"),
+        (
+            "Could not resolve hostname node: Temporary failure in name resolution",
+            "name-resolution",
+        ),
+        ("Connection timed out", "timeout"),
+        ("Permission denied", "permission-denied"),
+        ("unclassified transport failure", "connection-refused"),
+    ],
+)
+def test_unreachable_prefers_specific_failure_category(
+    directory: Path, message: str, category: str
+) -> None:
+    failure.record_ansible_failure(
+        "ansible.builtin.command",
+        f"{failure.ROOT / 'config/ansible/playbooks/site.yml'}:17",
+        {"msg": message},
+        outcome="unreachable",
+    )
+    assert failure.ansible_failure(directory)["category"] == category
 
 
 def test_capture_retains_original_container_identity(
@@ -334,6 +454,20 @@ def test_command_time_and_output_limits_apply_to_real_processes() -> None:
     assert probe.bounded_command([sys.executable, "-c", "print('x' * 100000)"]) is None
     assert probe.bounded_command([sys.executable, "-c", "print('bounded')"]) == b"bounded\n"
     assert probe.bounded_command([sys.executable, "-c", "raise SystemExit(7)"]) is None
+
+
+def test_checked_bounded_command_preserves_failure_type() -> None:
+    with pytest.raises(FileNotFoundError):
+        probe.bounded_command(["lowerduckpond-command-does-not-exist"], check=True)
+    with pytest.raises(subprocess.TimeoutExpired):
+        probe.bounded_command(
+            [sys.executable, "-c", "import time; time.sleep(30)"], timeout=0.1, check=True
+        )
+    with pytest.raises(subprocess.CalledProcessError) as error:
+        probe.bounded_command(
+            [sys.executable, "-c", f"raise SystemExit({COMMAND_FAILURE_STATUS})"], check=True
+        )
+    assert error.value.returncode == COMMAND_FAILURE_STATUS
 
 
 def test_host_deadline_terminates_even_when_optional_probe_swallows_exceptions() -> None:

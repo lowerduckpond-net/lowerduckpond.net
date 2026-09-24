@@ -13,6 +13,7 @@ from molecule.interpolation import Interpolator, TemplateWithDefaults
 
 from scripts import qualification_context as context
 from scripts import qualification_failure as failure
+from scripts import qualification_group_case
 from scripts import qualification_local as local
 from scripts import qualification_timing as timing
 
@@ -145,8 +146,9 @@ def test_docker_context_is_resolved_and_pinned(
     monkeypatch.setenv("DOCKER_CONTEXT", "chosen-fixture-daemon")
     commands: list[list[str]] = []
 
-    def inspect(command: list[str]) -> bytes:
+    def inspect(command: list[str], **kwargs: object) -> bytes:
         commands.append(command)
+        assert kwargs == {"check": True}
         return b"ssh://docker@disposable.invalid\n"
 
     monkeypatch.setattr(local, "bounded_command", inspect)
@@ -163,6 +165,99 @@ def test_docker_context_is_resolved_and_pinned(
             "{{.Endpoints.docker.Host}}",
         ]
     ]
+
+
+@pytest.mark.parametrize(
+    ("error", "category"),
+    [
+        (subprocess.TimeoutExpired(["docker", "context", "inspect"], 5), "timeout"),
+        (subprocess.CalledProcessError(125, ["docker", "context", "inspect"]), "nonzero-exit"),
+    ],
+)
+def test_docker_context_failure_retains_typed_diagnostic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+    category: str,
+) -> None:
+    monkeypatch.setenv("DOCKER_CONTEXT", "chosen-fixture-daemon")
+    monkeypatch.setenv(timing.EVENT_ENV, str(tmp_path / "timing-events.jsonl"))
+
+    def fail(*args: object, **kwargs: object) -> bytes:
+        raise error
+
+    monkeypatch.setattr(local, "bounded_command", fail)
+    with pytest.raises(type(error)):
+        local.run(tmp_path)
+    assert json.loads((tmp_path / "failure-controller.json").read_text()) == {
+        "stage": "docker-endpoint",
+        "category": category,
+        "return_code": 125 if category == "nonzero-exit" else "unknown",
+    }
+
+
+def test_missing_docker_context_command_is_classified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DOCKER_CONTEXT", "chosen-fixture-daemon")
+    monkeypatch.setenv(timing.EVENT_ENV, str(tmp_path / "timing-events.jsonl"))
+
+    def missing(*args: object, **kwargs: object) -> bytes:
+        raise FileNotFoundError("docker")
+
+    monkeypatch.setattr(local, "bounded_command", missing)
+    with pytest.raises(FileNotFoundError):
+        local.run(tmp_path)
+    assert json.loads((tmp_path / "failure-controller.json").read_text()) == {
+        "stage": "docker-endpoint",
+        "category": "missing-command",
+        "return_code": "unknown",
+    }
+
+
+@pytest.mark.parametrize(("missing", "category"), [(True, "missing-command"), (False, "os-error")])
+def test_missing_uv_is_classified_as_a_dependency_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, missing: bool, category: str
+) -> None:
+    monkeypatch.setenv(timing.EVENT_ENV, str(tmp_path / "timing-events.jsonl"))
+
+    def lookup(name: str) -> str | None:
+        if name == "docker":
+            return "/usr/bin/docker"
+        if missing:
+            return None
+        raise OSError("PATH lookup unavailable")
+
+    monkeypatch.setattr(shutil, "which", lookup)
+    with pytest.raises(FileNotFoundError if missing else OSError):
+        local.run(tmp_path)
+    assert json.loads((tmp_path / "failure-controller.json").read_text()) == {
+        "stage": "dependencies",
+        "category": category,
+        "return_code": "unknown",
+    }
+
+
+def test_post_preflight_failure_is_not_reported_as_a_controller_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(timing.EVENT_ENV, str(tmp_path / "timing-events.jsonl"))
+    monkeypatch.setattr(shutil, "which", lambda value: f"/usr/bin/{value}")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(
+            command, 0 if command[1] == "info" else 1
+        ),
+    )
+
+    def fail(*args: object, **kwargs: object) -> int:
+        raise RuntimeError("later qualification failure")
+
+    monkeypatch.setattr(qualification_group_case, "run_group", fail)
+    with pytest.raises(RuntimeError, match="later qualification failure"):
+        local.run(tmp_path, case="audit-rotation")
+    assert not (tmp_path / "failure-controller.json").exists()
 
 
 def test_name_collision_never_reaches_molecule_cleanup(

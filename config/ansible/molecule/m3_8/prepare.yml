@@ -101,6 +101,28 @@
         state: mounted
       loop: "{{ m3_8_durable_images }}"
 
+    - name: Create the ext4-backed backup cache source
+      ansible.builtin.file:
+        path: /var/lib/lowerduckpond/.m3-8-backup-cache
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Bind the backup cache to the durable state filesystem
+      ansible.posix.mount:
+        path: /var/cache/lowerduckpond-backup
+        src: /var/lib/lowerduckpond/.m3-8-backup-cache
+        fstype: none
+        opts: bind,nodev,nosuid
+        state: mounted
+
+    - name: Require production backup workspace capacity semantics
+      ansible.builtin.script:
+        cmd: "{{ playbook_dir }}/require_capacity.py /var/cache/lowerduckpond-backup"
+        executable: /usr/bin/python3
+      changed_when: false
+
 - name: Import the shared installed-host preparation onto durable storage
   ansible.builtin.import_playbook: ../default/prepare.yml
 

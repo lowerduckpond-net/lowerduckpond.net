@@ -309,6 +309,17 @@ def test_generated_verifier_preserves_phase_for_failure_before_pytest(
     assert not (tmp_path / "failure-test.json").exists()
     report = json.loads(failure.collect(tmp_path, result.returncode).read_text())
     assert report["phase"] == "verify"
+    assert report["ansible_failure"] == {
+        "outcome": "failed",
+        "action": "ansible.builtin.assert",
+        "source": {
+            "path": "config/ansible/molecule/m3_8/tasks/groups.yml",
+            "line": 2,
+        },
+        "category": "assertion",
+        "return_code": "unknown",
+        "no_log": False,
+    }
     assert report["original_exit_status"] == result.returncode
     assert not (tmp_path / "case.json").exists()
 

@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 from contextlib import suppress
@@ -113,6 +114,40 @@ TEST_FILES = frozenset(
     }
 )
 MAX_SOURCE_LINE = 100000
+CONTROLLER_STAGES = frozenset(
+    {"docker-endpoint", "dependencies", "docker-daemon", "resource-collision"}
+)
+CONTROLLER_FAILURES = frozenset(
+    {"missing-command", "nonzero-exit", "timeout", "validation", "os-error", "unknown"}
+)
+ANSIBLE_OUTCOMES = frozenset({"failed", "unreachable"})
+ANSIBLE_FAILURES = frozenset(
+    {
+        "assertion",
+        "capacity-prerequisite",
+        "connection-refused",
+        "module-exception",
+        "module-failed",
+        "name-resolution",
+        "not-found",
+        "package-manager",
+        "permission-denied",
+        "storage-exhausted",
+        "timeout",
+    }
+)
+ACCOUNTING_CHECKS = frozenset(
+    {
+        "stage-receipts",
+        "fixture-identity-before-storage",
+        "local-before-storage",
+        "storage-absence",
+        "fixture-identity-before-teardown",
+        "local-before-teardown",
+        "destroy",
+        "image-cleanup",
+    }
+)
 
 
 def source_line(value: object) -> int | str:
@@ -155,6 +190,139 @@ def record_phase(phase: str) -> None:
             _write(directory / "failure-phase.json", {"phase": label(phase, PHASES)})
         except Exception:
             print("Qualification diagnostic context unavailable.", file=sys.stderr)
+
+
+def record_controller_stage(stage: str) -> None:
+    """Retain only the fixed pre-fixture operation, never its arguments or environment."""
+    directory = _directory()
+    if directory:
+        try:
+            _write(
+                directory / "failure-controller-stage.json",
+                {"stage": label(stage, CONTROLLER_STAGES)},
+            )
+        except Exception:
+            print("Qualification controller context unavailable.", file=sys.stderr)
+
+
+def record_controller_failure(error: BaseException) -> None:
+    directory = _directory()
+    if directory is None:
+        return
+    try:
+        if isinstance(error, FileNotFoundError):
+            category = "missing-command"
+        elif isinstance(error, subprocess.TimeoutExpired):
+            category = "timeout"
+        elif isinstance(error, subprocess.CalledProcessError):
+            category = "nonzero-exit"
+        elif isinstance(error, ValueError):
+            category = "validation"
+        elif isinstance(error, OSError):
+            category = "os-error"
+        else:
+            category = UNKNOWN
+        stage = _optional(directory / "failure-controller-stage.json").get("stage")
+        status = error.returncode if isinstance(error, subprocess.CalledProcessError) else UNKNOWN
+        _write(
+            directory / "failure-controller.json",
+            {
+                "stage": label(stage, CONTROLLER_STAGES),
+                "category": label(category, CONTROLLER_FAILURES),
+                "return_code": (
+                    status if type(status) is int and 0 < status <= MAX_EXIT_STATUS else UNKNOWN
+                ),
+            },
+            first=True,
+        )
+    except Exception:
+        print("Qualification controller failure context unavailable.", file=sys.stderr)
+
+
+def record_accounting_check(group: str, check: str) -> None:
+    """Retain only the declared group and fixed outer-accounting operation."""
+    directory = _directory()
+    if directory:
+        try:
+            _write(
+                directory / "failure-accounting-check.json",
+                {"group": label(group, GROUPS), "check": label(check, ACCOUNTING_CHECKS)},
+            )
+        except Exception:
+            print("Qualification accounting context unavailable.", file=sys.stderr)
+
+
+def _ansible_category(action: str, result: dict[str, object], outcome: str) -> str:
+    if action in {"ansible.builtin.assert", "assert"}:
+        return "assertion"
+    text = " ".join(
+        value.lower() for key in ("msg", "stderr") if isinstance((value := result.get(key)), str)
+    )
+    patterns = (
+        ("capacity-prerequisite", ("qualification_capacity_prerequisite_failed",)),
+        ("storage-exhausted", ("no space left on device",)),
+        (
+            "name-resolution",
+            (
+                "temporary failure resolving",
+                "temporary failure in name resolution",
+                "name or service not known",
+            ),
+        ),
+        ("connection-refused", ("connection refused", "failed to connect")),
+        ("timeout", ("timed out", "timeout")),
+        ("package-manager", ("apt cache", "apt-get", "dpkg")),
+        ("permission-denied", ("permission denied",)),
+        ("not-found", ("no such file or directory", "not found")),
+    )
+    category = next(
+        (category for category, needles in patterns if any(needle in text for needle in needles)),
+        None,
+    )
+    if category:
+        return category
+    if outcome == "unreachable":
+        return "connection-refused"
+    return "module-exception" if "exception" in result else "module-failed"
+
+
+def record_ansible_failure(action: object, source: object, result: object, *, outcome: str) -> None:
+    """Record fixed classifications and source coordinates, never module output."""
+    directory = _directory()
+    if directory is None or (directory / "failure-ansible.json").exists():
+        return
+    try:
+        action_name = action if isinstance(action, str) else UNKNOWN
+        if re.fullmatch(r"[a-z0-9_.]{1,128}", action_name) is None:
+            action_name = UNKNOWN
+        match = re.fullmatch(r"(.+\.ya?ml):(\d{1,6})", source if isinstance(source, str) else "")
+        path = UNKNOWN
+        line: int | str = UNKNOWN
+        if match:
+            candidate = Path(match[1]).resolve()
+            if candidate.is_relative_to(ROOT):
+                path = candidate.relative_to(ROOT).as_posix()
+                line = source_line(int(match[2]))
+        values = result if isinstance(result, dict) else {}
+        rc = values.get("rc")
+        _write(
+            directory / "failure-ansible.json",
+            {
+                "outcome": label(outcome, ANSIBLE_OUTCOMES),
+                "action": action_name,
+                "source": {"path": path, "line": line},
+                "category": label(
+                    _ansible_category(action_name, values, outcome), ANSIBLE_FAILURES
+                ),
+                "return_code": (
+                    rc if type(rc) is int and -MAX_EXIT_STATUS <= rc <= MAX_EXIT_STATUS else UNKNOWN
+                ),
+                "no_log": values.get("_ansible_no_log") is True,
+            },
+            first=True,
+        )
+    except Exception:
+        print("Qualification Ansible failure context unavailable.", file=sys.stderr)
 
 
 def record_submission(request: dict[str, object]) -> None:
@@ -305,6 +473,8 @@ def _observe(directory: Path, correlation: str) -> tuple[str, dict[str, object]]
 def _last_submission(directory: Path) -> tuple[str, dict[str, object], str]:
     context = _optional(directory / "failure-test.json")
     group = label(context.get("group"), GROUPS)
+    if group == UNKNOWN:
+        group = label(_optional(directory / "failure-accounting-check.json").get("group"), GROUPS)
     frozen = context.get("submission")
     last = frozen if isinstance(frozen, dict) else _optional(directory / "failure-submission.json")
     correlation = (
@@ -394,7 +564,59 @@ def local_obligations(observation: dict[str, object]) -> str:
     return UNKNOWN if UNKNOWN in local.values() else "none-observed"
 
 
-def collect(directory: Path, status: int | None = None, phase: str | None = None) -> Path:
+def controller_failure(directory: Path) -> dict[str, object]:
+    controller = _optional(directory / "failure-controller.json")
+    status = controller.get("return_code")
+    return {
+        "stage": label(controller.get("stage"), CONTROLLER_STAGES),
+        "category": label(controller.get("category"), CONTROLLER_FAILURES),
+        "return_code": (
+            status if type(status) is int and 0 < status <= MAX_EXIT_STATUS else UNKNOWN
+        ),
+    }
+
+
+def ansible_failure(directory: Path) -> dict[str, object]:
+    ansible = _optional(directory / "failure-ansible.json")
+    raw_source = ansible.get("source")
+    source: dict[str, object] = raw_source if isinstance(raw_source, dict) else {}
+    action = ansible.get("action")
+    path = source.get("path")
+    status = ansible.get("return_code")
+    return {
+        "outcome": label(ansible.get("outcome"), ANSIBLE_OUTCOMES),
+        "action": (
+            action
+            if isinstance(action, str) and re.fullmatch(r"[a-z0-9_.]{1,128}", action)
+            else UNKNOWN
+        ),
+        "source": {
+            "path": (
+                path
+                if isinstance(path, str) and re.fullmatch(r"[a-zA-Z0-9_./-]{1,512}\.ya?ml", path)
+                else UNKNOWN
+            ),
+            "line": source_line(source.get("line")),
+        },
+        "category": label(ansible.get("category"), ANSIBLE_FAILURES),
+        "return_code": (
+            status
+            if type(status) is int and -MAX_EXIT_STATUS <= status <= MAX_EXIT_STATUS
+            else UNKNOWN
+        ),
+        "no_log": ansible.get("no_log") if type(ansible.get("no_log")) is bool else UNKNOWN,
+    }
+
+
+def accounting_check(directory: Path) -> str:
+    return label(
+        _optional(directory / "failure-accounting-check.json").get("check"), ACCOUNTING_CHECKS
+    )
+
+
+def collect(  # noqa: PLR0912, PLR0915 - validate and assemble one bounded diagnostic
+    directory: Path, status: int | None = None, phase: str | None = None
+) -> Path:
     directory = directory.resolve(strict=True)
     original = _optional(directory / "failure-exit.json")
     if status is None:
@@ -443,6 +665,9 @@ def collect(directory: Path, status: int | None = None, phase: str | None = None
         omissions.append("source_revision")
     tools = required_tools()
     operation = label(last.get("operation"), OPERATIONS) if correlation != UNKNOWN else UNKNOWN
+    controller = controller_failure(directory)
+    ansible = ansible_failure(directory)
+    accounting = accounting_check(directory)
     report: dict[str, object] = {
         "format": FORMAT,
         "authority": "diagnostic-only",
@@ -455,6 +680,9 @@ def collect(directory: Path, status: int | None = None, phase: str | None = None
             "operation": operation,
         },
         "failure_category": label(context.get("category", "command-failed"), FAILURES),
+        "controller_failure": controller,
+        "ansible_failure": ansible,
+        "accounting_check": accounting,
         "test_location": {
             "file": label(context.get("file"), TEST_FILES),
             "line": source_line(context.get("line")),
@@ -491,6 +719,20 @@ def collect(directory: Path, status: int | None = None, phase: str | None = None
     _write(destination, report)
     print(f"Failure diagnostics: {destination}")
     print(f"  {report['phase']} / {group}: {report['failure_category']}; original exit {status}.")
+    if controller["category"] != UNKNOWN:
+        print(
+            f"  Controller: {controller['stage']} / {controller['category']}; "
+            f"exit {controller['return_code']}."
+        )
+    if ansible["category"] != UNKNOWN:
+        source = ansible["source"]
+        assert isinstance(source, dict)  # noqa: S101 - constructed above
+        print(
+            f"  Ansible: {ansible['category']} in {ansible['action']} "
+            f"at {source['path']}:{source['line']}."
+        )
+    if accounting != UNKNOWN:
+        print(f"  Outer accounting check: {accounting}.")
     print(
         f"  Last submission: {operation}; "
         f"outcome: {report['last_submission_disposition']}; host: {host_status}."

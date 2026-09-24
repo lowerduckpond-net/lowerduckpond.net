@@ -69,6 +69,15 @@ def _assert_completed_rotation(host: Host, expected: list[str], before: set[str]
     _assert_snapshot_inventory(host, before, len(expected))
 
 
+def _restore_timer_enablement_for_teardown(host: Host) -> None:
+    # The controller performs local and whole-bucket proofs immediately after
+    # this test, then destroys the disposable fixture. Restore boot enablement
+    # without activating persistent timers that could race those proofs.
+    assert host.run(f"systemctl enable {_TIMERS}").rc == 0
+    for timer in _TIMERS.split():
+        assert host.run("systemctl is-enabled --quiet %s", timer).rc == 0
+
+
 def test_installed_rotation_interruptions_before_reboot(host: Host, tmp_path: Path) -> None:
     require_owned_fixture()
     assert support._initialize_namespace(host)
@@ -187,4 +196,4 @@ def test_installed_rotation_reboot_and_second_full_segment(host: Host, tmp_path:
     assert "lowerduckpond_audit_protected_snapshots 3" in audits.health(host, succeeds=True)
     # Re-enable the configured owned timers only after all injections and
     # historical replays complete; final accounting still runs independently.
-    assert host.run(f"systemctl enable --now {_TIMERS}").rc == 0
+    _restore_timer_enablement_for_teardown(host)
