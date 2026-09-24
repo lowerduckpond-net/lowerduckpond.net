@@ -13,7 +13,7 @@ from scripts.m3_11_qualification_evidence import MAX_BYTES, canonical_bytes
 PRIVATE_FILE_MODE = 0o600
 
 
-def read_private(path: Path) -> dict[str, object]:
+def read_private_bytes(path: Path, *, maximum: int = MAX_BYTES) -> bytes:
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
         before = os.fstat(descriptor)
@@ -22,24 +22,30 @@ def read_private(path: Path) -> dict[str, object]:
             or stat.S_IMODE(before.st_mode) != PRIVATE_FILE_MODE
             or before.st_uid != os.geteuid()
             or before.st_nlink != 1
-            or not 0 < before.st_size <= MAX_BYTES
+            or not 0 < before.st_size <= maximum
         ):
             raise ValueError("combined private inputs have unsafe metadata")
         with os.fdopen(descriptor, "rb", closefd=False) as stream:
-            raw = stream.read(MAX_BYTES + 1)
-        value = json.loads(raw)
+            raw = stream.read(maximum + 1)
         after = os.fstat(descriptor)
-        if (
-            (after.st_size, after.st_mtime_ns, after.st_ctime_ns)
-            != (before.st_size, before.st_mtime_ns, before.st_ctime_ns)
-            or not isinstance(value, dict)
-            or raw != canonical_bytes(value)
-        ):
-            # Canonical equality also rejects duplicate fields at every depth.
+        if (after.st_size, after.st_mtime_ns, after.st_ctime_ns) != (
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        ) or len(raw) > maximum:
             raise ValueError("combined private inputs are ambiguous or changed")
-        return cast(dict[str, object], value)
+        return raw
     finally:
         os.close(descriptor)
+
+
+def read_private(path: Path) -> dict[str, object]:
+    raw = read_private_bytes(path)
+    value = json.loads(raw)
+    # Canonical equality also rejects duplicate fields at every depth.
+    if not isinstance(value, dict) or raw != canonical_bytes(value):
+        raise ValueError("combined private inputs are ambiguous or changed")
+    return cast(dict[str, object], value)
 
 
 def write_private(path: Path, value: dict[str, object]) -> None:
