@@ -7,12 +7,17 @@ import os
 import socket
 import ssl
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
 
 from lowerduckpond_static_contracts import decode_json_object, validate_uuid7
 
-from lowerduckpond_static_host_agent.archive_configuration import load_archive_configuration
+from lowerduckpond_static_host_agent.archive_configuration import (
+    ArchiveConfiguration,
+    load_archive_configuration,
+)
 from lowerduckpond_static_host_agent.archive_journal import ArchiveJournal
 from lowerduckpond_static_host_agent.archive_quarantine import ArchiveQuarantine
 from lowerduckpond_static_host_agent.backup_caddy import CaddyBackupEvidence
@@ -44,6 +49,7 @@ from lowerduckpond_static_host_agent.host_restore_journal import (
 )
 from lowerduckpond_static_host_agent.host_restore_local import DONE_SCHEMA, WORK_SCHEMA
 from lowerduckpond_static_host_agent.host_restore_remote import _bound, finish_restore_remote
+from lowerduckpond_static_host_agent.locks import LockMode, LockName
 from lowerduckpond_static_host_agent.repository import StateRepository
 
 # The two fixed units bind the appropriate private/installed source here. The
@@ -130,6 +136,35 @@ def helper_evidence(
     return verify_restore_archives(journal.remote, _bound(journal), workspace, owner=store.owner)
 
 
+@contextmanager
+def archive_journal(
+    store: RestoreStore, configuration: ArchiveConfiguration
+) -> Iterator[ArchiveJournal]:
+    with (
+        StateRepository(
+            STATE_ROOT,
+            expected_owner=store.owner,
+            recovery_root=RECOVERY_ROOT,
+            private_reconciliation=True,
+        ) as repository,
+        ExportSpool(STATE_ROOT, expected_owner=store.owner) as spool,
+        # Verification uses WORKSPACE, not an export construction. Keep export
+        # exclusion without writing .work into the read-only restored state.
+        spool.locks.acquire(LockName.EXPORT, mode=LockMode.EXCLUSIVE),
+    ):
+        quarantine = ArchiveQuarantine(
+            STATE_ROOT, bucket=configuration.bucket, expected_owner=store.owner, locks=spool.locks
+        )
+        yield ArchiveJournal(
+            repository,
+            spool,
+            configuration.remote_store(),
+            expected_owner=store.owner,
+            quarantine=quarantine.record,
+            require_quarantine_empty=quarantine.require_empty,
+        )
+
+
 def archive_helper_main(artifact: str, *, installed: bool) -> int:
     """Only the fixed systemd launcher calls this; neither credential set is inherited."""
     if os.geteuid() != 0 or sys.argv[1:]:
@@ -157,27 +192,7 @@ def archive_helper_main(artifact: str, *, installed: bool) -> int:
                 }:
                     raise HostRestoreError("restore_archive_target_mismatch")
                 require_helper_state(store, STATE_ROOT)
-                with (
-                    StateRepository(
-                        STATE_ROOT,
-                        expected_owner=0,
-                        recovery_root=RECOVERY_ROOT,
-                        private_reconciliation=True,
-                    ) as repository,
-                    ExportSpool(STATE_ROOT, expected_owner=0) as spool,
-                    spool.construction(),
-                ):
-                    quarantine = ArchiveQuarantine(
-                        STATE_ROOT, bucket=configuration.bucket, expected_owner=0, locks=spool.locks
-                    )
-                    journal = ArchiveJournal(
-                        repository,
-                        spool,
-                        configuration.remote_store(),
-                        expected_owner=0,
-                        quarantine=quarantine.record,
-                        require_quarantine_empty=quarantine.require_empty,
-                    )
+                with archive_journal(store, configuration) as journal:
                     evidence = helper_evidence(store, journal, action)
                 # Check that no phase or target changed while remote proof ran.
                 require_request(request, store, artifact, installed=installed)
