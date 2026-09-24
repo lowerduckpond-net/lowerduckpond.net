@@ -113,8 +113,9 @@ def run(directory: Path, *, create_only: bool = False, case: str = "complete") -
         if uv is None:
             raise FileNotFoundError("uv")
         record_controller_stage("docker-daemon")
+        # Query the daemon without running unrelated client plugins via docker info.
         subprocess.run(  # noqa: S603 - checked Docker endpoint; fixed read-only check
-            [docker, "info"],
+            [docker, "version", "--format", "{{.Server.Version}}"],
             env=environment,
             check=True,
             stdout=subprocess.DEVNULL,
