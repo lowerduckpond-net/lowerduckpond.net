@@ -317,12 +317,28 @@ def _run_installed_boundary_probe(
         "StandardError=null": "StandardError=journal",
         **(replacements or {}),
     }
+    # Exercise the admission command's privilege prefix, not only ExecStart's
+    # sandbox. Even kernels without PSI expose the missing cgroup mount when a
+    # full-privilege pre-start command keeps TemporaryFileSystem=/:ro.
+    admission_probe = (
+        "import os;"
+        "assert os.geteuid()==0;"
+        "assert os.statvfs('/').f_flag & os.ST_RDONLY;"
+        "assert os.path.isdir('/sys/fs/cgroup');"
+        "assert os.stat('/var/lib/lowerduckpond/recovery').st_mode & 0o777 == 0o700"
+    )
     install_probe = (
         "from pathlib import Path;import subprocess;"
         f"source=subprocess.run(['systemctl','cat','--',{template!r}],"
         "check=True,capture_output=True,text=True).stdout;"
         f"edits={edits!r};"
         "source='\\n'.join(edits.get(line,line) for line in source.splitlines());"
+        "gate,=[line for line in source.splitlines() "
+        "if line.startswith('ExecStartPre=') and '/host-restore-gate ' in line];"
+        "prefix=gate.split('=',1)[1].split('/',1)[0];"
+        f"preflight='ExecStartPre='+prefix+"
+        f"{('/usr/bin/python3 -I -B -c ' + json.dumps(admission_probe))!r};"
+        "source=source.replace(gate,gate+'\\n'+preflight);"
         f"command={('ExecStart=/usr/bin/python3 -I -B -c ' + json.dumps(probe))!r};"
         "source='\\n'.join(command if line.startswith('ExecStart=') else line "
         "for line in source.splitlines())+'\\n';"

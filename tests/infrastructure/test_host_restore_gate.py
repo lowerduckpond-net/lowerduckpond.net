@@ -62,7 +62,7 @@ def test_unsafe_root_fails_closed_and_boot_installs_firewall_before_failure(
 def test_admission_dropins_bind_private_restore_provenance_into_isolated_workers() -> None:
     template = (GATE.parents[1] / "templates/restore-admission.conf.j2").read_text()
     assert "BindReadOnlyPaths=/var/lib/lowerduckpond/recovery" in template
-    assert "ExecStartPre=+/usr/local/libexec/lowerduckpond/host-restore-gate" in template
+    assert "ExecStartPre=!/usr/local/libexec/lowerduckpond/host-restore-gate" in template
     assert "ConditionPathExists=!/var/lib/lowerduckpond/recovery/restore-gate.json" in template
     firewall = (GATE.parent / "restore-firewall.conf").read_text()
     assert "ExecStop=\n" in firewall

@@ -98,7 +98,7 @@ def test_only_activators_can_start_with_completion_token_and_closed_gate() -> No
         activator = unit.endswith((".timer", ".socket"))
         assert ("schedules-ready" in dropin) == activator
         if unit.endswith(".service"):
-            assert "ExecStartPre=+/usr/local/libexec/lowerduckpond/host-restore-gate" in dropin
+            assert "ExecStartPre=!/usr/local/libexec/lowerduckpond/host-restore-gate" in dropin
             assert "--caddy" in dropin if unit == "caddy.service" else "--ordinary" in dropin
     tasks = yaml.safe_load((ROLE / "tasks/main.yml").read_text())
     preflight = next(

@@ -11,5 +11,8 @@ ConditionPathExists=!/var/lib/lowerduckpond/recovery/restore-gate.json
 {% if item.endswith('.service') %}
 [Service]
 BindReadOnlyPaths=/var/lib/lowerduckpond/recovery
-ExecStartPre=+/usr/local/libexec/lowerduckpond/host-restore-gate {{ '--caddy' if item == 'caddy.service' else '--ordinary' }}
+# Read private provenance as root while retaining the service sandbox. A full
+# privilege (+) prefix keeps the empty tmpfs root but omits its cgroup mount,
+# so systemd cannot prepare memory.pressure on hosts with PSI enabled.
+ExecStartPre=!/usr/local/libexec/lowerduckpond/host-restore-gate {{ '--caddy' if item == 'caddy.service' else '--ordinary' }}
 {% endif %}
