@@ -20,6 +20,7 @@ class Group:
     tests: tuple[str, ...]
     after_reboot: tuple[str, ...] = ()
     reconstruction: bool = False
+    protected_history: bool = False
 
     @property
     def phases(self) -> tuple[str, ...]:
@@ -51,8 +52,15 @@ class Group:
 
 _CREDENTIALS = "archive_credentials"
 GROUPS = {
+    "combined-reconstruction": Group(
+        (node("combined_reconstruction", "installed_combined_reconstruction"),),
+        reconstruction=True,
+        protected_history=True,
+    ),
     "restore-reconstruction": Group(
-        (node("restore_reconstruction", "installed_restore_reconstruction"),), reconstruction=True
+        (node("restore_reconstruction", "installed_restore_reconstruction"),),
+        reconstruction=True,
+        protected_history=True,
     ),
     "restore-negative": Group(
         (node("restore_negative", "installed_restore_negative"),), reconstruction=True

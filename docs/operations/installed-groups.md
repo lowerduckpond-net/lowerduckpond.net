@@ -17,7 +17,7 @@ archive-storage checks first and shares the tested image within that workflow
 run, so installed groups do not each compile it. This replaces the retired
 upstream binary image without changing the fixture's server or client revision.
 
-The three reconstruction cases also create a second fresh destination and a
+The four reconstruction cases also create a second fresh destination and a
 run-owned ACME service after fencing the source. Their private provider mappings
 survive destination restart; they do not contact the public ACME or DNS API.
 
@@ -30,6 +30,7 @@ rather than a production qualification report.
 | Case | Preserved installed assertions and independent setup |
 | --- | --- |
 | `restore-reconstruction` | Own fenced source plus second fresh Ubuntu/ext4 destination; full-ID Restic restore, four tenant states, protected audit prefix/local tail, excluded upload/export decisions, exact archive proof, cold Caddy generation, immutable result replay and reboot. |
+| `combined-reconstruction` | One source/destination history combines actual backup/mutation contention, excluded secret canaries, two full protected audit segments, lost snapshot response and index interruption, aged ordinary retention with interrupted forget/prune, interrupted reconstruction, reboot and historical-result replay. Local controlled-CA/MinIO evidence only; live Spaces and public-CA qualification remain separate. |
 | `restore-negative` | Own source/destination; invalid target/source bindings, unknown later object, denied/corrupted exact-version downloads, rehashed audit fork, mixed roots, corrupt trusted environment/retained content and retired exact VersionId. Gated failure, unchanged installed roots and independent remote absence are mandatory. |
 | `restore-tls-bootstrap` | Empty certificate storage, native DNS-01 issuance through pinned Pebble, actual DNS/CA rejection, process health insufficient for readiness, interrupted coordinator and destination restart with durable ingress gating. |
 | `audit-rotation` | Own explicit lineage and combined publication/coherent-backup/rotation activation; two production-size closed segments. Hard exits after prepare, lost snapshot reply, witness/index/head publication and unlink; actual reboot, fresh remote proof and bounded service completion. Exact create/delete replays, subsequent mutation, unchanged ordinary snapshots, protected counts, privilege/resource limits and final accounting. |
@@ -74,8 +75,8 @@ retain the source fence and independently bind the destination and controlled
 ACME service to recorded container IDs. The negative case must remain blocked
 with unchanged installed roots; it never supplies a completed-restore receipt.
 Reconstruction groups check source idempotence after enabling publication and
-recovery (and rotation for `restore-reconstruction`), instead of repeating the
-initial dark-source configuration. They still run two full Ansible convergences:
+recovery (and rotation for `restore-reconstruction` and `combined-reconstruction`),
+instead of repeating the initial dark-source configuration. They still run two full Ansible convergences:
 activation, then a zero-change reapply. Only that successful reapply writes the
 required receipt, bound to the run, source container, image, artifact and enabled
 features. Missing or mismatched receipts prevent completion and retirement.

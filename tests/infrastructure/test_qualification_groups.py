@@ -302,7 +302,7 @@ def test_reconstruction_requires_final_source_idempotence_before_completion_or_t
         if current == "verify":
             receipts(directory, env, name)
             receipt = restore.source_idempotence_receipt(
-                env, archived_prefix=name == "restore-reconstruction"
+                env, archived_prefix=GROUPS[name].protected_history
             )
             if fault == "rotation":
                 receipt["rotation"] = not receipt["rotation"]
