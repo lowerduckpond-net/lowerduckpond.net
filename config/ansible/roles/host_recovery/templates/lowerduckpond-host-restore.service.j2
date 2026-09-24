@@ -41,6 +41,9 @@ ProtectKernelModules=true
 ProtectKernelLogs=true
 ProtectControlGroups=true
 NoNewPrivileges=true
+# Retain the ability to drop to Caddy for validation under seccomp + no-new-privileges.
+# The validator clears inherited and ambient capabilities before executing Caddy.
+AmbientCapabilities=CAP_SETUID
 RestrictSUIDSGID=true
 LockPersonality=true
 IPAddressDeny=169.254.169.254/32
