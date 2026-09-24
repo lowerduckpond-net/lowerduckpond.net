@@ -4,6 +4,7 @@ import importlib
 import io
 import json
 import subprocess
+import sys
 import urllib.request
 import uuid
 from pathlib import Path
@@ -99,6 +100,42 @@ def test_source_idempotence_is_bound_to_final_configuration_and_owned_artifact(
 def test_activation_writes_idempotence_receipt_only_after_successful_zero_change_reapply(
     environment: dict[str, str],
     idempotence_source: dict[str, object],
+    fault: str,
+    *,
+    archived_prefix: bool,
+) -> None:
+    # Molecule's standalone test modules share names with component tests.
+    # A fresh interpreter keeps both suites' imports independent in the full run.
+    code = """
+import json, runpy, sys, pytest
+inputs = json.load(sys.stdin)
+module = runpy.run_path(sys.argv[1])
+with pytest.MonkeyPatch.context() as patch:
+    patch.setattr(module['restore'], 'inspect', lambda *_: inputs['identity'])
+    module['assert_source_activation'](
+        inputs['environment'], patch, inputs['fault'], archived_prefix=inputs['rotation'])
+"""
+    result = subprocess.run(  # noqa: S603 - fixed isolated assertion probe, no host access
+        [sys.executable, "-c", code, str(Path(__file__).resolve())],
+        cwd=Path(__file__).resolve().parents[2],
+        input=json.dumps(
+            {
+                "environment": environment,
+                "identity": idempotence_source,
+                "fault": fault,
+                "rotation": archived_prefix,
+            }
+        ),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def assert_source_activation(
+    environment: dict[str, str],
     monkeypatch: pytest.MonkeyPatch,
     fault: str,
     *,
