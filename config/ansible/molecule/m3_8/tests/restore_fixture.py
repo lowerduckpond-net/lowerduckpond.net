@@ -97,10 +97,24 @@ class Fixture:
     def copy_in(self, source: Path, identity: str, destination: str) -> None:
         self.command("docker", "cp", str(source), f"{identity}:{destination}")
 
-    def copy_between(self, source: str, destination: str) -> None:
+    def copy_root_between(self, source: str, destination: str) -> None:
         local = self.root / f"transfer-{uuid.uuid7().hex}"
         self.command("docker", "cp", f"{self.source_id}:{source}", str(local), timeout=120)
         self.copy_in(local, self.destination_id, destination)
+        # Staging through the controller replaces numeric ownership with its
+        # user. These two inputs (Restic repository and Caddy binary) are owned
+        # by root on both hosts; restore that ownership before bootstrap checks.
+        self.command(
+            "docker",
+            "exec",
+            self.destination_id,
+            "chown",
+            "--recursive",
+            "--no-dereference",
+            "0:0",
+            "--",
+            destination,
+        )
 
     def copy_operator_inputs(self) -> None:
         # systemd's /run mount is visible to exec, but not necessarily to the
@@ -378,12 +392,12 @@ WantedBy=multi-user.target
         ).stdout
         # Copy the fenced local Restic repository intact. Neither source history
         # nor its snapshots are pruned. Live-provider reconstruction remains P6.
-        self.copy_between("/mnt/lowerduckpond-restic-test", "/mnt/lowerduckpond-restic-test")
+        self.copy_root_between("/mnt/lowerduckpond-restic-test", "/mnt/lowerduckpond-restic-test")
         self.copy_operator_inputs()
         self.binary = self.source.run("readlink -f /usr/local/bin/caddy").stdout.strip()
         assert self.binary.startswith("/usr/local/lib/lowerduckpond/caddy-")
         assert self.destination.run("install -d -m 0755 /usr/local/lib/lowerduckpond").rc == 0
-        self.copy_between(self.binary, self.binary)
+        self.copy_root_between(self.binary, self.binary)
         for index in (0,):
             private(
                 self.inputs / f"original-origin-pull-ca-{index}.pem",
