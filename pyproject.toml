@@ -144,6 +144,8 @@ files = [
   "scripts/m3_11_live_storage.py",
   "scripts/m3_11_private_inputs.py",
   "scripts/m3_11_combined_inputs.py",
+  "scripts/m3_11_dns_witness.py",
+  "tests/infrastructure/test_m3_11_dns_witness.py",
   "tests/infrastructure/test_m3_11_combined_inputs.py",
   "scripts/m3_11_restore_reservation.py",
   "tests/infrastructure/test_m3_11_live_storage.py",
