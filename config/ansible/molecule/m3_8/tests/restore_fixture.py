@@ -565,6 +565,9 @@ WantedBy=multi-user.target
                 environment={
                     **self.environment,
                     "ANSIBLE_CONFIG": str(REPO / "config/ansible/ansible.cfg"),
+                    # Match Molecule's source transport: send modules over
+                    # stdin instead of copying each one into the destination.
+                    "ANSIBLE_PIPELINING": "true",
                 },
                 log=log,
             )

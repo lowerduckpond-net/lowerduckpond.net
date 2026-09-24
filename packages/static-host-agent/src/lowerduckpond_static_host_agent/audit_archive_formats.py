@@ -12,12 +12,9 @@ from typing import Final
 from lowerduckpond_static_contracts import (
     MAX_CANONICAL_BYTES,
     ContractError,
-    ContractKind,
     audit_entry_digest,
     canonical_json_bytes,
-    decode_contract,
     decode_json_object,
-    validate_contract,
     validate_uuid7,
 )
 
@@ -232,9 +229,10 @@ def _inspect_segment(raw: bytes) -> SegmentEvidence:
     terminal: dict[str, str] | None = None
     try:
         for line in raw.splitlines(keepends=True):
-            document = decode_contract(
-                line, expected_kind=ContractKind.AUDIT_ENTRY, maximum_raw_bytes=MAX_CANONICAL_BYTES
-            )
+            document = decode_json_object(line, maximum_bytes=MAX_CANONICAL_BYTES)
+            # The digest validates the complete audit contract. Do that once,
+            # before using any fields, and retain its original 32-bit framing.
+            entry_digest = audit_entry_digest(document).to_dict()
             if canonical_json_bytes(document) != line:
                 raise BackupIdentityError("audit archive entry is not canonical")
             sequence = archive_count(document["sequence"], MAX_WITNESSED_ENTRIES - 1)
@@ -254,7 +252,7 @@ def _inspect_segment(raw: bytes) -> SegmentEvidence:
             rows.append([document.get(key) for key in _ROW_FIELDS])
             if len(rows) > MAX_WITNESSED_ENTRIES:
                 raise BackupIdentityError("audit archive witness exceeds its entry boundary")
-            terminal = audit_entry_digest(document).to_dict()
+            terminal = entry_digest
         witness = canonical_json_bytes(rows, maximum_bytes=MAX_SEGMENT_BYTES)
     except ContractError as error:
         raise BackupIdentityError("audit archive contains an invalid entry") from error
@@ -292,13 +290,14 @@ def segment_from_witness(raw: bytes) -> bytes:
             }
             if document["deletionEvidence"] is None:
                 del document["deletionEvidence"]
-            validate_contract(document, expected_kind=ContractKind.AUDIT_ENTRY)
             result.extend(canonical_json_bytes(document))
             if len(result) > MAX_SEGMENT_BYTES:
                 raise BackupIdentityError("audit archive witness expands beyond one segment")
     except ContractError as error:
         raise BackupIdentityError("audit archive witness contains an invalid entry") from error
     segment = bytes(result)
+    # The bounded reconstructed segment receives the same full contract and
+    # chain validation as an original segment, once per entry.
     if inspect_segment(segment).witness != raw:
         raise BackupIdentityError("audit archive witness does not preserve its segment")
     return segment
