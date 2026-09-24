@@ -307,6 +307,7 @@ def _run_installed_boundary_probe(
     probe: str,
     *,
     replacements: dict[str, str] | None = None,
+    check_admission: bool = True,
 ) -> None:
     """Keep the unit and drop-in policy while replacing its entry point and test I/O."""
     probe_unit = "lowerduckpond-installed-boundary-probe.service"
@@ -333,12 +334,13 @@ def _run_installed_boundary_probe(
         "check=True,capture_output=True,text=True).stdout;"
         f"edits={edits!r};"
         "source='\\n'.join(edits.get(line,line) for line in source.splitlines());"
-        "gate,=[line for line in source.splitlines() "
+        "gates=[line for line in source.splitlines() "
         "if line.startswith('ExecStartPre=') and '/host-restore-gate ' in line];"
-        "prefix=gate.split('=',1)[1].split('/',1)[0];"
+        f"assert len(gates)==int({check_admission!r});gate=next(iter(gates),'');"
+        "prefix=gate.split('=',1)[-1].split('/',1)[0];"
         f"preflight='ExecStartPre='+prefix+"
         f"{('/usr/bin/python3 -I -B -c ' + json.dumps(admission_probe))!r};"
-        "source=source.replace(gate,gate+'\\n'+preflight);"
+        "source=source.replace(gate,gate+'\\n'+preflight) if gate else source;"
         f"command={('ExecStart=/usr/bin/python3 -I -B -c ' + json.dumps(probe))!r};"
         "source='\\n'.join(command if line.startswith('ExecStart=') else line "
         "for line in source.splitlines())+'\\n';"

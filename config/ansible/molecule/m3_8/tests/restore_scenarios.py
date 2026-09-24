@@ -177,6 +177,7 @@ def finish(fixture: Fixture, tenants: list[str], replay: dict[str, object]) -> N
         UNIT,
         "import os; assert not os.path.exists('/etc/lowerduckpond/archive/credentials.json'); "
         "assert os.path.isfile('/etc/lowerduckpond/backup.env')",
+        check_admission=False,
     )
     _run_installed_boundary_probe(
         destination,
@@ -196,6 +197,7 @@ assert os.path.isdir('/restore-state') and os.path.isdir('/restore-archives')
 assert os.statvfs('/').f_flag & os.ST_RDONLY
 """,
         ),
+        check_admission=False,
     )
     result = support._read_state(
         destination, f"{support.STATE_ROOT}/authorization/results/{replay['missingJob']}.json"

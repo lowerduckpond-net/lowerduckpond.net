@@ -62,42 +62,6 @@ def test_paired_accounting_requires_fresh_source_destination_and_dns_proofs(
             restore.paired_proof(environment)
 
 
-@pytest.mark.parametrize("fault", ["proof", "stop", "none"])
-def test_paired_removal_stops_before_deletion_without_authoritative_proof(
-    environment: dict[str, str], monkeypatch: pytest.MonkeyPatch, fault: str
-) -> None:
-    pair = {"destination": "a" * 64, "acme": "b" * 64}
-    events = []
-
-    def proof(_: dict[str, str]) -> dict[str, str]:
-        if fault == "proof":
-            raise ValueError("unproven")
-        return pair
-
-    def command(_: dict[str, str], *args: str, **kwargs: object) -> bytes:
-        events.append(args)
-        if fault == "stop":
-            raise ValueError("failed to stop")
-        return b""
-
-    monkeypatch.setattr(restore, "paired_proof", proof)
-    monkeypatch.setattr(restore, "command", command)
-    monkeypatch.setattr(restore, "inspect", lambda *_: {"running": False})
-    if fault != "none":
-        with pytest.raises(ValueError):
-            restore.remove_pair(environment, pair)
-        assert not any("rm" in args for args in events)
-        assert not (restore.directory(environment) / "removed.json").exists()
-    else:
-        restore.remove_pair(environment, pair)
-        assert events == [
-            ("docker", "stop", "--time", "20", pair["destination"]),
-            ("docker", "rm", "--volumes", pair["destination"]),
-            ("docker", "stop", "--time", "20", pair["acme"]),
-            ("docker", "rm", "--volumes", pair["acme"]),
-        ]
-
-
 def test_two_resource_retirement_cannot_orphan_a_reconstruction_pair(
     environment: dict[str, str],
 ) -> None:

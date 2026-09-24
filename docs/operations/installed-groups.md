@@ -68,6 +68,22 @@ with unchanged installed roots; it never supplies a completed-restore receipt.
 Successful reconstruction must finish ordinary destination accounting and all
 DNS challenge cleanup. The ordinary two-resource retirement command refuses a
 retained reconstruction fixture rather than orphaning its extra resources.
+Paired retirement durably records both container identities, artifact and boot
+incarnations before stopping either container. It stops both before removing
+either and journals each removal. Repeating that transaction under the run
+lease can finish after a lost stop/remove reply without requiring accounting
+from an already removed destination; changed ownership or a restart refuses
+continuation. Source fencing is freshly checked before each mutation.
+If Docker or the controller interrupts a started paired retirement, finish that
+existing transaction with:
+
+```sh
+uv run python -m scripts.qualification_restore_removal /absolute/private/run-directory
+```
+
+This requires `restore/removal.json` and acquires the original run lease. It
+finishes only the authorized destination/ACME removal; the source and storage
+remain retained, and the original failed diagnostic result remains unchanged.
 Before teardown, the controller obtains fresh validated local accounting bound
 to the run's artifact, independent root-identity whole-bucket absence for both
 MinIO buckets, then rechecks container identities and local accounting.

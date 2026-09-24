@@ -477,7 +477,9 @@ def test_installed_empty_configuration_withdraws_existing_archive_credentials(
         )
         directory = "/run/lowerduckpond-m3-10-withdrawal-proof"
         dropin_directory = f"/etc/systemd/system/{unit}.d"
-        assert not host.file(dropin_directory).exists
+        existing_dropin_directory = host.file(dropin_directory).exists
+        dropin_path = dropin_directory + "/00-m3-10-withdrawal-proof.conf"
+        assert not host.file(dropin_path).exists
         program = (
             "from pathlib import Path\nimport time\n"
             f"private_configuration = Path({credential!r}).read_bytes()\n"
@@ -507,7 +509,7 @@ def test_installed_empty_configuration_withdraws_existing_archive_credentials(
                         f"ExecStart=/usr/bin/python3 -I -B {directory}/probe.py\n"
                         f"BindPaths={directory}\n"
                     ),
-                    "dest": dropin_directory + "/00-m3-10-withdrawal-proof.conf",
+                    "dest": dropin_path,
                     "mode": "0644",
                 }
             },
@@ -536,7 +538,12 @@ def test_installed_empty_configuration_withdraws_existing_archive_credentials(
         ]
         cleanup = [
             {"ansible.builtin.systemd_service": {"name": unit, "state": "stopped"}},
-            {"ansible.builtin.file": {"path": dropin_directory, "state": "absent"}},
+            {
+                "ansible.builtin.file": {
+                    "path": dropin_path if existing_dropin_directory else dropin_directory,
+                    "state": "absent",
+                }
+            },
             {"ansible.builtin.file": {"path": directory, "state": "absent"}},
             {"ansible.builtin.systemd_service": {"daemon_reload": True}},
         ]

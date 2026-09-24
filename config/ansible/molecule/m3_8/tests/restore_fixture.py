@@ -299,9 +299,10 @@ with Path('/etc/hosts').open('a') as stream:
         # Keep this destination-only DNS redirection across its reboot. No host
         # or workstation resolver/CA configuration is changed.
         nft = (
-            "table ip restore_fixture_dns { chain output { type nat hook output priority -110; "
-            f"udp dport 53 dnat to {self.acme_address}:8054; "
-            f"tcp dport 53 dnat to {self.acme_address}:8054; " + "} }\n"
+            "table ip restore_fixture_dns {\n chain output {\n"
+            "  type nat hook output priority -110;\n"
+            f"  udp dport 53 dnat to {self.acme_address}:8054;\n"
+            f"  tcp dport 53 dnat to {self.acme_address}:8054;\n" + " }\n}\n"
         )
         checked(
             self.destination,
@@ -326,7 +327,10 @@ WantedBy=multi-user.target
 """,
         )
         assert self.destination.run("systemctl daemon-reload").rc == 0
-        assert self.destination.run("systemctl enable --now restore-fixture-dns.service").rc == 0
+        started = self.destination.run("systemctl enable --now restore-fixture-dns.service")
+        assert started.rc == 0, self.destination.run(
+            "journalctl --unit=restore-fixture-dns.service --no-pager --output=cat -n 30"
+        ).stdout
         # Copy the fenced local Restic repository intact. Neither source history
         # nor its snapshots are pruned. Live-provider reconstruction remains P6.
         self.copy_between("/mnt/lowerduckpond-restic-test", "/mnt/lowerduckpond-restic-test")

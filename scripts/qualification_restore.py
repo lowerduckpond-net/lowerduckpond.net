@@ -122,11 +122,12 @@ def create(environment: dict[str, str], kind: str) -> str:
             "/tmp",  # noqa: S108 - private container tmpfs mount
             *(["--publish", "0:22"] if kind == "destination" else []),
             str(source["image"]),
-            "/bin/sh",
+            "/usr/bin/python3",
+            "-I",
+            "-B",
             "-c",
-            # The base image may carry the build container's machine ID. Only
-            # this newly created host is initialized, before its first PID 1.
-            ": > /etc/machine-id\nrm -f /var/lib/dbus/machine-id\nexec /sbin/init",
+            Path(__file__).with_name("qualification_restore_init.py").read_text(),
+            kind,
         )
         .decode()
         .strip()
@@ -258,13 +259,6 @@ print('blocked-as-expected')
 
 
 def remove_pair(environment: dict[str, str], expected: dict[str, str]) -> None:
-    if paired_proof(environment) != expected:
-        raise ValueError("restore resources changed before retirement")
-    for kind in KINDS:
-        identity = expected[kind]
-        command(environment, "docker", "stop", "--time", "20", identity, timeout=30)
-        # Check ownership again after shutdown. Never --force or remove by a name.
-        if inspect(environment, identity)["running"] is not False:
-            raise ValueError("restore fixture did not stop")
-        command(environment, "docker", "rm", "--volumes", identity)
-    private_document(directory(environment), "removed.json", {"identities": expected})
+    from scripts.qualification_restore_removal import remove_pair as resume  # noqa: PLC0415
+
+    resume(environment, expected)
