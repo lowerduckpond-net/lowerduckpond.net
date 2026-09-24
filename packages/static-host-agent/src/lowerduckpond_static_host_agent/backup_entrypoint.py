@@ -21,6 +21,8 @@ from lowerduckpond_static_host_agent.backup_restic import (
     repository_genesis,
 )
 from lowerduckpond_static_host_agent.durable import FailureHook, StatePathError
+from lowerduckpond_static_host_agent.host_restore_gate import require_restore_admission
+from lowerduckpond_static_host_agent.host_restore_journal import HostRestoreError
 
 
 def capture_main(selection_descriptor: int, artifact_sha256: str) -> int:
@@ -28,6 +30,7 @@ def capture_main(selection_descriptor: int, artifact_sha256: str) -> int:
         print("backup_static_invalid_invocation", file=sys.stderr)
         return 1
     try:
+        require_restore_admission()
         with inherit_restic_leases((9, selection_descriptor)):
             snapshot_id = capture_backup(
                 CapturePaths(),
@@ -50,6 +53,7 @@ def identity_main(selection_descriptor: int) -> int:
         print("backup_identity_invalid_invocation", file=sys.stderr)
         return 1
     try:
+        require_restore_admission()
         with inherit_restic_leases((9, selection_descriptor)):
             ensure_lineage(
                 Path("/var/lib/lowerduckpond/static"),
@@ -57,7 +61,14 @@ def identity_main(selection_descriptor: int) -> int:
                 initialize=sys.argv[1] == "--initialize",
                 expected_owner=0,
             )
-    except BackupIdentityError, AuditError, ContractError, StatePathError, OSError:
+    except (
+        BackupIdentityError,
+        AuditError,
+        ContractError,
+        StatePathError,
+        HostRestoreError,
+        OSError,
+    ):
         # Private repository coordinates, audit entries and credentials never
         # become shareable command diagnostics, even through subprocess errors.
         print("backup_identity_unverified", file=sys.stderr)

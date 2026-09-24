@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from scripts import qualification_restore as restore
 from scripts.qualification_case import (
     ROOT,
     independent_storage_absence,
@@ -40,6 +41,10 @@ def stage_receipts(
             raise ValueError("the group did not pass every declared installed test")
     if case == "full-size-archive":
         return installed_receipt(directory, environment)
+    if group.reconstruction:
+        restore.require_source_idempotence(
+            environment, archived_prefix=case == "restore-reconstruction"
+        )
     return None
 
 
@@ -87,7 +92,7 @@ def run_group(directory: Path, environment: dict[str, str], uv: str, case: str) 
                 stream,
             )
         identities: dict[str, str] = {}
-        for name in ("create", "prepare", "converge", "idempotence", "verify"):
+        for name in group.phases:
             status = phase(directory, environment, uv, name)
             if name == "create":
                 try:
@@ -105,7 +110,11 @@ def run_group(directory: Path, environment: dict[str, str], uv: str, case: str) 
         if owned_containers(environment) != identities:
             raise ValueError("owned fixture changed before accounting")
         record_accounting_check(case, "local-before-storage")
-        if local_proof(environment, identities[HOST_ENV]) != "quiescent-installed":
+        pair = restore.paired_proof(environment) if group.reconstruction else None
+        if (
+            not group.reconstruction
+            and local_proof(environment, identities[HOST_ENV]) != "quiescent-installed"
+        ):
             raise ValueError("installed group accounting is incomplete")
         record_phase("final-storage-proof")
         record_accounting_check(case, "storage-absence")
@@ -115,9 +124,15 @@ def run_group(directory: Path, environment: dict[str, str], uv: str, case: str) 
         if owned_containers(environment) != identities:
             raise ValueError("owned fixture changed before teardown")
         record_accounting_check(case, "local-before-teardown")
-        if local_proof(environment, identities[HOST_ENV]) != "quiescent-installed":
+        if (
+            restore.paired_proof(environment) != pair
+            if group.reconstruction
+            else local_proof(environment, identities[HOST_ENV]) != "quiescent-installed"
+        ):
             raise ValueError("installed group accounting changed before teardown")
         record_accounting_check(case, "destroy")
+        if pair is not None:
+            restore.remove_pair(environment, pair)
         status = phase(directory, environment, uv, "destroy")
         if status:
             return status

@@ -1,0 +1,4 @@
+---
+host_recovery_bootstrap_enabled: false
+host_recovery_restore_id: ""
+host_recovery_input_directory: ""

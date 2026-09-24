@@ -69,6 +69,11 @@ from lowerduckpond_static_host_agent.durable import (
     FailureHook,
     validate_state_directory,
 )
+from lowerduckpond_static_host_agent.host_restore_decisions import read_decision
+from lowerduckpond_static_host_agent.host_restore_exports import (
+    export_decision_name,
+    require_export_retirement,
+)
 from lowerduckpond_static_host_agent.locks import (
     LockManager,
     LockMode,
@@ -552,7 +557,7 @@ class StoredContract:
 class StateRepository:
     """Own the verified state-root descriptor and tenant-state lock manager."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - explicit filesystem policy and private recovery boundary
         self,
         root: Path,
         *,
@@ -560,6 +565,8 @@ class StateRepository:
         expected_directory_mode: int = 0o700,
         expected_record_mode: int = 0o600,
         tenant_release_root: Path = _DEFAULT_TENANT_RELEASE_ROOT,
+        recovery_root: Path | None = None,
+        private_reconciliation: bool = False,
     ) -> None:
         self._durable = DurableDirectory.open(
             root,
@@ -580,6 +587,8 @@ class StateRepository:
         self._expected_directory_mode = expected_directory_mode
         self._expected_record_mode = expected_record_mode
         self._tenant_release_root = tenant_release_root
+        self._recovery_root = root.parent / "recovery" if recovery_root is None else recovery_root
+        self._private_reconciliation = private_reconciliation
         self._closed = False
 
     def __enter__(self) -> Self:
@@ -1147,6 +1156,63 @@ class _StateTransaction:
         if len(matches) != 1:
             raise StateRecordError("authorization-bound deployment record is not unique")
         return matches[0]
+
+    def restored_runtime_request(
+        self,
+        manifest: dict[str, object],
+        observed: dict[str, object] | None,
+        generation_id: str | None,
+    ) -> tuple[str | None, dict[str, object] | None]:
+        from lowerduckpond_static_host_agent.host_restore_mapping import (  # noqa: PLC0415
+            runtime_mappings,
+            translate_runtime_request,
+        )
+
+        self._require_active()
+        mappings = runtime_mappings(
+            self._repository._recovery_root,
+            owner=self._repository._expected_owner,
+            private_reconciliation=self._repository._private_reconciliation,
+        )
+        return translate_runtime_request(mappings, manifest, observed, generation_id)
+
+    def validate_restored_observation(
+        self, manifest: dict[str, object], observed: dict[str, object]
+    ) -> None:
+        from lowerduckpond_static_host_agent.host_restore_mapping import (  # noqa: PLC0415
+            require_mapped_current_observation,
+            runtime_mappings,
+        )
+
+        self._require_active()
+        for mapping in runtime_mappings(
+            self._repository._recovery_root,
+            owner=self._repository._expected_owner,
+            private_reconciliation=self._repository._private_reconciliation,
+        ):
+            require_mapped_current_observation(mapping, manifest, observed)
+
+    def restored_export_retired(self, job: dict[str, object], result: dict[str, object]) -> bool:
+        """Validate exact restore provenance without weakening ordinary spool checks."""
+        self._require_active()
+        payload = read_decision(
+            self._repository._recovery_root,
+            export_decision_name(job["jobId"]),
+            owner=self._repository._expected_owner,
+            private_reconciliation=self._repository._private_reconciliation,
+        )
+        if payload is None:
+            return False
+        require_export_retirement(payload, self, job, result)
+        try:
+            self._repository._durable.regular_metadata_generation(
+                ("exports", f"{validate_uuid7(job['jobId'])}.zip"),
+                expected_owner=self._repository._expected_owner,
+                expected_mode=self._repository._expected_record_mode,
+            )
+        except FileNotFoundError:
+            return True
+        raise StateRecordError("restore-retired export unexpectedly regained delivery bytes")
 
     def validate_export_bundle(
         self,

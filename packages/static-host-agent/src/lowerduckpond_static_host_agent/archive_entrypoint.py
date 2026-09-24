@@ -17,6 +17,7 @@ from lowerduckpond_static_host_agent.archive_diagnostics import archive_failure_
 from lowerduckpond_static_host_agent.archive_quarantine import ArchiveQuarantine
 from lowerduckpond_static_host_agent.archive_service import serve_archive_export
 from lowerduckpond_static_host_agent.export_spool import ExportSpool
+from lowerduckpond_static_host_agent.host_restore_gate import require_restore_admission
 from lowerduckpond_static_host_agent.repository import StateRepository
 
 _STATE_ROOT: Final = Path("/var/lib/lowerduckpond/static")
@@ -65,6 +66,7 @@ def _archive_main(arguments: list[str] | None, *, operation: str) -> int:
         print("invalid_archive_service_invocation", file=sys.stderr)
         return 64
     try:
+        require_restore_admission()
         with (
             _accept_connection() as stream,
             StateRepository(_STATE_ROOT, expected_owner=0) as repository,

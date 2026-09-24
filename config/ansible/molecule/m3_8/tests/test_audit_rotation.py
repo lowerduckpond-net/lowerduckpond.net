@@ -85,7 +85,7 @@ def test_installed_rotation_interruptions_before_reboot(host: Host, tmp_path: Pa
     audits.run_unit(host, identity.UNIT)
     support._assert_ansible_reapply_result(
         support._run_ansible_reapply(backup_recovery_enabled=True, audit_rotation_enabled=True),
-        expected_changes=9,
+        expected_changes=13,
     )
     assert host.service(rotation.TIMER).is_enabled
     assert "OnCalendar=hourly" in host.run("systemctl cat %s", rotation.TIMER).stdout

@@ -7,10 +7,9 @@ from pathlib import Path
 
 import pytest
 from lowerduckpond_static_contracts import (
-    ContractKind,
+    Digest,
     audit_entry_digest,
     canonical_json_bytes,
-    decode_contract,
 )
 from lowerduckpond_static_host_agent import audit_archive_formats as formats
 from lowerduckpond_static_host_agent.backup_identity import (
@@ -322,17 +321,14 @@ def test_adjacent_exact_byte_proofs_share_both_directions_with_bounded_retention
 ) -> None:
     calls: list[bytes] = []
 
-    def decode(
-        raw: bytes, *, expected_kind: ContractKind, maximum_raw_bytes: int
-    ) -> dict[str, object]:
-        calls.append(raw)
-        return decode_contract(
-            raw, expected_kind=expected_kind, maximum_raw_bytes=maximum_raw_bytes
-        )
+    def digest(document: object) -> Digest:
+        result = audit_entry_digest(document)
+        calls.append(canonical_json_bytes(document))
+        return result
 
     with formats._PROOF_CACHE_LOCK:
         formats._PROOF_CACHE.clear()
-    monkeypatch.setattr(formats, "decode_contract", decode)
+    monkeypatch.setattr(formats, "audit_entry_digest", digest)
     first = entry()
     second = entry(1, audit_entry_digest(first).to_dict())
     raw = (canonical_json_bytes(first), canonical_json_bytes(second))

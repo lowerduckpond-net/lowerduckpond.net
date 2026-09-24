@@ -2,12 +2,24 @@
 
 Use `just check-installed-group CASE` after `just setup`. Each case creates a
 fresh owned systemd host and MinIO service, installs the same artifact as the
-complete qualification, and checks idempotence before its tests. Production
+complete qualification, and checks idempotence on its source configuration. Production
 admission and service resource limits remain unchanged. The controller must
 reach the fixture's published SSH port. Run parallel cases on separate runners;
 the fixtures share a host kernel's loop-device pool even with distinct names.
 Molecule pipelines Ansible modules through its Docker connection to reduce
 per-task transfer overhead.
+
+The local MinIO fixture builds from fixed server and client commits with a pinned
+Go compiler. Its image tag and build receipt bind the complete
+[recipe](../../config/ansible/molecule/m3_8/Dockerfile.minio.j2). Matching local
+builds are reused; an unrelated image at that tag is rejected. CI runs the
+archive-storage checks first and shares the tested image within that workflow
+run, so installed groups do not each compile it. This replaces the retired
+upstream binary image without changing the fixture's server or client revision.
+
+The three reconstruction cases also create a second fresh destination and a
+run-owned ACME service after fencing the source. Their private provider mappings
+survive destination restart; they do not contact the public ACME or DNS API.
 
 The [fixed registry](../../scripts/qualification_groups.py) declares every test
 and parameter. It accepts no arbitrary test selector. The [reviewed selection policy](installed-selection.md) chooses required groups.
@@ -17,6 +29,9 @@ rather than a production qualification report.
 
 | Case | Preserved installed assertions and independent setup |
 | --- | --- |
+| `restore-reconstruction` | Own fenced source plus second fresh Ubuntu/ext4 destination; full-ID Restic restore, four tenant states, protected audit prefix/local tail, excluded upload/export decisions, exact archive proof, cold Caddy generation, immutable result replay and reboot. |
+| `restore-negative` | Own source/destination; invalid target/source bindings, unknown later object, denied/corrupted exact-version downloads, rehashed audit fork, mixed roots, corrupt trusted environment/retained content and retired exact VersionId. Gated failure, unchanged installed roots and independent remote absence are mandatory. |
+| `restore-tls-bootstrap` | Empty certificate storage, native DNS-01 issuance through pinned Pebble, actual DNS/CA rejection, process health insufficient for readiness, interrupted coordinator and destination restart with durable ingress gating. |
 | `audit-rotation` | Own explicit lineage and combined publication/coherent-backup/rotation activation; two production-size closed segments. Hard exits after prepare, lost snapshot reply, witness/index/head publication and unlink; actual reboot, fresh remote proof and bounded service completion. Exact create/delete replays, subsequent mutation, unchanged ordinary snapshots, protected counts, privilege/resource limits and final accounting. |
 | `audit-protection` | Own explicitly initialized empty lineage; publication and coherent backup activate together before supported tenant creation. Production-size closed audit segment, real ancient Restic copies and orphan adoption, exact index/witness and historical lookup, missing/corrupt/retagged protected evidence refusal before ordinary removal, journaled forget interruption and fixed-ID resume, service limits and credential-free health. Rotation and local removal remain disabled. |
 | `backup-identity` | Fresh supported tenant history; real Restic config/full snapshot IDs and restore, permanent repository genesis before local commit, refusal after both local identity records are lost, retention exclusion, audit-prefix verification, repository/selection/state lock exclusion, wrong repository identity and root-only command boundaries. |
@@ -53,7 +68,36 @@ Each stage must collect exactly its declared tests, in order, and pass setup,
 call and teardown for every test. A skip, expected failure, missing test,
 collection failure, or zero exit with incomplete execution produces no passing
 stage receipt. Both reboot cases need before/after receipts. Every final
-stage also runs the existing artifact-integrity and archive-accounting check.
+stage also runs the existing artifact-integrity and archive-accounting check,
+or the paired reconstruction accounting check for restore groups. Those groups
+retain the source fence and independently bind the destination and controlled
+ACME service to recorded container IDs. The negative case must remain blocked
+with unchanged installed roots; it never supplies a completed-restore receipt.
+Reconstruction groups check source idempotence after enabling publication and
+recovery (and rotation for `restore-reconstruction`), instead of repeating the
+initial dark-source configuration. They still run two full Ansible convergences:
+activation, then a zero-change reapply. Only that successful reapply writes the
+required receipt, bound to the run, source container, image, artifact and enabled
+features. Missing or mismatched receipts prevent completion and retirement.
+Successful reconstruction must finish ordinary destination accounting and all
+DNS challenge cleanup. The ordinary two-resource retirement command refuses a
+retained reconstruction fixture rather than orphaning its extra resources.
+Paired retirement durably records both container identities, artifact and boot
+incarnations before stopping either container. It stops both before removing
+either and journals each removal. Repeating that transaction under the run
+lease can finish after a lost stop/remove reply without requiring accounting
+from an already removed destination; changed ownership or a restart refuses
+continuation. Source fencing is freshly checked before each mutation.
+If Docker or the controller interrupts a started paired retirement, finish that
+existing transaction with:
+
+```sh
+uv run python -m scripts.qualification_restore_removal /absolute/private/run-directory
+```
+
+This requires `restore/removal.json` and acquires the original run lease. It
+finishes only the authorized destination/ACME removal; the source and storage
+remain retained, and the original failed diagnostic result remains unchanged.
 Before teardown, the controller obtains fresh validated local accounting bound
 to the run's artifact, independent root-identity whole-bucket absence for both
 MinIO buckets, then rechecks container identities and local accounting.

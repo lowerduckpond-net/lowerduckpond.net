@@ -1,0 +1,89 @@
+#!/usr/bin/python3 -I
+"""Verify the immutable selected artifact before importing administrative code."""
+
+from __future__ import annotations
+
+import fcntl
+import os
+import pathlib
+import re
+import stat
+import subprocess
+import sys
+
+sys.dont_write_bytecode = True
+ARTIFACT_ROOT = pathlib.Path("/opt/lowerduckpond/static-host-agent")
+REPOSITORY_LOCK = pathlib.Path("/var/cache/lowerduckpond-backup/repository.lock")
+
+
+def require_lock(path: pathlib.Path, descriptor: int) -> None:
+    opened = os.fstat(descriptor)
+    named = path.stat(follow_symlinks=False)
+    if (
+        not stat.S_ISREG(opened.st_mode)
+        or stat.S_IMODE(opened.st_mode) != 0o600  # noqa: PLR2004
+        or opened.st_uid != 0 or opened.st_gid != 0
+        or opened.st_nlink != 1 or opened.st_size != 0
+        or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)
+    ):
+        raise ValueError("unsafe restore lease")
+
+
+def acquire_selection() -> int:
+    if os.geteuid() != 0:
+        raise ValueError("root required")
+{% if item.mode in ['coordinator', 'source'] %}
+    require_lock(REPOSITORY_LOCK, 9)
+    with pathlib.Path("/proc/self/fdinfo/9").open("rb") as stream:
+        raw = stream.read(4097)
+    locks = [line.split() for line in raw.splitlines() if line.startswith(b"lock:")]
+    if (
+        len(raw) > 4096 or len(locks) != 1  # noqa: PLR2004
+        or locks[0][2:5] != [b"FLOCK", b"ADVISORY", b"WRITE"]
+        or locks[0][7:] != [b"0", b"EOF"]
+    ):
+        raise ValueError("restore repository lease missing")
+{% endif %}
+    path = ARTIFACT_ROOT / "selection.lock"
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    require_lock(path, descriptor)
+    fcntl.flock(descriptor, fcntl.{{ 'LOCK_EX' if item.mode == 'source' else 'LOCK_SH' }})
+    require_lock(path, descriptor)
+    return descriptor
+
+
+def selected_artifact() -> pathlib.Path:
+    selector = ARTIFACT_ROOT / "current"
+    metadata = selector.stat(follow_symlinks=False)
+    if (
+        not stat.S_ISLNK(metadata.st_mode)
+        or metadata.st_uid != 0 or metadata.st_gid != 0 or metadata.st_nlink != 1
+    ):
+        raise ValueError("unsafe artifact selector")
+    selected = selector.readlink()
+    if selected.parent != ARTIFACT_ROOT or re.fullmatch(r"[0-9a-f]{64}", selected.name) is None:
+        raise ValueError("unbound artifact identity")
+    subprocess.run(  # noqa: S603 - fixed verifier and immutable selected artifact
+        ["/usr/local/libexec/lowerduckpond/verify-static-host-agent-artifact", str(selected)],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        env={"PATH": "/usr/bin:/bin"}, timeout=60, check=True,
+    )
+    return selected
+
+
+try:
+    _SELECTION_FD = acquire_selection()
+    _ARTIFACT = selected_artifact()
+except (OSError, ValueError, subprocess.SubprocessError):
+    raise SystemExit("restore_artifact_unverified") from None
+sys.path.insert(0, str(_ARTIFACT / "site-packages"))
+
+{% if item.mode in ['archive-private', 'archive-installed'] %}
+from lowerduckpond_static_host_agent.host_restore_archive_helper import archive_helper_main  # noqa: E402
+
+raise SystemExit(archive_helper_main(_ARTIFACT.name, installed={{ item.mode == 'archive-installed' }}))
+{% else %}
+from lowerduckpond_static_host_agent.host_restore_entrypoint import {{ item.function }}  # noqa: E402
+
+raise SystemExit({{ item.function }}({% if item.mode != 'cli' %}_SELECTION_FD, {% endif %}_ARTIFACT.name))
+{% endif %}

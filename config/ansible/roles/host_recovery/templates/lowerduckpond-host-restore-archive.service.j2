@@ -1,0 +1,63 @@
+[Unit]
+Description=Prove exact tenant archive versions for fenced host reconstruction
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/lowerduckpond/archive/credentials.json
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+ExecStart=/usr/local/libexec/lowerduckpond/host-restore-archive-{{ item.mode }}
+StandardOutput=null
+StandardError=journal
+TimeoutStartSec=5min
+TimeoutStopSec=15s
+MemoryMax=128M
+MemorySwapMax=0
+TasksMax=16
+LimitNOFILE=128
+LimitCPU=120
+LimitCORE=0
+CPUQuota=100%
+PrivateIPC=true
+PrivateDevices=true
+ProtectSystem=false
+TemporaryFileSystem=/:ro
+BindReadOnlyPaths=/usr /lib /lib64
+BindReadOnlyPaths=/etc/ssl/certs /etc/nsswitch.conf /etc/hosts /etc/resolv.conf
+BindReadOnlyPaths=/etc/lowerduckpond/archive
+# Only nonsecret policy and the original public origin-pull trust live here.
+BindReadOnlyPaths=/etc/lowerduckpond/host-restore
+BindReadOnlyPaths=/opt/lowerduckpond/static-host-agent
+BindReadOnlyPaths={{ item.state }}:/restore-state
+BindPaths={{ item.state }}/locks:/restore-state/locks
+BindPaths={{ item.state }}/platform:/restore-state/platform
+BindPaths={{ item.state }}/intents:/restore-state/intents
+BindPaths=/var/lib/lowerduckpond/recovery
+BindPaths=/var/cache/lowerduckpond-host-restore/{{ host_recovery_restore_id }}/archives:/restore-archives
+BindReadOnlyPaths=/run/lowerduckpond-host-restore
+# No backup credentials, backup repository, Caddy environment or tenant content.
+ProtectHome=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectProc=invisible
+ProcSubset=pid
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@keyring @resources
+SystemCallErrorNumber=EPERM

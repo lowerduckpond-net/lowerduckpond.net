@@ -12,6 +12,7 @@ from lowerduckpond_static_host_agent.caddy_startup import (
     CaddyStartPhase,
     CaddyStartupError,
     CaddyStartupStore,
+    decode_caddy_start_intent,
     start_target,
 )
 
@@ -20,6 +21,63 @@ GENERATION_B = "0198d17f-6f4a-7000-8000-000000000002"
 TARGET_A = start_target(GENERATION_A, b"manifest-a")
 TARGET_B = start_target(GENERATION_B, b"manifest-b")
 INVOCATIONS = tuple(f"{value:032x}" for value in range(1, 8))
+RESTORE = "0198d17f-6f4a-7000-8000-000000000031"
+
+
+def test_host_restore_attempts_survive_healthy_process_and_have_no_ordinary_reset_or_rollback(
+    tmp_path: Path,
+) -> None:
+    with _store(tmp_path) as store:
+        intent = store.begin_host_restore(candidate=TARGET_B, restore_id=RESTORE)
+        assert decode_caddy_start_intent(intent.to_bytes()) == intent
+        store.mark_restart_required(intent)
+        for invocation in INVOCATIONS[:MAX_CADDY_START_ATTEMPTS]:
+            intent = store.prepare_start(active=TARGET_B, invocation_id=invocation)
+            matching = store.require_matching_success(active=TARGET_B, invocation_id=invocation)
+            store.commit_success(matching)
+            assert store.read() == intent
+            assert store.begin_host_restore(candidate=TARGET_B, restore_id=RESTORE) == intent
+            assert not store.clear_exhausted_ordinary_start()
+            assert store.require_rollback_target() is None
+            with pytest.raises(CaddyStartupError, match="rollback authority"):
+                store.mark_rollback_restart_required(intent)
+        with pytest.raises(CaddyStartupError, match="exhausted"):
+            store.prepare_start(active=TARGET_B, invocation_id=INVOCATIONS[3])
+        assert decode_caddy_start_intent((tmp_path / "intents/start.json").read_bytes()) == intent
+        with pytest.raises(CaddyStartupError, match="another"):
+            store.begin_host_restore(candidate=TARGET_A, restore_id=RESTORE)
+        with pytest.raises(CaddyStartupError, match="mismatched"):
+            store.complete_host_restore(intent, restore_id=GENERATION_A)
+        store.complete_host_restore(intent, restore_id=RESTORE)
+        assert store.read() is None
+
+
+def test_host_restore_cannot_replace_or_rebind_captured_startup_attempts(tmp_path: Path) -> None:
+    with _store(tmp_path) as store:
+        old = store.prepare_start(active=TARGET_A, invocation_id=INVOCATIONS[0])
+        original = old.to_bytes()
+        assert b"restoreId" not in original
+        with pytest.raises(CaddyStartupError, match="another"):
+            store.begin_host_restore(candidate=TARGET_B, restore_id=RESTORE)
+        assert store.read().to_bytes() == original  # type: ignore[union-attr]
+        assert decode_caddy_start_intent(original) == old
+
+
+@pytest.mark.parametrize(
+    "phase", [CaddyStartPhase.ORDINARY_STARTING, CaddyStartPhase.RECOVERY_STARTING]
+)
+def test_restore_transaction_cannot_claim_an_ordinary_or_fallback_phase(
+    phase: CaddyStartPhase,
+) -> None:
+    with pytest.raises(CaddyStartupError):
+        CaddyStartIntent(
+            CaddyStartMode.HOST_RESTORE,
+            phase,
+            TARGET_B,
+            candidate_invocations=(INVOCATIONS[0],),
+            invocation_id=INVOCATIONS[0],
+            restore_id=RESTORE,
+        )
 
 
 def _store(tmp_path: Path) -> CaddyStartupStore:

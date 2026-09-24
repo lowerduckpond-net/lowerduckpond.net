@@ -77,6 +77,12 @@ GROUPS = frozenset(
         "cross-feature",
         "audit-protection",
         "audit-rotation",
+        "backup-identity",
+        "backup-coherence",
+        "backup-mutation-overlap",
+        "restore-reconstruction",
+        "restore-negative",
+        "restore-tls-bootstrap",
     }
 )
 FAILURES = frozenset(
@@ -111,11 +117,21 @@ TEST_FILES = frozenset(
         "audit_protection_support.py",
         "test_audit_rotation.py",
         "audit_rotation_support.py",
+        "test_backup_identity.py",
+        "test_backup_coherence.py",
+        "backup_capture_support.py",
+        "test_restore_reconstruction.py",
+        "test_restore_negative.py",
+        "test_restore_tls_bootstrap.py",
+        "test_restore_accounting.py",
+        "restore_fixture.py",
+        "restore_scenarios.py",
+        "restore_negative_faults.py",
     }
 )
 MAX_SOURCE_LINE = 100000
 CONTROLLER_STAGES = frozenset(
-    {"docker-endpoint", "dependencies", "docker-daemon", "resource-collision"}
+    {"docker-endpoint", "dependencies", "docker-daemon", "resource-collision", "fixture-image"}
 )
 CONTROLLER_FAILURES = frozenset(
     {"missing-command", "nonzero-exit", "timeout", "validation", "os-error", "unknown"}
@@ -711,6 +727,14 @@ def collect(  # noqa: PLR0912, PLR0915 - validate and assemble one bounded diagn
             "filesystem_primitives": "not-tested-read-only",
         },
     }
+    if (directory / "restore").exists():
+        from scripts.qualification_restore import observations  # noqa: PLC0415
+        from scripts.qualification_retirement import environment_for  # noqa: PLC0415
+
+        try:
+            report["reconstruction"] = observations(environment_for(directory))
+        except Exception:
+            report["reconstruction"] = "unknown"
     destination = directory / "failure.json"
     if destination.exists():
         destination = directory / (

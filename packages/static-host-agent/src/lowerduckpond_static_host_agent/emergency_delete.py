@@ -6,12 +6,11 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import cast
 
-from lowerduckpond_static_contracts import canonical_json_bytes, validate_uuid7
+from lowerduckpond_static_contracts import validate_uuid7
 from lowerduckpond_static_domain import EntropySource, MillisecondClock, generate_uuid7
 
 from lowerduckpond_static_host_agent.archive_activate import _ensure_forward_candidate
 from lowerduckpond_static_host_agent.archive_commit import _missing_exact
-from lowerduckpond_static_host_agent.audit import DEFAULT_AUDIT_LIMITS
 from lowerduckpond_static_host_agent.caddy_admin import (
     reload_caddy_generation,
     restore_caddy_generation,
@@ -21,21 +20,24 @@ from lowerduckpond_static_host_agent.caddy_routes import TenantRouteInput
 from lowerduckpond_static_host_agent.caddy_runtime import CaddyRuntime
 from lowerduckpond_static_host_agent.capacity import (
     DEFAULT_HOST_CAPACITY_LIMITS,
-    CapacityReservation,
     HostCapacityLimits,
-    ReleaseCapacityUsage,
-    admit_release_capacity,
+)
+from lowerduckpond_static_host_agent.emergency_commit import (
+    EmergencyDeletionError as EmergencyDeletionError,  # noqa: PLC0414 - preserve public exception
+)
+from lowerduckpond_static_host_agent.emergency_commit import (
+    admit_emergency_transition,
+    finalize_emergency_transition,
+    verify_emergency_releases,
 )
 from lowerduckpond_static_host_agent.emergency_plan import plan_emergency_deletion
 from lowerduckpond_static_host_agent.emergency_state import (
-    remove_emergency_state,
     verify_emergency_state,
 )
 from lowerduckpond_static_host_agent.export_spool import ExportSpool
 from lowerduckpond_static_host_agent.locks import LockName
 from lowerduckpond_static_host_agent.release_store import DeploymentReleaseStore
 from lowerduckpond_static_host_agent.repository import (
-    IntentRemovalToken,
     StateRecordPath,
     StateRepository,
     StoredContract,
@@ -60,11 +62,6 @@ from lowerduckpond_static_host_agent.route_snapshot import (
     snapshot_other_tenant_routes,
     snapshot_tenant_routes,
 )
-from lowerduckpond_static_host_agent.state_inventory import StateInventoryReservation
-
-
-class EmergencyDeletionError(RuntimeError):
-    """Administrator deletion cannot prove its exact recorded recovery path."""
 
 
 class _RemovalGate:
@@ -355,30 +352,16 @@ class EmergencyDeletion:
                         verifier=self.verifier,
                     )
                 self.hook("candidate-selected")
-                if _audit_needs_append(transaction.inspect_audit(), audit):
-                    transaction.append_audit(audit, administrator=True)
-                self.hook("audit-sync")
-                for record in cast(list[dict[str, object]], document["deploymentRecords"]):
-                    self.store.remove_release(
-                        tenant,
-                        record["id"],
-                        expected_release_tree_digest=cast(
-                            dict[str, object], record["releaseTreeDigest"]
-                        ),
-                        publication_lock=transaction,
-                    )
-                    self.hook("release-removed")
-                remove_emergency_state(self.repository, transaction, document, hook=self.hook)
-                self._verify_absence(transaction, tenant)
-                if result_missing:
-                    transaction.create_immutable(StateRecordPath.emergency_result(identity), result)
-                self.hook("result-sync")
-                original = next(value for value in inventory.records if value.intent_id == identity)
-                transaction.remove_reconciled_intent(
-                    path, IntentRemovalToken(prepared.revision, original.metadata_generation)
+                return finalize_emergency_transition(
+                    self.repository,
+                    transaction,
+                    self.spool,
+                    self.store,
+                    prepared,
+                    limits=self.limits,
+                    verify_absence=lambda: self._verify_absence(transaction, tenant),
+                    hook=self.hook,
                 )
-                self.hook("intent-removed")
-                return result
 
     def _candidate(
         self, transaction: _StateTransaction, document: dict[str, object], *, audit_missing: bool
@@ -430,23 +413,7 @@ class EmergencyDeletion:
     def _verify_releases(
         self, transaction: _StateTransaction, intent: dict[str, object], *, committed: bool
     ) -> None:
-        tenant = str(intent["tenantId"])
-        records = cast(list[dict[str, object]], intent["deploymentRecords"])
-        actual = dict(
-            self.store.published_inventory(publication_lock=transaction).tenant_releases
-        ).get(tenant, ())
-        expected = tuple(str(record["id"]) for record in records)
-        if not set(actual).issubset(expected) or (not committed and actual != expected):
-            raise EmergencyDeletionError("emergency releases exceed their recorded authority")
-        for record in records:
-            if (
-                record["id"] in actual
-                and self.store.measure(
-                    tenant, record["id"], publication_lock=transaction
-                ).digest.to_dict()
-                != record["releaseTreeDigest"]
-            ):
-                raise EmergencyDeletionError("emergency release content changed")
+        verify_emergency_releases(self.store, transaction, intent, committed=committed)
 
     def _verify_absence(self, transaction: _StateTransaction, tenant: str) -> None:
         if tenant in transaction.measure_inventory().tenant_ids or tenant in dict(
@@ -497,44 +464,11 @@ class EmergencyDeletion:
         audit_missing: bool,
         result_missing: bool,
     ) -> None:
-        audit = cast(dict[str, object], intent["auditEntry"])
-        result = cast(dict[str, object], intent["result"])
-        if audit_missing:
-            transaction.admit_audit_append(audit, administrator=True)
-        if result_missing:
-            transaction.admit_inventory(
-                StateInventoryReservation(
-                    authorization_records=1,
-                    authorization_allocated_bytes=transaction.allocation_upper_bound(
-                        len(canonical_json_bytes(result))
-                    ),
-                )
-            )
-        writes = ([intent] if preparing else []) + ([result] if result_missing else [])
-        retirement = intent["retirementIntent"]
-        if type(retirement) is dict and (
-            preparing
-            or _missing_exact(
-                transaction,
-                StateRecordPath.archive_retirement_intent(retirement["intentId"]),
-                retirement,
-            )
-        ):
-            writes.append(retirement)
-        allocated = sum(
-            transaction.allocation_upper_bound(len(canonical_json_bytes(value))) for value in writes
+        admit_emergency_transition(
+            transaction,
+            intent,
+            self.limits,
+            preparing=preparing,
+            audit_missing=audit_missing,
+            result_missing=result_missing,
         )
-        if audit_missing:
-            allocated += transaction.allocation_upper_bound(
-                DEFAULT_AUDIT_LIMITS.maximum_segment_bytes
-            )
-        count = len(writes) + int(audit_missing)
-        if count:
-            admit_release_capacity(
-                ReleaseCapacityUsage(()),
-                CapacityReservation(
-                    allocated + transaction.namespace_allocation_upper_bound(count), count
-                ),
-                transaction.measure_filesystem_capacity(),
-                limits=self.limits,
-            )

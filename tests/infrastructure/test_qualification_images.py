@@ -102,9 +102,10 @@ def test_create_only_or_failed_complete_run_preserves_the_original_result(
         subprocess,
         "run",
         lambda command, **kwargs: subprocess.CompletedProcess(
-            command, 0 if command[1] == "info" else 1
+            command, 0 if command[1] == "version" else 1
         ),
     )
+    monkeypatch.setattr(local, "ensure_image", lambda _environment: "fixture-image")
     monkeypatch.setattr(subprocess, "call", lambda *args, **kwargs: status)
 
     def cleanup(environment: dict[str, str]) -> None:

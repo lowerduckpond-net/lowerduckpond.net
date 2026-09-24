@@ -1,0 +1,25 @@
+---
+host_recovery_guarded_units:
+  - caddy.service
+  - caddy-recovery.service
+  - lowerduckpond-static-worker@.service
+  - lowerduckpond-static-reconcile.service
+  - lowerduckpond-static-emergency-reconcile.service
+  - lowerduckpond-archive-export@.service
+  - lowerduckpond-archive-construction@.service
+  - lowerduckpond-archive-cleanup@.service
+  - lowerduckpond-backup.service
+  - lowerduckpond-backup-maintenance.service
+  - lowerduckpond-backup-identity.service
+  - lowerduckpond-audit-initialize.service
+  - lowerduckpond-audit-verify.service
+  - lowerduckpond-audit-rotate.service
+  - lowerduckpond-static-reconcile.timer
+  - lowerduckpond-static-emergency-reconcile.timer
+  - lowerduckpond-archive-export.socket
+  - lowerduckpond-archive-construction.socket
+  - lowerduckpond-archive-cleanup.socket
+  - lowerduckpond-backup.timer
+  - lowerduckpond-backup-maintenance.timer
+  - lowerduckpond-audit-verify.timer
+  - lowerduckpond-audit-rotate.timer

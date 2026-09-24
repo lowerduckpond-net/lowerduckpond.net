@@ -57,3 +57,7 @@
   ansible.builtin.command:
     cmd: /usr/local/libexec/lowerduckpond/health-check
   changed_when: false
+  # Recovery deliberately keeps publication and backup services stopped. Keep
+  # reporting that unhealthy state, but do not require ordinary service health
+  # before the coordinator and its administrative commands can be installed.
+  when: not (host_recovery_bootstrap_enabled | default(false) | bool)

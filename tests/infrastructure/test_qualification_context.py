@@ -30,6 +30,7 @@ def clean_context(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DOCKER_CONTEXT", raising=False)
     monkeypatch.setenv("DOCKER_HOST", "unix:///disposable/docker.sock")
     monkeypatch.setenv("M3_10_ARCHIVE_BACKEND", "minio")
+    monkeypatch.setattr(local, "ensure_image", lambda _environment: "fixture-image")
 
 
 def test_distinct_runs_own_all_mutable_resources(tmp_path: Path) -> None:
@@ -247,7 +248,7 @@ def test_post_preflight_failure_is_not_reported_as_a_controller_failure(
         subprocess,
         "run",
         lambda command, **kwargs: subprocess.CompletedProcess(
-            command, 0 if command[1] == "info" else 1
+            command, 0 if command[1] == "version" else 1
         ),
     )
 
@@ -278,7 +279,7 @@ def test_name_collision_never_reaches_molecule_cleanup(
     monkeypatch.setattr(subprocess, "call", forbidden)
     with pytest.raises(ValueError, match="already exists"):
         local.run(tmp_path)
-    assert all(command[1] in {"info", "inspect"} for command in commands)
+    assert all(command[1] in {"version", "inspect"} for command in commands)
 
 
 def test_diagnostics_inspect_only_their_owned_host(
@@ -318,7 +319,7 @@ def test_complete_and_baseline_commands_use_only_new_owned_contexts(
         subprocess,
         "run",
         lambda command, **kwargs: subprocess.CompletedProcess(
-            command, 0 if command[1] == "info" else 1
+            command, 0 if command[1] == "version" else 1
         ),
     )
     called: list[list[str]] = []

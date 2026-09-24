@@ -5,9 +5,14 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
+        ca-certificates \
         e2fsprogs \
+        git \
+        golang-go \
         iproute2 \
+        nftables \
         openssh-client \
+        openssl \
         python3 \
         sudo \
         systemd \

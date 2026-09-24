@@ -19,14 +19,27 @@ def node(module: str, name: str, parameters: str = "") -> str:
 class Group:
     tests: tuple[str, ...]
     after_reboot: tuple[str, ...] = ()
+    reconstruction: bool = False
+
+    @property
+    def phases(self) -> tuple[str, ...]:
+        # Reconstruction checks the fully activated source inside verify and
+        # requires its bound receipt. Other groups check initial idempotence.
+        idempotence = () if self.reconstruction else ("idempotence",)
+        return ("create", "prepare", "converge", *idempotence, "verify")
 
     def nodes(self, stage: str, host: str) -> tuple[str, ...]:
+        accounting = (
+            node("restore_accounting", "installed_restore_paired_accounting")
+            if self.reconstruction
+            else f"tests/{ACCOUNTING}[{{host}}]"
+        )
         if stage == "before" and self.after_reboot:
             tests = self.tests
         elif stage == "after" and self.after_reboot:
-            tests = (*self.after_reboot, f"tests/{ACCOUNTING}[{{host}}]")
+            tests = (*self.after_reboot, accounting)
         elif stage == "run" and not self.after_reboot:
-            tests = (*self.tests, f"tests/{ACCOUNTING}[{{host}}]")
+            tests = (*self.tests, accounting)
         else:
             raise ValueError("unsupported installed group stage")
         return tuple(value.format(host=f"docker://{host}") for value in tests)
@@ -38,6 +51,15 @@ class Group:
 
 _CREDENTIALS = "archive_credentials"
 GROUPS = {
+    "restore-reconstruction": Group(
+        (node("restore_reconstruction", "installed_restore_reconstruction"),), reconstruction=True
+    ),
+    "restore-negative": Group(
+        (node("restore_negative", "installed_restore_negative"),), reconstruction=True
+    ),
+    "restore-tls-bootstrap": Group(
+        (node("restore_tls_bootstrap", "installed_restore_tls_bootstrap"),), reconstruction=True
+    ),
     "audit-rotation": Group(
         (node("audit_rotation", "installed_rotation_interruptions_before_reboot"),),
         after_reboot=(node("audit_rotation", "installed_rotation_reboot_and_second_full_segment"),),

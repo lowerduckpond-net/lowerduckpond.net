@@ -15,7 +15,6 @@ from lowerduckpond_static_contracts import (
     ContractKind,
     audit_entry_digest,
     canonical_json_bytes,
-    decode_contract,
     decode_json_object,
     validate_contract,
     validate_uuid7,
@@ -919,15 +918,10 @@ def _validate_chain_records(  # noqa: PLR0912,PLR0913,PLR0915 - one bounded vali
             if len(line) > MAX_CANONICAL_BYTES:
                 raise AuditError("audit entry exceeds its canonical byte ceiling")
             try:
-                document = (
-                    decode_json_object(line, maximum_bytes=MAX_CANONICAL_BYTES)
-                    if archived is not None
-                    else decode_contract(
-                        line,
-                        expected_kind=ContractKind.AUDIT_ENTRY,
-                        maximum_raw_bytes=MAX_CANONICAL_BYTES,
-                    )
-                )
+                document = decode_json_object(line, maximum_bytes=MAX_CANONICAL_BYTES)
+                # Computing the digest strictly validates the whole contract;
+                # retain that proof instead of validating the same entry again.
+                entry_digest = audit_entry_digest(document).to_dict() if archived is None else None
             except ContractError as error:
                 raise AuditError("audit segment contains an invalid entry") from error
             if archived is None:
@@ -979,7 +973,7 @@ def _validate_chain_records(  # noqa: PLR0912,PLR0913,PLR0915 - one bounded vali
             ):
                 deployment_history_matches.add(tenant_id)
             if archived is None:
-                terminal = audit_entry_digest(document).to_dict()
+                terminal = entry_digest
             sequence += 1
         if archived is not None:
             terminal = require_digest(archived["terminalEntryDigest"], AUDIT_ENTRY_FORMAT)

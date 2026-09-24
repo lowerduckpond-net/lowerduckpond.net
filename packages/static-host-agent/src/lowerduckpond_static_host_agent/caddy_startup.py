@@ -40,6 +40,7 @@ class CaddyStartMode(StrEnum):
 
     ORDINARY = "ordinary"
     TRANSACTIONAL = "transactional"
+    HOST_RESTORE = "host-restore"
 
 
 class CaddyStartPhase(StrEnum):
@@ -86,11 +87,29 @@ class CaddyStartIntent:
     candidate_invocations: tuple[str, ...] = ()
     recovery_invocations: tuple[str, ...] = ()
     invocation_id: str | None = None
+    restore_id: str | None = None
 
-    def __post_init__(self) -> None:
+    def __post_init__(self) -> None:  # noqa: PLR0912 - three disjoint bounded startup protocols
         candidate_count = len(self.candidate_invocations)
         recovery_count = len(self.recovery_invocations)
-        if self.mode is CaddyStartMode.ORDINARY:
+        if self.mode is not CaddyStartMode.HOST_RESTORE and self.restore_id is not None:
+            raise CaddyStartupError("ordinary startup carries restore authority")
+        if self.mode is CaddyStartMode.HOST_RESTORE:
+            validate_uuid7(self.restore_id)
+            if self.previous is not None or recovery_count:
+                raise CaddyStartupError("host restore has rollback authority")
+            if self.phase in {CaddyStartPhase.CANDIDATE_PREPARED, CaddyStartPhase.RESTART_REQUIRED}:
+                valid = candidate_count == 0 and self.invocation_id is None
+            elif self.phase is CaddyStartPhase.CANDIDATE_STARTING:
+                valid = (
+                    1 <= candidate_count <= MAX_CADDY_START_ATTEMPTS
+                    and self.invocation_id == self.candidate_invocations[-1]
+                )
+            else:
+                valid = False
+            if not valid:
+                raise CaddyStartupError("host restore startup phase is invalid")
+        elif self.mode is CaddyStartMode.ORDINARY:
             if (
                 self.previous is not None
                 or self.phase is not CaddyStartPhase.ORDINARY_STARTING
@@ -169,6 +188,11 @@ class CaddyStartIntent:
                 "previous": None if self.previous is None else self.previous.to_dict(),
                 "recoveryInvocations": list(self.recovery_invocations),
                 "schema": _SCHEMA,
+                **(
+                    {"restoreId": self.restore_id}
+                    if self.mode is CaddyStartMode.HOST_RESTORE
+                    else {}
+                ),
             },
             maximum_bytes=MAX_CADDY_START_INTENT_BYTES,
         )
@@ -276,6 +300,29 @@ class CaddyStartupStore:
         self._write(updated)
         return updated
 
+    def begin_host_restore(
+        self, *, candidate: CaddyStartTarget, restore_id: str
+    ) -> CaddyStartIntent:
+        """Only a new private runtime may own this explicit administrator start."""
+        validate_uuid7(restore_id)
+        current = self.read()
+        if current is not None:
+            if (
+                current.mode is not CaddyStartMode.HOST_RESTORE
+                or current.restore_id != restore_id
+                or current.candidate != candidate
+            ):
+                raise CaddyStartupError("another Caddy startup intent is active")
+            return current
+        intent = CaddyStartIntent(
+            mode=CaddyStartMode.HOST_RESTORE,
+            phase=CaddyStartPhase.CANDIDATE_PREPARED,
+            candidate=candidate,
+            restore_id=restore_id,
+        )
+        self._write(intent)
+        return intent
+
     def prepare_start(
         self,
         *,
@@ -352,13 +399,28 @@ class CaddyStartupStore:
 
     def commit_success(self, intent: CaddyStartIntent) -> None:
         self._require_current(intent)
+        if intent.mode is CaddyStartMode.HOST_RESTORE:
+            # Process health does not establish cold TLS readiness. Keep this
+            # exact bounded attempt history through the administrator TLS gate.
+            return
+        self._directory.remove((CADDY_START_INTENT_NAME,))
+
+    def complete_host_restore(self, intent: CaddyStartIntent, *, restore_id: str) -> None:
+        """Caller independently proves the restore journal durably complete."""
+        self._require_current(intent)
+        if (
+            intent.mode is not CaddyStartMode.HOST_RESTORE
+            or intent.restore_id != validate_uuid7(restore_id)
+            or intent.phase is not CaddyStartPhase.CANDIDATE_STARTING
+        ):
+            raise CaddyStartupError("host restore completion is mismatched")
         self._directory.remove((CADDY_START_INTENT_NAME,))
 
     def require_rollback_target(self) -> CaddyStartIntent | None:
         current = self.read()
         if current is None:
             return None
-        if current.mode is CaddyStartMode.ORDINARY:
+        if current.mode in {CaddyStartMode.ORDINARY, CaddyStartMode.HOST_RESTORE}:
             return None
         if current.phase is CaddyStartPhase.ROLLBACK_RESTART_REQUIRED:
             return current
@@ -394,6 +456,8 @@ class CaddyStartupStore:
         intent: CaddyStartIntent,
     ) -> CaddyStartIntent:
         current = self._require_current(intent)
+        if current.mode is not CaddyStartMode.TRANSACTIONAL:
+            raise CaddyStartupError("startup has no rollback authority")
         if current.phase is CaddyStartPhase.ROLLBACK_RESTART_REQUIRED:
             return current
         if (
@@ -484,6 +548,11 @@ def decode_caddy_start_intent(data: bytes) -> CaddyStartIntent:
                 "recoveryInvocations",
                 "schema",
             }
+            | (
+                {"restoreId"}
+                if document.get("mode") == CaddyStartMode.HOST_RESTORE.value
+                else set()
+            )
             or document["schema"] != _SCHEMA
         ):
             raise CaddyStartupError("Caddy startup intent schema is not recognized")
@@ -506,6 +575,11 @@ def decode_caddy_start_intent(data: bytes) -> CaddyStartIntent:
             candidate_invocations=_decode_invocations(document["candidateInvocations"]),
             recovery_invocations=_decode_invocations(document["recoveryInvocations"]),
             invocation_id=invocation_id,
+            restore_id=(
+                validate_uuid7(document["restoreId"])
+                if mode == CaddyStartMode.HOST_RESTORE.value
+                else None
+            ),
         )
     except (ContractError, KeyError, TypeError, ValueError, StatePathError) as error:
         if isinstance(error, CaddyStartupError):

@@ -760,3 +760,50 @@ def test_required_tool_presence_omits_paths_and_lookup_errors(
         for name in failure.REQUIRED_TOOLS
     }
     assert CANARY not in json.dumps(tools)
+
+
+@pytest.mark.parametrize(
+    "group,file",
+    [
+        ("backup-identity", "test_backup_identity.py"),
+        ("backup-coherence", "test_backup_coherence.py"),
+        ("backup-mutation-overlap", "backup_capture_support.py"),
+    ],
+)
+def test_backup_failures_keep_their_declared_group_and_source_location(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, group: str, file: str
+) -> None:
+    monkeypatch.setenv(timing.EVENT_ENV, str(tmp_path / "timing-events.jsonl"))
+    monkeypatch.setenv(timing.CONTEXT_ENV, group)
+    failure.record_test_failure("assertion", file=file, line=42)
+    record = json.loads((tmp_path / "failure-test.json").read_text())
+    assert record["group"] == group
+    assert record["file"] == file
+    assert record["line"] == 42  # noqa: PLR2004 - diagnostic source line
+
+
+def test_restore_command_failure_points_to_the_preparation_call_site(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
+    from scripts import qualification_pytest_timing as plugin  # noqa: PLC0415
+
+    monkeypatch.setenv(timing.EVENT_ENV, str(tmp_path / "timing-events.jsonl"))
+    namespace: dict[str, object] = {}
+    # Real traceback coordinates for the fixture wrappers, without Docker or
+    # embedding command arguments/output in the shareable failure record.
+    source = (
+        f"def command():\n    raise ValueError({CANARY!r})\n"
+        "def copy_in():\n    command()\n"
+        "def prepare():\n    copy_in()\n"
+    )
+    exec(compile(source, "restore_fixture.py", "exec"), namespace)  # noqa: S102
+    prepare = namespace["prepare"]
+    assert callable(prepare)
+    call = pytest.CallInfo.from_call(prepare, when="call")
+    assert isinstance(request.node, pytest.Item)
+    plugin.pytest_runtest_makereport(request.node, call)
+    text = (tmp_path / "failure-test.json").read_text()
+    record = json.loads(text)
+    assert record["file"] == "restore_fixture.py"
+    assert record["line"] == 6  # noqa: PLR2004 - actual preparation call, not command wrapper
+    assert CANARY not in text

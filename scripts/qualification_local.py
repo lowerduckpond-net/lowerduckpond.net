@@ -30,6 +30,7 @@ from scripts.qualification_failure import (  # noqa: E402
     record_phase,
 )
 from scripts.qualification_groups import GROUPS  # noqa: E402
+from scripts.qualification_minio import ensure_image  # noqa: E402
 from scripts.qualification_probe import bounded_command  # noqa: E402
 
 FORMAT = "lowerduckpond-local-qualification-fixture-v1"
@@ -113,8 +114,9 @@ def run(directory: Path, *, create_only: bool = False, case: str = "complete") -
         if uv is None:
             raise FileNotFoundError("uv")
         record_controller_stage("docker-daemon")
+        # Query the daemon without running unrelated client plugins via docker info.
         subprocess.run(  # noqa: S603 - checked Docker endpoint; fixed read-only check
-            [docker, "info"],
+            [docker, "version", "--format", "{{.Server.Version}}"],
             env=environment,
             check=True,
             stdout=subprocess.DEVNULL,
@@ -133,6 +135,9 @@ def run(directory: Path, *, create_only: bool = False, case: str = "complete") -
             )
             if existing.returncode == 0:
                 raise ValueError("generated qualification name already exists")
+        if case != "baseline":
+            record_controller_stage("fixture-image")
+            ensure_image(environment)
     except Exception as error:
         record_controller_failure(error)
         raise

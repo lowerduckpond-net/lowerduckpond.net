@@ -1,0 +1,9 @@
+#!/usr/sbin/nft -f
+
+destroy table inet lowerduckpond_restore
+table inet lowerduckpond_restore {
+    chain input {
+        type filter hook input priority -200; policy accept;
+        iifname != "lo" tcp dport { 80, 443 } drop
+    }
+}

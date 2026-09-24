@@ -13,6 +13,10 @@ from scripts.qualification_failure import TEST_FILES, capture_fixture, record_te
 from scripts.qualification_timing import CONTEXT_ENV, capture_fixture_identity, record_span
 
 GROUPS = {
+    "test_restore_reconstruction.py": "restore-reconstruction",
+    "test_restore_negative.py": "restore-negative",
+    "test_restore_tls_bootstrap.py": "restore-tls-bootstrap",
+    "test_restore_accounting.py": "accounting",
     "test_archive_credentials.py": "archive-credentials",
     "test_lifecycle.py": "core",
     "test_core_independent.py": "core",
@@ -28,6 +32,8 @@ GROUPS = {
     "test_archive_completion.py": "accounting",
     "test_audit_protection.py": "audit-protection",
     "test_audit_rotation.py": "audit-rotation",
+    "test_backup_identity.py": "backup-identity",
+    "test_backup_coherence.py": "backup-coherence",
 }
 OPERATOR_FAILURES = {
     "operator transport failed: correlation burst limit is exhausted": "admission-burst-exhausted",
@@ -37,6 +43,11 @@ OPERATOR_FAILURES = {
 }
 
 FUNCTION_GROUPS = {
+    "test_installed_backup_capture_races_mutations": "backup-mutation-overlap",
+    "test_restore_reconstruction.py": "restore-reconstruction",
+    "test_restore_negative.py": "restore-negative",
+    "test_restore_tls_bootstrap.py": "restore-tls-bootstrap",
+    "test_restore_accounting.py": "accounting",
     "test_publication_and_operator_boundaries_preserve_the_live_tenant": (
         "configuration-publication"
     ),
@@ -102,6 +113,10 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[None]) ->
             entry
             for entry in reversed(call.excinfo.traceback)
             if Path(entry.path).name in TEST_FILES
+            and not (
+                Path(entry.path).name == "restore_fixture.py"
+                and entry.name in {"command", "copy_in", "copy_between", "checked"}
+            )
         ),
         None,
     )

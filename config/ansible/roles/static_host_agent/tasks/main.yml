@@ -743,15 +743,19 @@
   loop:
     - lowerduckpond-static-reconcile.service
     - lowerduckpond-static-reconcile.timer
+  when: not (host_recovery_bootstrap_enabled | default(false) | bool)
 
 - name: Start bounded static authorization reconciliation
   ansible.builtin.systemd_service:
     name: lowerduckpond-static-reconcile.timer
     state: started
+  when: not (host_recovery_bootstrap_enabled | default(false) | bool)
 
 - name: Enable services supported by the selected M3.10 artifact
   ansible.builtin.include_tasks: archive_services.yml
-  when: static_host_agent_archive_lifecycle_enabled | bool
+  when:
+    - not (host_recovery_bootstrap_enabled | default(false) | bool)
+    - static_host_agent_archive_lifecycle_enabled | bool
 
 - name: Prove an empty Caddy candidate passes the publication boundary
   ansible.builtin.command:
@@ -760,6 +764,7 @@
       - caddy-generation
       - "0"
   changed_when: false
+  when: not (host_recovery_bootstrap_enabled | default(false) | bool)
 
 - name: Prove job issuance remains disabled at the closed publication boundary
   ansible.builtin.command:
@@ -771,7 +776,9 @@
   failed_when: >-
     static_host_agent_issuance_gate.rc != 78 or
     static_host_agent_issuance_gate.stderr | trim != 'publication_disabled'
-  when: not static_publication_enabled | bool
+  when:
+    - not (host_recovery_bootstrap_enabled | default(false) | bool)
+    - not static_publication_enabled | bool
 
 - name: Create inert Caddy generation storage
   vars:

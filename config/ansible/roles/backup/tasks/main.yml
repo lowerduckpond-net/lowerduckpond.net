@@ -161,6 +161,7 @@
     group: root
     mode: "0700"
   when:
+    - not (host_recovery_bootstrap_enabled | default(false) | bool)
     - backup_repository is ansible.builtin.match('^/')
     - not (backup_local_repository_stat.stat.exists | default(false))
 
@@ -259,9 +260,19 @@
       set +o allexport &&
       exec /usr/bin/restic init
     executable: /bin/bash
-  when: backup_repository_status.rc != 0
+  when:
+    - not (host_recovery_bootstrap_enabled | default(false) | bool)
+    - backup_repository_status.rc != 0
   changed_when: true
   no_log: true
+
+- name: Require the original encrypted repository during recovery bootstrap
+  ansible.builtin.assert:
+    that:
+      - backup_repository_status.rc == 0
+    fail_msg: Recovery requires the existing bound repository; initialization is forbidden.
+    quiet: true
+  when: host_recovery_bootstrap_enabled | default(false) | bool
 
 - name: Inspect the protected audit index migration
   ansible.builtin.stat:
@@ -275,19 +286,23 @@
     name: lowerduckpond-audit-initialize.service
     state: started
   changed_when: not (backup_audit_head.stat.exists | default(false))
-  when: backup_static_recovery_enabled | bool
+  when:
+    - not (host_recovery_bootstrap_enabled | default(false) | bool)
+    - backup_static_recovery_enabled | bool
 
 - name: Configure protected audit verification at boot and daily
   ansible.builtin.systemd_service:
     name: lowerduckpond-audit-verify.timer
     enabled: "{{ backup_static_recovery_enabled | bool }}"
     state: "{{ 'started' if backup_static_recovery_enabled | bool else 'stopped' }}"
+  when: not (host_recovery_bootstrap_enabled | default(false) | bool)
 
 - name: Configure explicitly qualified hourly audit rotation
   ansible.builtin.systemd_service:
     name: lowerduckpond-audit-rotate.timer
     enabled: "{{ backup_audit_rotation_enabled | bool }}"
     state: "{{ 'started' if backup_audit_rotation_enabled | bool else 'stopped' }}"
+  when: not (host_recovery_bootstrap_enabled | default(false) | bool)
 
 - name: Inspect the backup repository for this node
   ansible.builtin.command:
@@ -325,6 +340,7 @@
     name: lowerduckpond-backup.service
     state: started
   when:
+    - not (host_recovery_bootstrap_enabled | default(false) | bool)
     - backup_run_initial
     - >-
       ((backup_static_recovery_enabled | bool) and
@@ -347,6 +363,7 @@
     name: lowerduckpond-backup-maintenance.service
     state: started
   when:
+    - not (host_recovery_bootstrap_enabled | default(false) | bool)
     - backup_run_initial_maintenance
     - >-
       (backup_initial_maintenance_status.content | default('') |
@@ -363,3 +380,4 @@
   loop:
     - lowerduckpond-backup.timer
     - lowerduckpond-backup-maintenance.timer
+  when: not (host_recovery_bootstrap_enabled | default(false) | bool)

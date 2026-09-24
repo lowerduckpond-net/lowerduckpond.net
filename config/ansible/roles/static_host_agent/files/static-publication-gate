@@ -5,6 +5,7 @@ import json
 import pathlib
 import re
 import stat
+import subprocess
 import sys
 
 CONFIGURATION = pathlib.Path("/etc/lowerduckpond/static-publication.json")
@@ -46,7 +47,21 @@ def publication_enabled() -> bool:
     return payload["static_publication_enabled"]
 
 
+def require_restore_admission() -> None:
+    admitted = subprocess.run(
+        ["/usr/local/libexec/lowerduckpond/host-restore-gate", "--ordinary"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+        timeout=30,
+    )
+    if admitted.returncode != 0:
+        fail("host_restore_pending", 78)
+
+
 def main() -> None:
+    require_restore_admission()
     arguments = sys.argv[1:]
     if arguments == ["job-issuance"]:
         pass

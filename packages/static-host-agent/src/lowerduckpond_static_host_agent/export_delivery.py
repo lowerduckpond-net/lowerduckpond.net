@@ -130,6 +130,9 @@ class ExportDelivery:
                 self._spool.remove_completed(job_id)
                 self._notify(ExportDeliveryBoundary.BUNDLE_REMOVED)
             return False
+        result = transaction.read(StateRecordPath.authorization_result(job_id)).document
+        if transaction.restored_export_retired(job, result):
+            return False
         if occupied != job_id:
             raise ExportDeliveryError("unretired export has no exact completed slot")
         now = self._now()

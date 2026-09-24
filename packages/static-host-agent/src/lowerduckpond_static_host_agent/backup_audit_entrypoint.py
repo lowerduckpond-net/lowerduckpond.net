@@ -13,6 +13,7 @@ from lowerduckpond_static_host_agent.audit_archive_coordinator import (
 from lowerduckpond_static_host_agent.audit_rotation_coordinator import RotationPaths, rotate_archive
 from lowerduckpond_static_host_agent.backup_legacy_retention import maintain_archive_free_repository
 from lowerduckpond_static_host_agent.backup_restic import inherit_restic_leases
+from lowerduckpond_static_host_agent.host_restore_gate import require_restore_admission
 
 
 def audit_main(selection_descriptor: int) -> int:
@@ -25,6 +26,7 @@ def audit_main(selection_descriptor: int) -> int:
         print("backup_audit_invalid_invocation", file=sys.stderr)
         return 1
     try:
+        require_restore_admission()
         with inherit_restic_leases((9, selection_descriptor)):
             if sys.argv[1] == "--rotate":
                 if (

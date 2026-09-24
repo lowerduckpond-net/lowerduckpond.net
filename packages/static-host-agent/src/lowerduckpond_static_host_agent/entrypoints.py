@@ -105,6 +105,9 @@ from lowerduckpond_static_host_agent.execution import (
 from lowerduckpond_static_host_agent.export_delivery import ExportDelivery
 from lowerduckpond_static_host_agent.export_handler import ExportLifecycleHandler
 from lowerduckpond_static_host_agent.export_spool import ExportSpool, ExportSpoolError
+from lowerduckpond_static_host_agent.host_restore_gate import require_restore_admission
+from lowerduckpond_static_host_agent.host_restore_journal import HostRestoreError
+from lowerduckpond_static_host_agent.host_restore_startup import require_restore_startup
 from lowerduckpond_static_host_agent.intake import ArtifactIntake, IntakeError
 from lowerduckpond_static_host_agent.issuance import (
     AuthorizationIssuer,
@@ -259,6 +262,7 @@ _SAFE_ERRORS: Final = (
     StateRecordError,
     StateBusyError,
     StateInventoryError,
+    HostRestoreError,
     StreamError,
 )
 
@@ -275,6 +279,7 @@ def operator_main(arguments: list[str] | None = None) -> int:
         return _fail("invalid_operator_adapter_invocation", 64)
     principal = values[1]
     try:
+        require_restore_admission()
         gate = CommandPublicationGate(_PUBLICATION_GATE)
         # Preserve the disabled boundary even if durable state is absent,
         # partially restored, or unsafe: no state descriptor is opened first.
@@ -321,6 +326,7 @@ def executor_main(arguments: list[str] | None = None) -> int:
     if len(values) != 1:
         return _fail("invalid_authorized_job_invocation", 64)
     try:
+        require_restore_admission()
         job_id = validate_uuid7(values[0])
         with (
             StateRepository(_STATE_ROOT, expected_owner=_EXPECTED_OWNER) as repository,
@@ -442,6 +448,7 @@ def reconcile_main(arguments: list[str] | None = None) -> int:
     if values:
         return _fail("invalid_authorization_reconcile_invocation", 64)
     try:
+        require_restore_admission()
         with (
             StateRepository(_STATE_ROOT, expected_owner=_EXPECTED_OWNER) as repository,
             ArtifactIntake(_STATE_ROOT, expected_owner=_EXPECTED_OWNER) as intake,
@@ -454,6 +461,7 @@ def reconcile_main(arguments: list[str] | None = None) -> int:
                 export_delivery=ExportDelivery(repository, export_spool),
             ).reconcile()
     except (
+        HostRestoreError,
         CapacityError,
         CorrelationError,
         ExecutionError,
@@ -506,6 +514,7 @@ def caddy_start_gate_main(arguments: list[str] | None = None) -> int:
 
     values = sys.argv[1:] if arguments is None else arguments
     try:
+        require_restore_admission(caddy=True)
         _require_no_arguments(values)
         invocation_id = _systemd_invocation_id()
         with (
@@ -516,6 +525,11 @@ def caddy_start_gate_main(arguments: list[str] | None = None) -> int:
             startup.reconcile_temporaries()
             selected = runtime.open_active_verified()
             with selected.generation as generation:
+                require_restore_startup(
+                    startup.read(),
+                    start_target(selected.generation_id, generation.manifest.to_bytes()),
+                    invocation_id,
+                )
                 startup.prepare_start(
                     active=start_target(selected.generation_id, generation.manifest.to_bytes()),
                     invocation_id=invocation_id,
@@ -530,6 +544,7 @@ def caddy_start_verifier_main(arguments: list[str] | None = None) -> int:
 
     values = sys.argv[1:] if arguments is None else arguments
     try:
+        require_restore_admission(caddy=True)
         _require_no_arguments(values)
         invocation_id = _systemd_invocation_id()
         with (
@@ -544,6 +559,7 @@ def caddy_start_verifier_main(arguments: list[str] | None = None) -> int:
                     active=start_target(selected.generation_id, generation.manifest.to_bytes()),
                     invocation_id=invocation_id,
                 )
+                require_restore_startup(intent, intent.selected_target, invocation_id)
                 verify_starting_caddy(generation)
                 startup.commit_success(intent)
     except (
@@ -564,6 +580,7 @@ def caddy_start_recovery_main(arguments: list[str] | None = None) -> int:
     values = sys.argv[1:] if arguments is None else arguments
     restart_required = False
     try:
+        require_restore_admission()
         _require_no_arguments(values)
         with (
             _open_systemd_caddy_runtime() as runtime,
@@ -641,6 +658,7 @@ def caddy_bootstrap_main(arguments: list[str] | None = None) -> int:
     if not all(path.is_absolute() for path in (binary_path, environment_path, *ca_paths)):
         return _fail("invalid_caddy_bootstrap_invocation", 64)
     try:
+        require_restore_admission()
         caddy_user = pwd.getpwnam(_CADDY_ACCOUNT)
         caddy_group = grp.getgrnam(_CADDY_ACCOUNT)
         binary = CaddyBinarySource(binary_path, owner=0, group=0, mode=0o755)
@@ -988,6 +1006,9 @@ def _selected_tenant_runtime_matches(  # noqa: PLR0911,PLR0913,PLR0917
             repository.publication_transaction(blocking=True) as transaction,
             runtime.using_held_publication_lock(repository),
         ):
+            generation_id, observed_state = transaction.restored_runtime_request(
+                manifest, observed_state, generation_id
+            )
             active_generation_id = runtime.read_active()
             if generation_id is not None and active_generation_id != generation_id:
                 return False
@@ -1000,6 +1021,8 @@ def _selected_tenant_runtime_matches(  # noqa: PLR0911,PLR0913,PLR0917
                 if allow_reconcile_source_drift
                 else snapshot_tenant_routes(transaction)
             )
+            for row in expected.tenants:
+                transaction.validate_restored_observation(row.manifest, row.observed_state)
             if snapshot != expected:
                 return (
                     allow_reconcile_source_drift
@@ -1064,6 +1087,7 @@ def _selected_tenant_runtime_matches(  # noqa: PLR0911,PLR0913,PLR0917
             )
     except (
         CaddyRuntimeError,
+        HostRestoreError,
         KeyError,
         OSError,
         ReleaseTreeError,

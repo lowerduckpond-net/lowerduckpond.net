@@ -44,6 +44,9 @@ GROUPS = frozenset(
         "cross-feature",
         "audit-protection",
         "audit-rotation",
+        "restore-reconstruction",
+        "restore-negative",
+        "restore-tls-bootstrap",
     }
 )
 KINDS = frozenset(
