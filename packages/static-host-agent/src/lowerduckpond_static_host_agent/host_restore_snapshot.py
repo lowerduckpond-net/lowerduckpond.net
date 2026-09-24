@@ -222,7 +222,8 @@ class _TreeWalk:
             )
         ) or path.name.startswith(".ldp-state-"):
             raise HostRestoreError("restore_snapshot_contains_excluded_input")
-        size = 0 if kind == "dir" else node.get("size")
+        # Restic omits the uint64 size field for empty files.
+        size = 0 if kind == "dir" else node.get("size", 0)
         maximum = (
             MAX_TREE_BYTES
             if label == "database"
@@ -237,7 +238,7 @@ class _TreeWalk:
             raise HostRestoreError("restore_tree_resource_limit")
         if kind == "file":
             blobs = node.get("content")
-            if type(blobs) is not list or (size > 0 and not blobs):
+            if type(blobs) is not list or (size > 0 and not blobs) or (size == 0 and blobs):
                 raise HostRestoreError("restore_file_content_invalid")
             for blob in blobs:
                 full_id(blob)
@@ -251,6 +252,17 @@ class _TreeWalk:
         row["allocatedBytes"] += fragment + max(
             fragment, ((size + fragment - 1) // fragment) * fragment
         )
+
+
+def _same_members(value: object, expected: tuple[str, ...]) -> bool:
+    # Restic's inventory can reorder paths relative to the stored snapshot.
+    # Preserve exact membership and cardinality, including duplicate rejection.
+    return (
+        type(value) is list
+        and len(value) == len(expected)
+        and all(type(member) is str for member in value)
+        and sorted(value) == sorted(expected)
+    )
 
 
 def inspect_restore_tree(
@@ -267,8 +279,8 @@ def inspect_restore_tree(
     header = decode_json_object(raw, maximum_bytes=MAX_NODE_BYTES)
     if (
         header.get("hostname") != snapshot.snapshot.hostname
-        or header.get("paths") != list(snapshot.snapshot.paths)
-        or header.get("tags") != list(snapshot.snapshot.tags)
+        or not _same_members(header.get("paths"), snapshot.snapshot.paths)
+        or not _same_members(header.get("tags"), snapshot.snapshot.tags)
     ):
         raise HostRestoreError("restore_snapshot_header_mismatch")
     tree = full_id(header.get("tree"))

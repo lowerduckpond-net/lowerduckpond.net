@@ -3,11 +3,12 @@ from __future__ import annotations
 import hashlib
 import os
 import stat
+from collections.abc import Callable, Mapping
 from pathlib import PurePosixPath
 from typing import cast
 
 import pytest
-from lowerduckpond_static_contracts import canonical_json_bytes
+from lowerduckpond_static_contracts import canonical_json_bytes, decode_json_object
 from lowerduckpond_static_host_agent import host_restore_snapshot as snapshot
 from lowerduckpond_static_host_agent.backup_identity import BackupIdentityError, RepositoryIdentity
 from lowerduckpond_static_host_agent.backup_restic import RepositorySnapshot
@@ -156,6 +157,73 @@ def test_full_identity_and_complete_tree_are_proven_before_any_restore_allocatio
     )
     with pytest.raises(HostRestoreError):
         snapshot.select_restore_snapshot("dddddddd", {})
+
+
+@pytest.mark.parametrize("field", ["paths", "tags"])
+@pytest.mark.parametrize(
+    "change", ["reorder", "duplicate", "missing", "extra", "different", "non-string", "not-list"]
+)
+def test_header_membership_is_order_independent_but_exact(
+    restic: tuple[snapshot.RestoreSnapshot, dict[str, dict[str, object]]],
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    change: str,
+) -> None:
+    selected, _ = restic
+    original = cast(
+        Callable[[tuple[str, ...], Mapping[str, str], int], bytes], vars(snapshot)["_restic"]
+    )
+
+    def changed_header(
+        arguments: tuple[str, ...], environment: Mapping[str, str], limit: int
+    ) -> bytes:
+        raw = original(arguments, environment, limit)
+        if arguments != ("cat", "snapshot", selected.snapshot.snapshot_id):
+            return raw
+        header = decode_json_object(raw)
+        values = cast(list[object], header[field])
+        replacements: dict[str, object] = {
+            "reorder": values[::-1],
+            "duplicate": [*values[:-1], values[0]],
+            "missing": values[:-1],
+            "extra": [*values, "unexpected"],
+            "different": [*values[:-1], "unexpected"],
+            "non-string": [*values[:-1], 1],
+            "not-list": None,
+        }
+        header[field] = replacements[change]
+        return canonical_json_bytes(header)
+
+    monkeypatch.setattr(snapshot, "_restic", changed_header)
+    if change == "reorder":
+        assert inspect(selected)["snapshotId"] == selected.snapshot.snapshot_id
+    else:
+        with pytest.raises(HostRestoreError, match="restore_snapshot_header_mismatch"):
+            inspect(selected)
+
+
+@pytest.mark.parametrize("size_present", [False, True])
+@pytest.mark.parametrize("content", ["empty", "nonempty", "missing", "null"])
+def test_empty_file_zero_size_encoding_cannot_hide_content(
+    restic: tuple[snapshot.RestoreSnapshot, dict[str, dict[str, object]]],
+    size_present: bool,
+    content: str,
+) -> None:
+    selected, paths = restic
+    node = next(node for node in paths.values() if node["type"] == "file" and node["size"] == 0)
+    if not size_present:
+        del node["size"]
+    if content == "nonempty":
+        node["content"] = ["f" * 64]
+    elif content == "missing":
+        del node["content"]
+    elif content == "null":
+        node["content"] = None
+    if content == "empty":
+        assert inspect(selected)["snapshotId"] == selected.snapshot.snapshot_id
+    else:
+        with pytest.raises(HostRestoreError):
+            inspect(selected)
 
 
 @pytest.mark.parametrize(
