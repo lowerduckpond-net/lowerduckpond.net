@@ -38,7 +38,7 @@ In addition to the existing private run files, packaging requires:
 
 | Input | Required authority |
 | --- | --- |
-| `combined-context.json` | Canonical context captured before combined proof begins: run UUIDv7, capture time, original source/artifact/input/target binding, distinct source/destination fixture hashes, dedicated backup-repository hash, selected Caddy binary hash and disposable subject-set hash. |
+| `combined-context.json` | Canonical context captured before combined proof begins: run UUIDv7, capture time, original source/artifact/input/target binding, original storage report run UUIDv7 and exact-byte SHA-256, distinct source/destination fixture hashes, dedicated backup-repository hash, selected Caddy binary hash and disposable subject-set hash. |
 | `combined-names.json` | Private run binding, separate UUIDv7 nonce and the exact sorted four public-CA subjects. The nonce must differ from the shared run ID. |
 | `combined.json` | Canonical completed combined receipt, with that exact context, every phase/check, reconstruction observations, public-CA proof, paired accounting and complete owned teardown. |
 
@@ -48,6 +48,11 @@ receipt precedes the existing final independent provider proof. Packaging does
 not rewrite these files or repair their chronology. An interrupted or failed
 run keeps its original receipts and resources under the existing diagnostic and
 resumption rules; it produces no passing envelope.
+
+The context's `storage_run_id` and `storage_report_sha256` must match the enclosing
+legacy report at both packaging and consumption. Identical candidate inputs and
+overlapping timestamps do not permit moving combined receipts between attempts;
+the original storage report bytes remain part of the run identity.
 
 The private name nonce generates `m3-11-<nonce-without-hyphens>` below each of
 `lowerduckpond.net` and `lowerduckpond.com`, with its wildcard. The manifest

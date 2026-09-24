@@ -119,6 +119,10 @@ def run(tmp_path: Path) -> Run:
         "run_id": run_id,
         "captured_at": utc(start + timedelta(seconds=10)),
         **binding,
+        "storage_run_id": storage.run_id,
+        "storage_report_sha256": hashlib.sha256(
+            (directory / "storage.json").read_bytes()
+        ).hexdigest(),
         **{key: hashlib.sha256(key.encode()).hexdigest() for key in combined.IDENTITY_FIELDS},
         "subject_set_sha256": combined.subject_digest(nonce),
     }
@@ -183,14 +187,46 @@ def rehash(report: dict[str, object]) -> None:
 
 def test_complete_combined_report_keeps_original_evidence_and_named_checks(run: Run) -> None:
     proof_raw = (run.directory / "combined.json").read_bytes()
+    storage_raw = (run.directory / "storage.json").read_bytes()
     report = run.create()
     assert report["format"] == combined.REPORT_FORMAT
     assert report["combined_report_sha256"] == hashlib.sha256(proof_raw).hexdigest()
     assert combined.canonical_bytes(report["combined"]) == proof_raw
     assert report["phases"] == dict.fromkeys(reports.PHASES, "passed")
+    context = child(report, "combined", "context")
+    assert context["storage_run_id"] == report["storage_run_id"]
+    assert context["storage_report_sha256"] == hashlib.sha256(storage_raw).hexdigest()
     raw = run.verify(report)
     assert b"lowerduckpond.net" not in raw  # Public report contains only the subject digest.
     assert b"secret-canary" not in raw
+    assert (run.directory / "storage.json").read_bytes() == storage_raw
+
+
+@pytest.mark.parametrize("fault", ["another-run", "changed-bytes"])
+def test_packaging_rejects_another_legacy_run_with_identical_candidate_and_chronology(
+    run: Run, fault: str
+) -> None:
+    path = run.directory / "storage.json"
+    raw, storage = combined.read_document(path)
+    if fault == "another-run":
+        storage["run_id"] = str(uuid.uuid7())
+        changed = combined.canonical_bytes(storage)
+    else:
+        changed = raw + b"\n"  # Same ID and semantics, different original report bytes.
+    replace_file(path, changed)
+    with pytest.raises(ValueError, match="identity"):
+        run.create()
+    assert path.read_bytes() == changed
+
+
+@pytest.mark.parametrize("key", ["storage_run_id", "storage_report_sha256"])
+def test_consumption_rejects_combined_receipt_moved_to_another_legacy_envelope(
+    run: Run, key: str
+) -> None:
+    report = run.create()
+    report[key] = str(uuid.uuid7()) if key == "storage_run_id" else "0" * 64
+    with pytest.raises(ValueError, match="identity"):
+        run.verify(report)
 
 
 @pytest.mark.parametrize("milestone", ["3.10", "3.11"])

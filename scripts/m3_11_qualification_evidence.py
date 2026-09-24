@@ -67,6 +67,8 @@ BINDING_FIELDS = (
     "input_policy",
     "qualification_inputs_sha256",
     "storage_target_sha256",
+    "storage_run_id",
+    "storage_report_sha256",
 )
 IDENTITY_FIELDS = (
     "source_fixture_sha256",
@@ -222,6 +224,8 @@ def validate(
         context[key] != binding[key] for key in BINDING_FIELDS
     ):
         raise ValueError("combined qualification identity does not match the enclosing run")
+    uuid7(context["storage_run_id"])
+    digest(context["storage_report_sha256"])
     for key in IDENTITY_FIELDS:
         digest(context[key])
     uuid7(context["run_id"])
