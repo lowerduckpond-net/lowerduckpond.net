@@ -45,6 +45,17 @@ def private(path: Path, data: bytes) -> None:
     path.chmod(0o600)
 
 
+def wait_systemd(host: Host) -> None:
+    # Do not publish fstab entries while the initial generator is still
+    # discovering mounts. Docker start only proves that PID 1 was launched.
+    deadline = time.monotonic() + 45
+    while time.monotonic() < deadline:
+        if host.run("systemctl is-system-running").stdout.strip() in {"running", "degraded"}:
+            return
+        time.sleep(0.5)
+    raise AssertionError("fresh destination systemd did not finish booting")
+
+
 class Fixture:
     def __init__(self, source: Host, snapshot: str) -> None:
         self.environment = dict(os.environ)
@@ -74,13 +85,14 @@ class Fixture:
         self._prepare_acme()
         self.destination_id = owned.create(self.environment, "destination")
         self.destination = testinfra.get_host(f"docker://{self.destination_id}")
+        wait_systemd(self.destination)
         self._prepare_destination()
         self.target = self._target()
         private(self.inputs / "target.json", canonical_json_bytes(self.target))
         self._bootstrap()
 
-    def command(self, *args: str, timeout: int = 60) -> bytes:
-        return owned.command(self.environment, *args, timeout=timeout)
+    def command(self, *args: str, timeout: int = 60, stdin: bytes = b"") -> bytes:
+        return owned.command(self.environment, *args, timeout=timeout, stdin=stdin)
 
     def copy_in(self, source: Path, identity: str, destination: str) -> None:
         self.command("docker", "cp", str(source), f"{identity}:{destination}")
@@ -89,6 +101,47 @@ class Fixture:
         local = self.root / f"transfer-{uuid.uuid7().hex}"
         self.command("docker", "cp", f"{self.source_id}:{source}", str(local), timeout=120)
         self.copy_in(local, self.destination_id, destination)
+
+    def copy_operator_inputs(self) -> None:
+        # systemd's /run mount is visible to exec, but not necessarily to the
+        # Docker copy API. Transfer only these fixed disposable fixture inputs
+        # through stdin into the running destination's mount namespace.
+        names = (
+            "operator-key",
+            "operator-key.pub",
+            "origin-pull-client.key",
+            "origin-pull-client.pem",
+        )
+        values = {
+            name: self.source.file(f"/run/lowerduckpond-molecule/{name}").content.hex()
+            for name in names
+        }
+        data = canonical_json_bytes(values)
+        assert len(data) <= 65536  # noqa: PLR2004 - fixed fixture input transfer bound
+        self.command(
+            "docker",
+            "exec",
+            "--interactive",
+            self.destination_id,
+            "python3",
+            "-I",
+            "-B",
+            "-c",
+            """
+import json, sys
+from pathlib import Path
+root = Path('/run/lowerduckpond-molecule')
+root.mkdir(mode=0o700, exist_ok=True)
+values = json.load(sys.stdin)
+names = ('operator-key', 'operator-key.pub', 'origin-pull-client.key', 'origin-pull-client.pem')
+assert set(values) == set(names)
+for name in names:
+    path = root / name
+    path.write_bytes(bytes.fromhex(values[name]))
+    path.chmod(0o644 if name.endswith('.pub') else 0o600)
+""",
+            stdin=data,
+        )
 
     def address(self, identity: str) -> str:
         return (
@@ -204,13 +257,8 @@ class Fixture:
         )
         private(root / "server.py", (SCENARIO / "restore_acme_server.py").read_bytes())
         private(root / "restore_dns_server.py", (SCENARIO / "restore_dns_server.py").read_bytes())
-        private(root / "address", self.address(self.acme_id).encode())
         self.copy_in(root, self.acme_id, "/root/restore-acme")
-        result = self.acme.run(
-            "systemd-run --unit=restore-acme-fixture --property=Restart=no "
-            "/usr/bin/python3 -I -B /root/restore-acme/server.py"
-        )
-        assert result.rc == 0, result.stderr
+        self.command("docker", "start", self.acme_id)
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
             result = self.acme.run(
@@ -248,11 +296,8 @@ for name in etc srv var-lib; do
     install -d /mnt/restore-copy
     mount -o loop,nodev,nosuid /root/restore-disks/$name.ext4 /mnt/restore-copy
     cp -a "$target/." /mnt/restore-copy/
-    umount /mnt/restore-copy
-    mount "$target"
+    mount --move /mnt/restore-copy "$target"
 done
-apt-get update -qq
-apt-get install -y -qq ca-certificates openssl nftables
 """,
         )
         assert result.rc == 0, result.stderr
@@ -334,7 +379,7 @@ WantedBy=multi-user.target
         # Copy the fenced local Restic repository intact. Neither source history
         # nor its snapshots are pruned. Live-provider reconstruction remains P6.
         self.copy_between("/mnt/lowerduckpond-restic-test", "/mnt/lowerduckpond-restic-test")
-        self.copy_between("/run/lowerduckpond-molecule", "/run/lowerduckpond-molecule")
+        self.copy_operator_inputs()
         self.binary = self.source.run("readlink -f /usr/local/bin/caddy").stdout.strip()
         assert self.binary.startswith("/usr/local/lib/lowerduckpond/caddy-")
         assert self.destination.run("install -d -m 0755 /usr/local/lib/lowerduckpond").rc == 0
@@ -541,7 +586,7 @@ with urllib.request.urlopen(request, timeout=10) as response:
     def connection(self, path: Path) -> tuple[str, Path, Path]:
         path.mkdir(mode=0o700)
         if not self.destination.file(support.OPERATOR_KEY).exists:
-            self.copy_between("/run/lowerduckpond-molecule", "/run/lowerduckpond-molecule")
+            self.copy_operator_inputs()
         support._initialize_admission_pacing(self.destination)
         return support._operator_inputs(
             path, container=self.destination_id, transport_path=self.transport

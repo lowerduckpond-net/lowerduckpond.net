@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import socket
 import stat
 import sys
 from pathlib import Path
@@ -34,9 +35,17 @@ def loop_nodes(root: Path = Path("/")) -> None:
 
 
 if __name__ == "__main__":
-    identity()
     if sys.argv[1:] == ["destination"]:
+        identity()
         loop_nodes()
-    elif sys.argv[1:] != ["acme"]:
+        os.execv("/sbin/init", ["/sbin/init"])  # noqa: S606 - fixed fixture PID 1
+    elif sys.argv[1:] == ["acme"]:
+        # Docker has assigned the container address by the time this runs.
+        Path("/root/restore-acme/address").write_text(
+            socket.gethostbyname(socket.gethostname()), encoding="ascii"
+        )
+        os.execv(  # noqa: S606 - fixed fixture process, supervised by Docker's init
+            "/usr/bin/python3", ["python3", "-I", "-B", "/root/restore-acme/server.py"]
+        )
+    else:
         raise ValueError("unknown reconstruction fixture")
-    os.execv("/sbin/init", ["/sbin/init"])  # noqa: S606 - fixed fixture PID 1

@@ -8,6 +8,9 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
+from lowerduckpond_static_host_agent.durable import StatePathError
+from lowerduckpond_static_host_agent.host_restore_gate import restore_admission
+from lowerduckpond_static_host_agent.host_restore_journal import HostRestoreError
 
 GATE = Path(__file__).parents[2] / "config/ansible/roles/host_recovery/files/host-restore-gate"
 
@@ -19,6 +22,52 @@ def _load() -> ModuleType:
     module = importlib.util.module_from_spec(spec)
     loader.exec_module(module)
     return module
+
+
+@pytest.mark.parametrize("gate", ["installed", "package"])
+@pytest.mark.parametrize(
+    "damage", [None, "name", "mode", "symlink", "hardlink", "directory", "overflow", "orphan"]
+)
+def test_uninitialized_gate_accepts_only_bounded_private_unpublished_files(
+    gate: str, damage: str | None, tmp_path: Path
+) -> None:
+    root = tmp_path / "recovery"
+    root.mkdir(mode=0o700)
+    temporary = root / (".ldp-state-" + "a" * 32)
+    temporary.write_bytes(b"unpublished bytes")
+    temporary.chmod(0o600)
+    lock = root / "host-restore.lock"
+    lock.touch(mode=0o600)
+    if damage == "name":
+        temporary.rename(root / ".ldp-state-invalid")
+    elif damage == "mode":
+        temporary.chmod(0o644)
+    elif damage == "symlink":
+        temporary.unlink()
+        temporary.symlink_to(lock)
+    elif damage == "hardlink":
+        (tmp_path / "alias").hardlink_to(temporary)
+    elif damage == "directory":
+        temporary.unlink()
+        temporary.mkdir(mode=0o600)
+    elif damage == "overflow":
+        for number in range(64):
+            (root / f".ldp-state-{number:032x}").touch(mode=0o600)
+    elif damage == "orphan":
+        (root / "completed.json").write_text("{}")
+
+    def admitted() -> bool:
+        if gate == "package":
+            return restore_admission(root, owner=os.geteuid())
+        _load().require_uninitialized_directory(root, owner=os.geteuid())
+        return True
+
+    if damage is None:
+        assert admitted()
+        assert temporary.read_bytes() == b"unpublished bytes"
+    else:
+        with pytest.raises((ValueError, StatePathError, HostRestoreError)):
+            admitted()
 
 
 @pytest.mark.parametrize("argument", ["--ordinary", "--boot", "--caddy"])

@@ -17,6 +17,7 @@ ROOT = pathlib.Path("/var/lib/lowerduckpond/recovery")
 ARTIFACT_ROOT = pathlib.Path("/opt/lowerduckpond/static-host-agent")
 PRIVATE_MODE = 0o700
 LOCK_MODE = 0o600
+MAX_UNINITIALIZED_ENTRIES = 64
 
 
 def close_firewall() -> None:
@@ -29,6 +30,25 @@ def close_firewall() -> None:
         check=True,
         timeout=10,
     )
+
+
+def require_uninitialized_directory(root: pathlib.Path, *, owner: int = 0) -> None:
+    """Accept only an empty lease and private unpublished atomic-write files."""
+    with os.scandir(root) as entries:
+        for count, entry in enumerate(entries, start=1):
+            metadata = entry.stat(follow_symlinks=False)
+            temporary = re.fullmatch(r"\.ldp-state-[0-9a-f]{32}", entry.name) is not None
+            if (
+                count > MAX_UNINITIALIZED_ENTRIES
+                or not (temporary or entry.name == "host-restore.lock")
+                or not stat.S_ISREG(metadata.st_mode)
+                or stat.S_IMODE(metadata.st_mode) != LOCK_MODE
+                or metadata.st_uid != owner
+                or metadata.st_gid != owner
+                or metadata.st_nlink != 1
+                or (not temporary and metadata.st_size != 0)
+            ):
+                raise ValueError("restore provenance lost its journal")
 
 
 def require_lock(descriptor: int) -> None:
@@ -93,7 +113,7 @@ def require_artifact() -> pathlib.Path:
     return selected
 
 
-def main() -> int:  # noqa: PLR0911, PLR0912 - explicit boot and admission failure boundaries
+def main() -> int:  # noqa: PLR0911 - explicit boot and admission failure boundaries
     if sys.argv[1:] not in (["--boot"], ["--ordinary"], ["--caddy"]):
         return 64
     if os.geteuid() != 0:
@@ -113,19 +133,7 @@ def main() -> int:  # noqa: PLR0911, PLR0912 - explicit boot and admission failu
         marker = os.path.lexists(ROOT / "restore-gate.json")
         journal = os.path.lexists(ROOT / "host-restore.json")
         if not marker and not journal:
-            with os.scandir(ROOT) as entries:
-                for entry in entries:
-                    lock = entry.stat(follow_symlinks=False)
-                    if (
-                        entry.name != "host-restore.lock"
-                        or not stat.S_ISREG(lock.st_mode)
-                        or stat.S_IMODE(lock.st_mode) != LOCK_MODE
-                        or lock.st_uid != 0
-                        or lock.st_gid != 0
-                        or lock.st_nlink != 1
-                        or lock.st_size != 0
-                    ):
-                        raise ValueError("restore provenance lost its journal")
+            require_uninitialized_directory(ROOT)
             return 0
         if marker and boot:
             close_firewall()

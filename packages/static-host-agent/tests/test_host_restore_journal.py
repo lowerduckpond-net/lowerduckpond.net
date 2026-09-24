@@ -186,3 +186,19 @@ def test_changed_destination_and_unsafe_lock_are_not_new_attempt_authority(
     ):
         pytest.fail("unsafe lease was accepted")
     assert lock.stat().st_ino == inode and lock.read_bytes() == b"unsafe"
+
+
+def test_unpublished_recovery_temporaries_are_excluded_without_blocking_ordinary_backup(
+    root: Path,
+) -> None:
+    from lowerduckpond_static_host_agent.host_restore_history import (  # noqa: PLC0415
+        require_backup_provenance,
+    )
+
+    temporary = root / (".ldp-state-" + "a" * 32)
+    temporary.write_bytes(b"unpublished recovery bytes")
+    temporary.chmod(0o600)
+    require_backup_provenance(root, owner=os.geteuid())
+    assert admitted(root)
+    assert admitted(root, caddy=True)
+    assert temporary.read_bytes() == b"unpublished recovery bytes"

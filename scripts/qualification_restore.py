@@ -51,8 +51,10 @@ def directory(environment: dict[str, str]) -> Path:
     return Path(environment[ARTIFACT_ENV]).parent.parent / "restore"
 
 
-def command(environment: dict[str, str], *args: str, timeout: int = 60) -> bytes:
-    result = bounded_command(list(args), environment=environment, timeout=timeout)
+def command(
+    environment: dict[str, str], *args: str, timeout: int = 60, stdin: bytes = b""
+) -> bytes:
+    result = bounded_command(list(args), environment=environment, timeout=timeout, stdin=stdin)
     if result is None:
         raise ValueError("owned reconstruction fixture command failed")
     return result
@@ -113,7 +115,11 @@ def create(environment: dict[str, str], kind: str) -> str:
             name,
             "--label",
             f"lowerduckpond.qualification.run={environment[RUN_ENV]}",
-            "--privileged",
+            *(
+                ["--privileged"]
+                if kind == "destination"
+                else ["--init", "--stop-signal", "SIGTERM"]
+            ),
             "--tmpfs",
             "/run",
             "--tmpfs",
@@ -134,7 +140,10 @@ def create(environment: dict[str, str], kind: str) -> str:
     )
     current = inspect(environment, identity)
     private_document(root, f"{kind}.json", current)
-    command(environment, "docker", "start", identity)
+    # The controlled ACME service starts directly after its fixed inputs are
+    # copied. It needs neither systemd nor the destination's mount privileges.
+    if kind == "destination":
+        command(environment, "docker", "start", identity)
     return identity
 
 

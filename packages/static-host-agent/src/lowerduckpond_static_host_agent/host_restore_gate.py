@@ -101,11 +101,16 @@ def restore_admission(
         except FileNotFoundError:
             if gate is not None:
                 return False
+            temporaries = directory.publication_temporaries(
+                expected_owner=owner, expected_mode=0o600, maximum_entries=64
+            )
             descriptor = directory.duplicate_descriptor()
             try:
                 with os.scandir(descriptor) as entries:
                     for entry in entries:
-                        if entry.name != LOCK or _read(directory, (LOCK,), owner) != b"":
+                        if entry.name not in temporaries and (
+                            entry.name != LOCK or _read(directory, (LOCK,), owner) != b""
+                        ):
                             raise HostRestoreError("restore provenance lost its journal") from None
             finally:
                 os.close(descriptor)

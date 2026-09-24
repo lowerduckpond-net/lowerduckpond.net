@@ -67,3 +67,33 @@ def test_two_resource_retirement_cannot_orphan_a_reconstruction_pair(
 ) -> None:
     with pytest.raises(ValueError, match="fenced source"):
         retirement.retire(restore.directory(environment).parent)
+
+
+@pytest.mark.parametrize("kind", ["acme", "destination"])
+def test_owned_service_startup_preserves_destination_systemd_and_defers_acme_inputs(
+    environment: dict[str, str], monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(restore, "source_fenced", lambda _: None)
+    monkeypatch.setattr(
+        restore,
+        "inspect",
+        lambda *_: {"id": "a" * 64, "image": "sha256:" + "b" * 64},
+    )
+
+    def command(_: object, *arguments: str) -> bytes:
+        calls.append(arguments)
+        return b"a" * 64
+
+    monkeypatch.setattr(restore, "command", command)
+    assert restore.create(environment, kind) == "a" * 64
+    create = calls[0]
+    assert create[:2] == ("docker", "create")
+    assert create[-1] == kind
+    if kind == "acme":
+        assert "--init" in create and "--privileged" not in create
+        assert create[create.index("--stop-signal") + 1] == "SIGTERM"
+        assert len(calls) == 1  # Fixed service inputs must be copied before starting PID 1.
+    else:
+        assert "--privileged" in create and "--init" not in create
+        assert calls[1] == ("docker", "start", "a" * 64)

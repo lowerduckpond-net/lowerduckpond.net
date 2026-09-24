@@ -21,7 +21,7 @@ PHASES = {
     "unknown",
 }
 STATES = {"active", "inactive", "failed", "activating", "deactivating", "unknown"}
-UNITS = ("lowerduckpond-host-restore.service", "caddy.service", "restore-acme-fixture.service")
+UNITS = ("lowerduckpond-host-restore.service", "caddy.service")
 RESULTS = {"success", "exit-code", "signal", "timeout", "resources", "oom-kill", "start-limit-hit"}
 
 
