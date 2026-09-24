@@ -223,7 +223,8 @@ for name in names:
                 "-subj",
                 "/CN=localhost",
                 "-addext",
-                "subjectAltName=DNS:localhost,DNS:acme-v02.api.letsencrypt.org,DNS:api.cloudflare.com",
+                "subjectAltName=DNS:localhost,DNS:acme-v02.api.letsencrypt.org,"
+                "DNS:acme-staging-v02.api.letsencrypt.org,DNS:api.cloudflare.com",
                 "-addext",
                 "extendedKeyUsage=serverAuth",
                 "-keyout",
@@ -279,8 +280,27 @@ for name in names:
             result = self.acme.run(
                 "/usr/bin/python3 -I -B -c %s",
                 """
-import ssl, urllib.request
+import json, socket, ssl, struct, urllib.request
 ctx = ssl.create_default_context(cafile='/root/restore-acme/proxy-ca.crt')
+for host in ('acme-v02.api.letsencrypt.org', 'acme-staging-v02.api.letsencrypt.org'):
+    request = urllib.request.Request('https://localhost/directory', headers={'Host': host})
+    with urllib.request.urlopen(request, context=ctx, timeout=2) as response:
+        directory = json.load(response)
+    for field in ('newAccount', 'newNonce', 'newOrder'):
+        assert directory[field].startswith('https://' + host + '/')
+# Exercise forwarding to the actual challenge responder, not a synthesized
+# SOA answer or the independently healthy Pebble management listener.
+name = b''.join(bytes([len(label)]) + label
+                for label in b'_acme-challenge.lowerduckpond.net'.split(b'.')) + bytes(1)
+packet = struct.pack('!6H', 123, 0x0100, 1, 0, 0, 0) + name + struct.pack('!HH', 16, 1)
+with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as connection:
+    connection.settimeout(2)
+    connection.connect(('127.0.0.1', 8054))
+    connection.send(packet)
+    reply = connection.recv(65535)
+assert len(reply) >= 12 and reply[:2] == packet[:2]
+flags = struct.unpack('!H', reply[2:4])[0]
+assert flags & 0x8000 and flags & 0x000f == 0
 with urllib.request.urlopen('https://localhost:15000/roots/0', context=ctx, timeout=5) as response:
     print(response.read().decode(), end='')
 """,
@@ -346,7 +366,8 @@ done
         ).stdout.split()[0]
         self.acme_address = self.address(self.acme_id)
         hosts = (
-            f"{self.acme_address} acme-v02.api.letsencrypt.org api.cloudflare.com\n"
+            f"{self.acme_address} acme-v02.api.letsencrypt.org "
+            "acme-staging-v02.api.letsencrypt.org api.cloudflare.com\n"
             f"{archive_address} ams3.digitaloceanspaces.com\n"
         )
         checked(

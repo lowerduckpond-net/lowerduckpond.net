@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
+import http.client
 import importlib.util
 import json
 import socket
+import ssl
 import struct
 import threading
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import pytest
+
+from config.ansible.molecule.m3_8.prepare_archive_storage import _certificates
 
 ROOT = Path(__file__).resolve().parents[2] / "config/ansible/molecule/m3_8"
 
@@ -85,8 +91,13 @@ def test_dns_rejects_malformed_questions(packet: bytes) -> None:
         dns.question(packet)
 
 
+@pytest.mark.parametrize("relative", [False, True])
+@pytest.mark.parametrize("quoted", [False, True])
 def test_concurrent_apex_and_wildcard_challenges_keep_both_txt_values(
     monkeypatch: pytest.MonkeyPatch,
+    *,
+    relative: bool,
+    quoted: bool,
 ) -> None:
     acme = module("restore_acme_server")
     state = acme.State()
@@ -110,8 +121,10 @@ def test_concurrent_apex_and_wildcard_challenges_keep_both_txt_values(
                 json.dumps(
                     {
                         "type": "TXT",
-                        "name": "_acme-challenge.lowerduckpond.com",
-                        "content": content,
+                        "name": "_acme-challenge"
+                        if relative
+                        else "_acme-challenge.lowerduckpond.com.",
+                        "content": json.dumps(content) if quoted else content,
                     }
                 ).encode(),
             )
@@ -120,7 +133,7 @@ def test_concurrent_apex_and_wildcard_challenges_keep_both_txt_values(
     state.cloudflare("DELETE", endpoint + "/" + records[0]["id"], b"")
     assert values == {"_acme-challenge.lowerduckpond.com.": ["wildcard-proof"]}
     assert (
-        state.cloudflare("GET", endpoint + "?name=_acme-challenge.lowerduckpond.com&type=TXT", b"")
+        state.cloudflare("GET", endpoint + "?name=_acme-challenge.lowerduckpond.com.&type=TXT", b"")
         == records[1:]
     )
     state.cloudflare("DELETE", endpoint + "/" + records[1]["id"], b"")
@@ -128,9 +141,30 @@ def test_concurrent_apex_and_wildcard_challenges_keep_both_txt_values(
     assert state.created == state.deleted == len(records)
 
 
+@pytest.mark.parametrize("suffix", ["", "."])
+def test_cloudflare_discovery_accepts_absolute_dns_names(suffix: str) -> None:
+    state = module("restore_acme_server").State()
+    zones = state.cloudflare("GET", f"/client/v4/zones?name=lowerduckpond.net{suffix}", b"")
+    assert zones == [{"id": "2" * 32, "name": "lowerduckpond.net", "status": "active"}]
+    for name in ("lowerduckpond.net..", "foreign.example", "child.lowerduckpond.net"):
+        assert state.cloudflare("GET", f"/client/v4/zones?name={name}", b"") == []
+    assert (
+        state.cloudflare(
+            "GET", "/client/v4/zones?name=lowerduckpond.net&name=lowerduckpond.com", b""
+        )
+        == []
+    )
+
+
 @pytest.mark.parametrize(
     "name",
-    ["production.example.com", "lowerduckpond.com", "_acme-challenge.other.lowerduckpond.com"],
+    [
+        "production.example.com",
+        "lowerduckpond.com",
+        "_acme-challenge.other.lowerduckpond.com",
+        "_acme-challenge.lowerduckpond.net",
+        "_acme-challenge.lowerduckpond.com..",
+    ],
 )
 def test_dns_adapter_refuses_records_outside_its_two_owned_challenges(name: str) -> None:
     state = module("restore_acme_server").State()
@@ -141,3 +175,100 @@ def test_dns_adapter_refuses_records_outside_its_two_owned_challenges(name: str)
             json.dumps({"type": "TXT", "name": name, "content": "proof"}).encode(),
         )
     assert not state.records
+
+
+def test_acme_proxy_preserves_client_headers_and_issuer_urls(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    acme = module("restore_acme_server")
+    _certificates(tmp_path)
+    (tmp_path / "proxy-ca.crt").write_bytes((tmp_path / "ca.crt").read_bytes())
+    monkeypatch.setattr(acme, "ROOT", tmp_path)
+    requests: list[tuple[str, str, str, str, bytes]] = []
+
+    class Upstream(BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+            return
+
+        def do_POST(self) -> None:
+            body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            requests.append(
+                (
+                    self.path,
+                    self.headers["Host"],
+                    self.headers.get("User-Agent", ""),
+                    self.headers.get("Content-Type", ""),
+                    body,
+                )
+            )
+            payload = json.dumps(
+                {"newOrder": "https://" + self.headers["Host"] + "/order"}
+            ).encode()
+            self.send_response(200 if self.headers.get("User-Agent") else 400)
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Replay-Nonce", "test-nonce")
+            self.end_headers()
+            self.wfile.write(payload)
+
+    with ThreadingHTTPServer(("127.0.0.1", 0), Upstream) as upstream:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(tmp_path / "public.crt", tmp_path / "private.key")
+        upstream.socket = context.wrap_socket(upstream.socket, server_side=True)
+        real_connection = http.client.HTTPSConnection
+
+        def connect(
+            host: str, port: int, *, context: ssl.SSLContext, timeout: int
+        ) -> http.client.HTTPSConnection:
+            assert (host, port) == ("localhost", 14000)
+            return real_connection(
+                "127.0.0.1", upstream.server_port, context=context, timeout=timeout
+            )
+
+        monkeypatch.setattr(
+            acme, "http", SimpleNamespace(client=SimpleNamespace(HTTPSConnection=connect))
+        )
+        with ThreadingHTTPServer(("127.0.0.1", 0), acme.Handler) as proxy:
+            threads = [
+                threading.Thread(target=server.serve_forever) for server in (upstream, proxy)
+            ]
+            for thread in threads:
+                thread.start()
+            try:
+                for host in (
+                    "acme-v02.api.letsencrypt.org",
+                    "acme-staging-v02.api.letsencrypt.org",
+                ):
+                    connection = http.client.HTTPConnection(
+                        "127.0.0.1", proxy.server_port, timeout=5
+                    )
+                    try:
+                        connection.request(
+                            "POST",
+                            "/directory",
+                            b"signed-request",
+                            {
+                                "Host": host,
+                                "User-Agent": "Caddy test client",
+                                "Content-Type": "application/jose+json",
+                            },
+                        )
+                        response = connection.getresponse()
+                        assert response.status == HTTPStatus.OK
+                        assert response.getheader("Replay-Nonce") == "test-nonce"
+                        assert json.load(response) == {"newOrder": f"https://{host}/order"}
+                        assert requests[-1] == (
+                            "/dir",
+                            host,
+                            "Caddy test client",
+                            "application/jose+json",
+                            b"signed-request",
+                        )
+                    finally:
+                        connection.close()
+            finally:
+                for server in (upstream, proxy):
+                    server.shutdown()
+                for thread in threads:
+                    thread.join(timeout=5)
+                    assert not thread.is_alive()

@@ -20,11 +20,16 @@ from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path("/root/restore-acme")
 ZONES = {"lowerduckpond.com": "1" * 32, "lowerduckpond.net": "2" * 32}
+ACME_HOSTS = {"acme-v02.api.letsencrypt.org", "acme-staging-v02.api.letsencrypt.org"}
 TOKEN = "0" * 40
 MAX_BODY = 256 * 1024
 MAX_TXT = 128
 RECORD_PARTS = 5
 CONTROL_PORT = 8056
+
+
+def matches_name(query: dict[str, list[str]], name: str) -> bool:
+    return [value.removesuffix(".") for value in query.get("name", [name])] == [name]
 
 
 class State:
@@ -63,7 +68,7 @@ class State:
             return [
                 {"id": identity, "name": name, "status": "active"}
                 for name, identity in ZONES.items()
-                if query.get("name", [name]) == [name]
+                if matches_name(query, name)
             ]
         if (
             len(parts) not in (5, 6)
@@ -78,16 +83,22 @@ class State:
                 record
                 for record in self.records.values()
                 if record["zone_id"] == parts[3]
-                and query.get("name", [record["name"]]) == [record["name"]]
+                and matches_name(query, str(record["name"]))
                 and query.get("type", [record["type"]]) == [record["type"]]
             ]
         if method == "POST" and len(parts) == RECORD_PARTS:
             value = json.loads(body)
+            content = value.get("content")
+            # libdns sends zone-relative names and quoted TXT presentation.
+            # Cloudflare returns the absolute name and accepts either form.
+            if isinstance(content, str) and content.startswith('"'):
+                content = json.loads(content)
             if (
                 value.get("type") != "TXT"
-                or value.get("name", "").rstrip(".") != f"_acme-challenge.{zone}"
-                or not isinstance(value.get("content"), str)
-                or not 1 <= len(value["content"]) <= MAX_TXT
+                or value.get("name", "").removesuffix(".")
+                not in {"_acme-challenge", f"_acme-challenge.{zone}"}
+                or not isinstance(content, str)
+                or not 1 <= len(content) <= MAX_TXT
             ):
                 raise ValueError("request is outside the disposable DNS-01 scope")
             self.created += 1
@@ -98,7 +109,7 @@ class State:
                 "zone_name": zone,
                 "type": "TXT",
                 "name": f"_acme-challenge.{zone}",
-                "content": value["content"],
+                "content": content,
                 "ttl": 120,
             }
             self.records[identity] = record
@@ -175,7 +186,7 @@ class Handler(BaseHTTPRequestHandler):
                     },
                 )
                 return
-            if host != "acme-v02.api.letsencrypt.org":
+            if host not in ACME_HOSTS:
                 self.reply(421, {})
                 return
             if STATE.fault == "acme":
@@ -194,6 +205,7 @@ class Handler(BaseHTTPRequestHandler):
                 {
                     "Host": host,
                     "Content-Type": self.headers.get("Content-Type", ""),
+                    "User-Agent": self.headers.get("User-Agent", ""),
                     "X-Forwarded-Proto": "https",
                 },
             )
@@ -238,6 +250,8 @@ def main() -> None:
                     "-http01",
                     "",
                     "-https01",
+                    "",
+                    "-doh",
                     "",
                     "-tlsalpn01",
                     "",
