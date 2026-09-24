@@ -125,17 +125,24 @@ LOCAL_PATHS = {
 }
 
 
+def _command_failure(error: BaseException, *, check: bool) -> bytes | None:
+    if check:
+        raise error
+    return None
+
+
 def bounded_command(
     arguments: list[str],
     *,
     timeout: float = 5,
     stdin: bytes = b"",
     environment: dict[str, str] | None = None,
+    check: bool = False,
 ) -> bytes | None:
-    """Bound time and captured bytes, discard stderr, and never expose tool errors."""
+    """Bound time and captured bytes, always discarding stderr and sensitive output."""
     executable = shutil.which(arguments[0])
     if executable is None:
-        return None
+        return _command_failure(FileNotFoundError(arguments[0]), check=check)
     with tempfile.TemporaryFile() as source:
         source.write(stdin)
         source.seek(0)
@@ -148,8 +155,8 @@ def bounded_command(
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
             )
-        except OSError:
-            return None
+        except OSError as error:
+            return _command_failure(error, check=check)
         assert process.stdout is not None  # noqa: S101 - PIPE established above
         try:
             with selectors.DefaultSelector() as ready:
@@ -159,16 +166,27 @@ def bounded_command(
                 while True:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0 or not ready.select(remaining):
-                        return None
+                        return _command_failure(
+                            subprocess.TimeoutExpired(arguments, timeout), check=check
+                        )
                     block = os.read(process.stdout.fileno(), 4096)
                     if not block:
                         remaining = max(0.001, deadline - time.monotonic())
-                        return bytes(output) if process.wait(timeout=remaining) == 0 else None
+                        status = process.wait(timeout=remaining)
+                        return (
+                            bytes(output)
+                            if status == 0
+                            else _command_failure(
+                                subprocess.CalledProcessError(status, arguments), check=check
+                            )
+                        )
                     output.extend(block)
                     if len(output) > MAX_COMMAND_BYTES:
-                        return None
-        except OSError, subprocess.TimeoutExpired:
-            return None
+                        return _command_failure(
+                            ValueError("command output exceeded diagnostic limit"), check=check
+                        )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            return _command_failure(error, check=check)
         finally:
             # Kill the command group, including helper grandchildren retaining its pipe.
             with contextlib.suppress(ProcessLookupError):

@@ -128,3 +128,19 @@ def test_rotation_memory_evidence_is_fresh_unique_and_within_the_original_limit(
     query = host.run.call_args.args
     assert "--after-cursor=%s" in query[0] and "_PID=1" in query[0]
     assert query[1:] == ("before-this-invocation", UNIT, MESSAGE)
+
+
+def test_rotation_timer_restore_remains_quiescent_for_outer_accounting() -> None:
+    host = Mock()
+    host.run.return_value = SimpleNamespace(rc=0)
+    restore = load_function(
+        "test_audit_rotation",
+        "_restore_timer_enablement_for_teardown",
+        _TIMERS="owned.timer other.timer",
+    )
+    restore(host)
+    assert [call.args for call in host.run.call_args_list] == [
+        ("systemctl enable owned.timer other.timer",),
+        ("systemctl is-enabled --quiet %s", "owned.timer"),
+        ("systemctl is-enabled --quiet %s", "other.timer"),
+    ]
