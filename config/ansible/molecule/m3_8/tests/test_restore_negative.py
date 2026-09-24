@@ -18,7 +18,7 @@ from scripts.qualification_case import private_document
 
 
 def test_installed_restore_negative(host: Host, tmp_path: Path) -> None:  # noqa: PLR0915
-    fixture, tenants, _replay = restore.source(host, tmp_path)
+    fixture, tenants, _replay = restore.source(host, tmp_path, full_history=False)
     destination = fixture.destination
     original_roots = owned.installed_roots_digest(fixture.environment, fixture.destination_id)
     target = "/etc/lowerduckpond/host-restore/target.json"

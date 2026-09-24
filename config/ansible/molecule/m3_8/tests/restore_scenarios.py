@@ -28,7 +28,7 @@ from scripts.qualification_case import private_document
 
 
 def source(
-    host: Host, tmp_path: Path, *, archived_prefix: bool = False
+    host: Host, tmp_path: Path, *, archived_prefix: bool = False, full_history: bool = True
 ) -> tuple[Fixture, list[str], dict[str, object]]:
     require_owned_fixture()
     assert support._initialize_namespace(host)
@@ -49,7 +49,10 @@ def source(
     connection = support._operator_inputs(tmp_path)
     tenants = []
     replay: dict[str, object] = {}
-    for number in range(4):
+    # Negative evidence needs active content and one exact archive. Positive
+    # reconstruction and TLS keep all four states and the prior retained release.
+    content_history = (b"retained release\n", b"selected release\n")
+    for number in range(4) if full_history else (0, 2):
         request = support._request(
             "create",
             str(uuid.uuid7()),
@@ -63,7 +66,7 @@ def source(
         if number == 3:  # noqa: PLR2004 - fourth fixture remains undeployed
             replay = {"request": request, "result": created}
             continue
-        for content in (b"retained release\n", b"selected release\n"):
+        for content in content_history if full_history else content_history[1:]:
             result = support._submit(
                 tmp_path,
                 *connection,

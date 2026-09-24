@@ -36,12 +36,17 @@ def downloads(fixture: Fixture, record: dict[str, str]) -> None:
         ).rc
         == 0
     )
-    assert (
-        fixture.acme.run(
-            "systemd-run --unit restore-fixture-archive "
-            "/usr/bin/python3 -I -B /root/restore-archive/proxy.py"
-        ).rc
-        == 0
+    # ACME uses Docker's init, not a systemd manager. The proxy belongs to
+    # this same run-owned container and stops with its paired teardown.
+    fixture.command(
+        "docker",
+        "exec",
+        "--detach",
+        fixture.acme_id,
+        "/usr/bin/python3",
+        "-I",
+        "-B",
+        "/root/restore-archive/proxy.py",
     )
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
@@ -54,10 +59,12 @@ def downloads(fixture: Fixture, record: dict[str, str]) -> None:
     private(
         rules,
         (
-            "table ip restore_fixture_archive { chain output { "
-            "type nat hook output priority -111; "
-            f"ip daddr {address} tcp dport 443 dnat to {fixture.acme_address}:8443; "
-            "} }\n"
+            "table ip restore_fixture_archive {\n"
+            "  chain output {\n"
+            "    type nat hook output priority -111;\n"
+            f"    ip daddr {address} tcp dport 443 dnat to {fixture.acme_address}:8443;\n"
+            "  }\n"
+            "}\n"
         ).encode(),
     )
     fixture.copy_in(rules, fixture.destination_id, "/root/restore-archive-fault.nft")
@@ -74,7 +81,6 @@ def downloads(fixture: Fixture, record: dict[str, str]) -> None:
         assert fixture.acme.file("/root/restore-archive/observed").content_string == expected
     # This removes only the test-owned redirection after both observed failures.
     assert fixture.destination.run("nft delete table ip restore_fixture_archive").rc == 0
-    assert fixture.acme.run("systemctl stop restore-fixture-archive.service").rc == 0
 
 
 def audit_fork(fixture: Fixture) -> None:
