@@ -195,14 +195,20 @@ that cleanup. Private fixture metadata is not included in CI diagnostic
 artifacts. Live Spaces continues to use its serialized secure-workstation
 workflow; local resource overrides cannot redirect it.
 
-Separate resources do not provide additional machine capacity. In particular,
-privileged Docker fixtures share the host kernel's loop-device pool. This
-workspace's eight exposed loop-device nodes were insufficient to prepare two
-complete fixtures simultaneously. Concurrent systemd fixtures also caused
-disposable MinIO TLS startup to fail with `too many open files`; stopping the
-unused second host allowed the unchanged service to start. Serialize systemd
-fixtures on one daemon and use separate runners for parallel installed checks;
-do not detach another run's devices or prune shared Docker resources.
+Independent local fixtures can run concurrently when the shared host has enough
+capacity. Privileged Docker fixtures share the kernel's loop-device pool, and
+their systemd and MinIO processes consume per-user inotify instances. These are
+separate resources: raising `fs.inotify.max_user_instances` does not expose more
+loop-device nodes.
+
+Check both the kernel's available loop devices and the nodes exposed in the
+Docker daemon's `/dev`. A nested daemon can expose too few nodes even when the
+kernel supports additional devices. Provision missing nodes in that daemon's
+device namespace before creating fixtures, and preserve that setup when the
+daemon container is recreated. Check the effective inotify limit inside the
+fixtures; `too many open files` needs diagnosis before changing a limit.
+Serialize runs only while capacity is insufficient, or use separate runners.
+Never detach another run's devices or prune shared Docker resources.
 
 After reboot, operator connections rediscover Docker's assigned SSH port while
 requiring the recorded source and peer addresses to remain unchanged. The
