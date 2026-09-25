@@ -30,8 +30,11 @@ _SECRETS = {
 
 
 class TokenFixture:
-    def __init__(self, defect: str | None) -> None:
+    def __init__(
+        self, defect: str | None, *, audit_overrides: dict[str, object] | None = None
+    ) -> None:
         self.defect = defect
+        self.audit_overrides = audit_overrides or {}
         self.calls: list[tuple[str, str]] = []
 
     def client(self, token: str) -> CloudflareClient:
@@ -133,8 +136,54 @@ class TokenFixture:
         if not runtime and self.defect == "audit-expired":
             document["expires_on"] = (now - timedelta(hours=1)).isoformat()
         if not runtime and self.defect == "audit-too-long":
-            document["expires_on"] = (now + timedelta(days=8)).isoformat()
+            document["expires_on"] = (now + timedelta(days=9)).isoformat()
+        if not runtime:
+            document.update(self.audit_overrides)
         return deepcopy(document)
+
+
+@pytest.mark.parametrize(
+    ("issued_age", "remaining", "error"),
+    [
+        (timedelta(days=365), timedelta(seconds=1), None),
+        (timedelta(days=365), timedelta(days=7, hours=12), None),
+        (timedelta(days=365), timedelta(days=8), None),
+        (timedelta(days=365), timedelta(), "must expire within 8 days from now"),
+        (timedelta(days=365), timedelta(seconds=-1), "must expire within 8 days from now"),
+        (timedelta(days=365), timedelta(days=8, seconds=1), "must expire within 8 days from now"),
+        (timedelta(seconds=-1), timedelta(days=1), "issue date is in the future"),
+    ],
+)
+def test_audit_token_expiry_uses_now_instead_of_the_retained_original_issue_date(
+    monkeypatch: pytest.MonkeyPatch,
+    issued_age: timedelta,
+    remaining: timedelta,
+    error: str | None,
+) -> None:
+    now = datetime(2026, 9, 25, tzinfo=UTC)
+    fixture = TokenFixture(
+        None,
+        audit_overrides={
+            "issued_on": (now - issued_age).isoformat(),
+            "not_before": (now - issued_age).isoformat(),
+            "expires_on": (now + remaining).isoformat(),
+        },
+    )
+    monkeypatch.setattr(provider, "CloudflareClient", fixture.client)
+    with (
+        nullcontext() if error is None else pytest.raises(ProductionEdgePreflightError, match=error)
+    ):
+        provider.check_caddy_token(
+            {
+                "CLOUDFLARE_API_TOKEN": _SECRETS["edge"],
+                "CADDY_CLOUDFLARE_API_TOKEN": _SECRETS["caddy"],
+                "M3_10_TOKEN_AUDIT_TOKEN": _SECRETS["audit"],
+                "CLOUDFLARE_ZONE_ID": "b" * 32,
+                "CLOUDFLARE_TENANT_ZONE_ID": "c" * 32,
+            },
+            account_id=_ACCOUNT,
+            now=now,
+        )
 
 
 @pytest.mark.parametrize(

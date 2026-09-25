@@ -182,9 +182,13 @@ separate and retains only Zone Read and DNS Write for the two zones.
 
 Create one additional, temporary account-owned token for the read-only starting
 gate. Give it only Account API Tokens Read on the single Lower Duck Pond
-account, set a lifetime of no more than seven days, and name it for the M3.7
-token audit and creation date. Do not install or back up this token. The gate
-uses it only to read the two target tokens' Cloudflare policy documents, bind
+account, set its expiry within eight days from now, and name it for the M3.7
+token audit and creation date. This remaining-time bound includes one extra
+day for Cloudflare's date-based expiry selection. A rolled token may retain
+its original issue date; the gate does not limit its age or issue-to-expiry
+interval. It must still be active, already issued and unexpired. Do not install
+or back up this token. The gate uses it only to read the two target tokens'
+Cloudflare policy documents, bind
 them to their self-verified token IDs, and prove the exact permission and zone
 resource sets above. Revoke it after the gate passes.
 

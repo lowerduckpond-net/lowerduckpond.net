@@ -197,14 +197,14 @@ main() {
         gate_value=${M3_10_TOKEN_AUDIT_TOKEN:-}
         if [[ -z ${gate_value} ]]; then
             prompt_secret gate_value \
-                'Temporary Cloudflare Account API Tokens Read token (at most seven days; hidden)'
+                'Temporary Cloudflare Account API Tokens Read token (expires within 8 days from now; hidden)'
         fi
         [[ -n ${gate_value} ]] || return 2
         export M3_10_TOKEN_AUDIT_TOKEN=${gate_value}
         gate_value=${M3_10_PAGE_RULES_TOKEN:-}
         if [[ -z ${gate_value} ]]; then
             prompt_secret gate_value \
-                'Workstation Page Rules Read user API token (expires within 90 days; hidden)'
+                'Workstation Page Rules Read user API token (expires within 91 days from now; hidden)'
         fi
         [[ -n ${gate_value} ]] || return 2
         export M3_10_PAGE_RULES_TOKEN=${gate_value}

@@ -66,11 +66,17 @@ def test_cfut_token_is_sent_intact_only_to_user_verification_and_page_rules(
     ]
 
 
-@pytest.mark.parametrize("remaining_days", [1, 30, 60, 90])
-def test_page_rules_user_token_has_bounded_expiry_and_only_two_inventory_paths(
+@pytest.mark.parametrize("remaining_days", [1, 30, 60, 90, 91])
+def test_rolled_page_rules_token_has_bounded_remaining_expiry_and_only_two_inventory_paths(
     remaining_days: int,
 ) -> None:
-    raw = UserClient({"expires_on": (_NOW + timedelta(days=remaining_days)).isoformat()})
+    raw = UserClient(
+        {
+            "issued_on": (_NOW - timedelta(days=365)).isoformat(),
+            "not_before": (_NOW - timedelta(days=365)).isoformat(),
+            "expires_on": (_NOW + timedelta(days=remaining_days)).isoformat(),
+        }
+    )
     client = PageRulesClient(cast(CloudflareClient, raw), zone_ids=_ZONES, now=_NOW)
     for zone in sorted(_ZONES):
         assert client.get(f"/zones/{zone}/pagerules") == []
@@ -104,7 +110,7 @@ def test_page_rules_user_token_has_bounded_expiry_and_only_two_inventory_paths(
         {"expires_on": "2026-10-13T00:00:00"},
         {"expires_on": _NOW.isoformat()},
         {"expires_on": (_NOW - timedelta(seconds=1)).isoformat()},
-        {"expires_on": (_NOW + timedelta(days=90, seconds=1)).isoformat()},
+        {"expires_on": (_NOW + timedelta(days=91, seconds=1)).isoformat()},
         {"not_before": (_NOW + timedelta(seconds=1)).isoformat()},
         {"not_before": "invalid"},
     ],
@@ -119,14 +125,25 @@ def test_page_rules_refuses_invalid_user_token_before_any_inventory_read(
 
 
 @pytest.mark.parametrize(
-    "zones", [frozenset(), frozenset({"a" * 32}), frozenset({"invalid", "b" * 32})]
+    "zones",
+    [
+        frozenset(),
+        frozenset({"a" * 32}),
+        frozenset({"invalid", "b" * 32}),
+        frozenset({"A" * 32, "b" * 32}),
+        frozenset({"a" * 32 + " ", "b" * 32}),
+    ],
 )
 def test_invalid_page_rules_zone_scope_fails_before_sending_the_user_token(
     zones: frozenset[str],
 ) -> None:
     raw = UserClient()
-    with pytest.raises(ProductionEdgePreflightError, match="two exact zones"):
+    with pytest.raises(
+        ProductionEdgePreflightError,
+        match=r"CLOUDFLARE_ZONE_ID and CLOUDFLARE_TENANT_ZONE_ID.*two distinct 32-character",
+    ) as error:
         PageRulesClient(cast(CloudflareClient, raw), zone_ids=zones, now=_NOW)
+    assert "before Page Rules token verification" in str(error.value)
     assert not raw.calls
 
 

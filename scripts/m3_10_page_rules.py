@@ -8,7 +8,7 @@ from typing import Final
 
 from scripts.check_m3_7_production_edge import CloudflareClient, ProductionEdgePreflightError
 
-_MAXIMUM_REMAINING: Final = timedelta(days=90)
+_MAXIMUM_REMAINING: Final = timedelta(days=91)
 _ZONE_COUNT: Final = 2
 
 
@@ -32,7 +32,12 @@ class PageRulesClient:
         if len(zone_ids) != _ZONE_COUNT or any(
             re.fullmatch(r"[0-9a-f]{32}", zone) is None for zone in zone_ids
         ):
-            raise ProductionEdgePreflightError("the Page Rules user token needs two exact zones")
+            raise ProductionEdgePreflightError(
+                "Page Rules preflight requires CLOUDFLARE_ZONE_ID and "
+                "CLOUDFLARE_TENANT_ZONE_ID to contain two distinct 32-character "
+                "lowercase hexadecimal zone IDs. This local configuration check "
+                "runs before Page Rules token verification."
+            )
         self._client = client
         self._paths = frozenset(f"/zones/{zone}/pagerules" for zone in zone_ids)
         verification = client.get("/user/tokens/verify")
@@ -46,7 +51,7 @@ class PageRulesClient:
         expires = _timestamp(verification.get("expires_on"))
         if not now < expires <= now + _MAXIMUM_REMAINING:
             raise ProductionEdgePreflightError(
-                "the Page Rules user token must expire within 90 days"
+                "the Page Rules user token must expire within 91 days from now"
             )
         not_before = verification.get("not_before")
         if not_before not in (None, "") and _timestamp(not_before) > now:

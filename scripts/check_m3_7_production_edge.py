@@ -37,7 +37,7 @@ MAXIMUM_CA_LIFETIME: Final = timedelta(days=1826)
 MINIMUM_CA_REMAINING: Final = timedelta(days=366)
 MAXIMUM_LEAF_LIFETIME: Final = timedelta(days=366)
 MINIMUM_LEAF_REMAINING: Final = timedelta(days=60)
-MAXIMUM_AUDIT_TOKEN_LIFETIME: Final = timedelta(days=7)
+MAXIMUM_AUDIT_TOKEN_REMAINING: Final = timedelta(days=8)
 CERTIFICATE_ID_PATTERN: Final = re.compile(
     r"^(?:[0-9a-f]{32}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$"
 )
@@ -675,12 +675,14 @@ def _require_account_token_policies(  # noqa: PLR0913 -- all credential roles ar
     )
     issued_on = _timestamp(audit_details.get("issued_on"))
     expires_on = _timestamp(audit_details.get("expires_on"))
-    if (
-        issued_on > now
-        or expires_on <= now
-        or expires_on - issued_on > MAXIMUM_AUDIT_TOKEN_LIFETIME
-    ):
-        raise ProductionEdgePreflightError("the temporary token-audit lifetime is outside policy")
+    if issued_on > now:
+        raise ProductionEdgePreflightError("the temporary token-audit issue date is in the future")
+    # Rolled tokens retain their original issue date. Bound remaining validity,
+    # including one extra day for the provider's date-based expiry selection.
+    if not now < expires_on <= now + MAXIMUM_AUDIT_TOKEN_REMAINING:
+        raise ProductionEdgePreflightError(
+            "the temporary token-audit token must expire within 8 days from now"
+        )
 
     zone_resources = frozenset(f"com.cloudflare.api.account.zone.{zone_id}" for zone_id in zone_ids)
     subjects = [(caddy_client, CADDY_TOKEN_PERMISSIONS, "Caddy runtime")]

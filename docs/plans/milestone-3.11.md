@@ -833,6 +833,16 @@ on the secure workstation, using its existing private environment-file launcher
 and pinned Mise tools. An operator runs production convergence explicitly;
 the coder task prepares everything independently possible before that handoff.
 
+M3.11 amends the temporary operator-token expiry policy to use remaining time:
+the Account API Tokens Read token must expire within eight days from the
+current check, and the Page Rules user token within 91 days. Each bound adds
+one day to the preceding seven-/90-day limit for provider date-based expiry.
+Rolling a token may preserve its original issue/start date; no maximum token
+age or issue-to-expiry interval applies. Active status, unexpired credentials,
+future-date checks, exact permissions and exact resource scopes remain required.
+The Page Rules local zone-ID error must name both environment variables and
+explain that token verification has not yet run.
+
 P6c retains the exact original report, artifact, predecessor completion and
 hash-linked phase proposals on the workstation and host. A complete proposal
 is durable before either journal can publish it. A resumed controller recovers
