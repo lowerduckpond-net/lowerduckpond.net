@@ -138,6 +138,8 @@ files = [
   "scripts/check_m3_10_host_firewall.py",
   "scripts/check_m3_10_provider.py",
   "scripts/m3_10_qualification_report.py",
+  "scripts/m3_11_qualification_evidence.py",
+  "tests/infrastructure/test_m3_11_qualification_report.py",
   "tests/infrastructure/test_m3_10_production_gate.py",
   "tests/infrastructure/test_m3_10_qualification_report.py",
   "packages/static-contracts/src",
