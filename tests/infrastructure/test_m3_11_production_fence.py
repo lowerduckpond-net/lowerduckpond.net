@@ -26,7 +26,25 @@ PUBLISHED_MODE = 0o400
 ROOT = Path(__file__).parents[2]
 
 
-@pytest.mark.parametrize("phase", ["lineage", "converged"])
+def test_backup_timers_wait_through_convergence_and_unacknowledged_capture(
+    tmp_path: Path, records: list[tuple[str, bytes]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(wire, "ROOT", tmp_path / "m3-11")
+    for name, raw in records[:8]:
+        wire.operate(wire.ROOT, ["publish", name], raw, owner=OWNER)
+    conditions = []
+    for unit in fence.BACKUP:
+        raw = fence.content(records[0][1], fence.FENCES[unit])
+        line = next(line for line in raw.decode().splitlines() if line.startswith("Condition"))
+        conditions.append(Path(line.removeprefix("ConditionPathExists=")))
+    for name, raw in records[8:10]:
+        wire.operate(wire.ROOT, ["publish", name], raw, owner=OWNER)
+        assert not any(path.exists() for path in conditions)
+    wire.operate(wire.ROOT, ["publish", records[10][0]], records[10][1], owner=OWNER)
+    assert all(path.exists() for path in conditions)
+
+
+@pytest.mark.parametrize("phase", ["lineage", "backup-verified"])
 def test_exact_service_condition_retry_preserves_original_file(
     tmp_path: Path, records: list[tuple[str, bytes]], phase: str
 ) -> None:
@@ -51,7 +69,7 @@ def test_actual_process_death_resumes_only_original_condition(
 ) -> None:
     directory = tmp_path / "unit.service.d"
     directory.mkdir(mode=0o700)
-    raw = fence.content(records[0][1], "converged")
+    raw = fence.content(records[0][1], "backup-verified")
     source = tmp_path / "original"
     source.write_bytes(raw)
     program = """
@@ -76,7 +94,7 @@ fence.publish(Path(sys.argv[1]),Path(sys.argv[2]).read_bytes(),owner=os.geteuid(
     )
     assert result.returncode == CRASH
     with pytest.raises(ValueError):
-        fence.publish(directory, raw.replace(b"converged", b"lineage"), owner=OWNER)
+        fence.publish(directory, raw.replace(b"backup-verified", b"lineage"), owner=OWNER)
     fence.publish(directory, raw, owner=OWNER)
     assert (directory / fence.NAME).read_bytes() == raw
     assert {p.name for p in directory.iterdir()} == {fence.NAME}
@@ -87,7 +105,7 @@ def test_unsafe_or_changed_conditions_are_never_replaced(
     tmp_path: Path, records: list[tuple[str, bytes]], fault: str
 ) -> None:
     directory = tmp_path / "unit.service.d"
-    raw = fence.content(records[0][1], "converged")
+    raw = fence.content(records[0][1], "backup-verified")
     if fault == "directory-link":
         elsewhere = tmp_path / "elsewhere"
         elsewhere.mkdir()
@@ -114,7 +132,7 @@ def test_effective_systemd_condition_must_require_the_real_completion_record(
         "ConditionPathExists",
         False,
         False,
-        str(wire.ROOT / "converged.json"),
+        str(wire.ROOT / "backup-verified.json"),
         0,
     ]
     if change == "negated":
@@ -122,7 +140,7 @@ def test_effective_systemd_condition_must_require_the_real_completion_record(
     elif change == "trigger":
         condition[1] = True
     elif change == "wrong-phase":
-        condition[3] = str(wire.ROOT / "converged.started.json")
+        condition[3] = str(wire.ROOT / "backup-verified.started.json")
 
     def run(args: list[str], *, stop: bool = False) -> bytes:
         assert not stop
@@ -136,7 +154,7 @@ def test_effective_systemd_condition_must_require_the_real_completion_record(
 
     monkeypatch.setattr(fence, "run", run)
     with pytest.raises(ValueError, match="required migration condition"):
-        fence.conditions("lowerduckpond-backup.service", "converged")
+        fence.conditions("lowerduckpond-backup.service", "backup-verified")
 
 
 @pytest.fixture

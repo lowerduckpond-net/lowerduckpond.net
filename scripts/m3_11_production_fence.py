@@ -44,7 +44,9 @@ BACKUP = (
     "lowerduckpond-audit-verify.timer",
     "lowerduckpond-audit-rotate.timer",
 )
-FENCES = {**dict.fromkeys(STATIC, "lineage"), **dict.fromkeys(BACKUP, "converged")}
+# Background backup/protection must not rewrite the source of a retained capture
+# before its exact snapshot and restore proof have been durably acknowledged.
+FENCES = {**dict.fromkeys(STATIC, "lineage"), **dict.fromkeys(BACKUP, "backup-verified")}
 PROCESS_PATTERN = (
     r"[/]usr/local/libexec/lowerduckpond/(backup[^ /]*|restic-check|latest-backup-snapshot|"
     r"restore-smoke-test|static-operator-adapter|static-request-decoder|execute-authorized-job|"
@@ -53,7 +55,7 @@ PROCESS_PATTERN = (
 
 
 def content(original: bytes, phase: str) -> bytes:
-    if phase not in {"lineage", "converged"}:
+    if phase not in {"lineage", "backup-verified"}:
         raise ValueError("invalid production service phase")
     return (
         "# Original M3.11 transaction: " + journal.digest(original) + "\n"

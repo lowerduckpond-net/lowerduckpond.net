@@ -101,15 +101,20 @@ def configuration(raw: bytes) -> dict[str, str]:
     return result
 
 
-def environment(raw: bytes, *, region: str, locator: str) -> dict[str, str]:
+def environment(
+    raw: bytes, *, region: str, locator: str, recovery: bool = False, rotation: bool = False
+) -> dict[str, str]:
     result = configuration(raw)
     if (
-        any(not result.get(key) for key in ENVIRONMENT)
+        type(recovery) is not bool
+        or type(rotation) is not bool
+        or any(not result.get(key) for key in ENVIRONMENT)
         or result.get("RESTIC_REPOSITORY") != locator
         or result.get("AWS_DEFAULT_REGION") != region
         or result.get("LOWERDUCKPOND_BACKUP_NODE_NAME") != NODE
-        or result.get("LOWERDUCKPOND_BACKUP_STATIC_RECOVERY_ENABLED", "false") != "false"
-        or result.get("LOWERDUCKPOND_AUDIT_ROTATION_ENABLED", "false") != "false"
+        or result.get("LOWERDUCKPOND_BACKUP_STATIC_RECOVERY_ENABLED", "false")
+        != str(recovery).lower()
+        or result.get("LOWERDUCKPOND_AUDIT_ROTATION_ENABLED", "false") != str(rotation).lower()
     ):
         raise ValueError("production predecessor backup target or migration mode changed")
     return {key: result[key] for key in ENVIRONMENT}

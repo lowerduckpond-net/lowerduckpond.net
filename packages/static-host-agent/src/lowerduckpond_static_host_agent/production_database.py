@@ -76,6 +76,7 @@ def _stream(
     output: BinaryIO,
     errors: BinaryIO,
     deadline: float,
+    directory_descriptor: int,
 ) -> dict[str, object]:
     producer, compressor = processes
     sizes = {"sql": 0, "errors": 0}
@@ -108,7 +109,7 @@ def _stream(
                 if sizes[kind] > maximum:
                     raise BackupIdentityError("production database dump exceeds its bound")
                 target = output if kind == "sql" else errors
-                _reserve(target.fileno(), len(raw))
+                _reserve(directory_descriptor, len(raw))
                 target.write(raw)
                 target.flush()
                 if kind == "sql":
@@ -129,7 +130,9 @@ def _stop(process: subprocess.Popen[bytes]) -> None:
             stream.close()
 
 
-def _dump(output: BinaryIO, errors: BinaryIO, descriptors: tuple[int, ...]) -> dict[str, object]:
+def _dump(
+    output: BinaryIO, errors: BinaryIO, descriptors: tuple[int, ...], directory_descriptor: int
+) -> dict[str, object]:
     deadline = time.monotonic() + DEADLINE_SECONDS
     producer = subprocess.Popen(  # noqa: S603 - fixed installed database identity and dump arguments
         DUMP,
@@ -153,7 +156,7 @@ def _dump(output: BinaryIO, errors: BinaryIO, descriptors: tuple[int, ...]) -> d
         )
         assert producer.stdout is not None  # noqa: S101 - PIPE above
         producer.stdout.close()
-        result = _stream((producer, compressor), output, errors, deadline)
+        result = _stream((producer, compressor), output, errors, deadline, directory_descriptor)
         for process in (producer, compressor):
             status = process.wait(timeout=max(0, deadline - time.monotonic()))
             if status:
@@ -209,13 +212,18 @@ def retain_database(
         except FileNotFoundError:
             attempt = _next(store)
             name = f"dump-{attempt:02d}.sql.gz"
-            with (
-                (directory / name).open("xb") as output,
-                (directory / f"dump-{attempt:02d}.stderr").open("xb") as errors,
-            ):
-                os.fchmod(output.fileno(), 0o600)
-                os.fchmod(errors.fileno(), 0o600)
-                metadata = _dump(output, errors, descriptors)
+            parent = store.directory.duplicate_descriptor()
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+            try:
+                with (
+                    os.fdopen(os.open(name, flags, 0o600, dir_fd=parent), "wb") as output,
+                    os.fdopen(
+                        os.open(f"dump-{attempt:02d}.stderr", flags, 0o600, dir_fd=parent), "wb"
+                    ) as errors,
+                ):
+                    metadata = _dump(output, errors, descriptors, parent)
+            finally:
+                os.close(parent)
             raw = canonical_json_bytes({"format": FORMAT, "file": name, **metadata})
             store.immutable("database-original.json", raw)
         value = decode_json_object(raw)

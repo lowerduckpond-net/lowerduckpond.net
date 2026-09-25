@@ -7,6 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from scripts import m3_11_production_backup as backup
 from scripts import m3_11_production_fence as fence
 from scripts import m3_11_production_gate as gate
 from scripts import m3_11_production_initialize as initialize
@@ -75,6 +76,16 @@ def main() -> int:  # noqa: PLR0911,PLR0912 - fixed root-only wire operations
             except Exception:
                 # Candidate errors may contain private paths or provider data.
                 raise ValueError("production initialization failed") from None
+            sys.stdout.buffer.write(result)
+            return 0
+        if len(arguments) == 2 and arguments[0] == "backup":  # noqa: PLR2004 - operation and token
+            lease.require_action(LEASE, owner=0, token=arguments[1])
+            if sys.stdin.buffer.read(1):
+                raise ValueError("unexpected production backup input")
+            try:
+                result = backup.verify()
+            except Exception:
+                raise ValueError("production backup proof failed") from None
             sys.stdout.buffer.write(result)
             return 0
         if len(arguments) >= 3 and arguments[0] == "journal":  # noqa: PLR2004 - token and operation

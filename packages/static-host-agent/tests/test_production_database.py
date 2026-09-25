@@ -41,13 +41,13 @@ def dump(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Dump:
     program = tmp_path / "producer.py"
     program.write_text(f"import sys\nsys.stdout.buffer.write({SQL!r})\n")
     monkeypatch.setattr(database, "DUMP", (sys.executable, str(program)))
-    monkeypatch.setattr(
-        database,
-        "measure_filesystem_capacity_descriptor",
-        lambda fd: FilesystemCapacity(
-            os.fstat(fd).st_dev, 4096, 8_000_000, 7_000_000, 2_000_000, 1_500_000
-        ),
-    )
+
+    def capacity(fd: int) -> FilesystemCapacity:
+        metadata = os.fstat(fd)
+        assert stat.S_ISDIR(metadata.st_mode), "capacity must use the pinned directory"
+        return FilesystemCapacity(metadata.st_dev, 4096, 8_000_000, 7_000_000, 2_000_000, 1_500_000)
+
+    monkeypatch.setattr(database, "measure_filesystem_capacity_descriptor", capacity)
     authority = BackupAuthority(
         original_sha256="1" * 64,
         phase_sha256="2" * 64,
