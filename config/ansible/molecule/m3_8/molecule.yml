@@ -72,6 +72,10 @@ provisioner:
 verifier:
   name: ansible
 scenario:
+  # Capture original public trust and DNS inputs before the explicit prepare step.
+  create_sequence:
+    - dependency
+    - create
   test_sequence:
     - destroy
     - syntax

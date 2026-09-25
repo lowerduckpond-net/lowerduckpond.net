@@ -35,6 +35,14 @@ The console names the operation separately from its observed outcome. Known
 burst-limit and ordinary-deletion eligibility rejections receive fixed categories;
 unrecognized transport errors stay generic without copying private messages.
 
+For M3.11 live qualification, `public-input-capture` identifies the original
+public trust/DNS capture between `create` and `prepare`. Inspect the retained
+private `public-inputs.log` for that failure; a successful `create.log` only
+establishes fixture creation. The scenario's explicit create sequence excludes
+preparation because the capture requires an unprepared host. A failed capture
+stops before preparation and retains the fixture without producing a passing
+report.
+
 To observe the retained run again, run this from its checkout, on the machine
 that owns the fixture, replacing the path with the printed run directory:
 
