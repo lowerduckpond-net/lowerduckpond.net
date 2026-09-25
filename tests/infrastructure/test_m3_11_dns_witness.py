@@ -5,8 +5,10 @@ from __future__ import annotations
 import hashlib
 import stat
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -331,3 +333,70 @@ def test_observation_cannot_change_names_exceed_bounds_or_replace_originals(
         assert read_private(run.directory / "public-dns/0001.json") == {
             "original": "partial attempt"
         }
+
+
+@pytest.mark.parametrize("interrupt_at", [0, 600, 1790])
+@pytest.mark.parametrize("expires", [False, True])
+def test_public_polling_can_use_the_full_deadline_and_retain_cleanup_evidence(
+    run: Run,
+    monkeypatch: pytest.MonkeyPatch,
+    installed_module: Callable[[str], ModuleType],
+    interrupt_at: int,
+    expires: bool,
+) -> None:
+    module = installed_module("public_ca_recovery")
+    previous_observation_limit = 240
+    elapsed = 0
+    ready = False
+
+    def sleep(seconds: int) -> None:
+        nonlocal elapsed
+        elapsed += seconds
+
+    monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: elapsed, sleep=sleep))
+    monkeypatch.setattr(module.PublicRecovery, "_identity", Mock())
+    monkeypatch.setattr(module.PublicRecovery, "peer", Mock())
+    monkeypatch.setattr(module, "gate_closed", Mock())
+    monkeypatch.setattr(module, "require_original", Mock(return_value={}))
+    monkeypatch.setattr(module, "_selected_python", lambda host, body: body)
+    (run.directory / "public-inputs").mkdir(mode=0o700)
+    write_private(run.directory / "public-inputs/original.json", {})
+    fixture = Mock(
+        live_storage=run.storage, binary="fixture", target={"auditRotationEnabled": False}
+    )
+    recovery = module.PublicRecovery(fixture, run.storage, run.directory)
+    original_deadline = recovery.deadline
+
+    def records(path: str, *, query: dict[str, str]) -> list[dict[str, object]]:
+        return [record(query["name"])] if elapsed >= interrupt_at and not ready else []
+
+    def call(action: str, **arguments: object) -> dict[str, object]:
+        nonlocal ready
+        if action != "stop_failed":
+            recovery._remaining()
+        if action == "ready":
+            ready = not expires and elapsed >= module.COORDINATOR_SECONDS - 5
+            return {"ready": ready, "tls": {"issuer": "fixture", "certificates": []}}
+        return {"action": action}
+
+    run.client.get_collection.side_effect = records
+    recovery.call = Mock(side_effect=call)
+    if expires:
+        with pytest.raises(TimeoutError, match="original coordinator deadline"):
+            recovery.run()
+        assert recovery.call.call_args_list[-1].args == ("stop_failed",)
+        assert "open_verified" not in [item.args[0] for item in recovery.call.call_args_list]
+        assert not (run.directory / "public-ca.json").exists()
+        assert elapsed == module.COORDINATOR_SECONDS
+    else:
+        _, details = recovery.run()
+        # Normal teardown independently checks absence before and after removal.
+        before = recovery.witness.require_absent("teardown")
+        after = recovery.witness.require_absent("teardown")
+        assert before.sha256 != after.sha256
+        assert recovery.witness.sequence <= dns.MAX_OBSERVATIONS
+        assert (run.directory / "public-ca.json").exists()
+        assert len(details["dns_activity_sha256"]) > previous_observation_limit
+        assert elapsed == module.COORDINATOR_SECONDS - 5
+    assert recovery.deadline == original_deadline
+    fixture.reboot.assert_called_once()

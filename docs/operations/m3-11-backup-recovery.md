@@ -758,6 +758,10 @@ Let's Encrypt DNS-01, the original public roots and independent observations of
 both zones. It interrupts real challenge activity, preserves the acquired
 account, reboots behind the real ingress gate and resumes under the original
 coordinator deadline. Fresh TLS verification must precede opening ingress.
+The DNS witness allows 366 observations: the full 30-minute deadline at the
+shared five-second polling interval, an immediate sample for each of the two
+polling loops, baseline and cleanup, and both teardown checks. The coordinator
+still enforces the original deadline; exhausting it fails with ingress closed.
 
 Final paired accounting preserves the fenced source's excluded pending input,
 verifies the destination's protected history and independently proves archive
