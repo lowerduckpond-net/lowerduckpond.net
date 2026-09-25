@@ -202,6 +202,37 @@ def test_complete_combined_report_keeps_original_evidence_and_named_checks(run: 
     assert (run.directory / "storage.json").read_bytes() == storage_raw
 
 
+@pytest.mark.parametrize("boundary", ["before-start", "during-teardown", "before-completion"])
+def test_packaging_rejects_receipts_written_before_all_checks_complete(
+    run: Run, boundary: str
+) -> None:
+    path = run.directory / "combined.json"
+    original, proof = combined.read_document(path)
+    phases = child(proof, "phases")
+    if boundary == "before-start":
+        moment = child(phases, "backup-mutation-overlap")["started_at"]
+    elif boundary == "during-teardown":
+        moment = child(phases, "owned-teardown")["started_at"]
+    else:
+        moment = child(phases, "owned-teardown")["completed_at"]
+    assert isinstance(moment, str)
+    timestamp = (datetime.fromisoformat(moment) - timedelta(milliseconds=1)).timestamp()
+    os.utime(path, (timestamp, timestamp))
+    with pytest.raises(ValueError, match="original context and proof"):
+        run.create()
+    assert path.read_bytes() == original
+
+
+def test_receipt_written_at_completion_is_accepted(run: Run) -> None:
+    path = run.directory / "combined.json"
+    _, proof = combined.read_document(path)
+    moment = child(proof, "phases", "owned-teardown")["completed_at"]
+    assert isinstance(moment, str)
+    timestamp = datetime.fromisoformat(moment).timestamp()
+    os.utime(path, (timestamp, timestamp))
+    run.verify(run.create())
+
+
 @pytest.mark.parametrize("fault", ["another-run", "changed-bytes"])
 def test_packaging_rejects_another_legacy_run_with_identical_candidate_and_chronology(
     run: Run, fault: str

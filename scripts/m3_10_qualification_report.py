@@ -304,7 +304,9 @@ def _add_combined(report: dict[str, object], directory: Path) -> None:
         or context != proof["context"]
         or _evidence_time(directory / "combined-context.json") > times.started_at
         or _evidence_time(directory / "combined-names.json") > times.started_at
-        or _evidence_time(directory / "combined.json") > _fresh_timestamp(report["completed_at"])
+        or not times.completed_at
+        <= _evidence_time(directory / "combined.json")
+        <= _fresh_timestamp(report["completed_at"])
     ):
         raise ValueError("combined qualification did not retain its original context and proof")
     combined.validate_names(directory / "combined-names.json", context)
