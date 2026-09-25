@@ -17,7 +17,7 @@ archive-storage checks first and shares the tested image within that workflow
 run, so installed groups do not each compile it. This replaces the retired
 upstream binary image without changing the fixture's server or client revision.
 
-The three reconstruction cases also create a second fresh destination and a
+The four reconstruction cases also create a second fresh destination and a
 run-owned ACME service after fencing the source. Their private provider mappings
 survive destination restart; they do not contact the public ACME or DNS API.
 
@@ -27,9 +27,19 @@ The complete installed journey remains available locally and is required on
 scheduled/manual workflows; each group result remains diagnostic evidence
 rather than a production qualification report.
 
+After the original complete local lifecycle and accounting checks, that journey
+also runs combined reconstruction on the same source. It preserves the earlier
+tenants alongside the four new recovery states, restores their full backup, then
+retires them through ordinary destination operations. Exact test completion and
+fresh paired/independent storage accounting are required before removing the
+destination and controlled ACME service. `complete-combined.json` records that
+local diagnostic; the outer Molecule sequence still removes its source and
+storage fixtures before the complete run can pass.
+
 | Case | Preserved installed assertions and independent setup |
 | --- | --- |
 | `restore-reconstruction` | Own fenced source plus second fresh Ubuntu/ext4 destination; full-ID Restic restore, four tenant states, protected audit prefix/local tail, excluded upload/export decisions, exact archive proof, cold Caddy generation, immutable result replay and reboot. |
+| `combined-reconstruction` | One source/destination history combines actual backup/mutation contention, excluded secret canaries, two full protected audit segments, lost snapshot response and index interruption, aged ordinary retention with interrupted forget/prune, interrupted reconstruction, reboot and historical-result replay. Local controlled-CA/MinIO evidence only; live Spaces and public-CA qualification remain separate. |
 | `restore-negative` | Own source/destination; invalid target/source bindings, unknown later object, denied/corrupted exact-version downloads, rehashed audit fork, mixed roots, corrupt trusted environment/retained content and retired exact VersionId. Gated failure, unchanged installed roots and independent remote absence are mandatory. |
 | `restore-tls-bootstrap` | Empty certificate storage, native DNS-01 issuance through pinned Pebble, actual DNS/CA rejection, process health insufficient for readiness, interrupted coordinator and destination restart with durable ingress gating. |
 | `audit-rotation` | Own explicit lineage and combined publication/coherent-backup/rotation activation; two production-size closed segments. Hard exits after prepare, lost snapshot reply, witness/index/head publication and unlink; actual reboot, fresh remote proof and bounded service completion. Exact create/delete replays, subsequent mutation, unchanged ordinary snapshots, protected counts, privilege/resource limits and final accounting. |
@@ -74,8 +84,8 @@ retain the source fence and independently bind the destination and controlled
 ACME service to recorded container IDs. The negative case must remain blocked
 with unchanged installed roots; it never supplies a completed-restore receipt.
 Reconstruction groups check source idempotence after enabling publication and
-recovery (and rotation for `restore-reconstruction`), instead of repeating the
-initial dark-source configuration. They still run two full Ansible convergences:
+recovery (and rotation for `restore-reconstruction` and `combined-reconstruction`),
+instead of repeating the initial dark-source configuration. They still run two full Ansible convergences:
 activation, then a zero-change reapply. Only that successful reapply writes the
 required receipt, bound to the run, source container, image, artifact and enabled
 features. Missing or mismatched receipts prevent completion and retirement.
@@ -120,6 +130,30 @@ configuration, wall time and total runner minutes from normal validation before
 claiming the target. A matrix can lower wall time while increasing runner cost.
 `just check` remains the full local entry point; it does not silently substitute
 these groups for complete qualification.
+
+CI execution ceilings allow at least 1.5 times the typical observed duration,
+including setup. The operator-authorized P6b adjustment is recorded in the
+[M3.11 plan](../plans/milestone-3.11.md):
+
+| Installed case | CI ceiling |
+| --- | --- |
+| `combined-reconstruction` | 90 minutes, provisional pending a complete measured run. |
+| `core`, `archive-cycles`, `backup-mutation-overlap`, `restore-reconstruction`, `restore-tls-bootstrap` | 60 minutes. |
+| Other installed cases | 45 minutes. |
+
+The combined case preserves one source/destination history through mutation,
+two full protected rotations, interrupted reconstruction, reboot, replay,
+retirement, accounting, and teardown. Those dependent phases cannot become
+independent fixtures without losing the combined proof. Its initial ceiling
+allows 1.5 times a conservative 60-minute execution window; the interrupted
+45-minute run does not establish a successful duration. Measure the complete
+window through normal validation and retain at least 1.5 times the typical
+observed runtime when reviewing the ceiling.
+
+These ceilings do not establish compliance with the 30-minute engineering
+target. Production service limits, admission pacing, assertions, required
+completion receipts, and the 330-minute complete-journey ceiling remain
+unchanged. A higher ceiling does not lengthen a successfully completed job.
 
 The original combined backup case passed in [CI run 35563599873](https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35563599873)
 but took 39.35 minutes including setup, exceeding the target. Its timing report

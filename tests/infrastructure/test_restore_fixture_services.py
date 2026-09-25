@@ -9,6 +9,7 @@ import socket
 import ssl
 import struct
 import threading
+from collections.abc import Callable
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -277,11 +278,11 @@ def test_acme_proxy_preserves_client_headers_and_issuer_urls(
 @pytest.mark.parametrize("becomes_ready", [False, True])
 def test_provider_fault_waits_for_systemd_readiness_within_the_existing_bound(
     monkeypatch: pytest.MonkeyPatch,
+    installed_module: Callable[[str], ModuleType],
     *,
     becomes_ready: bool,
 ) -> None:
-    monkeypatch.syspath_prepend(str(ROOT / "tests"))
-    fixture_module = module("tests/restore_fixture")
+    fixture_module = installed_module("restore_fixture")
     running = iter((False, becomes_ready))
     observations: list[str] = []
 

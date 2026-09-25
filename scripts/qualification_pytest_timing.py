@@ -14,6 +14,7 @@ from scripts.qualification_timing import CONTEXT_ENV, capture_fixture_identity, 
 
 GROUPS = {
     "test_restore_reconstruction.py": "restore-reconstruction",
+    "test_combined_reconstruction.py": "combined-reconstruction",
     "test_restore_negative.py": "restore-negative",
     "test_restore_tls_bootstrap.py": "restore-tls-bootstrap",
     "test_restore_accounting.py": "accounting",
@@ -45,6 +46,7 @@ OPERATOR_FAILURES = {
 FUNCTION_GROUPS = {
     "test_installed_backup_capture_races_mutations": "backup-mutation-overlap",
     "test_restore_reconstruction.py": "restore-reconstruction",
+    "test_combined_reconstruction.py": "combined-reconstruction",
     "test_restore_negative.py": "restore-negative",
     "test_restore_tls_bootstrap.py": "restore-tls-bootstrap",
     "test_restore_accounting.py": "accounting",

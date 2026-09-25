@@ -1,7 +1,7 @@
 # M3.11 backup and recovery operations
 
 M3.11 implementation is in progress. The accepted [plan](../plans/milestone-3.11.md)
-defines the complete qualification and production handoff. These P2–P5 commands
+defines the complete qualification and production handoff. These P2–P6 commands
 are preparation and verification tooling; production convergence remains an
 explicit later operator step after the final M3.11 qualification. M3.12 is
 unstarted and production publication stays disabled.
@@ -718,3 +718,89 @@ future coherent backups. Keep the compatible reader and original artifact;
 after reconstruction, older binaries lacking the runtime/history mapping cannot
 safely replay restored results. Do not roll back by deleting provenance or
 repointing `current` to such a binary.
+
+## Combined live qualification
+
+Run final qualification after the complete P6 implementation and production
+handoff inputs have merged, on a clean supported x86-64 Linux secure workstation
+with its local Unix-socket Docker daemon. Use the existing private environment
+file/disposable shell and M3.10 provider inputs, including the independent Spaces
+operator, separate archive and backup runtime keys from encrypted state, Caddy
+DNS token, both Cloudflare zone IDs, and the temporary token-policy audit token.
+The controller and Docker daemon must share the host network namespace used for
+published SSH ports. A forwarded Unix socket from a different container host is
+not that supported controller topology.
+
+```bash
+just m3-11-spaces-qualification
+```
+
+This invokes the existing Spaces wrapper with `--milestone 3.11`, under the
+330-minute full-run safeguard. Its default invocation remains M3.10. The new
+mode allocates unique source, archive, destination and controlled-CA resources
+and uses a fresh password and run-owned `m3-11-qualification/<run UUID>/restic`
+prefix in the backup Space. It retains the existing provider acceptance,
+complete lifecycle, idempotence, reboot, installed accounting, final independent
+provider proof and outer destroy sequence. It never runs qualification retention
+against the production Restic repository or changes the production host.
+
+Immediately after creation, the controller captures the original clean public
+trust bundle, hosts file and resolver before any controlled fixture inputs are
+installed. It binds the original source revision, artifact, accepted storage run
+and report bytes, target, distinct destination reservation, pinned Caddy binary
+and four private disposable subjects before combined assertions begin.
+
+The same installed journey then exercises backup/mutation overlap, two protected
+audit rotations and interrupted retention, interrupted reconstruction, reboot
+and ordinary replay. The public dependency phase uses the actual destination and
+pinned Caddy binary with an empty isolated certificate/account store, production
+Let's Encrypt DNS-01, the original public roots and independent observations of
+both zones. It interrupts real challenge activity, preserves the acquired
+account, reboots behind the real ingress gate and resumes under the original
+coordinator deadline. Fresh TLS verification must precede opening ingress.
+
+Final paired accounting preserves the fenced source's excluded pending input,
+verifies the destination's protected history and independently proves archive
+absence. Only complete pytest setup/call/teardown permits retirement: remove the
+destination and controlled CA, delete exact owned backup versions and uploads,
+remove the original ownership version last, stop/remove the source and unused
+empty local archive fixture, and remove only the run's image tag. Independent
+backup, archive and DNS absence must hold before the combined receipt is written.
+
+Share only `qualification.json` and `qualification.sha256` from the printed
+private run directory. The [evidence contract](m3-11-qualification-evidence.md)
+defines their original bindings and chronology. Private names, captured system
+inputs, provider coordinates, phase details, teardown journals and logs remain
+in that directory. Local tests and the complete MinIO journey remain diagnostic;
+they do not establish live Spaces or public-CA qualification.
+
+### Interrupted combined teardown
+
+A failed qualification retains its original attempt and cannot be rerun into a
+pass. If `owned-teardown/intent.json` exists, the fixed installed test already
+completed and deletion was authorized. In the same private environment, this
+commands, from the repository root, reload the runtime keys from encrypted state
+inside a disposable subshell and finish that exact cleanup after a lost response:
+
+```bash
+m3_11_run_directory=/absolute/original/private/run
+(
+    set -euo pipefail
+    repository_root=$(pwd -P)
+    unset DOCKER_CONTEXT
+    export DOCKER_HOST
+    DOCKER_HOST=$(jq --exit-status --raw-output '.environment.DOCKER_HOST' \
+        "${m3_11_run_directory}/fixture.json")
+    source "${repository_root}/scripts/lib/m3-10-production-state"
+    uv run --frozen python -m scripts.m3_11_owned_teardown "${m3_11_run_directory}"
+)
+```
+
+The cleanup takes the original run lock and verifies its original inputs and
+step authorizations. It rejects replaced/restarted containers, changed ownership,
+new backup objects and changed DNS coordinates. Already deleted ownership does
+not authorize new writes or a new attempt. Cleanup appends a fresh DNS absence
+observation and returns the private removal receipt; it never creates
+`combined.json` or packages a qualification report. Without the prior teardown
+intent, retain the fixture and use the existing bounded failure diagnostics to
+resolve its outstanding authority before any removal.

@@ -19,6 +19,7 @@ def executable(path: Path, body: str) -> None:
 
 
 @pytest.mark.parametrize("relative", [False, True])
+@pytest.mark.parametrize("milestone", ["3.10", "3.11"])
 @pytest.mark.parametrize("inputs_available", [False, True])
 @pytest.mark.parametrize(
     "docker_selection",
@@ -36,6 +37,7 @@ def test_spaces_workflow_keeps_evidence_paths_stable_across_phase_directories(
     relative: bool,
     docker_selection: tuple[str, str, str, bool],
     inputs_available: bool,
+    milestone: str,
 ) -> None:
     docker_host, docker_context, context_endpoint, accepted = docker_selection
     checkout = tmp_path / "checkout"
@@ -74,6 +76,13 @@ fi
     )
     executable(commands / "tofu", "#!/bin/bash\nexit 0\n")
     executable(
+        checkout / "scripts/build-static-host-agent",
+        """#!/bin/bash
+set -eu
+cp -- "$TEST_ARTIFACT_PATH" "$1"
+""",
+    )
+    executable(
         commands / "uv",
         """#!/usr/bin/python3
 import json, os, sys
@@ -89,18 +98,68 @@ if 'scripts.production_qualification_inputs' in sys.argv:
     if os.environ['TEST_INPUTS_AVAILABLE'] != 'true':
         sys.exit(1)
     marker.write_text('captured')
+if 'scripts.m3_11_combined_inputs' in sys.argv:
+    action, directory = sys.argv[-2], Path(sys.argv[-1])
+    if action == 'allocate':
+        fixture = directory / 'fixture'
+        fixture.mkdir()
+        run_id = '0198d17f6f4a70008000000000000001'
+        values = {
+            'LDP_QUALIFICATION_RUN_ID': run_id,
+            'LDP_QUALIFICATION_HOST': 'ldp-m3-' + run_id + '-host',
+            'LDP_QUALIFICATION_ARCHIVE': 'ldp-m3-' + run_id + '-archive',
+            'LDP_QUALIFICATION_IMAGE': 'ldp-m3-' + run_id + ':ubuntu-2604',
+            'LDP_QUALIFICATION_SSH_PORT': '0',
+            'LDP_QUALIFICATION_ARTIFACT': str(fixture / 'static-host-agent.tar'),
+            'MOLECULE_EPHEMERAL_DIRECTORY': str(fixture / 'molecule'),
+            'DOCKER_HOST': 'unix:///disposable/docker.sock',
+            'M3_10_ARCHIVE_BACKEND': 'spaces', 'M3_11_COMBINED_BACKEND': 'spaces',
+            'M3_10_INSTALLED_REPORT': str(directory / 'installed.json'),
+        }
+        sys.stdout.buffer.write(b''.join(key.encode() + b'\\0' + value.encode() + b'\\0'
+                                         for key, value in values.items()))
+    elif action == 'capture-public':
+        assert (directory / 'create.passed').exists()
+        assert not (directory / 'prepare.passed').exists()
+        (directory / 'public-inputs.json').write_text('original clean roots')
+    elif action == 'prepare-storage':
+        assert (directory / 'public-inputs.json').exists()
+        assert (directory / 'prepare.passed').exists()
+        assert not (directory / 'converge.passed').exists()
+        assert Path(os.environ['LDP_QUALIFICATION_ARTIFACT']).read_bytes() == b'disposable artifact'
+        (directory / 'live-storage.json').write_text('original owned storage')
+    elif action == 'capture':
+        assert (directory / 'idempotence.passed').exists()
+        assert not (directory / 'verify.passed').exists()
+        (directory / 'combined-context.json').write_text('original context')
 if 'scripts.check_m3_10_provider' in sys.argv or 'molecule' in sys.argv:
     assert marker.exists(), 'provider proof started before input capture'
 if 'molecule' in sys.argv:
     assert 'DOCKER_CONTEXT' not in os.environ
     allowed = {'LDP_QUALIFICATION_TIMING_EVENTS', 'LDP_QUALIFICATION_TIMING_GROUP'}
-    assert not any(key.startswith('LDP_QUALIFICATION_') and key not in allowed
-                   for key in os.environ)
-    assert 'MOLECULE_EPHEMERAL_DIRECTORY' not in os.environ
+    if os.environ['TEST_MILESTONE'] == '3.10':
+        assert not any(key.startswith('LDP_QUALIFICATION_') and key not in allowed
+                       for key in os.environ)
+        assert 'MOLECULE_EPHEMERAL_DIRECTORY' not in os.environ
+        assert 'M3_11_COMBINED_BACKEND' not in os.environ
+    else:
+        assert os.environ['M3_11_COMBINED_BACKEND'] == 'spaces'
+        assert os.environ['LDP_QUALIFICATION_HOST'].startswith('ldp-m3-')
     assert os.environ['DOCKER_HOST'] == 'unix:///disposable/docker.sock'
     phase = sys.argv[sys.argv.index('molecule') + 1]
     destination = Path(os.environ['M3_10_INSTALLED_REPORT'])
     assert destination.is_absolute(), 'installed report path changed meaning after chdir'
+    directory = destination.parent
+    if os.environ['TEST_MILESTONE'] == '3.11':
+        if phase == 'prepare':
+            assert (directory / 'public-inputs.json').exists()
+        elif phase == 'converge':
+            assert (directory / 'live-storage.json').exists()
+        elif phase == 'verify':
+            assert (directory / 'combined-context.json').exists()
+            (directory / 'combined.json').write_text('original complete live envelope')
+        elif phase == 'destroy':
+            assert (directory / 'combined.json').exists()
     if phase == 'verify':
         destination.write_text(json.dumps({'artifact_sha256': os.environ['TEST_ARTIFACT']}))
 if 'scripts.m3_10_qualification_report' in sys.argv:
@@ -109,12 +168,15 @@ if 'scripts.m3_10_qualification_report' in sys.argv:
     for phase in ('create', 'prepare', 'converge', 'idempotence', 'verify', 'destroy'):
         assert (directory / (phase + '.passed')).read_text() == 'passed\\n'
     assert (directory / 'installed.json').exists()
+    if os.environ['TEST_MILESTONE'] == '3.11':
+        assert sys.argv[-3:-1] == ['--milestone', '3.11']
+        assert (directory / 'combined.json').exists()
     (directory / 'qualification.json').write_text('{}')
 """,
     )
     evidence = "evidence/runs" if relative else str(tmp_path / "private evidence")
     result = subprocess.run(  # noqa: S603 - copied wrapper with fixed disposable command doubles
-        [str(wrapper)],
+        [str(wrapper), *(["--milestone", "3.11"] if milestone == "3.11" else [])],
         env={
             **os.environ,
             "PATH": str(commands) + ":" + os.environ["PATH"],
@@ -131,6 +193,10 @@ if 'scripts.m3_10_qualification_report' in sys.argv:
             "SPACES_ARCHIVE_BUCKET": "disposable-archive",
             "SPACES_BACKUP_BUCKET": "disposable-backup",
             "M3_10_EVIDENCE_ROOT": evidence,
+            "M3_11_EVIDENCE_ROOT": evidence,
+            "M3_11_COMBINED_BACKEND": "foreign-ambient-backend",
+            "TEST_MILESTONE": milestone,
+            "TEST_ARTIFACT_PATH": str(artifact),
             "TEST_ARTIFACT": digest,
             **dict.fromkeys(
                 (

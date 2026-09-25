@@ -16,6 +16,7 @@ FORMAT = "lowerduckpond-installed-selection-v1"
 ALL = tuple(GROUPS)
 _TESTS = "config/ansible/molecule/m3_8/tests/"
 _EMERGENCY = (
+    "combined-reconstruction",
     "backup-mutation-overlap",
     "deletion-quarantine",
     "credentials",

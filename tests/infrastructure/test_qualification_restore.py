@@ -287,7 +287,12 @@ def test_owned_service_startup_preserves_destination_systemd_and_defers_acme_inp
     monkeypatch.setattr(
         restore,
         "inspect",
-        lambda *_: {"id": "a" * 64, "image": "sha256:" + "b" * 64},
+        lambda *_: {
+            "id": "a" * 64,
+            "image": "sha256:" + "b" * 64,
+            "name": f"/ldp-m3-{environment[RUN_ENV]}-{kind}",
+            "running": False,
+        },
     )
 
     def command(_: object, *arguments: str) -> bytes:

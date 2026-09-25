@@ -2,9 +2,10 @@
 
 This is the P6a evidence boundary for the
 [accepted M3.11 plan](../plans/milestone-3.11.md). P5 reconstruction is merged.
-The combined live producer and production integration remain P6b work. This
-validator alone does not run qualification, authorize production convergence,
-enable rotation, or establish live-provider behavior.
+The [combined live producer](m3-11-backup-recovery.md#combined-live-qualification)
+is P6b; production integration remains P6c work. This validator alone does not
+run qualification, authorize production convergence, enable rotation, or
+establish live-provider behavior.
 
 ## Existing gate, explicit milestone
 
@@ -13,8 +14,9 @@ explicit `--milestone 3.11` mode requires the new
 `lowerduckpond-m3-11-installed-spaces-v1` envelope. The default M3.10 mode
 continues to accept its original formats for their original purpose. Neither
 mode accepts the other milestone's format; relabeling an old report cannot add
-combined evidence. The operator commands promised by P6 are still pending;
-operators must not construct these receipts by hand.
+combined evidence. P6b adds `just m3-11-spaces-qualification`; final execution
+waits for P6c's production handoff and final merged inputs. Operators must not
+construct these receipts by hand.
 
 The M3.11 envelope retains every legacy phase (`create`, `prepare`, `converge`,
 `idempotence`, `verify`, `destroy`), complete installed accounting, the original

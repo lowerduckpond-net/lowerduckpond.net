@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from copy import deepcopy
 from pathlib import Path
@@ -18,6 +19,7 @@ from lowerduckpond_static_contracts import (
     TransactionPhase,
     archive_record_digest,
     audit_entry_digest,
+    canonical_audit_entry,
     canonical_json_bytes,
     decode_contract,
     decode_request,
@@ -63,11 +65,61 @@ def test_accepted_fixtures_round_trip_through_canonical_bytes(path: Path) -> Non
 def test_audit_entry_digest_has_a_pinned_domain_separated_vector() -> None:
     document = _load_object(FIXTURE_ROOT / "accepted/audit-entry.json")
 
-    assert audit_entry_digest(document).to_dict() == {
+    raw, digest = canonical_audit_entry(document)
+    assert raw == canonical_json_bytes(document)
+    assert digest == audit_entry_digest(document)
+    assert digest.to_dict() == {
         "format": "lowerduckpond-audit-entry-v1",
         "algorithm": "sha256",
         "value": "5a88a866a74fc4b0f694a53ecae12e96d60ac2253177dd32b762d722b94f1372",
     }
+
+
+def test_canonical_audit_identity_retains_bytes_and_revalidates_mutated_input() -> None:
+    document = _load_object(FIXTURE_ROOT / "accepted/audit-entry.json")
+    original = deepcopy(document)
+    raw, digest = canonical_audit_entry(document)
+    document["resultDigest"] = {
+        "algorithm": "sha256",
+        "format": "lowerduckpond-result-v1",
+        "value": "a" * 64,
+    }
+    changed_raw, changed_digest = canonical_audit_entry(document)
+    assert (changed_raw, changed_digest) != (raw, digest)
+    assert raw == canonical_json_bytes(original)
+    for payload, identity in ((raw, digest), (changed_raw, changed_digest)):
+        framed = b"lowerduckpond-audit-entry-v1\0" + len(payload).to_bytes(4, "big") + payload
+        assert identity.value == hashlib.sha256(framed).hexdigest()
+    document["sequence"] = True
+    with pytest.raises(ContractError) as captured:
+        canonical_audit_entry(document)
+    assert captured.value.code is ErrorCode.SCHEMA_INVALID
+
+
+@pytest.mark.parametrize("reason", ['\n\r\t💧 "quoted" \\path', "\ud800"])
+def test_canonical_audit_identity_keeps_unicode_and_canonicalization_checks(reason: str) -> None:
+    document = _load_object(FIXTURE_ROOT / "accepted/audit-entry.json")
+    document.update(
+        operation="delete",
+        deletionEvidence={
+            "mode": "emergency",
+            "releasedSlugs": ["original-slug"],
+            "archiveRecordDigest": None,
+            "bucket": None,
+            "key": None,
+            "versionId": None,
+            "emergencyReason": reason,
+        },
+    )
+    if reason == "\ud800":
+        with pytest.raises(ContractError) as captured:
+            canonical_audit_entry(document)
+        assert captured.value.code is ErrorCode.SCHEMA_INVALID
+    else:
+        raw, digest = canonical_audit_entry(document)
+        assert raw == canonical_json_bytes(document)
+        assert json.loads(raw) == document
+        assert digest == audit_entry_digest(document)
 
 
 def test_audit_entry_digest_rejects_another_contract_kind() -> None:
@@ -75,6 +127,8 @@ def test_audit_entry_digest_rejects_another_contract_kind() -> None:
 
     with pytest.raises(ContractError):
         audit_entry_digest(document)
+    with pytest.raises(ContractError):
+        canonical_audit_entry(document)
 
 
 def test_schema_loader_returns_a_copy_not_mutable_cached_state() -> None:

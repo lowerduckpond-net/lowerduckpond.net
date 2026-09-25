@@ -7,6 +7,8 @@
   vars:
     m3_10_archive_backend: >-
       {{ lookup('ansible.builtin.env', 'M3_10_ARCHIVE_BACKEND') | default('minio', true) }}
+    m3_11_combined_backend: >-
+      {{ lookup('ansible.builtin.env', 'M3_11_COMBINED_BACKEND') }}
     static_host_agent_molecule_artifact: >-
       {{ lookup('ansible.builtin.env', 'LDP_QUALIFICATION_ARTIFACT') |
          default('/tmp/lowerduckpond-static-host-agent-m3-8.tar', true) }}
@@ -263,6 +265,55 @@
           {{ m3_8_https_server_certificate }}
       loop: "{{ groups['hosting_nodes'] }}"
       changed_when: false
+
+    - name: Require explicit live storage for combined qualification
+      ansible.builtin.assert:
+        that:
+          - m3_11_combined_backend in ['', 'spaces']
+          - m3_11_combined_backend != 'spaces' or m3_10_archive_backend == 'spaces'
+
+    - name: Load owned combined storage through a temporary private file
+      when: m3_11_combined_backend == 'spaces'
+      block:
+        - name: Validate the owned combined backup repository and private inputs
+          ansible.builtin.command:
+            argv:
+              - "{{ ansible_playbook_python }}"
+              - -m
+              - scripts.m3_11_live_storage
+              - --variables-file
+            chdir: "{{ playbook_dir }}/../../../.."
+          register: m3_11_live_storage
+          changed_when: false
+          no_log: true
+
+        - name: Read the private combined storage variables without logging their contents
+          ansible.builtin.include_vars:
+            file: "{{ m3_11_live_storage.stdout | trim }}"
+            name: m3_11_storage_inputs
+          no_log: true
+      always:
+        - name: Remove temporary combined storage credential material
+          ansible.builtin.file:
+            path: "{{ m3_11_live_storage.stdout | trim }}"
+            state: absent
+          when: m3_11_live_storage.stdout | default('') | trim | length > 0
+          changed_when: false
+          no_log: true
+
+    - name: Attach the owned combined backup repository to the disposable source
+      ansible.builtin.add_host:
+        name: "{{ item }}"
+        backup_repository: "{{ m3_11_storage_inputs.backup_repository }}"
+        backup_restic_password: "{{ m3_11_storage_inputs.backup_restic_password }}"
+        backup_spaces_access_key_id: "{{ m3_11_storage_inputs.backup_spaces_access_key_id }}"
+        backup_spaces_secret_access_key: "{{ m3_11_storage_inputs.backup_spaces_secret_access_key }}"
+        backup_spaces_region: "{{ m3_11_storage_inputs.backup_spaces_region }}"
+        backup_node_name: "{{ m3_11_storage_inputs.backup_node_name }}"
+      loop: "{{ groups['hosting_nodes'] }}"
+      changed_when: false
+      no_log: true
+      when: m3_11_combined_backend == 'spaces'
 
     - name: Attach only the dedicated live archive credential to the disposable host
       ansible.builtin.add_host:

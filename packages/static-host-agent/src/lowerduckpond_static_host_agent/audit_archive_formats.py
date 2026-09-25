@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from threading import Lock
 from typing import Final
@@ -12,7 +13,7 @@ from typing import Final
 from lowerduckpond_static_contracts import (
     MAX_CANONICAL_BYTES,
     ContractError,
-    audit_entry_digest,
+    canonical_audit_entry,
     canonical_json_bytes,
     decode_json_object,
     validate_uuid7,
@@ -178,6 +179,45 @@ class SegmentEvidence:
     witness: bytes
 
 
+@dataclass(slots=True)
+class _SegmentChain:
+    """The same complete entry and chain proof for both serialized directions."""
+
+    count: int = 0
+    first: int = 0
+    predecessor: dict[str, str] | None = None
+    terminal: dict[str, str] | None = None
+    seen: set[str] = field(default_factory=set)
+
+    def add(self, document: dict[str, object]) -> bytes:
+        # Validate the complete audit contract before using its fields; the
+        # returned bytes and digest retain the original canonical framing.
+        canonical, digest = canonical_audit_entry(document)
+        sequence = archive_count(document["sequence"], MAX_WITNESSED_ENTRIES - 1)
+        previous = document["previousEntryDigest"]
+        if self.count == 0:
+            self.first = sequence
+            self.predecessor = (
+                None if previous is None else require_digest(previous, AUDIT_ENTRY_FORMAT)
+            )
+            self.terminal = self.predecessor
+        if sequence != self.first + self.count or previous != self.terminal:
+            raise BackupIdentityError("audit archive segment breaks its hash chain")
+        correlation = validate_uuid7(document["correlationId"])
+        if correlation in self.seen:
+            raise BackupIdentityError("audit archive repeats a correlation")
+        self.seen.add(correlation)
+        self.count += 1
+        if self.count > MAX_WITNESSED_ENTRIES:
+            raise BackupIdentityError("audit archive witness exceeds its entry boundary")
+        self.terminal = digest.to_dict()
+        return canonical
+
+    def evidence(self, witness: bytes) -> SegmentEvidence:
+        assert self.terminal is not None  # noqa: S101 - nonempty validated segment
+        return SegmentEvidence(self.first, self.count, self.predecessor, self.terminal, witness)
+
+
 # Share the two directions of the same exact-byte proof. Two pairs retain at
 # most 32 MiB (two segments and two witnesses, each bounded at 8 MiB), matching
 # the previous combined bound. Keeping both directions in one entry avoids
@@ -222,42 +262,26 @@ def _inspect_segment(raw: bytes) -> SegmentEvidence:
         return cached[1]
     if not raw or len(raw) > MAX_SEGMENT_BYTES or not raw.endswith(b"\n"):
         raise BackupIdentityError("audit archive segment exceeds its byte boundary")
-    rows: list[list[object]] = []
-    seen: set[str] = set()
-    first = 0
-    predecessor: dict[str, str] | None = None
-    terminal: dict[str, str] | None = None
+    # Retain canonical row bytes, not an entire second decoded history or a
+    # splitlines copy of the segment, inside the archive service's memory cap.
+    rows = io.BytesIO()
+    rows.write(b"[")
+    chain = _SegmentChain()
     try:
-        for line in raw.splitlines(keepends=True):
+        for line in io.BytesIO(raw):
             document = decode_json_object(line, maximum_bytes=MAX_CANONICAL_BYTES)
-            # The digest validates the complete audit contract. Do that once,
-            # before using any fields, and retain its original 32-bit framing.
-            entry_digest = audit_entry_digest(document).to_dict()
-            if canonical_json_bytes(document) != line:
+            if chain.add(document) != line:
                 raise BackupIdentityError("audit archive entry is not canonical")
-            sequence = archive_count(document["sequence"], MAX_WITNESSED_ENTRIES - 1)
-            previous = document["previousEntryDigest"]
-            if not rows:
-                first = sequence
-                predecessor = (
-                    None if previous is None else require_digest(previous, AUDIT_ENTRY_FORMAT)
-                )
-                terminal = predecessor
-            if sequence != first + len(rows) or previous != terminal:
-                raise BackupIdentityError("audit archive segment breaks its hash chain")
-            correlation = validate_uuid7(document["correlationId"])
-            if correlation in seen:
-                raise BackupIdentityError("audit archive repeats a correlation")
-            seen.add(correlation)
-            rows.append([document.get(key) for key in _ROW_FIELDS])
-            if len(rows) > MAX_WITNESSED_ENTRIES:
-                raise BackupIdentityError("audit archive witness exceeds its entry boundary")
-            terminal = entry_digest
-        witness = canonical_json_bytes(rows, maximum_bytes=MAX_SEGMENT_BYTES)
+            if chain.count > 1:
+                rows.write(b",")
+            rows.write(canonical_json_bytes([document.get(key) for key in _ROW_FIELDS])[:-1])
+            if rows.tell() + 2 > MAX_SEGMENT_BYTES:
+                raise BackupIdentityError("audit archive witness exceeds its byte boundary")
+        rows.write(b"]\n")
+        witness = rows.getvalue()
     except ContractError as error:
         raise BackupIdentityError("audit archive contains an invalid entry") from error
-    assert terminal is not None  # noqa: S101 - nonempty validated segment
-    result = SegmentEvidence(first, len(rows), predecessor, terminal, witness)
+    result = chain.evidence(witness)
     _remember_proof(raw, result)
     return result
 
@@ -279,8 +303,9 @@ def segment_from_witness(raw: bytes) -> bytes:
             or canonical_json_bytes(rows, maximum_bytes=MAX_SEGMENT_BYTES) != raw
         ):
             raise BackupIdentityError("audit archive witness is not a canonical row array")
-        result = bytearray()
-        for row in rows:
+        result = io.BytesIO()
+        chain = _SegmentChain()
+        for position, row in enumerate(rows):
             if type(row) is not list or len(row) != len(_ROW_FIELDS):
                 raise BackupIdentityError("audit archive witness row has unexpected members")
             document = {
@@ -290,16 +315,20 @@ def segment_from_witness(raw: bytes) -> bytes:
             }
             if document["deletionEvidence"] is None:
                 del document["deletionEvidence"]
-            result.extend(canonical_json_bytes(document))
-            if len(result) > MAX_SEGMENT_BYTES:
+            result.write(chain.add(document))
+            if result.tell() > MAX_SEGMENT_BYTES:
                 raise BackupIdentityError("audit archive witness expands beyond one segment")
+            # The canonical input array was checked before expansion. Release
+            # consumed rows as the output grows within the fixed memory cap.
+            rows[position] = None
     except ContractError as error:
         raise BackupIdentityError("audit archive witness contains an invalid entry") from error
-    segment = bytes(result)
-    # The bounded reconstructed segment receives the same full contract and
-    # chain validation as an original segment, once per entry.
-    if inspect_segment(segment).witness != raw:
-        raise BackupIdentityError("audit archive witness does not preserve its segment")
+    segment = result.getvalue()
+    # Fixed columns plus constant API version/kind reconstruct every original
+    # field, with null representing absent deletion evidence. Each entry and
+    # the full chain have already passed the same proof as inspect_segment;
+    # serializing and parsing the whole segment again adds no validation.
+    _remember_proof(segment, chain.evidence(raw))
     return segment
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -396,3 +397,91 @@ def test_relative_timing_directory_survives_the_molecule_working_directory(
     ]
     assert timing.run_command(command, Path("relative/run")) == 0
     assert (tmp_path / "relative/run/timing.json").is_file()
+
+
+def test_interrupted_snapshot_after_real_wrapper_death_retains_original_inputs(
+    tmp_path: Path,
+) -> None:
+    directory = tmp_path / "killed"
+    child = (
+        "import os,signal; "
+        "from scripts.qualification_timing import measure; "
+        "\nwith measure('operator'): pass\n"
+        "os.kill(os.getppid(), signal.SIGKILL)"
+    )
+    wrapper = (
+        "from pathlib import Path; import sys; "
+        "from scripts.qualification_timing import run_command; "
+        f"run_command([sys.executable, '-c', {child!r}], Path({str(directory)!r}))"
+    )
+    result = subprocess.run(  # noqa: S603 - fixed child kills only its own wrapper
+        [sys.executable, "-c", wrapper],
+        cwd=ROOT,
+        env={**os.environ, "PYTHONPATH": str(ROOT)},
+        check=False,
+        capture_output=True,
+        timeout=30,
+    )
+    assert result.returncode == -signal.SIGKILL
+    assert not (directory / "timing.json").exists()
+    originals = {path.name: path.read_bytes() for path in directory.iterdir()}
+    timing.interrupted_run(directory)
+    path = directory / "timing-interrupted.json"
+    report = json.loads(path.read_text())
+    assert report["exit_status"] is None
+    assert report["observation"] == "interrupted-run-snapshot"
+    assert report["authority"] == "diagnostic-only"
+    assert report["event_count"] == 1
+    assert report["categories"][0]["kind"] == "operator"
+    assert not (directory / "case.json").exists()
+    assert not (directory / "failure-exit.json").exists()
+    before = path.read_bytes(), path.stat().st_ino, path.stat().st_mtime_ns
+    timing.interrupted_run(directory)
+    assert (path.read_bytes(), path.stat().st_ino, path.stat().st_mtime_ns) == before
+    assert all((directory / name).read_bytes() == raw for name, raw in originals.items())
+
+
+def test_interrupted_snapshot_omits_only_incomplete_final_append(run_directory: Path) -> None:
+    with timing.measure("operator"):
+        pass
+    events = run_directory / "timing-events.jsonl"
+    with events.open("ab") as stream:
+        stream.write(b'{"secret":"' + CANARY.encode())
+    original = events.read_bytes()
+    timing.interrupted_run(run_directory)
+    raw = (run_directory / "timing-interrupted.json").read_text()
+    assert CANARY not in raw
+    assert json.loads(raw)["event_count"] == 1
+    assert events.read_bytes() == original
+    with pytest.raises(ValueError):
+        timing.finish_run(run_directory, 1)
+
+
+@pytest.mark.parametrize("target", ["timing-start.json", "timing-events.jsonl"])
+def test_interrupted_snapshot_rejects_private_fields_in_complete_records(
+    run_directory: Path, target: str
+) -> None:
+    (run_directory / target).write_text(json.dumps({"secret": CANARY}) + "\n")
+    with pytest.raises(ValueError):
+        timing.interrupted_run(run_directory)
+    assert not (run_directory / "timing-interrupted.json").exists()
+
+
+@pytest.mark.parametrize("status", [0, FAILURE_STATUS])
+def test_interrupted_snapshot_preserves_completed_summary(run_directory: Path, status: int) -> None:
+    timing.finish_run(run_directory, status)
+    before = report_text(run_directory)
+    timing.interrupted_run(run_directory)
+    assert report_text(run_directory) == before
+    assert not (run_directory / "timing-interrupted.json").exists()
+
+
+@pytest.mark.parametrize("name", ["timing.json", "timing-interrupted.json"])
+def test_interrupted_snapshot_does_not_follow_existing_output_symlink(
+    run_directory: Path, tmp_path: Path, name: str
+) -> None:
+    destination = tmp_path / "absent"
+    (run_directory / name).symlink_to(destination)
+    timing.interrupted_run(run_directory)
+    assert not destination.exists()
+    assert (run_directory / name).is_symlink()

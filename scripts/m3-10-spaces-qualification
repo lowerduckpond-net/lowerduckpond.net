@@ -7,11 +7,15 @@ umask 077
 unset LDP_QUALIFICATION_RUN_ID LDP_QUALIFICATION_HOST LDP_QUALIFICATION_ARCHIVE
 unset LDP_QUALIFICATION_IMAGE LDP_QUALIFICATION_SSH_PORT LDP_QUALIFICATION_ARTIFACT
 unset MOLECULE_EPHEMERAL_DIRECTORY
+unset M3_11_COMBINED_BACKEND M3_11_BACKUP_RECOVERY_ENABLED M3_11_AUDIT_ROTATION_ENABLED
 
 repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "${repository_root}"
-if (($#)); then
-    echo "Usage: $0" >&2
+milestone=3.10
+if (($# == 2)) && [[ $1 == --milestone && ( $2 == 3.10 || $2 == 3.11 ) ]]; then
+    milestone=$2
+elif (($#)); then
+    echo "Usage: $0 [--milestone 3.10|3.11]" >&2
     exit 2
 fi
 for variable_name in SPACES_ACCESS_KEY_ID SPACES_SECRET_ACCESS_KEY; do
@@ -27,7 +31,7 @@ for command_name in docker git jq tofu uv; do
     }
 done
 if [[ -n $(git status --porcelain) ]]; then
-    echo "Live M3.10 qualification requires a clean source revision." >&2
+    echo "Live M${milestone} qualification requires a clean source revision." >&2
     exit 2
 fi
 # A remote daemon would copy the live archive credential off the workstation.
@@ -37,27 +41,32 @@ else
     docker_endpoint=${DOCKER_HOST:-$(docker context inspect --format '{{.Endpoints.docker.Host}}')}
 fi
 if [[ ${docker_endpoint} != unix:///* ]]; then
-    echo "Live M3.10 qualification requires a local Unix-socket Docker daemon." >&2
+    echo "Live M${milestone} qualification requires a local Unix-socket Docker daemon." >&2
     exit 2
 fi
 # Pin both the CLI and Python Docker clients to the checked endpoint.
 unset DOCKER_CONTEXT
 export DOCKER_HOST="${docker_endpoint}"
 docker info >/dev/null
-for container in lowerduckpond-ubuntu-2604 lowerduckpond-m3-10-minio; do
-    if docker inspect "${container}" >/dev/null 2>&1; then
-        echo "A qualification container already exists; preserve it and resolve its run first." >&2
-        exit 2
-    fi
-done
+if [[ ${milestone} == 3.10 ]]; then
+    for container in lowerduckpond-ubuntu-2604 lowerduckpond-m3-10-minio; do
+        if docker inspect "${container}" >/dev/null 2>&1; then
+            echo "A qualification container already exists; preserve it and resolve its run first." >&2
+            exit 2
+        fi
+    done
+fi
 
 source_revision=$(git rev-parse HEAD)
 evidence_root=${M3_10_EVIDENCE_ROOT:-${XDG_DATA_HOME:-${HOME}/.local/share}/lowerduckpond.net/m3-10}
+if [[ ${milestone} == 3.11 ]]; then
+    evidence_root=${M3_11_EVIDENCE_ROOT:-${XDG_DATA_HOME:-${HOME}/.local/share}/lowerduckpond.net/m3-11}
+fi
 mkdir -p -- "${evidence_root}"
 chmod 0700 "${evidence_root}"
 run_directory=$(mktemp -d "${evidence_root}/spaces-${source_revision:0:7}.XXXXXX")
 run_directory=$(cd -- "${run_directory}" && pwd -P)
-printf 'Private M3.10 qualification run: %s\n' "${run_directory}"
+printf 'Private M%s qualification run: %s\n' "${milestone}" "${run_directory}"
 printf '%s\n' "${source_revision}" >"${run_directory}/source-revision"
 failed() {
     local status=$?
@@ -87,6 +96,23 @@ diagnostic_phase=dependencies
 uv sync --all-packages --all-groups --frozen >"${run_directory}/dependencies.log" 2>&1
 uv run --quiet --frozen python -m scripts.qualification_minio \
     >"${run_directory}/local-storage-fixture.log" 2>&1
+combined_step() (
+    cd "${repository_root}"
+    uv run --quiet --frozen python -m scripts.m3_11_combined_inputs "$1" "${run_directory}"
+)
+if [[ ${milestone} == 3.11 ]]; then
+    combined_step allocate >"${run_directory}/fixture-environment"
+    while IFS= read -r -d '' variable_name && IFS= read -r -d '' variable_value; do
+        case ${variable_name} in
+            LDP_QUALIFICATION_RUN_ID|LDP_QUALIFICATION_HOST|LDP_QUALIFICATION_ARCHIVE|\
+            LDP_QUALIFICATION_IMAGE|LDP_QUALIFICATION_SSH_PORT|LDP_QUALIFICATION_ARTIFACT|\
+            MOLECULE_EPHEMERAL_DIRECTORY|DOCKER_HOST|M3_10_ARCHIVE_BACKEND|\
+            M3_11_COMBINED_BACKEND|M3_10_INSTALLED_REPORT)
+                export "${variable_name}=${variable_value}" ;;
+            *) echo 'Unexpected combined fixture coordinate.' >&2; exit 2 ;;
+        esac
+    done <"${run_directory}/fixture-environment"
+fi
 diagnostic_phase=state-inputs
 uv run --quiet --frozen python -m scripts.production_qualification_inputs \
     --capture-run "${run_directory}" --source "${source_revision}"
@@ -109,10 +135,20 @@ export ANSIBLE_CONFIG="${repository_root}/config/ansible/ansible.cfg"
 cd "${repository_root}/config/ansible"
 for phase in create prepare converge idempotence verify; do
     diagnostic_phase=${phase}
-    printf 'M3.10 installed Spaces qualification: %s\n' "${phase}"
+    if [[ ${milestone} == 3.11 && ${phase} == converge ]]; then
+        "${repository_root}/scripts/build-static-host-agent" "${LDP_QUALIFICATION_ARTIFACT}" \
+            >"${run_directory}/artifact-build.log" 2>&1
+        combined_step prepare-storage >"${run_directory}/combined-storage.log" 2>&1
+    fi
+    printf 'M%s installed Spaces qualification: %s\n' "${milestone}" "${phase}"
     uv run --frozen molecule "${phase}" --scenario-name m3_8 \
         >"${run_directory}/${phase}.log" 2>&1
     printf '%s\n' passed >"${run_directory}/${phase}.passed"
+    if [[ ${milestone} == 3.11 && ${phase} == create ]]; then
+        combined_step capture-public >"${run_directory}/public-inputs.log" 2>&1
+    elif [[ ${milestone} == 3.11 && ${phase} == idempotence ]]; then
+        combined_step capture >"${run_directory}/combined-context.log" 2>&1
+    fi
     if [[ ${phase} == create ]]; then
         uv run --quiet --no-sync --frozen python "${repository_root}/scripts/qualification_failure.py" fixture || true
     fi
@@ -127,7 +163,8 @@ if [[ $(git rev-parse HEAD) != "${source_revision}" || -n $(git status --porcela
     echo "Source changed during live qualification; preserve this run for investigation." >&2
     exit 1
 fi
-artifact_digest=$(sha256sum /tmp/lowerduckpond-static-host-agent-m3-8.tar)
+artifact_path=${LDP_QUALIFICATION_ARTIFACT:-/tmp/lowerduckpond-static-host-agent-m3-8.tar}
+artifact_digest=$(sha256sum "${artifact_path}")
 artifact_digest=${artifact_digest%% *}
 if [[ $(jq --exit-status --raw-output '.artifact_sha256' "${M3_10_INSTALLED_REPORT}") != "${artifact_digest}" ]]; then
     echo "The installed artifact differs from the built qualification artifact." >&2
@@ -142,5 +179,10 @@ uv run --frozen molecule destroy --scenario-name m3_8 >"${run_directory}/destroy
 printf '%s\n' passed >"${run_directory}/destroy.passed"
 cd "${repository_root}"
 diagnostic_phase=package
-uv run --quiet --frozen python -m scripts.m3_10_qualification_report "${run_directory}"
+report_arguments=()
+if [[ ${milestone} == 3.11 ]]; then
+    report_arguments=(--milestone 3.11)
+fi
+uv run --quiet --frozen python -m scripts.m3_10_qualification_report \
+    "${report_arguments[@]}" "${run_directory}"
 printf 'Share only qualification.json and qualification.sha256 from %s.\n' "${run_directory}"

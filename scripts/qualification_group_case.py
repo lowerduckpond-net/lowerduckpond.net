@@ -42,9 +42,7 @@ def stage_receipts(
     if case == "full-size-archive":
         return installed_receipt(directory, environment)
     if group.reconstruction:
-        restore.require_source_idempotence(
-            environment, archived_prefix=case == "restore-reconstruction"
-        )
+        restore.require_source_idempotence(environment, archived_prefix=group.protected_history)
     return None
 
 
