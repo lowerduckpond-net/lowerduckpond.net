@@ -12,6 +12,8 @@ from typing import cast
 
 from lowerduckpond_static_contracts import canonical_json_bytes, decode_json_object
 
+from lowerduckpond_static_host_agent.backup_descriptor import BACKUP_SCHEMA
+from lowerduckpond_static_host_agent.backup_identity import framed_digest
 from lowerduckpond_static_host_agent.backup_restic import _run_restic
 from lowerduckpond_static_host_agent.backup_sources import (
     MAX_DEPTH,
@@ -284,6 +286,29 @@ def materialize_snapshot(
         or inspection.get("descriptorDigest") != journal.bindings["backupDescriptor"]
     ):
         raise HostRestoreError("restore materialization lacks prepared authority")
+    return materialize_private_snapshot(store, snapshot, paths, environment, inspection)
+
+
+def materialize_private_snapshot(
+    store: RestoreStore,
+    snapshot: RestoreSnapshot,
+    paths: MaterializationPaths,
+    environment: Mapping[str, str],
+    inspection: dict[str, object],
+) -> dict[str, object]:
+    """Restore inert trees after the caller binds its original operation authority.
+
+    Full reconstruction requires its prepared journal above. Production backup
+    verification instead retains its exact original rollout and snapshot inputs;
+    it never creates a recovery journal or installs these private candidate roots.
+    Both callers retain the repository/selection leases and use the same resource,
+    metadata, inode, descriptor and Restic readback checks below.
+    """
+    snapshot_id = snapshot.snapshot.snapshot_id
+    if inspection.get("snapshotId") != snapshot_id or inspection.get(
+        "descriptorDigest"
+    ) != framed_digest(BACKUP_SCHEMA, snapshot.descriptor):
+        raise HostRestoreError("restore materialization inspection changed")
     targets = paths.targets()
     root_metadata = exact_object(
         inspection.get("rootMetadata"), set(SOURCE_PATHS) | set(STAGED_PATHS)
@@ -305,7 +330,7 @@ def materialize_snapshot(
             (
                 "--no-cache",
                 "restore",
-                f"{journal.snapshot_id}:{sources[label]}",
+                f"{snapshot_id}:{sources[label]}",
                 "--target",
                 str(target),
                 "--verify",
