@@ -120,7 +120,11 @@ passing-report validator rejects this diagnostic format and partial runs.
   Live wrapper timing begins after its private run directory is allocated.
 - Categories identify fixture creation/preparation, converge/idempotence,
   verification, cleanup/destruction, each verification group, admission pacing,
-  operator calls, Ansible reapply, and reboot/readiness waits.
+  operator calls, Ansible reapply, and reboot/readiness waits. The combined drill
+  also records its mutation, protected rotation, reconstruction, and reboot/replay
+  phases separately. Restore cases record source activation, history preparation,
+  snapshot capture/destination bootstrap, restored-state verification, and
+  historical replay/retirement.
 - `summed_seconds` adds every observed span in a category. `union_seconds`
   counts overlapping intervals only once. Categories also overlap with each
   other: operator and pacing spans sit inside groups; groups sit inside verify;

@@ -23,6 +23,7 @@ from testinfra.host import Host
 from scripts.m3_11_live_storage import LiveStorage
 from scripts.m3_11_phase_receipts import Recorder
 from scripts.m3_11_qualification_evidence import canonical_bytes
+from scripts.qualification_timing import measure
 
 
 def run(
@@ -34,18 +35,30 @@ def run(
     existing_namespace: bool = False,
 ) -> tuple[Fixture, dict[str, object]]:
     """The same actual assertions serve independent, complete and live callers."""
-    with recorder.phase("backup-mutation-overlap") if recorder else nullcontext({}) as observations:
+    with (
+        measure("combined-mutation"),
+        recorder.phase("backup-mutation-overlap") if recorder else nullcontext({}) as observations,
+    ):
         history, overlap = backup_mutation(
             host, tmp_path, live_storage=live_storage, existing_namespace=existing_namespace
         )
         observations.update(overlap)
-    with recorder.phase("protected-rotation") if recorder else nullcontext({}) as observations:
+    with (
+        measure("combined-rotation"),
+        recorder.phase("protected-rotation") if recorder else nullcontext({}) as observations,
+    ):
         rotated = protected_rotation(host, tmp_path, history)
         observations.update(rotated)
-    with recorder.phase("reconstruction") if recorder else nullcontext({}) as observations:
+    with (
+        measure("combined-reconstruction"),
+        recorder.phase("reconstruction") if recorder else nullcontext({}) as observations,
+    ):
         fixture, restored = reconstruction(host, tmp_path, history, live_storage=live_storage)
         observations.update(restored)
-    with recorder.phase("reboot") if recorder else nullcontext({}) as observations:
+    with (
+        measure("combined-reboot"),
+        recorder.phase("reboot") if recorder else nullcontext({}) as observations,
+    ):
         observations.update(reboot_and_replay(fixture, history))
     return fixture, {
         **restored,

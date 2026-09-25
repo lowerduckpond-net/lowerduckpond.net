@@ -28,8 +28,10 @@ from config.ansible.molecule.default.tests.test_host import _run_installed_bound
 from scripts import qualification_restore as owned
 from scripts.m3_11_live_storage import LiveStorage
 from scripts.qualification_case import private_document
+from scripts.qualification_timing import measure
 
 
+@measure("restore-source-activation")
 def activate_source(host: Host, *, archived_prefix: bool, existing_namespace: bool = False) -> None:
     """Require full source convergence and idempotence on its final configuration."""
     assert support._initialize_namespace(host) is not existing_namespace
@@ -83,6 +85,7 @@ class SourceHistory:
     connection: tuple[str, Path, Path]
 
 
+@measure("restore-source-history")
 def prepare_history(
     host: Host, tmp_path: Path, *, full_history: bool = True, retain_existing: bool = False
 ) -> SourceHistory:
@@ -155,6 +158,7 @@ finally:
     return SourceHistory([*tenants, *existing], replay, connection)
 
 
+@measure("restore-source-capture")
 def capture_source(
     host: Host,
     tmp_path: Path,
@@ -243,6 +247,7 @@ def finish(fixture: Fixture, tenants: list[str], replay: dict[str, object]) -> N
     replay_and_retire(fixture, tenants, replay)
 
 
+@measure("restore-verify-state")
 def verify_reconstruction(fixture: Fixture, replay: dict[str, object]) -> None:
     """Complete reconstruction assertions before any success receipt or reboot."""
     fixture.wait({"complete"}, seconds=300)
@@ -298,6 +303,7 @@ assert os.statvfs('/').f_flag & os.ST_RDONLY
     ).stdout
 
 
+@measure("restore-replay-retire")
 def replay_and_retire(
     fixture: Fixture, tenants: list[str], replay: dict[str, object]
 ) -> dict[str, object]:

@@ -67,6 +67,15 @@ KINDS = frozenset(
         "reboot-caddy",
         "reboot-reconcile",
         "other-playbook",
+        "combined-mutation",
+        "combined-rotation",
+        "combined-reconstruction",
+        "combined-reboot",
+        "restore-source-activation",
+        "restore-source-history",
+        "restore-source-capture",
+        "restore-verify-state",
+        "restore-replay-retire",
     }
 )
 MAX_EVENTS_BYTES = 8 * 1024 * 1024
