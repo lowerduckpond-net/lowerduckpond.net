@@ -82,6 +82,7 @@ GROUPS = frozenset(
         "backup-mutation-overlap",
         "restore-reconstruction",
         "combined-reconstruction",
+        "production-rollout",
         "restore-negative",
         "restore-tls-bootstrap",
     }
@@ -124,6 +125,8 @@ TEST_FILES = frozenset(
         "test_restore_reconstruction.py",
         "test_combined_reconstruction.py",
         "combined_reconstruction.py",
+        "test_production_rollout.py",
+        "production_rollout_fixture.py",
         "test_restore_negative.py",
         "test_restore_tls_bootstrap.py",
         "test_restore_accounting.py",

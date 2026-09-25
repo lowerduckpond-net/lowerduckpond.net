@@ -254,7 +254,7 @@ jobs:
     if: needs.installed-selection.outputs.required == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: >-
-      ${{ matrix.case == 'combined-reconstruction' && 90 ||
+      ${{ contains(fromJSON('["combined-reconstruction","production-rollout"]'), matrix.case) && 90 ||
           contains(fromJSON('["core","archive-cycles","backup-mutation-overlap","restore-reconstruction","restore-tls-bootstrap"]'), matrix.case) && 60 ||
           45 }}
     strategy:

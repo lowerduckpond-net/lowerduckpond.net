@@ -52,6 +52,9 @@ class Group:
 
 _CREDENTIALS = "archive_credentials"
 GROUPS = {
+    "production-rollout": Group(
+        (node("production_rollout", "installed_production_rollout_preserves_original_evidence"),)
+    ),
     "combined-reconstruction": Group(
         (node("combined_reconstruction", "installed_combined_reconstruction"),),
         reconstruction=True,

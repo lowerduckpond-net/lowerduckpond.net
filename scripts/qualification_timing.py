@@ -46,6 +46,7 @@ GROUPS = frozenset(
         "audit-rotation",
         "restore-reconstruction",
         "combined-reconstruction",
+        "production-rollout",
         "restore-negative",
         "restore-tls-bootstrap",
     }

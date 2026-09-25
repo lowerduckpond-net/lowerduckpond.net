@@ -38,6 +38,7 @@ storage fixtures before the complete run can pass.
 
 | Case | Preserved installed assertions and independent setup |
 | --- | --- |
+| `production-rollout` | Reapplies preceding main `69859cbb` with recovery/rotation disabled to an empty owned host, then runs the actual production bootstrap, four site converges, bounded backup/private restore and acceptance over verified administrator SSH. New controllers recover after namespace initialization and after retaining backup proof before acknowledgement; completed inspection preserves original records/capture. Uses a local disposable Restic repository and synthetic qualification binding; cannot qualify a live rollout. |
 | `restore-reconstruction` | Own fenced source plus second fresh Ubuntu/ext4 destination; full-ID Restic restore, four tenant states, protected audit prefix/local tail, excluded upload/export decisions, exact archive proof, cold Caddy generation, immutable result replay and reboot. |
 | `combined-reconstruction` | One source/destination history combines actual backup/mutation contention, excluded secret canaries, two full protected audit segments, lost snapshot response and index interruption, aged ordinary retention with interrupted forget/prune, interrupted reconstruction, reboot and historical-result replay. Local controlled-CA/MinIO evidence only; live Spaces and public-CA qualification remain separate. |
 | `restore-negative` | Own source/destination; invalid target/source bindings, unknown later object, denied/corrupted exact-version downloads, rehashed audit fork, mixed roots, corrupt trusted environment/retained content and retired exact VersionId. Gated failure, unchanged installed roots and independent remote absence are mandatory. |
@@ -138,6 +139,7 @@ including setup. The operator-authorized P6b adjustment is recorded in the
 | Installed case | CI ceiling |
 | --- | --- |
 | `combined-reconstruction` | 90 minutes, provisional pending a complete measured run. |
+| `production-rollout` | 90 minutes, provisional pending its first complete measurement. |
 | `core`, `archive-cycles`, `backup-mutation-overlap`, `restore-reconstruction`, `restore-tls-bootstrap` | 60 minutes. |
 | Other installed cases | 45 minutes. |
 
@@ -149,6 +151,14 @@ allows 1.5 times a conservative 60-minute execution window; the interrupted
 45-minute run does not establish a successful duration. Measure the complete
 window through normal validation and retain at least 1.5 times the typical
 observed runtime when reviewing the ceiling.
+
+The rollout case retains one host and original phase chain through each
+controller departure. Its four site passes and predecessor/bootstrap setup
+cannot use independent fixtures. The initial ceiling provides 1.5 times a
+conservative 60-minute window while measuring the full installed case; it is
+not a claim of a measured passing duration or acceptance of a target overrun.
+The case needs the pinned predecessor commit in local Git history, as supplied
+by CI's full checkout. Failed runs keep their original diagnostics and fixture.
 
 These ceilings do not establish compliance with the 30-minute engineering
 target. Production service limits, admission pacing, assertions, required

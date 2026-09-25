@@ -13,6 +13,7 @@ from scripts.qualification_failure import TEST_FILES, capture_fixture, record_te
 from scripts.qualification_timing import CONTEXT_ENV, capture_fixture_identity, record_span
 
 GROUPS = {
+    "test_production_rollout.py": "production-rollout",
     "test_restore_reconstruction.py": "restore-reconstruction",
     "test_combined_reconstruction.py": "combined-reconstruction",
     "test_restore_negative.py": "restore-negative",

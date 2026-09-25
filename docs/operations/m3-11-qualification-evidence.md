@@ -162,3 +162,13 @@ public-CA behavior, live qualification or actual production deployment. Keep
 partial native runs and failed CI results separate from completed proof. Final
 qualification must bind the merged input-changing revision; production execution
 remains the operator's explicit secure-workstation step.
+
+`just check-installed-group production-rollout` repeats the installed phase
+engine on an owned host through the real production playbooks and SSH lease.
+It deliberately stops after namespace initialization and after retaining the
+original verified backup proposal, then resumes with fresh controller owners.
+It compares original journal bytes and retained capture hashes/inodes/timestamps
+through completion and repeated inspection. Its synthetic qualification binding
+is labelled diagnostic and is never supplied to the public qualification gate;
+the controller gate is covered separately above. This fixture does not record
+production completion or replace final live qualification.

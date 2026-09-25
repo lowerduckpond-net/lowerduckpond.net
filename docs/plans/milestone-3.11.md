@@ -681,6 +681,18 @@ collect completed timing through normal CI. Any remaining performance-target
 overrun still needs measured resolution or explicit acceptance before milestone
 closeout; a passing job alone is insufficient.
 
+P6c adds the independent `production-rollout` installed case: actual preceding
+main configuration on an empty owned host, real administrator SSH/leases,
+bootstrap, four activation/idempotence passes, backup/private restoration and
+acceptance. Controller departures after namespace initialization and before
+backup acknowledgement retain one original history, followed by completed
+inspection without recapture. Its initial 90-minute CI ceiling provides 1.5
+times a conservative 60-minute window for the dependent setup and playbook
+passes, pending the first complete measurement. This is an execution ceiling,
+not a passing measurement or an approved engineering-target exception. Retain
+that distinction in the P6 timing review. Production service limits and the
+complete-journey safeguard are unchanged.
+
 Final qualification includes the original complete installed/live Spaces
 workflow plus the new combined reconstruction cases on disposable supported
 Ubuntu/ext4/systemd hosts. Extend the secure-workstation wrapper and report
