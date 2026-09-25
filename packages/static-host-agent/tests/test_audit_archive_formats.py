@@ -133,6 +133,7 @@ def test_witness_reconstructs_exact_original_entry_and_digest(variant: str) -> N
     with formats._PROOF_CACHE_LOCK:
         formats._PROOF_CACHE.clear()
     assert formats.segment_from_witness(evidence.witness) == raw
+    assert formats.inspect_segment(raw) == evidence
     assert evidence.terminal == audit_entry_digest(second).to_dict()
     assert json.loads(evidence.witness)[0] == [
         0,
@@ -156,7 +157,10 @@ def test_nonzero_segment_retains_predecessor_without_resetting_sequence() -> Non
     record = descriptor(raw, number=1)
     assert formats.decode_rotation(canonical_json_bytes(record)) == record
     evidence = formats.verify_segment(record, raw)
+    with formats._PROOF_CACHE_LOCK:
+        formats._PROOF_CACHE.clear()
     assert formats.segment_from_witness(evidence.witness) == raw
+    assert formats.inspect_segment(raw) == evidence
     assert evidence.first_sequence == first["sequence"]
 
 
@@ -264,6 +268,61 @@ def test_witness_never_accepts_lossy_or_invented_history(fault: str) -> None:
 
 
 @pytest.mark.parametrize(
+    ("field", "invalid"),
+    [
+        ("sequence", True),
+        ("sequence", 2),
+        ("sequence", formats.MAX_WITNESSED_ENTRIES),
+        ("previousEntryDigest", None),
+        ("previousEntryDigest", framed_digest(formats.INDEX_FORMAT, b"wrong-domain")),
+        ("previousEntryDigest", framed_digest(formats.AUDIT_ENTRY_FORMAT, b"wrong-chain")),
+        ("timestamp", "2026-02-30T00:00:00Z"),
+        ("operatorPrincipal", None),
+        ("operation", "invented"),
+        ("tenantId", "not-a-uuid"),
+        ("correlationId", "0198d17f-6f4a-4000-8000-000000000001"),
+        ("correlationId", "0198d17f-6f4a-7000-8000-000000000001"),
+        ("resultDigest", framed_digest(formats.INDEX_FORMAT, b"wrong-domain")),
+        ("resultStatus", "invented"),
+        ("deletionEvidence", {"invented": "authority"}),
+    ],
+)
+def test_cold_witness_and_segment_reject_the_same_invalid_entry_or_chain(
+    field: str, invalid: object
+) -> None:
+    first = entry()
+    second = entry(1, audit_entry_digest(first).to_dict())
+    second[field] = invalid
+    # Form the wire representation without asking either reader to validate
+    # it, so a previously cached proof cannot hide a missing validation step.
+    raw = canonical_json_bytes(first) + canonical_json_bytes(second)
+    witness = canonical_json_bytes(
+        [[document.get(key) for key in formats._ROW_FIELDS] for document in (first, second)]
+    )
+    with formats._PROOF_CACHE_LOCK:
+        formats._PROOF_CACHE.clear()
+    with pytest.raises(BackupIdentityError):
+        formats.segment_from_witness(witness)
+    with pytest.raises(BackupIdentityError):
+        formats.inspect_segment(raw)
+    assert not formats._PROOF_CACHE
+
+
+def test_witness_expansion_enforces_segment_byte_bound_before_caching(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw = canonical_json_bytes(entry())
+    witness = formats.inspect_segment(raw).witness
+    with formats._PROOF_CACHE_LOCK:
+        formats._PROOF_CACHE.clear()
+    assert len(witness) < len(raw) - 1
+    monkeypatch.setattr(formats, "MAX_SEGMENT_BYTES", len(raw) - 1)
+    with pytest.raises(BackupIdentityError, match="expands beyond"):
+        formats.segment_from_witness(witness)
+    assert not formats._PROOF_CACHE
+
+
+@pytest.mark.parametrize(
     "field", ["segmentSha256", "terminalEntryDigest", "witnessDigest", "witnessBytes"]
 )
 def test_restore_verification_rejects_well_shaped_but_wrong_descriptor(field: str) -> None:
@@ -311,10 +370,17 @@ def test_empty_head_has_no_fabricated_terminal_or_index() -> None:
             formats.decode_head(canonical_json_bytes({**head, key: value}))
 
 
-def test_cached_segment_evidence_cannot_be_changed_through_returned_digest_objects() -> None:
+@pytest.mark.parametrize("direction", ["segment", "witness"])
+def test_cached_segment_evidence_cannot_be_changed_through_returned_digest_objects(
+    direction: str,
+) -> None:
     first = entry(1, audit_entry_digest(entry()).to_dict())
     raw = canonical_json_bytes(first)
     expected = formats.inspect_segment(raw)
+    if direction == "witness":
+        with formats._PROOF_CACHE_LOCK:
+            formats._PROOF_CACHE.clear()
+        assert formats.segment_from_witness(expected.witness) == raw
     changed = formats.inspect_segment(raw)
     assert changed.predecessor is not None
     changed.predecessor["value"] = "0" * 64
