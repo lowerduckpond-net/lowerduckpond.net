@@ -137,8 +137,9 @@ def test_report_rejects_boolean_instead_of_zero(completed_run: Path) -> None:
 
 def test_exact_release_report_is_accepted(completed_run: Path) -> None:
     path = completed_run / "qualification.json"
-    path.write_text(json.dumps(create_report(completed_run)))
-    verify_report(path, source="a" * 40, artifact="b" * 64)
+    raw = (json.dumps(create_report(completed_run), indent=3) + "\n\n").encode()
+    path.write_bytes(raw)
+    assert verify_report(path, source="a" * 40, artifact="b" * 64) == raw
 
 
 @pytest.mark.parametrize(
