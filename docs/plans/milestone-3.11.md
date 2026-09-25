@@ -688,10 +688,71 @@ acceptance. Controller departures after namespace initialization and before
 backup acknowledgement retain one original history, followed by completed
 inspection without recapture. Its initial 90-minute CI ceiling provides 1.5
 times a conservative 60-minute window for the dependent setup and playbook
-passes, pending the first complete measurement. This is an execution ceiling,
+passes, pending the first complete CI measurement. This is an execution ceiling,
 not a passing measurement or an approved engineering-target exception. Retain
 that distinction in the P6 timing review. Production service limits and the
 complete-journey safeguard are unchanged.
+
+### P6c timing acceptance proposal
+
+This paragraph proposes an explicit M3.11 closeout exception for the measured
+cost of `core`, `archive-cycles`, `backup-mutation-overlap`, `restore-reconstruction`,
+`restore-tls-bootstrap`, `combined-reconstruction` and `production-rollout`. It requires review with
+P6c; until that amendment is accepted, the target overruns remain open. Retain
+the 30-minute engineering target and the existing production policy. Acceptance
+of these measurements does not relabel the cases as meeting that target or
+authorize unmeasured growth in their scope.
+
+The successful main [CI run 36134456113](https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/36134456113),
+at source `69859cbb949d95c1aae6959363773cbf1d8e126b`, retained the following
+normal-run diagnostic measurements. Scenario times include fixture setup;
+they exclude GitHub runner setup and queue time. All cases report four CPUs
+and an unmeasured cache state. These observations do not attribute overruns to
+runner contention or establish live-provider performance.
+
+| Case | Scenario minutes | Measured work retained by the exception |
+| --- | --- | --- |
+| `backup-mutation-overlap` | 32.65 | 10.63 minutes of create/prepare/converge/idempotence and 21.59 of verification; the independent coherent-backup case already has its own fixture. |
+| `restore-reconstruction` | 38.51 | 30.61 minutes in the reconstruction test, including original source activation/history/capture and restored-state verification/replay. |
+| `restore-tls-bootstrap` | 36.72 | 28.59 minutes in its separate TLS recovery test; source history, cold issuance interruption and resumed readiness remain required. |
+| `combined-reconstruction` | 51.41 | One retained history: 15.94 minutes mutation, 6.76 rotation, 11.24 reconstruction and 9.22 reboot/replay; splitting these into independent fixtures would remove the combined assertion. |
+
+The combined GitHub job took 52.02 minutes including runner setup, leaving
+the required 1.5-times margin within its 90-minute ceiling. The 22 scenarios
+consumed 558.63 diagnostic runner minutes in total. Nested Ansible, operator and
+pacing measurements are already contained in the test/phase intervals above;
+do not add them again. Original failed and interrupted reports remain failures.
+
+In that main run, `core` measured 28.46 minutes and `archive-cycles` 27.93.
+Subsequent completed cases in [PR CI run 36147368455](https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/36147368455)
+measured them at 31.01 and 32.51 minutes. The proposal therefore includes their
+repeated overruns, retaining the earlier P5 observations below. This run tests
+PR head `4b8692346ceaf988dfe81ba007d7fcedb27e5414`; its original diagnostic
+source is merge tree `a47d5a8c638ccf3c35c6526c53b65a84f683d093`, with artifact
+`05c26f7f1fbf1de37e94c46b7c4f6f277f20f3f59ba9add0fddd41121feed8da`.
+Core contains 13.70 minutes of actual production-policy pacing within its
+19.62-minute test. Archive cycles contain 10.50 minutes of real reconfiguration
+within their 20.74-minute test. These nested measurements explain work that
+the proposed exception retains; they are not additional runner minutes.
+The same run completed all 22 installed cases, measuring backup mutation
+overlap at 32.83 minutes, reconstruction at 39.46, TLS bootstrap at 36.51 and
+combined reconstruction at 45.01. Its total was 565.35 diagnostic runner
+minutes. Preserve these observations alongside the earlier main measurements
+rather than selecting only the fastest sample.
+
+The new `production-rollout` case passed locally on clean source
+`ca82b15e2d55b765f7210396145b7a44695c9e0a` with the same artifact above. Its
+original diagnostic run `01a0d90c6f7476f6bc5b9ef640763fbb` took 44.22 minutes
+including setup, of which 34.48 were inside the rollout test. Both declared
+tests passed, followed by fresh local/independent storage accounting and owned
+teardown. The test covers two deliberate controller departures, four real site
+passes, private backup restoration, acceptance and completed inspection with
+unchanged original records/capture. It has no production admission pacing to
+relax. The controller reported 32 visible CPUs and an unmeasured cache state;
+this local observation cannot predict the four-CPU CI duration. Its CI ceiling
+remains provisional until that normal run completes, and P6c review must assess
+that result before accepting this exception. Final live qualification must
+separately record its measured cost under the unchanged 330-minute safeguard.
 
 Final qualification includes the original complete installed/live Spaces
 workflow plus the new combined reconstruction cases on disposable supported

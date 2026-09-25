@@ -139,7 +139,7 @@ including setup. The operator-authorized P6b adjustment is recorded in the
 | Installed case | CI ceiling |
 | --- | --- |
 | `combined-reconstruction` | 90 minutes, provisional pending a complete measured run. |
-| `production-rollout` | 90 minutes, provisional pending its first complete measurement. |
+| `production-rollout` | 90 minutes, provisional pending its first complete CI measurement. |
 | `core`, `archive-cycles`, `backup-mutation-overlap`, `restore-reconstruction`, `restore-tls-bootstrap` | 60 minutes. |
 | Other installed cases | 45 minutes. |
 
@@ -159,6 +159,14 @@ conservative 60-minute window while measuring the full installed case; it is
 not a claim of a measured passing duration or acceptance of a target overrun.
 The case needs the pinned predecessor commit in local Git history, as supplied
 by CI's full checkout. Failed runs keep their original diagnostics and fixture.
+
+The first clean local rollout case completed in 44.22 minutes including setup,
+with original evidence, repeated completed inspection and owned teardown all
+verified. That controller reported 32 visible CPUs; this is not a four-CPU CI
+timing result. The [P6c timing amendment](../plans/milestone-3.11.md#p6c-timing-acceptance-proposal)
+records this and the existing groups' target overruns for explicit review before
+milestone closeout. Their higher execution ceilings do not themselves accept
+those overruns.
 
 These ceilings do not establish compliance with the 30-minute engineering
 target. Production service limits, admission pacing, assertions, required
