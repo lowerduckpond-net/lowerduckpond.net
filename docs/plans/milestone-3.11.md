@@ -749,10 +749,22 @@ P6 is split at its evidence boundary. P6a extends the existing qualification
 report entry point with the strict
 [combined evidence envelope](../operations/m3-11-qualification-evidence.md),
 explicit milestone selection, original identity/chronology checks and hostile
-report coverage. P6b supplies the combined installed/live producer and production
-handoff that consume that envelope. P6a does not make the planned operator
-commands available, qualify a rollout or change the existing production gate.
-Both slices must merge before requesting final secure-workstation qualification.
+report coverage. P6b supplies the combined installed/live producer, original
+observations, owned cleanup and the explicit M3.11 mode of the existing wrapper.
+Its installed/public-CA and interrupted-cleanup coverage warrants a separate
+review from production migration. P6c supplies production preflight, dark
+convergence, migration, rollout/rollback and remaining timing acceptance. P6a
+and P6b do not change the existing production gate or authorize a rollout.
+All three slices must merge before requesting final secure-workstation
+qualification against the final input-changing revision.
+
+P6a merged in [PR #172](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/172)
+after exact head `84640302af7bc23b78f5a01ea2f6af01f3e49a03` passed
+[CI run 36077502613](https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/36077502613),
+including all 21 installed groups and the final gate, and the requested review
+had no findings. It binds each combined receipt to the original storage run and
+report bytes and requires the receipt to postdate every declared phase. These
+checks establish report validation, not live-provider qualification.
 
 P5 merged in [PR #171](https://github.com/lowerduckpond-net/lowerduckpond.net/pull/171)
 after all 21 installed groups passed on exact head `eb6849b58ea24f193708a46e96a8e52ea9f663f3`
