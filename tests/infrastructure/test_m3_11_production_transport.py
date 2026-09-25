@@ -49,10 +49,17 @@ def test_helper_bundle_is_deterministic_and_contains_only_qualified_code(tmp_pat
         assert set(archive.namelist()) == {
             "__main__.py",
             "scripts/__init__.py",
+            "scripts/m3_11_production_journal.py",
             "scripts/m3_11_production_lease.py",
+            "scripts/m3_11_production_records.py",
             "scripts/m3_11_production_remote.py",
         }
-        for name in ("m3_11_production_lease.py", "m3_11_production_remote.py"):
+        for name in (
+            "m3_11_production_journal.py",
+            "m3_11_production_lease.py",
+            "m3_11_production_records.py",
+            "m3_11_production_remote.py",
+        ):
             assert archive.read("scripts/" + name) == (ROOT / "scripts" / name).read_bytes()
     path = stage.stage(tmp_path / "helpers", raw, Path(helper).stem, owner=OWNER)
     result = subprocess.run(  # noqa: S603 - owned isolated helper with invalid arguments

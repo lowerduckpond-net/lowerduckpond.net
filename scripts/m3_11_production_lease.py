@@ -162,3 +162,17 @@ def action(path: Path, *, owner: int, token: str) -> Iterator[None]:
         lease.require_token(token)
         yield
         lease.guard()
+
+
+def require_action(path: Path, *, owner: int, token: str) -> None:
+    """Check a child inside the fixed unit without retaking its parent's lock."""
+    with _open(path, owner=owner) as lease:
+        lease.require_token(token)
+        try:
+            fcntl.flock(lease.files["action"], fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            pass
+        else:
+            fcntl.flock(lease.files["action"], fcntl.LOCK_UN)
+            raise ValueError("production action lease is no longer held")
+        lease.guard()

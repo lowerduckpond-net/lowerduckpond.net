@@ -75,6 +75,20 @@ def test_live_owner_and_action_are_exclusive(directory: Path) -> None:
             pass
 
 
+def test_action_child_requires_both_the_original_owner_and_held_action(directory: Path) -> None:
+    with worker(directory) as (owner, token):
+        with pytest.raises(ValueError, match="no longer held"):
+            lease.require_action(directory, owner=OWNER, token=token)
+        with worker(directory, token):
+            lease.require_action(directory, owner=OWNER, token=token)
+            with pytest.raises(ValueError, match="superseded"):
+                lease.require_action(directory, owner=OWNER, token="f" * 64)
+            owner.kill()
+            owner.wait(timeout=5)
+            with pytest.raises(ValueError, match="no longer present"):
+                lease.require_action(directory, owner=OWNER, token=token)
+
+
 def test_owner_death_fences_late_commands_and_takeover_changes_token(directory: Path) -> None:
     with worker(directory) as (process, old):
         process.kill()

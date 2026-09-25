@@ -316,6 +316,22 @@ class Journal:
     def inspect(self) -> dict[str, object]:
         return validate(self._records())
 
+    def records(self, *, proposal: tuple[str, bytes] | None = None) -> list[tuple[str, bytes]]:
+        """Read completed bytes, optionally beside one exact retained proposal."""
+        pending = None
+        if proposal is not None:
+            name, raw = proposal
+            if name not in RECORDS or len(raw) > MAX_BYTES:
+                raise ValueError("invalid pending production proposal")
+            pending = "." + name + "." + digest(raw) + ".pending"
+        return self._records(pending)
+
+    def sync(self) -> None:
+        """Confirm a visible publication after an interrupted directory fsync."""
+        self._guard()
+        os.fsync(self.descriptor)
+        self._guard()
+
     def publish(
         self, name: str, raw: bytes, *, failure_hook: Callable[[str], None] = lambda _: None
     ) -> bool:

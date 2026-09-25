@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from scripts import m3_11_production_lease as lease
+from scripts import m3_11_production_records as records
 
 ROOT = Path("/run/lowerduckpond-m3-11")
 LEASE = ROOT / "lease"
@@ -50,10 +51,18 @@ def main() -> int:
                 if sys.stdin.buffer.read(8) not in {b"", b"release\n"}:
                     raise ValueError("invalid production owner control message")
             return 0
-        if len(arguments) != 3 or arguments[0] != "action":  # noqa: PLR2004 - fixed wire arguments
-            raise ValueError("invalid production action invocation")
         if Path("/proc/self/cgroup").read_text(encoding="ascii") != f"0::/system.slice/{UNIT}\n":
             raise ValueError("production action is outside its tracked unit")
+        if len(arguments) >= 3 and arguments[0] == "journal":  # noqa: PLR2004 - token and operation
+            # This child runs under the outer action's still-held lease. Taking
+            # another action lock here would conflict with that same owner.
+            lease.require_action(LEASE, owner=0, token=arguments[1])
+            raw = sys.stdin.buffer.read(records.MAX_RECORD_BYTES + 1)
+            result = records.operate(records.ROOT, arguments[2:], raw, owner=0)
+            sys.stdout.buffer.write(result)
+            return 0
+        if len(arguments) != 3 or arguments[0] != "action":  # noqa: PLR2004 - fixed wire arguments
+            raise ValueError("invalid production action invocation")
         with lease.action(LEASE, owner=0, token=arguments[1]):
             # The trusted Ansible/controller command is a single shell argument;
             # stdin/stdout remain byte streams, including piped file transfers.

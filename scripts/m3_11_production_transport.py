@@ -21,7 +21,12 @@ def helper_bundle() -> tuple[bytes, str]:
         "scripts/__init__.py": b"",
         **{
             "scripts/" + name: (directory / name).read_bytes()
-            for name in ("m3_11_production_lease.py", "m3_11_production_remote.py")
+            for name in (
+                "m3_11_production_journal.py",
+                "m3_11_production_lease.py",
+                "m3_11_production_records.py",
+                "m3_11_production_remote.py",
+            )
         },
     }
     output = io.BytesIO()
