@@ -54,6 +54,7 @@ def helper_bundle() -> tuple[bytes, str]:
                 "m3_11_production_initialize.py",
                 "m3_11_production_journal.py",
                 "m3_11_production_lease.py",
+                "m3_11_production_observe.py",
                 "m3_11_production_probe.py",
                 "m3_11_production_records.py",
                 "m3_11_production_remote.py",

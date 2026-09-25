@@ -16,6 +16,7 @@ from infrastructure.test_m3_11_production_journal import records as records  # n
 from scripts import m3_11_production_backup as backup
 from scripts import m3_11_production_fence as fence
 from scripts import m3_11_production_initialize as initialize
+from scripts import m3_11_production_journal as journal
 from scripts import m3_11_production_probe as probe
 from scripts import m3_11_production_records as wire
 
@@ -138,3 +139,60 @@ def test_mid_backup_drift_cannot_emit_success(
     with pytest.raises(ValueError):
         backup.verify(owner=OWNER)
     assert calls == ["backup"] and sys.path == before
+
+
+@pytest.mark.parametrize("count", [14, 15])
+def test_final_inspection_preserves_original_receipts_without_recapturing(
+    host: Path,
+    records: list[tuple[str, bytes]],
+    monkeypatch: pytest.MonkeyPatch,
+    count: int,
+) -> None:
+    for name, raw in records[10:count]:
+        wire.operate(wire.ROOT, ["publish", name], raw, owner=OWNER)
+    write(
+        probe.BACKUP,
+        probe.BACKUP.read_bytes().replace(b"ROTATION_ENABLED=false", b"ROTATION_ENABLED=true"),
+        0o600,
+    )
+    calls: list[str] = []
+
+    run = fence.run
+
+    def services(arguments: list[str], *, stop: bool = False) -> bytes:
+        if "--property=LoadState,ActiveState,UnitFileState" in arguments:
+            return b"LoadState=loaded\nActiveState=active\nUnitFileState=enabled\n"
+        return run(arguments, stop=stop)
+
+    monkeypatch.setattr(fence, "run", services)
+
+    def inspect(
+        chain: list[tuple[str, bytes]], environment: dict[str, str], descriptors: tuple[int, int]
+    ) -> None:
+        assert chain == records[:count]
+        assert (host / "verified").read_bytes() == b"yes"
+        assert environment["LOWERDUCKPOND_BACKUP_NODE_NAME"] == probe.NODE
+        for path in (initialize.REPOSITORY_LOCK, initialize.SELECTION_LOCK):
+            with path.open("rb") as rival, pytest.raises(BlockingIOError):
+                fcntl.flock(rival, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        calls.append("inspect")
+
+    def forbidden(*args: object) -> None:
+        pytest.fail("completed inspection must never create another backup")
+
+    monkeypatch.setattr(backup, "_inspect_candidate", inspect)
+    monkeypatch.setattr(backup, "_candidate", forbidden)
+    before = {
+        p.name: (p.stat().st_ino, p.stat().st_mtime_ns, p.read_bytes()) for p in wire.ROOT.iterdir()
+    }
+    result = json.loads(backup.inspect(owner=OWNER))
+    assert result["original_sha256"] == journal.digest(records[0][1])
+    assert result["last_sha256"] == journal.digest(records[count - 1][1])
+    assert calls == ["inspect"]
+    assert {
+        p.name: (p.stat().st_ino, p.stat().st_mtime_ns, p.read_bytes()) for p in wire.ROOT.iterdir()
+    } == before
+    monkeypatch.setattr(fence, "run", lambda *args: b"LoadState=masked\n")
+    with pytest.raises(ValueError):
+        backup.inspect(owner=OWNER)
+    assert calls == ["inspect"]

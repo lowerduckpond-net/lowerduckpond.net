@@ -95,21 +95,6 @@ if ! production_origin_ipv4=$(tofu -chdir="${production_root}" \
 fi
 export PRODUCTION_ORIGIN_IPV4=${production_origin_ipv4}
 
-# The first M3.10 upgrade needs its live gate in addition to the general host
-# checks. Artifact selection alone does not prove a completed installation.
-selected_production_artifact=$(ssh \
-    -o BatchMode=yes -o HostKeyAlias=lowerduckpond.net -o IdentitiesOnly=yes \
-    -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
-    -i "${ANSIBLE_PRIVATE_KEY_FILE}" "ldp-admin@${PRODUCTION_ORIGIN_IPV4}" \
-    'sudo --non-interactive /bin/sh -c "
-        if test -e /var/lib/lowerduckpond/convergence/m3-11 ||
-           test -L /var/lib/lowerduckpond/convergence/m3-11; then
-            echo Existing M3.11 transaction requires its original controller. >&2
-            exit 1
-        fi
-        readlink --canonicalize-existing /opt/lowerduckpond/static-host-agent/current
-    "')
-
 export SPACES_BACKUP_ACCESS_KEY_ID
 SPACES_BACKUP_ACCESS_KEY_ID=$(tofu -chdir="${production_root}" \
     output -raw backup_runtime_access_key_id)
@@ -129,6 +114,36 @@ SPACES_ARCHIVE_SECRET_ACCESS_KEY=$(tofu -chdir="${production_root}" \
     output -raw archive_runtime_secret_access_key)
 export SPACES_ARCHIVE_BUCKET
 SPACES_ARCHIVE_BUCKET=$(tofu -chdir="${production_root}" output -raw archive_bucket_name)
+
+# The M3.11 controller preserves the M3.10 completion and owns every rollout
+# phase. Dispatch before the legacy probe or legacy completion invalidation.
+if [[ -n ${M3_11_QUALIFICATION_REPORT:-} || -n ${M3_11_PRODUCTION_STATE_DIRECTORY:-} ]]; then
+    if [[ -z ${M3_11_QUALIFICATION_REPORT:-} ||
+          -n ${M3_DARK_HOST_ROLLBACK_ARTIFACT_PATH:-} ||
+          -n ${M3_DARK_HOST_ROLLBACK_ARTIFACT_SHA256:-} ]]; then
+        echo "M3.11 requires its original report and cannot be combined with legacy rollback." >&2
+        exit 2
+    fi
+    export ANSIBLE_CONFIG="${repository_root}/config/ansible/ansible.cfg"
+    export ANSIBLE_PRIVATE_KEY_FILE
+    cd "${repository_root}"
+    exec uv run --quiet --frozen python -m scripts.m3_11_production_controller
+fi
+
+# The first M3.10 upgrade needs its live gate in addition to the general host
+# checks. Artifact selection alone does not prove a completed installation.
+selected_production_artifact=$(ssh \
+    -o BatchMode=yes -o HostKeyAlias=lowerduckpond.net -o IdentitiesOnly=yes \
+    -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
+    -i "${ANSIBLE_PRIVATE_KEY_FILE}" "ldp-admin@${PRODUCTION_ORIGIN_IPV4}" \
+    'sudo --non-interactive /bin/sh -c "
+        if test -e /var/lib/lowerduckpond/convergence/m3-11 ||
+           test -L /var/lib/lowerduckpond/convergence/m3-11; then
+            echo Existing M3.11 transaction requires its original controller. >&2
+            exit 1
+        fi
+        readlink --canonicalize-existing /opt/lowerduckpond/static-host-agent/current
+    "')
 
 temporary_directory=$(mktemp -d)
 preserve_private_diagnostics=false

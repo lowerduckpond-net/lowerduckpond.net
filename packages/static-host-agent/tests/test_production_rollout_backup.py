@@ -123,3 +123,55 @@ def test_private_workspace_refuses_symlink_without_touching_target(
     with pytest.raises((StatePathError, OSError)):
         rollout._private(tmp_path / "proof", os.geteuid())
     assert not list(target.iterdir())
+
+
+def test_completed_inspection_uses_fresh_protection_without_capture_or_snapshot_write(
+    state: Path,
+    repository: Repository,
+    authority: BackupAuthority,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = state.parent / "protection"
+    workspace.mkdir(mode=0o700)
+    before = snapshot(state)
+    gates: list[str] = []
+    monkeypatch.setattr(rollout, "require_restore_admission", lambda: gates.append("admitted"))
+
+    def forbidden(*args: object, **kwargs: object) -> None:
+        pytest.fail("inspection must not recapture or initialize an ordinary backup")
+
+    monkeypatch.setattr(rollout, "capture_rollout_backup", forbidden)
+    monkeypatch.setattr(rollout, "retain_database", forbidden)
+    monkeypatch.setattr(rollout, "verify_backup", forbidden)
+    head = hashlib.sha256((state / "audit/archive/head.json").read_bytes()).hexdigest()
+    # Only the permanent genesis exists. An ordinary original snapshot is not
+    # required once completed rollout has passed into normal retention.
+    with (
+        (state / "locks/tenant-state.lock").open("rb") as first,
+        (state / "locks/publication.lock").open("rb") as second,
+    ):
+        for _ in range(2):
+            rollout.inspect(
+                authority,
+                {**ENVIRONMENT, "LOWERDUCKPOND_BACKUP_STATUS_SCOPE": "a" * 64},
+                (first.fileno(), second.fileno()),
+                genesis_snapshot_id="c" * 64,
+                audit_head_sha256=head,
+                workspace=workspace,
+                owner=OWNER,
+                paths=CapturePaths(state=state),
+            )
+        repository.snapshots.pop()
+        with pytest.raises(BackupIdentityError):
+            rollout.inspect(
+                authority,
+                {**ENVIRONMENT, "LOWERDUCKPOND_BACKUP_STATUS_SCOPE": "a" * 64},
+                (first.fileno(), second.fileno()),
+                genesis_snapshot_id="c" * 64,
+                audit_head_sha256=head,
+                workspace=workspace,
+                owner=OWNER,
+                paths=CapturePaths(state=state),
+            )
+    assert snapshot(state) == before and repository.writes == 1
+    assert gates == ["admitted"] * 5

@@ -202,7 +202,7 @@ def test_legacy_configure_probe_stops_before_treating_artifact_selection_as_auth
 ) -> None:
     wrapper = (ROOT / "scripts/configure-production").read_text()
     probe = wrapper.split("selected_production_artifact=$(ssh ", 1)[1].split(
-        "\nexport SPACES_BACKUP_ACCESS_KEY_ID", 1
+        "\ntemporary_directory=", 1
     )[0]
     remote = shlex.split(probe.rsplit(")", 1)[0])[-1]
     arguments = shlex.split(remote)

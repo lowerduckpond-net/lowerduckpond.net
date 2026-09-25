@@ -11,16 +11,18 @@ import pytest
 
 from scripts import m3_11_production_backup as backup
 from scripts import m3_11_production_lease as lease
+from scripts import m3_11_production_observe as observe
 from scripts import m3_11_production_remote as remote
 
 
+@pytest.mark.parametrize("operation", ["backup", "inspect", "observe"])
 @pytest.mark.parametrize("fault", ["uid", "cgroup", "lease", "input", "candidate", "none"])
 def test_backup_requires_tracked_live_action_and_never_exposes_private_errors(
-    monkeypatch: pytest.MonkeyPatch, fault: str
+    monkeypatch: pytest.MonkeyPatch, fault: str, operation: str
 ) -> None:
     calls: list[str] = []
     monkeypatch.setattr(os, "geteuid", lambda: 1 if fault == "uid" else 0)
-    monkeypatch.setattr(sys, "argv", ["helper.pyz", "backup", "a" * 64])
+    monkeypatch.setattr(sys, "argv", ["helper.pyz", operation, "a" * 64])
     monkeypatch.setattr(
         Path,
         "read_text",
@@ -49,6 +51,8 @@ def test_backup_requires_tracked_live_action_and_never_exposes_private_errors(
 
     monkeypatch.setattr(lease, "require_action", require)
     monkeypatch.setattr(backup, "verify", candidate)
+    monkeypatch.setattr(backup, "inspect", candidate)
+    monkeypatch.setattr(observe, "observe", candidate)
     assert remote.main() == (0 if fault == "none" else 1)
     assert output.getvalue() == (b'{"original":"proof"}\n' if fault == "none" else b"")
     assert errors.getvalue() == ("" if fault == "none" else "production_action_failed\n")

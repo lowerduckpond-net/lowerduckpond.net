@@ -208,3 +208,41 @@ def run(  # noqa: PLR0913 - fixed action bindings and privilege boundary
         )
         require_restore_admission()
         return result
+
+
+def inspect(  # noqa: PLR0913 - original authority and fixed inspection workspace
+    authority: BackupAuthority,
+    environment: Mapping[str, str],
+    descriptors: tuple[int, int],
+    *,
+    genesis_snapshot_id: str,
+    audit_head_sha256: str,
+    workspace: Path,
+    owner: int,
+    paths: CapturePaths = DEFAULT_CAPTURE_PATHS,
+) -> None:
+    """Recheck the unlaunched host without deploying or recapturing its backup.
+
+    The original ordinary snapshot may age out under normal retention after
+    completed rollout. Its historical receipt stays original; current admission
+    requires the permanent genesis and freshly verified protected inventory.
+    """
+    require_restore_admission()
+    authority.document()
+    full_id(genesis_snapshot_id)
+    full_id(audit_head_sha256)
+    full_id(environment.get("LOWERDUCKPOND_BACKUP_STATUS_SCOPE"))
+    with (
+        DurableDirectory.open(workspace, expected_owner=owner, expected_directory_mode=0o700),
+        inherit_restic_leases(descriptors),
+    ):
+        _protect(
+            paths,
+            workspace,
+            environment,
+            authority,
+            genesis_snapshot_id=genesis_snapshot_id,
+            audit_head_sha256=audit_head_sha256,
+            owner=owner,
+        )
+        require_restore_admission()

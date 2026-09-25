@@ -12,6 +12,7 @@ from scripts import m3_11_production_fence as fence
 from scripts import m3_11_production_gate as gate
 from scripts import m3_11_production_initialize as initialize
 from scripts import m3_11_production_lease as lease
+from scripts import m3_11_production_observe as observe
 from scripts import m3_11_production_records as records
 
 ROOT = Path("/run/lowerduckpond-m3-11")
@@ -78,12 +79,16 @@ def main() -> int:  # noqa: PLR0911,PLR0912 - fixed root-only wire operations
                 raise ValueError("production initialization failed") from None
             sys.stdout.buffer.write(result)
             return 0
-        if len(arguments) == 2 and arguments[0] == "backup":  # noqa: PLR2004 - operation and token
+        if len(arguments) == 2 and arguments[0] in {"backup", "inspect", "observe"}:  # noqa: PLR2004 - operation and token
             lease.require_action(LEASE, owner=0, token=arguments[1])
             if sys.stdin.buffer.read(1):
                 raise ValueError("unexpected production backup input")
             try:
-                result = backup.verify()
+                result = {
+                    "backup": backup.verify,
+                    "inspect": backup.inspect,
+                    "observe": observe.observe,
+                }[arguments[0]]()
             except Exception:
                 raise ValueError("production backup proof failed") from None
             sys.stdout.buffer.write(result)
