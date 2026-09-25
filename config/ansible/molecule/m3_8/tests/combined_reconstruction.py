@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import uuid
+from contextlib import nullcontext
 from pathlib import Path
 
 import audit_protection_support as audits
@@ -19,11 +21,52 @@ from restore_fixture import RECOVERY, UNIT, Fixture
 from testinfra.host import Host
 
 from scripts.m3_11_live_storage import LiveStorage
+from scripts.m3_11_phase_receipts import Recorder
+from scripts.m3_11_qualification_evidence import canonical_bytes
 
 
-def backup_mutation(host: Host, tmp_path: Path) -> restore.SourceHistory:
-    restore.activate_source(host, archived_prefix=True)
-    history = restore.prepare_history(host, tmp_path)
+def run(
+    host: Host,
+    tmp_path: Path,
+    *,
+    live_storage: LiveStorage | None = None,
+    recorder: Recorder | None = None,
+    existing_namespace: bool = False,
+) -> tuple[Fixture, dict[str, object]]:
+    """The same actual assertions serve independent, complete and live callers."""
+    with recorder.phase("backup-mutation-overlap") if recorder else nullcontext({}) as observations:
+        history, overlap = backup_mutation(
+            host, tmp_path, live_storage=live_storage, existing_namespace=existing_namespace
+        )
+        observations.update(overlap)
+    with recorder.phase("protected-rotation") if recorder else nullcontext({}) as observations:
+        rotated = protected_rotation(host, tmp_path, history)
+        observations.update(rotated)
+    with recorder.phase("reconstruction") if recorder else nullcontext({}) as observations:
+        fixture, restored = reconstruction(host, tmp_path, history, live_storage=live_storage)
+        observations.update(restored)
+    with recorder.phase("reboot") if recorder else nullcontext({}) as observations:
+        observations.update(reboot_and_replay(fixture, history))
+    return fixture, {
+        **restored,
+        "protected_segments": rotated["protected_segments"],
+        "index_sha256": rotated["index_sha256"],
+    }
+
+
+def backup_mutation(
+    host: Host,
+    tmp_path: Path,
+    *,
+    live_storage: LiveStorage | None = None,
+    existing_namespace: bool = False,
+) -> tuple[restore.SourceHistory, dict[str, object]]:
+    if live_storage is not None:
+        live_storage.require_source(os.environ)
+    elif os.environ.get("M3_10_ARCHIVE_BACKEND", "minio") != "minio":
+        raise ValueError("combined Spaces mutation requires its explicit owned storage inputs")
+    restore.activate_source(host, archived_prefix=True, existing_namespace=existing_namespace)
+    history = restore.prepare_history(host, tmp_path, retain_existing=existing_namespace)
     backups._source_exclusion_canaries(host)
     request = support._request(
         "rename",
@@ -35,7 +78,11 @@ def backup_mutation(host: Host, tmp_path: Path) -> restore.SourceHistory:
     result, descriptor = captures.race_job(host, job)
     assert result["status"] == "succeeded"
     assert {item["tenantId"] for item in descriptor["tenants"]} == set(history.tenants)
-    return history
+    return history, {
+        "descriptor_sha256": hashlib.sha256(canonical_bytes(descriptor)).hexdigest(),
+        "mutation_result_sha256": hashlib.sha256(canonical_bytes(result)).hexdigest(),
+        "tenant_count": len(history.tenants),
+    }
 
 
 def protected_rotation(
@@ -134,6 +181,7 @@ def reconstruction(
     assert journal != interrupted
     assert not fixture.destination.file("/var/lib/lowerduckpond/recovery/restore-gate.json").exists
     assert fixture.destination.service("caddy").is_running
+    restore.verify_reconstruction(fixture, replay)
     descriptor_raw = identity._restic(
         host, f"dump {fixture.snapshot} {captures.DESCRIPTOR}"
     ).encode()
@@ -161,7 +209,7 @@ def reconstruction(
     }
 
 
-def reboot_and_replay(fixture: Fixture, history: restore.SourceHistory) -> None:
+def reboot_and_replay(fixture: Fixture, history: restore.SourceHistory) -> dict[str, object]:
     original = fixture.destination.file(f"{RECOVERY}/host-restore.json").content
     fixture.reboot()
     assert fixture.destination.service("caddy").is_running
@@ -169,4 +217,4 @@ def reboot_and_replay(fixture: Fixture, history: restore.SourceHistory) -> None:
     fixture.start()
     fixture.wait({"complete"})
     assert fixture.destination.file(f"{RECOVERY}/host-restore.json").content == original
-    restore.finish(fixture, history.tenants, history.replay)
+    return restore.replay_and_retire(fixture, history.tenants, history.replay)

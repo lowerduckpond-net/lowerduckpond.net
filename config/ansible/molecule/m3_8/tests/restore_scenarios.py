@@ -30,9 +30,9 @@ from scripts.m3_11_live_storage import LiveStorage
 from scripts.qualification_case import private_document
 
 
-def activate_source(host: Host, *, archived_prefix: bool) -> None:
+def activate_source(host: Host, *, archived_prefix: bool, existing_namespace: bool = False) -> None:
     """Require full source convergence and idempotence on its final configuration."""
-    assert support._initialize_namespace(host)
+    assert support._initialize_namespace(host) is not existing_namespace
     assert host.run("systemctl start %s", identity.UNIT).rc == 0
     reapplied = support._run_ansible_reapply(
         backup_recovery_enabled=True, audit_rotation_enabled=archived_prefix
@@ -83,11 +83,33 @@ class SourceHistory:
     connection: tuple[str, Path, Path]
 
 
-def prepare_history(host: Host, tmp_path: Path, *, full_history: bool = True) -> SourceHistory:
+def prepare_history(
+    host: Host, tmp_path: Path, *, full_history: bool = True, retain_existing: bool = False
+) -> SourceHistory:
     """Prepare the same real tenant states for local and combined reconstruction."""
     support._prepare_edge_probe(host)
     support._initialize_admission_pacing(host)
     connection = support._operator_inputs(tmp_path)
+    existing = json.loads(
+        checked(
+            host,
+            exports._selected_python(
+                host,
+                f"""
+import json
+from pathlib import Path
+from lowerduckpond_static_host_agent.repository import StateRepository
+repository = StateRepository(Path({support.STATE_ROOT!r}), expected_owner=0)
+try:
+    print(json.dumps(repository.measure_inventory(blocking=True).tenant_ids))
+finally:
+    repository.close()
+""",
+            ),
+        )
+    )
+    assert isinstance(existing, list)
+    assert retain_existing or not existing, "fresh reconstruction inherited another history"
     tenants = []
     replay: dict[str, object] = {}
     # Negative evidence needs active content and one exact archive. Positive
@@ -127,7 +149,10 @@ def prepare_history(host: Host, tmp_path: Path, *, full_history: bool = True) ->
     assert host.run("systemctl stop lowerduckpond-static-reconcile.timer").rc == 0
     assert host.run("systemctl stop lowerduckpond-audit-rotate.timer").rc == 0
     recovery._await_authorization_quiescent(host)
-    return SourceHistory(tenants, replay, connection)
+    # The complete legacy journey intentionally retains ordinary tenants. They
+    # remain part of the same authoritative snapshot and destination cleanup;
+    # never delete them to make the combined drill resemble a fresh group.
+    return SourceHistory([*tenants, *existing], replay, connection)
 
 
 def capture_source(
@@ -214,6 +239,12 @@ def wait_failed(fixture: Fixture) -> None:
 
 
 def finish(fixture: Fixture, tenants: list[str], replay: dict[str, object]) -> None:
+    verify_reconstruction(fixture, replay)
+    replay_and_retire(fixture, tenants, replay)
+
+
+def verify_reconstruction(fixture: Fixture, replay: dict[str, object]) -> None:
+    """Complete reconstruction assertions before any success receipt or reboot."""
     fixture.wait({"complete"}, seconds=300)
     destination = fixture.destination
     assert fixture.status()["activationPending"] is False
@@ -260,6 +291,18 @@ assert os.statvfs('/').f_flag & os.ST_RDONLY
     ).exists
     descriptor = identity._restic(fixture.source, f"dump {fixture.snapshot} {captures.DESCRIPTOR}")
     assert json.loads(descriptor) == replay["descriptor"]
+    export_result = f"{support.STATE_ROOT}/authorization/results/{replay['exportJob']}.json"
+    assert destination.file(export_result).content == fixture.source.file(export_result).content
+    assert not destination.run(
+        "find %s/exports -mindepth 1 -print -quit", support.STATE_ROOT
+    ).stdout
+
+
+def replay_and_retire(
+    fixture: Fixture, tenants: list[str], replay: dict[str, object]
+) -> dict[str, object]:
+    """Replay ordinary authority, retire all fixture tenants, and prove accounting."""
+    destination = fixture.destination
     path = fixture.root / "destination-operator"
     connection = fixture.connection(path)
     request = dict(replay["request"])
@@ -273,6 +316,7 @@ assert os.statvfs('/').f_flag & os.ST_RDONLY
     )
     result_path = f"{support.STATE_ROOT}/authorization/results/{binding['jobId']}.json"
     assert destination.file(result_path).content == fixture.source.file(result_path).content
+    result_sha256 = hashlib.sha256(destination.file(result_path).content).hexdigest()
     export_result = f"{support.STATE_ROOT}/authorization/results/{replay['exportJob']}.json"
     assert destination.file(export_result).content == fixture.source.file(export_result).content
     assert not destination.run(
@@ -311,3 +355,9 @@ assert os.statvfs('/').f_flag & os.ST_RDONLY
         },
     )
     owned.paired_proof(fixture.environment)
+    return {
+        "historical_result_sha256": result_sha256,
+        "export_result_sha256": hashlib.sha256(destination.file(export_result).content).hexdigest(),
+        "journal_sha256": hashlib.sha256(journal).hexdigest(),
+        "retired_tenants": len(tenants),
+    }

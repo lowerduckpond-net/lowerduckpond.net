@@ -9,7 +9,9 @@ from testinfra.host import Host
 
 def test_installed_combined_reconstruction(host: Host, tmp_path: Path) -> None:
     require_owned_fixture()
-    history = combined.backup_mutation(host, tmp_path)
-    combined.protected_rotation(host, tmp_path, history)
-    fixture, _ = combined.reconstruction(host, tmp_path, history)
-    combined.reboot_and_replay(fixture, history)
+    combined.run(host, tmp_path)
+
+
+def test_complete_journey_combined_reconstruction(host: Host, tmp_path: Path) -> None:
+    require_owned_fixture()
+    combined.run(host, tmp_path, existing_namespace=True)

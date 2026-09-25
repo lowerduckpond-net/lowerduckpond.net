@@ -27,6 +27,15 @@ The complete installed journey remains available locally and is required on
 scheduled/manual workflows; each group result remains diagnostic evidence
 rather than a production qualification report.
 
+After the original complete local lifecycle and accounting checks, that journey
+also runs combined reconstruction on the same source. It preserves the earlier
+tenants alongside the four new recovery states, restores their full backup, then
+retires them through ordinary destination operations. Exact test completion and
+fresh paired/independent storage accounting are required before removing the
+destination and controlled ACME service. `complete-combined.json` records that
+local diagnostic; the outer Molecule sequence still removes its source and
+storage fixtures before the complete run can pass.
+
 | Case | Preserved installed assertions and independent setup |
 | --- | --- |
 | `restore-reconstruction` | Own fenced source plus second fresh Ubuntu/ext4 destination; full-ID Restic restore, four tenant states, protected audit prefix/local tail, excluded upload/export decisions, exact archive proof, cold Caddy generation, immutable result replay and reboot. |
