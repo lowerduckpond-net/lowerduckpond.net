@@ -8,11 +8,14 @@ themselves, assert that certificate issuance or the installed assertions passed.
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
+
+from lowerduckpond_static_host_agent.host_restore_coordinator import COORDINATOR_SECONDS
 
 from scripts import m3_11_qualification_evidence as evidence
 from scripts.check_m3_7_production_edge import (
@@ -25,7 +28,11 @@ from scripts.m3_11_live_storage import LiveStorage
 from scripts.m3_11_private_inputs import read_private, write_private
 
 FORMAT = "lowerduckpond-m3-11-private-dns-observation-v1"
-MAX_OBSERVATIONS = 240
+POLL_INTERVAL_SECONDS = 5
+# Both polling loops share the original coordinator deadline. Allow every
+# periodic sample, each loop's immediate first sample, then baseline, cleanup,
+# and the two teardown observations; evidence accounting must not shorten it.
+MAX_OBSERVATIONS = math.ceil(COORDINATOR_SECONDS / POLL_INTERVAL_SECONDS) + 2 + 4
 MAX_RECORDS_PER_NAME = 4
 MAX_TYPE_LENGTH = 16
 MAX_CONTENT_LENGTH = 4096

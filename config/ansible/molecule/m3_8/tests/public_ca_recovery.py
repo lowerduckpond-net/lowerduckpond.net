@@ -18,7 +18,7 @@ from test_export_import import _selected_python
 from scripts import m3_11_public_caddy as policy
 from scripts import m3_11_qualification_evidence as evidence
 from scripts import qualification_restore as owned
-from scripts.m3_11_dns_witness import DnsWitness
+from scripts.m3_11_dns_witness import POLL_INTERVAL_SECONDS, DnsWitness
 from scripts.m3_11_live_storage import LiveStorage
 from scripts.m3_11_phase_receipts import Recorder
 from scripts.m3_11_private_inputs import read_private, read_private_bytes, write_private
@@ -170,7 +170,7 @@ finally:
         self._remaining()
 
     def _wait(self) -> None:
-        time.sleep(min(5, self._remaining()))
+        time.sleep(min(POLL_INTERVAL_SECONDS, self._remaining()))
 
     def run(self) -> tuple[dict[str, object], dict[str, object]]:
         self.installed = False
