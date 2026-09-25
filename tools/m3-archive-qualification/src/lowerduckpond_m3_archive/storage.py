@@ -124,7 +124,9 @@ def assert_versioning_enabled(client: S3Client, *, bucket: str) -> None:
         raise ArchiveQualificationError("bucket versioning is not enabled")
 
 
-def list_current_objects(client: S3Client, *, bucket: str, prefix: str) -> tuple[str, ...]:
+def list_current_objects(
+    client: S3Client, *, bucket: str, prefix: str, maximum_entries: int | None = None
+) -> tuple[str, ...]:
     keys: list[str] = []
     continuation_token: str | None = None
     seen_tokens: set[str] = set()
@@ -141,6 +143,8 @@ def list_current_objects(client: S3Client, *, bucket: str, prefix: str) -> tuple
             key = _required_string(item, "Key")
             _require_prefix(key, prefix)
             keys.append(key)
+            if maximum_entries is not None and len(keys) > maximum_entries:
+                raise ArchiveQualificationError("object listing exceeded its entry bound")
         if not _is_truncated(response):
             return tuple(keys)
         continuation_token = _required_string(response, "NextContinuationToken")
@@ -156,6 +160,7 @@ def list_versions(
     bucket: str,
     prefix: str,
     max_keys: int = LIST_PAGE_SIZE,
+    maximum_entries: int | None = None,
 ) -> VersionListing:
     entries: list[VersionEntry] = []
     continuations: list[tuple[str, str]] = []
@@ -183,6 +188,8 @@ def list_versions(
                         version_id=_required_string(item, "VersionId"),
                     )
                 )
+                if maximum_entries is not None and len(entries) > maximum_entries:
+                    raise ArchiveQualificationError("version listing exceeded its entry bound")
         if not _is_truncated(response):
             return VersionListing(tuple(entries), page_index, tuple(continuations))
         key_marker = _required_string(response, "NextKeyMarker")
@@ -195,7 +202,9 @@ def list_versions(
     raise ArchiveQualificationError("version listing exceeded its page bound")
 
 
-def list_multipart_uploads(client: S3Client, *, bucket: str, prefix: str) -> MultipartListing:
+def list_multipart_uploads(
+    client: S3Client, *, bucket: str, prefix: str, maximum_entries: int | None = None
+) -> MultipartListing:
     uploads: list[MultipartUpload] = []
     key_marker: str | None = None
     upload_marker: str | None = None
@@ -214,6 +223,8 @@ def list_multipart_uploads(client: S3Client, *, bucket: str, prefix: str) -> Mul
             key = _required_string(item, "Key")
             _require_prefix(key, prefix)
             uploads.append(MultipartUpload(key=key, upload_id=_required_string(item, "UploadId")))
+            if maximum_entries is not None and len(uploads) > maximum_entries:
+                raise ArchiveQualificationError("multipart listing exceeded its entry bound")
         if not _is_truncated(response):
             return MultipartListing(tuple(uploads), page_index)
         key_marker = _required_string(response, "NextKeyMarker")
