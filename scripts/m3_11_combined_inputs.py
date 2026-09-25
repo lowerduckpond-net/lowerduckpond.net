@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import os
 import secrets
 import stat
+import sys
 import uuid
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
@@ -228,3 +230,38 @@ def capture(directory: Path, repository: Path, ambient: Mapping[str, str]) -> di
     write_private(directory / "combined-context.json", context)
     evidence.validate_names(directory / "combined-names.json", context)
     return context
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "action", choices=("allocate", "capture-public", "prepare-storage", "capture")
+    )
+    parser.add_argument("directory", type=Path)
+    arguments = parser.parse_args()
+    directory = arguments.directory
+    repository = Path(__file__).resolve().parents[1]
+    if arguments.action == "allocate":
+        allocate(directory, os.environ)
+        # Only fixed, non-secret fixture coordinates enter the shell. Never
+        # print the merged ambient environment or construct shell source text.
+        fixture = read_private(directory / "fixture.json")
+        environment = evidence.fields(
+            fixture["environment"],
+            set(_environment(directory, str(fixture["run_id"]), _local(os.environ))),
+        )
+        for key, value in environment.items():
+            sys.stdout.buffer.write(key.encode() + b"\0" + str(value).encode() + b"\0")
+    elif arguments.action == "capture-public":
+        from scripts.m3_11_public_inputs import capture as capture_public  # noqa: PLC0415
+
+        capture_public(directory, dict(os.environ))
+    elif arguments.action == "prepare-storage":
+        prepare_storage(directory, repository, os.environ)
+    else:
+        capture(directory, repository, os.environ)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

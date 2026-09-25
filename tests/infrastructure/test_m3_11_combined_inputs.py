@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import sys
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,7 +21,7 @@ from scripts.m3_11_backup_fixture import Target
 from scripts.m3_11_live_storage import LiveStorage
 from scripts.m3_11_private_inputs import read_private
 from scripts.production_qualification_inputs import REVOCATIONS, capture_run, git
-from scripts.qualification_context import ARTIFACT_ENV, HOST_ENV, RUN_ENV
+from scripts.qualification_context import ARTIFACT_ENV, HOST_ENV, RESOURCE_ENV, RUN_ENV
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -123,6 +125,30 @@ def test_owned_environment_cannot_follow_ambient_daemon_or_foreign_names(run: Ru
         with pytest.raises(ValueError):
             inputs.environment_for(run.directory, {**run.environment, key: value})
     assert (run.directory / "fixture.json").read_bytes() == raw
+
+
+def test_allocation_cli_exports_only_literal_nonsecret_coordinates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsysbinary: pytest.CaptureFixture[bytes]
+) -> None:
+    directory = tmp_path / "literal $(touch unwanted) `command` path"
+    directory.mkdir(mode=0o700)
+    for key in (*RESOURCE_ENV, "MOLECULE_EPHEMERAL_DIRECTORY", "DOCKER_CONTEXT"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("DOCKER_HOST", "unix:///var/run/docker.sock")
+    monkeypatch.setenv("SPACES_SECRET_ACCESS_KEY", "private-environment-canary")
+    monkeypatch.setattr(sys, "argv", ["inputs", "allocate", str(directory)])
+    assert inputs.main() == 0
+    raw = capsysbinary.readouterr().out
+    assert b"private-environment-canary" not in raw
+    parts = raw.decode().split("\0")
+    assert parts.pop() == ""
+    exported = dict(zip(parts[::2], parts[1::2], strict=True))
+    assert exported == read_private(directory / "fixture.json")["environment"]
+    assert inputs.environment_for(directory, {**os.environ, **exported})[ARTIFACT_ENV] == str(
+        directory / "fixture/static-host-agent.tar"
+    )
+    with pytest.raises(FileExistsError):
+        inputs.main()
 
 
 def test_provider_owner_and_private_password_bind_original_storage_report(run: Run) -> None:
