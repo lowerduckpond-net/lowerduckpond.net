@@ -9,6 +9,7 @@ import pytest
 from lowerduckpond_static_contracts import (
     Digest,
     audit_entry_digest,
+    canonical_audit_entry,
     canonical_json_bytes,
 )
 from lowerduckpond_static_host_agent import audit_archive_formats as formats
@@ -348,14 +349,14 @@ def test_adjacent_exact_byte_proofs_share_both_directions_with_bounded_retention
 ) -> None:
     calls: list[bytes] = []
 
-    def digest(document: object) -> Digest:
-        result = audit_entry_digest(document)
-        calls.append(canonical_json_bytes(document))
-        return result
+    def validated(document: object) -> tuple[bytes, Digest]:
+        raw, digest = canonical_audit_entry(document)
+        calls.append(raw)
+        return raw, digest
 
     with formats._PROOF_CACHE_LOCK:
         formats._PROOF_CACHE.clear()
-    monkeypatch.setattr(formats, "audit_entry_digest", digest)
+    monkeypatch.setattr(formats, "canonical_audit_entry", validated)
     first = entry()
     second = entry(1, audit_entry_digest(first).to_dict())
     raw = (canonical_json_bytes(first), canonical_json_bytes(second))

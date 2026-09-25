@@ -13,7 +13,7 @@ from typing import Final
 from lowerduckpond_static_contracts import (
     MAX_CANONICAL_BYTES,
     ContractError,
-    audit_entry_digest,
+    canonical_audit_entry,
     canonical_json_bytes,
     decode_json_object,
     validate_uuid7,
@@ -237,8 +237,9 @@ def _inspect_segment(raw: bytes) -> SegmentEvidence:
             document = decode_json_object(line, maximum_bytes=MAX_CANONICAL_BYTES)
             # The digest validates the complete audit contract. Do that once,
             # before using any fields, and retain its original 32-bit framing.
-            entry_digest = audit_entry_digest(document).to_dict()
-            if canonical_json_bytes(document) != line:
+            canonical, digest = canonical_audit_entry(document)
+            entry_digest = digest.to_dict()
+            if canonical != line:
                 raise BackupIdentityError("audit archive entry is not canonical")
             sequence = archive_count(document["sequence"], MAX_WITNESSED_ENTRIES - 1)
             previous = document["previousEntryDigest"]

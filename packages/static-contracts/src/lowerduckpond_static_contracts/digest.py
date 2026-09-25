@@ -15,12 +15,17 @@ from lowerduckpond_static_contracts._digest import (
 )
 from lowerduckpond_static_contracts.canonical import canonical_json_bytes
 from lowerduckpond_static_contracts.errors import ContractError, ErrorCode
-from lowerduckpond_static_contracts.schema import ContractKind, validate_contract
+from lowerduckpond_static_contracts.schema import (
+    ContractKind,
+    _validated_contract,
+    validate_contract,
+)
 
 __all__ = [
     "Digest",
     "archive_record_digest",
     "audit_entry_digest",
+    "canonical_audit_entry",
     "deployment_record_digest",
     "manifest_digest",
     "platform_state_digest",
@@ -78,13 +83,16 @@ def archive_record_digest(archive: object) -> Digest:
 def audit_entry_digest(entry: object) -> Digest:
     """Compute the accepted v1 canonical audit-entry digest."""
 
+    return canonical_audit_entry(entry)[1]
+
+
+def canonical_audit_entry(entry: object) -> tuple[bytes, Digest]:
+    """Validate one audit entry and bind its exact canonical bytes to its digest."""
+
     if type(entry) is not dict:
         raise ContractError(ErrorCode.SCHEMA_INVALID, "audit entry must be a contract object")
-    validate_contract(entry, expected_kind=ContractKind.AUDIT_ENTRY)
-    return digest_bytes(
-        canonical_json_bytes(entry),
-        format_identifier=AUDIT_ENTRY_DIGEST_FORMAT,
-    )
+    _, raw = _validated_contract(entry, expected_kind=ContractKind.AUDIT_ENTRY)
+    return raw, digest_bytes(raw, format_identifier=AUDIT_ENTRY_DIGEST_FORMAT)
 
 
 def manifest_digest(manifest: object) -> Digest:

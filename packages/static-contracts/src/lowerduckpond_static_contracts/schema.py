@@ -1142,6 +1142,16 @@ def validate_contract(
 ) -> ContractKind:
     """Validate shape, types, identifiers, reservations, and canonical size."""
 
+    return _validated_contract(document, expected_kind=expected_kind)[0]
+
+
+def _validated_contract(
+    document: dict[str, object],
+    *,
+    expected_kind: ContractKind | None = None,
+) -> tuple[ContractKind, bytes]:
+    """Retain the exact bounded bytes produced by complete contract validation."""
+
     kind = _require_supported_identity(document)
     if expected_kind is not None and kind is not expected_kind:
         raise ContractError(ErrorCode.UNKNOWN_KIND, "contract kind is not the expected kind")
@@ -1150,8 +1160,7 @@ def validate_contract(
         error = errors[0]
         raise ContractError(_validation_error_code(error), "contract does not match its schema")
     _semantic_validation(document, kind)
-    canonical_json_bytes(document)
-    return kind
+    return kind, canonical_json_bytes(document)
 
 
 def _reject_create_authority_fields(document: dict[str, object]) -> None:

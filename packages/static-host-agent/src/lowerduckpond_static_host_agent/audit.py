@@ -14,6 +14,7 @@ from lowerduckpond_static_contracts import (
     ContractError,
     ContractKind,
     audit_entry_digest,
+    canonical_audit_entry,
     canonical_json_bytes,
     decode_json_object,
     validate_contract,
@@ -921,11 +922,14 @@ def _validate_chain_records(  # noqa: PLR0912,PLR0913,PLR0915 - one bounded vali
                 document = decode_json_object(line, maximum_bytes=MAX_CANONICAL_BYTES)
                 # Computing the digest strictly validates the whole contract;
                 # retain that proof instead of validating the same entry again.
-                entry_digest = audit_entry_digest(document).to_dict() if archived is None else None
+                entry_digest = None
+                if archived is None:
+                    canonical, digest = canonical_audit_entry(document)
+                    entry_digest = digest.to_dict()
             except ContractError as error:
                 raise AuditError("audit segment contains an invalid entry") from error
             if archived is None:
-                if canonical_json_bytes(document) != line:
+                if canonical != line:
                     raise AuditError("audit entry is not its exact canonical representation")
                 if document["sequence"] != sequence:
                     raise AuditError("audit entry sequence is not contiguous")
