@@ -181,6 +181,35 @@ def test_remote_command_preserves_shell_input_as_one_argument() -> None:
     assert "--expand-environment=no" in arguments
 
 
+def test_rollout_backup_profile_preserves_installed_service_policy() -> None:
+    template = (
+        ROOT / "config/ansible/roles/backup/templates/lowerduckpond-backup.service.j2"
+    ).read_text()
+    service = template.split("[Service]\n", 1)[1].split("{%", 1)[0]
+    _, helper = transport.helper_bundle()
+    arguments = shlex.split(transport.command(helper, TOKEN, "/usr/bin/true", backup=True))
+    properties = dict(
+        value.removeprefix("--property=").split("=", 1)
+        for value in arguments
+        if value.startswith("--property=")
+    )
+    for line in service.splitlines():
+        key, _, value = line.partition("=")
+        if key in {"", "Type", "ExecStart"}:
+            continue
+        if key == "TimeoutStartSec":
+            assert properties["RuntimeMaxSec"] == value
+        elif key == "InaccessiblePaths":
+            assert value in properties[key].split()
+        elif key == "ReadWritePaths":
+            assert set(properties[key].split()) == {*value.split(), str(REMOTE_ROOT)}
+        else:
+            assert properties[key] == value
+    assert arguments[-4:] == [helper, "action", TOKEN, "/usr/bin/true"]
+    ordinary = shlex.split(transport.command(helper, TOKEN, "/usr/bin/true"))
+    assert not any(value.startswith("--property=MemoryMax=") for value in ordinary)
+
+
 @pytest.mark.parametrize(
     ("helper", "token", "action"),
     [

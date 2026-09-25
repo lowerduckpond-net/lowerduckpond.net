@@ -117,11 +117,16 @@ class Session:
         if self.owner.poll() is not None:
             raise ValueError("production controller connection ended")
 
-    def run(self, name: str, arguments: Sequence[str], *, data: bytes = b"") -> Result:
+    def run(
+        self, name: str, arguments: Sequence[str], *, data: bytes = b"", backup: bool = False
+    ) -> Result:
         self.require_owner()
         result = self.logs.run(
             name,
-            [*self.ssh, transport.command(self.helper, self.token, shlex.join(arguments))],
+            [
+                *self.ssh,
+                transport.command(self.helper, self.token, shlex.join(arguments), backup=backup),
+            ],
             data=data,
         )
         self.require_owner()

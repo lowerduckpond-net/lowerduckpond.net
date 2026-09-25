@@ -11,6 +11,32 @@ from pathlib import Path
 
 from scripts.m3_11_production_remote import ROOT, UNIT
 
+BACKUP_PROPERTIES = (
+    "RuntimeMaxSec=30min",
+    "MemoryMax=512M",
+    "MemorySwapMax=0",
+    "TasksMax=32",
+    "LimitNOFILE=1024",
+    "CPUQuota=100%",
+    "Nice=10",
+    "IOSchedulingClass=best-effort",
+    "IOSchedulingPriority=7",
+    "PrivateTmp=true",
+    "ProtectSystem=strict",
+    "ProtectHome=true",
+    "ProtectKernelTunables=true",
+    "ProtectKernelModules=true",
+    "ProtectKernelLogs=true",
+    "ProtectControlGroups=true",
+    "NoNewPrivileges=true",
+    "RestrictSUIDSGID=true",
+    "LockPersonality=true",
+    "IPAddressDeny=169.254.169.254/32",
+    "InaccessiblePaths=-/etc/lowerduckpond/archive -/run/lowerduckpond-archive",
+    "ReadWritePaths=/var/cache/lowerduckpond-backup /var/lib/lowerduckpond /var/lib/caddy "
+    + str(ROOT),
+)
+
 
 def helper_bundle() -> tuple[bytes, str]:
     directory = Path(__file__).parent
@@ -43,7 +69,7 @@ def helper_bundle() -> tuple[bytes, str]:
     return raw, str(ROOT / (hashlib.sha256(raw).hexdigest() + ".pyz"))
 
 
-def command(helper: str, token: str, action: str) -> str:
+def command(helper: str, token: str, action: str, *, backup: bool = False) -> str:
     if (
         re.fullmatch(re.escape(str(ROOT)) + r"/[0-9a-f]{64}\.pyz", helper) is None
         or re.fullmatch(r"[0-9a-f]{64}", token) is None
@@ -69,6 +95,7 @@ def command(helper: str, token: str, action: str) -> str:
             "--property=KillMode=control-group",
             "--property=UMask=0077",
             "--property=TimeoutStopSec=15s",
+            *("--property=" + value for value in BACKUP_PROPERTIES if backup),
             "/usr/bin/python3",
             "-I",
             "-B",
