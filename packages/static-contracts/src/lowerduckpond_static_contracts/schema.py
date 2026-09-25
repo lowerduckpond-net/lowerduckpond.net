@@ -39,6 +39,7 @@ from lowerduckpond_static_contracts.lifecycle import (
     Operation,
     TransactionPhase,
 )
+from lowerduckpond_static_contracts.schema_expansion import COMMON_ID, expand_common_references
 from lowerduckpond_static_contracts.values import (
     ValidatedCreateRequest,
     ValidatedPlatformNamespace,
@@ -145,10 +146,11 @@ def schema_for(kind: ContractKind) -> dict[str, object]:
 
 @cache
 def _validator(kind: ContractKind) -> Draft202012Validator:
-    schema = _cached_schema(kind)
+    registry = _registry()
+    schema = expand_common_references(_cached_schema(kind), _schema_documents()[COMMON_ID])
     return STRICT_DRAFT_202012_VALIDATOR(
         schema,
-        registry=_registry(),  # type: ignore[arg-type]  # jsonschema stub is wider
+        registry=registry,  # type: ignore[arg-type]  # jsonschema stub is wider
         format_checker=FormatChecker(),
     )
 
