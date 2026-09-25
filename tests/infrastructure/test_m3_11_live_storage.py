@@ -116,6 +116,24 @@ def test_original_owner_is_rechecked_by_both_independent_principals(
     ]
 
 
+def test_retained_inputs_after_owner_deletion_are_available_only_to_cleanup(
+    storage: LiveStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owner = Mock()
+    monkeypatch.setattr(LiveStorage, "require_owner", owner)
+    storage.save()
+    owner.side_effect = ValueError("original owner has been removed")
+    with pytest.raises(ValueError, match="owner has been removed"):
+        LiveStorage.load(storage.environment)
+    retained = LiveStorage._retained(storage.environment)
+    assert retained == storage
+    with pytest.raises(ValueError, match="owner has been removed"):
+        retained.variables()
+    Path(storage.environment[ARTIFACT_ENV]).write_bytes(b"replacement artifact")
+    with pytest.raises(ValueError, match="inputs changed"):
+        LiveStorage._retained(storage.environment)
+
+
 def test_source_and_destination_share_owned_repository_and_distinct_service_credentials(
     storage: LiveStorage, monkeypatch: pytest.MonkeyPatch
 ) -> None:

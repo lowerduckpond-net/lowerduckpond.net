@@ -96,6 +96,78 @@ def record(name: str, number: int = 1, **changes: object) -> dict[str, object]:
     return {"id": f"{number:032x}", "name": name, "type": "TXT", "content": "A" * 43, **changes}
 
 
+def authorize_removal(run: Run) -> dns.Observation:
+    witness = run.begin()
+    observation = witness.require_absent("teardown")
+    (run.directory / "owned-teardown").mkdir(mode=0o700)
+    write_private(
+        run.directory / "owned-teardown/intent.json",
+        {
+            "context_sha256": witness.context_sha256,
+            "dns_sha256": observation.sha256,
+        },
+    )
+    run.client.get.side_effect = [
+        {"id": zone_id, "name": domain, "status": "active", "account": {"id": "3" * 32}}
+        for zone_id, domain in (("1" * 32, "lowerduckpond.net"), ("2" * 32, "lowerduckpond.com"))
+    ]
+    return observation
+
+
+def test_cleanup_after_a_failed_attempt_appends_without_replacing_original_dns(run: Run) -> None:
+    original = authorize_removal(run)
+    before = {path: path.read_bytes() for path in original.path.parent.iterdir()}
+    observation = dns.removal_absence(run.directory, run.storage)
+    assert observation.record_count == 0
+    assert observation.path.name == "0002.json"
+    assert read_private(observation.path)["kind"] == "teardown"
+    assert all(path.read_bytes() == raw for path, raw in before.items())
+    run.policy.assert_called_once()  # Cleanup never starts or authorizes another issuer.
+    assert not (run.directory / "combined.json").exists()
+
+
+@pytest.mark.parametrize(
+    "fault",
+    ["zone", "context", "gap", "baseline", "authorization", "changed-hash", "count", "provider"],
+)
+def test_cleanup_cannot_adopt_changed_names_or_discard_previous_observations(
+    run: Run, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    original = authorize_removal(run)
+    if fault == "zone":
+        assert isinstance(run.storage.environment, dict)
+        run.storage.environment["CLOUDFLARE_ZONE_ID"] = "4" * 32
+    elif fault == "gap":
+        original.path.rename(original.path.with_name("0003.json"))
+    elif fault == "count":
+        monkeypatch.setattr(dns, "MAX_OBSERVATIONS", 2)
+    elif fault == "provider":
+        run.client.get_collection.side_effect = [[record(run.names[0])], []]
+    else:
+        path = run.directory / (
+            "combined-context.json"
+            if fault == "context"
+            else "public-dns/0000.json"
+            if fault == "baseline"
+            else "owned-teardown/intent.json"
+            if fault == "authorization"
+            else "public-dns/0001.json"
+        )
+        value = read_private(path)
+        if fault == "context":
+            value["storage_run_id"] = str(uuid.uuid7())
+        elif fault == "baseline":
+            value["kind"] = "cleanup"
+        elif fault == "authorization":
+            value["dns_sha256"] = "0" * 64
+        else:
+            value["completed_at"] = "changed original observation"
+        path.write_bytes(evidence.canonical_bytes(value))
+    with pytest.raises(ValueError):
+        dns.removal_absence(run.directory, run.storage)
+    assert not (run.directory / "combined.json").exists()
+
+
 def test_independent_dns_keeps_original_baseline_activity_and_cleanup(run: Run) -> None:
     witness = run.begin()
     run.policy.assert_called_once()

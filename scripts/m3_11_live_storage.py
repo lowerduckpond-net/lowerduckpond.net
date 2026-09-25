@@ -53,6 +53,17 @@ class LiveStorage:
     @classmethod
     def load(cls, environment: Mapping[str, str]) -> LiveStorage:
         """Read only the original private record in this fixture's owned run root."""
+        result = cls._retained(environment)
+        result.require_owner()
+        return result
+
+    @classmethod
+    def _retained(cls, environment: Mapping[str, str]) -> LiveStorage:
+        """Read local inputs; an authorized cleanup may already have deleted its owner.
+
+        Normal qualification must additionally require_owner. The cleanup caller
+        must validate the original durable teardown intent before any mutation.
+        """
         document = fields(
             read_private(_path(environment)),
             {
@@ -79,7 +90,7 @@ class LiveStorage:
         result = cls(
             target, binding, strings["owner_version"], environment, strings["restic_password"]
         )
-        result.require_source(environment)
+        result._require_inputs(environment)
         return result
 
     def save(self) -> None:
@@ -101,6 +112,10 @@ class LiveStorage:
 
     def require_source(self, environment: Mapping[str, str]) -> None:
         """Reject ambient/local overrides before attaching any live credentials."""
+        self._require_inputs(environment)
+        self.require_owner()
+
+    def _require_inputs(self, environment: Mapping[str, str]) -> None:
         host_name(environment)
         if (
             environment.get(RUN_ENV) != uuid7(self.target.run_id).hex
@@ -118,7 +133,6 @@ class LiveStorage:
             or self.binding["artifact_sha256"] != artifact_digest(Path(environment[ARTIFACT_ENV]))
         ):
             raise ValueError("combined Spaces reconstruction inputs changed")
-        self.require_owner()
 
     def require_owner(self) -> None:
         writer, observer = self.target.clients(self.environment)

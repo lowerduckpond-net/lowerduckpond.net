@@ -137,3 +137,11 @@
         chdir: "{{ lookup('ansible.builtin.env', 'MOLECULE_PROJECT_DIRECTORY') }}/../.."
       changed_when: false
       when: lookup('ansible.builtin.env', 'M3_10_ARCHIVE_BACKEND') != 'spaces'
+
+    - name: Qualify the combined live reconstruction and remove its owned resources
+      ansible.builtin.command:
+        cmd: python -m scripts.m3_11_combined_live
+      args:
+        chdir: "{{ lookup('ansible.builtin.env', 'MOLECULE_PROJECT_DIRECTORY') }}/../.."
+      changed_when: false
+      when: lookup('ansible.builtin.env', 'M3_11_COMBINED_BACKEND') == 'spaces'

@@ -207,3 +207,71 @@ class DnsWitness:
     def require_both_zones_observed(self) -> None:
         if self.observed_zones != {domain for domain, _ in ZONES}:
             raise ValueError("public DNS-01 activity was not independently observed in both zones")
+
+
+def removal_absence(directory: Path, storage: LiveStorage) -> Observation:
+    """Append a cleanup-only observation without replacing the failed live attempt.
+
+    The caller has validated its prior teardown authorization. No runtime token,
+    new baseline, certificate issuance, or qualification receipt is created here.
+    """
+    context = read_private(directory / "combined-context.json")
+    names = read_private(directory / "combined-names.json")
+    evidence.validate_names(directory / "combined-names.json", context)
+    intent = read_private(directory / "owned-teardown/intent.json")
+    if (
+        context["run_id"] != storage.target.run_id
+        or any(context[key] != storage.binding[key] for key in evidence.BINDING_FIELDS)
+        or intent.get("context_sha256") != _digest(context)
+    ):
+        raise ValueError("DNS cleanup lacks its original teardown context")
+    baseline = read_private(directory / "public-dns/0000.json")
+    zones = evidence.fields(baseline.get("zones"), {domain for domain, _ in ZONES})
+    nonce = evidence.uuid7(names["nonce"])
+    coordinates = tuple(
+        (
+            domain,
+            required(storage.environment, variable),
+            f"_acme-challenge.m3-11-{nonce.hex}.{domain}",
+        )
+        for domain, variable in ZONES
+    )
+    if (
+        baseline.get("kind") != "baseline"
+        or len({zone_id for _, zone_id, _ in coordinates}) != len(ZONES)
+        or any(
+            ZONE_ID_PATTERN.fullmatch(zone_id) is None
+            or zones[domain] != {"zone_id": zone_id, "name": name, "records": []}
+            for domain, zone_id, name in coordinates
+        )
+    ):
+        raise ValueError("DNS cleanup original zone ownership changed")
+    paths = []
+    for path in (directory / "public-dns").iterdir():
+        paths.append(path)
+        if len(paths) >= MAX_OBSERVATIONS:
+            raise ValueError("DNS cleanup observation count exceeds its bound")
+    hashes = []
+    for sequence, path in enumerate(sorted(paths)):
+        value = read_private(path)
+        if (
+            path.name != f"{sequence:04d}.json"
+            or value.get("format") != FORMAT
+            or value.get("sequence") != sequence
+            or value.get("context_sha256") != _digest(context)
+            or value.get("names_sha256") != _digest(names)
+        ):
+            raise ValueError("DNS cleanup original observation sequence changed")
+        hashes.append(_digest(value))
+    if intent.get("dns_sha256") not in hashes:
+        raise ValueError("DNS cleanup lost its original authorization observation")
+    client = CloudflareClient(required(storage.environment, "CLOUDFLARE_API_TOKEN"))
+    if (
+        len({_require_zone_identity(client, zone_id, domain) for domain, zone_id, _ in coordinates})
+        != 1
+    ):
+        raise ValueError("DNS cleanup zones belong to different accounts")
+    witness = DnsWitness(
+        directory, client, _digest(context), _digest(names), coordinates, len(paths)
+    )
+    return witness.require_absent("teardown")
