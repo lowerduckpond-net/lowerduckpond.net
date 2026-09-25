@@ -1,0 +1,8 @@
+---
+- name: Install the qualified artifact before original M3.11 metadata initialization
+  hosts: hosting_nodes
+  become: true
+  vars:
+    m3_11_production_static_stage: bootstrap
+  roles:
+    - role: static_host_agent
