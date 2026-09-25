@@ -49,12 +49,14 @@ def test_helper_bundle_is_deterministic_and_contains_only_qualified_code(tmp_pat
         assert set(archive.namelist()) == {
             "__main__.py",
             "scripts/__init__.py",
+            "scripts/m3_11_production_gate.py",
             "scripts/m3_11_production_journal.py",
             "scripts/m3_11_production_lease.py",
             "scripts/m3_11_production_records.py",
             "scripts/m3_11_production_remote.py",
         }
         for name in (
+            "m3_11_production_gate.py",
             "m3_11_production_journal.py",
             "m3_11_production_lease.py",
             "m3_11_production_records.py",

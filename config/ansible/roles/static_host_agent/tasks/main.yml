@@ -1,4 +1,9 @@
 ---
+- name: Guard an existing M3.11 production transaction before artifact changes
+  ansible.builtin.import_tasks: "{{ role_path }}/../../tasks/m3-11-production-guard.yml"
+  vars:
+    m3_11_production_guard_stage: "{{ m3_11_production_static_stage | default('converge') }}"
+
 - name: Require explicit completed-candidate verification authority
   ansible.builtin.assert:
     that:

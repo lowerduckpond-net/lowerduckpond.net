@@ -101,7 +101,14 @@ selected_production_artifact=$(ssh \
     -o BatchMode=yes -o HostKeyAlias=lowerduckpond.net -o IdentitiesOnly=yes \
     -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
     -i "${ANSIBLE_PRIVATE_KEY_FILE}" "ldp-admin@${PRODUCTION_ORIGIN_IPV4}" \
-    'readlink --canonicalize-existing /opt/lowerduckpond/static-host-agent/current')
+    'sudo --non-interactive /bin/sh -c "
+        if test -e /var/lib/lowerduckpond/convergence/m3-11 ||
+           test -L /var/lib/lowerduckpond/convergence/m3-11; then
+            echo Existing M3.11 transaction requires its original controller. >&2
+            exit 1
+        fi
+        readlink --canonicalize-existing /opt/lowerduckpond/static-host-agent/current
+    "')
 
 export SPACES_BACKUP_ACCESS_KEY_ID
 SPACES_BACKUP_ACCESS_KEY_ID=$(tofu -chdir="${production_root}" \
