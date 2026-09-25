@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import stat
 import sys
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -168,17 +168,20 @@ class LiveStorage:
 
 
 def main() -> int:
-    # Only no_log Ansible tasks consume this private stdout; never a shareable receipt.
-    if sys.argv[1:] != ["--variables"]:
-        print("Usage: python -m scripts.m3_11_live_storage --variables", file=sys.stderr)
+    # Ansible loads the private file with no_log and removes it in an always
+    # block. Standard output contains its path, never credential material.
+    if sys.argv[1:] != ["--variables-file"]:
+        print("Usage: python -m scripts.m3_11_live_storage --variables-file", file=sys.stderr)
         return 2
     try:
         storage = LiveStorage.load(os.environ)
         variables = storage.variables()
+        destination = _path(storage.environment).parent / f"ansible-storage-{uuid.uuid7().hex}.json"
+        write_private(destination, variables)
     except ValueError, OSError, KeyError:
         print("Combined Spaces private storage validation failed.", file=sys.stderr)
         return 1
-    print(json.dumps(variables, sort_keys=True))
+    print(destination)
     return 0
 
 

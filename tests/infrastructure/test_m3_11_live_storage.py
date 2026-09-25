@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import stat
+import subprocess
 import sys
 import uuid
 from dataclasses import replace
@@ -13,11 +14,13 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+import yaml  # type: ignore[import-untyped]
 
 from scripts import m3_11_restore_reservation as reservation
 from scripts import qualification_restore as owned
 from scripts.m3_11_backup_fixture import Target
 from scripts.m3_11_live_storage import LiveStorage, main
+from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes
 from scripts.production_qualification_inputs import POLICY
 from scripts.qualification_context import ARTIFACT_ENV, HOST_ENV, RUN_ENV, resource_names
@@ -254,12 +257,98 @@ def test_unsafe_private_inputs_fail_before_remote_observation(
 def test_private_cli_failure_cannot_print_private_record(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(sys, "argv", ["m3_11_live_storage", "--variables"])
+    monkeypatch.setattr(sys, "argv", ["m3_11_live_storage", "--variables-file"])
     monkeypatch.setattr(LiveStorage, "load", Mock(side_effect=ValueError("secret-canary")))
     assert main() == 1
     captured = capsys.readouterr()
     assert not captured.out
     assert "secret-canary" not in captured.err
+
+
+def test_private_cli_outputs_only_the_path_of_exclusive_private_credential_material(
+    storage: LiveStorage, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(LiveStorage, "load", Mock(return_value=storage))
+    monkeypatch.setattr(LiveStorage, "require_owner", Mock())
+    monkeypatch.setattr(sys, "argv", ["m3_11_live_storage", "--variables-file"])
+    assert main() == 0
+    captured = capsys.readouterr()
+    path = Path(captured.out.strip())
+    assert path.parent == Path(storage.environment[ARTIFACT_ENV]).parent.parent
+    assert path.name.startswith("ansible-storage-") and path.suffix == ".json"
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600  # noqa: PLR2004 - private credential transfer
+    assert read_private(path) == storage.variables()
+    assert not captured.err
+    assert all(
+        value not in captured.out
+        for value in (
+            storage.restic_password,
+            storage.environment["SPACES_BACKUP_SECRET_ACCESS_KEY"],
+            storage.environment["SPACES_ARCHIVE_SECRET_ACCESS_KEY"],
+        )
+    )
+    original = path.read_bytes()
+    assert main() == 0
+    assert capsys.readouterr().out.strip() != str(path)
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("malformed", [False, True])
+def test_ansible_private_transfer_removes_material_even_when_loading_fails(
+    tmp_path: Path, malformed: bool
+) -> None:
+    source = Path(__file__).resolve().parents[2] / "config/ansible/molecule/m3_8/converge.yml"
+    task = next(
+        task
+        for task in yaml.safe_load(source.read_bytes())[0]["tasks"]
+        if task["name"] == "Load owned combined storage through a temporary private file"
+    )
+    private = tmp_path / "private-inputs.json"
+    write_private(private, {"backup_restic_password": "secret-transfer-canary"})
+    if malformed:
+        private.write_bytes(b'{"secret-transfer-canary":unparseable')
+    # Replace only the provider/credential producer. Execute the actual
+    # include_vars/no_log/always cleanup tasks with the real Ansible runtime.
+    task["block"][0]["ansible.builtin.command"] = {"argv": ["/bin/echo", str(private)]}
+    playbook = tmp_path / "private-transfer.yml"
+    expression = "m3_11_storage_inputs.backup_restic_password == 'secret-transfer-canary'"
+    playbook.write_text(
+        yaml.safe_dump(
+            [
+                {
+                    "name": "Exercise private transfer",
+                    "hosts": "localhost",
+                    "gather_facts": False,
+                    "vars": {"m3_11_combined_backend": "spaces"},
+                    "tasks": [
+                        task,
+                        {
+                            "name": "Require the original loaded value",
+                            "ansible.builtin.assert": {"that": [expression]},
+                            "no_log": True,
+                        },
+                    ],
+                }
+            ]
+        )
+    )
+    result = subprocess.run(  # noqa: S603 - fixed local playbook with disposable input
+        [
+            str(Path(sys.executable).parent / "ansible-playbook"),
+            "--inventory",
+            "localhost,",
+            "--connection",
+            "local",
+            str(playbook),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert (result.returncode == 0) is (not malformed), result.stdout + result.stderr
+    assert not private.exists()
+    assert "secret-transfer-canary" not in result.stdout + result.stderr
 
 
 @pytest.fixture
