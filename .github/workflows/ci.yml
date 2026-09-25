@@ -253,7 +253,10 @@ jobs:
     needs: [installed-selection, pre-commit, python, python-recovery, m3-archive-storage]
     if: needs.installed-selection.outputs.required == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: >-
+      ${{ matrix.case == 'combined-reconstruction' && 90 ||
+          contains(fromJSON('["core","archive-cycles","backup-mutation-overlap","restore-reconstruction","restore-tls-bootstrap"]'), matrix.case) && 60 ||
+          45 }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.installed-selection.outputs.matrix) }}

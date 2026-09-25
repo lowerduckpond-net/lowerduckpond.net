@@ -131,6 +131,30 @@ claiming the target. A matrix can lower wall time while increasing runner cost.
 `just check` remains the full local entry point; it does not silently substitute
 these groups for complete qualification.
 
+CI execution ceilings allow at least 1.5 times the typical observed duration,
+including setup. The operator-authorized P6b adjustment is recorded in the
+[M3.11 plan](../plans/milestone-3.11.md):
+
+| Installed case | CI ceiling |
+| --- | --- |
+| `combined-reconstruction` | 90 minutes, provisional pending a complete measured run. |
+| `core`, `archive-cycles`, `backup-mutation-overlap`, `restore-reconstruction`, `restore-tls-bootstrap` | 60 minutes. |
+| Other installed cases | 45 minutes. |
+
+The combined case preserves one source/destination history through mutation,
+two full protected rotations, interrupted reconstruction, reboot, replay,
+retirement, accounting, and teardown. Those dependent phases cannot become
+independent fixtures without losing the combined proof. Its initial ceiling
+allows 1.5 times a conservative 60-minute execution window; the interrupted
+45-minute run does not establish a successful duration. Measure the complete
+window through normal validation and retain at least 1.5 times the typical
+observed runtime when reviewing the ceiling.
+
+These ceilings do not establish compliance with the 30-minute engineering
+target. Production service limits, admission pacing, assertions, required
+completion receipts, and the 330-minute complete-journey ceiling remain
+unchanged. A higher ceiling does not lengthen a successfully completed job.
+
 The original combined backup case passed in [CI run 35563599873](https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35563599873)
 but took 39.35 minutes including setup, exceeding the target. Its timing report
 recorded 13.91 minutes of admission pacing across 31 spans and 8.48 minutes across

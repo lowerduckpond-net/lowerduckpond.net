@@ -630,14 +630,56 @@ complete journey, and a scheduled regression blocks release.
 
 Targets remain five minutes for focused components, fifteen for fast lanes and
 thirty including setup for each installed case. Split a case at independent
-fixture boundaries if measured scope needs it; do not loosen production limits,
-broaden retries or increase CI timeouts to obtain a pass. Collect measurements
+fixture boundaries if measured scope needs it; do not loosen production limits
+or broaden retries. CI execution ceilings must allow at least 1.5 times the
+typical observed duration, including setup. Any increase must retain the
+measured cause and coverage, and must not disguise an engineering-target overrun
+as performance compliance. Collect measurements
 from normal validations, including failures, setup, pacing, wall time and total
 runner minutes. The complete live run retains the existing 330-minute safeguard;
 record its measured cost. A budget exception requires explicit review before
 closing the milestone. Avoid repeated expensive runs without changed inputs or
 an unresolved failure. When only a long lane remains, record head/run links and
 resume from durable task state after the operator reports the result.
+
+On 2026-09-25 the operator authorized splitting an oversized lane where its
+proof permits an independent fixture, otherwise extending its execution ceiling
+with at least 1.5 times the typical observed runtime. P6b applies this rule to
+the installed matrix: `combined-reconstruction` gets a provisional 90 minutes;
+`core`, `archive-cycles`, `backup-mutation-overlap`, `restore-reconstruction`,
+and `restore-tls-bootstrap` get 60 minutes; other cases retain 45 minutes.
+The original [CI run 36112371887](https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/36112371887)
+at PR head `1bfaa14936787a3ae3977e2672e78a165c8998df` passed 21 of 22 installed
+groups. The combined case was cancelled at 45 minutes. Its retained interrupted
+timing records approximately 7.5 minutes for fixture setup, 16.0 for mutation
+(including source activation and history), 6.8 for protected rotation, and 11.6
+for reconstruction. These completed phases consume approximately 42 minutes
+before the remaining reboot/replay/retirement/accounting/teardown work. Nested
+timing categories must not be added again. The interrupted report does not
+establish a successful duration or qualification.
+
+The five other adjusted cases completed in 31.30, 31.60, 33.43, 39.10, and
+36.50 minutes respectively, including runner setup. Their 1.5-times windows
+require 46.95 to 58.65 minutes, exceeding the inherited 45-minute ceiling.
+Every other successful installed case completed within 26.47 minutes in this
+run and retains sufficient headroom at 45 minutes.
+
+The component checks already have independent fixtures. The combined case
+must preserve the same mutation, protected snapshots, restored state, historical
+replay, and final resource accounting. Splitting it into independent fixtures
+would remove that cross-feature proof; splitting across runners would require
+a separate state-transfer mechanism. Keep the combined fixture and its complete
+assertions. Its provisional ceiling allows 1.5 times a conservative 60-minute
+window while obtaining the first complete measurement, rather than treating a
+cancelled 45-minute run as its typical duration. Review the ceiling using normal
+completed runs and retain the minimum 1.5-times margin.
+
+This execution-budget adjustment does not approve an exception to the 30-minute
+engineering target, alter production service limits or admission pacing, or
+change the 330-minute complete-journey safeguard. Keep all original failures and
+collect completed timing through normal CI. Any remaining performance-target
+overrun still needs measured resolution or explicit acceptance before milestone
+closeout; a passing job alone is insufficient.
 
 Final qualification includes the original complete installed/live Spaces
 workflow plus the new combined reconstruction cases on disposable supported
