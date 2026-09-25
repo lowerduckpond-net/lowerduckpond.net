@@ -46,6 +46,8 @@ def presented_certificate(hostname: str, trust: Path) -> bytes:
             "-verify_return_error",
             "-CAfile",
             str(trust),
+            "-no-CApath",
+            "-no-CAstore",
             "-showcerts",
         ),
         timeout=10,
@@ -138,7 +140,8 @@ def verify_cold_tls(  # noqa: PLR0912,PLR0913 - explicit policy, trust and certi
     ):
         raise HostRestoreError("restore_tls_policy_invalid")
     # Trust may contain many roots. It is a pinned administrator input, not a
-    # Caddy-owned file or recovered snapshot input.
+    # Caddy-owned file or recovered snapshot input. Both OpenSSL checks disable
+    # default CA directories/stores so restored roots cannot widen this input.
     trust_metadata = trust.stat(follow_symlinks=False)
     if (
         not stat.S_ISREG(trust_metadata.st_mode)
@@ -189,6 +192,8 @@ def verify_cold_tls(  # noqa: PLR0912,PLR0913 - explicit policy, trust and certi
                                 probe,
                                 "-CAfile",
                                 str(trust),
+                                "-no-CApath",
+                                "-no-CAstore",
                                 "-untrusted",
                                 f"/proc/self/fd/{certificate}",
                                 f"/proc/self/fd/{certificate}",
