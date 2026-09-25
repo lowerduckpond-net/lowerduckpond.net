@@ -98,12 +98,39 @@ def test_witness_reconstructs_exact_original_entry_and_digest(variant: str) -> N
             "bucket": None,
             "key": None,
             "versionId": None,
-            "emergencyReason": "owned test fixture" if variant.startswith("emergency") else None,
+            "emergencyReason": (
+                'owned test fixture: \n\r\t💧 "quoted" \\path'
+                if variant.startswith("emergency")
+                else None
+            ),
         }
     second = entry(1, audit_entry_digest(first).to_dict())
     second["operation"] = "rename"
     raw = canonical_json_bytes(first) + canonical_json_bytes(second)
     evidence = formats.verify_segment(descriptor(raw), raw)
+    # Compare the whole canonical array, including commas, escapes and final LF,
+    # independently of how the segment inspector accumulates its witness.
+    assert evidence.witness == canonical_json_bytes(
+        [
+            [
+                document["sequence"],
+                document["previousEntryDigest"],
+                document["timestamp"],
+                document["operatorPrincipal"],
+                document["operation"],
+                document["tenantId"],
+                document["correlationId"],
+                document["resultDigest"],
+                document["resultStatus"],
+                document.get("deletionEvidence"),
+            ]
+            for document in (first, second)
+        ]
+    )
+    # Exercise cold reconstruction and its full validation, not the proof just
+    # populated while preparing the original descriptor.
+    with formats._PROOF_CACHE_LOCK:
+        formats._PROOF_CACHE.clear()
     assert formats.segment_from_witness(evidence.witness) == raw
     assert evidence.terminal == audit_entry_digest(second).to_dict()
     assert json.loads(evidence.witness)[0] == [
