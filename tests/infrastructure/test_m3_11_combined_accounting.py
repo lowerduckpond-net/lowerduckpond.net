@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import importlib
 import json
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType
@@ -97,10 +96,8 @@ def test_source_pending_inventory_respects_its_bounds(
 
 
 @pytest.fixture
-def accounting(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
-    root = Path(__file__).resolve().parents[2]
-    monkeypatch.syspath_prepend(str(root / "config/ansible/molecule/m3_8/tests"))
-    return importlib.import_module("combined_accounting")
+def accounting(installed_module: Callable[[str], ModuleType]) -> ModuleType:
+    return installed_module("combined_accounting")
 
 
 @pytest.mark.parametrize("fault", ["source-inputs", "pair", "provider", "fence", "history", "none"])

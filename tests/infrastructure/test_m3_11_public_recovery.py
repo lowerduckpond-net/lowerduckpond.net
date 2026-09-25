@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
 import json
 import os
 import subprocess
@@ -11,6 +10,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from types import ModuleType
 from unittest.mock import Mock
 
 import pytest
@@ -260,10 +260,12 @@ class Controller:
 
 
 @pytest.fixture
-def controller(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Controller:
-    root = Path(__file__).resolve().parents[2]
-    monkeypatch.syspath_prepend(str(root / "config/ansible/molecule/m3_8/tests"))
-    module = importlib.import_module("public_ca_recovery")
+def controller(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    installed_module: Callable[[str], ModuleType],
+) -> Controller:
+    module = installed_module("public_ca_recovery")
     value = object.__new__(module.PublicRecovery)
     value.deadline = module.time.monotonic() + 100
     value.fixture = Mock(binary=BINARY, target={"auditRotationEnabled": False})
@@ -356,11 +358,11 @@ def test_public_controller_never_opens_or_emits_proof_after_failed_dependency_ch
 
 
 def test_installed_dispatch_loads_real_helpers_without_credentials_in_arguments(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    installed_module: Callable[[str], ModuleType],
 ) -> None:
-    root = Path(__file__).resolve().parents[2]
-    monkeypatch.syspath_prepend(str(root / "config/ansible/molecule/m3_8/tests"))
-    module = importlib.import_module("public_ca_recovery")
+    module = installed_module("public_ca_recovery")
     run_id, nonce = str(uuid.uuid7()), str(uuid.uuid7())
     context: dict[str, object] = {
         "run_id": run_id,
