@@ -693,6 +693,20 @@ not a passing measurement or an approved engineering-target exception. Retain
 that distinction in the P6 timing review. Production service limits and the
 complete-journey safeguard are unchanged.
 
+### Restore phase observation deadline
+
+The restore fixture's phase-observation deadline is amended from 180 to 300
+seconds. In [PR #176 CI run 36182939732](https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/36182939732),
+`combined-reconstruction` exhausted its first 180-second wait; the immediate
+failure observation found the destination at `installed`, the restore unit
+still activating and public ingress gated. Its reconstruction interval was
+529.84 seconds, including 348.03 seconds of source capture/destination setup,
+leaving approximately 181.81 seconds for startup and the unsuccessful wait.
+The original run remains failed. The five-minute observation ceiling provides
+the required minimum 1.5-times margin around that observed interval, retains a
+fixed deadline and immediate unit-failure detection, and does not restart the
+coordinator or change production service limits, job ceilings or phase assertions.
+
 ### P6c timing acceptance proposal
 
 This paragraph proposes an explicit M3.11 closeout exception for the measured

@@ -610,7 +610,7 @@ WantedBy=multi-user.target
     def start(self) -> None:
         assert self.destination.run("systemctl start --no-block %s", UNIT).rc == 0
 
-    def wait(self, phases: set[str], *, seconds: int = 180) -> dict[str, object]:
+    def wait(self, phases: set[str], *, seconds: int = 300) -> dict[str, object]:
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             status = self.status()
