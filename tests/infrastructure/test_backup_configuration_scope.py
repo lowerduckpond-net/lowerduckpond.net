@@ -116,7 +116,12 @@ def test_activation_requires_the_same_canonical_retention_values_as_the_runtime(
     counts: tuple[object, object, object], accepted: bool
 ) -> None:
     tasks = yaml.safe_load((TEMPLATES.parent / "tasks/main.yml").read_text())
-    conditions = tasks[0]["ansible.builtin.assert"]["that"]
+    configuration = next(
+        task
+        for task in tasks
+        if task["name"] == "Require explicit coherent backup migration configuration"
+    )
+    conditions = configuration["ansible.builtin.assert"]["that"]
     values = dict(
         zip(("backup_keep_daily", "backup_keep_weekly", "backup_keep_monthly"), counts, strict=True)
     )

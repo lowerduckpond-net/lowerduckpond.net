@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gzip
 import os
+import select
 import stat
 import sys
 from dataclasses import dataclass, replace
@@ -133,17 +134,31 @@ def test_deadline_kills_process_descendants_and_releases_inherited_leases(
     import fcntl  # noqa: PLC0415 - Unix lease proof
 
     lease = dump.directory / "external-lease"
+    child = dump.directory.parent / "descendant.pid"
     with lease.open("wb") as held:
         fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
         dump.program.write_text(
-            "import os, time\n"
+            "import os, time\nfrom pathlib import Path\n"
             f"os.fstat({held.fileno()})\n"
-            "if os.fork() == 0:\n    time.sleep(30)\n"
-            "else:\n    os._exit(0)\n"
+            "child = os.fork()\n"
+            "if child == 0:\n    time.sleep(30)\n"
+            f"else:\n    Path({str(child)!r}).write_text(str(child))\n    os._exit(0)\n"
         )
         monkeypatch.setattr(database, "DEADLINE_SECONDS", 0.3)
         with pytest.raises(BackupIdentityError, match="deadline"):
             dump.run((held.fileno(),))
+    # killpg delivers SIGKILL asynchronously. Waiting for the already-exited
+    # parent does not wait for its orphan. Observe that child's actual exit
+    # before checking the lease, as ExitType=cgroup does in the installed action.
+    try:
+        descriptor = os.pidfd_open(int(child.read_text()))
+    except ProcessLookupError:
+        pass
+    else:
+        try:
+            assert select.select([descriptor], [], [], 5)[0], "dump descendant survived SIGKILL"
+        finally:
+            os.close(descriptor)
     # All descendants inherited this same open-file description. If any still
     # hold it, a fresh descriptor cannot acquire the exclusive repository lease.
     with lease.open("rb") as rival:
