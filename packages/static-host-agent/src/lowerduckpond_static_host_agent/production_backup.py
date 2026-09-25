@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -182,4 +183,11 @@ def _verify_backup(  # noqa: PLR0913 - original authority and privilege boundari
         "report_sha256": authority.report_sha256,
     }
     store.immutable("backup-verified.json", canonical_json_bytes(cast(dict[str, object], result)))
+    descriptor = store.directory.duplicate_descriptor()
+    try:
+        # Confirm a previously visible but unacknowledged rename before returning
+        # the proof to the separately journaled rollout controller.
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
     return result
