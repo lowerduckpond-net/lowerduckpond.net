@@ -41,6 +41,7 @@
         'archive_enabled': static_host_agent_archive_lifecycle_enabled | default(false),
         'generation_enabled': caddy_generation_enabled | default(false)
       } | to_json }}
+  register: m3_11_production_phase
   changed_when: false
   when: m3_11_production_transaction.stat.exists
   no_log: true

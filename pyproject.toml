@@ -142,6 +142,8 @@ files = [
   "scripts/m3_11_qualification_evidence.py",
   "scripts/m3_11_production_journal.py",
   "scripts/m3_11_production_gate.py",
+  "scripts/m3_11_production_fence.py",
+  "tests/infrastructure/test_m3_11_production_fence.py",
   "tests/infrastructure/test_m3_11_production_gate.py",
   "scripts/m3_11_production_lease.py",
   "tests/infrastructure/test_m3_11_production_lease.py",

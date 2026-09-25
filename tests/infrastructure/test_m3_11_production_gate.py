@@ -71,7 +71,7 @@ def test_original_phase_allows_only_its_configuration_without_changing_receipts(
     }
     before = {p.name: (p.stat(), p.read_bytes()) for p in directory.iterdir()}
     for _ in range(2):
-        gate.require(directory, json.dumps(request).encode(), owner=OWNER)
+        assert gate.require(directory, json.dumps(request).encode(), owner=OWNER) == phase
     for name, (metadata, raw) in before.items():
         path = directory / name
         assert path.read_bytes() == raw

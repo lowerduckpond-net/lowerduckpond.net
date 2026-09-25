@@ -26,7 +26,7 @@ PHASES = {
 }
 
 
-def require(directory: Path, raw: bytes, *, owner: int) -> None:
+def require(directory: Path, raw: bytes, *, owner: int) -> str:
     """Read actual immutable authority; the caller must also hold the action lease.
 
     A completed journal authorizes records-only inspection, never another
@@ -60,3 +60,4 @@ def require(directory: Path, raw: bytes, *, owner: int) -> None:
         "generation_enabled": True,
     }:
         raise ValueError("production configuration differs from its qualified phase")
+    return str(state["phase"])

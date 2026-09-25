@@ -22,9 +22,11 @@ def helper_bundle() -> tuple[bytes, str]:
         **{
             "scripts/" + name: (directory / name).read_bytes()
             for name in (
+                "m3_11_production_fence.py",
                 "m3_11_production_gate.py",
                 "m3_11_production_journal.py",
                 "m3_11_production_lease.py",
+                "m3_11_production_probe.py",
                 "m3_11_production_records.py",
                 "m3_11_production_remote.py",
             )

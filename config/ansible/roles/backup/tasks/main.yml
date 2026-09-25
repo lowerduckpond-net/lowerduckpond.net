@@ -301,7 +301,9 @@
   ansible.builtin.systemd_service:
     name: lowerduckpond-audit-verify.timer
     enabled: "{{ backup_static_recovery_enabled | bool }}"
-    state: "{{ 'started' if backup_static_recovery_enabled | bool else 'stopped' }}"
+    state: >-
+      {{ omit if m3_11_production_phase.stdout | default('') == 'converged.started'
+         else ('started' if backup_static_recovery_enabled | bool else 'stopped') }}
   when: not (host_recovery_bootstrap_enabled | default(false) | bool)
 
 - name: Configure explicitly qualified hourly audit rotation
@@ -349,6 +351,7 @@
   when:
     - not (host_recovery_bootstrap_enabled | default(false) | bool)
     - backup_run_initial
+    - m3_11_production_phase.stdout | default('') != 'converged.started'
     - >-
       ((backup_static_recovery_enabled | bool) and
        (backup_local_health_status.content | default('') |
@@ -372,6 +375,7 @@
   when:
     - not (host_recovery_bootstrap_enabled | default(false) | bool)
     - backup_run_initial_maintenance
+    - m3_11_production_phase.stdout | default('') != 'converged.started'
     - >-
       (backup_initial_maintenance_status.content | default('') |
       ansible.builtin.b64decode | trim) is not ansible.builtin.match(
@@ -383,7 +387,9 @@
   ansible.builtin.systemd_service:
     name: "{{ item }}"
     enabled: true
-    state: started
+    state: >-
+      {{ omit if m3_11_production_phase.stdout | default('') == 'converged.started'
+         else 'started' }}
   loop:
     - lowerduckpond-backup.timer
     - lowerduckpond-backup-maintenance.timer
