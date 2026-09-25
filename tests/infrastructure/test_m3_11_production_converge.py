@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
+import yaml  # type: ignore[import-untyped]
 from ansible.executor.stats import AggregateStats  # type: ignore[import-untyped]
 from ansible.plugins.loader import callback_loader  # type: ignore[import-untyped]
 
@@ -13,6 +17,52 @@ from scripts import m3_11_production_converge as converge
 from scripts import m3_11_production_journal as journal
 
 CONTEXT = "a" * 64
+
+
+def test_bootstrap_resolves_the_actual_worker_and_sudo_templates(tmp_path: Path) -> None:
+    """Load real role defaults in Ansible without configuring the test runner."""
+    source = converge.ROOT / "config/ansible/playbooks/m3-11-bootstrap.yml"
+    play = yaml.safe_load(source.read_text())[0]
+    play["gather_facts"] = False
+    play["become"] = False
+    play["vars_files"] = [str(source.parent / name) for name in play.get("vars_files", [])]
+    templates = converge.ROOT / "config/ansible/roles/static_host_agent/templates"
+    play["pre_tasks"] = [
+        {
+            "name": "Render the real bootstrap account consumers",
+            "tags": ["bootstrap-account-proof"],
+            "ansible.builtin.assert": {
+                "that": [
+                    "'User=ldp-provisioner' in lookup('ansible.builtin.template', '"
+                    + str(templates / "lowerduckpond-static-worker@.service.j2")
+                    + "')",
+                    "'ldp-provisioner ALL=(root:caddy)' in lookup('ansible.builtin.template', '"
+                    + str(templates / "sudoers.j2")
+                    + "')",
+                ]
+            },
+        }
+    ]
+    playbook = tmp_path / "bootstrap.yml"
+    playbook.write_text(yaml.safe_dump([play]))
+    inventory = tmp_path / "inventory.ini"
+    inventory.write_text("[hosting_nodes]\nlocalhost ansible_connection=local\n")
+    result = subprocess.run(  # noqa: S603 - real Ansible, only a local tagged assertion
+        [
+            str(Path(sys.executable).with_name("ansible-playbook")),
+            "--inventory",
+            str(inventory),
+            "--tags",
+            "bootstrap-account-proof",
+            str(playbook),
+        ],
+        env={**os.environ, "ANSIBLE_CONFIG": str(converge.ROOT / "config/ansible/ansible.cfg")},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "ok=1" in result.stdout
 
 
 def write_recap(stats: AggregateStats) -> None:

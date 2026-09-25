@@ -1,11 +1,11 @@
 # M3.11 combined qualification evidence
 
-This is the P6a evidence boundary for the
-[accepted M3.11 plan](../plans/milestone-3.11.md). P5 reconstruction is merged.
-The [combined live producer](m3-11-backup-recovery.md#combined-live-qualification)
-is P6b; production integration remains P6c work. This validator alone does not
-run qualification, authorize production convergence, enable rotation, or
-establish live-provider behavior.
+This document maps the qualification and production evidence boundary for the
+[accepted M3.11 plan](../plans/milestone-3.11.md). The report validator is P6a,
+the [combined live producer](m3-11-backup-recovery.md#combined-live-qualification)
+is P6b, and the explicit production controller is P6c. Report validation alone
+does not run qualification, authorize production convergence, enable rotation,
+or establish live-provider behavior.
 
 ## Existing gate, explicit milestone
 
@@ -133,5 +133,32 @@ receipt between runs cannot extend either window. Future-dated evidence fails.
 `tests/infrastructure/test_m3_11_qualification_report.py` maps these rejection
 boundaries to hostile-vector, chronology, CLI and real-Git ancestry/revocation
 checks. Existing M3.10 report, input-equivalence and production-workflow tests
-continue to cover the legacy gate. P6b must supply installed and secure-workstation
-producer evidence before the new envelope can qualify an M3.11 rollout.
+continue to cover the legacy gate. The producer must supply installed and
+secure-workstation evidence before the new envelope can qualify an M3.11 rollout.
+
+## Production transaction evidence
+
+The explicit controller consumes the exact original qualification report before
+creating a transaction. Its phase records prove the actions in the
+[production convergence procedure](m3-11-backup-recovery.md), separately from the
+disposable live qualification. They cannot substitute for that qualification.
+
+The component tests below live in `tests/infrastructure/`, except the candidate
+tests explicitly listed under `packages/static-host-agent/tests/`.
+
+| Required invariant | Component and process coverage | Installed or operator evidence |
+| --- | --- | --- |
+| Original report, source, artifact, inputs, target, chronology and fresh provider checks precede migration. | `test_m3_11_production_controller.py`, `test_m3_11_production_preflight.py`, existing qualification-report and input-equivalence tests. | Original private qualification report and retained artifact; fresh provider/host observations from the secure workstation. |
+| One live controller and action own the transaction; lost ownership drains descendants and preserves service fences. | `test_m3_11_production_lease.py`, `test_m3_11_production_session.py`, `test_m3_11_production_transport.py`, `test_m3_11_production_remote.py`, `test_m3_11_production_fence.py`. | Actual SSH/systemd action units, service conditions and original drain observation. |
+| Complete proposals survive interrupted publication without invented or rewritten history. | `test_m3_11_production_journal.py`, `test_m3_11_production_replica.py`, `test_m3_11_production_proposals.py`. | Matching original workstation/host chains and retained proposals across a fresh controller session. |
+| Bootstrap initializes the original namespace and repository-bound lineage before recovery activation. | `test_m3_11_production_initialize.py`, `test_m3_11_production_gate.py`; candidate `test_production_namespace.py` and `test_production_lineage.py`. | Real bootstrap playbook, original namespace bytes, lineage/genesis snapshot and original repository binding. |
+| Each activation uses two real converges; the second has zero changes and neither has failed, unreachable, rescued or ignored tasks. | `test_m3_11_production_converge.py`, `test_m3_11_production_workflow.py`. | Hash-bound actual Ansible recaps, variables and logs for recovery activation and subsequent rotation activation. |
+| Retried backup verifies the original coherent capture and SQL, preserving resource limits and protected history. | `test_m3_11_production_backup.py`; candidate `test_production_database.py`, `test_production_capture.py`, `test_production_backup.py`, `test_production_rollout_backup.py`. | Actual bounded MariaDB/Restic capture and private restoration, original descriptor/index/snapshot and exact retained proof. |
+| Completed invocation performs fresh inspection without deployment, capture or new receipts. | `test_m3_11_production_observe.py`, `test_m3_11_production_controller.py`, `test_m3_11_production_workflow.py`, backup inspection tests. | Unchanged original records and capture, fresh provider/repository checks, dark publication, enabled recovery/rotation and active required timers. |
+
+Local native checks use disposable credentials and storage. Even a complete
+local playbook rollout is diagnostic evidence: it cannot establish Spaces policy,
+public-CA behavior, live qualification or actual production deployment. Keep
+partial native runs and failed CI results separate from completed proof. Final
+qualification must bind the merged input-changing revision; production execution
+remains the operator's explicit secure-workstation step.

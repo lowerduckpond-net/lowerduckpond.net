@@ -742,8 +742,10 @@ to implement and qualify are:
    dark publication, empty production tenant history, backup repository,
    archive accounting, fresh credentials/edge/firewall and free-space checks.
 3. `M3_11_QUALIFICATION_REPORT=/absolute/private/run/qualification.json just configure-production`:
-   separately authorized operator execution, two converges, acceptance,
-   matching backup and disposable reconstruction proof. Preserve
+   separately authorized operator execution, two recovery-enabled/rotation-off
+   converges, matching backup and private restoration proof, then two
+   rotation-enabled converges and acceptance. Each second converge must be
+   idempotent. Preserve
    `static_publication_enabled: false`. Default rotation remains off until the
    protected verification/recovery gate passes, then enable it through the
    reviewed M3.11 configuration transaction, never a direct file edit.
@@ -752,11 +754,24 @@ to implement and qualify are:
    come only from trusted installed configuration. This is documented disaster
    recovery, not an instruction to reconstruct production during M3.11 rollout.
 
-These names are planned interfaces, not commands available at the baseline.
+These interfaces are supplied by P5 and P6; they were unavailable at the baseline.
 Qualification alone does not deploy. Production credentials/live execution stay
 on the secure workstation, using its existing private environment-file launcher
 and pinned Mise tools. An operator runs production convergence explicitly;
 the coder task prepares everything independently possible before that handoff.
+
+P6c retains the exact original report, artifact, predecessor completion and
+hash-linked phase proposals on the workstation and host. A complete proposal
+is durable before either journal can publish it. A resumed controller recovers
+only the last unacknowledged proposal, rechecks its original bindings and fresh
+host/provider controls, and completes the interrupted phase under a new live
+lease. It must not reconstruct missing history or refresh original timestamps.
+Completed invocation requires equivalent inputs and fresh inspection, without
+deployment, backup recapture or new completion bytes. The original ordinary
+snapshot may age out under 7/5/12 retention after completion; protected genesis
+and audit history must remain verifiable. The
+[evidence map](../operations/m3-11-qualification-evidence.md#production-transaction-evidence)
+separates component coverage, installed observations and required operator proof.
 
 Before any local segment removal, rollback can disable rotation and use the
 preceding implementation only after proving it understands the current layout

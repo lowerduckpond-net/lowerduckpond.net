@@ -2,6 +2,9 @@
 - name: Install the qualified artifact before original M3.11 metadata initialization
   hosts: hosting_nodes
   become: true
+  vars_files:
+    # Bootstrap renders worker/sudo units without running the provisioner role.
+    - ../roles/provisioner/defaults/main.yml
   vars:
     m3_11_production_static_stage: bootstrap
   roles:
