@@ -338,8 +338,12 @@ def union_ns(intervals: Sequence[tuple[int, int]]) -> int:
     return total
 
 
-def _events(path: Path) -> list[Event]:
+def _events(path: Path, *, interrupted: bool = False) -> list[Event]:
     raw = _read(path, MAX_EVENTS_BYTES)
+    if interrupted and not raw.endswith(b"\n"):
+        # A killed writer can leave its final append incomplete. Preserve the
+        # source bytes and report only complete, independently validated spans.
+        raw = raw[: raw.rfind(b"\n") + 1]
     events: list[Event] = []
     for line in raw.splitlines():
         event = json.loads(line)
@@ -359,13 +363,13 @@ def _events(path: Path) -> list[Event]:
     return events
 
 
-def finish_run(directory: Path, status: int) -> dict[str, object]:
+def _report(directory: Path, status: int | None, *, interrupted: bool = False) -> dict[str, object]:
     ended = time.monotonic_ns()
     metadata = _metadata(directory)
     started = metadata.pop("started_ns")
     if metadata["format"] != FORMAT or type(started) is not int or not 0 <= started <= ended:
         raise ValueError("invalid timing start")
-    events = _events(directory / "timing-events.jsonl")
+    events = _events(directory / "timing-events.jsonl", interrupted=interrupted)
     if any(e["start_ns"] < started or e["start_ns"] + e["elapsed_ns"] > ended for e in events):
         raise ValueError("timing events span different runs")
     categories: list[Category] = []
@@ -399,7 +403,7 @@ def finish_run(directory: Path, status: int) -> dict[str, object]:
         fixture = observed
     all_intervals = [(e["start_ns"], e["start_ns"] + e["elapsed_ns"]) for e in events]
     covered = union_ns(all_intervals)
-    report: dict[str, object] = {
+    return {
         **metadata,
         **fixture,
         "exit_status": status,
@@ -410,10 +414,44 @@ def finish_run(directory: Path, status: int) -> dict[str, object]:
         "event_count": len(events),
         "authority": "diagnostic-only",
     }
+
+
+def interrupted_run(directory: Path) -> None:
+    """Snapshot incomplete diagnostics without inventing an exit or completion."""
+    # Never replace or re-date a normal summary, including a dangling/hostile
+    # existing leaf. The separate exclusive output also preserves first capture.
+    if os.path.lexists(directory / "timing.json") or os.path.lexists(
+        directory / "timing-interrupted.json"
+    ):
+        return
+    report = _report(directory, None, interrupted=True)
+    report.update(
+        {
+            "observation": "interrupted-run-snapshot",
+            "elapsed_scope": "start-through-diagnostic-collection",
+            "spans": "completed-appends-only-inflight-spans-unavailable",
+        }
+    )
+    # Publish only a complete file, and refuse a racing collector's first output.
+    with tempfile.NamedTemporaryFile(mode="w", dir=directory, delete=False) as stream:
+        temporary = Path(stream.name)
+        try:
+            json.dump(report, stream, sort_keys=True)
+            stream.write("\n")
+            stream.close()
+            with contextlib.suppress(FileExistsError):
+                os.link(temporary, directory / "timing-interrupted.json")
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+def finish_run(directory: Path, status: int) -> dict[str, object]:
+    report = _report(directory, status)
+    categories = cast(list[Category], report["categories"])
     (directory / "timing.json").write_text(
         json.dumps(report, sort_keys=True) + "\n", encoding="ascii"
     )
-    lines = [f"Qualification elapsed: {(ended - started) / 1e9:.1f}s; exit status: {status}."]
+    lines = [f"Qualification elapsed: {report['elapsed_seconds']:.1f}s; exit status: {status}."]
     lines.extend(
         f"{row['kind']} / {row['group']}: {row['summed_seconds']:.1f}s summed; "
         f"{row['union_seconds']:.1f}s union; {row['count']} spans."
@@ -500,6 +538,8 @@ def main() -> int:
     finish = sub.add_parser("finish")
     finish.add_argument("directory", type=Path)
     finish.add_argument("--status", type=int, required=True)
+    interrupted = sub.add_parser("interrupted")
+    interrupted.add_argument("directory", type=Path)
     run = sub.add_parser("run")
     run.add_argument(
         "--directory", type=Path, default=os.environ.get("LDP_QUALIFICATION_TIMING_DIRECTORY")
@@ -514,6 +554,8 @@ def main() -> int:
     try:
         if args.action == "start":
             start_run(args.directory, args.backend)
+        elif args.action == "interrupted":
+            interrupted_run(args.directory)
         else:
             finish_run(args.directory, args.status)
     except Exception:  # Timing diagnostics must not replace the command result.

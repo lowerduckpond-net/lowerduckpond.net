@@ -289,6 +289,10 @@ jobs:
           path: ${{ runner.temp }}/ldp-installed/case.json
           if-no-files-found: error
           retention-days: 30
+      - name: Snapshot interrupted installed timing
+        if: always()
+        continue-on-error: true
+        run: python -m scripts.qualification_timing interrupted "$RUNNER_TEMP/ldp-installed"
       - name: Retain allowlisted installed diagnostics
         if: always()
         continue-on-error: true
@@ -298,6 +302,7 @@ jobs:
           path: |
             ${{ runner.temp }}/ldp-installed/timing.json
             ${{ runner.temp }}/ldp-installed/timing.txt
+            ${{ runner.temp }}/ldp-installed/timing-interrupted.json
             ${{ runner.temp }}/ldp-installed/failure.json
           if-no-files-found: ignore
           retention-days: 30
@@ -332,6 +337,10 @@ jobs:
         env:
           LDP_QUALIFICATION_TIMING_DIRECTORY: ${{ runner.temp }}/ldp-complete
         run: just check-ansible-m3-8
+      - name: Snapshot interrupted complete-journey timing
+        if: always()
+        continue-on-error: true
+        run: python -m scripts.qualification_timing interrupted "$RUNNER_TEMP/ldp-complete"
       - name: Retain allowlisted complete-journey diagnostics
         if: always()
         continue-on-error: true
@@ -341,6 +350,7 @@ jobs:
           path: |
             ${{ runner.temp }}/ldp-complete/timing.json
             ${{ runner.temp }}/ldp-complete/timing.txt
+            ${{ runner.temp }}/ldp-complete/timing-interrupted.json
             ${{ runner.temp }}/ldp-complete/failure.json
           if-no-files-found: ignore
           retention-days: 30

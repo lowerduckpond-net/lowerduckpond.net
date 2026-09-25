@@ -7,6 +7,14 @@ by default. CI places it under the runner's temporary directory and retains only
 `timing.json` and `timing.txt` as the `m3-8-timing` artifact, including on failure.
 An artifact-upload problem does not replace the original qualification result.
 
+If cancellation kills the timing wrapper before it writes its summary, CI makes
+one separate `timing-interrupted.json` observation before uploading diagnostics.
+It retains the original source and fixture identities and validates the recorded
+spans. Its elapsed time runs through diagnostic collection, its exit status is
+unknown (`null`), and unfinished spans and any incomplete final append are omitted.
+It cannot establish completion or success. Existing normal summaries and the first
+interrupted observation are preserved; raw timing inputs are never rewritten.
+
 `just m3-10-spaces-qualification` records the same diagnostics in its existing
 private run directory on the secure workstation. `timing.json` and `timing.txt`
 contain allowlisted diagnostic fields and may be shared. Keep raw logs and
