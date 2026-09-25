@@ -808,3 +808,40 @@ observation and returns the private removal receipt; it never creates
 `combined.json` or packages a qualification report. Without the prior teardown
 intent, retain the fixture and use the existing bounded failure diagnostics to
 resolve its outstanding authority before any removal.
+
+## Production predecessor preflight
+
+On the secure workstation, from clean, current `main` in the existing private
+production environment shell, run:
+
+```bash
+just preflight-m3-11-production
+```
+
+This first-upgrade gate observes the accepted M3.10 deployment. It verifies the
+original completion record and selected artifact, reproducible candidate build,
+operator identity, closed publication, empty authoritative tenant history,
+current Caddy generation, archive accounting, fresh provider/edge policy and
+active firewall. It reads the actual encrypted Restic repository configuration
+using the installed credentials, without a cache or repository lock, and binds
+the full repository ID, production node and state-derived repository locator.
+The backup Space must remain private and versioned with exactly its reviewed
+`backups/` rule: abort incomplete uploads after seven days and expire superseded
+versions after 30 days. Current repository objects have no age expiration;
+protected Restic snapshots retain those objects indefinitely. Each state,
+release, backup-workspace and artifact filesystem must retain
+at least 5 GiB and 100,000 available inodes, and 10% available blocks and inodes.
+
+The command does not stop services, change credentials, initialize a repository,
+create migration authority, or write production files. It retains private
+observations and failed-step output in the workstation directory named in its
+result. That directory can contain production configuration details; the printed
+pass/fail summary is the handoff result. Completion, configuration and repository
+identity are checked again after the provider reads to detect concurrent drift.
+
+Any existing M3.11 transaction, including a partial one, is refused by this
+initial-predecessor gate. It must be handled using its original rollout authority,
+never erased or treated as a new M3.10 deployment. A passed preflight does not
+replace final combined qualification or authorize production convergence. The
+M3.11 convergence and interruption-resume integration remains a separate P6c
+deliverable until the complete production handoff is reviewed.

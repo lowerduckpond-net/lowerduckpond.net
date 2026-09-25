@@ -118,7 +118,7 @@ check-ansible-static: _sync
     bash -n scripts/preflight-m3-dark-host-production
     bash -n scripts/preflight-m3-6-production
     bash -n scripts/preflight-m3-7-production
-    bash -n scripts/preflight-m3-10-production scripts/m3-10-host-preflight scripts/m3-10-completed-host-preflight scripts/m3-10-convergence-state scripts/lib/m3-10-production-state scripts/m3-10-spaces-qualification
+    bash -n scripts/preflight-m3-10-production scripts/preflight-m3-11-production scripts/m3-10-host-preflight scripts/m3-10-completed-host-preflight scripts/m3-10-convergence-state scripts/lib/m3-10-production-state scripts/m3-10-spaces-qualification
     bash -n scripts/check-m3-6-operator-identity
     bash -n scripts/check-production-inventory
     bash -n config/ansible/roles/caddy/files/caddy-validate
@@ -167,6 +167,10 @@ preflight-m3-6-production: _sync
 # Read-only M3.10 production starting conditions; run on the secure workstation.
 preflight-m3-10-production: _sync
     scripts/preflight-m3-10-production
+
+# Read-only accepted M3.10 predecessor, provider, repository, and capacity gate.
+preflight-m3-11-production: _sync
+    scripts/preflight-m3-11-production
 
 # Installed lifecycle against live Spaces using a local disposable systemd host.
 m3-10-spaces-qualification: _sync
