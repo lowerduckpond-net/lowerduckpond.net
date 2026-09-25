@@ -1,4 +1,9 @@
 ---
+- name: Guard an existing M3.11 production transaction before backup changes
+  ansible.builtin.import_tasks: "{{ role_path }}/../../tasks/m3-11-production-guard.yml"
+  vars:
+    m3_11_production_guard_stage: converge
+
 - name: Require explicit coherent backup migration configuration
   ansible.builtin.assert:
     that:
@@ -254,6 +259,8 @@
     cmd: >-
       exec 9</var/cache/lowerduckpond-backup/repository.lock &&
       flock --exclusive 9 &&
+      test ! -e /var/lib/lowerduckpond/convergence/m3-11 &&
+      test ! -L /var/lib/lowerduckpond/convergence/m3-11 &&
       set -o allexport &&
       source /etc/lowerduckpond/backup.env &&
       test "${LOWERDUCKPOND_BACKUP_ACTIVATION_SCOPE:-}" = {{ backup_activation_scope | quote }} &&
@@ -294,7 +301,9 @@
   ansible.builtin.systemd_service:
     name: lowerduckpond-audit-verify.timer
     enabled: "{{ backup_static_recovery_enabled | bool }}"
-    state: "{{ 'started' if backup_static_recovery_enabled | bool else 'stopped' }}"
+    state: >-
+      {{ omit if m3_11_production_phase.stdout | default('') == 'converged.started'
+         else ('started' if backup_static_recovery_enabled | bool else 'stopped') }}
   when: not (host_recovery_bootstrap_enabled | default(false) | bool)
 
 - name: Configure explicitly qualified hourly audit rotation
@@ -342,6 +351,7 @@
   when:
     - not (host_recovery_bootstrap_enabled | default(false) | bool)
     - backup_run_initial
+    - m3_11_production_phase.stdout | default('') != 'converged.started'
     - >-
       ((backup_static_recovery_enabled | bool) and
        (backup_local_health_status.content | default('') |
@@ -365,6 +375,7 @@
   when:
     - not (host_recovery_bootstrap_enabled | default(false) | bool)
     - backup_run_initial_maintenance
+    - m3_11_production_phase.stdout | default('') != 'converged.started'
     - >-
       (backup_initial_maintenance_status.content | default('') |
       ansible.builtin.b64decode | trim) is not ansible.builtin.match(
@@ -376,7 +387,9 @@
   ansible.builtin.systemd_service:
     name: "{{ item }}"
     enabled: true
-    state: started
+    state: >-
+      {{ omit if m3_11_production_phase.stdout | default('') == 'converged.started'
+         else 'started' }}
   loop:
     - lowerduckpond-backup.timer
     - lowerduckpond-backup-maintenance.timer

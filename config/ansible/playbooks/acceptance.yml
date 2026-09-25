@@ -4,6 +4,11 @@
   become: true
   gather_facts: false
   pre_tasks:
+    - name: Guard an existing M3.11 production transaction before acceptance
+      ansible.builtin.import_tasks: ../tasks/m3-11-production-guard.yml
+      vars:
+        m3_11_production_guard_stage: acceptance
+
     - name: Resolve the installed host contract
       ansible.builtin.import_tasks: tasks/resolve-acceptance-contract.yml
 

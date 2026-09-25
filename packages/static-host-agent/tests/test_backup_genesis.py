@@ -119,6 +119,56 @@ def _initialize(root: Path) -> dict[str, object]:
     return ensure_lineage(root, ENVIRONMENT, initialize=True, expected_owner=os.geteuid())
 
 
+@pytest.mark.parametrize("initialized", [False, True])
+def test_rollout_repository_drift_cannot_publish_or_replace_lineage(
+    state: Path, repository: Repository, initialized: bool
+) -> None:
+    if initialized:
+        _initialize(state)
+    original = {
+        path: (state.joinpath(*path).read_bytes() if state.joinpath(*path).exists() else None)
+        for path in (LINEAGE_PATH, GENESIS_PATH)
+    }
+    remote, writes = repository.raw, repository.writes
+    with pytest.raises(BackupIdentityError, match="original migration binding"):
+        ensure_lineage(
+            state,
+            ENVIRONMENT,
+            initialize=True,
+            expected_owner=os.geteuid(),
+            expected_repository_binding="0" * 64,
+        )
+    assert repository.raw == remote and repository.writes == writes
+    for path, raw in original.items():
+        actual = state.joinpath(*path)
+        assert (actual.read_bytes() if actual.exists() else None) == raw
+
+
+def test_original_rollout_binding_resumes_the_same_genesis_after_lost_response(
+    state: Path, repository: Repository
+) -> None:
+    repository.fault = "lost-response"
+    with pytest.raises(BackupIdentityError, match="lost response"):
+        ensure_lineage(
+            state,
+            ENVIRONMENT,
+            initialize=True,
+            expected_owner=os.geteuid(),
+            expected_repository_binding=IDENTITY.binding()["value"],
+        )
+    original = repository.raw
+    repository.fault = ""
+    actual = ensure_lineage(
+        state,
+        ENVIRONMENT,
+        initialize=True,
+        expected_owner=os.geteuid(),
+        expected_repository_binding=IDENTITY.binding()["value"],
+    )
+    assert canonical_json_bytes(actual) == original
+    assert repository.writes == 1
+
+
 @pytest.mark.parametrize("fault", ["before-snapshot", "lost-response", "audit-advance"])
 def test_repository_publication_interruptions_resume_without_duplicate_snapshot(
     state: Path,

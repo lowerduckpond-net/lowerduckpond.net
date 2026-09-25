@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import secrets
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -13,7 +13,10 @@ from pathlib import Path
 from lowerduckpond_static_domain import generate_uuid7
 
 from lowerduckpond_static_host_agent.backup_capture import build_capture_descriptor
-from lowerduckpond_static_host_agent.backup_descriptor import MAX_BACKUP_DESCRIPTOR_BYTES
+from lowerduckpond_static_host_agent.backup_descriptor import (
+    MAX_BACKUP_DESCRIPTOR_BYTES,
+    decode_backup_descriptor,
+)
 from lowerduckpond_static_host_agent.backup_identity import BackupIdentityError
 from lowerduckpond_static_host_agent.backup_lineage import require_repository_history
 from lowerduckpond_static_host_agent.backup_restic import (
@@ -103,13 +106,15 @@ def _stage_descriptor(path: Path, raw: bytes, owner: int) -> None:
         staging.replace(("static-recovery.json",), raw, mode=0o600)
 
 
-def capture_backup(
+def capture_backup(  # noqa: PLR0913 - capture leases and optional original rollout authority
     paths: CapturePaths,
     environment: Mapping[str, str],
     *,
     artifact_sha256: str,
     expected_owner: int,
     content_group: int,
+    original_descriptor: bytes | None = None,
+    capture: Callable[[bytes, Mapping[str, str]], str] | None = None,
 ) -> str:
     """Caller has validated repository and artifact selection and lends both FDs."""
 
@@ -139,6 +144,21 @@ def capture_backup(
         try:
             with inherit_restic_leases(descriptors):
                 milliseconds = time.time_ns() // 1_000_000
+                original = (
+                    None
+                    if original_descriptor is None
+                    else decode_backup_descriptor(original_descriptor)
+                )
+                capture_id = (
+                    generate_uuid7(clock=lambda: milliseconds, entropy=_entropy)
+                    if original is None
+                    else str(original["captureId"])
+                )
+                captured_at = (
+                    datetime.fromtimestamp(milliseconds / 1000, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+                    if original is None
+                    else str(original["capturedAt"])
+                )
                 raw = build_capture_descriptor(
                     {"state": paths.state, "content": paths.content, "recovery": paths.recovery},
                     paths.workspace,
@@ -148,16 +168,13 @@ def capture_backup(
                     content_group=content_group,
                     artifact_sha256=artifact_sha256,
                     repository_genesis=genesis,
-                    capture_id=generate_uuid7(
-                        clock=lambda: milliseconds,
-                        entropy=_entropy,
-                    ),
-                    captured_at=datetime.fromtimestamp(milliseconds / 1000, UTC).strftime(
-                        "%Y-%m-%dT%H:%M:%SZ"
-                    ),
+                    capture_id=capture_id,
+                    captured_at=captured_at,
                 )
+                if original_descriptor is not None and raw != original_descriptor:
+                    raise BackupIdentityError("backup original captured authority changed")
                 _stage_descriptor(paths.staging, raw, expected_owner)
-                snapshot_id = create_coherent_snapshot(raw, environment)
+                snapshot_id = (capture or create_coherent_snapshot)(raw, environment)
                 _require_current_root(state, paths.state)
                 _require_current_root(lock_directory, paths.state / "locks")
                 # Successful Restic completion is inside both shared leases.

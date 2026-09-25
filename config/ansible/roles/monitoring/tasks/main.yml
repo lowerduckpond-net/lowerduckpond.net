@@ -60,4 +60,8 @@
   # Recovery deliberately keeps publication and backup services stopped. Keep
   # reporting that unhealthy state, but do not require ordinary service health
   # before the coordinator and its administrative commands can be installed.
-  when: not (host_recovery_bootstrap_enabled | default(false) | bool)
+  # The original M3.11 controller starts and verifies the newly configured
+  # backup services after both converges; final acceptance still requires health.
+  when:
+    - not (host_recovery_bootstrap_enabled | default(false) | bool)
+    - m3_11_production_phase.stdout | default('') != 'converged.started'

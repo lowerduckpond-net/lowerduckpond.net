@@ -1,0 +1,47 @@
+---
+- name: Inspect durable M3.11 production transaction authority
+  ansible.builtin.stat:
+    path: /var/lib/lowerduckpond/convergence/m3-11
+    follow: false
+  register: m3_11_production_transaction
+
+- name: Require the leased M3.11 production connection
+  ansible.builtin.assert:
+    that:
+      - m3_11_production_transaction.stat.exists
+      - ansible_connection | default('ssh') == 'ldp_m3_11'
+      - >-
+        lookup('ansible.builtin.env', 'LDP_M3_11_ACTION_HELPER') is
+        match('^/run/lowerduckpond-m3-11/[0-9a-f]{64}\.pyz$')
+      - lookup('ansible.builtin.env', 'LDP_M3_11_LEASE_TOKEN') is match('^[0-9a-f]{64}$')
+    fail_msg: An existing M3.11 transaction requires its original leased controller and qualified phase.
+    quiet: true
+  when: >-
+    m3_11_production_transaction.stat.exists or
+    ansible_connection | default('ssh') == 'ldp_m3_11'
+  no_log: true
+
+- name: Verify the original M3.11 candidate and configuration phase
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - -I
+      - -B
+      - "{{ lookup('ansible.builtin.env', 'LDP_M3_11_ACTION_HELPER') }}"
+      - gate
+      - "{{ lookup('ansible.builtin.env', 'LDP_M3_11_LEASE_TOKEN') }}"
+    stdin: >-
+      {{ {
+        'stage': m3_11_production_guard_stage,
+        'artifact_sha256': static_host_agent_artifact_sha256 | default(''),
+        'recovery_enabled': backup_static_recovery_enabled | default(false),
+        'rotation_enabled': backup_audit_rotation_enabled | default(false),
+        'publication_enabled': static_publication_enabled | default(false),
+        'reconstruction_enabled': host_recovery_bootstrap_enabled | default(false),
+        'archive_enabled': static_host_agent_archive_lifecycle_enabled | default(false),
+        'generation_enabled': caddy_generation_enabled | default(false)
+      } | to_json }}
+  register: m3_11_production_phase
+  changed_when: false
+  when: m3_11_production_transaction.stat.exists
+  no_log: true

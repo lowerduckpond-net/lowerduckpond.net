@@ -150,8 +150,10 @@ def test_roles_keep_shared_parent_searchable_without_listing_and_recovery_privat
 
 
 @pytest.mark.parametrize("bootstrap", [None, False, True])
+@pytest.mark.parametrize("phase", [None, "converged.started", "rotation-enabled.started"])
 def test_initial_health_requires_live_services_only_outside_recovery_bootstrap(
     bootstrap: bool | None,
+    phase: str | None,
 ) -> None:
     tasks = yaml.safe_load((ROLE.parent / "monitoring/tasks/main.yml").read_text())
     health = next(
@@ -160,11 +162,19 @@ def test_initial_health_requires_live_services_only_outside_recovery_bootstrap(
         if task.get("ansible.builtin.command", {}).get("cmd")
         == "/usr/local/libexec/lowerduckpond/health-check"
     )
-    variables = {} if bootstrap is None else {"host_recovery_bootstrap_enabled": bootstrap}
-    enabled = Templar(variables=variables).template(
-        trust_as_template("{{ " + health.get("when", "true") + " }}")
+    variables: dict[str, object] = (
+        {} if bootstrap is None else {"host_recovery_bootstrap_enabled": bootstrap}
     )
-    assert enabled is (bootstrap is not True)
+    if phase is not None:
+        variables["m3_11_production_phase"] = {"stdout": phase}
+    conditions = health.get("when", "true")
+    if isinstance(conditions, str):
+        conditions = [conditions]
+    enabled = all(
+        Templar(variables=variables).template(trust_as_template("{{ " + value + " }}"))
+        for value in conditions
+    )
+    assert enabled is (bootstrap is not True and phase != "converged.started")
 
 
 def test_bootstrap_replaces_package_flush_ruleset_before_installing_boot_guard() -> None:

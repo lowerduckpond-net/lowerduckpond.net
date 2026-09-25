@@ -15,7 +15,13 @@ from lowerduckpond_m3_archive.storage import AcceptanceEvidence
 
 from scripts import m3_10_qualification_report as reports
 from scripts import m3_11_qualification_evidence as combined
-from scripts.production_qualification_inputs import POLICY, REVOCATIONS, fingerprint, git
+from scripts.production_qualification_inputs import (
+    POLICY,
+    REVOCATIONS,
+    candidate_inputs,
+    fingerprint,
+    git,
+)
 
 ARTIFACT = "b" * 64
 TARGET = "c" * 64
@@ -58,7 +64,7 @@ class Run:
         raw = combined.canonical_bytes(report)
         path = self.directory / "qualification.json"
         path.write_bytes(raw)
-        reports.verify_report(
+        verified = reports.verify_report(
             path,
             source=source or self.source,
             artifact=ARTIFACT,
@@ -66,8 +72,9 @@ class Run:
             storage_target=TARGET,
             milestone="3.11",
         )
+        assert verified == raw
         assert path.read_bytes() == raw
-        return raw
+        return verified
 
 
 @pytest.fixture
@@ -200,6 +207,40 @@ def test_complete_combined_report_keeps_original_evidence_and_named_checks(run: 
     assert b"lowerduckpond.net" not in raw  # Public report contains only the subject digest.
     assert b"secret-canary" not in raw
     assert (run.directory / "storage.json").read_bytes() == storage_raw
+
+
+@pytest.mark.parametrize("replacement", [b"{}\n", None])
+def test_verified_bytes_survive_report_path_replacement_during_input_checks(
+    run: Run, monkeypatch: pytest.MonkeyPatch, replacement: bytes | None
+) -> None:
+    original = combined.canonical_bytes(run.create())
+    path = run.directory / "qualification.json"
+    path.write_bytes(original)
+
+    def replace_during_check(repository: Path, source: str, artifact: str) -> str:
+        inputs = candidate_inputs(repository, source, artifact)
+        if replacement is None:
+            path.unlink()
+        else:
+            changed = path.with_suffix(".replacement")
+            changed.write_bytes(replacement)
+            changed.replace(path)
+        return inputs
+
+    monkeypatch.setattr(reports, "candidate_inputs", replace_during_check)
+    verified = reports.verify_report(
+        path,
+        source=run.source,
+        artifact=ARTIFACT,
+        repository=run.repository,
+        storage_target=TARGET,
+        milestone="3.11",
+    )
+    assert verified == original
+    if replacement is None:
+        assert not path.exists()
+    else:
+        assert path.read_bytes() == replacement
 
 
 @pytest.mark.parametrize("boundary", ["before-start", "during-teardown", "before-completion"])

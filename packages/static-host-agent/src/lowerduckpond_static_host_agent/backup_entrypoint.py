@@ -83,11 +83,19 @@ def ensure_lineage(  # noqa: PLR0913 - explicit privilege and failure boundaries
     *,
     initialize: bool,
     expected_owner: int,
+    expected_repository_binding: str | None = None,
     failure_hook: FailureHook | None = None,
     genesis_failure_hook: FailureHook | None = None,
 ) -> dict[str, object]:
     """Caller holds repository and selection leases throughout both state phases."""
     identity, snapshots = discover_repository(environment)
+    if (
+        expected_repository_binding is not None
+        and identity.binding()["value"] != expected_repository_binding
+    ):
+        # A rollout binds its original preflight repository before any local
+        # genesis proposal or remote protected snapshot can be published.
+        raise BackupIdentityError("repository differs from the original migration binding")
     remote = repository_genesis(identity, snapshots, environment)
     if remote is None and initialize:
         candidate = lineage_for_repository(

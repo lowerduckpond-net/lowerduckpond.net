@@ -1,4 +1,9 @@
 ---
+- name: Guard an existing M3.11 production transaction before artifact changes
+  ansible.builtin.import_tasks: "{{ role_path }}/../../tasks/m3-11-production-guard.yml"
+  vars:
+    m3_11_production_guard_stage: "{{ m3_11_production_static_stage | default('converge') }}"
+
 - name: Require explicit completed-candidate verification authority
   ansible.builtin.assert:
     that:
@@ -749,13 +754,16 @@
   ansible.builtin.systemd_service:
     name: lowerduckpond-static-reconcile.timer
     state: started
-  when: not (host_recovery_bootstrap_enabled | default(false) | bool)
+  when:
+    - not (host_recovery_bootstrap_enabled | default(false) | bool)
+    - m3_11_production_phase.stdout | default('') != 'namespace.started'
 
 - name: Enable services supported by the selected M3.10 artifact
   ansible.builtin.include_tasks: archive_services.yml
   when:
     - not (host_recovery_bootstrap_enabled | default(false) | bool)
     - static_host_agent_archive_lifecycle_enabled | bool
+    - m3_11_production_phase.stdout | default('') != 'namespace.started'
 
 - name: Prove an empty Caddy candidate passes the publication boundary
   ansible.builtin.command:

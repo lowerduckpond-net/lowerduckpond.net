@@ -47,7 +47,13 @@ def verify_report(  # noqa: PLR0913 - candidate bindings plus explicit milestone
     repository: Path | None = None,
     storage_target: str | None = None,
     milestone: str = "3.10",
-) -> None:
+) -> bytes:
+    """Return the exact report bytes accepted by every gate below.
+
+    A rollout must retain and hash this result rather than reread ``path``:
+    its directory entry may change while Git/input/revocation checks run.
+    No report is reserialized or returned before those checks succeed.
+    """
     formats = _formats(milestone)
     raw, report = combined.read_document(path)
     if not isinstance(report.get("format"), str):
@@ -129,6 +135,7 @@ def verify_report(  # noqa: PLR0913 - candidate bindings plus explicit milestone
                 or report["storage_target_sha256"] != storage_target
             ):
                 raise ValueError("qualification inputs or storage target changed")
+    return raw
 
 
 def _formats(milestone: str) -> set[str]:

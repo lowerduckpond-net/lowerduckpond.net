@@ -175,9 +175,10 @@ def test_bound_report_retains_original_bytes_across_record_only_commit(
     record = root / "docs/records/deployed.md"
     record.parent.mkdir(parents=True)
     record.write_text("deployment complete\n")
-    verify_report(
+    verified = verify_report(
         evidence, source=commit(root), artifact=ARTIFACT, repository=root, storage_target=TARGET
     )
+    assert verified == before
     assert evidence.read_bytes() == before
     assert json.loads(before)["source_revision"] == source
 

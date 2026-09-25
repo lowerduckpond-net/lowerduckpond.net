@@ -808,3 +808,145 @@ observation and returns the private removal receipt; it never creates
 `combined.json` or packages a qualification report. Without the prior teardown
 intent, retain the fixture and use the existing bounded failure diagnostics to
 resolve its outstanding authority before any removal.
+
+## Production predecessor preflight
+
+On the secure workstation, from clean, current `main` in the existing private
+production environment shell, run:
+
+```bash
+just preflight-m3-11-production
+```
+
+This first-upgrade gate observes the accepted M3.10 deployment. It verifies the
+original completion record and selected artifact, reproducible candidate build,
+operator identity, closed publication, empty authoritative tenant history,
+current Caddy generation, archive accounting, fresh provider/edge policy and
+active firewall. It reads the actual encrypted Restic repository configuration
+using the installed credentials, without a cache or repository lock, and binds
+the full repository ID, production node and state-derived repository locator.
+The backup Space must remain private and versioned with exactly its reviewed
+`backups/` rule: abort incomplete uploads after seven days and expire superseded
+versions after 30 days. Current repository objects have no age expiration;
+protected Restic snapshots retain those objects indefinitely. Each state,
+release, backup-workspace and artifact filesystem must retain
+at least 5 GiB and 100,000 available inodes, and 10% available blocks and inodes.
+
+The command does not stop services, change credentials, initialize a repository,
+create migration authority, or write production files. It retains private
+observations and failed-step output in the workstation directory named in its
+result. That directory can contain production configuration details; the printed
+pass/fail summary is the handoff result. Completion, configuration and repository
+identity are checked again after the provider reads to detect concurrent drift.
+
+Any existing M3.11 transaction, including a partial one, is refused by this
+initial-predecessor gate. It must be handled using its original rollout authority,
+never erased or treated as a new M3.10 deployment. A passed preflight does not
+replace final combined qualification or authorize production convergence.
+
+## Explicit production convergence and resume
+
+After P6c merges and the final live qualification passes, run the following only
+as the separately authorized production step. Use clean, current `main`, the
+existing secure-workstation production environment and the original successful
+qualification report. The normal `configure-production` wrapper verifies the
+known SSH host key and reloads the separate runtime keys from encrypted state.
+
+```bash
+export M3_11_QUALIFICATION_REPORT=/absolute/original/private/run/qualification.json
+export M3_11_PRODUCTION_STATE_DIRECTORY=/absolute/private/production-convergence
+just configure-production
+```
+
+The state directory's parent must exist. The controller creates a mode-0700
+directory owned by the invoking workstation account; an existing directory must
+have that ownership and mode. If the state variable is omitted, the directory
+defaults to `production-convergence` beside the report. Use that same directory
+and report for every resume. The command refuses a combined M3.11/legacy-rollback
+request. An existing M3.11 host journal also prevents the legacy path from
+clearing completion or deploying another artifact.
+
+The controller verifies the exact accepted report bytes, artifact, input digest,
+storage target, revocations and source ancestry. It retains the qualified source
+even when invoked from a later records-only commit. Before first mutation it
+repeats the predecessor preflight and exercises current runtime credentials.
+Each resume repeats the credential and provider/edge/firewall/storage-policy
+checks, with archive accounting derived from the actual phase-bound empty host.
+An unfinished convergence may have interrupted Caddy service; final acceptance
+must restore service before completion can be recorded. Unfinished rollout
+still requires the original evidence to be within its seven-day consumption
+window. A retry never refreshes that window.
+
+The workstation retains `qualification.json`, `artifact.tar`, `journal/`,
+`proposals/` and a new private `attempts/attempt-*` directory for each invocation.
+Every proposal becomes a complete, synced immutable file before publication to
+either journal. Root stores the identical hash-linked record chain under
+`/var/lib/lowerduckpond/convergence/m3-11`. The original M3.10 completion bytes
+remain untouched. One local lock and one live SSH controller lease exclude
+competing attempts. Closing the controller connection revokes its action and
+drains its descendants before a successor can proceed.
+
+| Phase | Action and interruption behavior |
+| --- | --- |
+| Original | Bind the original qualification, predecessor, repository, transaction UUID and namespace time. A lost reply resumes those exact bytes. |
+| Drain | Install persistent service conditions, stop predecessor writers and verify empty installed authority. Reboot cannot admit static workers before lineage or backup/protection timers before the backup proof. |
+| Namespace and lineage | Install the qualified artifact, publish the original namespace, and initialize/read back the unique repository-backed lineage and empty protected head. Partial publication resumes its original proposal. |
+| Coherent convergence | Apply the actual site playbook twice with recovery enabled and rotation disabled. The second bound Ansible recap must report zero changes and no failed, unreachable, rescued or ignored work. |
+| Backup verified | Retain the original compressed SQL dump and coherent capture, independently restore and verify it privately under the installed backup resource limits, and bind the full snapshot and proof to the original report. An interrupted upload can only retry the same capture; an acknowledged result is never replaced. |
+| Rotation enabled | Apply the actual site playbook twice with rotation enabled after backup verification. The second pass must again be idempotent. |
+| Accepted | Run the real host acceptance playbook and independently inspect repository protection, original empty authority and enabled active backup schedules. Publication remains false. |
+
+Each phase has a synced `started` record before its action and a completed
+receipt only after verification. If interrupted, repeat the same command above.
+The controller reconciles only its last unacknowledged proposal; it does not
+replay completed phases into a missing or truncated host journal. Unknown,
+changed or missing authority stops the attempt and retains its diagnostics.
+Changed inputs during an action prevent publication of a completion receipt.
+
+After acceptance, the same command performs fresh inspection and current
+provider/credential checks. It does not rebuild the artifact, run playbooks,
+recapture the original backup, initialize metadata or rewrite original receipt
+timestamps. The completed proof may be older than seven days; current inputs
+must still be equivalent and unrevoked. Ordinary retention may have aged out
+the original scheduled snapshot, while the permanent genesis and protected
+inventory must remain available and verify. M3.12 publication remains a separate
+milestone and is not enabled by this command.
+
+### Production failure diagnostics and containment
+
+The command prints the private attempt directory on failure. Inspect the failed
+step's bounded observation and its private stdout/stderr there. The root action
+retains the same resource limits as the installed backup operation; a timeout
+is a failed attempt, not permission to raise its production limit. For bounded
+host diagnostics, use the already verified production SSH connection:
+
+```console
+sudo systemctl show lowerduckpond-m3-11-action.service --property=Result,ExecMainStatus,MemoryPeak
+sudo journalctl --unit lowerduckpond-m3-11-action.service --no-pager --lines=30
+sudo systemctl show lowerduckpond-backup.timer lowerduckpond-backup-maintenance.timer lowerduckpond-audit-verify.timer lowerduckpond-audit-rotate.timer --property=LoadState,ActiveState,UnitFileState
+```
+
+Keep workstation attempts, original proposals, both host completion records,
+retained SQL/capture/restore proof and repository evidence for diagnosis. Share
+the fixed failure label and phase first; these private directories may contain
+production configuration details and must not be committed as closeout records.
+Do not delete a journal, service condition, namespace or lineage to restart the
+migration. Expired unfinished qualification or changed input identity needs a
+reviewed recovery decision using the retained original transaction.
+
+If rotation or maintenance must be stopped for investigation, first end the
+rollout controller and allow its action to drain. Then the explicit containment
+step on the host is:
+
+```console
+sudo systemctl mask --now lowerduckpond-audit-rotate.timer lowerduckpond-audit-rotate.service lowerduckpond-backup-maintenance.timer lowerduckpond-backup-maintenance.service
+```
+
+This retains the compatible reader, original journals and protected history.
+Completed-rollout inspection refuses the masked schedules. Re-enable them only
+through the reviewed repair; containment is not a successful completion or an
+artifact downgrade. Before any removal, an older implementation is usable only
+after separately proving layout compatibility or restoring pre-migration state
+on a fenced target. After archival/index use or local removal, retain the new
+readers and deliver a forward repair or the qualified gated restoration. Never
+repoint the artifact selector or erase protected metadata to make rollback pass.
