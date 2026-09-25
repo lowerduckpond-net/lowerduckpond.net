@@ -90,7 +90,7 @@ def read(path: Path, *, owner: int, mode: int) -> bytes:
         os.close(fd)
 
 
-def environment(raw: bytes, *, region: str, locator: str) -> dict[str, str]:
+def configuration(raw: bytes) -> dict[str, str]:
     result: dict[str, str] = {}
     # Parse literal shell assignments without evaluating expansions or commands.
     for assignment in shlex.split(raw.decode("utf-8"), comments=True, posix=True):
@@ -98,6 +98,11 @@ def environment(raw: bytes, *, region: str, locator: str) -> dict[str, str]:
         if not separator or key not in CONFIGURATION or key in result or "\0" in value:
             raise ValueError("production backup configuration is not a literal environment")
         result[key] = value
+    return result
+
+
+def environment(raw: bytes, *, region: str, locator: str) -> dict[str, str]:
+    result = configuration(raw)
     if (
         any(not result.get(key) for key in ENVIRONMENT)
         or result.get("RESTIC_REPOSITORY") != locator

@@ -174,6 +174,21 @@ def predecessor(
     return units
 
 
+@pytest.mark.parametrize("fault", ["zero", "duplicate"])
+def test_drain_requires_one_boolean_false_publication_value(predecessor: Path, fault: str) -> None:
+    raw = probe.PUBLICATION.read_bytes()
+    if fault == "zero":
+        raw = raw.replace(b"false", b"0")
+    else:
+        raw = raw.replace(b"{", b'{"static_publication_enabled":false,', 1)
+    probe.PUBLICATION.chmod(0o600)
+    probe.PUBLICATION.write_bytes(raw)
+    probe.PUBLICATION.chmod(0o400)
+    with pytest.raises(ValueError):
+        fence.drain(owner=OWNER)
+    assert not list(predecessor.iterdir())
+
+
 @pytest.mark.parametrize("fault", ["none", "live-unit", "external-process", "stop-failed"])
 def test_drain_cannot_complete_until_all_old_execution_is_absent(
     predecessor: Path, monkeypatch: pytest.MonkeyPatch, fault: str

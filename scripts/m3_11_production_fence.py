@@ -238,11 +238,15 @@ def drain(*, owner: int = 0) -> bytes:  # noqa: PLR0912 - ordered predecessor fe
     if not probe.SELECTION.is_symlink() or probe.SELECTION.resolve(strict=True) != selected:
         raise ValueError("production predecessor selection changed")
     publication_raw = probe.read(probe.PUBLICATION, owner=owner, mode=0o400)
-    publication = json.loads(publication_raw)
-    if publication != {
-        "format": "lowerduckpond-static-publication-gate-v1",
-        "static_publication_enabled": False,
-    }:
+    publication = json.loads(publication_raw, object_pairs_hook=probe.unique_object)
+    if (
+        publication
+        != {
+            "format": "lowerduckpond-static-publication-gate-v1",
+            "static_publication_enabled": False,
+        }
+        or publication["static_publication_enabled"] is not False
+    ):
         raise ValueError("production publication must remain disabled")
     run(["/usr/local/libexec/lowerduckpond/verify-static-host-agent-artifact", str(selected)])
     for unit, phase in FENCES.items():

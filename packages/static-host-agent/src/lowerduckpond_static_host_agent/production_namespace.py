@@ -153,8 +153,8 @@ def initialize_namespace(
     The caller must first persist these exact bytes (including the actual initial
     timestamp) in its qualified migration transaction and drain old processes.
     This primitive neither authorizes a rollout nor manufactures a timestamp.
-    It has no CLI or automatic Ansible callsite. False means the original record
-    was already published; even its inode and modification time remain intact.
+    False means the original record was already published; even its inode and
+    modification time remain intact.
     """
     _validate(original)
     temporary = ".ldp-state-" + hashlib.sha256(original).hexdigest()[:32]

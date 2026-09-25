@@ -24,6 +24,7 @@ def helper_bundle() -> tuple[bytes, str]:
             for name in (
                 "m3_11_production_fence.py",
                 "m3_11_production_gate.py",
+                "m3_11_production_initialize.py",
                 "m3_11_production_journal.py",
                 "m3_11_production_lease.py",
                 "m3_11_production_probe.py",

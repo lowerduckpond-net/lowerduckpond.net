@@ -51,6 +51,7 @@ def test_helper_bundle_is_deterministic_and_contains_only_qualified_code(tmp_pat
             "scripts/__init__.py",
             "scripts/m3_11_production_fence.py",
             "scripts/m3_11_production_gate.py",
+            "scripts/m3_11_production_initialize.py",
             "scripts/m3_11_production_journal.py",
             "scripts/m3_11_production_lease.py",
             "scripts/m3_11_production_probe.py",
@@ -60,6 +61,7 @@ def test_helper_bundle_is_deterministic_and_contains_only_qualified_code(tmp_pat
         for name in (
             "m3_11_production_fence.py",
             "m3_11_production_gate.py",
+            "m3_11_production_initialize.py",
             "m3_11_production_journal.py",
             "m3_11_production_lease.py",
             "m3_11_production_probe.py",

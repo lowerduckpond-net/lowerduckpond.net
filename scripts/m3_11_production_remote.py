@@ -9,6 +9,7 @@ from pathlib import Path
 
 from scripts import m3_11_production_fence as fence
 from scripts import m3_11_production_gate as gate
+from scripts import m3_11_production_initialize as initialize
 from scripts import m3_11_production_lease as lease
 from scripts import m3_11_production_records as records
 
@@ -39,7 +40,7 @@ def drain() -> None:
         raise ValueError("production action descendants remain")
 
 
-def main() -> int:
+def main() -> int:  # noqa: PLR0911,PLR0912 - fixed root-only wire operations
     try:
         if os.geteuid() != 0:
             raise ValueError("production action requires root")
@@ -64,6 +65,17 @@ def main() -> int:
             if sys.stdin.buffer.read(1):
                 raise ValueError("unexpected production drain input")
             sys.stdout.buffer.write(fence.drain())
+            return 0
+        if len(arguments) == 3 and arguments[0] == "initialize":  # noqa: PLR2004 - token and phase
+            lease.require_action(LEASE, owner=0, token=arguments[1])
+            if sys.stdin.buffer.read(1):
+                raise ValueError("unexpected production initialization input")
+            try:
+                result = initialize.initialize(arguments[2])
+            except Exception:
+                # Candidate errors may contain private paths or provider data.
+                raise ValueError("production initialization failed") from None
+            sys.stdout.buffer.write(result)
             return 0
         if len(arguments) >= 3 and arguments[0] == "journal":  # noqa: PLR2004 - token and operation
             # This child runs under the outer action's still-held lease. Taking
