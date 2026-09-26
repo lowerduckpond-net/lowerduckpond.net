@@ -380,7 +380,9 @@ def _require_same_job(
     second = current.document
     first.pop("phase", None)
     second.pop("phase", None)
+    first.pop("dispatchAuditBoundary", None)
     first.pop("dispatchArchiveDeploymentIds", None)
+    second.pop("dispatchAuditBoundary", None)
     second.pop("dispatchArchiveDeploymentIds", None)
     first.pop("dispatchArtifactReleaseTreeDigest", None)
     second.pop("dispatchArtifactReleaseTreeDigest", None)

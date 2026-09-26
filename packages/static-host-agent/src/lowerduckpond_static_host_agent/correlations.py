@@ -436,6 +436,7 @@ def _retry_binding(document: dict[str, object]) -> bytes:
         del binding[field]
     binding.pop("executionValidated", None)
     binding.pop("exportDelivery", None)
+    binding.pop("dispatchAuditBoundary", None)
     binding.pop("dispatchArchiveDeploymentIds", None)
     binding.pop("dispatchArtifactReleaseTreeDigest", None)
     binding.pop("dispatchImportManifest", None)
@@ -465,6 +466,7 @@ def _durable_binding(document: dict[str, object]) -> bytes:
     del binding["phase"]
     binding.pop("executionValidated", None)
     binding.pop("exportDelivery", None)
+    binding.pop("dispatchAuditBoundary", None)
     binding.pop("dispatchArchiveDeploymentIds", None)
     binding.pop("dispatchArtifactReleaseTreeDigest", None)
     binding.pop("dispatchImportManifest", None)

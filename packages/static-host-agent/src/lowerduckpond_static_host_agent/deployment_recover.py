@@ -321,6 +321,7 @@ def _require_bound_job(
     for field in (
         "phase",
         "executionValidated",
+        "dispatchAuditBoundary",
         "dispatchArchiveDeploymentIds",
         "dispatchArtifactReleaseTreeDigest",
         "dispatchImportManifest",

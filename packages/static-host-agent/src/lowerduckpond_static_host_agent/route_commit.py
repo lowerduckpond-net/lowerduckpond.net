@@ -417,6 +417,7 @@ def _require_same_job(
     second = current.document
     for field in (
         "phase",
+        "dispatchAuditBoundary",
         "dispatchArchiveDeploymentIds",
         "dispatchArtifactReleaseTreeDigest",
         "dispatchSourceReleaseTreeDigest",

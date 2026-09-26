@@ -716,14 +716,24 @@ local recovery. A separate diagnostic reached the same tenant-inventory
 rejection reproduced by a component case: concurrent create requests can leave
 the rejected job with a dispatch inventory captured before the winner commits.
 An executor-published rejection before intent creation does not commit a handler
-transition. Replay and restore therefore validate its original request, result,
-audit and absence of a bound intent without treating that dispatch inventory or
-target retained-history snapshot as handler rollback authority. The original
-dispatch histories still constrain unrelated tenants, including authorized later
-audited changes, even when earlier jobs predate global history binding.
-Unvalidated source checks and ordinary handler-result history checks remain in
-force. Original job/result/audit bytes are not rewritten to repair this
-interpretation.
+transition. Newly dispatched jobs bind an audit entry count and terminal digest
+alongside the tenant inventory and retained histories under the same exclusive
+tenant-state lock. Replay and restore verify that exact prefix and advance all
+bound inventories through successful, result-bound audit entries between
+dispatch and rejection. Existing validation then accounts for audited work after
+rejection. Target histories, unrelated histories and the complete tenant
+inventory remain authoritative; unaudited additions or removals still fail.
+Original request/result/audit bindings, intent exclusion and unvalidated source
+checks remain in force.
+
+The optional `dispatchAuditBoundary` job field does not migrate historical
+records. Jobs without it retain strict snapshot validation. An old contested
+rejection whose snapshot no longer matches cannot acquire a retrospectively
+invented boundary or be made valid by this fix. The failed live attempt remains
+failed; fresh qualification uses newly bound jobs. Original job/result/audit
+bytes are not rewritten. Readers predating this field cannot consume newly
+dispatched jobs; rollback must retain the compatible reader or the prior
+coherent backup.
 
 The live combined phase observer is amended to follow the unchanged 30-minute
 coordinator limit plus 30 seconds for shutdown and status reporting. Its fixed

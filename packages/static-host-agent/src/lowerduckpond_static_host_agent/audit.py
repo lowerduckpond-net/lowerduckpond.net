@@ -473,8 +473,9 @@ def inspect_later_audit_transitions(  # noqa: PLR0913 - storage contract is expl
     expected_directory_mode: int,
     expected_record_mode: int,
     limits: AuditLimits = DEFAULT_AUDIT_LIMITS,
+    dispatch_boundary: dict[str, object] | None = None,
 ) -> tuple[AuditTransition, ...]:
-    """Return a capped slim projection after one verified correlation."""
+    """Project after a correlation, or from dispatch up to that correlation."""
 
     if (
         type(maximum_transitions) is not int
@@ -512,6 +513,7 @@ def inspect_later_audit_transitions(  # noqa: PLR0913 - storage contract is expl
         segments,
         matching_entry=matching_entry,
         maximum_transitions=maximum_transitions,
+        dispatch_boundary=dispatch_boundary,
     )
 
 
@@ -1030,19 +1032,56 @@ def _previous_tenant_state_transition(
     return previous
 
 
+def _dispatch_transition_start(
+    segments: _Segments,
+    boundary: dict[str, object],
+    end: int,
+) -> int:
+    """Verify the exact hash-chain prefix captured with a dispatch snapshot."""
+
+    count = boundary.get("entryCount")
+    digest = boundary.get("terminalDigest")
+    if (
+        set(boundary) != {"entryCount", "terminalDigest"}
+        or type(count) is not int
+        or not 0 <= count <= end
+    ):
+        raise AuditError("dispatch audit boundary is outside its rejection prefix")
+    if count == 0:
+        if digest is not None:
+            raise AuditError("empty dispatch audit boundary has a terminal digest")
+        return count
+    for segment in segments:
+        for line in segment.data.splitlines(keepends=True):
+            document = decode_json_object(line, maximum_bytes=MAX_CANONICAL_BYTES)
+            if document["sequence"] == count - 1:
+                if audit_entry_digest(document).to_dict() != digest:
+                    raise AuditError("dispatch audit boundary digest disagrees with history")
+                return count
+    raise AuditError("dispatch audit boundary is unavailable")  # pragma: no cover
+
+
 def _later_audit_transitions(
     segments: _Segments,
     *,
     matching_entry: dict[str, object] | None,
     maximum_transitions: int,
+    dispatch_boundary: dict[str, object] | None = None,
 ) -> tuple[AuditTransition, ...]:
     """Project only fixed-size transition authority, never complete entries."""
 
     if matching_entry is None:
+        if dispatch_boundary is not None:
+            raise AuditError("dispatch audit projection has no rejection entry")
         return ()
     matching_sequence = matching_entry["sequence"]
     if type(matching_sequence) is not int:  # pragma: no cover - schema validation proves this
         raise AuditError("matching audit sequence is malformed")
+    start = (
+        matching_sequence + 1
+        if dispatch_boundary is None
+        else _dispatch_transition_start(segments, dispatch_boundary, matching_sequence)
+    )
     transitions: list[AuditTransition] = []
     transition_correlations: set[str] = set()
     for segment in segments:
@@ -1054,8 +1093,10 @@ def _later_audit_transitions(
             correlation_id = document["correlationId"]
             if type(sequence) is not int or type(correlation_id) is not str:
                 raise AuditError("audit transition identity is malformed")
-            if sequence <= matching_sequence:
+            if sequence < start:
                 continue
+            if dispatch_boundary is not None and sequence >= matching_sequence:
+                return tuple(transitions)
             tenant_id = document["tenantId"]
             operation = document["operation"]
             if (

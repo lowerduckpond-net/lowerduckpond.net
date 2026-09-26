@@ -172,11 +172,13 @@ def _require_exact_job(
     expected_document = prepared.document
     current_document = current.document
     expected_document.pop("phase", None)
+    expected_document.pop("dispatchAuditBoundary", None)
     expected_document.pop("dispatchArchiveDeploymentIds", None)
     expected_document.pop("dispatchArtifactReleaseTreeDigest", None)
     expected_document.pop("dispatchSourceReleaseTreeDigest", None)
     expected_document.pop("dispatchDeploymentIds", None)
     current_phase = current_document.pop("phase", None)
+    current_document.pop("dispatchAuditBoundary", None)
     current_document.pop("dispatchArchiveDeploymentIds", None)
     current_document.pop("dispatchArtifactReleaseTreeDigest", None)
     current_document.pop("dispatchSourceReleaseTreeDigest", None)

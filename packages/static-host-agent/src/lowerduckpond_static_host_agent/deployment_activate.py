@@ -200,6 +200,7 @@ def _require_exact_job(
     for field in (
         "phase",
         "executionValidated",
+        "dispatchAuditBoundary",
         "dispatchArchiveDeploymentIds",
         "dispatchArtifactReleaseTreeDigest",
         "dispatchSourceReleaseTreeDigest",

@@ -169,6 +169,7 @@ class AuthorizationIssuer:
             "artifact": request.get("artifact"),
             "expectedSource": expected_source,
             "sourceAuthority": source_authority,
+            "dispatchAuditBoundary": None,
             "dispatchArchiveDeploymentIds": None,
             "dispatchArtifactReleaseTreeDigest": None,
             "dispatchSourceObservedState": None,
