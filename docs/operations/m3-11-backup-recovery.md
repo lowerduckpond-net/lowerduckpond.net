@@ -809,6 +809,15 @@ observation and returns the private removal receipt; it never creates
 intent, retain the fixture and use the existing bounded failure diagnostics to
 resolve its outstanding authority before any removal.
 
+If legacy restored-state validation cannot complete, workstation updates do not
+repair the original fixture or create teardown authorization. The
+[failed-fixture archive retirement proposal](../plans/m3-11-failed-fixture-retirement.md)
+defines the separate reviewed path needed for this case. It requires a later
+implementation and explicit approval of a concrete private plan. Until that
+tooling is delivered, there is no generic failed-run cleanup command: keep the
+existing gates and evidence, and do not use successful-test teardown or a fresh
+qualification invocation to bypass the retained obligations.
+
 ## Production predecessor preflight
 
 On the secure workstation, from clean, current `main` in the existing private

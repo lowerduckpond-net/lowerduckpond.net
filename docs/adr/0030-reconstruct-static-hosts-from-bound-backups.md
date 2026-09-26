@@ -157,6 +157,31 @@ privilege, capacity and negative recovery outcome. Production publication stays
 disabled; convergence is a separate operator step. ADR 0029 governs final
 input/artifact/target identity, original evidence bytes and records-only closeout.
 
+### Failed disposable qualification
+
+Proposed amendment, requiring merge before dependent implementation:
+the [failed-fixture archive retirement plan](../plans/m3-11-failed-fixture-retirement.md)
+defines a separate administrative decision for a failed combined live
+reconstruction before public-CA verification. Ordinary recovery may remain
+impossible for legacy records that cannot acquire newly required authority.
+Successful-test teardown is not available in that case.
+
+For this bounded disposable case, explicit operator approval of an immutable
+plan may retire exact archive versions after proving ownership, stopping the
+recorded writers, preserving and verifying the exact bytes privately, and
+independently reconciling the entire archive inventory. Unknown or ambiguous
+objects cannot be retired. Retain the stopped hosts, original failure/state,
+private copies and all backup objects, including protected snapshots. The
+operator accepts that their historical version IDs will no longer resolve;
+preserved copies do not authorize replacement versions or resumed service.
+
+This exception supplies no production data-loss, protected-snapshot expiration,
+ordinary tenant retirement or qualification authority. Original failures stay
+failed, successful-test teardown keeps its existing prerequisites, and a new
+qualification must pass its unchanged starting and completion gates. The
+amendment defines required behavior; it does not install a retirement command
+or authorize deletion of any particular retained run.
+
 ## Consequences
 
 Backups may hold publication longer, but that is already the installed behavior
