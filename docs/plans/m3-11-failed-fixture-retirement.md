@@ -1,6 +1,7 @@
 # M3.11 failed-fixture archive retirement
 
-- Status: proposed amendment; merge before dependent implementation
+- Status: retirement boundary accepted in PR #179; evidence correction proposed
+  below, requiring merge before dependent implementation
 - Parent: [M3.11](milestone-3.11.md#7-qualification-ci-and-evidence)
 - Decision: [ADR 0030 amendment](../adr/0030-reconstruct-static-hosts-from-bound-backups.md#failed-disposable-qualification)
 - Scope: an explicit secure-workstation action for a failed disposable combined
@@ -35,6 +36,25 @@ settled accounting, a passing qualification report, or production authority.
 Fresh qualification must independently pass its unchanged whole-bucket-empty
 guard with a new run identity and backup prefix on final merged inputs.
 
+## Correction to the original evidence prerequisites
+
+PR #179 required two historical records that the retained live format does not
+capture. The [public-input capture](../../scripts/m3_11_public_inputs.py) saves
+the fresh source's resolver, hosts and trust files, not provider DNS records.
+The [DNS witness](../../scripts/m3_11_dns_witness.py) captures its baseline only
+when [public-CA recovery](../../config/ansible/molecule/m3_8/tests/public_ca_recovery.py)
+starts, after reconstruction and reboot. A failure during reconstruction therefore
+has no pre-attempt provider DNS baseline. Retirement must use a new, explicitly
+dated absence observation and must never describe it as historical evidence.
+
+The [live fixture manifest](../../scripts/m3_11_combined_inputs.py) records an
+unused MinIO name and owner, but no container ID. The live wrapper does not write
+the independent local case's `case-containers.json`. Source, destination and
+controlled-ACME IDs are saved separately. Do not infer the missing MinIO identity
+from its current label, image or creation time. Leave that local service untouched;
+exclude it from the Spaces writer set only under the checks below. This correction
+reduces container mutation authority and does not permit replacement hosts.
+
 ## Eligibility and ownership
 
 The initial implementation accepts only the following bounded case. Unsupported
@@ -42,9 +62,18 @@ or ambiguous cases retain all resources and require a further reviewed decision.
 
 1. Validate the original private live manifest, combined context, original
    artifact digest, source revision, storage target, unique backup owner version,
-   and saved source/destination/ACME/unused-MinIO container identities. Derive
+   and saved source/destination/controlled-ACME container identities. Derive
    coordinates from those records; accept no caller-selected bucket, prefix,
-   object key, container name, or replacement artifact.
+   object key, container name, or replacement artifact. All three IDs must be
+   original saved IDs. The unused local MinIO service is outside this stop
+   authorization. Confirm from the original Spaces configuration that it is not
+   a live archive or backup endpoint and receives no Spaces credentials. A
+   read-only inspection of the saved local name must match the original fixture
+   recipe and local-server launch configuration; reject unexpected environment,
+   executable, command, privileges or host mounts. Record its current ID and
+   configuration digest only as a fresh observation, require them unchanged
+   through retirement, and never stop, restart, delete or adopt it as an original
+   bound container. Missing or ambiguous exclusion evidence prevents retirement.
 2. Require the original nonzero failure and interrupted reconstruction receipt;
    reject a completed reconstruction, any started public-CA phase, successful
    combined assertions/report, or existing successful teardown authorization.
@@ -62,9 +91,17 @@ or ambiguous cases retain all resources and require a further reviewed decision.
    Reject delete markers, multipart uploads, duplicate/extra/missing versions,
    unknown objects, and missing or conflicting ownership. Never infer ownership
    from an empty starting bucket, a fixture label, a prefix, or a count alone.
-5. Confirm the original disposable DNS subjects and challenge names remain at
-   their captured pre-attempt baseline using the operator credential. This path
-   performs no DNS changes and cannot handle an interrupted public-CA attempt.
+5. Reject any public-CA phase intent or `public-dns` observation directory,
+   including partial progress. Derive the exact disposable subjects and
+   challenge names from the original bound context and name record. Using the
+   operator credential, verify both zone identities and collect a new bounded
+   all-record-type absence observation for those names. Persist its real time,
+   context/name digests and zone bindings under the separate retirement
+   transaction. Recheck absence before approval and each deletion; any record,
+   changed binding or failed observation stops progress. Do not create a
+   replacement `public-dns/0000.json`, backdate evidence or infer historical
+   absence. This path performs no DNS changes and cannot handle an interrupted
+   public-CA attempt.
 
 Use the existing 25-tenant, 120-MiB-per-bundle and 3,000-MiB aggregate archive
 bounds. Reject oversized inventories before allocation. Fixed command and
@@ -86,8 +123,9 @@ or manual provider writer remains an explicit operator exclusion prerequisite.
 
 Take that lease and the original run lease. Validate eligibility before changing
 anything. Write an immutable preparation intent binding the original inputs,
-container incarnations, observed gates and the hashes of existing failure and
-phase evidence. Stop only the four recorded disposable containers. Require
+container incarnations, observed gates, fresh DNS/unused-MinIO observations and
+the hashes of existing failure and phase evidence. Stop only the three recorded
+disposable source, destination and controlled-ACME containers. Require
 their original identities, unchanged incarnations, stopped state and disabled
 restart policies; never un-fence, restart or replace a container. Resuming an
 interrupted stop uses this same intent and rejects a restart or replacement.
@@ -101,7 +139,8 @@ or replay their journals. Capacity checks include the backing-image copies.
 Revalidate eligibility and archive ownership against this frozen capture;
 live unit status remains the preceding recorded observation, not an assertion
 that a stopped unit is currently readable. Recheck both provider inventories and
-DNS baseline. Stream each exact archive version to an exclusively created
+current DNS absence and the unchanged exclusion of the untouched local MinIO
+service. Stream each exact archive version to an exclusively created
 private file; enforce its recorded
 length and SHA-256, then fsync and reread it to verify preservation. A changed,
 missing or unreadable version prevents authorization. Check sufficient local
@@ -122,7 +161,8 @@ archive data loss as command arguments. This is separate from approval of the
 software PR. Reacquire both leases, validate all original bindings and retained
 evidence, and require all recorded writers still stopped with the same
 incarnations and restart policies. Revalidate the preserved copies, backup owner,
-DNS baseline and both exact archive inventories before accepting approval.
+current DNS absence, the untouched local MinIO exclusion and both exact archive
+inventories before accepting approval.
 
 Persist that authorization before the first deletion. Delete only the listed
 `Key` plus `VersionId`, never an unversioned key or bucket-wide purge. Before each
@@ -142,9 +182,10 @@ validators reject it. `inspect` reports progress without restarting workers,
 deleting bytes or rewriting original evidence. Interrupted retirement resumes
 only the same approved plan; it cannot refresh or expand its authority.
 
-The stopped containers, original logs/state, private archive copies and backup
-prefix remain retained for diagnosis. This workflow neither removes them nor
-provides a procedure for restarting them. Their later disposal requires its own
+The three stopped containers, untouched local MinIO service, original logs/state,
+private archive copies and backup prefix remain retained for diagnosis. This
+workflow neither removes them nor provides a procedure for restarting them.
+Their later disposal requires its own
 explicitly reviewed authority. Any future claim about their recovery must
 acknowledge that the original remote archive versions were retired.
 
@@ -162,6 +203,15 @@ secure-workstation retirement is requested:
 - Tests cover interrupted preparation, partial copies, interruption immediately
   before/after every delete, lost responses, changed inventory, and concurrent
   local attempts. Approval of one digest cannot authorize a modified plan.
+- A failed reconstruction without provider DNS history can prepare only after
+  fresh absence checks. Existing public-CA progress, a nonempty name, wrong zone,
+  failed provider read or later DNS change prevents authorization or further
+  deletion. Original public-input bytes remain unchanged and no public-CA
+  baseline is fabricated.
+- A live-format fixture without a saved MinIO ID leaves that service untouched.
+  Unexpected launch settings, a changed current ID/configuration or ambiguous
+  exclusion from Spaces writers blocks retirement. A matching name, image or
+  creation time never permits stopping a container without its original ID.
 - An independent installed MinIO case uses real source/destination fixtures with
   gated failed restoration and unresolved work, real versioned objects and
   separate runtime/operator credentials. It proves exact retirement and retains
