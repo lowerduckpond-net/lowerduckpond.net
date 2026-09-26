@@ -711,6 +711,20 @@ measurement. The correction verifies root-owned private ancestry and a single
 link before stopping, retains original modes, and always writes controller
 copies as `0600`; it does not repair or broaden access to original state.
 
+The second fresh local native case passed on 2026-09-26 in 2,228.77 seconds
+(37.15 minutes), including setup and preserved-state verification. It retired
+one exact version and retained the original failed state and protected backup
+bytes. This diagnostic run used a dirty implementation checkout based on
+`6ba62c770eab98e2bb42b1999190bfca6fd710f8`; it is not exact-head CI or live-provider
+qualification. Its already-started controller included an extra 233.42-second
+initial dark-source idempotence pass, and its pytest span was recorded as
+`unclassified`. Preserve the full original duration and attribution. The final
+registry omits that redundant pass while retaining activated-source idempotence,
+and the timing plugin now attributes this test to `failed-retirement`, with a
+real pytest regression. Do not subtract those differences to claim a measured
+target pass: the 30-minute target remains unmet pending normal CI measurements
+and resolution or explicit acceptance before milestone closeout.
+
 ### Restore phase observation deadline
 
 The restore fixture's phase-observation deadline is amended from 180 to 300

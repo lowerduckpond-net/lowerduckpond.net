@@ -235,7 +235,11 @@ def test_real_ansible_callback_captures_playbook_and_reboot_without_payloads(
 )
 @pytest.mark.parametrize(
     ("filename", "group"),
-    [("test_lifecycle.py", "core"), ("test_combined_live.py", "combined-reconstruction")],
+    [
+        ("test_lifecycle.py", "core"),
+        ("test_combined_live.py", "combined-reconstruction"),
+        ("test_failed_retirement.py", "failed-retirement"),
+    ],
 )
 def test_real_pytest_group_retains_a_failed_operator_span(  # noqa: PLR0913
     run_directory: Path,

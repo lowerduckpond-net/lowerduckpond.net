@@ -254,3 +254,8 @@ The provisional CI ceiling is 90 minutes, providing 1.5 times a conservative
 measurements. The 30-minute engineering target and production service deadlines
 remain unchanged. This case supplies local diagnostic evidence only; it cannot
 establish live Spaces deletion or qualify a production rollout.
+The first completed local diagnostic took 37.15 minutes, including an extra
+initial idempotence pass already in flight before the final registry change.
+The [timing record](../plans/milestone-3.11.md#7-qualification-ci-and-evidence)
+preserves that full duration and its attribution limits; the engineering target
+has not been met by a measured complete run.
