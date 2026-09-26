@@ -131,11 +131,31 @@ class Fixture:
             ["bash", "-s", "--", "record", selected, PREDECESSOR],
             (ROOT / "scripts/m3-10-convergence-state").read_bytes(),
         )
-        self.remote(
-            "previous-integrity",
-            ["bash", "-s", "--", selected, "upgrade-host", PREDECESSOR],
-            (ROOT / "scripts/m3-10-completed-host-preflight").read_bytes(),
-        )
+        self.predecessor_integrity(selected)
+
+    def predecessor_integrity(self, selected: str) -> None:
+        # The real read-only gate rejects queued/running lifecycle work. Pause
+        # this empty owned fixture's periodic producers before draining them,
+        # then restore them for the actual controller's drain/recovery proof.
+        services = [
+            "lowerduckpond-static-reconcile.service",
+            "lowerduckpond-static-emergency-reconcile.service",
+        ]
+        timers = [unit.removesuffix(".service") + ".timer" for unit in services]
+        for unit in timers:
+            self.remote("previous-timer-active", ["systemctl", "is-active", "--quiet", unit])
+        try:
+            self.remote("previous-timers-pause", ["systemctl", "stop", *timers])
+            self.remote("previous-reconcilers-drain", ["systemctl", "stop", *services])
+            self.remote(
+                "previous-integrity",
+                ["bash", "-s", "--", selected, "upgrade-host", PREDECESSOR],
+                (ROOT / "scripts/m3-10-completed-host-preflight").read_bytes(),
+            )
+        finally:
+            self.remote("previous-timers-resume", ["systemctl", "start", *timers])
+        for unit in timers:
+            self.remote("previous-timer-active", ["systemctl", "is-active", "--quiet", unit])
 
     def transport(self) -> list[str]:
         self.endpoint = json.loads(

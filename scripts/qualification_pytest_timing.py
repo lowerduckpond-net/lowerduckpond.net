@@ -117,10 +117,11 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[None]) ->
             entry
             for entry in reversed(call.excinfo.traceback)
             if Path(entry.path).name in TEST_FILES
-            and not (
-                Path(entry.path).name == "restore_fixture.py"
-                and entry.name in {"command", "copy_in", "copy_between", "checked"}
-            )
+            and entry.name
+            not in {
+                "restore_fixture.py": {"command", "copy_in", "copy_between", "checked"},
+                "production_rollout_fixture.py": {"command", "remote"},
+            }.get(Path(entry.path).name, set())
         ),
         None,
     )

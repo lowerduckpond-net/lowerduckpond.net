@@ -807,8 +807,15 @@ def test_backup_failures_keep_their_declared_group_and_source_location(
     assert record["line"] == 42  # noqa: PLR2004 - diagnostic source line
 
 
-def test_restore_command_failure_points_to_the_preparation_call_site(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+@pytest.mark.parametrize(
+    "file,wrapper", [("restore_fixture.py", "copy_in"), ("production_rollout_fixture.py", "remote")]
+)
+def test_installed_command_failure_points_to_the_preparation_call_site(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+    file: str,
+    wrapper: str,
 ) -> None:
     from scripts import qualification_pytest_timing as plugin  # noqa: PLC0415
 
@@ -818,10 +825,10 @@ def test_restore_command_failure_points_to_the_preparation_call_site(
     # embedding command arguments/output in the shareable failure record.
     source = (
         f"def command():\n    raise ValueError({CANARY!r})\n"
-        "def copy_in():\n    command()\n"
-        "def prepare():\n    copy_in()\n"
+        f"def {wrapper}():\n    command()\n"
+        f"def prepare():\n    {wrapper}()\n"
     )
-    exec(compile(source, "restore_fixture.py", "exec"), namespace)  # noqa: S102
+    exec(compile(source, file, "exec"), namespace)  # noqa: S102
     prepare = namespace["prepare"]
     assert callable(prepare)
     call = pytest.CallInfo.from_call(prepare, when="call")
@@ -829,6 +836,6 @@ def test_restore_command_failure_points_to_the_preparation_call_site(
     plugin.pytest_runtest_makereport(request.node, call)
     text = (tmp_path / "failure-test.json").read_text()
     record = json.loads(text)
-    assert record["file"] == "restore_fixture.py"
+    assert record["file"] == file
     assert record["line"] == 6  # noqa: PLR2004 - actual preparation call, not command wrapper
     assert CANARY not in text
