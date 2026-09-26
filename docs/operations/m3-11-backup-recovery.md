@@ -811,12 +811,19 @@ resolve its outstanding authority before any removal.
 
 If legacy restored-state validation cannot complete, workstation updates do not
 repair the original fixture or create teardown authorization. The
-[failed-fixture archive retirement proposal](../plans/m3-11-failed-fixture-retirement.md)
+[failed-fixture archive retirement plan](../plans/m3-11-failed-fixture-retirement.md)
 defines the separate reviewed path needed for this case. It requires a later
 implementation and explicit approval of a concrete private plan. Until that
 tooling is delivered, there is no generic failed-run cleanup command: keep the
 existing gates and evidence, and do not use successful-test teardown or a fresh
 qualification invocation to bypass the retained obligations.
+
+This pre-public-CA failure has no historical provider DNS baseline, and its live
+manifest has no saved ID for the unused local MinIO service. The proposed
+correction requires fresh retirement-only DNS absence observations and leaves
+that service untouched after proving it is outside the Spaces writer set. It
+does not request another workstation diagnostic or authorize manually stopping
+an unbound container.
 
 ## Production predecessor preflight
 

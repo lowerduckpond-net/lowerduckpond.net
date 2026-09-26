@@ -159,7 +159,8 @@ input/artifact/target identity, original evidence bytes and records-only closeou
 
 ### Failed disposable qualification
 
-Proposed amendment, requiring merge before dependent implementation:
+Retirement boundary accepted in PR #179; the accompanying evidence correction
+requires review and merge before dependent implementation:
 the [failed-fixture archive retirement plan](../plans/m3-11-failed-fixture-retirement.md)
 defines a separate administrative decision for a failed combined live
 reconstruction before public-CA verification. Ordinary recovery may remain
@@ -174,6 +175,15 @@ objects cannot be retired. Retain the stopped hosts, original failure/state,
 private copies and all backup objects, including protected snapshots. The
 operator accepts that their historical version IDs will no longer resolve;
 preserved copies do not authorize replacement versions or resumed service.
+
+For this pre-public-CA failure, retirement records new DNS absence observations
+under its own transaction; it cannot invent the historical baseline that the
+failed attempt never reached. Any public-CA progress or nonempty disposable DNS
+name excludes this path. Stop only source, destination and controlled-ACME
+containers with original saved IDs. The unused local MinIO service has no saved
+ID in this live format: leave it untouched and independently verify its exclusion
+from the Spaces writer set as specified by the plan. Its current name, label,
+image or creation time cannot grant historical ownership or stop authority.
 
 This exception supplies no production data-loss, protected-snapshot expiration,
 ordinary tenant retirement or qualification authority. Original failures stay
