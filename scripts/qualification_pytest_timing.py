@@ -16,6 +16,7 @@ GROUPS = {
     "test_production_rollout.py": "production-rollout",
     "test_restore_reconstruction.py": "restore-reconstruction",
     "test_combined_reconstruction.py": "combined-reconstruction",
+    "test_combined_live.py": "combined-reconstruction",
     "test_restore_negative.py": "restore-negative",
     "test_restore_tls_bootstrap.py": "restore-tls-bootstrap",
     "test_restore_accounting.py": "accounting",

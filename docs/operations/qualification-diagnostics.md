@@ -31,6 +31,9 @@ workstation. Share the JSON report when reporting a failure; it contains no raw
 exception, provider response, credential, bucket/key name, or tenant content.
 The first failed test and its submission context are retained even if later
 tests or teardown also fail. Later errors remain available in the private log.
+The separately recorded first Ansible failure can come from an intentional
+rejection test inside a passing group. It is context, not necessarily the cause
+of the run's failure; use the failed test location and its terminal traceback.
 The console names the operation separately from its observed outcome. Known
 burst-limit and ordinary-deletion eligibility rejections receive fixed categories;
 unrecognized transport errors stay generic without copying private messages.
@@ -112,6 +115,10 @@ separate bounded read-only probes (at most 20 seconds each). Their optional
 `reconstruction` section contains only phase, gate presence and fixed service
 state/result/exit-status fields. Missing or changed identities remain `unknown`;
 no DNS records, keys, object coordinates or tenant bytes are included.
+Both local and M3.11 live manifests select their original Docker endpoint and
+saved container identities. Live observation revalidates the private manifest
+without requiring provider credentials. The live combined test is attributed to
+`combined-reconstruction` in timing and failure reports.
 
 This report grants **no cleanup authority**. Empty intents and no quarantine
 are insufficient. Cleanup still requires fresh authoritative local accounting

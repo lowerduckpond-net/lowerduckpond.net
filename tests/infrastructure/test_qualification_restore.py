@@ -14,7 +14,18 @@ import pytest
 
 from scripts import qualification_restore as restore
 from scripts import qualification_retirement as retirement
-from scripts.qualification_context import ARTIFACT_ENV, HOST_ENV, RUN_ENV, resource_names
+from scripts.m3_11_combined_inputs import allocate
+from scripts.m3_11_qualification_evidence import canonical_bytes
+from scripts.qualification_case import private_document
+from scripts.qualification_context import (
+    ARCHIVE_ENV,
+    ARTIFACT_ENV,
+    HOST_ENV,
+    RUN_ENV,
+    resource_names,
+)
+from scripts.qualification_local import FORMAT as FIXTURE_FORMAT
+from scripts.qualification_probe import document
 
 
 @pytest.fixture
@@ -25,6 +36,114 @@ def environment(tmp_path: Path) -> dict[str, str]:
     }
     restore.directory(values).mkdir(mode=0o700)
     return values
+
+
+@pytest.fixture(params=["live", "local"])
+def observed_run(tmp_path: Path, request: pytest.FixtureRequest) -> Path:
+    endpoint = "unix:///original-fixture.sock"
+    if request.param == "live":
+        values = allocate(tmp_path, {"DOCKER_HOST": endpoint})
+    else:
+        values = {
+            **resource_names(uuid.uuid7().hex),
+            ARTIFACT_ENV: str(tmp_path / "fixture/static-host-agent.tar"),
+            "MOLECULE_EPHEMERAL_DIRECTORY": str(tmp_path / "fixture/molecule"),
+        }
+        private_document(
+            tmp_path,
+            "fixture.json",
+            {
+                "format": FIXTURE_FORMAT,
+                "run_id": values[RUN_ENV],
+                "environment": values,
+                "host": values[HOST_ENV],
+                "archive": values[ARCHIVE_ENV],
+                "docker_endpoint": endpoint,
+            },
+        )
+    root = restore.directory(values)
+    root.mkdir(mode=0o700)
+    for kind, digit in zip(("source", *restore.KINDS), "abc", strict=True):
+        private_document(
+            root,
+            f"{kind}.json",
+            {
+                "id": digit * 64,
+                "name": "/" + values[HOST_ENV] if kind == "source" else f"/fixture-{kind}",
+                "owner": values[RUN_ENV],
+                "image": "sha256:" + "d" * 64,
+            },
+        )
+    return tmp_path
+
+
+@pytest.mark.parametrize("fault", ["none", "id", "name", "owner", "image", "missing"])
+def test_reconstruction_observes_original_live_or_local_identities_only(
+    observed_run: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    monkeypatch.setenv("DOCKER_HOST", "unix:///unrelated-daemon.sock")
+    monkeypatch.setenv("DOCKER_CONTEXT", "unrelated-context")
+    monkeypatch.setenv("SPACES_SECRET_ACCESS_KEY", "private-credential-canary")
+    rows = {
+        kind: document(observed_run / "restore" / f"{kind}.json")
+        for kind in ("source", *restore.KINDS)
+    }
+    probes: list[str] = []
+
+    def command(arguments: list[str], **kwargs: object) -> bytes | None:
+        environment = kwargs["environment"]
+        assert isinstance(environment, dict)
+        assert environment["DOCKER_HOST"] == "unix:///original-fixture.sock"
+        assert "DOCKER_CONTEXT" not in environment
+        assert "SPACES_SECRET_ACCESS_KEY" not in environment
+        if arguments[:2] == ["docker", "inspect"]:
+            kind = next(kind for kind, row in rows.items() if row["id"] == arguments[-1])
+            value = dict(rows[kind])
+            if kind == "destination":
+                if fault == "missing":
+                    return None
+                if fault != "none":
+                    value[fault] = "e" * 64
+            return json.dumps(value).encode()
+        assert arguments[:3] == ["docker", "exec", "--interactive"]
+        assert arguments[4:] == ["/usr/bin/python3", "-I", "-B", "-"]
+        assert kwargs["timeout"] == 20  # noqa: PLR2004 - bounded observation contract
+        assert (
+            kwargs["stdin"]
+            == Path(restore.__file__).with_name("qualification_restore_probe.py").read_bytes()
+        )
+        probes.append(arguments[3])
+        return b'{"phase":"validated","gate_present":true,"units":{}}'
+
+    monkeypatch.setattr(restore, "bounded_command", command)
+    result = restore.observations_for(observed_run)
+    expected = {"phase": "validated", "gate_present": True, "units": {}}
+    assert result["source"] == result["acme"] == expected
+    assert result["destination"] == (expected if fault == "none" else "unknown")
+    assert probes == (["a" * 64, "b" * 64, "c" * 64] if fault == "none" else ["a" * 64, "c" * 64])
+
+
+@pytest.mark.parametrize("fault", ["format", "path", "endpoint", "permissions", "canonical"])
+def test_live_reconstruction_rejects_changed_coordinates_before_observing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    allocate(tmp_path, {"DOCKER_HOST": "unix:///original-fixture.sock"})
+    path = tmp_path / "fixture.json"
+    manifest = json.loads(path.read_bytes())
+    if fault == "format":
+        manifest["format"] = "unknown-format"
+    elif fault == "path":
+        manifest["environment"][ARTIFACT_ENV] = str(tmp_path / "other/artifact.tar")
+    elif fault == "endpoint":
+        manifest["environment"]["DOCKER_HOST"] = "tcp://remote.invalid:2375"
+    path.write_bytes(canonical_bytes(manifest))
+    if fault == "permissions":
+        path.chmod(0o644)
+    elif fault == "canonical":
+        path.write_text(json.dumps(manifest))
+    monkeypatch.setattr(restore, "observations", lambda _: pytest.fail("invalid context observed"))
+    with pytest.raises(ValueError):
+        restore.observations_for(tmp_path)
 
 
 @pytest.fixture

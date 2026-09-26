@@ -125,7 +125,10 @@ TEST_FILES = frozenset(
         "backup_capture_support.py",
         "test_restore_reconstruction.py",
         "test_combined_reconstruction.py",
+        "test_combined_live.py",
         "combined_reconstruction.py",
+        "combined_accounting.py",
+        "public_ca_recovery.py",
         "test_production_rollout.py",
         "production_rollout_fixture.py",
         "test_restore_negative.py",
@@ -735,11 +738,10 @@ def collect(  # noqa: PLR0912, PLR0915 - validate and assemble one bounded diagn
         },
     }
     if (directory / "restore").exists():
-        from scripts.qualification_restore import observations  # noqa: PLC0415
-        from scripts.qualification_retirement import environment_for  # noqa: PLC0415
+        from scripts.qualification_restore import observations_for  # noqa: PLC0415
 
         try:
-            report["reconstruction"] = observations(environment_for(directory))
+            report["reconstruction"] = observations_for(directory)
         except Exception:
             report["reconstruction"] = "unknown"
     destination = directory / "failure.json"
@@ -750,6 +752,10 @@ def collect(  # noqa: PLR0912, PLR0915 - validate and assemble one bounded diagn
     _write(destination, report)
     print(f"Failure diagnostics: {destination}")
     print(f"  {report['phase']} / {group}: {report['failure_category']}; original exit {status}.")
+    location = report["test_location"]
+    assert isinstance(location, dict)  # noqa: S101 - constructed above
+    if location["file"] != UNKNOWN:
+        print(f"  Failed test location: {location['file']}:{location['line']}.")
     if controller["category"] != UNKNOWN:
         print(
             f"  Controller: {controller['stage']} / {controller['category']}; "
@@ -759,7 +765,8 @@ def collect(  # noqa: PLR0912, PLR0915 - validate and assemble one bounded diagn
         source = ansible["source"]
         assert isinstance(source, dict)  # noqa: S101 - constructed above
         print(
-            f"  Ansible: {ansible['category']} in {ansible['action']} "
+            f"  Recorded Ansible failure (may be expected): {ansible['category']} "
+            f"in {ansible['action']} "
             f"at {source['path']}:{source['line']}."
         )
     if accounting != UNKNOWN:
