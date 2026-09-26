@@ -233,8 +233,18 @@ def test_real_ansible_callback_captures_playbook_and_reboot_without_payloads(
         ),
     ],
 )
-def test_real_pytest_group_retains_a_failed_operator_span(
-    run_directory: Path, tmp_path: Path, exception: str, category: str
+@pytest.mark.parametrize(
+    ("filename", "group"),
+    [("test_lifecycle.py", "core"), ("test_combined_live.py", "combined-reconstruction")],
+)
+def test_real_pytest_group_retains_a_failed_operator_span(  # noqa: PLR0913
+    run_directory: Path,
+    tmp_path: Path,
+    exception: str,
+    category: str,
+    filename: str,
+    *,
+    group: str,
 ) -> None:
     scenario = tmp_path / "scenario"
     scenario.mkdir()
@@ -258,7 +268,7 @@ def test_secondary_failure():
     )
     raise RuntimeError("private-provider-response-canary")
 """
-    (scenario / "test_lifecycle.py").write_text(body.replace("FIRST_FAILURE", exception))
+    (scenario / filename).write_text(body.replace("FIRST_FAILURE", exception))
     commands = tmp_path / "commands"
     commands.mkdir()
     docker = commands / "docker"
@@ -278,20 +288,20 @@ def test_secondary_failure():
     assert result.returncode == 1, result.stdout + result.stderr
     assert json.loads((run_directory / "failure-test.json").read_text()) == {
         "category": category,
-        "group": "core",
-        "file": "test_lifecycle.py",
+        "group": group,
+        "file": filename,
         "line": 10,
         "submission": {
             "operation": "archive",
             "correlation_id": "01a0b11c-8fe8-7781-b277-81e5e4c813ba",
-            "group": "core",
+            "group": group,
         },
     }
     events = timing._events(run_directory / "timing-events.jsonl")
     assert [(event["kind"], event["group"], event["outcome"]) for event in events] == [
-        ("operator", "core", "failed"),
-        ("group", "core", "failed"),
-        ("group", "core", "failed"),
+        ("operator", group, "failed"),
+        ("group", group, "failed"),
+        ("group", group, "failed"),
     ]
     timing.finish_run(run_directory, result.returncode)
     assert CANARY not in report_text(run_directory)

@@ -18,6 +18,7 @@ import test_lifecycle as support
 import testinfra
 from lowerduckpond_static_contracts import canonical_json_bytes
 from lowerduckpond_static_host_agent.backup_identity import framed_digest
+from lowerduckpond_static_host_agent.host_restore_coordinator import COORDINATOR_SECONDS
 from lowerduckpond_static_host_agent.host_restore_inputs import INPUT_SCHEMA, ISSUER, SUBJECTS
 from testinfra.host import Host
 
@@ -610,7 +611,12 @@ WantedBy=multi-user.target
     def start(self) -> None:
         assert self.destination.run("systemctl start --no-block %s", UNIT).rc == 0
 
-    def wait(self, phases: set[str], *, seconds: int = 300) -> dict[str, object]:
+    def wait(self, phases: set[str], *, seconds: int | None = None) -> dict[str, object]:
+        if seconds is None:
+            # The live journey carries the preceding groups' complete history.
+            # Observe its existing service deadline plus shutdown/reporting time;
+            # keep the independently measured native fixture window unchanged.
+            seconds = COORDINATOR_SECONDS + 30 if self.live_storage is not None else 300
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             status = self.status()

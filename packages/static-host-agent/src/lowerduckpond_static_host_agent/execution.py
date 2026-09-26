@@ -31,6 +31,7 @@ from lowerduckpond_static_host_agent.audit import (
     DEFAULT_AUDIT_LIMITS,
     AuditCorrelationSnapshot,
     AuditError,
+    AuditState,
     AuditTransition,
 )
 from lowerduckpond_static_host_agent.capacity import (
@@ -197,11 +198,14 @@ class ExecutionTransaction(Protocol):
         correlation_id: object,
     ) -> AuditCorrelationSnapshot: ...
 
+    def inspect_audit(self) -> AuditState: ...
+
     def inspect_later_audit_transitions(
         self,
         correlation_id: object,
         *,
         maximum_transitions: int,
+        dispatch_boundary: dict[str, object] | None = None,
     ) -> tuple[AuditTransition, ...]: ...
 
     def append_audit(self, document: dict[str, object]) -> object: ...
@@ -262,6 +266,8 @@ class _LifecycleDispatchAuthority:
     source_tenant_ids: tuple[str, ...] | None = None
     source_tenant_record_histories: tuple[_TenantRecordHistory, ...] | None = None
     execution_validation_committed: bool = False
+    executor_rejection_superseded: bool = False
+    executor_rejection_cross_tenant_transition: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -980,7 +986,10 @@ class AuthorizationExecutor:
             and runtime_inventory_validator(reconcile_drift_tenant_id) is not True
         ):
             raise ExecutionError("lifecycle handler changed selected runtime outside authority")
-        if not audit_is_latest_for_tenant:
+        # A verified target commit between dispatch and rejection supersedes
+        # rollback authority just like a later commit. The whole-host release
+        # and runtime inventory checks above still apply in either case.
+        if not audit_is_latest_for_tenant or authority.executor_rejection_superseded:
             return
         if result["status"] == "failed":
             self._validate_failed_external_terminal_state(
@@ -1082,6 +1091,7 @@ class AuthorizationExecutor:
         ],
         blocking: bool,
         allow_reconcile_source_drift: bool = False,
+        prior_cross_tenant_transition: bool = False,
     ) -> bool:
         """Accept a newer complete generation selected by another tenant."""
 
@@ -1105,7 +1115,7 @@ class AuthorizationExecutor:
             )
         return (
             audit_is_latest
-            and has_later_cross_tenant_transition
+            and (has_later_cross_tenant_transition or prior_cross_tenant_transition)
             and runtime_validator(
                 tenant_id,
                 route_set,
@@ -1225,6 +1235,7 @@ class AuthorizationExecutor:
                 runtime_validator=runtime_validator,
                 blocking=blocking,
                 allow_reconcile_source_drift=(result["operation"] == "reconcile"),
+                prior_cross_tenant_transition=authority.executor_rejection_cross_tenant_transition,
             )
         if runtime_restored or self._result_was_superseded(job, result, blocking=blocking):
             return
@@ -1431,7 +1442,9 @@ def _require_same_authority(
     second.pop("executionValidated", None)
     first.pop("exportDelivery", None)
     second.pop("exportDelivery", None)
+    first.pop("dispatchAuditBoundary", None)
     first.pop("dispatchArchiveDeploymentIds", None)
+    second.pop("dispatchAuditBoundary", None)
     second.pop("dispatchArchiveDeploymentIds", None)
     first.pop("dispatchArtifactReleaseTreeDigest", None)
     second.pop("dispatchArtifactReleaseTreeDigest", None)
@@ -1823,7 +1836,7 @@ def _capture_replay_authority(
                 source_observed,
                 source_spec,
             )
-        return _LifecycleDispatchAuthority(
+        authority = _LifecycleDispatchAuthority(
             source_manifest=source,
             source_observed_state=source_observed,
             source_runtime_generation_id=source_generation,
@@ -1841,6 +1854,11 @@ def _capture_replay_authority(
             source_tenant_record_histories=_dispatch_tenant_record_histories(job),
             execution_validation_committed=validation_was_committed,
         )
+        if _is_executor_failure(result):
+            return _project_executor_rejection_authority(
+                transaction, job, result, authority=authority
+            )
+        return authority
     operation = result["operation"]
 
     observed: dict[str, object] | None = None
@@ -2188,6 +2206,11 @@ def _bind_dispatch_authority(  # noqa: PLR0912,PLR0915 - dispatch authority matr
         for tenant_id in inventory.tenant_ids
     ]
     bound = job
+    audit = transaction.inspect_audit()
+    bound["dispatchAuditBoundary"] = {
+        "entryCount": audit.entry_count,
+        "terminalDigest": audit.terminal_digest,
+    }
     bound["dispatchArchiveDeploymentIds"] = list(archive_ids)
     bound["dispatchArtifactReleaseTreeDigest"] = artifact_release_tree_digest
     bound["dispatchSourceReleaseTreeDigest"] = source_release_tree_digest
@@ -2687,6 +2710,77 @@ def _validate_result_intent_binding(
         raise ExecutionError("successful create result disagrees with its lifecycle intent")
 
 
+def _project_executor_rejection_authority(
+    transaction: ExecutionTransaction,
+    job: dict[str, object],
+    result: dict[str, object],
+    *,
+    authority: _LifecycleDispatchAuthority,
+) -> _LifecycleDispatchAuthority:
+    """Advance dispatch inventories only through exact intervening audited work."""
+
+    boundary = job.get("dispatchAuditBoundary")
+    if boundary is None:
+        # Historical snapshots have no provable lower audit boundary. Preserve
+        # their strict validation; never infer a boundary or refresh old records.
+        return authority
+    histories = authority.source_tenant_record_histories
+    if (
+        type(boundary) is not dict
+        or histories is None
+        or authority.source_tenant_ids != tuple(item.tenant_id for item in histories)
+    ):
+        raise ExecutionError("dispatch audit boundary lost its inventory authority")
+    transitions, inventory = _bounded_later_audit_transitions(
+        transaction, result, dispatch_boundary=boundary
+    )
+    projected = {
+        item.tenant_id: (item.archive_deployment_ids, item.deployment_ids, True)
+        for item in histories
+    }
+    target = result.get("tenantId")
+    target_id = None if target is None else validate_uuid7(target)
+    original_target = (
+        ((), (), False) if target_id is None else projected.get(target_id, ((), (), False))
+    )
+    if (
+        authority.source_archive_deployment_ids,
+        authority.source_deployment_ids,
+    ) != original_target[:2]:
+        raise ExecutionError("dispatch target history disagrees with its global snapshot")
+    superseded = False
+    cross_tenant_transition = False
+    for transition in _audited_results(transaction, transitions, inventory):
+        tenant_id = validate_uuid7(transition.result["tenantId"])
+        superseded |= tenant_id == target_id
+        cross_tenant_transition |= tenant_id != target_id
+        archives, deployments, present = projected.get(tenant_id, ((), (), False))
+        projected[tenant_id] = _project_record_history(
+            archives,
+            deployments,
+            tenant_present=present,
+            result=transition.result,
+            restore_archive_id=transition.restore_archive_id,
+        )
+    advanced = tuple(
+        _TenantRecordHistory(tenant_id, archives, deployments)
+        for tenant_id, (archives, deployments, present) in sorted(projected.items())
+        if present
+    )
+    archives, deployments, _present = (
+        ((), (), False) if target_id is None else projected.get(target_id, ((), (), False))
+    )
+    return replace(
+        authority,
+        source_archive_deployment_ids=archives,
+        source_deployment_ids=deployments,
+        source_tenant_ids=tuple(item.tenant_id for item in advanced),
+        source_tenant_record_histories=advanced,
+        executor_rejection_superseded=superseded,
+        executor_rejection_cross_tenant_transition=cross_tenant_transition,
+    )
+
+
 def _validate_handler_result_state(
     transaction: ExecutionTransaction,
     job: dict[str, object],
@@ -2695,6 +2789,10 @@ def _validate_handler_result_state(
     authority: _LifecycleDispatchAuthority,
     audit_is_latest_for_tenant: bool,
 ) -> None:
+    if _is_executor_failure(result) and _has_bound_lifecycle_intent(
+        transaction, job, result=result
+    ):
+        raise ExecutionError("executor failure retains an active lifecycle intent")
     if result["status"] == "succeeded" and result["operation"] == "export":
         _validate_export_bundle(transaction, job, result, authority=authority)
     if result["status"] == "succeeded" and result["operation"] != "delete":
@@ -2799,21 +2897,26 @@ def _validate_failed_handler_result_state(
     if result["operation"] == "create":
         return
     tenant_id = result["tenantId"]
+    # An audited intervening delete can remove the target. The inventory check
+    # above proves that absence; source-error validation below still applies.
+    target_present = authority.source_tenant_ids is None or tenant_id in authority.source_tenant_ids
     source_archive_ids = authority.source_archive_deployment_ids
     source_deployment_ids = authority.source_deployment_ids
     if (
         tenant_id is not None
+        and target_present
         and source_archive_ids is not None
         and transaction.tenant_archive_ids(tenant_id) != source_archive_ids
     ):
         raise ExecutionError("failed lifecycle handler retained unauthorized archive history")
     if (
         tenant_id is not None
+        and target_present
         and source_deployment_ids is not None
         and transaction.tenant_deployment_ids(tenant_id) != source_deployment_ids
     ):
         raise ExecutionError("failed lifecycle handler retained unauthorized deployment history")
-    if authority.execution_validation_committed:
+    if authority.execution_validation_committed or authority.executor_rejection_superseded:
         return
     if _expected_source_error(transaction, job) is not None:
         raise ExecutionError("failed lifecycle handler did not restore its authorized source")
@@ -2847,6 +2950,14 @@ def _validate_failed_tenant_inventory(
             expected.discard(transition.tenant_id)
     if transaction.measure_inventory().tenant_ids != tuple(sorted(expected)):
         raise ExecutionError("failed lifecycle handler changed the authorized tenant inventory")
+    if _is_executor_failure(result):
+        # Inventory enumeration also counts a residual tenant directory. An
+        # empty history cannot conceal an unaudited removal of desired state.
+        for tenant_id in expected:
+            try:
+                transaction.read(StateRecordPath.tenant_desired(tenant_id))
+            except FileNotFoundError as error:
+                raise ExecutionError("authorized tenant inventory is incomplete") from error
 
 
 def _validate_success_tenant_inventory(
@@ -3085,6 +3196,14 @@ def _later_audited_results(
     result: dict[str, object],
 ) -> tuple[_AuditedTransition, ...]:
     transitions, inventory = _bounded_later_audit_transitions(transaction, result)
+    return _audited_results(transaction, transitions, inventory)
+
+
+def _audited_results(
+    transaction: ExecutionTransaction,
+    transitions: tuple[AuditTransition, ...],
+    inventory: AuthorizationRecordInventory,
+) -> tuple[_AuditedTransition, ...]:
     expected_correlations = {transition.correlation_id for transition in transitions}
     matched: dict[str, dict[str, object]] = {}
     for job_id in inventory.result_ids:
@@ -3168,6 +3287,8 @@ def _later_audited_results(
 def _bounded_later_audit_transitions(
     transaction: ExecutionTransaction,
     result: dict[str, object],
+    *,
+    dispatch_boundary: dict[str, object] | None = None,
 ) -> tuple[tuple[AuditTransition, ...], AuthorizationRecordInventory]:
     """Pair a slim audit suffix with the durable result inventory that bounds it."""
 
@@ -3176,6 +3297,7 @@ def _bounded_later_audit_transitions(
         transitions = transaction.inspect_later_audit_transitions(
             result["correlationId"],
             maximum_transitions=len(inventory.result_ids),
+            dispatch_boundary=dispatch_boundary,
         )
     except AuditError as error:
         raise ExecutionError("later lifecycle audit authority is invalid") from error

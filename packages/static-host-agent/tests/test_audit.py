@@ -131,6 +131,48 @@ def test_later_transition_projection_fails_closed_at_its_result_bound(
             )
 
 
+@pytest.mark.parametrize("damage", ["none", "digest", "future", "missing", "limit"])
+def test_dispatch_projection_verifies_prefix_and_excludes_rejection_suffix(
+    tmp_path: Path, damage: str
+) -> None:
+    root = _state_root(tmp_path)
+    entries = []
+    previous = None
+    with _repository(root) as repository:
+        for sequence in range(5):
+            entry = _entry(sequence, previous)
+            repository.append_audit(entry)
+            entries.append(entry)
+            previous = audit_entry_digest(entry).to_dict()
+        boundary: dict[str, object] = {
+            "entryCount": 1,
+            "terminalDigest": audit_entry_digest(entries[0]).to_dict(),
+        }
+        correlation = entries[3]["correlationId"]
+        if damage == "digest":
+            boundary["terminalDigest"] = audit_entry_digest(entries[1]).to_dict()
+        elif damage == "future":
+            boundary["entryCount"] = 4
+            boundary["terminalDigest"] = audit_entry_digest(entries[3]).to_dict()
+        elif damage == "missing":
+            correlation = "0198d17f-6f4a-7000-8000-ffffffffffff"
+        if damage != "none":
+            with pytest.raises(AuditError):
+                repository.inspect_later_audit_transitions(
+                    correlation,
+                    maximum_transitions=1 if damage == "limit" else 5,
+                    dispatch_boundary=boundary,
+                )
+            return
+        transitions = repository.inspect_later_audit_transitions(
+            correlation, maximum_transitions=5, dispatch_boundary=boundary
+        )
+        assert [item.sequence for item in transitions] == [1, 2]
+        assert [item.correlation_id for item in transitions] == [
+            entry["correlationId"] for entry in entries[1:3]
+        ]
+
+
 def test_later_transition_projection_rejects_duplicate_correlations(
     tmp_path: Path,
 ) -> None:

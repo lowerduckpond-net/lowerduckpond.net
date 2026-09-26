@@ -15,6 +15,7 @@ from lowerduckpond_static_host_agent import archive_configuration
 
 from scripts import qualification_failure as failure
 from scripts import qualification_probe as probe
+from scripts import qualification_restore as restore
 from scripts import qualification_timing as timing
 from scripts.m3_10_qualification_report import verify_report
 
@@ -283,6 +284,28 @@ def test_manual_collection_is_fresh_and_retains_original_failure(
     assert new["last_submission_disposition"] == "operation-succeeded"
     assert new["original_exit_status"] == old["original_exit_status"] == FAILURE_STATUS
     assert new["observation_started_at"] > old["observation_started_at"]
+
+
+def test_reconstruction_refresh_keeps_the_original_failed_run(
+    directory: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (directory / "restore").mkdir()
+    monkeypatch.setattr(failure, "bounded_command", lambda *args, **kwargs: None)
+    current: dict[str, object] = {"destination": {"phase": "validated"}}
+
+    def observe(run: Path) -> dict[str, object]:
+        assert run == directory
+        return current
+
+    monkeypatch.setattr(restore, "observations_for", observe)
+    first = failure.collect(directory, FAILURE_STATUS)
+    original = first.read_bytes()
+    assert json.loads(original)["reconstruction"] == current
+    current["destination"] = {"phase": "complete"}
+    second = json.loads(failure.collect(directory).read_bytes())
+    assert second["reconstruction"] == current
+    assert second["original_exit_status"] == FAILURE_STATUS
+    assert first.read_bytes() == original
 
 
 @pytest.mark.parametrize("phase", ["provider-preflight", "public-input-capture"])

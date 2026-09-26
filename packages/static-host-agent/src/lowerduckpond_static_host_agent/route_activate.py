@@ -175,6 +175,7 @@ def _require_exact_job(
     current_phase = current_document.get("phase")
     for field in (
         "phase",
+        "dispatchAuditBoundary",
         "dispatchArchiveDeploymentIds",
         "dispatchArtifactReleaseTreeDigest",
         "dispatchSourceReleaseTreeDigest",

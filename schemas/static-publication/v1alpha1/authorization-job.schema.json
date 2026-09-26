@@ -359,6 +359,62 @@
           "type": "null"
         }
       ]
+    },
+    "dispatchAuditBoundary": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "entryCount",
+            "terminalDigest"
+          ],
+          "properties": {
+            "entryCount": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "terminalDigest": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "common.schema.json#/$defs/auditEntryDigest"
+                }
+              ]
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "entryCount": {
+                    "const": 0
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "terminalDigest": {
+                    "type": "null"
+                  }
+                }
+              },
+              "else": {
+                "properties": {
+                  "terminalDigest": {
+                    "$ref": "common.schema.json#/$defs/auditEntryDigest"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ]
     }
   },
   "required": [

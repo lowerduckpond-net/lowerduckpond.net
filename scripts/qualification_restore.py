@@ -21,6 +21,24 @@ GATE = "/var/lib/lowerduckpond/recovery/restore-gate.json"
 MIN_READY_REQUESTS = 2
 
 
+def observations_for(run: Path) -> dict[str, object]:
+    """Recover read-only diagnostic coordinates from either owned fixture format."""
+    from scripts import m3_11_combined_inputs as live  # noqa: PLC0415 - producer imports ownership
+    from scripts import qualification_retirement as local  # noqa: PLC0415
+
+    manifest = document(run / "fixture.json")
+    if manifest.get("format") == live.FORMAT:
+        saved = manifest.get("environment")
+        if not isinstance(saved, dict) or not isinstance(endpoint := saved.get("DOCKER_HOST"), str):
+            raise ValueError("live fixture lacks its original Docker endpoint")
+        # The live loader rechecks private metadata, canonical bytes, complete
+        # coordinates and the local endpoint. No provider credential is needed.
+        environment = live.environment_for(run, {"DOCKER_HOST": endpoint})
+    else:
+        environment = local.environment_for(run)
+    return observations(environment)
+
+
 def observations(environment: dict[str, str]) -> dict[str, object]:
     """Inspect only recorded container IDs; missing/changed hosts remain unknown."""
     result: dict[str, object] = {}

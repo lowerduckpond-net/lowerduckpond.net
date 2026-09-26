@@ -189,7 +189,7 @@ def reconstruction(
     assert fixture.status()["phase"] == "installed"
     fixture.fault("none")
     fixture.start()
-    fixture.wait({"complete"}, seconds=300)
+    fixture.wait({"complete"})
     journal = fixture.destination.file(f"{RECOVERY}/host-restore.json").content
     assert journal != interrupted
     assert not fixture.destination.file("/var/lib/lowerduckpond/recovery/restore-gate.json").exists

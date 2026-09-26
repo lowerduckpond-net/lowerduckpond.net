@@ -370,7 +370,27 @@ requested create or delete delta, projected through later successful create and
 delete entries in the validated audit chain. Thus a successful operation cannot
 hide an unrelated tenant addition or removal, while independently committed
 later work remains valid. For
-deploy and import, root independently derives the normalized release-tree
+executor-published rejections before intent creation, newly dispatched jobs
+also bind `dispatchAuditBoundary`: the verified audit entry count and terminal
+digest captured with the inventories under exclusive tenant-state. Replay
+validates this exact prefix and projects successful commits between dispatch and
+the rejection's audit entry, requiring each original result to match its audit
+digest. It then applies the existing projection after rejection. This covers
+intervening create/delete inventory changes and target or unrelated retained
+history without exempting any inventory from corruption checks. A mismatched or
+out-of-range boundary, unavailable prefix, missing result, or result/audit disagreement
+fails closed. Historical jobs without the optional boundary retain their strict
+snapshot checks; no boundary is inferred and no historical record is rewritten.
+A verified intervening commit on the rejection's own tenant also supersedes its
+old source release/runtime rollback authority, just as a post-rejection commit
+does. Whole-host release and runtime inventory validators still run against
+current state before accepting replay; unrelated commits do not supersede the
+target's source authority.
+Verified cross-tenant commits in the same interval may also justify checking a
+newer complete runtime generation through the existing cross-tenant fallback;
+the target's source manifest and observed-state checks remain required.
+
+For deploy and import, root independently derives the normalized release-tree
 digest and binds it to the job before invoking the handler: deploy is measured
 directly from its admitted flat ZIP, while import is measured from the
 validated `lowerduckpond-export-v1/content/` envelope under the portable-bundle

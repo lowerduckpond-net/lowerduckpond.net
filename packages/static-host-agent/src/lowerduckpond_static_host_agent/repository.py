@@ -109,6 +109,7 @@ _TENANT_CHILD_DIRECTORIES: Final = ("archives", "deployments")
 _MAX_RETAINED_DEPLOYMENT_RECORDS: Final = 3
 _DEFAULT_TENANT_RELEASE_ROOT: Final = Path("/srv/lowerduckpond/sites")
 _DISPATCH_AUTHORITY_FIELDS: Final = (
+    "dispatchAuditBoundary",
     "dispatchArchiveDeploymentIds",
     "dispatchArtifactReleaseTreeDigest",
     "dispatchImportManifest",
@@ -811,6 +812,7 @@ class StateRepository:
         maximum_transitions: int,
         limits: AuditLimits = DEFAULT_AUDIT_LIMITS,
         blocking: bool = False,
+        dispatch_boundary: dict[str, object] | None = None,
     ) -> tuple[AuditTransition, ...]:
         """Return capped later transition authority under exclusive tenant-state."""
 
@@ -818,6 +820,7 @@ class StateRepository:
             return transaction.inspect_later_audit_transitions(
                 correlation_id,
                 maximum_transitions=maximum_transitions,
+                dispatch_boundary=dispatch_boundary,
                 limits=limits,
             )
 
@@ -2111,12 +2114,14 @@ class _StateTransaction:
         *,
         maximum_transitions: int,
         limits: AuditLimits = DEFAULT_AUDIT_LIMITS,
+        dispatch_boundary: dict[str, object] | None = None,
     ) -> tuple[AuditTransition, ...]:
         self._require_exclusive()
         return inspect_later_audit_transition_records(
             self._repository._durable,
             correlation_id,
             maximum_transitions=maximum_transitions,
+            dispatch_boundary=dispatch_boundary,
             expected_owner=self._repository._expected_owner,
             expected_directory_mode=self._repository._expected_directory_mode,
             expected_record_mode=self._repository._expected_record_mode,

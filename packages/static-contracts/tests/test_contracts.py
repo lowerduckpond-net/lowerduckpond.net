@@ -366,6 +366,14 @@ def test_maximum_dispatch_authority_fits_the_authorization_job_bound() -> None:
             "requestDigest": request_digest(request).to_dict(),
             "phase": "pending",
             "sourceAuthority": {"manifest": source, "archiveRecord": archive},
+            "dispatchAuditBoundary": {
+                "entryCount": 10000,
+                "terminalDigest": {
+                    "format": "lowerduckpond-audit-entry-v1",
+                    "algorithm": "sha256",
+                    "value": "f" * 64,
+                },
+            },
             "dispatchArchiveDeploymentIds": archive_ids,
             "dispatchArtifactReleaseTreeDigest": None,
             "dispatchSourceReleaseTreeDigest": None,

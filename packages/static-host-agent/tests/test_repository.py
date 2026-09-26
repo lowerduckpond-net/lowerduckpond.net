@@ -175,6 +175,43 @@ def test_dispatch_binding_admits_allocated_growth_before_replacement(
     assert retained == job
 
 
+@pytest.mark.parametrize("mutation", ["change", "remove"])
+@pytest.mark.parametrize("binding_method", ["compare_and_swap", "bind_dispatch_authority"])
+def test_dispatch_audit_boundary_cannot_be_replaced(
+    tmp_path: Path, mutation: str, binding_method: str
+) -> None:
+    root = _state_root(tmp_path)
+    path = StateRecordPath.authorization_job(_JOB_ID)
+    job = _fixture("authorization-job.json")
+    job.update(
+        compatibilityVersion="static-job-v2",
+        executionValidated=False,
+        sourceAuthority=None,
+        dispatchAuditBoundary={"entryCount": 0, "terminalDigest": None},
+    )
+    _write_record(root, path, job)
+    with (
+        _repository(root) as repository,
+        repository.transaction(mode=LockMode.EXCLUSIVE) as transaction,
+    ):
+        current = transaction.read(path)
+        changed = current.document
+        if mutation == "remove":
+            changed.pop("dispatchAuditBoundary")
+        else:
+            changed["dispatchAuditBoundary"] = {
+                "entryCount": 1,
+                "terminalDigest": {
+                    "format": "lowerduckpond-audit-entry-v1",
+                    "algorithm": "sha256",
+                    "value": "f" * 64,
+                },
+            }
+        with pytest.raises(StateRecordError):
+            getattr(transaction, binding_method)(path, current.revision, changed)
+        assert transaction.read(path).document == job
+
+
 def test_route_source_rebind_is_forbidden_after_intent_creation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
