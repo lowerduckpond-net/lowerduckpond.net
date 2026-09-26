@@ -10,6 +10,8 @@ from pathlib import Path
 from scripts.qualification_case import validate_installed_receipt
 from scripts.qualification_context import RUN_PATTERN
 from scripts.qualification_groups import GROUP_REPORT_FORMAT
+from scripts.qualification_groups import RETAINED_FAILURE_CASE as CASE
+from scripts.qualification_groups import RETAINED_FAILURE_DISPOSITION as DISPOSITION
 from scripts.qualification_probe import document
 from scripts.qualification_selection import ALL, FORMAT, select_revisions, selection
 
@@ -99,6 +101,7 @@ def verify(  # noqa: PLR0913 - explicit required CI lane results
                 "local_accounting": "passed",
                 "independent_storage_absence": "passed",
                 "destroy": "passed",
+                **(DISPOSITION if case == CASE else {}),
                 **({"installed": installed} if case == "full-size-archive" else {}),
             }
         ):
@@ -142,7 +145,7 @@ def main() -> int:
     except OSError, ValueError, KeyError:
         print("Required installed checks or their completion receipts did not pass.")
         return 1
-    print("Every required installed group and accounting receipt passed.")
+    print("Every required installed group and its declared completion evidence passed.")
     return 0
 
 

@@ -693,6 +693,24 @@ not a passing measurement or an approved engineering-target exception. Retain
 that distinction in the P6 timing review. Production service limits and the
 complete-journey safeguard are unchanged.
 
+The independent `failed-retirement` case creates supported active/archived
+history, a protected audit snapshot, unresolved work and a second gated host.
+It deliberately fails the private archive helper, then runs the retirement
+transaction against real versioned MinIO storage. It preserves both 8-GiB state
+images and compares retained job/result/audit and protected-backup bytes. These
+assertions require one failed fixture throughout. Its provisional 90-minute
+execution ceiling allows 1.5 times a conservative 60-minute window including
+setup, restoration and durable evidence copies. Measure completed runs and keep
+the same 30-minute engineering target; this is no performance exception or
+change to production service limits. The operator command also has a 90-minute
+per-invocation safeguard and resumes only its original durable transaction.
+The first local native validation stopped safely after 32.38 minutes before
+any archive deletion: its metadata check rejected the legacy destination
+backing file's `0666` mode within a `0700` directory. Preserve that failed
+measurement. The correction verifies root-owned private ancestry and a single
+link before stopping, retains original modes, and always writes controller
+copies as `0600`; it does not repair or broaden access to original state.
+
 ### Restore phase observation deadline
 
 The restore fixture's phase-observation deadline is amended from 180 to 300
@@ -844,10 +862,11 @@ The [failed-fixture archive retirement amendment](m3-11-failed-fixture-retiremen
 defines a separate operator decision, accepted in PR #179, for failed
 pre-public-CA reconstruction whose legacy authority cannot be repaired. It retains stopped hosts and all
 backup objects and permits only explicitly approved, exactly owned archive
-versions to be retired after preserving their bytes. Merge that plan/ADR
-amendment, including its correction for absent historical DNS/MinIO identities,
-before its implementation. Existing cleanup tools gain no authority
-from a failed diagnostic report, and this proposal is not an available command.
+versions to be retired after preserving their bytes. PR #180 merged the
+correction for absent historical DNS/MinIO identities before implementation.
+The dedicated [operator transaction](../operations/m3-11-backup-recovery.md#failed-fixture-archive-retirement)
+requires a concrete plan digest and separate data-loss acknowledgement. Existing
+successful cleanup tools gain no authority from a failed diagnostic report.
 
 Publish an M3.11 invariant-to-test/evidence map and a new versioned report envelope
 that retains the original source, exact artifact, ADR 0029 input policy/digest,

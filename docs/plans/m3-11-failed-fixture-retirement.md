@@ -1,7 +1,7 @@
 # M3.11 failed-fixture archive retirement
 
-- Status: retirement boundary accepted in PR #179; evidence correction proposed
-  below, requiring merge before dependent implementation
+- Status: retirement boundary accepted in PR #179; evidence correction accepted
+  in PR #180 before dependent implementation
 - Parent: [M3.11](milestone-3.11.md#7-qualification-ci-and-evidence)
 - Decision: [ADR 0030 amendment](../adr/0030-reconstruct-static-hosts-from-bound-backups.md#failed-disposable-qualification)
 - Scope: an explicit secure-workstation action for a failed disposable combined
@@ -110,9 +110,9 @@ apply; no unbounded retries or new production timeout apply.
 
 ## Operator transaction
 
-Implementation supplies a dedicated command with `prepare`, `retire` and
-`inspect` actions. These interfaces are requirements, not commands available
-from this amendment. Provider credentials remain in the existing private shell.
+The [operator runbook](../operations/m3-11-backup-recovery.md#failed-fixture-archive-retirement)
+provides the dedicated `prepare`, `retire` and `inspect` commands. The plan and
+evidence correction merged before this implementation. Provider credentials remain in the existing private shell.
 No production host is mutated. The operator must exclude other archive writers
 and other live qualification attempts for the duration; a bucket listing cannot
 prove that exclusion. Document and enforce a workstation storage-target lease
@@ -191,9 +191,9 @@ acknowledge that the original remote archive versions were retired.
 
 ## Required validation and delivery
 
-Merge this plan and ADR amendment first. The next implementation PR must provide
-the operator tool, exact runbook commands and the following evidence before any
-secure-workstation retirement is requested:
+The plan and ADR amendments merged in PRs #179 and #180. The implementation
+must provide the operator tool, exact runbook commands and the following
+evidence before any secure-workstation retirement is requested:
 
 - Component cases reject wrong runs, artifacts, endpoints, production hosts or
   backup prefixes,

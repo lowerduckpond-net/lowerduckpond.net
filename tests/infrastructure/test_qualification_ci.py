@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 import uuid
 from pathlib import Path
 
@@ -9,7 +11,33 @@ import pytest
 from scripts import qualification_ci as ci
 from scripts.qualification_case import CONTENT_BYTES, ENTRY_COUNT, INSTALLED_FORMAT
 from scripts.qualification_groups import GROUP_REPORT_FORMAT
+from scripts.qualification_groups import RETAINED_FAILURE_CASE as CASE
+from scripts.qualification_groups import RETAINED_FAILURE_DISPOSITION as DISPOSITION
 from scripts.qualification_selection import ALL, selection
+
+
+def test_selection_runs_before_workspace_dependencies_are_installed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "outputs"))
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-S",
+            "-m",
+            "scripts.qualification_ci",
+            "plan",
+            "--event",
+            "workflow_dispatch",
+        ],
+        cwd=Path(__file__).resolve().parents[2],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert CASE in result.stdout
 
 
 def receipt(directory: Path, case: str) -> Path:
@@ -24,9 +52,15 @@ def receipt(directory: Path, case: str) -> Path:
                 "run_id": uuid.uuid7().hex,
                 "backend": "minio",
                 "status": "passed",
-                "local_accounting": "passed",
-                "independent_storage_absence": "passed",
-                "destroy": "passed",
+                **(
+                    DISPOSITION
+                    if case == CASE
+                    else {
+                        "local_accounting": "passed",
+                        "independent_storage_absence": "passed",
+                        "destroy": "passed",
+                    }
+                ),
             }
         )
     )
@@ -42,6 +76,25 @@ def receipt(directory: Path, case: str) -> Path:
         }
         destination.write_text(json.dumps(report))
     return destination
+
+
+@pytest.mark.parametrize("case", [CASE, "core"])
+def test_retirement_retention_cannot_substitute_for_successful_cleanup(
+    tmp_path: Path, case: str
+) -> None:
+    path = receipt(tmp_path, case)
+    report = json.loads(path.read_text())
+    report.update(dict.fromkeys(DISPOSITION, "passed") if case == CASE else DISPOSITION)
+    path.write_text(json.dumps(report))
+    with pytest.raises(ValueError):
+        ci.verify(
+            selection((case,), "reviewed-map"),
+            tmp_path,
+            event="pull_request",
+            matrix_result="success",
+            complete_result="skipped",
+            static_result="success",
+        )
 
 
 @pytest.mark.parametrize("fault", [None, "missing", "other-run", "size", "hash", "extra"])

@@ -58,6 +58,7 @@ PHASES = frozenset(
 )
 GROUPS = frozenset(
     {
+        "failed-retirement",
         "unclassified",
         "storage-credentials",
         "archive-credentials",
@@ -100,6 +101,8 @@ FAILURES = frozenset(
 )
 TEST_FILES = frozenset(
     {
+        "test_failed_retirement.py",
+        "retirement_fixture.py",
         "test_lifecycle.py",
         "test_core_independent.py",
         "test_configuration_independent.py",

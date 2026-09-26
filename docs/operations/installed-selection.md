@@ -4,8 +4,13 @@ The stable `Ansible` check requires the baseline Ansible lane, successful
 selection, every selected installed group, and a complete result for each group.
 A successful matrix summary alone is insufficient. Missing, duplicate, failed,
 skipped, cancelled or malformed selected results fail the required check. Each
-group result requires its declared assertions, fresh local accounting,
-independent whole-bucket absence, and teardown on its own fixture.
+ordinary group result requires its declared assertions, fresh local accounting,
+independent whole-bucket absence, and teardown on its own fixture. The fixed
+[`failed-retirement` case](installed-groups.md#failed-fixture-retirement-case)
+instead requires its exact completed assertions, archive-only absence and bound
+failure-retention receipt. The gate accepts those distinct dispositions only
+for their declared case; no ordinary group may substitute retained failure for
+successful cleanup.
 
 Installed groups and the complete journey start after the Python component lane
 and repository hooks pass. This avoids allocating their fixtures for failed fast
@@ -19,7 +24,8 @@ without repeating successful installed work.
 The [selector](../../scripts/qualification_selection.py) reads committed Git
 changes, including file modes and both sides of a rename. The
 [registry](../../scripts/qualification_groups.py) declares the complete matrix.
-The initial narrow map is deliberately small:
+The registry contains 24 independent groups. The initial narrow map is
+deliberately small:
 
 | Changed input | Required installed groups | Dependency basis |
 | --- | --- | --- |
@@ -32,7 +38,7 @@ The initial narrow map is deliberately small:
 | Quarantine / credential test module | Its declared group and reboot journey. | These test modules have no consumers in other installed modules. Deletion helpers are shared with backup mutation overlap and therefore select the complete matrix. |
 | Cross-feature test | Reboot journey. | Both stages are required together, including the actual restart. |
 | Reboot test/helpers | Complete installed matrix. | Audit rotation also consumes the restart evidence, volatile-key and captured endpoint helpers; this module is no longer an unimported leaf. |
-| Every other path | Complete installed matrix. | Unknown mappings never exempt coverage. This includes shared test helpers, authorization, persistence, recovery, schemas, units, Ansible roles, packaging, lockfiles, selectors, workflows and other test infrastructure. |
+| Every other path | Complete installed matrix. | Unknown mappings never exempt coverage. This includes the retirement controller/case, shared test helpers, authorization, persistence, recovery, schemas, units, Ansible roles, packaging, lockfiles, selectors, workflows and other test infrastructure. |
 
 Adding/removing/renaming mapped code, executable or nonregular inputs, empty or
 malformed diff metadata, missing revisions and shallow history also select the

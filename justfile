@@ -180,6 +180,11 @@ m3-10-spaces-qualification: _sync
 m3-11-spaces-qualification: _sync
     timeout --signal=TERM --kill-after=30s 330m scripts/m3-10-spaces-qualification --milestone 3.11
 
+# Prepare, explicitly approve, or inspect a failed disposable archive retirement.
+[positional-arguments]
+m3-11-failed-retirement action directory *arguments: _sync
+    scripts/m3-11-failed-retirement "$@"
+
 # Prove the M3.7 CA, edge inputs, and direct production state without mutation.
 preflight-m3-7-production: _sync
     scripts/preflight-m3-7-production

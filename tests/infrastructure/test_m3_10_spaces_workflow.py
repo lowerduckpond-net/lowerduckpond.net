@@ -115,6 +115,13 @@ import json, os, sys
 from pathlib import Path
 with Path(os.environ['TEST_UV_CALLS']).open('a') as stream:
     stream.write(json.dumps(sys.argv[1:]) + '\\n')
+if 'scripts.qualification_storage_lease' in sys.argv:
+    if '--check' in sys.argv:
+        assert os.environ.get('LDP_QUALIFICATION_STORAGE_LEASE_FD') == '3'
+        sys.exit(0)
+    # The real descriptor inheritance and contention are exercised separately.
+    command = sys.argv[sys.argv.index('--') + 1:]
+    os.execvpe(command[0], command, {**os.environ, 'LDP_QUALIFICATION_STORAGE_LEASE_FD': '3'})
 # A broken optional reporter cannot change the qualification's exit status.
 reporters = ('/scripts/qualification_timing.py', '/scripts/qualification_failure.py')
 if any(arg.endswith(reporters) for arg in sys.argv):
@@ -164,7 +171,8 @@ if 'scripts.check_m3_10_provider' in sys.argv or 'molecule' in sys.argv:
     assert marker.exists(), 'provider proof started before input capture'
 if 'molecule' in sys.argv:
     assert 'DOCKER_CONTEXT' not in os.environ
-    allowed = {'LDP_QUALIFICATION_TIMING_EVENTS', 'LDP_QUALIFICATION_TIMING_GROUP'}
+    allowed = {'LDP_QUALIFICATION_TIMING_EVENTS', 'LDP_QUALIFICATION_TIMING_GROUP',
+               'LDP_QUALIFICATION_STORAGE_LEASE_FD'}
     if os.environ['TEST_MILESTONE'] == '3.10':
         assert not any(key.startswith('LDP_QUALIFICATION_') and key not in allowed
                        for key in os.environ)
@@ -253,13 +261,15 @@ if 'scripts.m3_10_qualification_report' in sys.argv:
         return
     assert (tmp_path / "loaded").exists()
     calls = [json.loads(line) for line in (tmp_path / "uv-calls.jsonl").read_text().splitlines()]
-    assert "start" in calls[0] and "--no-sync" in calls[0]
-    assert calls[1] == ["sync", "--all-packages", "--all-groups", "--frozen"]
+    assert "scripts.qualification_storage_lease" in calls[0] and "--" in calls[0]
+    assert "scripts.qualification_storage_lease" in calls[1] and "--check" in calls[1]
+    assert "start" in calls[2] and "--no-sync" in calls[2]
+    assert calls[3] == ["sync", "--all-packages", "--all-groups", "--frozen"]
     timing_calls = [
         call for call in calls if any(arg.endswith("/qualification_timing.py") for arg in call)
     ]
     start_call, finish_call = timing_calls
-    assert start_call == calls[0]
+    assert start_call == calls[2]
     assert "finish" in finish_call and "--no-sync" in finish_call
     failure_calls = [
         call for call in calls if any(arg.endswith("/qualification_failure.py") for arg in call)

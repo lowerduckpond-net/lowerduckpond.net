@@ -172,3 +172,25 @@ through completion and repeated inspection. Its synthetic qualification binding
 is labelled diagnostic and is never supplied to the public qualification gate;
 the controller gate is covered separately above. This fixture does not record
 production completion or replace final live qualification.
+
+## Separate failed-fixture retirement evidence
+
+The [retirement exception](../plans/m3-11-failed-fixture-retirement.md) leaves the
+original qualification failed. Its `lowerduckpond-m3-11-failed-fixture-archive-retirement-v1`
+receipt is an allowlisted administrative diagnostic. The combined report,
+qualification report and production journal validators reject it. Original
+failures, timestamps and artifact/input bindings are never repackaged as a pass.
+
+| Retirement boundary | Evidence |
+| --- | --- |
+| Original run, artifact, endpoint, tenant/deployment and snapshot authority; no invented DNS history | `test_m3_11_retirement_bindings.py` rejects changed bindings, public-CA progress, foreign canonical archive ownership, nonempty names and ambiguous zones. Original public inputs are retained; only fresh absence is observed. |
+| Original container incarnations, durable stop intent and untouched unused MinIO | `test_m3_11_retirement_containers.py` exercises lost stop responses, restarts/replacements, restart policies and unexpected local-server settings. Only three saved IDs acquire stop authority. |
+| Private durable copies and clean offline state | `test_m3_11_retirement_files.py` exercises truncated/oversized streams, symlinks/hardlinks, inadequate capacity and interruptions around no-replace publication. Real ext4 images reject unsafe inodes/dirty state and remain byte-identical under read-only inspection. |
+| Explicit digest approval, exact independent version inventories and interruption recovery | `test_m3_11_retirement_transaction.py` exercises every before/after-delete interruption, lost responses, changed evidence/inventory and foreign objects. Only a durable pending exact version can be reconciled as absent. |
+| Local exclusion and diagnostic privacy | `test_qualification_storage_lease.py` launches real competing/inherited processes through `uv`. CLI tests reject private receipt fields and suppress provider error strings; expanded private probe bounds leave default diagnostic limits unchanged. |
+| Real failed restore, real versions and retained original bytes | The fixed installed `failed-retirement` case deliberately faults the private archive helper after coherent restoration. It proves exact MinIO version removal with separate principals and retention of original source/destination job/result/audit bytes, protected Restic objects, stopped hosts and private copies. Its CI disposition states archive-only absence and no destruction authority. |
+
+Local tests do not prove live Spaces deletion semantics or provider DNS absence.
+Those remain fresh secure-workstation gates under the exact original transaction
+and separately approved plan. A later fresh qualification must produce its own
+complete live report before production convergence can be authorized.

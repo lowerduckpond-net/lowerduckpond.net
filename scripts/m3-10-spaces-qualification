@@ -57,6 +57,16 @@ if [[ ${milestone} == 3.10 ]]; then
     done
 fi
 
+# Resolve the real target before taking the shared workstation lease. Re-exec
+# with its open descriptor so every phase and child retains writer exclusion.
+# State outputs remain in this process tree, never in the lease file.
+source "${repository_root}/scripts/lib/m3-10-production-state"
+if [[ -z ${LDP_QUALIFICATION_STORAGE_LEASE_FD:-} ]]; then
+    exec uv run --quiet --frozen python -m scripts.qualification_storage_lease -- \
+        bash "${repository_root}/scripts/m3-10-spaces-qualification" --milestone "${milestone}"
+fi
+uv run --quiet --frozen python -m scripts.qualification_storage_lease --check
+
 source_revision=$(git rev-parse HEAD)
 evidence_root=${M3_10_EVIDENCE_ROOT:-${XDG_DATA_HOME:-${HOME}/.local/share}/lowerduckpond.net/m3-10}
 if [[ ${milestone} == 3.11 ]]; then
@@ -91,7 +101,6 @@ uv run --quiet --no-sync --frozen python "${repository_root}/scripts/qualificati
 
 # State access and every provider secret stay in this process tree. Logs are
 # private operator diagnostics, not sanitized reports or uploadable artifacts.
-source "${repository_root}/scripts/lib/m3-10-production-state"
 diagnostic_phase=dependencies
 uv sync --all-packages --all-groups --frozen >"${run_directory}/dependencies.log" 2>&1
 uv run --quiet --frozen python -m scripts.qualification_minio \

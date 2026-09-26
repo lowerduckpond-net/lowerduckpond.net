@@ -159,8 +159,8 @@ input/artifact/target identity, original evidence bytes and records-only closeou
 
 ### Failed disposable qualification
 
-Retirement boundary accepted in PR #179; the accompanying evidence correction
-requires review and merge before dependent implementation:
+Retirement boundary accepted in PR #179; the evidence correction was accepted
+in PR #180 before dependent implementation:
 the [failed-fixture archive retirement plan](../plans/m3-11-failed-fixture-retirement.md)
 defines a separate administrative decision for a failed combined live
 reconstruction before public-CA verification. Ordinary recovery may remain
@@ -189,8 +189,10 @@ This exception supplies no production data-loss, protected-snapshot expiration,
 ordinary tenant retirement or qualification authority. Original failures stay
 failed, successful-test teardown keeps its existing prerequisites, and a new
 qualification must pass its unchanged starting and completion gates. The
-amendment defines required behavior; it does not install a retirement command
-or authorize deletion of any particular retained run.
+amendment defines required behavior. The separate
+[operator command](../operations/m3-11-backup-recovery.md#failed-fixture-archive-retirement)
+still requires approval of a concrete plan before deleting any particular
+retained run's archive versions.
 
 ## Consequences
 
