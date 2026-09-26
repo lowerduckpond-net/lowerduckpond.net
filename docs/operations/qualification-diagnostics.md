@@ -34,6 +34,8 @@ tests or teardown also fail. Later errors remain available in the private log.
 The separately recorded first Ansible failure can come from an intentional
 rejection test inside a passing group. It is context, not necessarily the cause
 of the run's failure; use the failed test location and its terminal traceback.
+Restore and production-rollout command failures identify the calling fixture
+step rather than the shared command wrapper; command output remains private.
 The console names the operation separately from its observed outcome. Known
 burst-limit and ordinary-deletion eligibility rejections receive fixed categories;
 unrecognized transport errors stay generic without copying private messages.
