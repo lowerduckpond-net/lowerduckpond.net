@@ -381,6 +381,14 @@ history without exempting any inventory from corruption checks. A mismatched or
 out-of-range boundary, unavailable prefix, missing result, or result/audit disagreement
 fails closed. Historical jobs without the optional boundary retain their strict
 snapshot checks; no boundary is inferred and no historical record is rewritten.
+A verified intervening commit on the rejection's own tenant also supersedes its
+old source release/runtime rollback authority, just as a post-rejection commit
+does. Whole-host release and runtime inventory validators still run against
+current state before accepting replay; unrelated commits do not supersede the
+target's source authority.
+Verified cross-tenant commits in the same interval may also justify checking a
+newer complete runtime generation through the existing cross-tenant fallback;
+the target's source manifest and observed-state checks remain required.
 
 For deploy and import, root independently derives the normalized release-tree
 digest and binds it to the job before invoking the handler: deploy is measured

@@ -723,8 +723,18 @@ bound inventories through successful, result-bound audit entries between
 dispatch and rejection. Existing validation then accounts for audited work after
 rejection. Target histories, unrelated histories and the complete tenant
 inventory remain authoritative; unaudited additions or removals still fail.
-Original request/result/audit bindings, intent exclusion and unvalidated source
+Original request/result/audit bindings, intent exclusion and unsuperseded source
 checks remain in force.
+
+A verified intervening same-tenant commit also supersedes the rejected job's
+old source release/runtime checks. Replay carries this verified supersession
+into external validation while retaining the whole-host release and runtime
+inventory checks, matching the existing treatment of later audited work.
+That verified supersession also permits repairing a result/audit-first failure
+whose terminal job-phase update was interrupted, without requiring the old
+source state to overwrite the independently committed state.
+Verified cross-tenant commits in that interval can justify the existing fallback
+to a newer complete runtime generation while preserving the target source checks.
 
 The optional `dispatchAuditBoundary` job field does not migrate historical
 records. Jobs without it retain strict snapshot validation. An old contested

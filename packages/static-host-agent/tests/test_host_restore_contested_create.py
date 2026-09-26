@@ -202,9 +202,36 @@ def test_executor_rejection_preserves_unrelated_legacy_tenant_history(
             executor.execute(issued.job_id)
 
 
-@pytest.mark.parametrize("operation", ["create", "rename"])
+def _interrupt_terminal_update(root: Path, repository: StateRepository, job_id: str) -> None:
+    path = StateRecordPath.authorization_job(job_id)
+    interrupted = repository.read(path).document
+    interrupted.update(executionValidated=False, phase="claimed")
+    _write(root, path, interrupted)
+
+
+def _write_active_peer(root: Path) -> str:
+    target_id = "0198d17f-6f4a-7000-8000-000000000010"
+    other = _fixture("site.json")
+    metadata = other["metadata"]
+    assert isinstance(metadata, dict)
+    metadata.update(
+        id=target_id,
+        slug="unrelated-duck",
+        canonicalOrigin="t-0198d17f6f4a70008000000000000010.lowerduckpond.com",
+    )
+    _write(root, StateRecordPath.tenant_desired(target_id), other)
+    _write_observed_for_manifest(root, other)
+    _write(
+        root,
+        StateRecordPath.tenant_deployment(target_id, _DEPLOYMENT_ID),
+        {**_fixture("deployment-record.json"), "tenantId": target_id},
+    )
+    return target_id
+
+
+@pytest.mark.parametrize("operation", ["create", "rename", "unrelated-rename"])
 @pytest.mark.parametrize("timing", ["before", "after"])
-@pytest.mark.parametrize("damage", ["none", "missing-result", "changed-result"])
+@pytest.mark.parametrize("damage", ["none", "missing-result", "changed-result", "unvalidated"])
 def test_executor_rejection_projects_audited_target_and_unrelated_deployments(
     tmp_path: Path, operation: str, timing: str, damage: str
 ) -> None:
@@ -214,15 +241,19 @@ def test_executor_rejection_projects_audited_target_and_unrelated_deployments(
     source = _fixture("site.json")
     _write(root, StateRecordPath.tenant_desired(_TENANT_ID), source)
     _write_observed_for_manifest(root, source)
+    target_id = _TENANT_ID
+    request_operation = "create" if operation == "create" else "rename"
+    if operation == "unrelated-rename":
+        target_id = _write_active_peer(root)
     with (
         StateRepository(root, expected_owner=os.geteuid()) as repository,
         ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
     ):
         request = _fixture("operation-request.json")
         request["slug"] = "other-duck"
-        if operation == "rename":
+        if request_operation == "rename":
             request.pop("quotas")
-            request.update(operation=operation, tenantId=_TENANT_ID)
+            request.update(operation=request_operation, tenantId=target_id)
         rejected = AuthorizationIssuer(
             repository, gate=_OpenGate(), entropy=lambda length: b"\x09" * length
         ).issue(
@@ -252,16 +283,35 @@ def test_executor_rejection_projects_audited_target_and_unrelated_deployments(
                     deploy_executor.execute(deployed.job_id)
                 raise LifecycleJobRejectionError("state_drift")
 
+        inventory_valid = {"release": True, "runtime": True}
         executor = AuthorizationExecutor(
-            repository, intake, handlers={operation: RejectedRequest()}
+            repository,
+            intake,
+            handlers={request_operation: RejectedRequest()},
+            tenant_release_validator=lambda tenant, manifest, _drift: (
+                manifest == repository.read(StateRecordPath.tenant_desired(tenant)).document
+            ),
+            tenant_runtime_validator=lambda tenant, _routes, generation, manifest, *_: (
+                manifest == repository.read(StateRecordPath.tenant_desired(tenant)).document
+                and (operation != "unrelated-rename" or generation is None)
+            ),
+            tenant_release_inventory_validator=lambda _: inventory_valid["release"],
+            tenant_runtime_inventory_validator=lambda _: inventory_valid["runtime"],
         )
         result = executor.execute(rejected.job_id).result
         if timing == "after":
             deploy_executor.execute(deployed.job_id)
+        if damage == "unvalidated":
+            _interrupt_terminal_update(root, repository, rejected.job_id)
         assert result["failurePublisher"] == "authorization-executor"
         assert executor.execute(rejected.job_id).result == result
         verify_authorization(repository, settled=True)
-        if damage != "none":
+        for kind in inventory_valid:
+            inventory_valid[kind] = False
+            with pytest.raises(ExecutionError, match="outside authority"):
+                executor.execute(rejected.job_id)
+            inventory_valid[kind] = True
+        if damage in {"missing-result", "changed-result"}:
             path = StateRecordPath.authorization_result(deployed.job_id)
             if damage == "missing-result":
                 root.joinpath(*path.components).unlink()
@@ -329,8 +379,9 @@ def test_executor_rejection_preserves_legacy_tenant_inventory(tmp_path: Path, da
 
 @pytest.mark.parametrize("operation", ["create", "rename"])
 @pytest.mark.parametrize("timing", ["before", "after"])
+@pytest.mark.parametrize("interrupted", [False, True])
 def test_executor_rejection_projects_audited_tenant_removal(
-    tmp_path: Path, operation: str, timing: str
+    tmp_path: Path, operation: str, timing: str, interrupted: bool
 ) -> None:
     root = _state_root(tmp_path)
     _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
@@ -381,10 +432,18 @@ def test_executor_rejection_projects_audited_tenant_removal(
                 raise LifecycleJobRejectionError("state_drift")
 
         executor = AuthorizationExecutor(
-            repository, intake, handlers={operation: RejectedRequest()}
+            repository,
+            intake,
+            handlers={operation: RejectedRequest()},
+            tenant_release_validator=lambda *_: False,
+            tenant_runtime_validator=lambda *_: False,
+            tenant_release_inventory_validator=lambda _: True,
+            tenant_runtime_inventory_validator=lambda _: True,
         )
         result = executor.execute(rejected.job_id).result
         if timing == "after":
             delete_executor.execute(deleted.job_id)
+        if interrupted:
+            _interrupt_terminal_update(root, repository, rejected.job_id)
         assert executor.execute(rejected.job_id).result == result
         verify_authorization(repository, settled=True)

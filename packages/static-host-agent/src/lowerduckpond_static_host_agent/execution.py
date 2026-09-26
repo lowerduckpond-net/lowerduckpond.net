@@ -266,6 +266,8 @@ class _LifecycleDispatchAuthority:
     source_tenant_ids: tuple[str, ...] | None = None
     source_tenant_record_histories: tuple[_TenantRecordHistory, ...] | None = None
     execution_validation_committed: bool = False
+    executor_rejection_superseded: bool = False
+    executor_rejection_cross_tenant_transition: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -984,7 +986,10 @@ class AuthorizationExecutor:
             and runtime_inventory_validator(reconcile_drift_tenant_id) is not True
         ):
             raise ExecutionError("lifecycle handler changed selected runtime outside authority")
-        if not audit_is_latest_for_tenant:
+        # A verified target commit between dispatch and rejection supersedes
+        # rollback authority just like a later commit. The whole-host release
+        # and runtime inventory checks above still apply in either case.
+        if not audit_is_latest_for_tenant or authority.executor_rejection_superseded:
             return
         if result["status"] == "failed":
             self._validate_failed_external_terminal_state(
@@ -1086,6 +1091,7 @@ class AuthorizationExecutor:
         ],
         blocking: bool,
         allow_reconcile_source_drift: bool = False,
+        prior_cross_tenant_transition: bool = False,
     ) -> bool:
         """Accept a newer complete generation selected by another tenant."""
 
@@ -1109,7 +1115,7 @@ class AuthorizationExecutor:
             )
         return (
             audit_is_latest
-            and has_later_cross_tenant_transition
+            and (has_later_cross_tenant_transition or prior_cross_tenant_transition)
             and runtime_validator(
                 tenant_id,
                 route_set,
@@ -1229,6 +1235,7 @@ class AuthorizationExecutor:
                 runtime_validator=runtime_validator,
                 blocking=blocking,
                 allow_reconcile_source_drift=(result["operation"] == "reconcile"),
+                prior_cross_tenant_transition=authority.executor_rejection_cross_tenant_transition,
             )
         if runtime_restored or self._result_was_superseded(job, result, blocking=blocking):
             return
@@ -1829,7 +1836,7 @@ def _capture_replay_authority(
                 source_observed,
                 source_spec,
             )
-        return _LifecycleDispatchAuthority(
+        authority = _LifecycleDispatchAuthority(
             source_manifest=source,
             source_observed_state=source_observed,
             source_runtime_generation_id=source_generation,
@@ -1847,6 +1854,11 @@ def _capture_replay_authority(
             source_tenant_record_histories=_dispatch_tenant_record_histories(job),
             execution_validation_committed=validation_was_committed,
         )
+        if _is_executor_failure(result):
+            return _project_executor_rejection_authority(
+                transaction, job, result, authority=authority
+            )
+        return authority
     operation = result["operation"]
 
     observed: dict[str, object] | None = None
@@ -2736,8 +2748,12 @@ def _project_executor_rejection_authority(
         authority.source_deployment_ids,
     ) != original_target[:2]:
         raise ExecutionError("dispatch target history disagrees with its global snapshot")
+    superseded = False
+    cross_tenant_transition = False
     for transition in _audited_results(transaction, transitions, inventory):
         tenant_id = validate_uuid7(transition.result["tenantId"])
+        superseded |= tenant_id == target_id
+        cross_tenant_transition |= tenant_id != target_id
         archives, deployments, present = projected.get(tenant_id, ((), (), False))
         projected[tenant_id] = _project_record_history(
             archives,
@@ -2760,10 +2776,12 @@ def _project_executor_rejection_authority(
         source_deployment_ids=deployments,
         source_tenant_ids=tuple(item.tenant_id for item in advanced),
         source_tenant_record_histories=advanced,
+        executor_rejection_superseded=superseded,
+        executor_rejection_cross_tenant_transition=cross_tenant_transition,
     )
 
 
-def _validate_handler_result_state(  # noqa: PLR0912 - executor rejection and handler outcome matrix
+def _validate_handler_result_state(
     transaction: ExecutionTransaction,
     job: dict[str, object],
     result: dict[str, object],
@@ -2771,12 +2789,10 @@ def _validate_handler_result_state(  # noqa: PLR0912 - executor rejection and ha
     authority: _LifecycleDispatchAuthority,
     audit_is_latest_for_tenant: bool,
 ) -> None:
-    if _is_executor_failure(result):
-        if _has_bound_lifecycle_intent(transaction, job, result=result):
-            raise ExecutionError("executor failure retains an active lifecycle intent")
-        authority = _project_executor_rejection_authority(
-            transaction, job, result, authority=authority
-        )
+    if _is_executor_failure(result) and _has_bound_lifecycle_intent(
+        transaction, job, result=result
+    ):
+        raise ExecutionError("executor failure retains an active lifecycle intent")
     if result["status"] == "succeeded" and result["operation"] == "export":
         _validate_export_bundle(transaction, job, result, authority=authority)
     if result["status"] == "succeeded" and result["operation"] != "delete":
@@ -2900,7 +2916,7 @@ def _validate_failed_handler_result_state(
         and transaction.tenant_deployment_ids(tenant_id) != source_deployment_ids
     ):
         raise ExecutionError("failed lifecycle handler retained unauthorized deployment history")
-    if authority.execution_validation_committed:
+    if authority.execution_validation_committed or authority.executor_rejection_superseded:
         return
     if _expected_source_error(transaction, job) is not None:
         raise ExecutionError("failed lifecycle handler did not restore its authorized source")
