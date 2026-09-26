@@ -2695,6 +2695,7 @@ def _validate_handler_result_state(  # noqa: PLR0912 - executor rejection and ha
     authority: _LifecycleDispatchAuthority,
     audit_is_latest_for_tenant: bool,
 ) -> None:
+    history_authority = authority
     if _is_executor_failure(result):
         # Callers have already proved the request/result/audit bindings. The
         # executor can reject after dispatch but before the handler creates an
@@ -2702,6 +2703,8 @@ def _validate_handler_result_state(  # noqa: PLR0912 - executor rejection and ha
         # inventory is not the source of a committed handler transition. Applying
         # handler rollback rules here would reject that legitimate intervening
         # commit during ordinary replay and whole-host restore alike.
+        # Keep the original authority for unrelated tenants: their retained
+        # histories still require validation, including later audited changes.
         if _has_bound_lifecycle_intent(transaction, job, result=result):
             raise ExecutionError("executor failure retains an active lifecycle intent")
         authority = replace(
@@ -2727,7 +2730,7 @@ def _validate_handler_result_state(  # noqa: PLR0912 - executor rejection and ha
     _validate_unrelated_tenant_record_histories(
         transaction,
         result,
-        authority=authority,
+        authority=history_authority,
     )
     if not audit_is_latest_for_tenant:
         # A later fully audited lifecycle operation may legitimately supersede

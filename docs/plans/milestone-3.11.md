@@ -718,9 +718,12 @@ the rejected job with a dispatch inventory captured before the winner commits.
 An executor-published rejection before intent creation does not commit a handler
 transition. Replay and restore therefore validate its original request, result,
 audit and absence of a bound intent without treating that dispatch inventory or
-retained-history snapshot as handler rollback authority. Unvalidated source
-checks and ordinary handler-result history checks remain in force. Original
-job/result/audit bytes are not rewritten to repair this interpretation.
+target retained-history snapshot as handler rollback authority. The original
+dispatch histories still constrain unrelated tenants, including authorized later
+audited changes, even when earlier jobs predate global history binding.
+Unvalidated source checks and ordinary handler-result history checks remain in
+force. Original job/result/audit bytes are not rewritten to repair this
+interpretation.
 
 The live combined phase observer is amended to follow the unchanged 30-minute
 coordinator limit plus 30 seconds for shutdown and status reporting. Its fixed
