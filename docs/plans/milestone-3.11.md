@@ -841,11 +841,12 @@ teardown. This cannot expose a runtime command to expire individual protected
 production snapshots. A failed proof retains the fixture and original failure.
 
 The [failed-fixture archive retirement amendment](m3-11-failed-fixture-retirement.md)
-proposes a separate operator decision for failed pre-public-CA reconstruction
-whose legacy authority cannot be repaired. It retains stopped hosts and all
+defines a separate operator decision, accepted in PR #179, for failed
+pre-public-CA reconstruction whose legacy authority cannot be repaired. It retains stopped hosts and all
 backup objects and permits only explicitly approved, exactly owned archive
 versions to be retired after preserving their bytes. Merge that plan/ADR
-amendment before its implementation. Existing cleanup tools gain no authority
+amendment, including its correction for absent historical DNS/MinIO identities,
+before its implementation. Existing cleanup tools gain no authority
 from a failed diagnostic report, and this proposal is not an available command.
 
 Publish an M3.11 invariant-to-test/evidence map and a new versioned report envelope
