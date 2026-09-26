@@ -285,15 +285,17 @@ def test_manual_collection_is_fresh_and_retains_original_failure(
     assert new["observation_started_at"] > old["observation_started_at"]
 
 
+@pytest.mark.parametrize("phase", ["provider-preflight", "public-input-capture"])
 def test_manual_collection_keeps_original_phase_and_refuses_new_exit_status(
     directory: Path,
     monkeypatch: pytest.MonkeyPatch,
+    phase: str,
 ) -> None:
     monkeypatch.setattr(failure, "bounded_command", lambda *args, **kwargs: None)
-    failure.collect(directory, FAILURE_STATUS, "provider-preflight")
+    failure.collect(directory, FAILURE_STATUS, phase)
     failure.record_phase("destroy")
     report = json.loads(failure.collect(directory).read_text())
-    assert report["phase"] == "provider-preflight"
+    assert report["phase"] == phase
     with pytest.raises(ValueError, match="cannot change"):
         failure.collect(directory, 7)
 

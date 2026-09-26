@@ -145,6 +145,7 @@ for phase in create prepare converge idempotence verify; do
         >"${run_directory}/${phase}.log" 2>&1
     printf '%s\n' passed >"${run_directory}/${phase}.passed"
     if [[ ${milestone} == 3.11 && ${phase} == create ]]; then
+        diagnostic_phase=public-input-capture
         combined_step capture-public >"${run_directory}/public-inputs.log" 2>&1
     elif [[ ${milestone} == 3.11 && ${phase} == idempotence ]]; then
         combined_step capture >"${run_directory}/combined-context.log" 2>&1

@@ -10,6 +10,7 @@ import pytest
 
 ROOT = Path(__file__).parents[2]
 PHASES = ("create", "prepare", "converge", "idempotence", "verify", "destroy")
+CAPTURE_FAILURE_STATUS = 19
 
 
 def executable(path: Path, body: str) -> None:
@@ -38,6 +39,31 @@ def test_spaces_workflow_keeps_evidence_paths_stable_across_phase_directories(
     docker_selection: tuple[str, str, str, bool],
     inputs_available: bool,
     milestone: str,
+) -> None:
+    check_spaces_workflow(tmp_path, relative, docker_selection, inputs_available, milestone)
+
+
+def test_public_input_capture_failure_retains_create_without_preparing_or_destroying(
+    tmp_path: Path,
+) -> None:
+    check_spaces_workflow(
+        tmp_path,
+        False,
+        ("unix:///disposable/docker.sock", "", "", True),
+        True,
+        "3.11",
+        capture_fails=True,
+    )
+
+
+def check_spaces_workflow(  # noqa: PLR0913, PLR0915 - shared command-double workflow fixture
+    tmp_path: Path,
+    relative: bool,
+    docker_selection: tuple[str, str, str, bool],
+    inputs_available: bool,
+    milestone: str,
+    *,
+    capture_fails: bool = False,
 ) -> None:
     docker_host, docker_context, context_endpoint, accepted = docker_selection
     checkout = tmp_path / "checkout"
@@ -121,6 +147,8 @@ if 'scripts.m3_11_combined_inputs' in sys.argv:
     elif action == 'capture-public':
         assert (directory / 'create.passed').exists()
         assert not (directory / 'prepare.passed').exists()
+        if os.environ['TEST_CAPTURE_FAILS'] == 'true':
+            sys.exit(19)
         (directory / 'public-inputs.json').write_text('original clean roots')
     elif action == 'prepare-storage':
         assert (directory / 'public-inputs.json').exists()
@@ -187,6 +215,7 @@ if 'scripts.m3_10_qualification_report' in sys.argv:
             "TEST_INPUT_MARKER": str(tmp_path / "input-captured"),
             "TEST_UV_CALLS": str(tmp_path / "uv-calls.jsonl"),
             "TEST_INPUTS_AVAILABLE": str(inputs_available).lower(),
+            "TEST_CAPTURE_FAILS": str(capture_fails).lower(),
             "SPACES_ACCESS_KEY_ID": "disposable-operator",
             "SPACES_SECRET_ACCESS_KEY": "disposable-secret",
             "SPACES_REGION": "nyc3",
@@ -236,7 +265,7 @@ if 'scripts.m3_10_qualification_report' in sys.argv:
         call for call in calls if any(arg.endswith("/qualification_failure.py") for arg in call)
     ]
     assert len(failure_calls) == 1
-    assert ("fixture" if inputs_available else "collect") in failure_calls[0]
+    assert ("fixture" if inputs_available and not capture_fails else "collect") in failure_calls[0]
     assert all("--no-sync" in call for call in failure_calls)
     directories = list(expected.glob("spaces-*"))
     assert len(directories) == 1
@@ -245,6 +274,21 @@ if 'scripts.m3_10_qualification_report' in sys.argv:
         assert not (tmp_path / "input-captured").exists()
         assert not list(directories[0].glob("*.passed"))
         assert not (directories[0] / "qualification.json").exists()
+        return
+    if capture_fails:
+        assert result.returncode == CAPTURE_FAILURE_STATUS
+        assert failure_calls[0][-4:] == ["--status", "19", "--phase", "public-input-capture"]
+        assert (directories[0] / "create.passed").read_text() == "passed\n"
+        assert (directories[0] / "public-inputs.log").exists()
+        assert not (directories[0] / "public-inputs.json").exists()
+        assert not (directories[0] / "qualification.json").exists()
+        for phase in PHASES[1:]:
+            assert not (directories[0] / f"{phase}.passed").exists()
+            assert not (directories[0] / f"{phase}.log").exists()
+        assert [call[call.index("molecule") + 1] for call in calls if "molecule" in call] == [
+            "create"
+        ]
+        assert not any("scripts.m3_10_qualification_report" in call for call in calls)
         return
     assert result.returncode == 0, result.stdout + result.stderr
     for phase in PHASES:

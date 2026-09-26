@@ -693,6 +693,20 @@ not a passing measurement or an approved engineering-target exception. Retain
 that distinction in the P6 timing review. Production service limits and the
 complete-journey safeguard are unchanged.
 
+### Restore phase observation deadline
+
+The restore fixture's phase-observation deadline is amended from 180 to 300
+seconds. In [PR #176 CI run 36182939732](https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/36182939732),
+`combined-reconstruction` exhausted its first 180-second wait; the immediate
+failure observation found the destination at `installed`, the restore unit
+still activating and public ingress gated. Its reconstruction interval was
+529.84 seconds, including 348.03 seconds of source capture/destination setup,
+leaving approximately 181.81 seconds for startup and the unsuccessful wait.
+The original run remains failed. The five-minute observation ceiling provides
+the required minimum 1.5-times margin around that observed interval, retains a
+fixed deadline and immediate unit-failure detection, and does not restart the
+coordinator or change production service limits, job ceilings or phase assertions.
+
 ### P6c timing acceptance proposal
 
 This paragraph proposes an explicit M3.11 closeout exception for the measured
@@ -832,6 +846,16 @@ Qualification alone does not deploy. Production credentials/live execution stay
 on the secure workstation, using its existing private environment-file launcher
 and pinned Mise tools. An operator runs production convergence explicitly;
 the coder task prepares everything independently possible before that handoff.
+
+M3.11 amends the temporary operator-token expiry policy to use remaining time:
+the Account API Tokens Read token must expire within eight days from the
+current check, and the Page Rules user token within 91 days. Each bound adds
+one day to the preceding seven-/90-day limit for provider date-based expiry.
+Rolling a token may preserve its original issue/start date; no maximum token
+age or issue-to-expiry interval applies. Active status, unexpired credentials,
+future-date checks, exact permissions and exact resource scopes remain required.
+The Page Rules local zone-ID error must name both environment variables and
+explain that token verification has not yet run.
 
 P6c retains the exact original report, artifact, predecessor completion and
 hash-linked phase proposals on the workstation and host. A complete proposal

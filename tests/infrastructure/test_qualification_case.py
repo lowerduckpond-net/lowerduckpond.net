@@ -147,6 +147,30 @@ def test_molecule_resolves_the_case_verifier_without_changing_the_complete_seque
     )
 
 
+def test_live_molecule_create_leaves_public_inputs_unprepared(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MOLECULE_EPHEMERAL_DIRECTORY", str(tmp_path / "molecule"))
+    scenario = str(case.ROOT / "config/ansible/molecule/m3_8/molecule.yml")
+    # Resolve the live wrapper's actual CLI sequence without the installed groups'
+    # private base-config override: the default create sequence includes prepare.
+    create = Config(scenario, command_args={"subcommand": "create"})
+    assert create.scenario.sequence == ["dependency", "create"]
+    prepare = Config(scenario, command_args={"subcommand": "prepare"})
+    assert prepare.scenario.sequence == ["prepare"]
+    complete = Config(scenario, command_args={"subcommand": "test"})
+    assert complete.scenario.sequence == [
+        "destroy",
+        "syntax",
+        "create",
+        "prepare",
+        "converge",
+        "idempotence",
+        "verify",
+        "destroy",
+    ]
+
+
 @pytest.mark.parametrize("present", [[], [HOST_ENV], [ARCHIVE_ENV], [HOST_ENV, ARCHIVE_ENV]])
 def test_optional_inventory_proves_absence_without_adopting_other_owners(
     monkeypatch: pytest.MonkeyPatch, environment: dict[str, str], present: list[str]

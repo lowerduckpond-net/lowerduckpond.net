@@ -307,3 +307,55 @@ def test_provider_fault_waits_for_systemd_readiness_within_the_existing_bound(
         with pytest.raises(AssertionError, match="native Caddy did not observe"):
             fixture_module.Fixture.fault_observed(fixture, "deniedDns")
     assert observations == ["caddy", "caddy"]
+
+
+@pytest.mark.parametrize("outcome", ["installed", "complete", "pending", "stalled", "failed"])
+def test_restore_phase_wait_requires_progress_within_one_fixed_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+    installed_module: Callable[[str], ModuleType],
+    outcome: str,
+) -> None:
+    fixture_module = installed_module("restore_fixture")
+    observations: list[dict[str, object]] = []
+
+    def status() -> dict[str, object]:
+        # The two-segment combined restore can still be reconstructing after
+        # three minutes. Only actual requested-phase readiness ends the wait.
+        ready = len(observations) == 2  # noqa: PLR2004 - third observation is at 250 seconds
+        value: dict[str, object] = {
+            "phase": "complete"
+            if outcome in {"complete", "pending"}
+            else "installed"
+            if outcome == "installed" and ready
+            else "validated",
+            "activationPending": outcome != "complete" or not ready,
+        }
+        observations.append(value)
+        return value
+
+    commands: list[tuple[str, str]] = []
+
+    def run(command: str, unit: str) -> SimpleNamespace:
+        commands.append((command, unit))
+        return SimpleNamespace(stdout="failed" if outcome == "failed" else "activating")
+
+    fixture = SimpleNamespace(status=status, destination=SimpleNamespace(run=run))
+    clock = iter((0, 1, 181, 250, 301))
+    monkeypatch.setattr(
+        fixture_module,
+        "time",
+        SimpleNamespace(monotonic=lambda: next(clock), sleep=lambda seconds: None),
+    )
+    phases = {"complete"} if outcome in {"complete", "pending"} else {"installed"}
+    if outcome in {"installed", "complete"}:
+        assert fixture_module.Fixture.wait(fixture, phases) == observations[-1]
+        assert observations[-1]["phase"] in phases
+    else:
+        message = "restore failed" if outcome == "failed" else "expected phase"
+        with pytest.raises(AssertionError, match=message):
+            fixture_module.Fixture.wait(fixture, phases)
+    assert len(observations) == (1 if outcome == "failed" else 3)
+    assert commands and all(
+        command == ("systemctl show --value --property=ActiveState %s", fixture_module.UNIT)
+        for command in commands
+    )

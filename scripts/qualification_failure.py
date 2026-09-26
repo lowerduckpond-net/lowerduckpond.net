@@ -42,6 +42,7 @@ PHASES = frozenset(
         "provider-preflight",
         "storage-acceptance",
         "create",
+        "public-input-capture",
         "prepare",
         "converge",
         "idempotence",

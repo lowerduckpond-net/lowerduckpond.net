@@ -20,6 +20,12 @@ upstream binary image without changing the fixture's server or client revision.
 The four reconstruction cases also create a second fresh destination and a
 run-owned ACME service after fencing the source. Their private provider mappings
 survive destination restart; they do not contact the public ACME or DNS API.
+The fixture waits at most five minutes for each requested restore phase, using
+one fixed deadline and stopping immediately if the restore unit fails. The
+combined two-segment restore exceeded the former three-minute observation
+window; five minutes provides at least 1.5 times that observed interval.
+Completion still requires cleared activation state. This harness deadline does
+not extend the production coordinator's 30-minute limit or any CI job ceiling.
 
 The [fixed registry](../../scripts/qualification_groups.py) declares every test
 and parameter. It accepts no arbitrary test selector. The [reviewed selection policy](installed-selection.md) chooses required groups.
