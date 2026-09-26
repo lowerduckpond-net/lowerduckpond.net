@@ -2687,7 +2687,7 @@ def _validate_result_intent_binding(
         raise ExecutionError("successful create result disagrees with its lifecycle intent")
 
 
-def _validate_handler_result_state(
+def _validate_handler_result_state(  # noqa: PLR0912 - executor rejection and handler outcome matrix
     transaction: ExecutionTransaction,
     job: dict[str, object],
     result: dict[str, object],
@@ -2695,6 +2695,22 @@ def _validate_handler_result_state(
     authority: _LifecycleDispatchAuthority,
     audit_is_latest_for_tenant: bool,
 ) -> None:
+    if _is_executor_failure(result):
+        # Callers have already proved the request/result/audit bindings. The
+        # executor can reject after dispatch but before the handler creates an
+        # intent (for example, another create won the slug). Its earlier dispatch
+        # inventory is not the source of a committed handler transition. Applying
+        # handler rollback rules here would reject that legitimate intervening
+        # commit during ordinary replay and whole-host restore alike.
+        if _has_bound_lifecycle_intent(transaction, job, result=result):
+            raise ExecutionError("executor failure retains an active lifecycle intent")
+        authority = replace(
+            authority,
+            source_archive_deployment_ids=None,
+            source_deployment_ids=None,
+            source_tenant_ids=None,
+            source_tenant_record_histories=None,
+        )
     if result["status"] == "succeeded" and result["operation"] == "export":
         _validate_export_bundle(transaction, job, result, authority=authority)
     if result["status"] == "succeeded" and result["operation"] != "delete":

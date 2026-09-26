@@ -707,6 +707,30 @@ the required minimum 1.5-times margin around that observed interval, retains a
 fixed deadline and immediate unit-failure detection, and does not restart the
 coordinator or change production service limits, job ceilings or phase assertions.
 
+### Live reconstruction follow-up
+
+The failed live attempt at `bfd2f5bb03710560e3168cccaf4be88dbbc9ec31`
+exhausted the five-minute phase observer before the coordinator exited after
+668 seconds. Its retained destination had completed audit reconstruction and
+local recovery. A separate diagnostic reached the same tenant-inventory
+rejection reproduced by a component case: concurrent create requests can leave
+the rejected job with a dispatch inventory captured before the winner commits.
+An executor-published rejection before intent creation does not commit a handler
+transition. Replay and restore therefore validate its original request, result,
+audit and absence of a bound intent without treating that dispatch inventory or
+retained-history snapshot as handler rollback authority. Unvalidated source
+checks and ordinary handler-result history checks remain in force. Original
+job/result/audit bytes are not rewritten to repair this interpretation.
+
+The live combined phase observer is amended to follow the unchanged 30-minute
+coordinator limit plus 30 seconds for shutdown and status reporting. Its fixed
+deadline and immediate service-failure/activation checks remain. The native
+five-minute default, CI job ceilings, production limits and complete-journey
+330-minute safeguard remain unchanged. The failed 668-second observation is not
+a successful runtime measurement; the larger observer exposes the actual bounded
+service outcome while preserving more than the required 1.5-times margin around
+that observation. This amendment does not accept an engineering-target overrun.
+
 ### P6c timing acceptance proposal
 
 This paragraph proposes an explicit M3.11 closeout exception for the measured

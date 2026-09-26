@@ -1225,21 +1225,20 @@ def _exercise_contested_jobs(fixture: _RecoveryFixture) -> None:
     assert failed[0]["errorCode"] == "state_drift"
     results_by_correlation = {result["correlationId"]: result for result in contested_results}
     assert set(results_by_correlation) == {request["correlationId"] for request in contested}
-    winning_request = next(
-        request
-        for request in contested
-        if results_by_correlation[request["correlationId"]]["status"] == "succeeded"
-    )
-    assert (
-        support._submit(
-            tmp_path,
-            operator_host,
-            identity,
-            ssh,
-            dict(winning_request),
+    # Both outcomes must survive ordinary replay. The loser may carry an
+    # earlier dispatch inventory even though it was rejected before an intent;
+    # leaving that history unreplayable also prevents whole-host restoration.
+    for request in contested:
+        assert (
+            support._submit(
+                tmp_path,
+                operator_host,
+                identity,
+                ssh,
+                dict(request),
+            )
+            == results_by_correlation[request["correlationId"]]
         )
-        == results_by_correlation[winning_request["correlationId"]]
-    )
     _await_authorization_quiescent(host)
     reconciled = host.run("systemctl start --wait lowerduckpond-static-reconcile.service")
     assert reconciled.rc == 0, reconciled.stderr

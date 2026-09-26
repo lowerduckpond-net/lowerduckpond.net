@@ -310,10 +310,13 @@ def test_provider_fault_waits_for_systemd_readiness_within_the_existing_bound(
 
 
 @pytest.mark.parametrize("outcome", ["installed", "complete", "pending", "stalled", "failed"])
+@pytest.mark.parametrize("live", [False, True])
 def test_restore_phase_wait_requires_progress_within_one_fixed_deadline(
     monkeypatch: pytest.MonkeyPatch,
     installed_module: Callable[[str], ModuleType],
     outcome: str,
+    *,
+    live: bool,
 ) -> None:
     fixture_module = installed_module("restore_fixture")
     observations: list[dict[str, object]] = []
@@ -321,7 +324,7 @@ def test_restore_phase_wait_requires_progress_within_one_fixed_deadline(
     def status() -> dict[str, object]:
         # The two-segment combined restore can still be reconstructing after
         # three minutes. Only actual requested-phase readiness ends the wait.
-        ready = len(observations) == 2  # noqa: PLR2004 - third observation is at 250 seconds
+        ready = len(observations) == 2  # noqa: PLR2004 - third observation shows real readiness
         value: dict[str, object] = {
             "phase": "complete"
             if outcome in {"complete", "pending"}
@@ -339,8 +342,11 @@ def test_restore_phase_wait_requires_progress_within_one_fixed_deadline(
         commands.append((command, unit))
         return SimpleNamespace(stdout="failed" if outcome == "failed" else "activating")
 
-    fixture = SimpleNamespace(status=status, destination=SimpleNamespace(run=run))
-    clock = iter((0, 1, 181, 250, 301))
+    fixture = SimpleNamespace(
+        status=status, destination=SimpleNamespace(run=run), live_storage=object() if live else None
+    )
+    deadline = fixture_module.COORDINATOR_SECONDS + 30 if live else 300
+    clock = iter((0, 1, 669 if live else 181, deadline - 1, deadline + 1))
     monkeypatch.setattr(
         fixture_module,
         "time",
