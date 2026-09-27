@@ -89,6 +89,7 @@ python_version = "3.14"
 strict = true
 warn_unreachable = true
 files = [
+  "tests/infrastructure/test_production_file_environment_shell.py",
   "tests/infrastructure/test_m3_11_debug_bindings.py",
   "tests/infrastructure/test_m3_11_debug_stages.py",
   "scripts/m3_11_debug.py",
