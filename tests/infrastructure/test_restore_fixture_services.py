@@ -292,6 +292,7 @@ def test_provider_fault_waits_for_systemd_readiness_within_the_existing_bound(
 
     fixture = SimpleNamespace(
         acme=object(),
+        live_storage=None,
         destination=SimpleNamespace(
             service=service, run=lambda *args: SimpleNamespace(stdout="activating")
         ),
@@ -314,13 +315,15 @@ def test_provider_fault_waits_for_systemd_readiness_within_the_existing_bound(
     assert observations == ["caddy", "caddy"]
 
 
-@pytest.mark.parametrize(("denied", "ready"), [(0, False), (1, False), (1, True)])
+@pytest.mark.parametrize(("denied", "ready"), [(0, False), (0, True), (1, False), (1, True)])
+@pytest.mark.parametrize("live", [False, True])
 def test_provider_fault_reports_failed_restore_without_waiting_for_a_dns_timeout(
     monkeypatch: pytest.MonkeyPatch,
     installed_module: Callable[[str], ModuleType],
     denied: int,
     *,
     ready: bool,
+    live: bool,
 ) -> None:
     fixture_module = installed_module("restore_fixture")
     commands = []
@@ -331,6 +334,7 @@ def test_provider_fault_reports_failed_restore_without_waiting_for_a_dns_timeout
 
     fixture = SimpleNamespace(
         acme=object(),
+        live_storage=object() if live else None,
         destination=SimpleNamespace(service=lambda _: SimpleNamespace(is_running=ready), run=run),
     )
     monkeypatch.setattr(fixture_module, "checked", lambda *_: json.dumps({"deniedDns": denied}))
@@ -339,7 +343,7 @@ def test_provider_fault_reports_failed_restore_without_waiting_for_a_dns_timeout
         "time",
         SimpleNamespace(monotonic=lambda: 0, sleep=lambda _: pytest.fail("failed restore waited")),
     )
-    if ready:
+    if denied and ready:
         # The injected TLS failure may itself terminate the coordinator after
         # Caddy has become ready. Its real provider observation still counts.
         fixture_module.Fixture.fault_observed(fixture, "deniedDns")
@@ -350,6 +354,59 @@ def test_provider_fault_reports_failed_restore_without_waiting_for_a_dns_timeout
         assert commands == [
             ("systemctl show --value --property=ActiveState %s", fixture_module.UNIT)
         ]
+
+
+@pytest.mark.parametrize("name", ["deniedDns", "deniedAcme"])
+@pytest.mark.parametrize("live", [False, True])
+@pytest.mark.parametrize(
+    "timeline",
+    [(450, 450), (None, 0), (0, None), (180, 301), (1820, None)],
+)
+def test_provider_observer_separates_live_verification_from_provider_readiness(
+    monkeypatch: pytest.MonkeyPatch,
+    installed_module: Callable[[str], ModuleType],
+    name: str,
+    *,
+    live: bool,
+    timeline: tuple[int | None, int | None],
+) -> None:
+    fixture_module = installed_module("restore_fixture")
+    ready_at, denied_at = timeline
+    elapsed = 0.0
+
+    def sleep(seconds: float) -> None:
+        nonlocal elapsed
+        elapsed += seconds
+
+    fixture = SimpleNamespace(
+        acme=object(),
+        live_storage=object() if live else None,
+        destination=SimpleNamespace(
+            service=lambda _: SimpleNamespace(
+                is_running=ready_at is not None and elapsed >= ready_at
+            ),
+            run=lambda *_: SimpleNamespace(stdout="activating"),
+        ),
+    )
+    monkeypatch.setattr(
+        fixture_module,
+        "checked",
+        lambda *_: json.dumps({name: int(denied_at is not None and elapsed >= denied_at)}),
+    )
+    monkeypatch.setattr(
+        fixture_module, "time", SimpleNamespace(monotonic=lambda: elapsed, sleep=sleep)
+    )
+    if live and ready_at == denied_at == 450:  # noqa: PLR2004 - delayed live startup
+        fixture_module.Fixture.fault_observed(fixture, name)
+        assert elapsed == 450  # noqa: PLR2004
+    else:
+        with pytest.raises(AssertionError, match="native Caddy did not observe"):
+            fixture_module.Fixture.fault_observed(fixture, name)
+        expected = min(
+            fixture_module.COORDINATOR_SECONDS + 30 if live else 120,
+            ready_at + 120 if ready_at is not None else float("inf"),
+        )
+        assert elapsed == expected
 
 
 @pytest.mark.parametrize("outcome", ["installed", "complete", "pending", "stalled", "failed"])

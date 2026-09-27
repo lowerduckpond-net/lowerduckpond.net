@@ -31,6 +31,13 @@ phase observer follows the existing 30-minute coordinator ceiling plus 30 second
 for shutdown/status reporting, with the same immediate failure detection and
 activation checks. This keeps a five-minute observer from hiding a later service
 failure. It does not increase any production service limit or retry the service.
+The live provider-fault observer uses that same ceiling while installed-state
+verification precedes Caddy startup. Once Caddy first reports ready, at most
+120 seconds remain to observe the injected provider denial, within the original
+ceiling. Further readiness observations never refresh either bound. Both the
+denial and running Caddy are required; coordinator failure stops the wait unless
+both have already been observed. Native fixtures retain their total 120-second
+provider-fault observation window.
 
 The [fixed registry](../../scripts/qualification_groups.py) declares every test
 and parameter. It accepts no arbitrary test selector. The [reviewed selection policy](installed-selection.md) chooses required groups.
