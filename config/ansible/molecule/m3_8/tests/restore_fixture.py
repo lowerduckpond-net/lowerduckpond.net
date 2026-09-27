@@ -694,5 +694,11 @@ with urllib.request.urlopen('http://127.0.0.1:8056/status', timeout=5) as respon
             # both observations within this same bound before testing the gate.
             if value[name] > 0 and self.destination.service("caddy").is_running:
                 return
+            state = self.destination.run(
+                "systemctl show --value --property=ActiveState %s", UNIT
+            ).stdout.strip()
+            assert state != "failed", (
+                "restore failed before provider-fault readiness: retain destination unit journal"
+            )
             time.sleep(0.5)
         raise AssertionError("native Caddy did not observe the injected provider failure")

@@ -290,7 +290,12 @@ def test_provider_fault_waits_for_systemd_readiness_within_the_existing_bound(
         observations.append(name)
         return SimpleNamespace(is_running=next(running))
 
-    fixture = SimpleNamespace(acme=object(), destination=SimpleNamespace(service=service))
+    fixture = SimpleNamespace(
+        acme=object(),
+        destination=SimpleNamespace(
+            service=service, run=lambda *args: SimpleNamespace(stdout="activating")
+        ),
+    )
     monkeypatch.setattr(fixture_module, "checked", lambda host, code: '{"deniedDns": 1}')
     clock = iter((0, 1, 2, 121))
     monkeypatch.setattr(
@@ -307,6 +312,44 @@ def test_provider_fault_waits_for_systemd_readiness_within_the_existing_bound(
         with pytest.raises(AssertionError, match="native Caddy did not observe"):
             fixture_module.Fixture.fault_observed(fixture, "deniedDns")
     assert observations == ["caddy", "caddy"]
+
+
+@pytest.mark.parametrize(("denied", "ready"), [(0, False), (1, False), (1, True)])
+def test_provider_fault_reports_failed_restore_without_waiting_for_a_dns_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    installed_module: Callable[[str], ModuleType],
+    denied: int,
+    *,
+    ready: bool,
+) -> None:
+    fixture_module = installed_module("restore_fixture")
+    commands = []
+
+    def run(*args: str) -> SimpleNamespace:
+        commands.append(args)
+        return SimpleNamespace(stdout="failed")
+
+    fixture = SimpleNamespace(
+        acme=object(),
+        destination=SimpleNamespace(service=lambda _: SimpleNamespace(is_running=ready), run=run),
+    )
+    monkeypatch.setattr(fixture_module, "checked", lambda *_: json.dumps({"deniedDns": denied}))
+    monkeypatch.setattr(
+        fixture_module,
+        "time",
+        SimpleNamespace(monotonic=lambda: 0, sleep=lambda _: pytest.fail("failed restore waited")),
+    )
+    if ready:
+        # The injected TLS failure may itself terminate the coordinator after
+        # Caddy has become ready. Its real provider observation still counts.
+        fixture_module.Fixture.fault_observed(fixture, "deniedDns")
+        assert not commands
+    else:
+        with pytest.raises(AssertionError, match="restore failed before provider-fault readiness"):
+            fixture_module.Fixture.fault_observed(fixture, "deniedDns")
+        assert commands == [
+            ("systemctl show --value --property=ActiveState %s", fixture_module.UNIT)
+        ]
 
 
 @pytest.mark.parametrize("outcome", ["installed", "complete", "pending", "stalled", "failed"])
