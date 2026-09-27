@@ -138,7 +138,12 @@ def test_setup_errors_keep_private_tracebacks_without_printing_values(
             )
         ),
     )
-    assert cli.main() == 1
+    previous_umask = os.umask(0o022)
+    try:
+        assert cli.main() == 1
+        assert os.umask(0o022) == 0o022  # noqa: PLR2004 - caller's original creation mask
+    finally:
+        os.umask(previous_umask)
     output = capsys.readouterr().out
     assert "private-canary" not in output
     (log,) = retained.glob("debug-setup-*.log")

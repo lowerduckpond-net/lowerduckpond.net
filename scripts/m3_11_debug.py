@@ -26,7 +26,7 @@ def main() -> int:
         "--repair", type=Path, help="tracked Python script to execute in the retained destination"
     )
     args = parser.parse_args()
-    os.umask(0o077)
+    previous_umask = os.umask(0o077)
     try:
         if not args.exclusive_archive_writers:
             raise ValueError("diagnostic continuation requires exclusive archive writers")
@@ -70,6 +70,9 @@ def main() -> int:
             )
         )
         return 1
+
+    finally:
+        os.umask(previous_umask)
 
 
 if __name__ == "__main__":
