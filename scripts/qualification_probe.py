@@ -131,15 +131,18 @@ def _command_failure(error: BaseException, *, check: bool) -> bytes | None:
     return None
 
 
-def bounded_command(
+def bounded_command(  # noqa: PLR0913 - independent command, time, input and output bounds
     arguments: list[str],
     *,
     timeout: float = 5,
     stdin: bytes = b"",
     environment: dict[str, str] | None = None,
     check: bool = False,
+    maximum: int = MAX_COMMAND_BYTES,
 ) -> bytes | None:
     """Bound time and captured bytes, always discarding stderr and sensitive output."""
+    if type(maximum) is not int or not 0 < maximum <= MAX_BYTES:
+        raise ValueError("invalid bounded observation output limit")
     executable = shutil.which(arguments[0])
     if executable is None:
         return _command_failure(FileNotFoundError(arguments[0]), check=check)
@@ -181,7 +184,7 @@ def bounded_command(
                             )
                         )
                     output.extend(block)
-                    if len(output) > MAX_COMMAND_BYTES:
+                    if len(output) > maximum:
                         return _command_failure(
                             ValueError("command output exceeded diagnostic limit"), check=check
                         )

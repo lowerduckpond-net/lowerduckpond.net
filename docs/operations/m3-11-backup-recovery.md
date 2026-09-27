@@ -809,21 +809,107 @@ observation and returns the private removal receipt; it never creates
 intent, retain the fixture and use the existing bounded failure diagnostics to
 resolve its outstanding authority before any removal.
 
-If legacy restored-state validation cannot complete, workstation updates do not
-repair the original fixture or create teardown authorization. The
-[failed-fixture archive retirement plan](../plans/m3-11-failed-fixture-retirement.md)
-defines the separate reviewed path needed for this case. It requires a later
-implementation and explicit approval of a concrete private plan. Until that
-tooling is delivered, there is no generic failed-run cleanup command: keep the
-existing gates and evidence, and do not use successful-test teardown or a fresh
-qualification invocation to bypass the retained obligations.
+### Failed-fixture archive retirement
 
-This pre-public-CA failure has no historical provider DNS baseline, and its live
-manifest has no saved ID for the unused local MinIO service. The proposed
-correction requires fresh retirement-only DNS absence observations and leaves
-that service untouched after proving it is outside the Spaces writer set. It
-does not request another workstation diagnostic or authorize manually stopping
-an unbound container.
+If legacy restored-state validation cannot complete, workstation updates do not
+repair the original fixture or create successful teardown authority. The
+[accepted exception](../plans/m3-11-failed-fixture-retirement.md) supplies a
+separate transaction for a failed disposable combined reconstruction before any
+public-CA phase. It retires only exactly owned archive versions. The original
+attempt stays failed and cannot resume with the retired version IDs.
+
+Use clean, merged `main` on the secure workstation in the existing private
+production environment shell. Keep the original run directory, selected artifact
+and local Docker daemon. The wrapper reads current production state outputs to
+verify the bound storage target; it does not converge or connect to production.
+It requires distinct operator, archive and backup storage credentials plus the
+Cloudflare token for read-only absence checks in both original zones. No bucket,
+key, prefix or container override is accepted.
+
+Before preparation, exclude production archive writers, manual provider writes
+and live attempts on every workstation for the duration of preparation and
+retirement. `--exclusive-archive-writers` acknowledges that prerequisite.
+The tool and both live qualification entry points also share a nonblocking
+workstation lease, keyed by region/archive bucket, under
+`~/.local/share/lowerduckpond.net/storage-leases/`. This local lease cannot exclude
+another workstation or provider client. Each invocation also holds the original
+run lease; do not delete lock files to bypass an active controller.
+
+Preparation requires `debugfs` from `e2fsprogs`, a private local filesystem with
+durable no-replace rename/fsync, and at least 16 GiB plus the selected archive
+sizes and 256 MiB reserve free. The fixed source/destination images are each
+8 GiB; copies preserve sparse holes but capacity admission charges their full
+logical size. Before stopping, each backing file must have one link and be
+root-owned beneath verified root-owned, non-writable directory ancestry with
+a root-only ancestor. This preserves the legacy destination file's original
+`0666` mode inside `/root/restore-disks` (`0700`); the controller copy is always
+`0600`. No original file or permission is repaired. Archive limits remain 25 versions, 120 MiB each, 3,000 MiB total.
+Bounded provider reads and offline filesystem reads reject incomplete evidence.
+The command has a 90-minute per-invocation safeguard.
+
+Set the original absolute path, then prepare only when stopping the failed
+fixture is intended:
+
+```bash
+failed_run=/absolute/path/to/original/private/spaces-run
+just m3-11-failed-retirement prepare "$failed_run" --exclusive-archive-writers
+```
+
+Preparation validates original bindings, gated failed restore, canonical archive
+ownership and matching independent provider inventories before any stop. It
+writes a new intent, stops only the saved source, destination and controlled-ACME
+IDs, privately copies their clean ext4 state images without mounting or repair,
+and copies and verifies every exact archive version. It deletes no remote
+bytes. A failed preparation leaves any stopped resources stopped; rerunning the
+same command resumes its intent and rejects replacements or restarts.
+
+The pre-public-CA attempt has no historical provider DNS baseline. The tool
+records fresh absence observations for its original disposable subjects and
+challenge names, without creating `public-dns/0000.json` or changing DNS. The
+unused local MinIO service has no saved historical ID: fresh inspection must
+prove its original local-server recipe/configuration excludes Spaces writes.
+Its observed ID/configuration must remain unchanged, and it is left untouched.
+Any public-CA progress, nonempty name or ambiguous exclusion rejects this path.
+
+Review the shareable preparation output, especially `plan_sha256`, archive count
+and preserved byte count. Raw keys, version IDs, state images and archive copies
+remain private under `failed-archive-retirement/`. Software review or a merged
+PR does not approve deletion. Obtain explicit operator approval of that concrete
+plan and the loss of its original remote archive version IDs before running:
+
+```bash
+approved_plan_sha256=THE_EXACT_APPROVED_64_CHARACTER_DIGEST
+just m3-11-failed-retirement retire "$failed_run" \
+  --exclusive-archive-writers \
+  --plan-sha256 "$approved_plan_sha256" \
+  --acknowledge-failed-run-data-loss
+```
+
+Every delete uses its recorded key and version ID, after renewed writer, owner,
+DNS, private-copy and two-principal inventory checks. Durable authorization and
+pending deletion precede the provider call. If interrupted, use the same command
+and digest: only an already authorized pending version can be reconciled from a
+lost response. Foreign objects, changed bytes or restarted hosts stop progress.
+There is no purge, replacement-version upload or automatic restart path.
+
+Read progress without provider access, fixture mutation or credentials:
+
+```bash
+just m3-11-failed-retirement inspect "$failed_run"
+```
+
+The final shareable receipt has format
+`lowerduckpond-m3-11-failed-fixture-archive-retirement-v1` and outcome
+`archives-retired-fixture-retained`. It proves exact archive retirement and final
+absence, with `qualification_authority: none`. It retains the three stopped
+containers, untouched MinIO service, original failure/state, private copies and
+entire backup prefix, including protected snapshots. It grants no later disposal
+or restart authority. Preserve these resources and the original failure bytes.
+
+Only after retirement succeeds may a **new** qualification on final merged inputs
+attempt its unchanged empty-archive starting gate. The fresh run must complete
+all lifecycle, reconstruction, public-CA, accounting and successful teardown
+checks. Neither the retirement receipt nor a local MinIO test qualifies production.
 
 ## Production predecessor preflight
 

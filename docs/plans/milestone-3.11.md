@@ -693,6 +693,38 @@ not a passing measurement or an approved engineering-target exception. Retain
 that distinction in the P6 timing review. Production service limits and the
 complete-journey safeguard are unchanged.
 
+The independent `failed-retirement` case creates supported active/archived
+history, a protected audit snapshot, unresolved work and a second gated host.
+It deliberately fails the private archive helper, then runs the retirement
+transaction against real versioned MinIO storage. It preserves both 8-GiB state
+images and compares retained job/result/audit and protected-backup bytes. These
+assertions require one failed fixture throughout. Its provisional 90-minute
+execution ceiling allows 1.5 times a conservative 60-minute window including
+setup, restoration and durable evidence copies. Measure completed runs and keep
+the same 30-minute engineering target; this is no performance exception or
+change to production service limits. The operator command also has a 90-minute
+per-invocation safeguard and resumes only its original durable transaction.
+The first local native validation stopped safely after 32.38 minutes before
+any archive deletion: its metadata check rejected the legacy destination
+backing file's `0666` mode within a `0700` directory. Preserve that failed
+measurement. The correction verifies root-owned private ancestry and a single
+link before stopping, retains original modes, and always writes controller
+copies as `0600`; it does not repair or broaden access to original state.
+
+The second fresh local native case passed on 2026-09-26 in 2,228.77 seconds
+(37.15 minutes), including setup and preserved-state verification. It retired
+one exact version and retained the original failed state and protected backup
+bytes. This diagnostic run used a dirty implementation checkout based on
+`6ba62c770eab98e2bb42b1999190bfca6fd710f8`; it is not exact-head CI or live-provider
+qualification. Its already-started controller included an extra 233.42-second
+initial dark-source idempotence pass, and its pytest span was recorded as
+`unclassified`. Preserve the full original duration and attribution. The final
+registry omits that redundant pass while retaining activated-source idempotence,
+and the timing plugin now attributes this test to `failed-retirement`, with a
+real pytest regression. Do not subtract those differences to claim a measured
+target pass: the 30-minute target remains unmet pending normal CI measurements
+and resolution or explicit acceptance before milestone closeout.
+
 ### Restore phase observation deadline
 
 The restore fixture's phase-observation deadline is amended from 180 to 300
@@ -844,10 +876,11 @@ The [failed-fixture archive retirement amendment](m3-11-failed-fixture-retiremen
 defines a separate operator decision, accepted in PR #179, for failed
 pre-public-CA reconstruction whose legacy authority cannot be repaired. It retains stopped hosts and all
 backup objects and permits only explicitly approved, exactly owned archive
-versions to be retired after preserving their bytes. Merge that plan/ADR
-amendment, including its correction for absent historical DNS/MinIO identities,
-before its implementation. Existing cleanup tools gain no authority
-from a failed diagnostic report, and this proposal is not an available command.
+versions to be retired after preserving their bytes. PR #180 merged the
+correction for absent historical DNS/MinIO identities before implementation.
+The dedicated [operator transaction](../operations/m3-11-backup-recovery.md#failed-fixture-archive-retirement)
+requires a concrete plan digest and separate data-loss acknowledgement. Existing
+successful cleanup tools gain no authority from a failed diagnostic report.
 
 Publish an M3.11 invariant-to-test/evidence map and a new versioned report envelope
 that retains the original source, exact artifact, ADR 0029 input policy/digest,

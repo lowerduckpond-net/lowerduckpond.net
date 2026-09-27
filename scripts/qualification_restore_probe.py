@@ -21,8 +21,53 @@ PHASES = {
     "unknown",
 }
 STATES = {"active", "inactive", "failed", "activating", "deactivating", "unknown"}
-UNITS = ("lowerduckpond-host-restore.service", "caddy.service")
+UNITS = (
+    "lowerduckpond-host-restore.service",
+    "lowerduckpond-host-restore-archive-private.service",
+    "lowerduckpond-host-restore-archive-installed.service",
+    "caddy.service",
+    "caddy-recovery.service",
+)
 RESULTS = {"success", "exit-code", "signal", "timeout", "resources", "oom-kill", "start-limit-hit"}
+VERIFICATION_STEPS = {
+    "installed-roots",
+    "installed-audit",
+    "installed-archives",
+    "installed-state",
+    "runtime-selection",
+    "caddy-start",
+    "running-runtime",
+    "tls",
+    "runtime-recheck",
+}
+
+
+def failed_step(invocation: str) -> str:
+    """Only a fixed marker from this coordinator invocation may leave the host."""
+    if re.fullmatch(r"[0-9a-f]{32}", invocation) is None:
+        return "unknown"
+    pattern = "^host_restore_step_failed step=(" + "|".join(sorted(VERIFICATION_STEPS)) + ")$"
+    try:
+        result = subprocess.run(  # noqa: S603 - fixed units, allowlisted ID and bounded labels
+            [
+                "/usr/bin/journalctl",
+                "--quiet",
+                "--no-pager",
+                "--output=cat",
+                "--lines=1",
+                "--unit=" + UNITS[0],
+                "_SYSTEMD_INVOCATION_ID=" + invocation,
+                "--grep=" + pattern,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+        match = re.fullmatch(pattern, result.stdout.strip()) if result.returncode == 0 else None
+        return match[1] if match else "unknown"
+    except Exception:
+        return "unknown"
 
 
 def observe() -> dict[str, object]:
@@ -36,16 +81,26 @@ def observe() -> dict[str, object]:
         pass
     except Exception:
         phase = "unknown"
+    result = subprocess.run(  # noqa: S603 - one bounded query for the fixed service set
+        [
+            "/usr/bin/systemctl",
+            "show",
+            "--property=Id,LoadState,ActiveState,Result,ExecMainStatus,InvocationID",
+            *UNITS,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=3,
+        check=False,
+    )
+    rows = {}
+    for block in result.stdout.strip().split("\n\n"):
+        value = dict(line.split("=", 1) for line in block.splitlines() if "=" in line)
+        if value.get("Id") in UNITS and value.get("LoadState") == "loaded":
+            rows[value["Id"]] = value
     units = {}
     for unit in UNITS:
-        result = subprocess.run(  # noqa: S603 - fixed read-only local observations
-            ["/usr/bin/systemctl", "show", "--property=ActiveState,Result,ExecMainStatus", unit],
-            capture_output=True,
-            text=True,
-            timeout=3,
-            check=False,
-        )
-        value = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+        value = rows.get(unit, {})
         units[unit] = {
             "state": value.get("ActiveState") if value.get("ActiveState") in STATES else "unknown",
             "result": value.get("Result") if value.get("Result") in RESULTS else "unknown",
@@ -57,6 +112,9 @@ def observe() -> dict[str, object]:
         "phase": phase if phase in PHASES else "unknown",
         "gate_present": Path("/var/lib/lowerduckpond/recovery/restore-gate.json").exists(),
         "units": units,
+        "failed_step": failed_step(rows.get(UNITS[0], {}).get("InvocationID", ""))
+        if units[UNITS[0]]["state"] == "failed"
+        else "unknown",
     }
 
 

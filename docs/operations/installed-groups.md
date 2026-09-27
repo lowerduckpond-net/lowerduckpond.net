@@ -17,8 +17,8 @@ archive-storage checks first and shares the tested image within that workflow
 run, so installed groups do not each compile it. This replaces the retired
 upstream binary image without changing the fixture's server or client revision.
 
-The four reconstruction cases also create a second fresh destination and a
-run-owned ACME service after fencing the source. Their private provider mappings
+The four reconstruction cases and `failed-retirement` also create a second
+fresh destination and a run-owned ACME service after fencing the source. Their private provider mappings
 survive destination restart; they do not contact the public ACME or DNS API.
 The native fixture waits at most five minutes for each requested restore phase, using
 one fixed deadline and stopping immediately if the restore unit fails. The
@@ -49,6 +49,7 @@ storage fixtures before the complete run can pass.
 
 | Case | Preserved installed assertions and independent setup |
 | --- | --- |
+| `failed-retirement` | Fresh active/archived history, a protected audit snapshot and unresolved intake/export; deliberately failed private archive helper leaves the destination validated and gated. Uses the production retirement transaction with separate real MinIO archive/operator principals, rejects a foreign object and wrong approval digest, retires exact versions, and proves original failure/job/result/audit/protected-backup bytes unchanged. Retains stopped hosts, copied ext4 images and archives; no ordinary successful accounting or teardown claim. Cloudflare and Spaces-specific bindings have component coverage and remain live operator gates. |
 | `production-rollout` | Reapplies preceding main `69859cbb` with recovery/rotation disabled to an empty owned host. Pauses the fixture's reconciliation timers and drains their services for the unchanged predecessor integrity check, then restarts the timers before the actual production bootstrap, four site converges, bounded backup/private restore and acceptance over verified administrator SSH. New controllers recover after namespace initialization and after retaining backup proof before acknowledgement; completed inspection preserves original records/capture. Uses a local disposable Restic repository and synthetic qualification binding; cannot qualify a live rollout. |
 | `restore-reconstruction` | Own fenced source plus second fresh Ubuntu/ext4 destination; full-ID Restic restore, four tenant states, protected audit prefix/local tail, excluded upload/export decisions, exact archive proof, cold Caddy generation, immutable result replay and reboot. |
 | `combined-reconstruction` | One source/destination history combines actual backup/mutation contention, excluded secret canaries, two full protected audit segments, lost snapshot response and index interruption, aged ordinary retention with interrupted forget/prune, interrupted reconstruction, reboot and historical-result replay. Local controlled-CA/MinIO evidence only; live Spaces and public-CA qualification remain separate. |
@@ -89,14 +90,16 @@ Neither restoration reapplies the production configuration.
 Each stage must collect exactly its declared tests, in order, and pass setup,
 call and teardown for every test. A skip, expected failure, missing test,
 collection failure, or zero exit with incomplete execution produces no passing
-stage receipt. Both reboot cases need before/after receipts. Every final
-stage also runs the existing artifact-integrity and archive-accounting check,
+stage receipt. Both reboot cases need before/after receipts. Except for the
+explicit failure-retention case below, every final stage also runs the existing
+artifact-integrity and archive-accounting check,
 or the paired reconstruction accounting check for restore groups. Those groups
 retain the source fence and independently bind the destination and controlled
 ACME service to recorded container IDs. The negative case must remain blocked
 with unchanged installed roots; it never supplies a completed-restore receipt.
 Reconstruction groups check source idempotence after enabling publication and
-recovery (and rotation for `restore-reconstruction` and `combined-reconstruction`),
+recovery (and rotation for `restore-reconstruction`, `combined-reconstruction`
+and `failed-retirement`),
 instead of repeating the initial dark-source configuration. They still run two full Ansible convergences:
 activation, then a zero-change reapply. Only that successful reapply writes the
 required receipt, bound to the run, source container, image, artifact and enabled
@@ -126,8 +129,9 @@ MinIO buckets, then rechecks container identities and local accounting.
 
 The printed private run directory contains readable phase logs, stage receipts,
 and the [timing and failure diagnostics](qualification-diagnostics.md).
-`case.json` appears only after all required tests, fresh accounting and teardown
-succeed. It is diagnostic evidence; the production qualification validator
+For ordinary groups, `case.json` appears only after all required tests, fresh
+accounting and teardown succeed. The fixed failure-retention exception is
+described below. Each result is diagnostic evidence; the production qualification validator
 rejects it. The complete secure-workstation Spaces workflow retains its fixed
 verifier and receives no group-selection option.
 
@@ -151,6 +155,7 @@ including setup. The operator-authorized P6b adjustment is recorded in the
 | --- | --- |
 | `combined-reconstruction` | 90 minutes, provisional pending a complete measured run. |
 | `production-rollout` | 90 minutes, provisional pending its first complete CI measurement. |
+| `failed-retirement` | 90 minutes, provisional pending its first complete CI measurement. |
 | `core`, `archive-cycles`, `backup-mutation-overlap`, `restore-reconstruction`, `restore-tls-bootstrap` | 60 minutes. |
 | Other installed cases | 45 minutes. |
 
@@ -219,3 +224,38 @@ Every group met the target on that run, with narrow margins in those cases.
 These measurements preserve the earlier overruns as separate results. The new
 eighteenth `audit-rotation` case still needs its own installed timing; the
 component full-size measurement cannot substitute for it.
+
+## Failed-fixture retirement case
+
+`failed-retirement` is an independent fixed case; it does not weaken the complete
+successful journey or another group's cleanup gate. It uses a real failed
+coordinator with both ingress gates closed, not a fabricated completed journal.
+Its disposable Restic repository contains the real protected backup history;
+its real MinIO service supplies archive versions through separate principals.
+The native adapter substitutes these local boundaries only for this declared
+test. The operator command has no MinIO/backend override. Like the other
+reconstruction cases, it requires the activated source's zero-change reapply
+receipt; it omits the redundant initial dark-source idempotence pass.
+
+After exact pytest setup/call/teardown completion, the controller requires the
+bound retirement receipt and original stopped container IDs. Its diagnostic
+`case.json` explicitly records `local_accounting: failed-state-retained`,
+`independent_storage_absence: archives-only-passed`, and
+`destroy: not-authorized`. CI accepts that disposition only for this case and
+rejects ordinary successful-cleanup fields in its place. Conversely, these
+retention fields cannot pass another group's gate. The test leaves its stopped
+source/destination/controlled-ACME containers, state/backup bytes, copies, and
+untouched local storage services retained. Normal ephemeral CI runner disposal
+is outside the retirement tool; local operators must preserve these resources
+until separately authorized disposal.
+
+The provisional CI ceiling is 90 minutes, providing 1.5 times a conservative
+60-minute setup/restore/preservation window while obtaining normal complete
+measurements. The 30-minute engineering target and production service deadlines
+remain unchanged. This case supplies local diagnostic evidence only; it cannot
+establish live Spaces deletion or qualify a production rollout.
+The first completed local diagnostic took 37.15 minutes, including an extra
+initial idempotence pass already in flight before the final registry change.
+The [timing record](../plans/milestone-3.11.md#7-qualification-ci-and-evidence)
+preserves that full duration and its attribution limits; the engineering target
+has not been met by a measured complete run.

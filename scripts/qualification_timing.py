@@ -24,6 +24,7 @@ EVENT_ENV = "LDP_QUALIFICATION_TIMING_EVENTS"
 CONTEXT_ENV = "LDP_QUALIFICATION_TIMING_GROUP"
 GROUPS = frozenset(
     {
+        "failed-retirement",
         "unclassified",
         "storage-credentials",
         "archive-credentials",

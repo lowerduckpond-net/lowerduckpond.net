@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Mapping
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
@@ -32,6 +33,7 @@ from lowerduckpond_static_host_agent.host_restore_audit_reconcile import (
 from lowerduckpond_static_host_agent.host_restore_authority import begin_restore_authority
 from lowerduckpond_static_host_agent.host_restore_cold_storage import require_cold_storage
 from lowerduckpond_static_host_agent.host_restore_decisions import seal_decisions
+from lowerduckpond_static_host_agent.host_restore_diagnostics import verification_step
 from lowerduckpond_static_host_agent.host_restore_fence import require_source_fence
 from lowerduckpond_static_host_agent.host_restore_gate import close_gate, gate_pending
 from lowerduckpond_static_host_agent.host_restore_history import (
@@ -345,46 +347,56 @@ class HostRestore:
         return {"roots": roots, "locks": locks}
 
     def _verify(self) -> dict[str, object]:
-        verify_installed_roots(self.store, self.paths.swaps)
-        verify_kernel_locks(self.store, self.paths.state, self.paths.swaps["state"].container)
-        self._cold()
-        self._files().require_inputs(self.inputs)
-        services.require_quiescent(caddy=False)
-        self._capacity()
-        audit = verify_reconstructed_audit(
-            self.store, self.snapshot, self._audit_paths(installed=True), self.environment
-        )
-        archives = self._archive("verify-installed")
-        with self._repository(installed=True) as repository:
-            state = verify_settled_state(
-                repository,
-                self.paths.state,
-                self.paths.content,
-                self.inputs,
-                self.snapshot.lineage,
-                owner=self.store.owner,
-                content_group=self.paths.caddy_group,
+        with verification_step("installed-roots"):
+            verify_installed_roots(self.store, self.paths.swaps)
+            verify_kernel_locks(self.store, self.paths.state, self.paths.swaps["state"].container)
+            self._cold()
+            self._files().require_inputs(self.inputs)
+            services.require_quiescent(caddy=False)
+            self._capacity()
+        with verification_step("installed-audit"):
+            audit = verify_reconstructed_audit(
+                self.store, self.snapshot, self._audit_paths(installed=True), self.environment
             )
-            verify_installed_runtime(
-                self.store,
-                repository,
-                self.paths,
-                self.inputs,
-                caddy_uid=self.caddy_uid,
-                running=False,
-            )
-            services.start_caddy()
-            runtime = verify_installed_runtime(
-                self.store, repository, self.paths, self.inputs, caddy_uid=self.caddy_uid
-            )
-            tls = self._tls()
-            if (
+        with verification_step("installed-archives"):
+            archives = self._archive("verify-installed")
+        with ExitStack() as stack:
+            with verification_step("installed-state"):
+                repository = stack.enter_context(self._repository(installed=True))
+                state = verify_settled_state(
+                    repository,
+                    self.paths.state,
+                    self.paths.content,
+                    self.inputs,
+                    self.snapshot.lineage,
+                    owner=self.store.owner,
+                    content_group=self.paths.caddy_group,
+                )
+            with verification_step("runtime-selection"):
                 verify_installed_runtime(
+                    self.store,
+                    repository,
+                    self.paths,
+                    self.inputs,
+                    caddy_uid=self.caddy_uid,
+                    running=False,
+                )
+            with verification_step("caddy-start"):
+                services.start_caddy()
+            with verification_step("running-runtime"):
+                runtime = verify_installed_runtime(
                     self.store, repository, self.paths, self.inputs, caddy_uid=self.caddy_uid
                 )
-                != runtime
-            ):
-                raise HostRestoreError("restore_runtime_changed_during_tls_proof")
+            with verification_step("tls"):
+                tls = self._tls()
+            with verification_step("runtime-recheck"):
+                if (
+                    verify_installed_runtime(
+                        self.store, repository, self.paths, self.inputs, caddy_uid=self.caddy_uid
+                    )
+                    != runtime
+                ):
+                    raise HostRestoreError("restore_runtime_changed_during_tls_proof")
         return {
             "state": state,
             "runtime": runtime,

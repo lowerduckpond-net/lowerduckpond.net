@@ -46,7 +46,7 @@ def stage_receipts(
     return None
 
 
-def run_group(directory: Path, environment: dict[str, str], uv: str, case: str) -> int:
+def run_group(directory: Path, environment: dict[str, str], uv: str, case: str) -> int:  # noqa: PLR0915 - distinct retained-failure and successful teardown paths
     group = GROUPS[case]
     with run_lease(directory, create=True):
         environment = {
@@ -104,6 +104,10 @@ def run_group(directory: Path, environment: dict[str, str], uv: str, case: str) 
         record_phase("final-accounting")
         record_accounting_check(case, "stage-receipts")
         installed = stage_receipts(directory, environment, case)
+        if group.retained_failure:
+            from scripts.m3_11_retirement_case import completion  # noqa: PLC0415
+
+            return completion(directory, environment)
         record_accounting_check(case, "fixture-identity-before-storage")
         if owned_containers(environment) != identities:
             raise ValueError("owned fixture changed before accounting")

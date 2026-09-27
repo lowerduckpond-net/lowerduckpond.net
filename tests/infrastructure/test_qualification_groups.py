@@ -331,9 +331,27 @@ def test_reconstruction_requires_final_source_idempotence_before_completion_or_t
     monkeypatch.setattr(restore, "paired_proof", paired)
     monkeypatch.setattr(restore, "remove_pair", lambda *_: phases.append("remove-pair"))
     monkeypatch.setattr(case, "remove_owned_image", lambda *_: None)
+    if GROUPS[name].retained_failure:
+        from scripts import m3_11_retirement_case as retained  # noqa: PLC0415
+
+        def completion(directory: Path, env: dict[str, str]) -> int:
+            if fault == "before-teardown":
+                proof.unlink()
+            restore.require_source_idempotence(env, archived_prefix=True)
+            phases.append("retain-failure")
+            (directory / "case.json").write_text("{}")
+            return 0
+
+        monkeypatch.setattr(retained, "completion", completion)
     if fault is None:
         assert case.run_group(tmp_path, environment, "uv", name) == 0
-        assert phases == ["create", "prepare", "converge", "verify", "remove-pair", "destroy"]
+        assert phases == [
+            "create",
+            "prepare",
+            "converge",
+            "verify",
+            *(["retain-failure"] if GROUPS[name].retained_failure else ["remove-pair", "destroy"]),
+        ]
     else:
         with pytest.raises((ValueError, FileNotFoundError)):
             case.run_group(tmp_path, environment, "uv", name)

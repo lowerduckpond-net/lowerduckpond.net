@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+repository_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+cd -- "${repository_root}"
+
+case ${1:-} in
+    prepare|retire)
+        # Use the existing private shell and exact production state target.
+        # The Python controller derives all mutation coordinates from the old run.
+        source "${repository_root}/scripts/lib/m3-10-production-state"
+        ;;
+    inspect|--help|-h) ;;
+    *) echo 'Usage: scripts/m3-11-failed-retirement {prepare|retire|inspect} RUN [options]' >&2; exit 2 ;;
+esac
+exec timeout --signal=TERM --kill-after=30s 90m \
+    uv run --frozen python -m scripts.m3_11_failed_retirement "$@"

@@ -5,6 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 GROUP_REPORT_FORMAT = "lowerduckpond-installed-group-diagnostic-v1"
+RETAINED_FAILURE_CASE = "failed-retirement"
+RETAINED_FAILURE_DISPOSITION = {
+    "local_accounting": "failed-state-retained",
+    "independent_storage_absence": "archives-only-passed",
+    "destroy": "not-authorized",
+}
 
 ACCOUNTING = (
     "test_archive_completion.py::test_installed_archive_qualification_has_no_unresolved_accounting"
@@ -21,6 +27,7 @@ class Group:
     after_reboot: tuple[str, ...] = ()
     reconstruction: bool = False
     protected_history: bool = False
+    retained_failure: bool = False
 
     @property
     def phases(self) -> tuple[str, ...]:
@@ -40,7 +47,7 @@ class Group:
         elif stage == "after" and self.after_reboot:
             tests = (*self.after_reboot, accounting)
         elif stage == "run" and not self.after_reboot:
-            tests = (*self.tests, accounting)
+            tests = self.tests if self.retained_failure else (*self.tests, accounting)
         else:
             raise ValueError("unsupported installed group stage")
         return tuple(value.format(host=f"docker://{host}") for value in tests)
@@ -52,6 +59,12 @@ class Group:
 
 _CREDENTIALS = "archive_credentials"
 GROUPS = {
+    RETAINED_FAILURE_CASE: Group(
+        (node("failed_retirement", "installed_failed_archive_retirement"),),
+        reconstruction=True,
+        protected_history=True,
+        retained_failure=True,
+    ),
     "production-rollout": Group(
         (node("production_rollout", "installed_production_rollout_preserves_original_evidence"),)
     ),

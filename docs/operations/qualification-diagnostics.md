@@ -114,8 +114,17 @@ Individual commands have deadlines and a 64-KiB output cap; the host probe also
 has its own 45-second alarm. Collection normally completes within 90 seconds. Reconstruction cases also
 observe the recorded source, destination and controlled ACME container IDs with
 separate bounded read-only probes (at most 20 seconds each). Their optional
-`reconstruction` section contains only phase, gate presence and fixed service
-state/result/exit-status fields. Missing or changed identities remain `unknown`;
+`reconstruction` section contains phase, gate presence and fixed service
+state/result/exit-status fields for the coordinator, both archive helpers, Caddy
+and Caddy recovery. Unloaded or unavailable units remain `unknown`. New restore
+artifacts also emit a fixed verification-step marker on failure. The optional
+`failed_step` field reads only that marker from the current failed coordinator
+invocation; it never copies raw journal text or attributes an earlier invocation's
+failure to a new attempt. Older artifacts or unavailable journals report
+`unknown`. A provider-fault test stops immediately when the coordinator fails
+before provider observation and Caddy readiness, preserving the underlying
+failure instead of waiting for a secondary DNS-observation timeout.
+Missing or changed identities remain `unknown`;
 no DNS records, keys, object coordinates or tenant bytes are included.
 Both local and M3.11 live manifests select their original Docker endpoint and
 saved container identities. Live observation revalidates the private manifest

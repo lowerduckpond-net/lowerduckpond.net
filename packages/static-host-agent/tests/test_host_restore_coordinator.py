@@ -43,7 +43,9 @@ def root(tmp_path: Path) -> Path:
     return result
 
 
-@pytest.mark.parametrize("fault", ["audit", "archives", "state", "selection", "tls", "none"])
+@pytest.mark.parametrize(
+    "fault", ["audit", "archives", "repository", "state", "selection", "tls", "none"]
+)
 def test_no_caddy_start_before_all_independent_authority_checks(  # noqa: PLR0913,PLR0917
     root: Path,
     journal: RestoreJournal,
@@ -51,6 +53,7 @@ def test_no_caddy_start_before_all_independent_authority_checks(  # noqa: PLR091
     configuration: dict[str, object],
     monkeypatch: pytest.MonkeyPatch,
     fault: str,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     inputs = RestoreInputs.from_bytes(canonical_json_bytes(configuration))
     journal = replace(journal, bindings={**journal.bindings, "trustedInputs": inputs.digest})
@@ -76,9 +79,13 @@ def test_no_caddy_start_before_all_independent_authority_checks(  # noqa: PLR091
     monkeypatch.setattr(coordinator.HostRestore, "_cold", lambda *args: None)
     monkeypatch.setattr(coordinator.HostRestore, "_capacity", lambda *args: None)
     monkeypatch.setattr(coordinator.HostRestore, "_tls", lambda *args: prove("tls"))
-    monkeypatch.setattr(
-        coordinator.HostRestore, "_repository", lambda *args, **kwargs: nullcontext(object())
-    )
+
+    def repository(*args: object, **kwargs: object) -> nullcontext[object]:
+        if fault == "repository":
+            prove("repository")
+        return nullcontext(object())
+
+    monkeypatch.setattr(coordinator.HostRestore, "_repository", repository)
     monkeypatch.setattr(
         coordinator.HostRestore,
         "_files",
@@ -117,6 +124,15 @@ def test_no_caddy_start_before_all_independent_authority_checks(  # noqa: PLR091
             for name in ("audit", "archives", "state", "selection")
         )
     assert not restore_admission(root, owner=os.geteuid())
+    step = {
+        "audit": "installed-audit",
+        "archives": "installed-archives",
+        "repository": "installed-state",
+        "state": "installed-state",
+        "selection": "runtime-selection",
+        "tls": "tls",
+    }.get(fault)
+    assert capsys.readouterr().err == (f"host_restore_step_failed step={step}\n" if step else "")
 
 
 @pytest.mark.parametrize(

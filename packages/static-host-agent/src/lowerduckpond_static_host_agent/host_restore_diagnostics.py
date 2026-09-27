@@ -1,5 +1,9 @@
 """Fixed restore categories; exception messages and remote coordinates stay private."""
 
+import sys
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
+
 from lowerduckpond_static_host_agent.archive_diagnostics import archive_failure_diagnostic
 from lowerduckpond_static_host_agent.host_restore_journal import HostRestoreError
 
@@ -31,6 +35,33 @@ CATEGORIES = frozenset(
         "restore_tls_storage_limit",
     }
 )
+
+VERIFICATION_STEPS = frozenset(
+    {
+        "installed-roots",
+        "installed-audit",
+        "installed-archives",
+        "installed-state",
+        "runtime-selection",
+        "caddy-start",
+        "running-runtime",
+        "tls",
+        "runtime-recheck",
+    }
+)
+
+
+@contextmanager
+def verification_step(step: str) -> Iterator[None]:
+    """Identify a failed proof without copying its exception or changing recovery."""
+    if step not in VERIFICATION_STEPS:
+        raise ValueError("unknown restore verification step")
+    try:
+        yield
+    except Exception:
+        with suppress(OSError, ValueError):
+            print("host_restore_step_failed step=" + step, file=sys.stderr, flush=True)
+        raise
 
 
 def diagnostic(error: Exception) -> str:
