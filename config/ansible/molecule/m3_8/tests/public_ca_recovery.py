@@ -43,19 +43,29 @@ def run(
 
 
 class PublicRecovery:
-    def __init__(self, fixture: Fixture, storage: LiveStorage, directory: Path) -> None:
+    def __init__(
+        self, fixture: Fixture, storage: LiveStorage, directory: Path, *, diagnostic: bool = False
+    ) -> None:
         self.deadline = time.monotonic() + COORDINATOR_SECONDS
         self.fixture = fixture
         self.directory = directory
         self.context = read_private(directory / "combined-context.json")
         evidence.validate_names(directory / "combined-names.json", self.context)
         self.names = read_private(directory / "combined-names.json")
-        self.original = require_original(directory, self.context)
+        self.original = (
+            require_original(directory, self.context, diagnostic=True)
+            if diagnostic
+            else require_original(directory, self.context)
+        )
         if fixture.live_storage is not storage or self.context["run_id"] != storage.target.run_id:
             raise ValueError("public recovery requires the original live fixture and storage")
         self.context_sha256 = _digest(self.context)
         self._identity()
-        self.witness = DnsWitness.begin(directory, storage)
+        self.witness = (
+            DnsWitness.begin(directory, storage, diagnostic=True)
+            if diagnostic
+            else DnsWitness.begin(directory, storage)
+        )
         self.token = storage.environment["CADDY_CLOUDFLARE_API_TOKEN"]
         # Execute the exact checked-out fixture helpers through the destination's
         # selected installed artifact. Credentials and captured roots use stdin;
@@ -79,12 +89,19 @@ sys.modules['scripts'] = package
                     ("scripts.m3_11_public_probe", "m3_11_public_probe.py"),
                 )
             )
+            + (
+                f"exec(compile({(script_root / 'm3_11_debug_public.py').read_bytes()!r}, "
+                "'m3_11_debug_public.py', 'exec'), module.__dict__)\n"
+                if diagnostic
+                else ""
+            )
             + """
 request = json.load(sys.stdin)
 action = request.pop('action')
 actions = {name: getattr(module, name) for name in (
     'install', 'start', 'ready', 'interrupt', 'rebooted', 'open_verified', 'restore_native',
-    'stop_failed')}
+    'stop_failed', 'diagnostic_prepare', 'diagnostic_start', 'diagnostic_interrupt',
+    'diagnostic_open', 'diagnostic_finish') if hasattr(module, name)}
 print(json.dumps(actions[action](**request), sort_keys=True))
 """,
         )
@@ -113,7 +130,7 @@ print(json.dumps(actions[action](**request), sort_keys=True))
 
     def call(self, action: str, **arguments: object) -> dict[str, object]:
         self._identity()
-        if action != "install":
+        if action not in {"install", "diagnostic_prepare"}:
             arguments["context_sha256"] = self.context_sha256
         raw = self.fixture.command(
             "docker",

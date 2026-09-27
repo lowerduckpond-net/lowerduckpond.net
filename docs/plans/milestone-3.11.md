@@ -908,6 +908,26 @@ diagnostic reports cannot qualify. Preserve seven-day oldest-observation
 consumption and 24-hour packaging bounds; no timestamp refresh. Capture target
 identity before provider proof and verify it again at packaging/convergence.
 
+### Failed-run diagnostic continuation
+
+The [retained-run debugging workflow](../operations/m3-11-debugging.md) implements
+the operator's 2026-09-27 request to investigate the remaining stages on a branch
+before another complete qualification. It reuses the original fenced source,
+backup prefix, destination and controlled CA. Each attempt logs the controller
+revision, exact branch repair bytes, private journals and stage results, then
+continues independent checks after ordinary failures. Resource-binding loss or
+unsettled timed-out actions stop mutations. Source reports and phase receipts
+are preserved, while both run roots are marked permanently diagnostic and
+rejected by the qualification producer. Public recovery may inspect old original
+inputs and retain a warm account only with diagnostic labels; it does not renew
+freshness or cold-start evidence. Production deadlines remain unchanged.
+
+The helper checks teardown prerequisites but retains the debugging resources.
+Normal cleanup authority, explicit failed-fixture retirement scope, fresh complete
+qualification and operator production handoff remain separate. This branch can
+consolidate discoveries and fixes without rerunning the preceding lifecycle for
+every first failure.
+
 ## 8. Migration, operator handoff, and rollback
 
 Install in this order: P2 repository/lineage schema support and validated lineage

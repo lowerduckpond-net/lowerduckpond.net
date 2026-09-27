@@ -29,6 +29,10 @@ from scripts.qualification_group_runner import SCENARIO, Completion
 
 class Attempt:
     def __init__(self, directory: Path, storage: LiveStorage) -> None:
+        if (directory / "diagnostic-origin.json").exists() or (
+            directory / "diagnostic-origin.json"
+        ).is_symlink():
+            raise ValueError("diagnostic continuation cannot produce qualification evidence")
         self.directory = directory
         self.storage = storage
         self.context = read_private(directory / "combined-context.json")
@@ -113,6 +117,10 @@ def run() -> int:
 
 
 def _run(directory: Path, environment: dict[str, str]) -> int:
+    if (directory / "diagnostic-origin.json").exists() or (
+        directory / "diagnostic-origin.json"
+    ).is_symlink():
+        raise ValueError("diagnostic continuation cannot become a qualification attempt")
     storage = LiveStorage.load(environment)
     legacy_sha256 = _legacy(directory, storage)
     attempt = Attempt(directory, storage)

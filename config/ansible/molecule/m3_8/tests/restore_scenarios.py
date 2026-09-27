@@ -305,11 +305,19 @@ assert os.statvfs('/').f_flag & os.ST_RDONLY
 
 @measure("restore-replay-retire")
 def replay_and_retire(
-    fixture: Fixture, tenants: list[str], replay: dict[str, object]
+    fixture: Fixture,
+    tenants: list[str],
+    replay: dict[str, object],
+    *,
+    operator_directory: Path | None = None,
 ) -> dict[str, object]:
     """Replay ordinary authority, retire all fixture tenants, and prove accounting."""
     destination = fixture.destination
-    path = fixture.root / "destination-operator"
+    path = (
+        operator_directory
+        if operator_directory is not None
+        else fixture.root / "destination-operator"
+    )
     connection = fixture.connection(path)
     request = dict(replay["request"])
     original_result = dict(replay["result"])
@@ -329,6 +337,16 @@ def replay_and_retire(
         "find %s/exports -mindepth 1 -print -quit", support.STATE_ROOT
     ).stdout
     for tenant in tenants:
+        if (
+            operator_directory is not None
+            and not destination.file(f"{support.STATE_ROOT}/tenants/{tenant}").exists
+        ):
+            # A diagnostic replay may have retired an earlier tenant before a
+            # later one failed. Normal qualification must never skip a tenant.
+            from scripts.m3_11_debug_files import require_original_unchanged  # noqa: PLC0415
+
+            require_original_unchanged(fixture.root.parent)
+            continue
         manifest = support._read_state(
             destination, f"{support.STATE_ROOT}/tenants/{tenant}/desired.json"
         )

@@ -357,3 +357,11 @@ Timing metadata identifies this harness strategy as
 `production-admission-host-history-pacing-v1`; the production admission limits
 are unchanged. Earlier reports labeled `conservative-host-clock` describe the
 preceding pacing strategy and must not be relabeled as new measurements.
+
+## Continue a failed M3.11 reconstruction
+
+For branch-based diagnosis beyond the first failed assertion, use the
+[retained-run debugger](m3-11-debugging.md). It reuses the owned disposable hosts,
+records all reachable downstream failures and supports captured branch repair
+scripts. Its results are permanently diagnostic; this read-only failure collector
+and the final fresh qualification keep their existing authority.

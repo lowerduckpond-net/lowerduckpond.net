@@ -109,7 +109,9 @@ def capture(directory: Path, ambient: dict[str, str]) -> None:
     )
 
 
-def require_original(directory: Path, context: dict[str, object]) -> dict[str, Path]:
+def require_original(
+    directory: Path, context: dict[str, object], *, diagnostic: bool = False
+) -> dict[str, Path]:
     """Bind later TLS verification to the original fresh-image trust, never the restored bundle."""
     destination = directory / "public-inputs"
     original = evidence.fields(
@@ -124,8 +126,14 @@ def require_original(directory: Path, context: dict[str, object]) -> dict[str, P
     ):
         raise ValueError("public dependency inputs belong to another source fixture")
     now = datetime.now(UTC)
+    if diagnostic:
+        from scripts.m3_11_debug_files import require_original_unchanged  # noqa: PLC0415
+
+        require_original_unchanged(directory)
     times = tuple(
-        evidence.timestamp(value, now=now, maximum_age=timedelta(hours=24))
+        evidence.timestamp(
+            value, now=now, maximum_age=timedelta.max if diagnostic else timedelta(hours=24)
+        )
         for value in (original["started_at"], original["completed_at"], context["captured_at"])
     )
     if not times[0] <= times[1] <= times[2]:

@@ -178,6 +178,16 @@ run again from a fresh fixture after safe cleanup. Its pass is diagnostic
 evidence, not a complete M3.10 qualification. Keep the complete lifecycle test
 until equivalent independent coverage and a cross-feature journey pass.
 
+M3.11 diagnostic-continuation amendment: the operator has authorized branch-based
+exploration of an already failed disposable combined reconstruction. The
+[retained-run debugger](../operations/m3-11-debugging.md) can reuse that destination,
+run subsequent independent checks and execute captured branch repair scripts.
+It permanently excludes both original and projected run roots from qualification,
+retains original source/snapshot/report provenance, and records each diagnostic
+attempt separately. This supersedes the initial fresh-fixture preference for this
+explicit diagnostic workflow; production publication and clean final qualification
+remain governed by their existing contracts.
+
 ### S4: Reduce repeated admission waiting
 
 Choose the smallest change supported by S1. First examine conservative harness

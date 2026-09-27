@@ -1052,3 +1052,11 @@ after separately proving layout compatibility or restoring pre-migration state
 on a fenced target. After archival/index use or local removal, retain the new
 readers and deliver a forward repair or the qualified gated restoration. Never
 repoint the artifact selector or erase protected metadata to make rollback pass.
+
+## Investigate downstream failures before rerunning qualification
+
+Use the [retained-run debugging workflow](m3-11-debugging.md) on the secure
+workstation to explore the remaining reconstruction, public-CA and accounting
+stages on a diagnostic branch. It retains the failed run and original backup
+evidence while allowing targeted destination repairs and repeated stages.
+Diagnostic completion cannot satisfy production handoff or qualification.
