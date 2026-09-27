@@ -678,7 +678,11 @@ with urllib.request.urlopen(request, timeout=10) as response:
 
     def fault_observed(self, name: str) -> None:
         assert name in {"deniedDns", "deniedAcme"}
-        deadline = time.monotonic() + 120
+        # Installed-root verification precedes Caddy startup and can cover the
+        # full live journey's history. Observe that work under the same service
+        # bound as wait(); keep the provider's own observation window at 120s.
+        seconds = COORDINATOR_SECONDS + 30 if self.live_storage is not None else 120
+        deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             value = json.loads(
                 checked(
@@ -692,8 +696,13 @@ with urllib.request.urlopen('http://127.0.0.1:8056/status', timeout=5) as respon
             )
             # DNS requests can precede systemd's Type=notify readiness. Require
             # both observations within this same bound before testing the gate.
-            if value[name] > 0 and self.destination.service("caddy").is_running:
+            running = self.destination.service("caddy").is_running
+            if value[name] > 0 and running:
                 return
+            if running:
+                # Readiness can shorten this invocation's deadline, never
+                # refresh it on another poll or after a service restart.
+                deadline = min(deadline, time.monotonic() + 120)
             state = self.destination.run(
                 "systemctl show --value --property=ActiveState %s", UNIT
             ).stdout.strip()

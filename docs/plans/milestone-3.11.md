@@ -786,6 +786,22 @@ a successful runtime measurement; the larger observer exposes the actual bounded
 service outcome while preserving more than the required 1.5-times margin around
 that observation. This amendment does not accept an engineering-target overrun.
 
+The same live observation policy applies between the `installed` phase and
+provider-fault readiness. The failed live run at `d0ec709f` exhausted the native
+120-second observer while the coordinator was still activating and Caddy was
+inactive. A later read-only observation found Caddy active and the coordinator
+timed out with the injected DNS fault still enabled. Caddy readiness was recorded
+at 15:05:00 UTC on 2026-09-27, over five minutes after the original failure
+observation completed at 14:59:44 UTC; the controlled provider recorded 36 DNS
+denials. The test had already exited before its stop/clear-fault/resume steps.
+The observer must accommodate the installed-state proof before Caddy startup
+under the existing coordinator ceiling plus 30 seconds. First Caddy readiness
+shortens the remaining provider-observation
+window to at most 120 seconds; subsequent polls cannot refresh either deadline.
+The native total 120-second bound, required provider denial and Caddy readiness,
+immediate coordinator-failure detection, production resource limits and full-run
+safeguard remain unchanged. This failed run is not qualification evidence.
+
 ### P6c timing acceptance proposal
 
 This paragraph proposes an explicit M3.11 closeout exception for the measured

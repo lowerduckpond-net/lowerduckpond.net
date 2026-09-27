@@ -124,6 +124,12 @@ failure to a new attempt. Older artifacts or unavailable journals report
 `unknown`. A provider-fault test stops immediately when the coordinator fails
 before provider observation and Caddy readiness, preserving the underlying
 failure instead of waiting for a secondary DNS-observation timeout.
+The live observer allows installed-state verification to reach Caddy startup
+under the existing coordinator ceiling; once Caddy is ready it allows at most
+120 seconds for the provider denial. A failed test exits before clearing its
+injected fault. A later coordinator timeout with Caddy active therefore does
+not, by itself, establish why the earlier observer failed. Compare the original
+failure snapshot with the fresh service state and retained timing evidence.
 Missing or changed identities remain `unknown`;
 no DNS records, keys, object coordinates or tenant bytes are included.
 Both local and M3.11 live manifests select their original Docker endpoint and
