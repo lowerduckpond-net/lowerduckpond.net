@@ -182,6 +182,10 @@ def reconstruction(
     fixture.fault("dns")
     fixture.start()
     fixture.wait({"installed"})
+    for unit in ("lowerduckpond-health.timer", "lowerduckpond-health.service"):
+        assert fixture.destination.run(
+            "systemctl show --value --property=ActiveState %s", unit
+        ).stdout.strip() in {"inactive", "failed"}
     fixture.fault_observed("deniedDns")
     restore.gate_closed(fixture)
     assert fixture.destination.run("systemctl stop %s", UNIT).rc == 0
@@ -194,6 +198,7 @@ def reconstruction(
     assert journal != interrupted
     assert not fixture.destination.file("/var/lib/lowerduckpond/recovery/restore-gate.json").exists
     assert fixture.destination.service("caddy").is_running
+    assert fixture.destination.service("lowerduckpond-health.timer").is_running
     restore.verify_reconstruction(fixture, replay)
     descriptor_raw = identity._restic(
         host, f"dump {fixture.snapshot} {captures.DESCRIPTOR}"

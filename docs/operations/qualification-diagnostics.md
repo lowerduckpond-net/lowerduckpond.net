@@ -121,7 +121,12 @@ artifacts also emit a fixed verification-step marker on failure. The optional
 `failed_step` field reads only that marker from the current failed coordinator
 invocation; it never copies raw journal text or attributes an earlier invocation's
 failure to a new attempt. Older artifacts or unavailable journals report
-`unknown`. A provider-fault test stops immediately when the coordinator fails
+`unknown`. Each archive helper also reports an allowlisted `failure_category`
+from its own failed invocation, provided it started during the current
+coordinator attempt. Older helper failures are not attributed to a later
+restore. The category excludes exception text and provider coordinates;
+unavailable journals and other services report `unknown`.
+A provider-fault test stops immediately when the coordinator fails
 before provider observation and Caddy readiness, preserving the underlying
 failure instead of waiting for a secondary DNS-observation timeout.
 The live observer allows installed-state verification to reach Caddy startup

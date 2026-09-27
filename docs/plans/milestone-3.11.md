@@ -426,7 +426,10 @@ disposable-shell workflow; no credential values enter this workspace.
 
 Before restoring bytes, durably close public HTTP/HTTPS ingress while preserving
 administrative SSH, and stop/mask Caddy, operator ingress, lifecycle workers,
-reconcilers, rotation and retention. Install verified immutable code, frozen
+reconcilers, rotation, retention and the periodic health reader. Health's local
+audit proof also holds the tenant-state lock, so drain its service and gate its
+timer through reconstruction; resume the timer with the other schedules after
+completion. Install verified immutable code, frozen
 Caddy unit/launcher, recovery gate, filesystem layout and fresh locks. A durable
 root restore marker and startup checks enforce the mask after reboot. A plain
 converge must detect that marker and refuse ordinary bootstrap/enablement.

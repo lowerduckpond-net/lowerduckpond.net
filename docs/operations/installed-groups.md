@@ -20,6 +20,9 @@ upstream binary image without changing the fixture's server or client revision.
 The four reconstruction cases and `failed-retirement` also create a second
 fresh destination and a run-owned ACME service after fencing the source. Their private provider mappings
 survive destination restart; they do not contact the public ACME or DNS API.
+Recovery also drains and gates the periodic health reader: its read-only audit
+inspection holds the tenant-state lock and can otherwise race installed archive
+verification. Completion restores its timer alongside the ordinary schedules.
 The native fixture waits at most five minutes for each requested restore phase, using
 one fixed deadline and stopping immediately if the restore unit fails. The
 combined two-segment restore exceeded the former three-minute observation

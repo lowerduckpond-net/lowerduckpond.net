@@ -7,6 +7,11 @@ from pathlib import Path
 import pytest
 import yaml  # type: ignore[import-untyped]
 from ansible.template import Templar, trust_as_template  # type: ignore[import-untyped]
+from lowerduckpond_static_host_agent.host_restore_services import (
+    ORDINARY_ACTIVATORS,
+    ORDINARY_SERVICES,
+    TEMPLATES,
+)
 
 ROLE = Path(__file__).parents[2] / "config/ansible/roles/host_recovery"
 RESTORE = "0198d17f-6f4a-7000-8000-000000000001"
@@ -93,6 +98,7 @@ def test_archive_helper_has_no_backup_or_dns_environment_and_keeps_existing_ceil
 
 def test_only_activators_can_start_with_completion_token_and_closed_gate() -> None:
     units = yaml.safe_load((ROLE / "vars/main.yml").read_text())["host_recovery_guarded_units"]
+    assert set(units) == {*ORDINARY_ACTIVATORS, *ORDINARY_SERVICES, *TEMPLATES, "caddy.service"}
     for unit in units:
         dropin = render("restore-admission.conf.j2", item=unit)
         activator = unit.endswith((".timer", ".socket"))

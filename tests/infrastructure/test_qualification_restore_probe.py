@@ -10,6 +10,7 @@ import pytest
 from lowerduckpond_static_host_agent.host_restore_diagnostics import VERIFICATION_STEPS
 
 from scripts import qualification_restore_probe as probe
+from scripts.qualification_probe import CATEGORIES
 
 
 @pytest.mark.parametrize(
@@ -66,13 +67,19 @@ def test_observation_reports_helpers_and_uses_only_the_current_failed_invocation
     )
 
     def run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if args[0] == "/usr/bin/journalctl":
+            assert "--unit=" + probe.UNITS[1] in args
+            assert "_SYSTEMD_INVOCATION_ID=" + "b" * 32 in args
+            return subprocess.CompletedProcess(
+                args, 0, "restore_archive_unverified restore_unverified category=state_busy", ""
+            )
         assert args[0] == "/usr/bin/systemctl" and all(unit in args for unit in probe.UNITS)
         assert kwargs["timeout"] == 3  # noqa: PLR2004 - batch stays within original probe alarm
         rows = [
             f"Id={probe.UNITS[0]}\nLoadState=loaded\nActiveState={state}\nResult=exit-code\n"
-            f"ExecMainStatus=1\nInvocationID={'a' * 32}",
+            f"ExecMainStatus=1\nInvocationID={'a' * 32}\nExecMainStartTimestampMonotonic=10",
             f"Id={probe.UNITS[1]}\nLoadState=loaded\nActiveState=failed\nResult=oom-kill\n"
-            "ExecMainStatus=9",
+            f"ExecMainStatus=9\nInvocationID={'b' * 32}\nExecMainStartTimestampMonotonic=20",
             f"Id={probe.UNITS[2]}\nLoadState=not-found\nActiveState=inactive\nResult=success\n"
             "ExecMainStatus=0",
             f"Id={probe.UNITS[3]}\nLoadState=loaded\nActiveState=private-state\n"
@@ -87,8 +94,94 @@ def test_observation_reports_helpers_and_uses_only_the_current_failed_invocation
     assert observed == (["a" * 32] if state == "failed" else [])
     units = result["units"]
     assert isinstance(units, dict)
-    assert units[probe.UNITS[1]] == {"state": "failed", "result": "oom-kill", "exit_status": 9}
+    assert units[probe.UNITS[1]] == {
+        "state": "failed",
+        "result": "oom-kill",
+        "exit_status": 9,
+        "failure_category": "state_busy",
+    }
     for unit in probe.UNITS[2:]:
-        assert units[unit] == {"state": "unknown", "result": "unknown", "exit_status": "unknown"}
+        assert units[unit] == {
+            "state": "unknown",
+            "result": "unknown",
+            "exit_status": "unknown",
+            "failure_category": "unknown",
+        }
     for canary in ("private-state", "private-result", "private-exit", "private stderr"):
         assert canary not in json.dumps(result)
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("restore_archive_unverified restore_unverified category=local_io", "local_io"),
+        (
+            "restore_archive_unverified restore_unverified category=provider_response "
+            "operation=get_object code=access_denied http_status=403",
+            "provider_response",
+        ),
+        ("restore_archive_unverified restore_unverified category=unexpected", "unexpected"),
+        ("restore_archive_unverified restore_unverified category=private-value", "unknown"),
+        (
+            "restore_archive_unverified restore_unverified category=local_io private-value",
+            "unknown",
+        ),
+        (
+            "restore_archive_unverified restore_unverified category=local_io\nprivate-value",
+            "unknown",
+        ),
+        ("", "unknown"),
+    ],
+)
+def test_archive_category_is_allowlisted_and_bound_to_helper_invocation(
+    message: str, expected: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        assert "--unit=" + probe.UNITS[2] in args
+        assert "_SYSTEMD_INVOCATION_ID=" + "b" * 32 in args
+        assert "--lines=1" in args
+        assert kwargs["timeout"] == 3  # noqa: PLR2004 - bounded journal collection
+        return subprocess.CompletedProcess(args, 0, message, "private stderr")
+
+    monkeypatch.setattr(probe.subprocess, "run", run)
+    assert probe.ARCHIVE_CATEGORIES == CATEGORIES
+    assert (
+        probe.archive_failure_category(
+            probe.UNITS[2],
+            {
+                "ActiveState": "failed",
+                "InvocationID": "b" * 32,
+                "ExecMainStartTimestampMonotonic": "20",
+            },
+            {"ExecMainStartTimestampMonotonic": "10"},
+        )
+        == expected
+    )
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"ActiveState": "activating"},
+        {"InvocationID": "private-value"},
+        {"ExecMainStartTimestampMonotonic": "9"},
+        {"ExecMainStartTimestampMonotonic": "0"},
+        {"ExecMainStartTimestampMonotonic": "private-value"},
+    ],
+)
+def test_old_or_unbound_archive_failure_cannot_be_attributed_to_current_restore(
+    override: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(probe.subprocess, "run", lambda *_a, **_k: pytest.fail("unbound journal"))
+    helper = {
+        "ActiveState": "failed",
+        "InvocationID": "b" * 32,
+        "ExecMainStartTimestampMonotonic": "20",
+        **override,
+    }
+    assert (
+        probe.archive_failure_category(
+            probe.UNITS[2], helper, {"ExecMainStartTimestampMonotonic": "10"}
+        )
+        == "unknown"
+    )
