@@ -68,7 +68,9 @@ The replay limit is 90 minutes, ordinary restore/public stages are bounded by
 1,900 seconds, and accounting/teardown checks by ten minutes.
 
 The final `summary.json` contains stage outcomes, elapsed time, fixed exception
-types/locations and coverage gaps. It is shareable. Raw stage logs, journals,
+types/locations and coverage gaps. Failed stages also include the bounded
+destination observation and any invocation-bound diagnostic restore trace.
+It is shareable. Raw stage logs, journals,
 scripts, diffs, source history, DNS observations and all other files remain
 private. Setup failures also emit a private `debug-setup-*.log` path, so a failure
 before the first stage still has a traceback. Journal collection omissions are
@@ -79,7 +81,10 @@ recorded separately and do not hide the stage's result.
 After updating the branch, repeat the command. By default it begins at the first
 stage without a passing diagnostic observation, and re-executes later stages.
 Earlier successes are scheduling hints only; actions recheck their live
-prerequisites. Use `--from restore`, `--from public-ca`, or another stage from the
+prerequisites. A finished stage replaces its previous scheduling hint before
+post-stage checks or diagnostic collection, so a failed rerun remains eligible
+for the next default invocation even if a follow-up check fails.
+Use `--from restore`, `--from public-ca`, or another stage from the
 table when a fix requires an earlier/later starting point. Original logs are
 never overwritten. Partial tenant retirement is handled by skipping tenants
 already absent only in this explicitly marked diagnostic mode.
@@ -103,6 +108,58 @@ cycle. This is an explicit branch development facility: it may probe or change
 the disposable destination. It is never called by qualification or production
 commands. Put the actual fixes and regressions into the branch as they are
 identified; a repair script is not evidence that a fresh install contains them.
+
+### Resume the retained pre-health-quiescence destination
+
+The retained `spaces-d0ec709.cYloMO` destination still selects its original
+artifact. Updating the controller checkout does not install the later fix that
+drains the periodic health reader during reconstruction. To apply that reviewed
+behavior for diagnosis and locate any remaining stall, use the checked-out fix
+branch with:
+
+```bash
+just m3-11-debug \
+  /home/tturner/.local/share/lowerduckpond.net/m3-11/spaces-d0ec709.cYloMO \
+  --exclusive-archive-writers --from restore \
+  --repair scripts/m3_11_debug_restore_repair.py
+```
+
+The repair requires a stopped coordinator in its Docker destination with the
+original journal at `installed` or `verified` and ingress still gated. It saves
+the original administrative launcher in the private sibling directory
+`/var/lib/lowerduckpond/recovery-diagnostic-launcher-<restore-id>/`,
+installs the existing health admission rules, and instruments that launcher
+after its original artifact verification. The instrumented launcher retains
+the production launcher policy of root ownership and mode `0700`, including
+when correcting an earlier diagnostic repair that published mode `0755`.
+In the coordinator process it adds
+the health service/timer to ordinary quiescence and schedule restoration, as the
+merged implementation does. The selected artifact, source fence, journal,
+archive target, TLS validation and all native service limits stay intact.
+Repeating the repair in either phase verifies the saved launcher before reusing
+it; after restore completes, resume without `--repair`.
+
+The first version of this repair saved the launcher at
+`recovery/diagnostic-launcher/original.py`. That extra directory violates the
+closed recovery provenance inventory: native completion rejects it after
+reaching `verified`. The corrected repair validates the saved original and
+current launcher, then moves that exact directory to its private sibling using
+a same-filesystem, no-replace rename. It preserves the original inode and bytes;
+unexpected contents or a conflicting destination stop the repair. Repeating
+the command above handles an already-patched destination without editing its
+journal or restarting qualification. Diagnostic files must stay outside the
+authoritative recovery tree; its production inventory rules remain unchanged.
+
+The instrumented coordinator records verification-step boundaries and at most
+62 stack samples at 30-second intervals. Samples contain elapsed/CPU time and
+code locations, without arguments, local values or source lines. The private
+journal keeps the full trace; failed-stage summaries include only a compact
+trace bound to the current systemd invocation. Successful inactive units may
+have their execution state unloaded by systemd, so an absent invocation or empty
+helper timestamps remain unknown. They are not proof that a helper never ran.
+The launcher instrumentation persists through the diagnostic reboot stage;
+retiring the disposable destination removes it. It is never installed by
+qualification or production convergence.
 
 Public-CA continuation preserves the original account/certificate storage and
 clean trust inputs. It records whether the attempt was cold or warm and any

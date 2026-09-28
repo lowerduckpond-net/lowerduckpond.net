@@ -57,6 +57,29 @@ def test_failed_restore_blocks_unsafe_downstream_stages(
     assert stage_results(result)["replay"] == {"outcome": "blocked", "dependencies": ["restore"]}
 
 
+def test_failed_stage_summary_includes_captured_service_and_trace_diagnostics(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runner, "execute", Mock(return_value=1))
+    observed = {
+        "reconstruction": {"destination": {"phase": "installed"}},
+        "restore_trace": {"collection": "observed", "step": "installed-audit"},
+    }
+
+    def capture(attempt: Path, label: str) -> None:
+        write_private(attempt / (label + ".diagnostics.json"), observed)
+
+    result = runner.run(root, {}, start=None, guard=Mock(), prepare=Mock(), capture=capture)
+    value = stage_results(result)["restore"]
+    assert value["diagnostics"] == observed
+    (attempt,) = (root / "attempts").iterdir()
+    assert (
+        read_private(attempt / "restore.json")
+        == read_private(root / "restore.latest.json")
+        == value
+    )
+
+
 def test_rerun_begins_at_first_failure_and_keeps_earlier_logs(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -92,6 +115,43 @@ def test_binding_loss_stops_mutation_but_still_emits_all_statuses(
     assert "secret" not in str(result)
     assert stage_results(result)["replay"]["outcome"] == "blocked"
     assert result["controller_error"]
+
+
+@pytest.mark.parametrize("stage", ["restore", "replay"])
+@pytest.mark.parametrize("status", [1, runner.TIMED_OUT])
+def test_failed_explicit_rerun_replaces_old_pass_before_post_stage_guard(
+    root: Path, monkeypatch: pytest.MonkeyPatch, stage: str, status: int
+) -> None:
+    execute = Mock(return_value=0)
+    monkeypatch.setattr(runner, "execute", execute)
+    passed = runner.run(root, {}, start=None, guard=Mock(), prepare=Mock(), capture=Mock())
+    assert passed["outcome"] == "diagnostic-complete"
+    (original,) = (root / "attempts").iterdir()
+    original_bytes = {path.name: path.read_bytes() for path in original.iterdir()}
+    execute.reset_mock()
+    execute.return_value = status
+    result = runner.run(
+        root,
+        {},
+        start=stage,
+        guard=Mock(side_effect=[None, None, ValueError("post-stage guard lost binding")]),
+        prepare=Mock(),
+        capture=Mock(),
+    )
+    assert execute.call_count == 1
+    assert result["controller_error"]
+    value = stage_results(result)[stage]
+    assert value["outcome"] == "failed"
+    assert value["exit_status"] == status
+    assert read_private(root / (stage + ".latest.json")) == value
+    (attempt,) = [path for path in (root / "attempts").iterdir() if path != original]
+    assert read_private(attempt / (stage + ".json")) == value
+    assert {path.name: path.read_bytes() for path in original.iterdir()} == original_bytes
+    execute.reset_mock()
+    execute.return_value = 0
+    resumed = runner.run(root, {}, start=None, guard=Mock(), prepare=Mock(), capture=Mock())
+    assert execute.call_args_list[0].args[0][-1] == stage
+    assert resumed["outcome"] == "diagnostic-complete"
 
 
 def test_collection_failure_does_not_hide_test_results(

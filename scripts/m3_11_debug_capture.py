@@ -11,6 +11,7 @@ from pathlib import Path
 
 from scripts import qualification_restore as owned
 from scripts.m3_11_debug_files import MAX_FILE, fingerprint
+from scripts.m3_11_debug_trace import summarize
 from scripts.m3_11_private_inputs import write_private
 from scripts.m3_11_qualification_evidence import MAX_BYTES
 from scripts.production_qualification_inputs import git
@@ -121,7 +122,7 @@ def checkpoint(root: Path, attempt: Path, label: str, environment: dict[str, str
                     "systemctl",
                     "show",
                     unit,
-                    "--property=ActiveState,SubState,Result,ExecMainStatus,ExecMainStartTimestamp,ExecMainExitTimestamp,CPUUsageNSec",
+                    "--property=ActiveState,SubState,Result,ExecMainStatus,ExecMainStartTimestamp,ExecMainExitTimestamp,CPUUsageNSec,InvocationID",
                 ),
                 ("journalctl", "--unit=" + unit, "--no-pager", "--output=short-iso", "--lines=100"),
             ):
@@ -133,4 +134,12 @@ def checkpoint(root: Path, attempt: Path, label: str, environment: dict[str, str
                     timeout=25,
                     check=False,
                 )
-    write_private(attempt / (label + ".observation.json"), owned.observations(environment))
+    observations = owned.observations(environment)
+    write_private(attempt / (label + ".observation.json"), observations)
+    write_private(
+        attempt / (label + ".diagnostics.json"),
+        {
+            "destination": observations.get("destination", "unknown"),
+            "restore_trace": summarize(attempt / (label + ".journals.log")),
+        },
+    )
