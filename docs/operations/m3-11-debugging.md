@@ -16,14 +16,14 @@ machines. No image build or registry credential-helper invocation is needed.
 
 ## Start with the retained failure
 
-Check out the diagnostic branch in the secure-workstation repository, preserving
-any local changes. The branch initially contains the provider-observer correction
-from PR #182; it can be retargeted to `main` after that PR merges.
+Start from merged `main` in the secure-workstation repository, preserving any
+local changes. Use a fix branch when iterating on a newly identified problem.
 
 ```bash
 cd /home/tturner/dev/lowerduckpond.net
 git fetch origin
-git switch --track origin/codex/m3-11-diagnostic-continuation
+git switch main
+git merge --ff-only origin/main
 just m3-11-debug \
   /home/tturner/.local/share/lowerduckpond.net/m3-11/spaces-d0ec709.cYloMO \
   --exclusive-archive-writers
@@ -37,7 +37,17 @@ succeed. No timestamps, original phase receipts or pytest completion are renewed
 
 Each invocation creates `diagnostics/workspace/attempts/<attempt-id>/` under the
 retained run. It captures the checked-out revision, helper hashes, private diff,
-service journals and current observations, then attempts these stages:
+service journals and current observations.
+
+Checkout provenance accepts ordinary group-writable source files (mode `0664`)
+and empty Python package markers. It hashes their bytes without changing their
+permissions. Retained evidence keeps its stricter ownership and permission
+checks; an optional repair script is captured as a private mode-`0600` copy and
+checked by hash before execution. Repair scripts must be nonempty and fit the
+private-input byte bound. Source capture still refuses redirected, hard-linked,
+world-writable, oversized or concurrently changing files.
+
+The controller then attempts these stages:
 
 | Stage | Action |
 | --- | --- |
