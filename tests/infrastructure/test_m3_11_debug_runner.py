@@ -57,6 +57,29 @@ def test_failed_restore_blocks_unsafe_downstream_stages(
     assert stage_results(result)["replay"] == {"outcome": "blocked", "dependencies": ["restore"]}
 
 
+def test_failed_stage_summary_includes_captured_service_and_trace_diagnostics(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runner, "execute", Mock(return_value=1))
+    observed = {
+        "reconstruction": {"destination": {"phase": "installed"}},
+        "restore_trace": {"collection": "observed", "step": "installed-audit"},
+    }
+
+    def capture(attempt: Path, label: str) -> None:
+        write_private(attempt / (label + ".diagnostics.json"), observed)
+
+    result = runner.run(root, {}, start=None, guard=Mock(), prepare=Mock(), capture=capture)
+    value = stage_results(result)["restore"]
+    assert value["diagnostics"] == observed
+    (attempt,) = (root / "attempts").iterdir()
+    assert (
+        read_private(attempt / "restore.json")
+        == read_private(root / "restore.latest.json")
+        == value
+    )
+
+
 def test_rerun_begins_at_first_failure_and_keeps_earlier_logs(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
