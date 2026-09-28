@@ -29,6 +29,28 @@ UNITS = (
     "caddy-recovery.service",
 )
 RESULTS = {"success", "exit-code", "signal", "timeout", "resources", "oom-kill", "start-limit-hit"}
+ARCHIVE_CATEGORIES = {
+    "provider_response",
+    "provider_read_timeout",
+    "provider_connect_timeout",
+    "provider_connection_closed",
+    "provider_tls",
+    "provider_connection",
+    "provider_stream",
+    "provider_sdk",
+    "archive_validation",
+    "archive_transport",
+    "archive_configuration",
+    "state_validation",
+    "state_busy",
+    "local_timeout",
+    "local_connection",
+    "local_permission",
+    "local_memory",
+    "local_io",
+    "local_storage_full",
+    "unexpected",
+}
 VERIFICATION_STEPS = {
     "installed-roots",
     "installed-audit",
@@ -70,6 +92,51 @@ def failed_step(invocation: str) -> str:
         return "unknown"
 
 
+def archive_failure_category(unit: str, helper: dict[str, str], coordinator: dict[str, str]) -> str:
+    """Read only this restore attempt's helper category, never its raw error."""
+    invocation = helper.get("InvocationID", "")
+    started = helper.get("ExecMainStartTimestampMonotonic", "")
+    restore_started = coordinator.get("ExecMainStartTimestampMonotonic", "")
+    if (
+        unit not in UNITS[1:3]
+        or helper.get("ActiveState") != "failed"
+        or re.fullmatch(r"[0-9a-f]{32}", invocation) is None
+        or re.fullmatch(r"[1-9][0-9]{0,19}", started) is None
+        or re.fullmatch(r"[1-9][0-9]{0,19}", restore_started) is None
+        or int(started) < int(restore_started)
+    ):
+        return "unknown"
+    try:
+        result = subprocess.run(  # noqa: S603 - fixed unit and validated invocation
+            [
+                "/usr/bin/journalctl",
+                "--quiet",
+                "--no-pager",
+                "--output=cat",
+                "--lines=1",
+                "--unit=" + unit,
+                "_SYSTEMD_INVOCATION_ID=" + invocation,
+                "--grep=^restore_archive_unverified ",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+        match = re.fullmatch(
+            r"restore_archive_unverified [a-z_]+ category=([a-z_]+)"
+            r"(?: operation=[a-z_]+ code=[a-z_]+ http_status=(?:[1-5][0-9]{2}|other))?",
+            result.stdout.strip(),
+        )
+        return (
+            match[1]
+            if result.returncode == 0 and match and match[1] in ARCHIVE_CATEGORIES
+            else "unknown"
+        )
+    except Exception:
+        return "unknown"
+
+
 def observe() -> dict[str, object]:
     signal.alarm(15)
     phase = "not-started"
@@ -85,7 +152,8 @@ def observe() -> dict[str, object]:
         [
             "/usr/bin/systemctl",
             "show",
-            "--property=Id,LoadState,ActiveState,Result,ExecMainStatus,InvocationID",
+            "--property=Id,LoadState,ActiveState,Result,ExecMainStatus,InvocationID,"
+            "ExecMainStartTimestampMonotonic",
             *UNITS,
         ],
         capture_output=True,
@@ -107,6 +175,7 @@ def observe() -> dict[str, object]:
             "exit_status": int(value["ExecMainStatus"])
             if re.fullmatch(r"[0-9]{1,3}", value.get("ExecMainStatus", ""))
             else "unknown",
+            "failure_category": archive_failure_category(unit, value, rows.get(UNITS[0], {})),
         }
     return {
         "phase": phase if phase in PHASES else "unknown",

@@ -426,7 +426,10 @@ disposable-shell workflow; no credential values enter this workspace.
 
 Before restoring bytes, durably close public HTTP/HTTPS ingress while preserving
 administrative SSH, and stop/mask Caddy, operator ingress, lifecycle workers,
-reconcilers, rotation and retention. Install verified immutable code, frozen
+reconcilers, rotation, retention and the periodic health reader. Health's local
+audit proof also holds the tenant-state lock, so drain its service and gate its
+timer through reconstruction; resume the timer with the other schedules after
+completion. Install verified immutable code, frozen
 Caddy unit/launcher, recovery gate, filesystem layout and fresh locks. A durable
 root restore marker and startup checks enforce the mask after reboot. A plain
 converge must detect that marker and refuse ordinary bootstrap/enablement.
@@ -907,6 +910,26 @@ every declared phase and teardown; missing, skipped, failed, future-dated or
 diagnostic reports cannot qualify. Preserve seven-day oldest-observation
 consumption and 24-hour packaging bounds; no timestamp refresh. Capture target
 identity before provider proof and verify it again at packaging/convergence.
+
+### Failed-run diagnostic continuation
+
+The [retained-run debugging workflow](../operations/m3-11-debugging.md) implements
+the operator's 2026-09-27 request to investigate the remaining stages on a branch
+before another complete qualification. It reuses the original fenced source,
+backup prefix, destination and controlled CA. Each attempt logs the controller
+revision, exact branch repair bytes, private journals and stage results, then
+continues independent checks after ordinary failures. Resource-binding loss or
+unsettled timed-out actions stop mutations. Source reports and phase receipts
+are preserved, while both run roots are marked permanently diagnostic and
+rejected by the qualification producer. Public recovery may inspect old original
+inputs and retain a warm account only with diagnostic labels; it does not renew
+freshness or cold-start evidence. Production deadlines remain unchanged.
+
+The helper checks teardown prerequisites but retains the debugging resources.
+Normal cleanup authority, explicit failed-fixture retirement scope, fresh complete
+qualification and operator production handoff remain separate. This branch can
+consolidate discoveries and fixes without rerunning the preceding lifecycle for
+every first failure.
 
 ## 8. Migration, operator handoff, and rollback
 

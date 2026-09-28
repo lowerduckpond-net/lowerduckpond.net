@@ -114,7 +114,7 @@ check-ansible: check-ansible-static check-ansible-m3-8
 # Lint, syntax-check, and run the baseline Ansible acceptance scenario.
 check-ansible-static: _sync
     bash -n scripts/configure-production
-    bash -n scripts/production-environment-shell
+    bash -n scripts/production-environment-shell scripts/production-file-environment-shell
     bash -n scripts/preflight-m3-dark-host-production
     bash -n scripts/preflight-m3-6-production
     bash -n scripts/preflight-m3-7-production
@@ -184,6 +184,11 @@ m3-11-spaces-qualification: _sync
 [positional-arguments]
 m3-11-failed-retirement action directory *arguments: _sync
     scripts/m3-11-failed-retirement "$@"
+
+# Explore a failed live fixture on the checked-out diagnostic branch.
+[positional-arguments]
+m3-11-debug directory *arguments: _sync
+    scripts/m3-11-debug "$@"
 
 # Prove the M3.7 CA, edge inputs, and direct production state without mutation.
 preflight-m3-7-production: _sync

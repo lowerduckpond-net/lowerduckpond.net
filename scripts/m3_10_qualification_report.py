@@ -240,6 +240,10 @@ def create_report(
     storage_target: str | None = None,
     milestone: str = "3.10",
 ) -> dict[str, object]:
+    if (directory / "diagnostic-origin.json").exists() or (
+        directory / "diagnostic-origin.json"
+    ).is_symlink():
+        raise ValueError("diagnostic continuation cannot produce qualification evidence")
     _formats(milestone)
     if milestone == "3.11" and repository is None:
         raise ValueError("M3.11 qualification requires its Git inputs and storage target")

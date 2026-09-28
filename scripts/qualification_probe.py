@@ -75,6 +75,7 @@ CATEGORIES = frozenset(
         "archive_transport",
         "archive_configuration",
         "state_validation",
+        "state_busy",
         "local_timeout",
         "local_connection",
         "local_permission",

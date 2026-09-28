@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import math
 import re
+import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -69,14 +70,24 @@ class DnsWitness:
     sequence: int = 0
     observed_zones: set[str] = field(default_factory=set)
     _failed: bool = field(default=False, init=False, repr=False)
+    output_directory: Path | None = field(default=None, repr=False)
 
     @classmethod
-    def begin(cls, directory: Path, storage: LiveStorage) -> DnsWitness:
+    def begin(
+        cls, directory: Path, storage: LiveStorage, *, diagnostic: bool = False
+    ) -> DnsWitness:
         """Refuse pre-existing names before the caller may start public issuance."""
         storage.require_source(storage.environment)
         if directory != Path(storage.environment["M3_10_INSTALLED_REPORT"]).parent:
             raise ValueError("public DNS observations need their original owned run directory")
         observations = directory / "public-dns"
+        if diagnostic:
+            from scripts.m3_11_debug_files import require_original_unchanged  # noqa: PLC0415
+
+            require_original_unchanged(directory)
+            parent = directory / "diagnostic-dns"
+            parent.mkdir(mode=0o700, exist_ok=True)
+            observations = parent / uuid.uuid7().hex
         if observations.exists() or observations.is_symlink():
             raise ValueError("public DNS original observations are already allocated")
         context = read_private(directory / "combined-context.json")
@@ -113,7 +124,7 @@ class DnsWitness:
         check_caddy_token(storage.environment, account_id=accounts.pop(), now=datetime.now(UTC))
         # Allocation is exclusive even when the first observation fails. A retry
         # must retain that failure rather than replace a nonempty baseline.
-        (directory / "public-dns").mkdir(mode=0o700)
+        observations.mkdir(mode=0o700)
         nonce = evidence.uuid7(names["nonce"])
         witness = cls(
             directory,
@@ -125,7 +136,12 @@ class DnsWitness:
                 for (domain, _), zone_id in zip(ZONES, zone_ids, strict=True)
             ),
         )
-        witness.require_absent("baseline")
+        witness.output_directory = observations
+        if diagnostic:
+            # A continuation records current activity, never invents a cold baseline.
+            witness.sample("activity")
+        else:
+            witness.require_absent("baseline")
         return witness
 
     def _records(self, zone_id: str, name: str) -> list[dict[str, str]]:
@@ -187,7 +203,9 @@ class DnsWitness:
             "completed_at": _now(),
             "zones": zones,
         }
-        path = self.directory / "public-dns" / f"{self.sequence:04d}.json"
+        path = (
+            self.output_directory or self.directory / "public-dns"
+        ) / f"{self.sequence:04d}.json"
         write_private(path, document)
         self.sequence += 1
         records = [record for inventory in inventories.values() for record in inventory]

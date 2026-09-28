@@ -14,6 +14,7 @@ from lowerduckpond_static_host_agent.archive_diagnostics import archive_failure_
 from lowerduckpond_static_host_agent.archive_remote import ArchiveRemoteError
 from lowerduckpond_static_host_agent.archive_transport import ArchiveTransportError
 from lowerduckpond_static_host_agent.durable import StatePathError
+from lowerduckpond_static_host_agent.locks import StateBusyError
 from lowerduckpond_static_host_agent.repository import StateRecordError
 from lowerduckpond_static_host_agent.state_inventory import StateInventoryError
 
@@ -36,6 +37,7 @@ _PRIVATE = "private endpoint, object identity, or credential\nforged journal ent
         (StatePathError(_PRIVATE), "state_validation"),
         (StateRecordError(_PRIVATE), "state_validation"),
         (StateInventoryError(_PRIVATE), "state_validation"),
+        (StateBusyError(_PRIVATE), "state_busy"),
         (TimeoutError(_PRIVATE), "local_timeout"),
         (BrokenPipeError(_PRIVATE), "local_connection"),
         (PermissionError(errno.EACCES, _PRIVATE, _PRIVATE), "local_permission"),

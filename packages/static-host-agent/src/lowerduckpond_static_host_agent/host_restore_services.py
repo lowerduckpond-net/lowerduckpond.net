@@ -21,6 +21,7 @@ ORDINARY_ACTIVATORS: Final = (
     "lowerduckpond-backup-maintenance.timer",
     "lowerduckpond-audit-verify.timer",
     "lowerduckpond-audit-rotate.timer",
+    "lowerduckpond-health.timer",
 )
 ORDINARY_SERVICES: Final = (
     "caddy-recovery.service",
@@ -32,6 +33,9 @@ ORDINARY_SERVICES: Final = (
     "lowerduckpond-audit-initialize.service",
     "lowerduckpond-audit-verify.service",
     "lowerduckpond-audit-rotate.service",
+    # Its read-only audit proof holds tenant-state SH. Drain it before root
+    # replacement and nonblocking verification, just like scheduled mutation.
+    "lowerduckpond-health.service",
 )
 TEMPLATES: Final = (
     "lowerduckpond-static-worker@.service",

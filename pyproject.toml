@@ -89,6 +89,20 @@ python_version = "3.14"
 strict = true
 warn_unreachable = true
 files = [
+  "tests/infrastructure/test_production_file_environment_shell.py",
+  "tests/infrastructure/test_m3_11_debug_bindings.py",
+  "tests/infrastructure/test_m3_11_debug_stages.py",
+  "scripts/m3_11_debug.py",
+  "scripts/m3_11_debug_capture.py",
+  "scripts/m3_11_debug_files.py",
+  "scripts/m3_11_debug_fixture.py",
+  "scripts/m3_11_debug_history.py",
+  "scripts/m3_11_debug_public.py",
+  "scripts/m3_11_debug_runner.py",
+  "scripts/m3_11_debug_stages.py",
+  "scripts/m3_11_debug_types.py",
+  "tests/infrastructure/test_m3_11_debug_files.py",
+  "tests/infrastructure/test_m3_11_debug_runner.py",
   "tests/infrastructure/test_m3_11_retirement_bindings.py",
   "tests/infrastructure/test_m3_11_retirement_containers.py",
   "tests/infrastructure/test_m3_11_retirement_cli.py",

@@ -11,6 +11,7 @@ from lowerduckpond_static_host_agent.archive_configuration import ArchiveConfigu
 from lowerduckpond_static_host_agent.archive_remote import ArchiveRemoteError
 from lowerduckpond_static_host_agent.archive_transport import ArchiveTransportError
 from lowerduckpond_static_host_agent.durable import StatePathError
+from lowerduckpond_static_host_agent.locks import StateBusyError
 from lowerduckpond_static_host_agent.repository import StateRecordError
 from lowerduckpond_static_host_agent.state_inventory import StateInventoryError
 
@@ -55,6 +56,7 @@ _ERROR_CATEGORIES: Final[tuple[tuple[type[BaseException], str], ...]] = (
     (StatePathError, "state_validation"),
     (StateRecordError, "state_validation"),
     (StateInventoryError, "state_validation"),
+    (StateBusyError, "state_busy"),
     (TimeoutError, "local_timeout"),
     (ConnectionError, "local_connection"),
     (PermissionError, "local_permission"),

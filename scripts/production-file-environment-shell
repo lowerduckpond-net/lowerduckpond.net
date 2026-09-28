@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# Install outside the checkout as ~/.config/lowerduckpond.net/production-shell.
+set +xv
+if [[ ${BASH_SOURCE[0]} != "$0" ]]; then
+    printf 'Execute this launcher; do not source it into your current shell.\n' >&2
+    return 2
+fi
+set -euo pipefail
+umask 077
+fail() { printf '%s\n' "$1" >&2; exit 2; }
+mode=shell
+case ${1-} in
+    --check) mode=check; shift; (($# == 0)) || fail 'Usage: production-shell [--check | -- command ...]' ;;
+    --) mode=command; shift; (($# > 0)) || fail 'A command must follow --.' ;;
+    '') ;;
+    *) fail 'Usage: production-shell [--check | -- command ...]' ;;
+esac
+private_env=${LDP_PRODUCTION_ENV_FILE:-${HOME}/.config/lowerduckpond.net/m3-10.env}
+[[ ${private_env} == /* && -f ${private_env} && ! -L ${private_env} ]] ||
+    fail 'Expected an absolute, regular private .env file without a symlink.'
+metadata=$(stat --format='%u:%a' -- "${private_env}")
+[[ ${metadata} == "${EUID}:600" || ${metadata} == "${EUID}:400" ]] ||
+    fail 'The .env file must belong to you and have mode 600 (or 400).'
+private_parent=$(dirname -- "${private_env}")
+[[ $(stat --format='%u:%a' -- "${private_parent}") == "${EUID}:700" ]] ||
+    fail 'The directory containing the .env file must belong to you and have mode 700.'
+# Syntax errors can contain a secret-bearing source line. Report a fixed message.
+env -u BASH_ENV -u ENV /bin/bash --noprofile --norc -n "${private_env}" >/dev/null 2>&1 ||
+    fail 'The private .env file has invalid Bash syntax; check its quoting in your editor.'
+set -a
+if ! source "${private_env}" >/dev/null 2>&1; then
+    fail 'The private .env file could not be loaded; check its assignments in your editor.'
+fi
+set +a
+set +xv
+repository=${LDP_PRODUCTION_REPOSITORY:-${HOME}/dev/lowerduckpond.net}
+[[ -d ${repository} && -f ${repository}/scripts/m3-10-spaces-qualification ]] ||
+    fail 'Set LDP_PRODUCTION_REPOSITORY to your lowerduckpond.net checkout.'
+repository=$(realpath -e -- "${repository}")
+resolved_env=$(realpath -e -- "${private_env}")
+[[ ${resolved_env} != "${repository}/"* ]] || fail 'Keep the private .env file outside the checkout.'
+# Use the local daemon consistently; do not inherit a Desktop/remote context.
+unset DOCKER_CONTEXT DOCKER_TLS DOCKER_TLS_VERIFY DOCKER_CERT_PATH
+export DOCKER_HOST=${DOCKER_HOST:-unix:///var/run/docker.sock}
+[[ ${DOCKER_HOST} == unix:///* ]] || fail 'DOCKER_HOST must name a local Unix socket.'
+required=(
+    OPENTOFU_STATE_ACCESS_KEY_ID OPENTOFU_STATE_SECRET_ACCESS_KEY
+    OPENTOFU_STATE_BUCKET OPENTOFU_ENCRYPTION_PASSPHRASE SPACES_REGION
+    SPACES_ACCESS_KEY_ID SPACES_SECRET_ACCESS_KEY
+)
+missing=()
+for name in "${required[@]}"; do
+    [[ -n ${!name:-} ]] || missing+=("${name}")
+done
+if ((${#missing[@]})); then
+    printf 'Fill these .env fields for Spaces qualification:\n' >&2
+    printf '  %s\n' "${missing[@]}" >&2
+    exit 2
+fi
+# The CLI and Python Docker SDK both honor this existing config file. Use literal
+# {}: the pinned SDK interprets an empty auths mapping as legacy registry data.
+# Never copy Desktop helpers, registry credentials or contexts into this shell.
+production_docker_config=$(mktemp -d "${TMPDIR:-/tmp}/ldp-production-docker.XXXXXXXX")
+readonly production_docker_config
+trap 'rm -rf -- "${production_docker_config}"' EXIT
+printf '{}\n' > "${production_docker_config}/config.json"
+export DOCKER_CONFIG=${production_docker_config}
+# Existing SSH_AUTH_SOCK remains available. No SSH key is copied.
+export HISTFILE=/dev/null HISTSIZE=0 HISTFILESIZE=0
+unset BASH_ENV ENV
+cd -- "${repository}"
+if [[ ${mode} == check ]]; then
+    printf 'Private environment loaded; all seven Spaces inputs are present.\n'
+    printf 'A private Docker config without credential helpers is selected.\n'
+    printf 'No credentials were printed and no provider or Docker requests were made.\n'
+    exit 0
+fi
+# The parent may have been outside the repository, and the child deliberately
+# skips shell startup files. Resolve the repository's pinned tools explicitly.
+mise_executable=$(type -P mise || true)
+if [[ -z ${mise_executable} && -x ${HOME}/.local/bin/mise ]]; then
+    mise_executable=${HOME}/.local/bin/mise
+fi
+[[ -n ${mise_executable} ]] ||
+    fail 'mise was not found on PATH or at ~/.local/bin/mise.'
+# Retain this supervising process so EXIT cleans the temporary Docker config
+# after either the command or interactive shell exits, preserving its status.
+if [[ ${mode} == command ]]; then
+    "${mise_executable}" exec -- "$@"
+else
+    export PS1='(production) \u@\h:\w\$ '
+    printf 'Private production environment loaded. Type exit to leave this shell.\n' >&2
+    "${mise_executable}" exec -- env -u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS \
+        /bin/bash --noprofile --norc -i
+fi

@@ -75,6 +75,35 @@ interactive shell:
 scripts/production-environment-shell -- just preflight-m3-7-production
 ```
 
+For the existing private `.env` workflow, install the maintained file-based
+launcher once from the repository:
+
+```bash
+install -d -m 700 "$HOME/.config/lowerduckpond.net"
+install -m 700 scripts/production-file-environment-shell \
+  "$HOME/.config/lowerduckpond.net/production-shell"
+"$HOME/.config/lowerduckpond.net/production-shell" --check
+```
+
+It loads `~/.config/lowerduckpond.net/m3-10.env` by default, or the absolute path
+in `LDP_PRODUCTION_ENV_FILE`. The file must be outside the checkout, owned by the
+operator, mode 600 or 400, with its containing directory mode 700. Set
+`LDP_PRODUCTION_REPOSITORY` if the checkout is not `~/dev/lowerduckpond.net`.
+Existing environment-file contents and SSH agent access are preserved. After
+replacing an older launcher, leave the old production shell and launch the
+updated one normally. `-- command ...` also supports a single child command.
+
+Every invocation uses a new private `DOCKER_CONFIG` containing exactly `{}` and
+removes it when the shell or command exits. Both the Docker CLI and the pinned
+Python Docker SDK therefore avoid the Windows `docker-credential-desktop.exe`
+helper, without editing the operator's ordinary Docker configuration. The empty
+object also avoids the pinned SDK's legacy interpretation of `{"auths": {}}`.
+Registry access in this shell is anonymous unless credentials are explicitly
+added during that invocation. An explicit local Unix `DOCKER_HOST` is preserved;
+otherwise the launcher uses `unix:///var/run/docker.sock`. Desktop contexts and
+Docker TLS overrides are removed. `--check` validates the environment and
+temporary configuration without contacting Docker or any provider.
+
 ## M3.5 dark-host starting gate
 
 M3.5 changes ownership and backup scope but intentionally cannot publish a

@@ -447,6 +447,12 @@ cannot provide the receipt requires a separately reviewed fencing decision;
 removing the receipt check or fabricating a successful source command is not a
 recovery procedure.
 
+Fencing and destination recovery also stop the periodic health timer and drain
+its service. The read-only audit health check holds a shared tenant-state lock;
+it must not race root replacement or installed verification. Its recovery
+admission drop-ins keep it stopped across reboot while the gate is closed.
+Successful completion restores the health timer with the ordinary schedules.
+
 Use the secure workstation's existing private environment file/disposable shell
 from [production preparation](m3-10-convergence-preparation.md), verified SSH host
 keys and administrator identity. Keep the original report, selected artifact,
@@ -1052,3 +1058,11 @@ after separately proving layout compatibility or restoring pre-migration state
 on a fenced target. After archival/index use or local removal, retain the new
 readers and deliver a forward repair or the qualified gated restoration. Never
 repoint the artifact selector or erase protected metadata to make rollback pass.
+
+## Investigate downstream failures before rerunning qualification
+
+Use the [retained-run debugging workflow](m3-11-debugging.md) on the secure
+workstation to explore the remaining reconstruction, public-CA and accounting
+stages on a diagnostic branch. It retains the failed run and original backup
+evidence while allowing targeted destination repairs and repeated stages.
+Diagnostic completion cannot satisfy production handoff or qualification.
