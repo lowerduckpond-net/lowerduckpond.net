@@ -283,7 +283,7 @@ def main() -> None:
                     raise ValueError("diagnostic health admission differs from reviewed repair")
             else:
                 publish(path, admission(unit), mode=0o644)
-        publish(LAUNCHER, updated, mode=0o755)
+        publish(LAUNCHER, updated, mode=0o700)
         subprocess.run(
             ["/usr/bin/systemctl", "daemon-reload"],
             check=True,

@@ -81,7 +81,10 @@ recorded separately and do not hide the stage's result.
 After updating the branch, repeat the command. By default it begins at the first
 stage without a passing diagnostic observation, and re-executes later stages.
 Earlier successes are scheduling hints only; actions recheck their live
-prerequisites. Use `--from restore`, `--from public-ca`, or another stage from the
+prerequisites. A finished stage replaces its previous scheduling hint before
+post-stage checks or diagnostic collection, so a failed rerun remains eligible
+for the next default invocation even if a follow-up check fails.
+Use `--from restore`, `--from public-ca`, or another stage from the
 table when a fix requires an earlier/later starting point. Original logs are
 never overwritten. Partial tenant retirement is handled by skipping tenants
 already absent only in this explicitly marked diagnostic mode.
@@ -126,7 +129,10 @@ original journal at `installed` or `verified` and ingress still gated. It saves
 the original administrative launcher in the private sibling directory
 `/var/lib/lowerduckpond/recovery-diagnostic-launcher-<restore-id>/`,
 installs the existing health admission rules, and instruments that launcher
-after its original artifact verification. In the coordinator process it adds
+after its original artifact verification. The instrumented launcher retains
+the production launcher policy of root ownership and mode `0700`, including
+when correcting an earlier diagnostic repair that published mode `0755`.
+In the coordinator process it adds
 the health service/timer to ordinary quiescence and schedule restoration, as the
 merged implementation does. The selected artifact, source fence, journal,
 archive target, TLS validation and all native service limits stay intact.

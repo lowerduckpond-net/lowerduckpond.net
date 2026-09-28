@@ -135,13 +135,17 @@ def run(  # noqa: PLR0913, PLR0915 - explicit injectable stage runner and final 
                     if suffix == "details" and read_private(path).get("coverage_gaps"):
                         value["outcome"] = "failed"
             progress[stage] = value
+            # Retire a previous passing hint before any fallible post-stage
+            # observation. A failed explicit rerun must remain the next default.
+            write_private(attempt / (stage + ".json"), value)
+            replace_private(previous, value)
             guard()
             checkpoint(stage)
             diagnostics = attempt / (stage + ".diagnostics.json")
             if diagnostics.exists() and value["outcome"] != "passed":
                 value["diagnostics"] = read_private(diagnostics)
-            write_private(attempt / (stage + ".json"), value)
-            replace_private(root / (stage + ".latest.json"), value)
+                replace_private(attempt / (stage + ".json"), value)
+                replace_private(previous, value)
             if status == TIMED_OUT or (stage == "repair" and status):
                 # A timed out docker exec can leave a guest process behind.
                 # Retain its checkpoint; do not overlap a new mutating stage.
