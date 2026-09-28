@@ -93,7 +93,7 @@ threading.Thread(target=sample, name="restore-diagnostic", daemon=True).start()
 """
 
 
-def read_root(path: Path) -> bytes:
+def read_root(path: Path, *, owner: int = 0) -> bytes:
     if path.resolve() != path:
         raise ValueError("diagnostic repair path is redirected")
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
@@ -101,8 +101,8 @@ def read_root(path: Path) -> bytes:
         before = os.fstat(stream.fileno())
         if (
             not stat.S_ISREG(before.st_mode)
-            or before.st_uid != 0
-            or before.st_gid != 0
+            or before.st_uid != owner
+            or before.st_gid != owner
             or before.st_mode & 0o022
             or before.st_nlink != 1
             or not 0 < before.st_size <= MAXIMUM
@@ -142,6 +142,74 @@ def instrument(original: bytes) -> bytes:
     result = source.replace(TAIL, injection)
     compile(result, str(LAUNCHER), "exec")
     return result.encode()
+
+
+def private_directory(directory: Path, *, owner: int) -> None:
+    metadata = directory.lstat()
+    if (
+        directory.resolve() != directory
+        or not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != owner
+        or metadata.st_gid != owner
+        or stat.S_IMODE(metadata.st_mode) != 0o700  # noqa: PLR2004 - private diagnostic directory
+    ):
+        raise ValueError("diagnostic launcher directory is unsafe")
+
+
+def preserve_launcher(restore_id: str, *, owner: int = 0) -> bytes:
+    from lowerduckpond_static_contracts import validate_uuid7  # noqa: PLC0415
+    from lowerduckpond_static_host_agent.durable import _rename_noreplace  # noqa: PLC0415
+
+    validate_uuid7(restore_id)
+    # Recovery is a closed inventory of authoritative evidence. Keep diagnostic
+    # files on the same filesystem but outside that tree, bound to this restore.
+    directory = ROOT.with_name("recovery-diagnostic-launcher-" + restore_id)
+    legacy = ROOT / "diagnostic-launcher"
+    existing = read_root(LAUNCHER, owner=owner)
+    if legacy.exists() or legacy.is_symlink():
+        private_directory(legacy, owner=owner)
+        if {entry.name for entry in legacy.iterdir()} != {"original.py"}:
+            raise ValueError("legacy diagnostic launcher directory has unexpected entries")
+        original = read_root(legacy / "original.py", owner=owner)
+        if existing not in (original, instrument(original)):
+            raise ValueError("diagnostic launcher changed outside this repair")
+        # One no-replace rename retains the original inode/bytes, or changes
+        # nothing. Do not copy/delete unknown evidence or replace a prior backup.
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+        source_fd = os.open(ROOT, flags)
+        try:
+            target_fd = os.open(directory.parent, flags)
+            try:
+                _rename_noreplace(source_fd, legacy.name, directory.name, destination_fd=target_fd)
+                os.fsync(target_fd)
+                os.fsync(source_fd)
+            finally:
+                os.close(target_fd)
+        finally:
+            os.close(source_fd)
+    directory.mkdir(mode=0o700, exist_ok=True)
+    private_directory(directory, owner=owner)
+    if {entry.name for entry in directory.iterdir()} - {"original.py"}:
+        raise ValueError("diagnostic launcher directory has unexpected entries")
+    saved = directory / "original.py"
+    if not (saved.exists() or saved.is_symlink()):
+        instrument(existing)
+        with saved.open("xb") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(existing)
+            stream.flush()
+            os.fsync(stream.fileno())
+    original = read_root(saved, owner=owner)
+    if existing not in (original, instrument(original)):
+        raise ValueError("diagnostic launcher changed outside this repair")
+    # Also finish directory durability when resuming after an interrupted rename.
+    for parent in (directory, directory.parent, ROOT):
+        fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    return original
 
 
 def admission(unit: str) -> bytes:
@@ -192,33 +260,12 @@ def main() -> None:
         current = store.read()
         if (
             current is None
-            or current.phase is not RestorePhase.INSTALLED
+            or current.phase not in {RestorePhase.INSTALLED, RestorePhase.VERIFIED}
             or not gate_pending(store)
         ):
-            raise ValueError("diagnostic repair requires the installed, gated restore")
-        directory = ROOT / "diagnostic-launcher"
-        directory.mkdir(mode=0o700, exist_ok=True)
-        metadata = directory.lstat()
-        if (
-            directory.resolve() != directory
-            or not stat.S_ISDIR(metadata.st_mode)
-            or metadata.st_uid != 0
-            or stat.S_IMODE(metadata.st_mode) != 0o700  # noqa: PLR2004 - private diagnostic directory
-        ):
-            raise ValueError("diagnostic launcher directory is unsafe")
-        saved = directory / "original.py"
-        existing = read_root(LAUNCHER)
-        if not (saved.exists() or saved.is_symlink()):
-            instrument(existing)
-            with saved.open("xb") as stream:
-                os.fchmod(stream.fileno(), 0o600)
-                stream.write(existing)
-                stream.flush()
-                os.fsync(stream.fileno())
-        original = read_root(saved)
+            raise ValueError("diagnostic repair requires an installed or verified gated restore")
+        original = preserve_launcher(current.restore_id)
         updated = instrument(original)
-        if existing not in (original, updated):
-            raise ValueError("diagnostic launcher changed outside this repair")
         for unit in UNITS:
             parent = Path("/etc/systemd/system") / (unit + ".d")
             parent.mkdir(mode=0o755, exist_ok=True)

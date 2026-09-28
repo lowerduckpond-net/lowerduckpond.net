@@ -10,9 +10,142 @@ from pathlib import Path
 
 import pytest
 from jinja2 import Environment
+from lowerduckpond_static_host_agent.backup_identity import framed_digest
+from lowerduckpond_static_host_agent.host_restore_gate import close_gate, open_gate
+from lowerduckpond_static_host_agent.host_restore_history import (
+    require_backup_provenance,
+    seal_provenance,
+)
+from lowerduckpond_static_host_agent.host_restore_journal import (
+    PHASES,
+    HostRestoreError,
+    RestoreJournal,
+    RestorePhase,
+    RestoreStore,
+)
 
 from scripts import m3_11_debug_restore_repair as repair
 from scripts import m3_11_debug_trace as trace
+
+RESTORE = "0198d17f-6f4a-7000-8000-000000000001"
+
+
+@pytest.fixture
+def launcher(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> bytes:
+    root = tmp_path / "recovery"
+    root.mkdir(mode=0o700)
+    path = tmp_path / "host-restore-coordinator"
+    original = ("# original administrative launcher\n" + repair.TAIL + "\n").encode()
+    path.write_bytes(original)
+    path.chmod(0o755)
+    monkeypatch.setattr(repair, "ROOT", root)
+    monkeypatch.setattr(repair, "LAUNCHER", path)
+    return original
+
+
+def legacy_launcher(original: bytes) -> Path:
+    directory = repair.ROOT / "diagnostic-launcher"
+    directory.mkdir(mode=0o700)
+    saved = directory / "original.py"
+    saved.write_bytes(original)
+    saved.chmod(0o600)
+    repair.LAUNCHER.write_bytes(repair.instrument(original))
+    return saved
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("phase", [RestorePhase.INSTALLED, RestorePhase.VERIFIED])
+def test_diagnostic_backup_preserves_evidence_and_allows_native_completion(
+    launcher: bytes, legacy: bool, phase: RestorePhase
+) -> None:
+    formats = {
+        "backupDescriptor": "lowerduckpond-static-backup-v1",
+        "repository": "lowerduckpond-backup-repository-binding-v1",
+        "originalArtifact": "lowerduckpond-static-host-agent-artifact-v1",
+        "trustedInputs": "lowerduckpond-host-restore-inputs-v1",
+        "destination": "lowerduckpond-host-restore-destination-v1",
+        "sourceFence": "lowerduckpond-host-restore-source-fence-v1",
+    }
+    journal = RestoreJournal(
+        RESTORE,
+        "a" * 64,
+        "0198d17f-6f4a-7000-8000-000000000002",
+        "0198d17f-6f4a-7000-8000-000000000003",
+        {key: framed_digest(value, b"synthetic bound input") for key, value in formats.items()},
+    )
+    with RestoreStore.locked(repair.ROOT, owner=os.geteuid()) as store:
+        close_gate(store, RESTORE)
+        store.begin(journal)
+        for step in PHASES[1 : PHASES.index(phase) + 1]:
+            journal = store.advance(
+                journal, step, {"decisions": []} if step is RestorePhase.RECONCILED else {}
+            )
+        before = {path.name: path.read_bytes() for path in repair.ROOT.iterdir()}
+        inode = legacy_launcher(launcher).stat().st_ino if legacy else None
+        if legacy and phase is RestorePhase.VERIFIED:
+            with pytest.raises(HostRestoreError, match="restore_provenance_file_unsafe"):
+                seal_provenance(store)
+        assert repair.preserve_launcher(RESTORE, owner=os.geteuid()) == launcher
+        repair.LAUNCHER.write_bytes(repair.instrument(launcher))
+        assert repair.preserve_launcher(RESTORE, owner=os.geteuid()) == launcher
+        assert {path.name: path.read_bytes() for path in repair.ROOT.iterdir()} == before
+        saved = repair.ROOT.with_name("recovery-diagnostic-launcher-" + RESTORE) / "original.py"
+        assert saved.read_bytes() == launcher
+        if legacy:
+            assert saved.stat().st_ino == inode
+        if journal.phase is RestorePhase.INSTALLED:
+            journal = store.advance(journal, RestorePhase.VERIFIED, {})
+        digest = seal_provenance(store)
+        store.advance(journal, RestorePhase.COMPLETE, {"provenanceInventory": digest})
+        open_gate(store)
+    require_backup_provenance(repair.ROOT, owner=os.geteuid())
+
+
+@pytest.mark.parametrize(
+    "damage", ["unknown-file", "symlink", "hardlink", "mode", "launcher", "collision"]
+)
+def test_legacy_migration_refuses_ambiguous_or_changed_backup(
+    launcher: bytes, tmp_path: Path, damage: str
+) -> None:
+    saved = legacy_launcher(launcher)
+    if damage == "unknown-file":
+        (saved.parent / "unclassified-evidence").write_bytes(b"preserve")
+    elif damage == "symlink":
+        saved.rename(tmp_path / "original.py")
+        saved.symlink_to(tmp_path / "original.py")
+    elif damage == "hardlink":
+        os.link(saved, tmp_path / "original.py")
+    elif damage == "mode":
+        saved.chmod(0o666)
+    elif damage == "launcher":
+        repair.LAUNCHER.write_bytes(b"changed launcher")
+    else:
+        repair.ROOT.with_name("recovery-diagnostic-launcher-" + RESTORE).mkdir(mode=0o700)
+    before = repair.LAUNCHER.read_bytes()
+    with pytest.raises((ValueError, FileExistsError)):
+        repair.preserve_launcher(RESTORE, owner=os.geteuid())
+    assert saved.read_bytes() == launcher
+    assert repair.LAUNCHER.read_bytes() == before
+
+
+def test_migration_resumes_after_rename_before_directory_sync(
+    launcher: bytes, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    saved = legacy_launcher(launcher)
+    original_inode = saved.stat().st_ino
+    original_sync = os.fsync
+
+    def interrupted(fd: int) -> None:
+        raise OSError("injected interruption after rename")
+
+    monkeypatch.setattr(os, "fsync", interrupted)
+    with pytest.raises(OSError, match="injected interruption"):
+        repair.preserve_launcher(RESTORE, owner=os.geteuid())
+    assert not saved.parent.exists()
+    monkeypatch.setattr(os, "fsync", original_sync)
+    assert repair.preserve_launcher(RESTORE, owner=os.geteuid()) == launcher
+    destination = repair.ROOT.with_name("recovery-diagnostic-launcher-" + RESTORE) / "original.py"
+    assert destination.stat().st_ino == original_inode
 
 
 def test_original_launcher_verification_and_argument_binding_are_preserved() -> None:

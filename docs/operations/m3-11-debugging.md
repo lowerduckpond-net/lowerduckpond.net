@@ -122,15 +122,27 @@ just m3-11-debug \
 ```
 
 The repair requires a stopped coordinator in its Docker destination with the
-original journal at `installed` and ingress still gated. It saves the original
-administrative launcher under the destination's private recovery directory,
+original journal at `installed` or `verified` and ingress still gated. It saves
+the original administrative launcher in the private sibling directory
+`/var/lib/lowerduckpond/recovery-diagnostic-launcher-<restore-id>/`,
 installs the existing health admission rules, and instruments that launcher
 after its original artifact verification. In the coordinator process it adds
 the health service/timer to ordinary quiescence and schedule restoration, as the
 merged implementation does. The selected artifact, source fence, journal,
 archive target, TLS validation and all native service limits stay intact.
-Repeating the repair while still installed verifies the saved launcher before
-reusing it; after restore completes, resume without `--repair`.
+Repeating the repair in either phase verifies the saved launcher before reusing
+it; after restore completes, resume without `--repair`.
+
+The first version of this repair saved the launcher at
+`recovery/diagnostic-launcher/original.py`. That extra directory violates the
+closed recovery provenance inventory: native completion rejects it after
+reaching `verified`. The corrected repair validates the saved original and
+current launcher, then moves that exact directory to its private sibling using
+a same-filesystem, no-replace rename. It preserves the original inode and bytes;
+unexpected contents or a conflicting destination stop the repair. Repeating
+the command above handles an already-patched destination without editing its
+journal or restarting qualification. Diagnostic files must stay outside the
+authoritative recovery tree; its production inventory rules remain unchanged.
 
 The instrumented coordinator records verification-step boundaries and at most
 62 stack samples at 30-second intervals. Samples contain elapsed/CPU time and
