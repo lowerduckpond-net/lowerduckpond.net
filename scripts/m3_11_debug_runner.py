@@ -100,8 +100,16 @@ def run(  # noqa: PLR0913, PLR0915 - explicit injectable stage runner and final 
             previous = root / (stage + ".latest.json")
             prior = read_private(previous) if previous.exists() else {"outcome": "unknown"}
             active = active or stage == start or (start is None and prior["outcome"] != "passed")
-            if not active and stage != "repair":
-                progress[stage] = {**prior, "reused_diagnostic_observation": True}
+            # An explicit later starting point can adopt a newly failed run.
+            # Establish its live restore prerequisite rather than treating a
+            # missing scheduling hint as evidence of completion.
+            prerequisite = stage == "restore" and prior["outcome"] != "passed"
+            if not active and stage != "repair" and not prerequisite:
+                progress[stage] = (
+                    {**prior, "reused_diagnostic_observation": True}
+                    if prior["outcome"] == "passed"
+                    else {"outcome": "not-run"}
+                )
                 continue
             guard()
             blocked = [name for name in dependencies if progress[name]["outcome"] != "passed"]
