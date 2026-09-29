@@ -176,6 +176,15 @@ The provider audit establishes account ownership, policy and zone scope;
 credential shape does not establish those properties. A credential-format
 rejection occurs before creating public-CA inputs or starting issuance.
 
+The ingress probe uses the existing controlled-CA container as its network peer.
+That container does not retain network-administration privileges. A fixed address
+setup command receives only `CAP_NET_ADMIN` after dropping Docker exec's other
+capabilities; the CA process and TCP probe retain their ordinary permissions.
+This also works on retained containers without recreating them. The same probe
+checks closed and open ingress in the local combined-reconstruction lane before
+it is used with public issuance. An issuance failure keeps ingress closed, so
+the subsequent accounting check cannot report activation complete.
+
 After restore, reconstruction, reboot and replay have passed, resume a corrected
 public-CA stage directly, without the completed restore's repair script:
 

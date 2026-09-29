@@ -12,6 +12,7 @@ from pathlib import Path
 import audit_protection_support as audits
 import audit_rotation_support as rotation
 import backup_capture_support as captures
+import restore_peer
 import restore_scenarios as restore
 import test_audit_rotation as rotation_checks
 import test_backup_coherence as backups
@@ -188,6 +189,7 @@ def reconstruction(
         ).stdout.strip() in {"inactive", "failed"}
     fixture.fault_observed("deniedDns")
     restore.gate_closed(fixture)
+    restore_peer.check(fixture, opened=False)
     assert fixture.destination.run("systemctl stop %s", UNIT).rc == 0
     interrupted = fixture.destination.file(f"{RECOVERY}/host-restore.json").content
     assert fixture.status()["phase"] == "installed"
@@ -198,6 +200,7 @@ def reconstruction(
     assert journal != interrupted
     assert not fixture.destination.file("/var/lib/lowerduckpond/recovery/restore-gate.json").exists
     assert fixture.destination.service("caddy").is_running
+    restore_peer.check(fixture, opened=True)
     assert fixture.destination.service("lowerduckpond-health.timer").is_running
     restore.verify_reconstruction(fixture, replay)
     descriptor_raw = identity._restic(
