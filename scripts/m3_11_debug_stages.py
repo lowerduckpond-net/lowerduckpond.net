@@ -16,6 +16,7 @@ from typing import cast
 from lowerduckpond_m3_archive.storage import assert_storage_empty
 
 from scripts import qualification_restore as owned
+from scripts.m3_11_debug_dns import retire as retire_dns
 from scripts.m3_11_debug_files import fingerprint, replace_private
 from scripts.m3_11_debug_fixture import attach, history
 from scripts.m3_11_debug_types import Fixture
@@ -29,7 +30,9 @@ from scripts.qualification_retirement import uninstalled_storage_absence
 from scripts.qualification_storage_lease import require_inherited
 
 
-def public_recovery(root: Path, fixture: Fixture) -> dict[str, object]:
+def public_recovery(
+    root: Path, fixture: Fixture, *, retire_stale_dns: bool = False
+) -> dict[str, object]:
     module = importlib.import_module("public_ca_recovery")
     public = module.PublicRecovery(fixture, fixture.live_storage, root, diagnostic=True)
     value = {
@@ -46,6 +49,7 @@ def public_recovery(root: Path, fixture: Fixture) -> dict[str, object]:
     prepared = public.call("diagnostic_prepare", value=value)
     interrupted = False
     try:
+        retirement = retire_dns(public.witness, public.call) if retire_stale_dns else None
         public.call("diagnostic_start")
         public.peer(opened=False)
         while True:
@@ -77,6 +81,7 @@ def public_recovery(root: Path, fixture: Fixture) -> dict[str, object]:
             "cold": prepared["cold"],
             "interrupted": interrupted,
             "public_tls": True,
+            "dns_retirement": retirement,
             "zones_observed": len(public.witness.observed_zones),
             "coverage_gaps": ["cold-interruption-or-two-zone-observation"]
             if prepared["cold"] and (not interrupted or len(public.witness.observed_zones) != 2)  # noqa: PLR2004 - both configured zones
@@ -86,7 +91,7 @@ def public_recovery(root: Path, fixture: Fixture) -> dict[str, object]:
         return result
     except BaseException:
         try:
-            public.call("stop_failed")
+            public.call("diagnostic_stop_failed")
         except Exception:
             traceback.print_exc()
         raise
@@ -195,7 +200,12 @@ def run(  # noqa: PLR0911, PLR0912 - fixed stage dispatch
             ),
         )
     if stage == "public-ca":
-        return public_recovery(root, fixture)
+        return public_recovery(
+            root,
+            fixture,
+            retire_stale_dns=read_private(attempt / "controller.json").get("retire_stale_dns")
+            is True,
+        )
     if stage == "accounting":
         return accounting(root, fixture)
     if stage == "teardown-check":

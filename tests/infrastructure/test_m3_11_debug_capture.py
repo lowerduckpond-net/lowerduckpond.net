@@ -101,6 +101,14 @@ def test_empty_package_marker_is_recorded_and_untracked_helpers_are_included(
     assert helpers["scripts/__init__.py"] == hashlib.sha256(b"").hexdigest()
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_dns_retirement_authorization_is_captured(
+    checkout: Path, tmp_path: Path, enabled: bool
+) -> None:
+    capture.controller(tmp_path, None, retire_stale_dns=enabled)
+    assert read_private(tmp_path / "controller.json")["retire_stale_dns"] is enabled
+
+
 @pytest.mark.parametrize(
     "unsafe", ["symlink", "ancestor", "fifo", "oversize", "changed", "hardlink", "world-writable"]
 )

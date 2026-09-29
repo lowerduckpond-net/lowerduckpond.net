@@ -370,7 +370,7 @@ def restore_native(context_sha256: str, *, audit_rotation: bool) -> dict[str, ob
     return _record("restored", {"journal_sha256": marker["journal_sha256"]})
 
 
-def stop_failed(context_sha256: str) -> dict[str, object]:
+def _stop_failed(context_sha256: str) -> None:
     """Stop further issuance and retain the closed original fixture on failure."""
     _fixture()
     marker = _document("original")
@@ -387,4 +387,8 @@ def stop_failed(context_sha256: str) -> dict[str, object]:
         services.close_public_ingress()
         services.quiesce_host()
         _systemctl("stop", policy.UNIT)
+
+
+def stop_failed(context_sha256: str) -> dict[str, object]:
+    _stop_failed(context_sha256)
     return _record("failed", {"context_sha256": context_sha256})
