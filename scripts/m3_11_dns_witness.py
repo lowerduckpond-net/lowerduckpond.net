@@ -212,9 +212,13 @@ class DnsWitness:
         active = frozenset(domain for domain, inventory in inventories.items() if inventory)
         if kind == "activity":
             # Retain the actual response above, then reject unrelated contents.
+            # Cloudflare returns TXT content as quoted character strings. A
+            # DNS-01 digest fits one string; accept that representation and the
+            # bare value without normalizing the original observation bytes.
             if any(
                 record["type"] != "TXT"
-                or re.fullmatch(r"[A-Za-z0-9_-]{43}", record["content"]) is None
+                or re.fullmatch(r'(?:[A-Za-z0-9_-]{43}|"[A-Za-z0-9_-]{43}")', record["content"])
+                is None
                 for record in records
             ):
                 raise ValueError("public DNS activity is not an ACME DNS-01 challenge")

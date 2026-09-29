@@ -176,6 +176,14 @@ The provider audit establishes account ownership, policy and zone scope;
 credential shape does not establish those properties. A credential-format
 rejection occurs before creating public-CA inputs or starting issuance.
 
+The independent DNS witness recognizes the 43-character DNS-01 value either bare
+or inside one pair of double quotes, matching
+[Cloudflare's TXT representation](https://developers.cloudflare.com/dns/manage-dns-records/reference/dns-record-types/#txt).
+Private observations retain the exact provider content, including its quotes.
+Malformed quotes, escapes, multiple strings and non-challenge content stop the
+attempt. Continuation records existing valid challenges as activity; it cannot
+turn them into a new empty baseline. Cleanup still requires both names to be empty.
+
 The ingress probe uses the existing controlled-CA container as its network peer.
 That container does not retain network-administration privileges. A fixed address
 setup command receives only `CAP_NET_ADMIN` after dropping Docker exec's other
