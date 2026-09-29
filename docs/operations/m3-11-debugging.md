@@ -168,6 +168,26 @@ in this mode without changing their age; normal qualification freshness checks
 remain enforced. Existing partially installed public inputs may need a specific
 diagnostic repair; they are not silently erased into another purported cold run.
 
+The public-CA helper accepts the same bounded credential characters and length
+as production configuration (20-256 ASCII letters, digits, `_` or `-`). It passes
+the entire credential unchanged, including Cloudflare's
+[account-token prefix and checksum](https://developers.cloudflare.com/fundamentals/api/get-started/token-formats/).
+The provider audit establishes account ownership, policy and zone scope;
+credential shape does not establish those properties. A credential-format
+rejection occurs before creating public-CA inputs or starting issuance.
+
+After restore, reconstruction, reboot and replay have passed, resume a corrected
+public-CA stage directly, without the completed restore's repair script:
+
+```bash
+just m3-11-debug \
+  /home/tturner/.local/share/lowerduckpond.net/m3-11/spaces-d0ec709.cYloMO \
+  --exclusive-archive-writers --from public-ca
+```
+
+This rechecks public-CA recovery, accounting and teardown prerequisites while
+retaining the earlier observations and original failed qualification.
+
 The retained backup and fenced source remain the recovery reference. The
 diagnostic workspace is **not** a complete disk snapshot or automatic rollback.
 The final teardown stage deliberately retains containers and the backup prefix

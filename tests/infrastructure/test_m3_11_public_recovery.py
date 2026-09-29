@@ -25,6 +25,74 @@ BINARY = "/usr/local/lib/lowerduckpond/caddy-2.11.4-xcaddy-0.4.7-cloudflare-0.2.
 CONTEXT = "a" * 64
 
 
+@pytest.mark.parametrize(
+    "token",
+    [
+        "0" * 40,
+        "cfat_" + "aB0_-" * 10,
+        "cfut_" + "aB0_-" * 10,
+        "a" * 20,
+        "Z" * 256,
+    ],
+)
+def test_public_environment_keeps_bounded_runtime_credential_bytes(token: str) -> None:
+    # Prefixes are transported intact; the live provider audit remains the
+    # authority for token ownership and policy, including legacy credentials.
+    raw = policy.credential_environment(token)
+    assert raw == b"CLOUDFLARE_API_TOKEN=" + token.encode("ascii") + b"\n"
+    assert len(raw.splitlines()) == 1
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        None,
+        40,
+        b"a" * 40,
+        "",
+        "a" * 19,
+        "a" * 257,
+        "cfat_" + "a" * 40 + "\n",
+        "a" * 40 + "\rINJECTED=value",
+        "a" * 40 + "\x00",
+        "a" * 40 + " ",
+        "a" * 40 + "'",
+        "a" * 40 + '"',
+        "a" * 40 + "$(id)",
+        "a" * 40 + "`id`",
+        "a" * 40 + "é",
+    ],
+)
+def test_public_install_rejects_unsafe_credentials_before_guest_state_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, token: object
+) -> None:
+    monkeypatch.setattr(probe, "_fixture", Mock())
+    inputs, storage = tmp_path / "inputs", tmp_path / "storage"
+    monkeypatch.setattr(policy, "INPUTS", inputs)
+    monkeypatch.setattr(policy, "STORAGE", storage)
+    read = Mock(side_effect=AssertionError("must reject before reading guest inputs"))
+    command = Mock(side_effect=AssertionError("must reject before changing services"))
+    monkeypatch.setattr(probe, "_read", read)
+    monkeypatch.setattr(probe, "_systemctl", command)
+    with pytest.raises(ValueError) as error:
+        probe.install(
+            {
+                "context_sha256": CONTEXT,
+                "binary": BINARY,
+                "binary_sha256": "b" * 64,
+                "nonce": str(uuid.uuid7()),
+                "files": {},
+                "token": token,
+            }
+        )
+    assert str(error.value) == (
+        "public probe DNS credential must contain 20-256 ASCII letters, digits, '_' or '-'"
+    )
+    assert not inputs.exists() and not storage.exists()
+    read.assert_not_called()
+    command.assert_not_called()
+
+
 def test_disposable_configuration_cannot_fall_back_to_a_private_or_staging_issuer() -> None:
     nonce = str(uuid.uuid7())
     assert policy.disposable_subjects(nonce) == evidence.subjects(nonce)

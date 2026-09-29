@@ -181,9 +181,7 @@ def install(value: dict[str, object]) -> dict[str, object]:
         raise ValueError("public probe inputs are malformed")
     binary, nonce = str(value["binary"]), str(value["nonce"])
     unit, configuration = policy.service(binary), policy.configuration(nonce)
-    token = value["token"]
-    if not isinstance(token, str) or re.fullmatch(r"[A-Za-z0-9_-]{40}", token) is None:
-        raise ValueError("public probe requires its audited runtime DNS credential")
+    credential = policy.credential_environment(value["token"])
     for field in ("context_sha256", "binary_sha256"):
         if (
             not isinstance(value[field], str)
@@ -223,7 +221,7 @@ def install(value: dict[str, object]) -> dict[str, object]:
         failure="public_probe_controlled_dns_remove_failed",
     )
     decoded["caddy.json"] = configuration
-    decoded["environment"] = f"CLOUDFLARE_API_TOKEN={token}\n".encode("ascii")
+    decoded["environment"] = credential
     for name, raw in decoded.items():
         _write(
             policy.INPUTS / name,

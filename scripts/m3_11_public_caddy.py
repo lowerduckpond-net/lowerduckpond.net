@@ -26,6 +26,16 @@ def canonical(value: object) -> bytes:
     ).encode()
 
 
+def credential_environment(token: object) -> bytes:
+    # Match site.yml's runtime-input bound. Provider preflight proves account
+    # ownership/scope; neither legacy length nor a prefix proves that policy.
+    if not isinstance(token, str) or re.fullmatch(r"[A-Za-z0-9_-]{20,256}", token) is None:
+        raise ValueError(
+            "public probe DNS credential must contain 20-256 ASCII letters, digits, '_' or '-'"
+        )
+    return f"CLOUDFLARE_API_TOKEN={token}\n".encode("ascii")
+
+
 def disposable_subjects(nonce: str) -> tuple[str, ...]:
     if str(uuid.UUID(nonce, version=7)) != nonce:
         raise ValueError("public probe requires a canonical private UUIDv7 nonce")
