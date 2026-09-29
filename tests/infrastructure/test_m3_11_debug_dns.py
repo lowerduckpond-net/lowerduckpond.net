@@ -29,7 +29,7 @@ def wanted(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, str]]:
     monkeypatch.setattr(probe, "_guard", Mock(return_value={"nonce": nonce}))
     monkeypatch.setattr(probe, "_closed", Mock())
     monkeypatch.setattr(probe, "_inactive", Mock())
-    monkeypatch.setattr(probe, "_tls", Mock())
+    monkeypatch.setattr(guest, "_stored_tls", Mock())
     monkeypatch.setattr(guest, "_clean_dependencies", Mock())
     monkeypatch.setattr(
         probe, "_read", Mock(return_value=b"CLOUDFLARE_API_TOKEN=" + b"a" * 40 + b"\n")
@@ -102,7 +102,7 @@ def test_guest_refuses_foreign_changed_or_active_challenges_before_deleting(
     elif fault == "running":
         monkeypatch.setattr(probe, "_inactive", Mock(side_effect=ValueError("running")))
     else:
-        monkeypatch.setattr(probe, "_tls", Mock(side_effect=ValueError("unissued")))
+        monkeypatch.setattr(guest, "_stored_tls", Mock(side_effect=ValueError("unissued")))
     request = Mock(side_effect=lambda *args: provider(actual, *args))
     monkeypatch.setattr(guest, "_request", request)
     with pytest.raises(ValueError):

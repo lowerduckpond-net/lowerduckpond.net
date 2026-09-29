@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
+import pwd
 import re
 import ssl
 import time
+from contextlib import ExitStack
 from pathlib import Path
 from typing import cast
 
+from lowerduckpond_static_host_agent import host_restore_tls as tls
+from lowerduckpond_static_host_agent.durable import DurableDirectory
 from lowerduckpond_static_host_agent.host_restore_process import require_command
 
 from scripts import m3_11_public_caddy as policy
@@ -83,11 +88,67 @@ def _clean_dependencies() -> None:
         )
 
 
+def _stored_tls(marker: dict[str, object]) -> None:
+    """Validate retained keys/chains offline while the issuer is stopped.
+
+    Supply stored leaves to the existing bounded verifier, which still checks
+    ownership, key pairing, exact subjects, pinned trust and current validity.
+    This is not evidence of a serving TLS peer; continuation checks that after
+    restarting the issuer, before opening ingress.
+    """
+    account = pwd.getpwnam("caddy")
+    subjects = policy.disposable_subjects(str(marker["nonce"]))
+    leaves: dict[str, bytes] = {}
+    storage = policy.STORAGE / "certificates"
+    with DurableDirectory.open(
+        storage / policy.ISSUER_STORAGE,
+        expected_owner=account.pw_uid,
+        expected_directory_mode=0o700,
+    ) as directory:
+        parent = directory.duplicate_descriptor()
+        try:
+            with os.scandir(parent) as entries:
+                for index, entry in enumerate(entries):
+                    if index >= tls.MAX_CERTIFICATE_DIRECTORIES:
+                        raise ValueError("diagnostic certificate inventory exceeds its bound")
+                    with directory.open_descendant((entry.name,)) as child, ExitStack() as stack:
+                        descriptor = child.duplicate_descriptor()
+                        stack.callback(os.close, descriptor)
+                        pair = []
+                        for suffix in (".crt", ".key"):
+                            fd = tls._open_key_or_chain(
+                                descriptor, entry.name + suffix, account.pw_uid, account.pw_gid
+                            )
+                            stack.callback(os.close, fd)
+                            pair.append(fd)
+                        leaf, names = tls._pair_subjects(*pair)
+                        for subject in set(subjects) & names:
+                            name = (
+                                "restore-probe." + subject[2:]
+                                if subject.startswith("*.")
+                                else subject
+                            )
+                            if name in leaves and leaves[name] != leaf:
+                                raise ValueError("diagnostic certificate subject is ambiguous")
+                            leaves[name] = leaf
+        finally:
+            os.close(parent)
+    tls.verify_cold_tls(
+        storage,
+        issuer=policy.ISSUER_STORAGE,
+        subjects=subjects,
+        trust=policy.INPUTS / "roots.pem",
+        owner=account.pw_uid,
+        group=account.pw_gid,
+        peer_source=lambda name, _trust: leaves.get(name, b""),
+    )
+
+
 def retire(context_sha256: str, expected: object) -> dict[str, object]:
     marker = probe._guard(context_sha256)
     probe._closed()
     probe._inactive(policy.UNIT)
-    probe._tls(marker)  # Cleanup is only for an already-issued diagnostic continuation.
+    _stored_tls(marker)  # Cleanup is only for an already-issued diagnostic continuation.
     wanted = records(expected, str(marker["nonce"]))
     _clean_dependencies()
     raw = probe._read(policy.INPUTS / "environment")

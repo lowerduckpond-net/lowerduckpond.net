@@ -97,6 +97,7 @@ files = [
   "scripts/m3_11_debug_dns.py",
   "scripts/m3_11_debug_dns_probe.py",
   "tests/infrastructure/test_m3_11_debug_dns.py",
+  "tests/infrastructure/test_m3_11_debug_dns_tls.py",
   "scripts/m3_11_debug_capture.py",
   "scripts/m3_11_debug_files.py",
   "scripts/m3_11_debug_fixture.py",

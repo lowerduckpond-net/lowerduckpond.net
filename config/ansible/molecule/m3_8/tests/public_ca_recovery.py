@@ -106,7 +106,8 @@ action = request.pop('action')
 actions = {name: getattr(module, name) for name in (
     'install', 'start', 'ready', 'interrupt', 'rebooted', 'open_verified', 'restore_native',
     'stop_failed', 'diagnostic_prepare', 'diagnostic_start', 'diagnostic_interrupt',
-    'diagnostic_open', 'diagnostic_finish', 'diagnostic_retire_dns') if hasattr(module, name)}
+    'diagnostic_open', 'diagnostic_finish', 'diagnostic_retire_dns',
+    'diagnostic_stop_failed') if hasattr(module, name)}
 print(json.dumps(actions[action](**request), sort_keys=True))
 """,
         )
@@ -155,12 +156,14 @@ print(json.dumps(actions[action](**request), sort_keys=True))
             stdin=evidence.canonical_bytes({"action": action, **arguments}),
             # Failure handling stops issuance; it cannot resume or produce a
             # passing receipt after the original qualification deadline.
-            timeout=30 if action == "stop_failed" else min(180, self._remaining()),
+            timeout=30
+            if action in {"stop_failed", "diagnostic_stop_failed"}
+            else min(180, self._remaining()),
         )
         result = json.loads(raw)
         if not isinstance(result, dict):
             raise ValueError("public recovery probe did not return an observation")
-        if action != "stop_failed":
+        if action not in {"stop_failed", "diagnostic_stop_failed"}:
             self._remaining()
         return cast("dict[str, object]", result)
 

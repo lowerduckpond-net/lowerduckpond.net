@@ -17,6 +17,7 @@ from lowerduckpond_static_host_agent.host_restore_journal import RestoreStore
 
 from scripts import m3_11_debug_public as public
 from scripts import m3_11_debug_stages as stages
+from scripts import m3_11_public_caddy as policy
 from scripts import m3_11_public_probe as probe
 from scripts import m3_11_qualification_evidence as evidence
 from scripts.m3_11_private_inputs import write_private
@@ -139,7 +140,7 @@ def test_public_failure_stops_issuance_and_never_opens_ingress(
     )
     with pytest.raises(ValueError, match="invalid TLS"):
         stages.public_recovery(tmp_path, Mock())
-    assert recovery.call.call_args_list[-1].args == ("stop_failed",)
+    assert recovery.call.call_args_list[-1].args == ("diagnostic_stop_failed",)
     assert all(call.args[0] != "diagnostic_finish" for call in recovery.call.call_args_list)
 
 
@@ -167,8 +168,36 @@ class MockLease:
         pass
 
 
+def test_diagnostic_failure_repeats_quiescence_without_replacing_original_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(policy, "INPUTS", tmp_path)
+    original = b'{"context_sha256":"original"}\n'
+    failed = tmp_path / "failed.json"
+    failed.write_bytes(original)
+    before = failed.stat()
+    stop = Mock()
+    monkeypatch.setattr(probe, "_stop_failed", stop)
+    record = Mock(side_effect=AssertionError("must preserve original evidence"))
+    monkeypatch.setattr(probe, "_record", record)
+    for _ in range(2):
+        assert public.diagnostic_stop_failed("original") == {
+            "stopped": True,
+            "qualification_authority": "none",
+        }
+    assert stop.call_count == 2  # noqa: PLR2004 - both failures must stop the issuer
+    record.assert_not_called()
+    assert failed.read_bytes() == original
+    assert (failed.stat().st_ino, failed.stat().st_mtime_ns) == (before.st_ino, before.st_mtime_ns)
+    stop.side_effect = ValueError("changed context")
+    with pytest.raises(ValueError, match="changed context"):
+        public.diagnostic_stop_failed("changed")
+
+
 @pytest.mark.parametrize("diagnostic", [False, True])
-@pytest.mark.parametrize("action", ["diagnostic_start", "diagnostic_retire_dns"])
+@pytest.mark.parametrize(
+    "action", ["diagnostic_start", "diagnostic_retire_dns", "diagnostic_stop_failed"]
+)
 def test_diagnostic_actions_exist_only_in_explicit_debug_dispatch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

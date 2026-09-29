@@ -28,6 +28,13 @@ def diagnostic_retire_dns(context_sha256: str, expected: object) -> dict[str, ob
     return retire(context_sha256, expected)
 
 
+def diagnostic_stop_failed(context_sha256: str) -> dict[str, object]:
+    probe._stop_failed(context_sha256)
+    # The controller retains each diagnostic failure. Never rewrite the original
+    # qualification's failed.json or require another exclusively-created record.
+    return {"stopped": True, "qualification_authority": "none"}
+
+
 def diagnostic_prepare(value: dict[str, object]) -> dict[str, object]:
     probe._fixture()
     if not (policy.INPUTS / "original.json").exists():

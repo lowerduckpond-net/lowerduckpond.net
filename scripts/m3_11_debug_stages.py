@@ -91,7 +91,7 @@ def public_recovery(
         return result
     except BaseException:
         try:
-            public.call("stop_failed")
+            public.call("diagnostic_stop_failed")
         except Exception:
             traceback.print_exc()
         raise

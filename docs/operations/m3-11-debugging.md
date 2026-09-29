@@ -194,9 +194,10 @@ just m3-11-debug /absolute/path/to/failed-run \
   --exclusive-archive-writers --from public-ca --retire-stale-dns
 ```
 
-This diagnostic-only option stops the owned issuer, verifies the existing public
-certificates and permits deletion only of exact TXT record IDs and contents from
-a prior failed cleanup observation on this run's disposable names. New or changed
+This diagnostic-only option stops the owned issuer, verifies the stored public
+certificate chains, names, validity and matching keys offline, and permits deletion
+only of exact TXT record IDs and contents from a prior failed cleanup observation
+on this run's disposable names. New or changed
 records stop the operation. The fixture uses its bound runtime credential, clean
 resolver files in a private mount namespace, and captured public trust roots;
 the controller's independent DNS credential remains read-only. Provider calls have
@@ -206,6 +207,11 @@ absence observation is required before issuance or ingress activation continues.
 After a partial deletion, another explicit invocation considers only the still-present
 previously observed records. The option never changes qualification's DNS checks
 or labels the continued attempt as a cold qualification.
+
+The live TLS listener is checked after restarting the issuer, before ingress opens;
+offline certificate validation does not establish a serving listener. Repeated
+diagnostic failures still stop issuance and close ingress, while preserving the
+original `failed.json`; each new failure is recorded in its controller attempt.
 
 The ingress probe uses the existing controlled-CA container as its network peer.
 That container does not retain network-administration privileges. A fixed address
