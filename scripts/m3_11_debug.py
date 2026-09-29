@@ -23,6 +23,11 @@ def main() -> int:
     parser.add_argument("--from", dest="start", choices=STAGES)
     parser.add_argument("--exclusive-archive-writers", action="store_true")
     parser.add_argument(
+        "--retire-stale-dns",
+        action="store_true",
+        help="retire exact challenges recorded by a prior failed public-CA cleanup",
+    )
+    parser.add_argument(
         "--repair", type=Path, help="tracked Python script to execute in the retained destination"
     )
     args = parser.parse_args()
@@ -43,7 +48,9 @@ def main() -> int:
                 environment,
                 start=args.start,
                 guard=lambda: inputs(root),
-                prepare=lambda attempt: controller(attempt, args.repair),
+                prepare=lambda attempt: controller(
+                    attempt, args.repair, retire_stale_dns=args.retire_stale_dns
+                ),
                 capture=lambda attempt, label: checkpoint(root, attempt, label, environment),
                 repair=args.repair is not None,
             )

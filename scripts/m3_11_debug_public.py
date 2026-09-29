@@ -21,6 +21,11 @@ from lowerduckpond_static_host_agent.host_restore_process import require_command
 
 from scripts import m3_11_public_caddy as policy
 from scripts import m3_11_public_probe as probe
+from scripts.m3_11_debug_dns_probe import retire
+
+
+def diagnostic_retire_dns(context_sha256: str, expected: object) -> dict[str, object]:
+    return retire(context_sha256, expected)
 
 
 def diagnostic_prepare(value: dict[str, object]) -> dict[str, object]:

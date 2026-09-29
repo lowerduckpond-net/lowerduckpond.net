@@ -72,8 +72,9 @@ def test_recorded_repair_runs_in_original_destination_and_refuses_changed_script
 
 
 @pytest.mark.parametrize("warm", [False, True])
+@pytest.mark.parametrize("retire_stale_dns", [False, True])
 def test_public_continuation_reaches_accounting_without_relabeling_warm_issuance(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, warm: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, warm: bool, retire_stale_dns: bool
 ) -> None:
     dependency = tmp_path / "roots.pem"
     dependency.write_bytes(b"original roots")
@@ -97,13 +98,19 @@ def test_public_continuation_reaches_accounting_without_relabeling_warm_issuance
         return {"retained": "account"}
 
     recovery.call.side_effect = call
+    retirement = Mock(return_value={"retired_records": 4})
+    monkeypatch.setattr(stages, "retire_dns", retirement)
     monkeypatch.setattr(
         importlib,
         "import_module",
         Mock(return_value=Mock(PublicRecovery=Mock(return_value=recovery))),
     )
     fixture = Mock(target={"auditRotationEnabled": True})
-    result = stages.public_recovery(tmp_path, fixture)
+    result = stages.public_recovery(tmp_path, fixture, retire_stale_dns=retire_stale_dns)
+    if retire_stale_dns:
+        retirement.assert_called_once_with(recovery.witness, recovery.call)
+    else:
+        retirement.assert_not_called()
     assert result["cold"] is not warm
     assert result["interrupted"] is not warm
     assert fixture.reboot.call_count == (0 if warm else 1)
@@ -161,11 +168,13 @@ class MockLease:
 
 
 @pytest.mark.parametrize("diagnostic", [False, True])
+@pytest.mark.parametrize("action", ["diagnostic_start", "diagnostic_retire_dns"])
 def test_diagnostic_actions_exist_only_in_explicit_debug_dispatch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     installed_module: Callable[[str], ModuleType],
     diagnostic: bool,
+    action: str,
 ) -> None:
     module = installed_module("public_ca_recovery")
     run_id, nonce = str(uuid.uuid7()), str(uuid.uuid7())
@@ -193,10 +202,31 @@ def test_diagnostic_actions_exist_only_in_explicit_debug_dispatch(
     # diagnostic program, without performing a guest mutation on this controller.
     result = subprocess.run(  # noqa: S603 - missing required arguments prevent execution
         [sys.executable, "-c", recovery.program],
-        input=b'{"action":"diagnostic_start"}',
+        input=evidence.canonical_bytes({"action": action}),
         capture_output=True,
         timeout=30,
         check=False,
     )
     assert result.returncode != 0
     assert (b"TypeError" if diagnostic else b"KeyError") in result.stderr
+
+
+@pytest.mark.parametrize("action", ["ready", "diagnostic_retire_dns"])
+def test_only_dns_retirement_gets_a_private_mount_namespace(
+    installed_module: Callable[[str], ModuleType], action: str
+) -> None:
+    module = installed_module("public_ca_recovery")
+    recovery = module.PublicRecovery.__new__(module.PublicRecovery)
+    recovery._identity = Mock()
+    recovery._remaining = Mock(return_value=180)
+    recovery.fixture = Mock(destination_id="owned-destination")
+    recovery.fixture.command.return_value = b"{}"
+    recovery.program = "pass"
+    recovery.context_sha256 = "a" * 64
+    assert recovery.call(action) == {}
+    arguments = recovery.fixture.command.call_args.args
+    assert arguments[:4] == ("docker", "exec", "--interactive", "owned-destination")
+    if action == "diagnostic_retire_dns":
+        assert arguments[4:9] == ("/usr/bin/unshare", "--mount", "--propagation", "private", "--")
+    else:
+        assert arguments[4] == "/usr/bin/python3"

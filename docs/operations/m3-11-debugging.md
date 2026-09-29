@@ -184,6 +184,29 @@ Malformed quotes, escapes, multiple strings and non-challenge content stop the
 attempt. Continuation records existing valid challenges as activity; it cannot
 turn them into a new empty baseline. Cleanup still requires both names to be empty.
 
+If certificates are verified but cleanup reports retained challenges, compare the
+saved DNS observations before deciding how to recover. A stopped issuer can leave
+records from an earlier interrupted attempt. After confirming that case, explicitly
+select their retirement while continuing:
+
+```bash
+just m3-11-debug /absolute/path/to/failed-run \
+  --exclusive-archive-writers --from public-ca --retire-stale-dns
+```
+
+This diagnostic-only option stops the owned issuer, verifies the existing public
+certificates and permits deletion only of exact TXT record IDs and contents from
+a prior failed cleanup observation on this run's disposable names. New or changed
+records stop the operation. The fixture uses its bound runtime credential, clean
+resolver files in a private mount namespace, and captured public trust roots;
+the controller's independent DNS credential remains read-only. Provider calls have
+a 120-second overall deadline within the existing stage limit. Private plans and
+results live in `diagnostics/workspace/diagnostic-dns-retirements/`. A fresh independent
+absence observation is required before issuance or ingress activation continues.
+After a partial deletion, another explicit invocation considers only the still-present
+previously observed records. The option never changes qualification's DNS checks
+or labels the continued attempt as a cold qualification.
+
 The ingress probe uses the existing controlled-CA container as its network peer.
 That container does not retain network-administration privileges. A fixed address
 setup command receives only `CAP_NET_ADMIN` after dropping Docker exec's other

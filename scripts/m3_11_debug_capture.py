@@ -67,7 +67,7 @@ def source_bytes(path: Path, *, maximum: int = MAX_FILE) -> bytes:
     return raw
 
 
-def controller(attempt: Path, repair: Path | None) -> None:
+def controller(attempt: Path, repair: Path | None, *, retire_stale_dns: bool = False) -> None:
     revision = git(REPOSITORY, "rev-parse", "HEAD").decode().strip()
     patch = git(REPOSITORY, "diff", "--binary", "HEAD")
     with (attempt / "controller.patch").open("xb") as stream:
@@ -83,6 +83,7 @@ def controller(attempt: Path, repair: Path | None) -> None:
     )
     value: dict[str, object] = {
         "revision": revision,
+        "retire_stale_dns": retire_stale_dns,
         "patch_sha256": hashlib.sha256(patch).hexdigest(),
         "helpers": {
             str(path.relative_to(REPOSITORY)): hashlib.sha256(source_bytes(path)).hexdigest()

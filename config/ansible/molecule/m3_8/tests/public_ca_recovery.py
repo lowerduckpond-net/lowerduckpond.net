@@ -91,6 +91,10 @@ sys.modules['scripts'] = package
                 )
             )
             + (
+                "helper = types.ModuleType('scripts.m3_11_debug_dns_probe')\n"
+                "sys.modules[helper.__name__] = helper\n"
+                f"exec(compile({(script_root / 'm3_11_debug_dns_probe.py').read_bytes()!r}, "
+                "'m3_11_debug_dns_probe.py', 'exec'), helper.__dict__)\n"
                 f"exec(compile({(script_root / 'm3_11_debug_public.py').read_bytes()!r}, "
                 "'m3_11_debug_public.py', 'exec'), module.__dict__)\n"
                 if diagnostic
@@ -102,7 +106,7 @@ action = request.pop('action')
 actions = {name: getattr(module, name) for name in (
     'install', 'start', 'ready', 'interrupt', 'rebooted', 'open_verified', 'restore_native',
     'stop_failed', 'diagnostic_prepare', 'diagnostic_start', 'diagnostic_interrupt',
-    'diagnostic_open', 'diagnostic_finish') if hasattr(module, name)}
+    'diagnostic_open', 'diagnostic_finish', 'diagnostic_retire_dns') if hasattr(module, name)}
 print(json.dumps(actions[action](**request), sort_keys=True))
 """,
         )
@@ -138,6 +142,11 @@ print(json.dumps(actions[action](**request), sort_keys=True))
             "exec",
             "--interactive",
             self.fixture.destination_id,
+            *(
+                ("/usr/bin/unshare", "--mount", "--propagation", "private", "--")
+                if action == "diagnostic_retire_dns"
+                else ()
+            ),
             "/usr/bin/python3",
             "-I",
             "-B",
