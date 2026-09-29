@@ -39,6 +39,13 @@ step rather than the shared command wrapper; command output remains private.
 The console names the operation separately from its observed outcome. Known
 burst-limit and ordinary-deletion eligibility rejections receive fixed categories;
 unrecognized transport errors stay generic without copying private messages.
+`operator_failure` adds a fixed reason label for recognized SSH failures, client
+timeouts, host handoff/result-validation failures and exhausted lock contention.
+It also records the operator client's function and line at the exception. These
+fields distinguish a refused connection from a completed host operation whose
+response could not be delivered; no peer addresses, request data or SSH stderr
+are copied. Unknown messages remain `unknown`. Older reports without this detail
+cannot establish which transport failure occurred, even if a later run passes.
 
 For M3.11 live qualification, `public-input-capture` identifies the original
 public trust/DNS capture between `create` and `prepare`. Inspect the retained

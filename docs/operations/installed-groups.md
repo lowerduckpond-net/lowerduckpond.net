@@ -42,6 +42,13 @@ denial and running Caddy are required; coordinator failure stops the wait unless
 both have already been observed. Native fixtures retain their total 120-second
 provider-fault observation window.
 
+Combined reconstruction also exercises the public-CA ingress probe locally:
+the owned controlled-CA peer uses the reviewed Cloudflare test source address
+to prove blocked ingress during recovery and reachable ingress after completion.
+Only the fixed address setup receives `CAP_NET_ADMIN`; the CA process keeps its
+ordinary container capabilities. This covers probe plumbing without contacting
+public providers, and works on retained fixtures as well as new containers.
+
 The [fixed registry](../../scripts/qualification_groups.py) declares every test
 and parameter. It accepts no arbitrary test selector. The [reviewed selection policy](installed-selection.md) chooses required groups.
 The complete installed journey remains available locally and is required on

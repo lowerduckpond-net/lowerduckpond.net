@@ -10,8 +10,9 @@ import time
 from pathlib import Path
 from typing import cast
 
+import restore_peer
 from lowerduckpond_static_host_agent.host_restore_coordinator import COORDINATOR_SECONDS
-from restore_fixture import Fixture, checked
+from restore_fixture import Fixture
 from restore_scenarios import gate_closed
 from test_export_import import _selected_python
 
@@ -156,34 +157,7 @@ print(json.dumps(actions[action](**request), sort_keys=True))
 
     def peer(self, *, opened: bool) -> None:
         self._identity()
-        # The base firewall still requires a Cloudflare source even when the
-        # restore gate opens. Use the existing fixture's reviewed probe address
-        # on the owned peer, with no published origin port or policy change.
-        peer_address = self.fixture.address(self.fixture.acme_id)
-        for host, arguments in (
-            (self.fixture.acme, "address replace 173.245.48.1/32 dev lo"),
-            (self.fixture.destination, f"route replace 173.245.48.1/32 via {peer_address}"),
-        ):
-            result = host.run("/usr/sbin/ip " + arguments)
-            assert result.rc == 0, result.stderr
-        address = self.fixture.address(self.fixture.destination_id)
-        checked(
-            self.fixture.acme,
-            f"""
-import socket
-connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-connection.settimeout(2)
-connection.bind(('173.245.48.1', 0))
-try:
-    connection.connect(({address!r}, 443))
-except OSError:
-    assert not {opened!r}, 'verified public probe did not open ingress'
-else:
-    assert {opened!r}, 'public probe exposed ingress before verification'
-finally:
-    connection.close()
-""",
-        )
+        restore_peer.check(self.fixture, opened=opened)
         self._remaining()
 
     def _wait(self) -> None:

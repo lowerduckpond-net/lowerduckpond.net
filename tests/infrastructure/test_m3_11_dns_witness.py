@@ -9,10 +9,12 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from typing import Literal
 from unittest.mock import Mock
 
 import pytest
 
+from scripts import m3_11_debug_files as debug_files
 from scripts import m3_11_dns_witness as dns
 from scripts import m3_11_qualification_evidence as evidence
 from scripts.check_m3_7_production_edge import CloudflareClient
@@ -98,6 +100,14 @@ def record(name: str, number: int = 1, **changes: object) -> dict[str, object]:
     return {"id": f"{number:032x}", "name": name, "type": "TXT", "content": "A" * 43, **changes}
 
 
+def observed_records(path: Path, domain: str) -> object:
+    zones = read_private(path)["zones"]
+    assert isinstance(zones, dict)
+    zone = zones[domain]
+    assert isinstance(zone, dict)
+    return zone["records"]
+
+
 def authorize_removal(run: Run) -> dns.Observation:
     witness = run.begin()
     observation = witness.require_absent("teardown")
@@ -170,7 +180,10 @@ def test_cleanup_cannot_adopt_changed_names_or_discard_previous_observations(
     assert not (run.directory / "combined.json").exists()
 
 
-def test_independent_dns_keeps_original_baseline_activity_and_cleanup(run: Run) -> None:
+@pytest.mark.parametrize("content", ["A" * 43, '"' + "A" * 43 + '"'], ids=["bare", "quoted"])
+def test_independent_dns_keeps_original_baseline_activity_and_cleanup(
+    run: Run, content: str
+) -> None:
     witness = run.begin()
     run.policy.assert_called_once()
     assert run.policy.call_args.kwargs["account_id"] == "3" * 32
@@ -179,12 +192,15 @@ def test_independent_dns_keeps_original_baseline_activity_and_cleanup(run: Run) 
         "/zones/" + "1" * 32 + "/dns_records", query={"name": run.names[0]}
     )
     # Apex and wildcard may use separate records at the same challenge name.
-    run.client.get_collection.side_effect = [[record(run.names[0]), record(run.names[0], 2)], []]
+    run.client.get_collection.side_effect = [
+        [record(run.names[0], content=content), record(run.names[0], 2, content=content)],
+        [],
+    ]
     first = witness.sample()
     assert first.record_count == len(run.names)
     with pytest.raises(ValueError, match="both zones"):
         witness.require_both_zones_observed()
-    run.client.get_collection.side_effect = [[], [record(run.names[1], 3)]]
+    run.client.get_collection.side_effect = [[], [record(run.names[1], 3, content=content)]]
     second = witness.sample()
     witness.require_both_zones_observed()
     run.client.get_collection.side_effect = None
@@ -198,17 +214,84 @@ def test_independent_dns_keeps_original_baseline_activity_and_cleanup(run: Run) 
         for path in final.path.parent.iterdir()
     )
     assert read_private(final.path)["kind"] == "cleanup"
+    assert observed_records(first.path, "lowerduckpond.net") == [
+        record(run.names[0], content=content),
+        record(run.names[0], 2, content=content),
+    ]
     assert all(
         b"fixture-independent-reader" not in path.read_bytes()
         for path in final.path.parent.iterdir()
     )
 
 
-@pytest.mark.parametrize("kind", ["TXT", "CNAME", "A"])
-def test_any_preexisting_record_fails_and_original_observation_is_retained(
-    run: Run, kind: str
+def test_diagnostic_begin_accepts_retained_quoted_activity_without_claiming_a_baseline(
+    run: Run, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    run.client.get_collection.side_effect = [[record(run.names[0], type=kind)], []]
+    guard = Mock()
+    monkeypatch.setattr(debug_files, "require_original_unchanged", guard)
+    (run.directory / "public-dns").mkdir(mode=0o700)
+    original = run.directory / "public-dns/0000.json"
+    write_private(original, {"original": "failed observation"})
+    before = original.read_bytes()
+    content = '"' + "aB9_-" * 8 + "Ab0" + '"'
+    run.client.get_collection.side_effect = [[record(run.names[0], content=content)], []]
+
+    witness = dns.DnsWitness.begin(run.directory, run.storage, diagnostic=True)
+
+    guard.assert_called_once_with(run.directory)
+    assert witness.observed_zones == {"lowerduckpond.net"}
+    assert witness.output_directory is not None
+    assert witness.output_directory.parent == run.directory / "diagnostic-dns"
+    path = witness.output_directory / "0000.json"
+    assert read_private(path)["kind"] == "activity"
+    assert observed_records(path, "lowerduckpond.net") == [record(run.names[0], content=content)]
+    assert original.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        '"' + "A" * 42 + '"',
+        '"' + "A" * 44 + '"',
+        '"' + "A" * 43,
+        "A" * 43 + '"',
+        '""' + "A" * 43 + '""',
+        "'" + "A" * 43 + "'",
+        '"' + "A" * 20 + '" "' + "A" * 23 + '"',
+        '"' + "A" * 43 + '" ""',
+        '"' + "A" * 42 + r'\065"',
+        ' "' + "A" * 43 + '"',
+        '"' + "A" * 43 + '"\n',
+        '"' + "A" * 42 + '="',
+        '"' + "A" * 42 + 'é"',
+    ],
+)
+def test_malformed_quoted_activity_is_retained_but_cannot_be_counted_or_retried(
+    run: Run, content: str
+) -> None:
+    witness = run.begin()
+    run.client.get_collection.side_effect = [[record(run.names[0], content=content)], []]
+
+    with pytest.raises(ValueError, match="not an ACME DNS-01 challenge"):
+        witness.sample()
+
+    path = run.directory / "public-dns/0001.json"
+    assert observed_records(path, "lowerduckpond.net") == [record(run.names[0], content=content)]
+    before = path.read_bytes()
+    assert not witness.observed_zones
+    run.client.get_collection.reset_mock()
+    with pytest.raises(ValueError, match="previously failed"):
+        witness.sample()
+    run.client.get_collection.assert_not_called()
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("kind", ["TXT", "CNAME", "A"])
+@pytest.mark.parametrize("content", ["A" * 43, '"' + "A" * 43 + '"'], ids=["bare", "quoted"])
+def test_any_preexisting_record_fails_and_original_observation_is_retained(
+    run: Run, kind: str, content: str
+) -> None:
+    run.client.get_collection.side_effect = [[record(run.names[0], type=kind, content=content)], []]
     with pytest.raises(ValueError, match="not empty"):
         run.begin()
     original = (run.directory / "public-dns/0000.json").read_bytes()
@@ -301,13 +384,17 @@ def test_incomplete_or_unrelated_activity_cannot_qualify(run: Run, fault: str) -
     run.client.get_collection.assert_not_called()
 
 
-def test_cleanup_and_teardown_each_require_fresh_independent_absence(run: Run) -> None:
+@pytest.mark.parametrize("kind", ["cleanup", "teardown"])
+@pytest.mark.parametrize("content", ["A" * 43, '"' + "A" * 43 + '"'], ids=["bare", "quoted"])
+def test_cleanup_and_teardown_each_require_fresh_independent_absence(
+    run: Run, kind: Literal["cleanup", "teardown"], content: str
+) -> None:
     witness = run.begin()
     witness.require_absent("cleanup")
-    run.client.get_collection.side_effect = [[], [record(run.names[1])]]
+    run.client.get_collection.side_effect = [[], [record(run.names[1], content=content)]]
     with pytest.raises(ValueError, match="not empty"):
-        witness.require_absent("teardown")
-    assert read_private(run.directory / "public-dns/0002.json")["kind"] == "teardown"
+        witness.require_absent(kind)
+    assert read_private(run.directory / "public-dns/0002.json")["kind"] == kind
 
 
 @pytest.mark.parametrize("fault", ["names", "context", "bound", "original-file"])
