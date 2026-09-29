@@ -89,6 +89,18 @@ The report separates:
   deliberate failure injections elsewhere in the fixture; they are explicitly
   **not bound to the last submission** and do not establish the cause by
   themselves.
+- Fresh fixtures also collect `archive_failures` independently from the source
+  and restored destination. These private helper records do not depend on
+  journald or on systemd retaining an exited invocation. They contain the helper,
+  invocation ID, selected artifact directory digest, fixed failure classification,
+  bounded exception types and
+  file basenames/line numbers. A decoded durable job supplies its job/correlation
+  IDs; errors before that point remain unbound. `matches_last_submission` is true
+  only for an exact known correlation match, and identifies context rather than
+  granting execution or cleanup authority. Other recorded failures can be
+  deliberate injections and do not establish the cause of the current failure.
+  `archive_failures_before_teardown` retains the separately timestamped first
+  snapshot if local CI has already removed its containers.
 - Controller prerequisite presence for `docker`, `git`, `rsync`, `ssh` and `uv`.
   Only fixed names and `present`/`missing`/`unknown` appear; paths and lookup
   errors are omitted. Presence does not prove version compatibility or usability.
@@ -104,6 +116,20 @@ The report separates:
   temporary mount can invalidate archive-sandbox component fixtures even when
   both mounts report the same filesystem type. Use a temporary directory on
   the required mount for those focused tests; do not relax the sandbox check.
+
+The M3.8 source and reconstruction inventories enable native archive failure
+capture before tests begin; production defaults leave it disabled. Each helper
+retains its latest eight failures in a root-only `0600` file below
+`/var/log/lowerduckpond-archive-failures` (`0700`). Each file and its fixed atomic
+staging file are bounded at 64 KiB: at most 384 KiB across the three helpers.
+Successful calls do not clear failures; cleanup cannot overwrite construction
+evidence. Capture never formats messages, source lines, locals, request bodies,
+credentials or provider identifiers. Storage failures leave diagnostics
+unavailable and preserve the original helper result. Service limits, authority
+checks and deadlines are unchanged. These records are outside backup state and
+cannot substitute for qualification. A missing record cannot prove that no
+failure occurred: older artifacts, failures before Python starts, forced kills
+and exhausted resources may leave no capture.
 
 Collection binds to the container ID captured by that run. If it was not
 captured, the host stopped/disappeared, or the output is malformed, fields say

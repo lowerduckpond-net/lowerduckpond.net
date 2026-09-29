@@ -89,6 +89,8 @@ python_version = "3.14"
 strict = true
 warn_unreachable = true
 files = [
+  "scripts/qualification_archive_failure.py",
+  "tests/infrastructure/test_qualification_archive_failure.py",
   "scripts/m3_11_debug_archive_repair.py",
   "scripts/m3_11_debug_archive_trace.py",
   "tests/infrastructure/test_m3_11_debug_archive.py",

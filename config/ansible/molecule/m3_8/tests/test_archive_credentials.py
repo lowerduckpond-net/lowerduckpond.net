@@ -162,6 +162,43 @@ def test_installed_archive_credentials_stay_inside_the_network_boundary(
     _run_installed_boundary_probe(host, f"lowerduckpond-archive-{operation}@.service", probe)
 
 
+@pytest.mark.parametrize("operation", ["construction", "cleanup", "export"])
+def test_installed_archive_failure_capture_survives_the_real_helper_sandbox(
+    host: Host,
+    operation: str,
+) -> None:
+    probe = exports._selected_python(
+        host,
+        f"""
+import json, os
+from lowerduckpond_static_host_agent import archive_failure_capture as capture
+assert os.environ['LDP_ARCHIVE_FAILURE_CAPTURE'] == '1'
+root = capture.ROOT / 'boundary-probe-{operation}'
+root.mkdir(mode=0o700)
+capture.ROOT = root
+try:
+    capture.reset()
+    try:
+        raise RuntimeError('private-archive-capture-canary')
+    except RuntimeError as error:
+        capture.capture('{operation}', error)
+    raw = (root / '{operation}.json').read_text()
+    assert 'private-archive-capture-canary' not in raw
+    record, = json.loads(raw)
+    assert record['helper'] == '{operation}'
+    assert record['invocation'] == os.environ['INVOCATION_ID']
+    assert record['artifact_sha256'] != 'unknown'
+    assert record['job_id'] == 'unknown'
+    assert record['chain'][0]['exception'] == 'RuntimeError'
+finally:
+    for path in root.iterdir():
+        path.unlink()
+    root.rmdir()
+""",
+    )
+    _run_installed_boundary_probe(host, f"lowerduckpond-archive-{operation}@.service", probe)
+
+
 @pytest.mark.parametrize(
     "unit",
     [

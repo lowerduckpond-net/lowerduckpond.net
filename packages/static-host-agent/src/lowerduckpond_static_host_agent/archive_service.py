@@ -16,6 +16,7 @@ from typing import BinaryIO, Final, cast
 
 from lowerduckpond_static_contracts import ContractError, manifest_digest, validate_uuid7
 
+from lowerduckpond_static_host_agent import archive_failure_capture
 from lowerduckpond_static_host_agent.archive_bundle import RemoteArchiveBundleSource
 from lowerduckpond_static_host_agent.archive_remote import ArchiveRemoteError, ArchiveRemoteStore
 from lowerduckpond_static_host_agent.archive_transport import (
@@ -163,6 +164,7 @@ def _read_authority(
 ) -> dict[str, object]:
     with repository.transaction(mode=LockMode.EXCLUSIVE, blocking=True) as transaction:
         job = transaction.read(StateRecordPath.authorization_job(job_id)).document
+        archive_failure_capture.bind_job(job, job_id)
         request = cast(dict[str, object], job["request"])
         expected = cast(dict[str, object], job["expectedSource"])
         if (

@@ -25,6 +25,7 @@ from lowerduckpond_static_contracts import (
     validate_uuid7,
 )
 
+from lowerduckpond_static_host_agent import archive_failure_capture
 from lowerduckpond_static_host_agent.archive_journal import (
     ArchiveJournal,
     PreparedArchive,
@@ -254,6 +255,7 @@ def _read_authority(
     with repository.transaction(mode=LockMode.EXCLUSIVE, blocking=True) as transaction:
         job = transaction.read(StateRecordPath.authorization_job(job_id))
         document = job.document
+        archive_failure_capture.bind_job(document, job_id)
         request = cast(dict[str, object], document["request"])
         expected = cast(dict[str, object], document["expectedSource"])
         measured = transaction.measure_intent_records()

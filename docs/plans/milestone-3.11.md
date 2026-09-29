@@ -958,6 +958,19 @@ qualification and operator production handoff remain separate. This branch can
 consolidate discoveries and fixes without rerunning the preceding lifecycle for
 every first failure.
 
+Fresh qualification also enables bounded native archive exception capture on
+both the source and reconstructed host, before any replay. It retains private
+per-helper histories outside authoritative backup state and captures only
+exception types, code locations, artifact/invocation identifiers and decoded
+durable job identity when available. Collection verifies each host independently
+and preserves the first observation before local teardown, without depending on
+journald. Production capture defaults off; root-only fixture storage is limited
+to 384 KiB including atomic staging. Capture failures cannot change execution
+results or authorize recovery, and service limits remain unchanged. The
+[diagnostic runbook](../operations/qualification-diagnostics.md) describes the
+bounds and attribution limits. A later successful replay does not resolve an
+unexplained earlier helper failure.
+
 ## 8. Migration, operator handoff, and rollback
 
 Install in this order: P2 repository/lineage schema support and validated lineage

@@ -14,6 +14,8 @@ static_host_agent_reconciler: /usr/local/libexec/lowerduckpond/reconcile-authori
 static_host_agent_archive_configuration: {}
 # Explicit legacy rollback cannot run entrypoints introduced in M3.10.
 static_host_agent_archive_lifecycle_enabled: true
+# Fresh qualification fixtures retain bounded private helper failure evidence.
+static_host_agent_archive_failure_capture: false
 # Supplied only by configure-production after exact completed-host verification.
 static_host_agent_verified_completed_candidate: false
 static_publication_enabled: false  # noqa var-naming[no-role-prefix]

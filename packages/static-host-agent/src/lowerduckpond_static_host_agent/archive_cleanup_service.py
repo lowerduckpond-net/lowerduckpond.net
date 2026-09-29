@@ -10,6 +10,7 @@ from typing import Final, cast
 
 from lowerduckpond_static_contracts import ContractError, validate_uuid7
 
+from lowerduckpond_static_host_agent import archive_failure_capture
 from lowerduckpond_static_host_agent.archive_journal import ArchiveJournal
 from lowerduckpond_static_host_agent.archive_quarantine import ArchiveQuarantine
 from lowerduckpond_static_host_agent.archive_remote import ArchiveRemoteError, ArchiveRemoteStore
@@ -187,6 +188,7 @@ def serve_archive_cleanup(  # noqa: PLR0913 - explicit privileged boundaries
 def _cleanup_authority(repository: StateRepository, job_id: str, *, operation: str) -> str:
     with repository.transaction(mode=LockMode.EXCLUSIVE, blocking=True) as transaction:
         job = transaction.read(StateRecordPath.authorization_job(job_id)).document
+        archive_failure_capture.bind_job(job, job_id)
         request = cast(dict[str, object], job["request"])
         identities = transaction.measure_intent_records().records
         if (

@@ -127,6 +127,13 @@ just m3-11-debug /absolute/path/to/failed-run \
   --repair scripts/m3_11_debug_archive_repair.py
 ```
 
+Fresh qualification fixtures now enable bounded native archive failure capture
+automatically on both hosts. Their ordinary failure report includes these
+records even if the journal is empty; see
+[qualification diagnostics](qualification-diagnostics.md). The repair below
+remains necessary for older retained artifacts that lack native capture. Neither
+mechanism establishes the cause of an earlier failure whose evidence was lost.
+
 The repair requires a Docker destination with completed restore and inactive
 workers, restore coordinator and archive helpers. It preserves each native
 launcher and its selection lock in an instrumented diagnostic copy, then adds

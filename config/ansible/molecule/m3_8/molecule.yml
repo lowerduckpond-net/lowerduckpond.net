@@ -63,6 +63,7 @@ provisioner:
         backup_spaces_secret_access_key: molecule-spaces-secret-key
         backup_spaces_region: us-east-1
         backup_node_name: molecule
+        static_host_agent_archive_failure_capture: true
         static_host_agent_archive_configuration:
           format: lowerduckpond-archive-configuration-v1
           region: ams3

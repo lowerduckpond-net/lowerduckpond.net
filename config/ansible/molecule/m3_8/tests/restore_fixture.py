@@ -543,6 +543,7 @@ WantedBy=multi-user.target
             ).content_string.strip(),
             "static_operator_principal": "molecule-m3-8-operator-v1",
             "static_host_agent_artifact_path": os.environ[ARTIFACT_ENV],
+            "static_host_agent_archive_failure_capture": True,
             "static_host_agent_artifact_sha256": self.target["originalArtifactSha256"],
             "static_host_agent_archive_configuration": {
                 "format": "lowerduckpond-archive-configuration-v1",

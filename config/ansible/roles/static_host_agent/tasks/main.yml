@@ -664,6 +664,15 @@
 - name: Reconcile the dedicated archive credential
   ansible.builtin.include_tasks: archive_credentials.yml
 
+- name: Create the bounded private archive failure directory for qualification
+  ansible.builtin.file:
+    path: /var/log/lowerduckpond-archive-failures
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  when: static_host_agent_archive_failure_capture | bool
+
 - name: Install the private archived export service and socket
   ansible.builtin.template:
     src: "{{ item }}.j2"

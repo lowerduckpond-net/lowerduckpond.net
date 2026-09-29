@@ -88,6 +88,17 @@ fields, noncanonical new-format bytes and boolean/coerced counts are rejected.
 
 ## Required combined observations
 
+Failure evidence is separate from these passing receipts. Fresh fixtures retain
+bounded private archive exception histories during the original execution,
+before diagnostic replay. `test_archive_failure_capture.py` covers preservation
+across successful calls and cleanup, limits, private-data exclusion, unsafe paths
+and unchanged failures when capture is unavailable.
+`test_qualification_archive_failure.py` covers independent host attribution,
+exact correlation matching and preservation of original failure reports. The
+installed archive boundary probe checks capture in each real helper sandbox.
+These observations grant no qualification, recovery or deletion authority and
+cannot retrospectively explain a failure with missing evidence.
+
 Every phase below has original UTC start/end times, a private evidence digest,
 and its exact named checks all marked `passed`. Missing, additional, failed or
 skipped checks cannot qualify. Phases execute in this order without overlapping

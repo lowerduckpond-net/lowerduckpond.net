@@ -23,6 +23,11 @@ MIN_READY_REQUESTS = 2
 
 def observations_for(run: Path) -> dict[str, object]:
     """Recover read-only diagnostic coordinates from either owned fixture format."""
+    return observations(environment_for(run))
+
+
+def environment_for(run: Path) -> dict[str, str]:
+    """Validate the retained fixture's local endpoint without provider credentials."""
     from scripts import m3_11_combined_inputs as live  # noqa: PLC0415 - producer imports ownership
     from scripts import qualification_retirement as local  # noqa: PLC0415
 
@@ -36,7 +41,7 @@ def observations_for(run: Path) -> dict[str, object]:
         environment = live.environment_for(run, {"DOCKER_HOST": endpoint})
     else:
         environment = local.environment_for(run)
-    return observations(environment)
+    return environment
 
 
 def observations(environment: dict[str, str]) -> dict[str, object]:

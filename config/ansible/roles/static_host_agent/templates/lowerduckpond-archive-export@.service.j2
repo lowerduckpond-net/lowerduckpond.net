@@ -15,6 +15,10 @@ ExecStart=/usr/local/libexec/lowerduckpond/archive-export-service
 StandardInput=socket
 StandardOutput=null
 StandardError=journal
+{% if static_host_agent_archive_failure_capture | bool %}
+Environment=LDP_ARCHIVE_FAILURE_CAPTURE=1
+BindPaths=/var/log/lowerduckpond-archive-failures
+{% endif %}
 MemoryMax=128M
 MemorySwapMax=0
 TasksMax=16
