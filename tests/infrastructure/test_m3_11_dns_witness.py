@@ -435,6 +435,7 @@ def test_public_polling_can_use_the_full_deadline_and_retain_cleanup_evidence(
     previous_observation_limit = 240
     elapsed = 0
     ready = False
+    suspended = False
 
     def sleep(seconds: int) -> None:
         nonlocal elapsed
@@ -455,15 +456,23 @@ def test_public_polling_can_use_the_full_deadline_and_retain_cleanup_evidence(
     original_deadline = recovery.deadline
 
     def records(path: str, *, query: dict[str, str]) -> list[dict[str, object]]:
-        return [record(query["name"])] if elapsed >= interrupt_at and not ready else []
+        return (
+            [record(query["name"])]
+            if elapsed >= interrupt_at and not ready and not suspended
+            else []
+        )
 
     def call(action: str, **arguments: object) -> dict[str, object]:
-        nonlocal ready
+        nonlocal ready, suspended
         if action != "stop_failed":
             recovery._remaining()
         if action == "ready":
             ready = not expires and elapsed >= module.COORDINATOR_SECONDS - 5
             return {"ready": ready, "tls": {"issuer": "fixture", "certificates": []}}
+        if action == "suspend":
+            suspended = True
+        if action == "start":
+            suspended = False
         return {"action": action}
 
     run.client.get_collection.side_effect = records

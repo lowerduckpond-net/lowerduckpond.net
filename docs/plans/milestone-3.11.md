@@ -885,6 +885,33 @@ challenge cleanup during owned-fixture teardown. A local internal CA cannot
 satisfy this receipt. This validates the changed recovery dependency and does
 not reopen the complete M3.12 production edge/browser/renewal gate.
 
+#### Public issuance interruption amendment
+
+The disposable public issuer uses a mode-0600 Unix administration socket inside
+its mode-0700 Caddy-owned store, with no TCP administration listener and no
+configuration persistence. Production Caddy configuration is unchanged. After
+the independent witness observes a live challenge and before certificates are
+ready, the controller loads a fixed configuration without applications through
+that socket. This cancels issuance while keeping Caddy alive to finish its own
+DNS cleanup. The controller polls independent observations under the same
+30-minute deadline, requires fresh absence, and only then stops the process,
+records retained account/certificate bytes, and reboots. It resumes the original
+immutable issuance configuration after comparing those bytes across reboot.
+The stopped inventory excludes only the exact mode-0600, Caddy-owned socket
+inode left by Caddy; a different type or unsafe metadata fails the inventory.
+Both-zone activity, fresh public TLS verification, final challenge absence and
+the ingress gate remain required. A provider read, suspension, or cleanup failure
+ends the attempt; the qualification controller gains no DNS deletion authority.
+
+This corrects an assumption about the pinned Caddy's process shutdown: a local
+native reproduction with a delayed simulated DNS API exited successfully in
+about 7 milliseconds while leaving the challenge behind. Cancelling its apps
+without exiting allowed its own cleanup to finish in about 0.6 seconds. These
+observations establish the local process behavior, not live-provider
+qualification. The service stop timeout and coordinator deadline are unchanged.
+The read-only witness bound includes the additional polling loop and absence
+observation. Original failed and diagnostic runs retain their original outcome.
+
 Protected snapshots in a disposable qualification repository have no production
 retention authority: after the successful drill and fresh independent accounting,
 retire the entire owned fixture through the explicitly authorized qualification

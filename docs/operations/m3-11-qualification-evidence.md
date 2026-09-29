@@ -111,6 +111,17 @@ subjects, two zones, the production Let's Encrypt directory and system public
 trust roots. These are proof obligations for the producer; a well-formed
 self-authored JSON file is not independent evidence that a test ran.
 
+Public interruption evidence also retains the independent activity hashes and
+fresh absence hash from cancellation before process stop. The private Unix
+socket cancels applications while the same Caddy process completes its DNS
+cleanup; it is not a new provider writer. `test_m3_11_public_control.py` exercises
+the actual Unix HTTP transport, unsafe socket metadata, active configurations,
+response bounds and the stopped inventory's exact socket exclusion.
+`test_m3_11_public_recovery.py` and `test_m3_11_dns_witness.py` cover ordered
+cancellation/absence/stop/reboot, failed reads, deadline exhaustion, original
+account checks and the shared observation bound. Live evidence still requires
+the original ordered cold attempt and final public TLS and teardown observations.
+
 The source and destination have different accounting obligations. The fenced
 source preserves the deliberately excluded pending input and original snapshot
 until the drill settles. Its fence and pending-input inventory are hashed.

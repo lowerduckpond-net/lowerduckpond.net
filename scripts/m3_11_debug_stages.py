@@ -58,6 +58,7 @@ def public_recovery(
             if ready["ready"]:
                 break
             if observation.record_count and not interrupted:
+                public.drain_issuance(diagnostic=True)
                 before = public.call("diagnostic_interrupt")
                 fixture.reboot()
                 after = public.call("diagnostic_interrupt")

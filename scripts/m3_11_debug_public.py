@@ -84,6 +84,11 @@ def diagnostic_interrupt(context_sha256: str) -> dict[str, object]:
     return {"storage": inventory}
 
 
+def diagnostic_suspend(context_sha256: str) -> dict[str, object]:
+    probe._suspend(context_sha256)
+    return {"issuance_suspended": True}
+
+
 def diagnostic_open(context_sha256: str, expected: dict[str, object]) -> dict[str, object]:
     marker = probe._guard(context_sha256)
     probe._closed()

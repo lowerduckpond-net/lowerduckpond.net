@@ -209,6 +209,17 @@ in this mode without changing their age; normal qualification freshness checks
 remain enforced. Existing partially installed public inputs may need a specific
 diagnostic repair; they are not silently erased into another purported cold run.
 
+New cold attempts cancel incomplete issuance through a mode-0600 Unix socket
+inside the private disposable Caddy store. The issuer remains alive while the
+independent DNS witness observes its cleanup, then stops before account-byte
+comparison and reboot. All waits use the original stage deadline. This avoids
+losing asynchronous cleanup when Caddy exits; increasing its service stop timeout
+would not make an already-exited process finish that work. Warm continuations on
+older retained configurations still work when certificates are already ready;
+attempting another interruption on those old inputs fails explicitly instead of
+silently rewriting their recorded configuration. The retirement option below
+remains available for challenges left by those older attempts.
+
 The public-CA helper accepts the same bounded credential characters and length
 as production configuration (20-256 ASCII letters, digits, `_` or `-`). It passes
 the entire credential unchanged, including Cloudflare's

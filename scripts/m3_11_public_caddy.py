@@ -53,7 +53,7 @@ def configuration(nonce: str) -> bytes:
     subjects = disposable_subjects(nonce)
     return canonical(
         {
-            "admin": {"disabled": True},
+            "admin": admin_configuration(),
             "storage": {"module": "file_system", "root": str(STORAGE)},
             "apps": {
                 "http": {
@@ -102,6 +102,23 @@ def configuration(nonce: str) -> bytes:
                 },
             },
         }
+    )
+
+
+def admin_configuration() -> dict[str, object]:
+    # The disposable issuer alone exposes this private Unix socket. No TCP
+    # admin listener or persisted replacement configuration is permitted.
+    return {
+        "listen": f"unix/{STORAGE}/admin.sock|0600",
+        "config": {"persist": False},
+    }
+
+
+def suspended_configuration() -> bytes:
+    # Loading no apps cancels issuance without exiting the process. CertMagic
+    # can then finish DNS cleanup before the controller stops Caddy for reboot.
+    return canonical(
+        {"admin": admin_configuration(), "storage": {"module": "file_system", "root": str(STORAGE)}}
     )
 
 
