@@ -295,6 +295,17 @@ def test_secondary_failure():
         "group": group,
         "file": filename,
         "line": 10,
+        **(
+            {
+                "operator": {
+                    "reason": "unknown",
+                    "client_function": "unknown",
+                    "client_line": "unknown",
+                }
+            }
+            if exception.startswith("OperatorClientError")
+            else {}
+        ),
         "submission": {
             "operation": "archive",
             "correlation_id": "01a0b11c-8fe8-7781-b277-81e5e4c813ba",

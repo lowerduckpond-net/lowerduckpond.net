@@ -161,6 +161,8 @@ files = [
   "tests/infrastructure/test_qualification_context.py",
   "tests/infrastructure/test_qualification_images.py",
   "scripts/qualification_failure.py",
+  "scripts/qualification_operator_failure.py",
+  "tests/infrastructure/test_qualification_operator_failure.py",
   "scripts/qualification_probe.py",
   "tests/infrastructure/test_qualification_failure.py",
   "scripts/qualification_timing.py",

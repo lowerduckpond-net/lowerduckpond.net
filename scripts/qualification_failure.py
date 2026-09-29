@@ -370,7 +370,15 @@ def record_submission(request: dict[str, object]) -> None:
             print("Qualification submission context unavailable.", file=sys.stderr)
 
 
-def record_test_failure(category: str, *, file: str = UNKNOWN, line: int | str = UNKNOWN) -> None:
+def record_test_failure(
+    category: str,
+    *,
+    file: str = UNKNOWN,
+    line: int | str = UNKNOWN,
+    operator: dict[str, object] | None = None,
+) -> None:
+    from scripts.qualification_operator_failure import sanitize as operator_detail  # noqa: PLC0415
+
     directory = _directory()
     if directory:
         try:
@@ -382,6 +390,7 @@ def record_test_failure(category: str, *, file: str = UNKNOWN, line: int | str =
                     "group": label(os.environ.get("LDP_QUALIFICATION_TIMING_GROUP"), GROUPS),
                     "file": label(file, TEST_FILES),
                     "line": source_line(line),
+                    **({"operator": operator_detail(operator)} if operator is not None else {}),
                     "submission": {
                         "operation": label(submission.get("operation"), OPERATIONS),
                         "correlation_id": matching(submission.get("correlation_id"), UUID),
@@ -697,6 +706,9 @@ def collect(  # noqa: PLR0912, PLR0915 - validate and assemble one bounded diagn
     controller = controller_failure(directory)
     ansible = ansible_failure(directory)
     accounting = accounting_check(directory)
+    from scripts.qualification_operator_failure import sanitize as operator_detail  # noqa: PLC0415
+
+    operator = operator_detail(context.get("operator"))
     report: dict[str, object] = {
         "format": FORMAT,
         "authority": "diagnostic-only",
@@ -710,6 +722,7 @@ def collect(  # noqa: PLR0912, PLR0915 - validate and assemble one bounded diagn
         },
         "failure_category": label(context.get("category", "command-failed"), FAILURES),
         "controller_failure": controller,
+        "operator_failure": operator,
         "ansible_failure": ansible,
         "accounting_check": accounting,
         "test_location": {
@@ -763,6 +776,11 @@ def collect(  # noqa: PLR0912, PLR0915 - validate and assemble one bounded diagn
         print(
             f"  Controller: {controller['stage']} / {controller['category']}; "
             f"exit {controller['return_code']}."
+        )
+    if operator["reason"] != UNKNOWN or operator["client_line"] != UNKNOWN:
+        print(
+            f"  Operator transport: {operator['reason']}; "
+            f"client {operator['client_function']}:{operator['client_line']}."
         )
     if ansible["category"] != UNKNOWN:
         source = ansible["source"]

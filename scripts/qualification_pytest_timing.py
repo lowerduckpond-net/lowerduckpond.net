@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from scripts import qualification_operator_failure as operator_failure
 from scripts.qualification_failure import TEST_FILES, capture_fixture, record_test_failure
 from scripts.qualification_timing import CONTEXT_ENV, capture_fixture_identity, record_span
 
@@ -109,8 +110,24 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[None]) ->
     )
 
     error = call.excinfo.value
+    operator: dict[str, object] | None = None
     if isinstance(error, OperatorClientError):
         category = OPERATOR_FAILURES.get(str(error), "operator-transport")
+        from lowerduckpond_static_operator import client  # noqa: PLC0415
+
+        client_location = next(
+            (
+                entry
+                for entry in reversed(call.excinfo.traceback)
+                if entry.path == Path(client.__file__)
+            ),
+            None,
+        )
+        operator = {
+            "reason": operator_failure.reason(str(error)),
+            "client_function": client_location.name if client_location else "unknown",
+            "client_line": client_location.lineno + 1 if client_location else "unknown",
+        }
     else:
         category = "assertion" if isinstance(error, AssertionError) else "test-error"
     location = next(
@@ -130,4 +147,5 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[None]) ->
         category,
         file=Path(location.path).name if location else "unknown",
         line=location.lineno + 1 if location else "unknown",
+        operator=operator,
     )
