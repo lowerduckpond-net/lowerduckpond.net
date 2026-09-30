@@ -88,6 +88,17 @@ fields, noncanonical new-format bytes and boolean/coerced counts are rejected.
 
 ## Required combined observations
 
+Failure evidence is separate from these passing receipts. Fresh fixtures retain
+bounded private archive exception histories during the original execution,
+before diagnostic replay. `test_archive_failure_capture.py` covers preservation
+across successful calls and cleanup, limits, private-data exclusion, unsafe paths
+and unchanged failures when capture is unavailable.
+`test_qualification_archive_failure.py` covers independent host attribution,
+exact correlation matching and preservation of original failure reports. The
+installed archive boundary probe checks capture in each real helper sandbox.
+These observations grant no qualification, recovery or deletion authority and
+cannot retrospectively explain a failure with missing evidence.
+
 Every phase below has original UTC start/end times, a private evidence digest,
 and its exact named checks all marked `passed`. Missing, additional, failed or
 skipped checks cannot qualify. Phases execute in this order without overlapping
@@ -110,6 +121,17 @@ suspended, archived and undeployed tenants. Public-CA observations require four
 subjects, two zones, the production Let's Encrypt directory and system public
 trust roots. These are proof obligations for the producer; a well-formed
 self-authored JSON file is not independent evidence that a test ran.
+
+Public interruption evidence also retains the independent activity hashes and
+fresh absence hash from cancellation before process stop. The private Unix
+socket cancels applications while the same Caddy process completes its DNS
+cleanup; it is not a new provider writer. `test_m3_11_public_control.py` exercises
+the actual Unix HTTP transport, unsafe socket metadata, active configurations,
+response bounds and the stopped inventory's exact socket exclusion.
+`test_m3_11_public_recovery.py` and `test_m3_11_dns_witness.py` cover ordered
+cancellation/absence/stop/reboot, failed reads, deadline exhaustion, original
+account checks and the shared observation bound. Live evidence still requires
+the original ordered cold attempt and final public TLS and teardown observations.
 
 The source and destination have different accounting obligations. The fenced
 source preserves the deliberately excluded pending input and original snapshot

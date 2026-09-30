@@ -761,13 +761,17 @@ audit rotations and interrupted retention, interrupted reconstruction, reboot
 and ordinary replay. The public dependency phase uses the actual destination and
 pinned Caddy binary with an empty isolated certificate/account store, production
 Let's Encrypt DNS-01, the original public roots and independent observations of
-both zones. It interrupts real challenge activity, preserves the acquired
-account, reboots behind the real ingress gate and resumes under the original
+both zones. It cancels real challenge activity through the disposable issuer's
+private Unix socket, then independently observes Caddy finishing DNS cleanup
+before stopping the process. No TCP admin listener or controller DNS deletion
+is enabled. It preserves the acquired account, reboots behind the real ingress
+gate and resumes the original immutable configuration under the original
 coordinator deadline. Fresh TLS verification must precede opening ingress.
-The DNS witness allows 366 observations: the full 30-minute deadline at the
-shared five-second polling interval, an immediate sample for each of the two
-polling loops, baseline and cleanup, and both teardown checks. The coordinator
-still enforces the original deadline; exhausting it fails with ingress closed.
+The DNS witness allows 368 observations: the full 30-minute deadline at the
+shared five-second polling interval, an immediate sample for each of the three
+polling loops, baseline and both cleanup checks, and both teardown checks.
+The coordinator still enforces the original deadline; exhausting it fails with
+ingress closed.
 
 Final paired accounting preserves the fenced source's excluded pending input,
 verifies the destination's protected history and independently proves archive

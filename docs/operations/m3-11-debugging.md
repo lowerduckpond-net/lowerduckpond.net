@@ -70,6 +70,8 @@ The replay limit is 90 minutes, ordinary restore/public stages are bounded by
 The final `summary.json` contains stage outcomes, elapsed time, fixed exception
 types/locations and coverage gaps. Failed stages also include the bounded
 destination observation and any invocation-bound diagnostic restore trace.
+When archive tracing is installed, it also includes invocation-bound exception
+types and code locations from the direct helper logs, without exception messages.
 It is shareable. Raw stage logs, journals,
 scripts, diffs, source history, DNS observations and all other files remain
 private. Setup failures also emit a private `debug-setup-*.log` path, so a failure
@@ -88,6 +90,12 @@ Use `--from restore`, `--from public-ca`, or another stage from the
 table when a fix requires an earlier/later starting point. Original logs are
 never overwritten. Partial tenant retirement is handled by skipping tenants
 already absent only in this explicitly marked diagnostic mode.
+
+On a newly adopted failed run, an explicit later starting point first runs the
+`restore` completion prerequisite if no passing diagnostic observation exists.
+A failed prerequisite blocks dependent stages. Earlier checks without a saved
+pass are reported as `not-run`, not as reused successes. Such a targeted attempt
+remains `diagnostic-incomplete` even if all requested downstream stages pass.
 
 For a targeted hypothesis or runtime repair, add a Python script to the branch
 and use:
@@ -108,6 +116,46 @@ cycle. This is an explicit branch development facility: it may probe or change
 the disposable destination. It is never called by qualification or production
 commands. Put the actual fixes and regressions into the branch as they are
 identified; a repair script is not evidence that a fresh install contains them.
+
+### Capture an archive failure when the journal is empty
+
+For a completed reconstruction that failed during archive replay, use:
+
+```bash
+just m3-11-debug /absolute/path/to/failed-run \
+  --exclusive-archive-writers --from replay \
+  --repair scripts/m3_11_debug_archive_repair.py
+```
+
+Fresh qualification fixtures now enable bounded native archive failure capture
+automatically on both hosts. Their ordinary failure report includes these
+records even if the journal is empty; see
+[qualification diagnostics](qualification-diagnostics.md). The repair below
+remains necessary for older retained artifacts that lack native capture. Neither
+mechanism establishes the cause of an earlier failure whose evidence was lost.
+
+The repair requires a Docker destination with completed restore and inactive
+workers, restore coordinator and archive helpers. It preserves each native
+launcher and its selection lock in an instrumented diagnostic copy, then adds
+instance-specific systemd overrides pointing to those copies. Native launchers,
+selected artifact, service limits and archive decisions remain unchanged. Each
+failure records its exception chain's types and code locations without messages,
+arguments, locals or source lines. Startup failures also retain stderr privately.
+
+The copies and original bytes live under
+`/usr/local/libexec/lowerduckpond/archive-diagnostic-<restore-id>/`; direct logs
+live under the root-only `/var/log/lowerduckpond-debug-archive/`. Neither location
+is inside authoritative state or recovery evidence. Repeating the repair checks
+the original and installed diagnostic bytes and preserves existing logs.
+Checkpoint collection saves bounded private `<stage>.archives.log` files along
+with the helper unit states. The shareable `archive_trace` accepts only records
+matching the observed systemd invocation. Missing records remain unknown.
+
+This continues through the normal operator interface with new diagnostic
+requests for remaining tenants. Earlier failures and results stay immutable;
+the attempt cannot repair the original qualification result. The overrides
+persist on the disposable destination for subsequent diagnostic attempts and
+are never installed by production convergence or fresh qualification.
 
 ### Resume the retained pre-health-quiescence destination
 
@@ -167,6 +215,17 @@ missing interruption/two-zone observations. Old original inputs may be inspected
 in this mode without changing their age; normal qualification freshness checks
 remain enforced. Existing partially installed public inputs may need a specific
 diagnostic repair; they are not silently erased into another purported cold run.
+
+New cold attempts cancel incomplete issuance through a mode-0600 Unix socket
+inside the private disposable Caddy store. The issuer remains alive while the
+independent DNS witness observes its cleanup, then stops before account-byte
+comparison and reboot. All waits use the original stage deadline. This avoids
+losing asynchronous cleanup when Caddy exits; increasing its service stop timeout
+would not make an already-exited process finish that work. Warm continuations on
+older retained configurations still work when certificates are already ready;
+attempting another interruption on those old inputs fails explicitly instead of
+silently rewriting their recorded configuration. The retirement option below
+remains available for challenges left by those older attempts.
 
 The public-CA helper accepts the same bounded credential characters and length
 as production configuration (20-256 ASCII letters, digits, `_` or `-`). It passes

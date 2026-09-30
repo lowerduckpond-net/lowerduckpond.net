@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import socket
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -7,6 +8,7 @@ from typing import cast
 
 import pytest
 from lowerduckpond_static_contracts import canonical_json_bytes
+from lowerduckpond_static_host_agent import archive_failure_capture
 from lowerduckpond_static_host_agent.archive_cleanup_service import ArchiveCleanupClient
 from lowerduckpond_static_host_agent.archive_quarantine import ArchiveQuarantine
 from lowerduckpond_static_host_agent.archive_remote import ArchiveRemoteError
@@ -175,3 +177,67 @@ def test_terminal_retry_resolves_quarantine_after_the_journal_is_already_removed
             ).read()
             assert (remaining is not None) == unknown_remains
         assert "delete" not in client.calls
+
+
+@pytest.mark.parametrize("boundary", ["provider", "quarantine"])
+def test_terminal_cleanup_failure_preserves_its_durable_job_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, boundary: str
+) -> None:
+    logs = tmp_path / "failure-logs"
+    logs.mkdir(mode=0o700)
+    monkeypatch.setattr(archive_failure_capture, "ROOT", logs)
+    monkeypatch.setenv("LDP_ARCHIVE_FAILURE_CAPTURE", "1")
+    with _prepared(tmp_path, "active") as (journal, store, prepared, runtime):
+        _activate(journal, store, prepared, runtime)
+        journal.finish(prepared.plan.construction_intent_id)
+        remote = journal.remote
+        client = cast(MemoryRemote, remote.client)
+        client.require_intent = False
+        job_id = str(prepared.job.document["jobId"])
+        job = journal.repository.read(StateRecordPath.authorization_job(job_id)).document
+        request = cast(dict[str, object], job["request"])
+        record = prepared.plan.archive_record
+        if boundary == "provider":
+            # Terminal authority is valid, but the provider bytes changed.
+            client.body = bytes([client.body[0] ^ 1]) + client.body[1:]
+        else:
+            # The retained archive verifies; the later whole-bucket proof fails.
+            client.versions.append(
+                dict(client.versions[0], Key="unknown/object", VersionId="unowned-version")
+            )
+            ArchiveQuarantine(
+                tmp_path / "state",
+                bucket=remote.bucket,
+                expected_owner=_OWNER,
+                locks=journal.spool.locks,
+            ).record(remote.inventory())
+
+    def capture_failure(stream: socket.socket) -> None:
+        # Capture in the service's thread, with no identity inherited from setup.
+        archive_failure_capture.reset()
+        try:
+            _serve(stream, tmp_path / "state", remote)
+        except Exception as error:
+            archive_failure_capture.capture("cleanup", error)
+            raise
+
+    sender, receiver = socket.socketpair()
+    with (
+        ThreadPoolExecutor() as pool,
+        ExportSpool(tmp_path / "state", expected_owner=_OWNER) as spool,
+    ):
+        future = pool.submit(capture_failure, receiver)
+        cleanup = ArchiveCleanupClient(spool, connector=lambda: sender, expected_peer_uid=_OWNER)
+        with pytest.raises(ArchiveRemoteError):
+            cleanup.verify_terminal(job_id, record, mode="retained")
+        with pytest.raises(ArchiveRemoteError):
+            future.result(timeout=5)
+    (failure,) = json.loads((logs / "cleanup.json").read_bytes())
+    assert failure["job_id"] == job_id
+    assert failure["correlation_id"] == request["correlationId"]
+    locations = failure["chain"][0]["locations"]
+    assert any(
+        frame["file"] == f"archive_{'verification' if boundary == 'provider' else 'quarantine'}.py"
+        for frame in locations
+    )
+    assert "delete" not in client.calls

@@ -89,6 +89,11 @@ python_version = "3.14"
 strict = true
 warn_unreachable = true
 files = [
+  "scripts/qualification_archive_failure.py",
+  "tests/infrastructure/test_qualification_archive_failure.py",
+  "scripts/m3_11_debug_archive_repair.py",
+  "scripts/m3_11_debug_archive_trace.py",
+  "tests/infrastructure/test_m3_11_debug_archive.py",
   "tests/infrastructure/test_production_file_environment_shell.py",
   "tests/infrastructure/test_m3_11_debug_bindings.py",
   "tests/infrastructure/test_m3_11_debug_capture.py",
@@ -241,6 +246,7 @@ files = [
   "scripts/m3_11_pending_probe.py",
   "tests/infrastructure/test_m3_11_combined_accounting.py",
   "tests/infrastructure/test_m3_11_public_recovery.py",
+  "tests/infrastructure/test_m3_11_public_control.py",
   "scripts/m3_11_phase_receipts.py",
   "scripts/m3_11_combined_local.py",
   "scripts/m3_11_combined_live.py",

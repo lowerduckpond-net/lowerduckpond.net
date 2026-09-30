@@ -11,6 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
+from typing import cast
 from unittest.mock import Mock
 
 import pytest
@@ -105,7 +106,14 @@ def test_disposable_configuration_cannot_fall_back_to_a_private_or_staging_issue
     assert issuers[0]["challenges"]["http"]["disabled"]
     assert issuers[0]["challenges"]["tls-alpn"]["disabled"]
     assert config["storage"]["root"] != "/var/lib/caddy"
-    assert config["admin"]["disabled"]
+    assert config["admin"] == {
+        "listen": f"unix/{policy.STORAGE}/admin.sock|0600",
+        "config": {"persist": False},
+    }
+    suspended = json.loads(policy.suspended_configuration())
+    assert set(suspended) == {"admin", "storage"}
+    assert suspended["admin"] == config["admin"]
+    assert suspended["storage"] == config["storage"]
 
 
 @pytest.mark.parametrize("nonce", [str(uuid.uuid4()), "nonce", "../../caddy", ""])
@@ -158,6 +166,7 @@ def actions(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     monkeypatch.setattr(probe, "_guard", Mock(return_value={"journal_sha256": "journal"}))
     monkeypatch.setattr(probe, "_closed", lambda: events.append("closed"))
     monkeypatch.setattr(probe, "_document", Mock(return_value={}))
+    monkeypatch.setattr(probe, "_require_suspended", lambda: events.append("suspended"))
 
     def record(name: str, value: object) -> dict[str, object]:
         events.append(name)
@@ -211,19 +220,26 @@ def test_completed_issuance_cannot_be_relabeled_as_interrupted(
     actions: list[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(probe, "_tls", Mock(return_value={"certificates": ["all four"]}))
+    nonce = str(uuid.uuid7())
+    monkeypatch.setattr(probe, "_guard", Mock(return_value={"nonce": nonce}))
+    monkeypatch.setattr(probe, "_read", Mock(return_value=policy.configuration(nonce)))
+    control = Mock()
+    monkeypatch.setattr(probe, "_admin", control)
     with pytest.raises(ValueError, match="already completed"):
-        probe.interrupt(CONTEXT)
-    assert actions == ["closed"]
+        probe.suspend(CONTEXT)
+    control.assert_not_called()
+    assert not any(action.startswith("systemctl stop") for action in actions)
 
 
 def test_interruption_requires_retained_actual_account(
     actions: list[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(probe, "_tls", Mock(side_effect=FileNotFoundError()))
+    monkeypatch.setattr(probe, "_document", Mock(return_value={"context_sha256": CONTEXT}))
     monkeypatch.setattr(probe, "_inventory", Mock(return_value={"certificate.crt": "digest"}))
     with pytest.raises(ValueError, match="actual ACME account"):
         probe.interrupt(CONTEXT)
-    assert "interrupting" in actions
+    assert "suspended" in actions
     assert "systemctl stop " + policy.UNIT in actions
     assert "interrupted" not in actions
 
@@ -350,7 +366,12 @@ def controller(
         path.chmod(0o600)
     value.original = {name: public_inputs / name for name in ("roots.pem", "hosts", "resolv.conf")}
     value.witness = Mock()
-    value.witness.sample.return_value = Mock(record_count=1, sha256="c" * 64)
+    value.witness.sample.side_effect = [
+        Mock(record_count=1, sha256="c" * 64),  # active challenge
+        Mock(record_count=1, sha256="c" * 64),  # asynchronous cleanup still running
+        Mock(record_count=0, sha256="d" * 64),  # Caddy finished cleanup
+        Mock(record_count=1, sha256="e" * 64),  # resumed issuance
+    ]
     value.witness.require_absent.return_value = Mock(sha256="d" * 64)
     value._identity = Mock()
     value.peer = Mock()
@@ -376,13 +397,39 @@ def controller(
     )
 
 
+@pytest.mark.parametrize("fault", ["dns-read", "deadline", "suspension"])
+def test_interruption_cannot_reboot_or_resume_after_failed_drain(
+    controller: Controller, fault: str
+) -> None:
+    original = cast("Callable[..., dict[str, object]]", controller.call.side_effect)
+
+    def call(action: str, **arguments: object) -> dict[str, object]:
+        if action == "suspend":
+            if fault == "suspension":
+                raise ValueError("cancellation was not confirmed")
+            if fault == "deadline":
+                controller.expire()
+            if fault == "dns-read":
+                controller.witness.sample.side_effect = ValueError("provider read failed")
+        return original(action, **arguments)
+
+    controller.call.side_effect = call
+    with pytest.raises((ValueError, TimeoutError)):
+        controller.run()
+    controller.fixture.reboot.assert_not_called()
+    assert "interrupt" not in [call.args[0] for call in controller.call.call_args_list]
+    assert controller.call.call_args_list[-1].args == ("stop_failed",)
+    assert not (controller.directory / "public-ca.json").exists()
+
+
 def test_public_controller_keeps_interruption_and_reboot_before_verification(
     controller: Controller,
 ) -> None:
-    public_ca, _ = controller.run()
+    public_ca, details = controller.run()
     assert [call.args[0] for call in controller.call.call_args_list] == [
         "install",
         "start",
+        "suspend",
         "interrupt",
         "rebooted",
         "start",
@@ -391,7 +438,7 @@ def test_public_controller_keeps_interruption_and_reboot_before_verification(
         "restore_native",
     ]
     assert controller.fixture.reboot.call_count == 1
-    assert controller.call.call_args_list[4].kwargs == {"resume": True}
+    assert controller.call.call_args_list[5].kwargs == {"resume": True}
     assert [call.kwargs["opened"] for call in controller.peer.call_args_list] == [
         False,
         False,
@@ -399,8 +446,15 @@ def test_public_controller_keeps_interruption_and_reboot_before_verification(
         True,
     ]
     controller.witness.require_both_zones_observed.assert_called_once()
-    controller.witness.require_absent.assert_called_once_with("cleanup")
+    assert [call.args for call in controller.witness.require_absent.call_args_list] == [
+        ("cleanup",),
+        ("cleanup",),
+    ]
     assert public_ca["trust"] == "system-public-roots"
+    assert details["interruption_cleanup"] == {
+        "activity_sha256": ["c" * 64, "d" * 64],
+        "absence_sha256": "d" * 64,
+    }
     assert (controller.directory / "public-ca.json").exists()
 
 
@@ -411,6 +465,7 @@ def test_public_controller_never_opens_or_emits_proof_after_failed_dependency_ch
     controller: Controller, fault: str
 ) -> None:
     if fault == "unobserved-interruption":
+        controller.witness.sample.side_effect = None
         controller.witness.sample.return_value.record_count = 0
     elif fault == "one-zone":
         controller.witness.require_both_zones_observed.side_effect = ValueError("one zone")

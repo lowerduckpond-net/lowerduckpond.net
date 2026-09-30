@@ -10,6 +10,8 @@ import traceback
 from pathlib import Path
 
 from scripts import qualification_restore as owned
+from scripts.m3_11_debug_archive_trace import OPERATIONS, PROBE
+from scripts.m3_11_debug_archive_trace import summarize as archive_summary
 from scripts.m3_11_debug_files import MAX_FILE, fingerprint
 from scripts.m3_11_debug_trace import summarize
 from scripts.m3_11_private_inputs import write_private
@@ -24,6 +26,7 @@ UNITS = (
     "lowerduckpond-host-restore-archive-installed.service",
     "caddy.service",
     "lowerduckpond-m3-11-public-caddy.service",
+    *(f"lowerduckpond-archive-{operation}@request.service" for operation in OPERATIONS),
 )
 
 
@@ -135,6 +138,18 @@ def checkpoint(root: Path, attempt: Path, label: str, environment: dict[str, str
                     timeout=25,
                     check=False,
                 )
+    archive_log = attempt / (label + ".archives.log")
+    with archive_log.open("xb") as stream:
+        os.fchmod(stream.fileno(), 0o600)
+        archive_status = subprocess.run(  # noqa: S603 - fixed bounded read-only guest probe
+            ["docker", "exec", "-i", destination, "/usr/bin/python3", "-I", "-B", "-"],  # noqa: S607
+            input=PROBE,
+            env=environment,
+            stdout=stream,
+            stderr=subprocess.STDOUT,
+            timeout=25,
+            check=False,
+        )
     observations = owned.observations(environment)
     write_private(attempt / (label + ".observation.json"), observations)
     write_private(
@@ -142,5 +157,8 @@ def checkpoint(root: Path, attempt: Path, label: str, environment: dict[str, str
         {
             "destination": observations.get("destination", "unknown"),
             "restore_trace": summarize(attempt / (label + ".journals.log")),
+            "archive_trace": archive_summary(archive_log, attempt / (label + ".journals.log"))
+            if archive_status.returncode == 0
+            else {"collection": "unavailable"},
         },
     )

@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Final
 
+from lowerduckpond_static_host_agent import archive_failure_capture
 from lowerduckpond_static_host_agent.archive_cleanup_service import serve_archive_cleanup
 from lowerduckpond_static_host_agent.archive_configuration import load_archive_configuration
 from lowerduckpond_static_host_agent.archive_construction_service import serve_archive_construction
@@ -65,6 +66,7 @@ def _archive_main(arguments: list[str] | None, *, operation: str) -> int:
     if values or os.geteuid() != 0:
         print("invalid_archive_service_invocation", file=sys.stderr)
         return 64
+    archive_failure_capture.reset()
     try:
         require_restore_admission()
         with (
@@ -96,9 +98,11 @@ def _archive_main(arguments: list[str] | None, *, operation: str) -> int:
                 serve_archive_export(stream, repository, spool, remote)
         return 0
     except Exception as error:
+        diagnostic = archive_failure_diagnostic(error)
+        archive_failure_capture.capture(operation, error, diagnostic=diagnostic)
         # Classify failures using fixed labels, never private exception details.
         print(
-            f"archive_{operation}_service_failed {archive_failure_diagnostic(error)}",
+            f"archive_{operation}_service_failed {diagnostic}",
             file=sys.stderr,
         )
         return 1

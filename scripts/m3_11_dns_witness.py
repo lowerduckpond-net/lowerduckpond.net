@@ -30,10 +30,10 @@ from scripts.m3_11_private_inputs import read_private, write_private
 
 FORMAT = "lowerduckpond-m3-11-private-dns-observation-v1"
 POLL_INTERVAL_SECONDS = 5
-# Both polling loops share the original coordinator deadline. Allow every
-# periodic sample, each loop's immediate first sample, then baseline, cleanup,
-# and the two teardown observations; evidence accounting must not shorten it.
-MAX_OBSERVATIONS = math.ceil(COORDINATOR_SECONDS / POLL_INTERVAL_SECONDS) + 2 + 4
+# All three polling loops share the original coordinator deadline. Allow every
+# periodic sample, each loop's immediate first sample, then baseline, both cleanup
+# checks and two teardown observations; evidence accounting must not shorten it.
+MAX_OBSERVATIONS = math.ceil(COORDINATOR_SECONDS / POLL_INTERVAL_SECONDS) + 3 + 5
 MAX_RECORDS_PER_NAME = 4
 MAX_TYPE_LENGTH = 16
 MAX_CONTENT_LENGTH = 4096

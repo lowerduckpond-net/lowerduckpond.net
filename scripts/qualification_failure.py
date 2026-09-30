@@ -530,6 +530,11 @@ def capture_failure_observation() -> None:
         _, _, correlation = _last_submission(directory)
         started = datetime.now(UTC).isoformat()
         host_status, observed = _observe(directory, correlation)
+        from scripts.qualification_archive_failure import (  # noqa: PLC0415
+            collect as archive_failures,
+        )
+
+        archives = archive_failures(directory, correlation)
         _write(
             directory / "failure-snapshot.json",
             {
@@ -538,6 +543,7 @@ def capture_failure_observation() -> None:
                 "correlation_id": correlation,
                 "host_status": host_status,
                 "observation": observed,
+                "archive_failures": archives,
             },
         )
     except Exception:
@@ -709,6 +715,9 @@ def collect(  # noqa: PLR0912, PLR0915 - validate and assemble one bounded diagn
     from scripts.qualification_operator_failure import sanitize as operator_detail  # noqa: PLC0415
 
     operator = operator_detail(context.get("operator"))
+    from scripts.qualification_archive_failure import before_teardown  # noqa: PLC0415
+    from scripts.qualification_archive_failure import collect as archive_failures  # noqa: PLC0415
+
     report: dict[str, object] = {
         "format": FORMAT,
         "authority": "diagnostic-only",
@@ -723,6 +732,8 @@ def collect(  # noqa: PLR0912, PLR0915 - validate and assemble one bounded diagn
         "failure_category": label(context.get("category", "command-failed"), FAILURES),
         "controller_failure": controller,
         "operator_failure": operator,
+        "archive_failures": archive_failures(directory, correlation),
+        "archive_failures_before_teardown": before_teardown(directory, correlation),
         "ansible_failure": ansible,
         "accounting_check": accounting,
         "test_location": {

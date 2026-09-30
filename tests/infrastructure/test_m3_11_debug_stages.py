@@ -115,6 +115,10 @@ def test_public_continuation_reaches_accounting_without_relabeling_warm_issuance
     assert result["cold"] is not warm
     assert result["interrupted"] is not warm
     assert fixture.reboot.call_count == (0 if warm else 1)
+    if warm:
+        recovery.drain_issuance.assert_not_called()
+    else:
+        recovery.drain_issuance.assert_called_once_with(diagnostic=True)
     assert recovery.call.call_args_list[-1].args == ("diagnostic_finish",)
     assert not (tmp_path / "public-ca.json").exists()
     assert not (tmp_path / "combined.json").exists()

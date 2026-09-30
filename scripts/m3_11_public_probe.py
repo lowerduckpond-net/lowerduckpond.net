@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import http.client
 import json
 import os
 import pwd
 import re
+import socket
 import stat
 from pathlib import Path
 from typing import cast
@@ -260,10 +262,76 @@ def _inventory() -> dict[str, str]:
             metadata = path.lstat()
             if entries > 512 or metadata.st_uid != owner or stat.S_ISLNK(metadata.st_mode):  # noqa: PLR2004 - bounded disposable Caddy store
                 raise ValueError("public probe storage inventory is unsafe or exceeds its bound")
+            if path == policy.STORAGE / "admin.sock":
+                # Caddy leaves its Unix socket inode after a clean stop. It is
+                # transient control state, never an account or certificate file.
+                if (
+                    not stat.S_ISSOCK(metadata.st_mode)
+                    or stat.S_IMODE(metadata.st_mode) != 0o600  # noqa: PLR2004
+                    or metadata.st_nlink != 1
+                ):
+                    raise ValueError("public probe retained an unsafe admin socket")
+                continue
             if stat.S_ISDIR(metadata.st_mode):
                 continue
             result[str(path.relative_to(policy.STORAGE))] = _digest(_read(path, owner=owner))
     return result
+
+
+def _admin(method: str, path: str, body: bytes | None = None) -> bytes:
+    """Use only the owned issuer's private local control socket."""
+    account = pwd.getpwnam("caddy")
+    parent = policy.STORAGE.lstat()
+    address = policy.STORAGE / "admin.sock"
+    entry = address.lstat()
+    if (
+        not stat.S_ISDIR(parent.st_mode)
+        or parent.st_uid != account.pw_uid
+        or stat.S_IMODE(parent.st_mode) != 0o700  # noqa: PLR2004 - private issuer directory
+        or not stat.S_ISSOCK(entry.st_mode)
+        or entry.st_uid != account.pw_uid
+        or stat.S_IMODE(entry.st_mode) != 0o600  # noqa: PLR2004 - private issuer socket
+    ):
+        raise ValueError("public probe admin socket is not private to the owned issuer")
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
+        channel.settimeout(10)
+        channel.connect(str(address))
+        connection = http.client.HTTPConnection("localhost", timeout=10)
+        connection.sock = channel
+        try:
+            connection.request(method, path, body, {"Content-Type": "application/json"})
+            response = connection.getresponse()
+            raw = response.read(policy.MAXIMUM_BYTES + 1)
+            if response.status != 200 or len(raw) > policy.MAXIMUM_BYTES:  # noqa: PLR2004
+                raise ValueError("public probe issuance suspension was not confirmed")
+            return raw
+        finally:
+            connection.close()
+
+
+def _require_suspended() -> None:
+    if json.loads(_admin("GET", "/config/")) != json.loads(policy.suspended_configuration()):
+        raise ValueError("public probe still has active issuance configuration")
+
+
+def _suspend(context_sha256: str) -> None:
+    marker = _guard(context_sha256)
+    _closed()
+    if _read(policy.INPUTS / "caddy.json") != policy.configuration(str(marker["nonce"])):
+        raise ValueError("retained public probe predates controlled issuance suspension")
+    if ready(context_sha256)["ready"]:
+        raise ValueError("public issuance already completed before its interruption")
+    _admin("POST", "/load", policy.suspended_configuration())
+    _require_suspended()
+
+
+def suspend(context_sha256: str) -> dict[str, object]:
+    _guard(context_sha256)
+    _closed()
+    _document("starting")
+    _record("interrupting", {"context_sha256": context_sha256})
+    _suspend(context_sha256)
+    return {"issuance_suspended": True}
 
 
 def _tls(marker: dict[str, object]) -> dict[str, object]:
@@ -305,13 +373,14 @@ def start(context_sha256: str, *, resume: bool = False) -> dict[str, object]:
 
 
 def interrupt(context_sha256: str) -> dict[str, object]:
-    # The controller independently observed an actual DNS challenge before this
-    # call. Require issuance still incomplete; a completed run cannot be relabeled
-    # as an interruption, even if the observation raced the CA response.
-    if ready(context_sha256)["ready"]:
-        raise ValueError("public issuance already completed before its interruption")
-    _document("starting")
-    _record("interrupting", {"context_sha256": context_sha256})
+    # The controller observed actual challenge activity, suspended issuance
+    # while incomplete, then independently observed Caddy's cleanup. Preserve
+    # account bytes only after stopping the now-quiescent process for reboot.
+    _guard(context_sha256)
+    _closed()
+    if _document("interrupting").get("context_sha256") != context_sha256:
+        raise ValueError("public interruption has no original suspension")
+    _require_suspended()
     _systemctl("stop", policy.UNIT)
     inventory = _inventory()
     if not any(name.startswith("acme/") and name.endswith(".key") for name in inventory):

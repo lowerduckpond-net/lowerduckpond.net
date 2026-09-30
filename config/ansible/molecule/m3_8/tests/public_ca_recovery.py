@@ -104,10 +104,11 @@ sys.modules['scripts'] = package
 request = json.load(sys.stdin)
 action = request.pop('action')
 actions = {name: getattr(module, name) for name in (
-    'install', 'start', 'ready', 'interrupt', 'rebooted', 'open_verified', 'restore_native',
+    'install', 'start', 'ready', 'suspend', 'interrupt', 'rebooted',
+    'open_verified', 'restore_native',
     'stop_failed', 'diagnostic_prepare', 'diagnostic_start', 'diagnostic_interrupt',
     'diagnostic_open', 'diagnostic_finish', 'diagnostic_retire_dns',
-    'diagnostic_stop_failed') if hasattr(module, name)}
+    'diagnostic_stop_failed', 'diagnostic_suspend') if hasattr(module, name)}
 print(json.dumps(actions[action](**request), sort_keys=True))
 """,
         )
@@ -175,6 +176,19 @@ print(json.dumps(actions[action](**request), sort_keys=True))
     def _wait(self) -> None:
         time.sleep(min(POLL_INTERVAL_SECONDS, self._remaining()))
 
+    def drain_issuance(self, *, diagnostic: bool = False) -> dict[str, object]:
+        self.call("diagnostic_suspend" if diagnostic else "suspend")
+        observations = []
+        while True:
+            self._remaining()
+            observation = self.witness.sample("activity")
+            observations.append(observation.sha256)
+            if not observation.record_count:
+                break
+            self._wait()
+        absence = self.witness.require_absent("cleanup")
+        return {"activity_sha256": observations, "absence_sha256": absence.sha256}
+
     def run(self) -> tuple[dict[str, object], dict[str, object]]:
         self.installed = False
         try:
@@ -227,6 +241,7 @@ print(json.dumps(actions[action](**request), sort_keys=True))
             observation = self.witness.sample("activity")
             observations.append(observation.sha256)
             if observation.record_count:
+                interruption_cleanup = self.drain_issuance()
                 interrupted = self.call("interrupt")
                 break
             if self.call("ready")["ready"]:
@@ -269,6 +284,7 @@ print(json.dumps(actions[action](**request), sort_keys=True))
             ).hexdigest(),
             "original": original,
             "interrupted": interrupted,
+            "interruption_cleanup": interruption_cleanup,
             "rebooted": reboot,
             "tls": tls,
             "opened": opened,
