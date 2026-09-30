@@ -8,6 +8,7 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -107,6 +108,8 @@ if os.environ['TEST_RESULT'] in ('timeout', 'killed'):
     if os.environ['TEST_RESULT'] == 'killed':
         os.kill(os.getpid(), signal.SIGKILL)
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    assert not {signal.SIGTERM, signal.SIGINT} & signal.pthread_sigmask(signal.SIG_BLOCK, [])
+    (run / 'controller-ready').touch()
     while True:
         time.sleep(1)
 raise SystemExit(int(os.environ['TEST_RESULT']))
@@ -155,6 +158,112 @@ def test_supervisor_collects_actual_result_and_phase_after_workflow_stops(
     else:
         assert not (journey / "failure.json").exists()
     assert all(CANARY not in path.read_text() for path in journey.glob("*.json"))
+
+
+@pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGINT])
+@pytest.mark.parametrize("when", ["before", "after"])
+def test_startup_signals_retain_child_handle_and_final_diagnostics(
+    journey: Path, monkeypatch: pytest.MonkeyPatch, signum: int, when: str
+) -> None:
+    monkeypatch.setenv("TEST_RESULT", "timeout")
+    original_spawn = subprocess.Popen
+    children: list[subprocess.Popen[bytes]] = []
+    handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
+
+    def interrupt() -> None:
+        os.kill(os.getpid(), signum)
+        # A second different signal must not replace the original cancellation.
+        os.kill(os.getpid(), signal.SIGINT if signum == signal.SIGTERM else signal.SIGTERM)
+
+    def spawn(
+        command: list[str],
+        *,
+        env: Mapping[str, str],
+        cwd: Path,
+        start_new_session: bool,
+        pass_fds: tuple[int, ...],
+    ) -> subprocess.Popen[bytes]:
+        controller = command[0] == str(deadline.ROOT / "scripts/m3-10-spaces-qualification")
+        if controller and when == "before":
+            interrupt()
+        child = original_spawn(
+            command,
+            env=env,
+            cwd=cwd,
+            start_new_session=start_new_session,
+            pass_fds=pass_fds,
+        )
+        if not controller:
+            return child
+        children.append(child)
+        ready = journey / "controller-ready"
+        until = time.monotonic() + 5
+        while not ready.exists() and time.monotonic() < until and child.poll() is None:
+            time.sleep(0.01)
+        assert ready.exists(), "controller did not start with unblocked signals"
+        if when == "after":
+            interrupt()
+        return child
+
+    monkeypatch.setattr(subprocess, "Popen", spawn)
+    try:
+        expected = 128 + signum
+        assert deadline.run() == expected
+        receipt = json.loads((journey / "qualification-exit.json").read_text())
+        assert receipt["status"] == expected
+        assert receipt["reason"] == "interrupted"
+        assert receipt["direct_child_reaped"] is True
+        assert json.loads((journey / "timing.json").read_text())["exit_status"] == expected
+        assert (
+            json.loads((journey / "failure.json").read_text())["original_exit_status"] == expected
+        )
+        assert all(child.poll() is not None for child in children)
+        assert {sig: signal.getsignal(sig) for sig in handlers} == handlers
+    finally:
+        for child in children:
+            if child.poll() is None:
+                os.killpg(child.pid, signal.SIGKILL)
+            child.wait(timeout=5)
+
+
+@pytest.mark.parametrize("signum", [None, signal.SIGTERM, signal.SIGINT])
+def test_failed_start_preserves_pending_cancellation_without_exception_payload(
+    journey: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    signum: int | None,
+) -> None:
+    def spawn(*args: object, **kwargs: object) -> subprocess.Popen[bytes]:
+        if signum is not None:
+            os.kill(os.getpid(), signum)
+        raise OSError(CANARY)
+
+    monkeypatch.setattr(subprocess, "Popen", spawn)
+    assert deadline.run() == (128 + signum if signum is not None else 1)
+    assert not (journey / "qualification.json").exists()
+    output = capsys.readouterr().err
+    assert "process could not be started" in output
+    assert CANARY not in output
+
+
+def test_repeated_signals_during_shutdown_preserve_deadline_result(
+    journey: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TEST_RESULT", "timeout")
+    original_kill = deadline._kill_group
+
+    def kill(child: subprocess.Popen[bytes], signum: int) -> None:
+        os.kill(os.getpid(), signal.SIGTERM)
+        os.kill(os.getpid(), signal.SIGINT)
+        original_kill(child, signum)
+
+    monkeypatch.setattr(deadline, "_kill_group", kill)
+    assert deadline.run() == TIMEOUT
+    receipt = json.loads((journey / "qualification-exit.json").read_text())
+    assert receipt["status"] == TIMEOUT
+    assert receipt["reason"] == "deadline-exceeded"
+    assert receipt["direct_child_reaped"] is True
+    assert json.loads((journey / "failure.json").read_text())["original_exit_status"] == TIMEOUT
 
 
 def test_unreapable_controller_preserves_timeout_and_collects_diagnostics(

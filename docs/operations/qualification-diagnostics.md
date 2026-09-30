@@ -46,7 +46,14 @@ of the controller also records `interrupted` and status 128 plus the signal
 number (137 for SIGKILL), so a truncated final timing append does not discard
 the completed spans. An ordinary command that exits 137 remains `command-exit`.
 The TERM/INT traps apply only to supervised M3.11; the default M3.10 wrapper
-retains its original signal handling. Failure collection
+retains its original signal handling. The supervisor records the first TERM/INT
+without raising from its signal handler. Cancellation during process creation
+is handled once the child handle is available; the child inherits no additional
+blocked signals. During execution, waits check cancellation at most one second
+apart against the original monotonic deadline. Repeated signals cannot unwind
+shutdown or replace an already determined result. If process creation fails,
+a pending cancellation still returns 130/143; otherwise it returns 1 with a
+fixed message, without copying exception payloads. Failure collection
 also records `full-run-deadline` as the controller stage for expiry. The phase
 is the last entered step, not a completion receipt. If the wrapper fails before
 allocating a run directory, no per-run report is available.

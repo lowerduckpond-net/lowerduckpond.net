@@ -26,6 +26,7 @@ CONTEXT_ENV = "LDP_QUALIFICATION_SUPERVISOR_CONTEXT"
 LIVE_SECONDS = 600 * 60
 GRACE_SECONDS = 30
 REPORT_SECONDS = 300
+INTERRUPT_POLL_SECONDS = 1
 MAX_CONTEXT_BYTES = 8192
 
 
@@ -37,19 +38,27 @@ class Exit:
     direct_child_reaped: bool
 
 
-class ControllerInterruptedError(Exception):
-    def __init__(self, signum: int) -> None:
-        self.signum = signum
+@dataclass
+class Interruption:
+    signum: int | None = None
+
+    def result(self) -> tuple[int, str] | None:
+        return (128 + self.signum, "interrupted") if self.signum is not None else None
 
 
 @contextlib.contextmanager
-def interrupts() -> Iterator[None]:
+def interrupts() -> Iterator[Interruption]:
+    pending = Interruption()
+
     def stop(signum: int, _frame: FrameType | None) -> None:
-        raise ControllerInterruptedError(signum)
+        # Never unwind Popen before its handle is assigned, or interrupt cleanup.
+        # Recording instead of masking also leaves the child's signal mask intact.
+        if pending.signum is None:
+            pending.signum = signum
 
     previous = {sig: signal.signal(sig, stop) for sig in (signal.SIGTERM, signal.SIGINT)}
     try:
-        yield
+        yield pending
     finally:
         for sig, handler in previous.items():
             signal.signal(sig, handler)
@@ -58,6 +67,24 @@ def interrupts() -> Iterator[None]:
 def _kill_group(child: subprocess.Popen[bytes], signum: int) -> None:
     with contextlib.suppress(ProcessLookupError):
         os.killpg(child.pid, signum)
+
+
+def _wait(
+    child: subprocess.Popen[bytes], deadline_at: float, pending: Interruption
+) -> tuple[int, str]:
+    while True:
+        if interrupted := pending.result():
+            return interrupted
+        remaining = deadline_at - time.monotonic()
+        if remaining <= 0:
+            return 124, "deadline-exceeded"
+        try:
+            status = child.wait(timeout=min(remaining, INTERRUPT_POLL_SECONDS))
+        except subprocess.TimeoutExpired:
+            continue
+        if interrupted := pending.result():
+            return interrupted
+        return (128 - status, "interrupted") if status < 0 else (status, "command-exit")
 
 
 def execute(
@@ -70,49 +97,41 @@ def execute(
     """Bound controller shutdown without replacing its result if reaping fails."""
     started = time.monotonic()
     reaped = True
-    with interrupts():
-        child = subprocess.Popen(  # noqa: S603 - fixed live workflow or fixed diagnostic reporter
-            command,
-            env=environment,
-            cwd=ROOT,
-            start_new_session=True,
-            pass_fds=(int(environment[FD_ENV]),) if FD_ENV in environment else (),
-        )
-        reason = "command-exit"
+    with interrupts() as pending:
         try:
-            status = child.wait(timeout=seconds)
-            if status < 0:
-                status, reason = 128 - status, "interrupted"
-        except subprocess.TimeoutExpired:
-            status, reason = 124, "deadline-exceeded"
-        except ControllerInterruptedError as error:
-            status, reason = 128 + error.signum, "interrupted"
+            child = subprocess.Popen(  # noqa: S603 - fixed workflow or diagnostic reporter
+                command,
+                env=environment,
+                cwd=ROOT,
+                start_new_session=True,
+                pass_fds=(int(environment[FD_ENV]),) if FD_ENV in environment else (),
+            )
+        except OSError:
+            print("Qualification process could not be started.", file=sys.stderr)
+            status, reason = pending.result() or (1, "command-exit")
+            return Exit(status, reason, round(time.monotonic() - started, 3), True)
+        try:
+            status, reason = _wait(child, started + seconds, pending)
         finally:
             # A terminating shell can exit zero or leave children behind. Neither
-            # changes the supervisor's timeout result. Do not signal our caller.
-            previous = {
-                sig: signal.signal(sig, signal.SIG_IGN) for sig in (signal.SIGTERM, signal.SIGINT)
-            }
+            # changes the result. Further signals are recorded without unwinding
+            # these bounded waits. Do not signal our caller.
+            _kill_group(child, signal.SIGTERM)
             try:
-                _kill_group(child, signal.SIGTERM)
+                child.wait(timeout=grace)
+            except subprocess.TimeoutExpired:
+                pass
+            finally:
+                _kill_group(child, signal.SIGKILL)
                 try:
                     child.wait(timeout=grace)
                 except subprocess.TimeoutExpired:
-                    pass
-                finally:
-                    _kill_group(child, signal.SIGKILL)
-                    try:
-                        child.wait(timeout=grace)
-                    except subprocess.TimeoutExpired:
-                        reaped = False
-                        print(
-                            "Qualification child could not be reaped after SIGKILL; "
-                            "original exit retained.",
-                            file=sys.stderr,
-                        )
-            finally:
-                for sig, handler in previous.items():
-                    signal.signal(sig, handler)
+                    reaped = False
+                    print(
+                        "Qualification child could not be reaped after SIGKILL; "
+                        "original exit retained.",
+                        file=sys.stderr,
+                    )
     return Exit(status, reason, round(time.monotonic() - started, 3), reaped)
 
 
