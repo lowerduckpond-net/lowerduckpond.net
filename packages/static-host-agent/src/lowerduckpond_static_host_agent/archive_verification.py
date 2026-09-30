@@ -13,6 +13,7 @@ from lowerduckpond_static_contracts import (
     validate_uuid7,
 )
 
+from lowerduckpond_static_host_agent import archive_failure_capture
 from lowerduckpond_static_host_agent.archive_journal import ArchiveJournal
 from lowerduckpond_static_host_agent.archive_remote import ArchiveRemoteError, RemoteVersion
 from lowerduckpond_static_host_agent.archive_service import _read_authority
@@ -85,6 +86,7 @@ def _terminal_authority(
 ) -> tuple[str, dict[str, object] | None]:
     with journal.repository.transaction(mode=LockMode.EXCLUSIVE, blocking=blocking) as transaction:
         job = transaction.read(StateRecordPath.authorization_job(job_id)).document
+        archive_failure_capture.bind_job(job, job_id)
         result = transaction.read(StateRecordPath.authorization_result(job_id)).document
         request = cast(dict[str, object], job["request"])
         if (
