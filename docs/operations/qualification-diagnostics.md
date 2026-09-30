@@ -22,6 +22,35 @@ intermediate files private. Production credentials remain on that workstation.
 These commands retain the production admission policy, resource limits, full
 lifecycle order, existing cleanup behavior, and original exit status.
 
+`just m3-11-spaces-qualification` supervises that complete live journey with a
+fixed 600-minute deadline, including wrapper setup; see the
+[budget amendment](../plans/milestone-3.11.md#live-qualification-deadline-amendment).
+Its controller runs in a separate process group. On expiry the supervisor sends
+TERM, allows at most 30 seconds for its direct child, then kills remaining group
+members before collecting diagnostics in a separate process. Docker guests are
+retained; stopping controller processes does not stop their guest services.
+Collection has a separate five-minute limit and 30-second termination grace.
+It is read-only against the fixture and providers and cannot extend qualification.
+
+Before collection, the supervisor writes `qualification-exit.json` with the
+actual status, fixed reason (`command-exit`, `deadline-exceeded` or `interrupted`),
+last entered wrapper phase, configured limit and monotonic supervised duration
+including controller shutdown. This allowlisted diagnostic contains no command
+arguments or credentials. Deadline expiry stays 124 and TERM/INT interruptions
+stay 143/130 even if a child exits zero or reporting fails. Failure collection
+also records `full-run-deadline` as the controller stage for expiry. The phase
+is the last entered step, not a completion receipt. If the wrapper fails before
+allocating a run directory, no per-run report is available.
+
+The supervisor preserves existing timing/failure reports. On forced termination,
+new timing collection accepts only completed event appends; incomplete final
+writes and unfinished spans cannot establish completion. Its elapsed time ends
+at immediate collection, whereas `qualification-exit.json` fixes the supervised
+duration before collection begins. A later read-only observation cannot refresh
+that exit measurement. Reporter failure may leave only the exit receipt; share
+it with any available `failure.json`. These diagnostics never substitute for a
+passing qualification envelope.
+
 ## Collecting a failure
 
 An unsuccessful installed run writes `failure.json` beside its timing report

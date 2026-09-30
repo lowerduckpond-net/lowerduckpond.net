@@ -176,6 +176,8 @@ files = [
   "tests/infrastructure/test_qualification_failure.py",
   "scripts/qualification_timing.py",
   "tests/infrastructure/test_qualification_timing.py",
+  "scripts/qualification_deadline.py",
+  "tests/infrastructure/test_qualification_deadline.py",
   "config/ansible/plugins/callback/ldp_timing.py",
   "scripts/qualification_pytest_timing.py",
   "scripts/m3_10_policy_client.py",

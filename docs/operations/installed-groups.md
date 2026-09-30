@@ -203,8 +203,10 @@ those overruns.
 
 These ceilings do not establish compliance with the 30-minute engineering
 target. Production service limits, admission pacing, assertions, required
-completion receipts, and the 330-minute complete-journey ceiling remain
-unchanged. A higher ceiling does not lengthen a successfully completed job.
+completion receipts, and the 330-minute CI complete-journey ceiling remain
+unchanged. The separate secure-workstation Spaces journey uses the provisional
+600-minute [live deadline amendment](../plans/milestone-3.11.md#live-qualification-deadline-amendment).
+A higher ceiling does not lengthen a successfully completed job.
 
 The original combined backup case passed in [CI run 35563599873](https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35563599873)
 but took 39.35 minutes including setup, exceeding the target. Its timing report

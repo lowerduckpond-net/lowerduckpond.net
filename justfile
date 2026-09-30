@@ -176,9 +176,9 @@ preflight-m3-11-production: _sync
 m3-10-spaces-qualification: _sync
     scripts/m3-10-spaces-qualification
 
-# Complete live recovery on owned disposable resources, within the existing full-run budget.
+# Complete live recovery with a measured deadline and separate failure collection.
 m3-11-spaces-qualification: _sync
-    timeout --signal=TERM --kill-after=30s 330m scripts/m3-10-spaces-qualification --milestone 3.11
+    uv run --frozen python -m scripts.qualification_deadline
 
 # Prepare, explicitly approve, or inspect a failed disposable archive retirement.
 [positional-arguments]

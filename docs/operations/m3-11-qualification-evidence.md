@@ -99,6 +99,14 @@ installed archive boundary probe checks capture in each real helper sandbox.
 These observations grant no qualification, recovery or deletion authority and
 cannot retrospectively explain a failure with missing evidence.
 
+`test_qualification_deadline.py` exercises real controller subprocesses,
+termination handlers, surviving descendants, external interruption and a stalled
+reporter. It verifies the original exit status, last entered phase and separately
+collected failure report even when a child's TERM handler exits zero.
+`qualification-exit.json` is diagnostic-only and cannot supply missing combined
+receipts. The [live deadline amendment](../plans/milestone-3.11.md#live-qualification-deadline-amendment)
+changes the execution ceiling, not this envelope or its uninterrupted proof.
+
 Every phase below has original UTC start/end times, a private evidence digest,
 and its exact named checks all marked `passed`. Missing, additional, failed or
 skipped checks cannot qualify. Phases execute in this order without overlapping
