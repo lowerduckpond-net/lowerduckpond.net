@@ -21,13 +21,14 @@ FAILED = 7
 CANARY = "private-provider-token-never-in-report"
 
 
-@pytest.mark.parametrize("status", [0, FAILED, TIMEOUT])
+@pytest.mark.parametrize("status", [0, FAILED, TIMEOUT, 128 + signal.SIGKILL])
 def test_ordinary_exit_is_not_reclassified_as_deadline(status: int) -> None:
     result = deadline.execute(
         [sys.executable, "-c", f"raise SystemExit({status})"], os.environ, seconds=10, grace=1
     )
     assert result.status == status
     assert result.reason == "command-exit"
+    assert result.direct_child_reaped
 
 
 def test_supervised_child_retains_existing_storage_lease_descriptor(tmp_path: Path) -> None:
@@ -96,10 +97,15 @@ run = Path(os.environ['TEST_RUN'])
 os.environ['DOCKER_HOST'] = 'unix:///disposable/docker.sock'
 timing._tool_output = lambda *_: 'unknown'
 timing.start_run(run, 'spaces')
+os.environ[timing.EVENT_ENV] = str(run / 'timing-events.jsonl')
 deadline.record(run, 'verify')
-if os.environ['TEST_RESULT'] == 'timeout':
+if os.environ['TEST_RESULT'] in ('timeout', 'killed'):
+    with timing.measure('verify'):
+        pass
     with (run / 'timing-events.jsonl').open('a') as stream:
         stream.write('{"incomplete":')
+    if os.environ['TEST_RESULT'] == 'killed':
+        os.kill(os.getpid(), signal.SIGKILL)
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     while True:
         time.sleep(1)
@@ -117,19 +123,27 @@ raise SystemExit(int(os.environ['TEST_RESULT']))
     return run
 
 
-@pytest.mark.parametrize("result", ["0", str(FAILED), "timeout"])
+@pytest.mark.parametrize("result", ["0", str(FAILED), "timeout", "killed"])
 def test_supervisor_collects_actual_result_and_phase_after_workflow_stops(
     journey: Path, monkeypatch: pytest.MonkeyPatch, result: str
 ) -> None:
     monkeypatch.setenv("TEST_RESULT", result)
-    expected = TIMEOUT if result == "timeout" else int(result)
+    expected = {"timeout": TIMEOUT, "killed": 128 + signal.SIGKILL}.get(result)
+    if expected is None:
+        expected = int(result)
     assert deadline.run() == expected
     exit_report = json.loads((journey / "qualification-exit.json").read_text())
     assert exit_report["status"] == expected
     assert exit_report["phase"] == "verify"
-    assert exit_report["reason"] == ("deadline-exceeded" if result == "timeout" else "command-exit")
+    assert exit_report["reason"] == {"timeout": "deadline-exceeded", "killed": "interrupted"}.get(
+        result, "command-exit"
+    )
+    assert exit_report["direct_child_reaped"] is True
     assert exit_report["authority"] == "diagnostic-only"
     assert json.loads((journey / "timing.json").read_text())["exit_status"] == expected
+    if result in {"timeout", "killed"}:
+        assert json.loads((journey / "timing.json").read_text())["event_count"] == 1
+        assert (journey / "timing-events.jsonl").read_bytes().endswith(b'{"incomplete":')
     assert not (journey / "qualification.json").exists()
     if expected:
         report = json.loads((journey / "failure.json").read_text())
@@ -141,6 +155,41 @@ def test_supervisor_collects_actual_result_and_phase_after_workflow_stops(
     else:
         assert not (journey / "failure.json").exists()
     assert all(CANARY not in path.read_text() for path in journey.glob("*.json"))
+
+
+def test_unreapable_controller_preserves_timeout_and_collects_diagnostics(
+    journey: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("TEST_RESULT", "timeout")
+    original_wait = subprocess.Popen.wait
+    controller: list[subprocess.Popen[bytes]] = []
+
+    def wait(child: subprocess.Popen[bytes], timeout: float | None = None) -> int:
+        if isinstance(child.args, list) and child.args[0] == str(
+            deadline.ROOT / "scripts/m3-10-spaces-qualification"
+        ):
+            if child in controller:
+                # Kernel I/O stalls cannot be safely induced in a test. Inject
+                # both exhausted shutdown waits after a real controller deadline.
+                assert timeout is not None
+                raise subprocess.TimeoutExpired(CANARY, timeout)
+            controller.append(child)
+        return original_wait(child, timeout=timeout)
+
+    monkeypatch.setattr(subprocess.Popen, "wait", wait)
+    try:
+        assert deadline.run() == TIMEOUT
+        receipt = json.loads((journey / "qualification-exit.json").read_text())
+        assert receipt["status"] == TIMEOUT
+        assert receipt["reason"] == "deadline-exceeded"
+        assert receipt["direct_child_reaped"] is False
+        assert json.loads((journey / "failure.json").read_text())["original_exit_status"] == TIMEOUT
+        output = capsys.readouterr().err
+        assert "could not be reaped after SIGKILL" in output
+        assert CANARY not in output
+    finally:
+        for child in controller:
+            original_wait(child, timeout=5)
 
 
 def test_reporter_failure_cannot_replace_original_timeout(

@@ -898,8 +898,10 @@ provider observations and final accounting chain. Splitting it into independent
 fixtures would remove that proof. Keep the existing independently runnable
 components and the full uninterrupted live journey. The supervisor now owns the
 deadline outside the controller's signal group, records its actual exit and
-duration, stops that group, then gives read-only failure collection five minutes
-plus a 30-second termination grace. A child EXIT trap reporting zero cannot
+duration, signals that group, then gives read-only failure collection five minutes.
+Both processes have a 30-second TERM grace and a bounded 30-second wait after
+SIGKILL. An unreapable child records a cleanup failure without changing the result.
+A child EXIT trap reporting zero cannot
 replace a deadline's 124 status. Collection does not continue qualification,
 restart guest services or grant cleanup authority.
 

@@ -745,8 +745,9 @@ This supervises the existing Spaces wrapper with `--milestone 3.11`, under a
 600-minute full-run deadline, including wrapper setup. The
 [live deadline amendment](../plans/milestone-3.11.md#live-qualification-deadline-amendment)
 records the provisional budget and required follow-up measurement. The supervisor
-stops the controller process group before collecting diagnostics separately for
-at most five minutes, with a 30-second termination grace. A deadline exit remains
+signals the controller process group before collecting diagnostics separately for
+at most five minutes. Shutdown allows 30 seconds after TERM and 30 after SIGKILL;
+failure to reap the child is reported without replacing the result. A deadline exit remains
 124 even if collection fails. `qualification-exit.json` records the actual
 supervised duration and last entered phase; later observation cannot extend it.
 See [qualification diagnostics](qualification-diagnostics.md) for report limits.

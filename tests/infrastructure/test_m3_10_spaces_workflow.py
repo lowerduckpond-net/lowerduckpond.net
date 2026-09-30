@@ -3,8 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import signal
 import subprocess
 import sys
+import time
+from contextlib import suppress
 from pathlib import Path
 
 import pytest
@@ -74,6 +77,55 @@ def test_supervised_workflow_records_phase_without_racing_parent_collection(
     )
 
 
+@pytest.mark.parametrize("milestone", ["3.10", "3.11"])
+@pytest.mark.parametrize("supervised", [False, True])
+def test_pid_targeted_term_is_trapped_only_by_supervised_m3_11(
+    tmp_path: Path, milestone: str, supervised: bool
+) -> None:
+    check_spaces_workflow(
+        tmp_path,
+        False,
+        ("unix:///disposable/docker.sock", "", "", True),
+        True,
+        milestone,
+        supervised=supervised,
+        cancel=True,
+    )
+
+
+def cancel_workflow(
+    command: list[str], environment: dict[str, str], directory: Path, *, trapped: bool
+) -> None:
+    process = subprocess.Popen(  # noqa: S603 - copied wrapper and owned command doubles
+        command,
+        env=environment,
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        ready = directory / "foreground-ready"
+        deadline_at = time.monotonic() + 10
+        while not ready.exists() and time.monotonic() < deadline_at and process.poll() is None:
+            time.sleep(0.01)
+        assert ready.exists(), "wrapper did not reach its foreground dependency command"
+        process.send_signal(signal.SIGTERM)
+        if trapped:
+            with pytest.raises(subprocess.TimeoutExpired):
+                process.wait(timeout=0.2)
+            (directory / "foreground-release").touch()
+            assert process.wait(timeout=5) == 128 + signal.SIGTERM
+        else:
+            assert process.wait(timeout=5) == -signal.SIGTERM
+            assert not (directory / "foreground-release").exists()
+    finally:
+        # Only the disposable test group: the direct-PID cancellation deliberately
+        # leaves its foreground child running, as the pre-supervisor wrapper did.
+        with suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
+        process.wait(timeout=5)
+
+
 def check_spaces_workflow(  # noqa: PLR0913, PLR0915 - shared command-double workflow fixture
     tmp_path: Path,
     relative: bool,
@@ -83,6 +135,7 @@ def check_spaces_workflow(  # noqa: PLR0913, PLR0915 - shared command-double wor
     *,
     capture_fails: bool = False,
     supervised: bool = False,
+    cancel: bool = False,
 ) -> None:
     docker_host, docker_context, context_endpoint, accepted = docker_selection
     checkout = tmp_path / "checkout"
@@ -130,10 +183,15 @@ cp -- "$TEST_ARTIFACT_PATH" "$1"
     executable(
         commands / "uv",
         """#!/usr/bin/python3
-import json, os, sys
+import json, os, sys, time
 from pathlib import Path
 with Path(os.environ['TEST_UV_CALLS']).open('a') as stream:
     stream.write(json.dumps(sys.argv[1:]) + '\\n')
+if sys.argv[1] == 'sync' and os.environ['TEST_CANCEL'] == 'true':
+    Path(os.environ['TEST_FOREGROUND_READY']).touch()
+    while not Path(os.environ['TEST_FOREGROUND_RELEASE']).exists():
+        time.sleep(0.01)
+    sys.exit(0)
 if 'scripts.qualification_deadline' in sys.argv:
     assert Path.cwd() == Path(os.environ['TEST_REPOSITORY'])
     command = [os.environ['TEST_PYTHON'], *sys.argv[sys.argv.index('python') + 1:]]
@@ -234,47 +292,55 @@ if 'scripts.m3_10_qualification_report' in sys.argv:
 """,
     )
     evidence = "evidence/runs" if relative else str(tmp_path / "private evidence")
-    result = subprocess.run(  # noqa: S603 - copied wrapper with fixed disposable command doubles
-        [str(wrapper), *(["--milestone", "3.11"] if milestone == "3.11" else [])],
-        env={
-            **os.environ,
-            "PATH": str(commands) + ":" + os.environ["PATH"],
-            "DOCKER_HOST": docker_host,
-            "DOCKER_CONTEXT": docker_context,
-            "TEST_CONTEXT_ENDPOINT": context_endpoint,
-            "TEST_LOADER_MARKER": str(tmp_path / "loaded"),
-            "TEST_INPUT_MARKER": str(tmp_path / "input-captured"),
-            "TEST_UV_CALLS": str(tmp_path / "uv-calls.jsonl"),
-            "TEST_INPUTS_AVAILABLE": str(inputs_available).lower(),
-            "TEST_CAPTURE_FAILS": str(capture_fails).lower(),
-            "SPACES_ACCESS_KEY_ID": "disposable-operator",
-            "SPACES_SECRET_ACCESS_KEY": "disposable-secret",
-            "SPACES_REGION": "nyc3",
-            "SPACES_ARCHIVE_BUCKET": "disposable-archive",
-            "SPACES_BACKUP_BUCKET": "disposable-backup",
-            "M3_10_EVIDENCE_ROOT": evidence,
-            "M3_11_EVIDENCE_ROOT": evidence,
-            "M3_11_COMBINED_BACKEND": "foreign-ambient-backend",
-            "TEST_MILESTONE": milestone,
-            "TEST_ARTIFACT_PATH": str(artifact),
-            "TEST_ARTIFACT": digest,
-            "TEST_PYTHON": sys.executable,
-            "TEST_REPOSITORY": str(checkout),
-            "PYTHONPATH": str(ROOT),
-            **({deadline.CONTEXT_ENV: str(tmp_path / "context.json")} if supervised else {}),
-            **dict.fromkeys(
-                (
-                    "LDP_QUALIFICATION_RUN_ID",
-                    "LDP_QUALIFICATION_HOST",
-                    "LDP_QUALIFICATION_ARCHIVE",
-                    "LDP_QUALIFICATION_IMAGE",
-                    "LDP_QUALIFICATION_SSH_PORT",
-                    "LDP_QUALIFICATION_ARTIFACT",
-                    "MOLECULE_EPHEMERAL_DIRECTORY",
-                ),
-                "foreign-local-fixture",
+    command = [str(wrapper), *(["--milestone", "3.11"] if milestone == "3.11" else [])]
+    environment = {
+        **os.environ,
+        "PATH": str(commands) + ":" + os.environ["PATH"],
+        "DOCKER_HOST": docker_host,
+        "DOCKER_CONTEXT": docker_context,
+        "TEST_CONTEXT_ENDPOINT": context_endpoint,
+        "TEST_LOADER_MARKER": str(tmp_path / "loaded"),
+        "TEST_INPUT_MARKER": str(tmp_path / "input-captured"),
+        "TEST_UV_CALLS": str(tmp_path / "uv-calls.jsonl"),
+        "TEST_INPUTS_AVAILABLE": str(inputs_available).lower(),
+        "TEST_CAPTURE_FAILS": str(capture_fails).lower(),
+        "TEST_CANCEL": str(cancel).lower(),
+        "TEST_FOREGROUND_READY": str(tmp_path / "foreground-ready"),
+        "TEST_FOREGROUND_RELEASE": str(tmp_path / "foreground-release"),
+        "SPACES_ACCESS_KEY_ID": "disposable-operator",
+        "SPACES_SECRET_ACCESS_KEY": "disposable-secret",
+        "SPACES_REGION": "nyc3",
+        "SPACES_ARCHIVE_BUCKET": "disposable-archive",
+        "SPACES_BACKUP_BUCKET": "disposable-backup",
+        "M3_10_EVIDENCE_ROOT": evidence,
+        "M3_11_EVIDENCE_ROOT": evidence,
+        "M3_11_COMBINED_BACKEND": "foreign-ambient-backend",
+        "TEST_MILESTONE": milestone,
+        "TEST_ARTIFACT_PATH": str(artifact),
+        "TEST_ARTIFACT": digest,
+        "TEST_PYTHON": sys.executable,
+        "TEST_REPOSITORY": str(checkout),
+        "PYTHONPATH": str(ROOT),
+        **({deadline.CONTEXT_ENV: str(tmp_path / "context.json")} if supervised else {}),
+        **dict.fromkeys(
+            (
+                "LDP_QUALIFICATION_RUN_ID",
+                "LDP_QUALIFICATION_HOST",
+                "LDP_QUALIFICATION_ARCHIVE",
+                "LDP_QUALIFICATION_IMAGE",
+                "LDP_QUALIFICATION_SSH_PORT",
+                "LDP_QUALIFICATION_ARTIFACT",
+                "MOLECULE_EPHEMERAL_DIRECTORY",
             ),
-        },
+            "foreign-local-fixture",
+        ),
+    }
+    if cancel:
+        cancel_workflow(command, environment, tmp_path, trapped=milestone == "3.11" and supervised)
+        return
+    result = subprocess.run(  # noqa: S603 - copied wrapper with fixed disposable command doubles
+        command,
+        env=environment,
         capture_output=True,
         text=True,
         check=False,

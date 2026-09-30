@@ -26,10 +26,14 @@ lifecycle order, existing cleanup behavior, and original exit status.
 fixed 600-minute deadline, including wrapper setup; see the
 [budget amendment](../plans/milestone-3.11.md#live-qualification-deadline-amendment).
 Its controller runs in a separate process group. On expiry the supervisor sends
-TERM, allows at most 30 seconds for its direct child, then kills remaining group
-members before collecting diagnostics in a separate process. Docker guests are
+TERM, allows at most 30 seconds for its direct child, then sends SIGKILL to remaining
+group members and waits at most another 30 seconds to reap that child. A kernel
+I/O stall can prevent reaping even after SIGKILL. This is recorded as
+`direct_child_reaped: false`, with a fixed warning; the already determined exit
+status and subsequent diagnostic collection are preserved. Docker guests are
 retained; stopping controller processes does not stop their guest services.
-Collection has a separate five-minute limit and 30-second termination grace.
+Collection runs in a separate process with a five-minute limit and the same
+bounded termination/reaping policy.
 It is read-only against the fixture and providers and cannot extend qualification.
 
 Before collection, the supervisor writes `qualification-exit.json` with the
@@ -37,7 +41,12 @@ actual status, fixed reason (`command-exit`, `deadline-exceeded` or `interrupted
 last entered wrapper phase, configured limit and monotonic supervised duration
 including controller shutdown. This allowlisted diagnostic contains no command
 arguments or credentials. Deadline expiry stays 124 and TERM/INT interruptions
-stay 143/130 even if a child exits zero or reporting fails. Failure collection
+stay 143/130 even if a child exits zero or reporting fails. Direct signal death
+of the controller also records `interrupted` and status 128 plus the signal
+number (137 for SIGKILL), so a truncated final timing append does not discard
+the completed spans. An ordinary command that exits 137 remains `command-exit`.
+The TERM/INT traps apply only to supervised M3.11; the default M3.10 wrapper
+retains its original signal handling. Failure collection
 also records `full-run-deadline` as the controller stage for expiry. The phase
 is the last entered step, not a completion receipt. If the wrapper fails before
 allocating a run directory, no per-run report is available.

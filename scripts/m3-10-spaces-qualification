@@ -107,8 +107,10 @@ set_phase() {
 }
 diagnostic_phase=state-inputs
 trap failed EXIT
-trap 'exit 143' TERM
-trap 'exit 130' INT
+if [[ ${milestone} == 3.11 && -n ${LDP_QUALIFICATION_SUPERVISOR_CONTEXT:-} ]]; then
+    trap 'exit 143' TERM
+    trap 'exit 130' INT
+fi
 set_phase state-inputs
 export LDP_QUALIFICATION_TIMING_EVENTS="${run_directory}/timing-events.jsonl"
 export LDP_QUALIFICATION_TIMING_GROUP=unclassified

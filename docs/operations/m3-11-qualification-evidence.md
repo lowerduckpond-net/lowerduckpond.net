@@ -103,6 +103,9 @@ cannot retrospectively explain a failure with missing evidence.
 termination handlers, surviving descendants, external interruption and a stalled
 reporter. It verifies the original exit status, last entered phase and separately
 collected failure report even when a child's TERM handler exits zero.
+It also covers direct controller SIGKILL with a truncated timing append and
+injects an exhausted reap wait after a real timeout. The wrapper regressions
+target its PID during a foreground command and retain default M3.10 cancellation.
 `qualification-exit.json` is diagnostic-only and cannot supply missing combined
 receipts. The [live deadline amendment](../plans/milestone-3.11.md#live-qualification-deadline-amendment)
 changes the execution ceiling, not this envelope or its uninterrupted proof.

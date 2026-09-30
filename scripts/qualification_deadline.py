@@ -1,4 +1,4 @@
-"""Supervise the live M3.11 journey and collect diagnostics after its controller stops."""
+"""Supervise the live M3.11 journey and retain diagnostics after bounded shutdown."""
 
 from __future__ import annotations
 
@@ -34,6 +34,7 @@ class Exit:
     status: int
     reason: str
     elapsed_seconds: float
+    direct_child_reaped: bool
 
 
 class ControllerInterruptedError(Exception):
@@ -66,8 +67,9 @@ def execute(
     seconds: float,
     grace: float = GRACE_SECONDS,
 ) -> Exit:
-    """Keep the supervisor outside the child's signal group and reap its direct child."""
+    """Bound controller shutdown without replacing its result if reaping fails."""
     started = time.monotonic()
+    reaped = True
     with interrupts():
         child = subprocess.Popen(  # noqa: S603 - fixed live workflow or fixed diagnostic reporter
             command,
@@ -79,7 +81,8 @@ def execute(
         reason = "command-exit"
         try:
             status = child.wait(timeout=seconds)
-            status = status if status >= 0 else 128 - status
+            if status < 0:
+                status, reason = 128 - status, "interrupted"
         except subprocess.TimeoutExpired:
             status, reason = 124, "deadline-exceeded"
         except ControllerInterruptedError as error:
@@ -98,11 +101,19 @@ def execute(
                     pass
                 finally:
                     _kill_group(child, signal.SIGKILL)
-                    child.wait(timeout=grace)
+                    try:
+                        child.wait(timeout=grace)
+                    except subprocess.TimeoutExpired:
+                        reaped = False
+                        print(
+                            "Qualification child could not be reaped after SIGKILL; "
+                            "original exit retained.",
+                            file=sys.stderr,
+                        )
             finally:
                 for sig, handler in previous.items():
                     signal.signal(sig, handler)
-    return Exit(status, reason, round(time.monotonic() - started, 3))
+    return Exit(status, reason, round(time.monotonic() - started, 3), reaped)
 
 
 def record(directory: Path, phase: str) -> None:
@@ -224,7 +235,7 @@ def run() -> int:
                 environment,
                 seconds=REPORT_SECONDS,
             )
-            if observed.status:
+            if observed.status or not observed.direct_child_reaped:
                 print(
                     "Qualification diagnostic collection incomplete; original exit retained.",
                     file=sys.stderr,
