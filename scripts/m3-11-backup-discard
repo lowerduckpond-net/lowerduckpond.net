@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+set +x
+
+repository_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+cd -- "${repository_root}"
+exec uv run --frozen python -m scripts.m3_11_backup_discard "$@"

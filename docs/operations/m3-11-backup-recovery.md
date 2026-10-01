@@ -819,6 +819,38 @@ inputs, provider coordinates, phase details, teardown journals and logs remain
 in that directory. Local tests and the complete MinIO journey remain diagnostic;
 they do not establish live Spaces or public-CA qualification.
 
+### Discarding abandoned qualification backups
+
+Once an abandoned attempt's diagnostics are no longer needed, permanently remove
+its disposable backup repository with `scripts/m3-11-backup-discard`. Stop that
+run's source and destination writers first. This is administrative disposal; it
+does not complete a failed qualification or produce acceptance evidence.
+
+In the private environment shell, use `SPACES_ACCESS_KEY_ID` and
+`SPACES_SECRET_ACCESS_KEY` for the Spaces operator. `--region` defaults to
+`SPACES_REGION`; `--bucket` defaults to `SPACES_BACKUP_BUCKET` if already loaded.
+Otherwise supply the backup Space's name explicitly. This command needs no
+OpenTofu state credentials or surviving local run directory.
+
+Pass one or more run UUIDs or exact `m3-11-qualification/<UUID>/` prefixes. The
+following uses example coordinates; substitute the abandoned run IDs and backup
+Space name. Without `--discard`, it only previews the selected inventories:
+
+```bash
+scripts/m3-11-backup-discard --bucket example-backup-space \
+    0198d17f-6f4a-7000-8000-000000000001 \
+    m3-11-qualification/0198d17f-6f4a-7000-8000-000000000002/
+```
+
+Add `--discard` to the same command to delete permanently. It removes every
+stored object version and delete marker, aborts unfinished multipart uploads,
+removes ownership markers last, and verifies all three inventory views are
+empty. All selected prefixes are inventoried before deletion begins. Broad
+prefixes, production repository paths, URLs, and subdirectories are rejected.
+An inventory change stops deletion; it does not repeatedly purge a live writer.
+If interrupted, completed deletions remain permanent. Rerun the same selected
+targets to finish, including when ownership markers are already gone.
+
 ### Interrupted combined teardown
 
 A failed qualification retains its original attempt and cannot be rerun into a
