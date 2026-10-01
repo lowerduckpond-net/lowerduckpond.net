@@ -74,6 +74,11 @@ uses these existing infrastructure inputs:
 | `CLOUDFLARE_ZONE_ID`, `CLOUDFLARE_TENANT_ZONE_ID` | Exact production zone identities. |
 | `CLOUDFLARE_ORIGIN_PULL_CERTIFICATE_ID`, `CLOUDFLARE_TENANT_ORIGIN_PULL_CERTIFICATE_ID` | Exact accepted active origin-pull leaves. |
 
+Fresh M3.11 qualification also requires at least 12 hours remaining on both
+temporary tokens at startup; see the [M3.11 runbook](m3-11-backup-recovery.md#combined-live-qualification).
+Rolling a token with an old issue/start date remains supported. This minimum
+does not apply to ordinary M3.10 checks or restart during an in-progress run.
+
 The separate archive and backup runtime keys are derived from encrypted state
 inside the wrapper process; do not copy them into inventory or artifact files.
 Use the existing state passphrase. No new passphrase or credential storage

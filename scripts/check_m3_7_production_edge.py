@@ -650,6 +650,7 @@ def _require_account_token_policies(  # noqa: PLR0913 -- all credential roles ar
     account_id: str,
     zone_ids: frozenset[str],
     now: datetime,
+    minimum_audit_remaining: timedelta = timedelta(),
 ) -> None:
     audit_details = _account_token_details(
         audit_client,
@@ -682,6 +683,12 @@ def _require_account_token_policies(  # noqa: PLR0913 -- all credential roles ar
     if not now < expires_on <= now + MAXIMUM_AUDIT_TOKEN_REMAINING:
         raise ProductionEdgePreflightError(
             "the temporary token-audit token must expire within 8 days from now"
+        )
+    if expires_on - now < minimum_audit_remaining:
+        hours = minimum_audit_remaining.total_seconds() / 3600
+        raise ProductionEdgePreflightError(
+            f"the temporary token-audit token needs at least {hours:g} hours remaining "
+            "from now before qualification; roll it before starting"
         )
 
     zone_resources = frozenset(f"com.cloudflare.api.account.zone.{zone_id}" for zone_id in zone_ids)

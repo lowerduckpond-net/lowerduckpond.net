@@ -27,7 +27,12 @@ class PageRulesClient:
     """Verify a temporary user token and restrict it to the two reviewed inventories."""
 
     def __init__(
-        self, client: CloudflareClient, *, zone_ids: frozenset[str], now: datetime
+        self,
+        client: CloudflareClient,
+        *,
+        zone_ids: frozenset[str],
+        now: datetime,
+        minimum_remaining: timedelta = timedelta(),
     ) -> None:
         if len(zone_ids) != _ZONE_COUNT or any(
             re.fullmatch(r"[0-9a-f]{32}", zone) is None for zone in zone_ids
@@ -52,6 +57,12 @@ class PageRulesClient:
         if not now < expires <= now + _MAXIMUM_REMAINING:
             raise ProductionEdgePreflightError(
                 "the Page Rules user token must expire within 91 days from now"
+            )
+        if expires - now < minimum_remaining:
+            hours = minimum_remaining.total_seconds() / 3600
+            raise ProductionEdgePreflightError(
+                f"the Page Rules user token needs at least {hours:g} hours remaining "
+                "from now before qualification; roll it before starting"
             )
         not_before = verification.get("not_before")
         if not_before not in (None, "") and _timestamp(not_before) > now:

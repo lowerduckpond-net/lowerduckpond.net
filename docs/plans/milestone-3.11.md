@@ -1088,6 +1088,18 @@ future-date checks, exact permissions and exact resource scopes remain required.
 The Page Rules local zone-ID error must name both environment variables and
 explain that token verification has not yet run.
 
+Fresh M3.11 qualification additionally requires both temporary tokens to have
+at least 12 hours remaining at startup. This minimum is derived from the
+shared 600-minute live-run ceiling plus a two-hour cleanup/reporting reserve,
+and is independent of their original issue/start dates. The check runs before
+fixture allocation or qualification provider writes, including when the Spaces
+wrapper is invoked directly. A separate read-only token preflight is available;
+its result is not reused to skip the startup check. Existing maximum remaining
+lifetimes and policy/role validation remain mandatory. Ordinary M3.10 checks,
+production convergence and later M3.11 provider checks do not acquire a new
+12-hour minimum. This startup guard does not extend the qualification deadline
+or establish live provider evidence.
+
 P6c retains the exact original report, artifact, predecessor completion and
 hash-linked phase proposals on the workstation and host. A complete proposal
 is durable before either journal can publish it. A resumed controller recovers

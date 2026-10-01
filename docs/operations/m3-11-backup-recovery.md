@@ -737,6 +737,28 @@ The controller and Docker daemon must share the host network namespace used for
 published SSH ports. A forwarded Unix socket from a different container host is
 not that supported controller topology.
 
+At the start of each fresh M3.11 attempt, the wrapper checks that the temporary
+Account API Tokens Read and Page Rules tokens each have at least **12 hours
+remaining from now**: the shared 600-minute run ceiling plus a two-hour cleanup
+and reporting margin. It does this after dependency sync and before building
+the storage fixture, allocating hosts, or writing qualification data to providers.
+A short-lived token is named in the error with an instruction to roll it.
+The existing eight-day audit-token and 91-day Page Rules maximum remaining
+lifetimes still apply. Old issue/start dates retained by rolled tokens are valid;
+these checks do not measure the original issue-to-expiry interval.
+
+To check the same starting condition separately in the private environment shell:
+
+```bash
+uv run --frozen python -m scripts.m3_11_token_preflight
+```
+
+The qualification command always repeats this read-only check at startup, so an
+earlier preflight cannot authorize starting with less time remaining. Later
+provider checks still require active, unexpired tokens and the exact runtime
+policy, without restarting the 12-hour minimum. The reserve cannot prevent
+external revocation. Caddy's runtime token remains non-expiring.
+
 ```bash
 just m3-11-spaces-qualification
 ```

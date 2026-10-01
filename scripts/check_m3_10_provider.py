@@ -12,7 +12,7 @@ import sys
 import tempfile
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
 from pathlib import Path
 from typing import Final, Protocol, cast
@@ -395,7 +395,13 @@ def required(environment: Mapping[str, str], name: str) -> str:
     return value
 
 
-def check_caddy_token(environment: Mapping[str, str], *, account_id: str, now: datetime) -> None:
+def check_caddy_token(
+    environment: Mapping[str, str],
+    *,
+    account_id: str,
+    now: datetime,
+    minimum_audit_remaining: timedelta = timedelta(),
+) -> None:
     """Bind the live runtime token to its exact non-expiring two-zone policy."""
     edge_token = required(environment, "CLOUDFLARE_API_TOKEN")
     caddy_token = required(environment, "CADDY_CLOUDFLARE_API_TOKEN")
@@ -420,10 +426,16 @@ def check_caddy_token(environment: Mapping[str, str], *, account_id: str, now: d
         account_id=account_id,
         zone_ids=frozenset(zone_id for zone_id, _ in zones),
         now=now,
+        minimum_audit_remaining=minimum_audit_remaining,
     )
 
 
-def page_rules_client(environment: Mapping[str, str], *, now: datetime) -> PageRulesClient:
+def page_rules_client(
+    environment: Mapping[str, str],
+    *,
+    now: datetime,
+    minimum_remaining: timedelta = timedelta(),
+) -> PageRulesClient:
     token = required(environment, "M3_10_PAGE_RULES_TOKEN")
     if token in {
         required(environment, name)
@@ -441,6 +453,7 @@ def page_rules_client(environment: Mapping[str, str], *, now: datetime) -> PageR
             for name in ("CLOUDFLARE_ZONE_ID", "CLOUDFLARE_TENANT_ZONE_ID")
         ),
         now=now,
+        minimum_remaining=minimum_remaining,
     )
 
 

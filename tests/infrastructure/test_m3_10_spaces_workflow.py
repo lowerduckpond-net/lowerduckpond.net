@@ -17,6 +17,7 @@ from scripts import qualification_deadline as deadline
 ROOT = Path(__file__).parents[2]
 PHASES = ("create", "prepare", "converge", "idempotence", "verify", "destroy")
 CAPTURE_FAILURE_STATUS = 19
+TOKEN_FAILURE_STATUS = 23
 
 
 def executable(path: Path, body: str) -> None:
@@ -59,6 +60,23 @@ def test_public_input_capture_failure_retains_create_without_preparing_or_destro
         True,
         "3.11",
         capture_fails=True,
+    )
+
+
+@pytest.mark.parametrize(
+    ("milestone", "supervised"), [("3.10", False), ("3.11", False), ("3.11", True)]
+)
+def test_short_token_stops_m3_11_before_fixture_or_provider_writes(
+    tmp_path: Path, milestone: str, supervised: bool
+) -> None:
+    check_spaces_workflow(
+        tmp_path,
+        False,
+        ("unix:///disposable/docker.sock", "", "", True),
+        True,
+        milestone,
+        supervised=supervised,
+        tokens_fail=True,
     )
 
 
@@ -126,7 +144,7 @@ def cancel_workflow(
         process.wait(timeout=5)
 
 
-def check_spaces_workflow(  # noqa: PLR0913, PLR0915 - shared command-double workflow fixture
+def check_spaces_workflow(  # noqa: PLR0912, PLR0913, PLR0915 - explicit workflow failure boundaries
     tmp_path: Path,
     relative: bool,
     docker_selection: tuple[str, str, str, bool],
@@ -136,6 +154,7 @@ def check_spaces_workflow(  # noqa: PLR0913, PLR0915 - shared command-double wor
     capture_fails: bool = False,
     supervised: bool = False,
     cancel: bool = False,
+    tokens_fail: bool = False,
 ) -> None:
     docker_host, docker_context, context_endpoint, accepted = docker_selection
     checkout = tmp_path / "checkout"
@@ -192,6 +211,11 @@ if sys.argv[1] == 'sync' and os.environ['TEST_CANCEL'] == 'true':
     while not Path(os.environ['TEST_FOREGROUND_RELEASE']).exists():
         time.sleep(0.01)
     sys.exit(0)
+if 'scripts.m3_11_token_preflight' in sys.argv:
+    assert Path.cwd() == Path(os.environ['TEST_REPOSITORY'])
+    if os.environ['TEST_TOKENS_FAIL'] == 'true':
+        print('Token needs at least 12 hours remaining from now.', file=sys.stderr)
+        sys.exit(23)
 if 'scripts.qualification_deadline' in sys.argv:
     assert Path.cwd() == Path(os.environ['TEST_REPOSITORY'])
     command = [os.environ['TEST_PYTHON'], *sys.argv[sys.argv.index('python') + 1:]]
@@ -305,6 +329,7 @@ if 'scripts.m3_10_qualification_report' in sys.argv:
         "TEST_INPUTS_AVAILABLE": str(inputs_available).lower(),
         "TEST_CAPTURE_FAILS": str(capture_fails).lower(),
         "TEST_CANCEL": str(cancel).lower(),
+        "TEST_TOKENS_FAIL": str(tokens_fail).lower(),
         "TEST_FOREGROUND_READY": str(tmp_path / "foreground-ready"),
         "TEST_FOREGROUND_RELEASE": str(tmp_path / "foreground-release"),
         "SPACES_ACCESS_KEY_ID": "disposable-operator",
@@ -360,6 +385,33 @@ if 'scripts.m3_10_qualification_report' in sys.argv:
     assert "scripts.qualification_storage_lease" in calls[1] and "--check" in calls[1]
     assert "start" in calls[2] and "--no-sync" in calls[2]
     assert calls[3] == ["sync", "--all-packages", "--all-groups", "--frozen"]
+    token_calls = [call for call in calls if "scripts.m3_11_token_preflight" in call]
+    assert len(token_calls) == (1 if milestone == "3.11" else 0)
+    if token_calls:
+        assert token_calls == [calls[4]]
+    if tokens_fail and milestone == "3.11":
+        assert result.returncode == TOKEN_FAILURE_STATUS
+        assert "12 hours remaining" in result.stderr
+        assert not any(
+            name in call
+            for call in calls
+            for name in (
+                "scripts.qualification_minio",
+                "scripts.m3_11_combined_inputs",
+                "scripts.check_m3_10_provider",
+                "ldp-m3-archive",
+                "molecule",
+            )
+        )
+        directories = list(expected.glob("spaces-*"))
+        assert len(directories) == 1
+        assert not (directories[0] / "qualification.json").exists()
+        assert not (directories[0] / "fixture").exists()
+        if supervised:
+            assert deadline.context(tmp_path / "context.json")[1] == "provider-preflight"
+        else:
+            assert calls[-1][-4:] == ["--status", "23", "--phase", "provider-preflight"]
+        return
     timing_calls = [
         call for call in calls if any(arg.endswith("/qualification_timing.py") for arg in call)
     ]

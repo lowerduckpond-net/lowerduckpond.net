@@ -124,6 +124,11 @@ uv run --quiet --no-sync --frozen python "${repository_root}/scripts/qualificati
 # private operator diagnostics, not sanitized reports or uploadable artifacts.
 set_phase dependencies
 uv sync --all-packages --all-groups --frozen >"${run_directory}/dependencies.log" 2>&1
+if [[ ${milestone} == 3.11 ]]; then
+    set_phase provider-preflight
+    uv run --quiet --frozen python -m scripts.m3_11_token_preflight
+    set_phase dependencies
+fi
 uv run --quiet --frozen python -m scripts.qualification_minio \
     >"${run_directory}/local-storage-fixture.log" 2>&1
 combined_step() (
