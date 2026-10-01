@@ -13,6 +13,7 @@ import pytest
 from scripts import m3_11_owned_teardown as teardown
 from scripts import m3_11_qualification_evidence as evidence
 from scripts import qualification_restore as restore
+from scripts.m3_11_backup_removal import MAX_INTENT_BYTES
 from scripts.m3_11_combined_inputs import allocate
 from scripts.m3_11_live_storage import LiveStorage
 from scripts.m3_11_private_inputs import read_private, write_private
@@ -102,6 +103,7 @@ class Fixture:
         self.removal.directory = directory / "owned-teardown/backup"
         self.removal.run.side_effect = self.backup
         self.removal._observed.return_value = copy.deepcopy(teardown.EMPTY)
+        self.backup_inventory: dict[str, object] = copy.deepcopy(teardown.EMPTY)
         self._patch(monkeypatch)
         self.controller = teardown.Teardown(directory, self.storage, self.dns)
         self.completion = Completion(teardown.nodes(self.environment))
@@ -183,8 +185,9 @@ class Fixture:
                 "ownership": self.controller.intent["storage"],
                 "owner_version": self.storage.owner_version,
                 "quiescent_sha256": teardown._digest(self.controller.intent),
+                "inventory": self.backup_inventory,
             }
-            write_private(self.removal.directory / "intent.json", intent)
+            write_private(self.removal.directory / "intent.json", intent, maximum=MAX_INTENT_BYTES)
             write_private(
                 self.removal.directory / "removed.json",
                 {
@@ -226,6 +229,21 @@ def test_complete_teardown_proves_absence_before_emitting_its_receipt(fixture: F
     assert fixture.controller.run() == result
     assert (fixture.controller.root / "removed.json").read_bytes() == original
     assert not (fixture.directory / "combined.json").exists()
+
+
+def test_final_teardown_reads_the_large_original_backup_deletion_intent(fixture: Fixture) -> None:
+    prefix = f"m3-11-qualification/{fixture.context['run_id']}/restic/data/"
+    keys = [prefix + f"{index:064x}" for index in range(1500)]
+    fixture.backup_inventory = {
+        "current": keys,
+        "versions": [["version", key, f"version-{index:064x}"] for index, key in enumerate(keys)],
+        "uploads": [],
+    }
+    fixture.authorize()
+    assert fixture.controller.run()["teardown"] == dict.fromkeys(evidence.ZERO_TEARDOWN, 0)
+    assert fixture.actions == list(teardown.STEPS)
+    with pytest.raises(ValueError, match="unsafe metadata"):
+        read_private(fixture.removal.directory / "intent.json")
 
 
 @pytest.mark.parametrize("step", teardown.STEPS)

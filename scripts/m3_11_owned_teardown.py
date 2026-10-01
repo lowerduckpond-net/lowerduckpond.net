@@ -19,7 +19,7 @@ from lowerduckpond_m3_archive.storage import assert_storage_empty
 
 from scripts import m3_11_qualification_evidence as evidence
 from scripts import qualification_restore as restore
-from scripts.m3_11_backup_removal import Removal, _once
+from scripts.m3_11_backup_removal import MAX_INTENT_BYTES, Removal, _once
 from scripts.m3_11_combined_inputs import environment_for
 from scripts.m3_11_dns_witness import removal_absence
 from scripts.m3_11_live_storage import LiveStorage
@@ -291,7 +291,7 @@ class Teardown:
 
     def _backup_absent(self) -> None:
         removal = self._backup()
-        intent = read_private(removal.directory / "intent.json")
+        intent = read_private(removal.directory / "intent.json", maximum=MAX_INTENT_BYTES)
         if (
             intent.get("ownership") != self.intent["storage"]
             or intent.get("owner_version") != self.storage.owner_version

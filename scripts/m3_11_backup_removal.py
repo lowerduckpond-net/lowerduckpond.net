@@ -28,7 +28,10 @@ from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes, digest, fields
 
 FORMAT = "lowerduckpond-m3-11-backup-removal-v1"
-MAX_ENTRIES = 1024
+# Versioned Restic lock churn alone can exceed a single S3 listing page.
+MAX_ENTRIES = 100_000
+# Only the exact deletion inventory uses this larger private-file bound.
+MAX_INTENT_BYTES = 32 * 1024 * 1024
 
 
 def _once(path: Path, value: dict[str, object]) -> None:
@@ -134,7 +137,7 @@ class Removal:
         path = self.directory / "intent.json"
         if self.directory.exists() or self.directory.is_symlink():
             intent = fields(
-                read_private(path),
+                read_private(path, maximum=MAX_INTENT_BYTES),
                 {"format", "ownership", "owner_version", "quiescent_sha256", "inventory"},
             )
             if (
@@ -160,7 +163,7 @@ class Removal:
             "quiescent_sha256": quiet,
             "inventory": inventory,
         }
-        write_private(path, intent)
+        write_private(path, intent, maximum=MAX_INTENT_BYTES)
         return intent
 
     def _delete(self, key: str, version: str) -> None:
@@ -201,9 +204,9 @@ class Removal:
             self._owner()
             original = cast("dict[str, object]", intent["inventory"])
             for key, rows in remaining.items():
+                authorized = {canonical_bytes(row) for row in cast("list[object]", original[key])}
                 if any(
-                    row not in cast("list[object]", original[key])
-                    for row in cast("list[object]", rows)
+                    canonical_bytes(row) not in authorized for row in cast("list[object]", rows)
                 ):
                     raise ValueError("new backup bytes appeared after removal authorization")
             only_owner = {

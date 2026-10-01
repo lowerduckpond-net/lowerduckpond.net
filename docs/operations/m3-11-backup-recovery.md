@@ -812,6 +812,12 @@ remove the original ownership version last, stop/remove the source and unused
 empty local archive fixture, and remove only the run's image tag. Independent
 backup, archive and DNS absence must hold before the combined receipt is written.
 
+Backup removal paginates the complete owned prefix, including historical Restic
+lock versions and delete markers. Its inventory is bounded at 100,000 combined
+current-object, version/delete-marker and multipart-upload entries; its private
+deletion intent has a separate 32-MiB bound. Other private evidence retains its
+256-KiB bound. Exceeding either removal bound stops before any backup deletion.
+
 Share only `qualification.json` and `qualification.sha256` from the printed
 private run directory. The [evidence contract](m3-11-qualification-evidence.md)
 defines their original bindings and chronology. Private names, captured system
