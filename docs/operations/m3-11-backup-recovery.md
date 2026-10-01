@@ -857,8 +857,10 @@ scripts/m3-11-backup-discard --bucket example-backup-space \
 Add `--discard` to the same command to delete permanently. It removes every
 stored object version and delete marker, aborts unfinished multipart uploads,
 removes ownership markers last, and verifies all three inventory views are
-empty. All selected prefixes are inventoried before deletion begins. Broad
-prefixes, production repository paths, URLs, and subdirectories are rejected.
+empty. All selected prefixes are inventoried before deletion begins.
+The 100,000-entry bound applies to the combined current objects, versions/delete
+markers and unfinished uploads for each prefix, before deletion begins.
+Broad prefixes, production repository paths, URLs, and subdirectories are rejected.
 An inventory change stops deletion; it does not repeatedly purge a live writer.
 If interrupted, completed deletions remain permanent. Rerun the same selected
 targets to finish, including when ownership markers are already gone.

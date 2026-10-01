@@ -143,6 +143,26 @@ def test_preview_accepts_ids_and_prefixes_without_mutation(
     assert "Preview only" in output
 
 
+@pytest.mark.parametrize("apply", [False, True])
+def test_combined_entry_bound_rejects_individually_bounded_views_before_deletion(
+    storage: Storage, monkeypatch: pytest.MonkeyPatch, apply: bool
+) -> None:
+    # Two current objects, five versions/markers and three uploads each fit nine.
+    monkeypatch.setattr(cleanup, "MAX_ENTRIES", 9)
+    with pytest.raises(cleanup.DiscardError, match="combined backup inventory"):
+        cleanup.run(storage.client(), bucket=BUCKET, targets=[RUN], apply=apply)
+    assert not storage.operations
+
+
+def test_inventory_at_the_combined_entry_bound_can_be_discarded(
+    storage: Storage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cleanup, "MAX_ENTRIES", 10)
+    cleanup.run(storage.client(), bucket=BUCKET, targets=[RUN], apply=True)
+    assert not any(key.startswith(PREFIX) for key, _identity in storage.versions)
+    assert not any(key.startswith(PREFIX) for key, _identity in storage.uploads)
+
+
 def test_purges_paginated_versions_markers_and_uploads_leaving_neighbors(storage: Storage) -> None:
     cleanup.run(storage.client(), bucket=BUCKET, targets=[RUN], apply=True)
     assert storage.versions == {

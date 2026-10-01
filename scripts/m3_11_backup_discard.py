@@ -80,6 +80,8 @@ def inventory(client: S3Client, *, bucket: str, prefix: str) -> Inventory:
             client, bucket=bucket, prefix=prefix, maximum_entries=MAX_ENTRIES
         ).uploads
     )
+    if len(current) + len(versions) + len(uploads) > MAX_ENTRIES:
+        raise DiscardError("combined backup inventory exceeds its entry bound")
     if not current <= {entry.key for entry in versions if entry.kind == "version"}:
         raise DiscardError("current objects lack exact version identities")
     return Inventory(current, versions, uploads)

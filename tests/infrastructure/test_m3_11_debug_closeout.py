@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
+import os
+import shutil
+import subprocess
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,7 +20,7 @@ from scripts import m3_11_qualification_evidence as evidence
 from scripts import qualification_restore as owned
 from scripts.m3_11_backup_fixture import Target
 from scripts.m3_11_combined_inputs import FORMAT, _environment
-from scripts.m3_11_private_inputs import write_private
+from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.qualification_context import RUN_ENV, run_lease
 
 RUN = "0198d17f-6f4a-7000-8000-000000000001"
@@ -129,6 +133,15 @@ def fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Fixture:
     write_private(
         run / "qualification-inputs.json", {"storage_target_sha256": TARGET.storage_target_sha256}
     )
+    write_private(
+        run / "live-storage.json",
+        {
+            "run_id": RUN,
+            "region": TARGET.region,
+            "backup_bucket": TARGET.backup_bucket,
+            "archive_bucket": TARGET.archive_bucket,
+        },
+    )
     write_private(run / "failure-exit.json", {"exit_status": 124, "phase": "verify"})
     environment = {
         "SPACES_REGION": TARGET.region,
@@ -208,11 +221,137 @@ def test_closeout_does_not_require_passing_diagnostics_or_an_exit_record(
         }
         fixture.versions.clear()
         (fixture.run / "qualification-inputs.json").unlink()
+        (fixture.run / "live-storage.json").unlink()
     elif phase == "already-stopped":
         for row in fixture.rows.values():
             row["running"] = False
     cleanup.closeout(fixture.run, fixture.environment, apply=True)
     assert not fixture.run.exists()
+
+
+@pytest.mark.parametrize("captured_inputs", [False, True])
+@pytest.mark.parametrize("contents", ["unowned", "owner-only", "empty"])
+def test_failed_storage_setup_requires_an_empty_prefix_before_any_cleanup(
+    fixture: Fixture, captured_inputs: bool, contents: str
+) -> None:
+    (fixture.run / "live-storage.json").unlink()
+    if not captured_inputs:
+        (fixture.run / "qualification-inputs.json").unlink()
+    if contents == "empty":
+        fixture.versions.clear()
+        cleanup.closeout(fixture.run, fixture.environment, apply=True)
+        assert not fixture.run.exists()
+    else:
+        fixture.versions = {
+            (
+                TARGET.owner_key if contents == "owner-only" else TARGET.prefix + "unowned",
+                "v",
+            ): "version"
+        }
+        with pytest.raises(RuntimeError, match="required empty boundary"):
+            cleanup.closeout(fixture.run, fixture.environment, apply=True)
+        assert not fixture.events
+        assert fixture.rows and fixture.versions and fixture.run.exists()
+
+
+@pytest.mark.parametrize("removed", ["manifest", "root"])
+def test_interrupted_directory_removal_resumes_without_manifest_providers_or_preservation(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, removed: str
+) -> None:
+    original = shutil.rmtree
+
+    def interrupt(path: Path) -> None:
+        assert path == fixture.run
+        assert not fixture.rows and not fixture.versions and not fixture.image_present
+        if removed == "manifest":
+            (path / "fixture.json").unlink()
+        else:
+            original(path)
+        raise OSError("interrupted directory removal")
+
+    monkeypatch.setattr(shutil, "rmtree", interrupt)
+    with pytest.raises(OSError, match="interrupted directory"):
+        cleanup.closeout(fixture.run, fixture.environment, apply=True)
+    receipt = cleanup.disposal_receipt(fixture.run)
+    raw = receipt.read_bytes()
+    events = list(fixture.events)
+    fixture.cloud_unavailable = True
+    cleanup.closeout(fixture.run, {}, apply=False)
+    assert receipt.read_bytes() == raw and fixture.events == events
+    monkeypatch.setattr(shutil, "rmtree", original)
+    cleanup.closeout(fixture.run, {}, apply=True)
+    assert not fixture.run.exists() and not receipt.exists()
+    assert fixture.events == events
+
+
+def test_final_disposal_wrapper_skips_state_loading_after_manifest_deletion(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = shutil.rmtree
+
+    def interrupt(path: Path) -> None:
+        (path / "fixture.json").unlink()
+        raise OSError("interrupted")
+
+    monkeypatch.setattr(shutil, "rmtree", interrupt)
+    with pytest.raises(OSError, match="interrupted"):
+        cleanup.closeout(fixture.run, fixture.environment, apply=True)
+    monkeypatch.setattr(shutil, "rmtree", original)
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("SPACES_", "OPENTOFU_", "CLOUDFLARE_", "M3_10_", "AWS_"))
+    }
+    script = Path(__file__).resolve().parents[2] / "scripts/m3-11-debug-closeout"
+    result = subprocess.run(  # noqa: S603 - exact owned local-only disposal fixture
+        [str(script), str(fixture.run), "--discard"],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert not fixture.run.exists() and not cleanup.disposal_receipt(fixture.run).exists()
+
+
+@pytest.mark.parametrize("fault", ["directory", "receipt", "fixture", "busy"])
+def test_final_disposal_refuses_changed_identity_or_concurrent_deletion(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    original = shutil.rmtree
+    monkeypatch.setattr(shutil, "rmtree", Mock(side_effect=OSError("interrupted")))
+    with pytest.raises(OSError, match="interrupted"):
+        cleanup.closeout(fixture.run, fixture.environment, apply=True)
+    monkeypatch.setattr(shutil, "rmtree", original)
+    receipt = cleanup.disposal_receipt(fixture.run)
+    if fault == "directory":
+        fixture.run.rename(fixture.run.with_name("original-leftover"))
+        fixture.run.mkdir(mode=0o700)
+        (fixture.run / "canary").write_bytes(b"unrelated recreated directory")
+    elif fault == "receipt":
+        saved = read_private(receipt)
+        saved["directory"] = str(fixture.run.parent / "unrelated")
+        receipt.unlink()
+        write_private(receipt, saved)
+    elif fault == "fixture":
+        (fixture.run / "fixture.json").unlink()
+        write_private(fixture.run / "fixture.json", {"format": "unrelated"})
+    else:
+        descriptor = os.open(receipt, os.O_RDONLY)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with pytest.raises(cleanup.CloseoutError, match="already running"):
+                cleanup.closeout(fixture.run, {}, apply=True)
+        finally:
+            os.close(descriptor)
+        assert fixture.run.exists() and receipt.exists()
+        return
+    with pytest.raises(cleanup.CloseoutError, match=r"identity|replaced|manifest changed"):
+        cleanup.closeout(fixture.run, {}, apply=True)
+    assert fixture.run.exists() and receipt.exists()
+    if fault == "directory":
+        assert (fixture.run / "canary").read_bytes() == b"unrelated recreated directory"
 
 
 @pytest.mark.parametrize("stage", ["stop", "remote", "container", "image"])
@@ -244,6 +383,7 @@ def test_uncertain_provider_or_ownership_prevents_local_and_remote_mutations(
     elif fault == "foreign-container":
         fixture.rows["1" * 64]["name"] = "/production-host"
     elif fault == "live-target":
+        (fixture.run / "live-storage.json").unlink()
         write_private(fixture.run / "live-storage.json", {"run_id": RUN, "region": "nyc3"})
     else:
         write_private(fixture.run / "qualification.json", {"status": "passed"})

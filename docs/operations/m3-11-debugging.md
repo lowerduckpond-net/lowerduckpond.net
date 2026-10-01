@@ -321,6 +321,9 @@ targets from encrypted state and checks them against the original run. Closeout
 holds the shared workstation storage lease and the run lock; an active local
 qualification, debugger or retirement prevents cleanup. It also supports failed
 creation and a workstation crash with no final exit record.
+If storage preparation never saved `live-storage.json`, its backup prefix must
+still be empty. A captured input file alone does not authorize deletion of data
+that may have caused the original ownership claim to fail.
 
 Closeout requires the shared archive Space and this run's public DNS challenges
 to be absent before stopping anything. Resolve remaining run-owned archives
@@ -344,3 +347,11 @@ permanent; the directory remains available until remote cleanup, container and
 image removal have all succeeded. After successful closeout, review/merge the
 fixes and run one fresh complete qualification from clean merged inputs. Only
 that fresh run can supply release evidence.
+
+Final directory disposal first publishes a small private sibling receipt named
+`<run-directory>.debug-closeout.json`, after cloud and Docker cleanup succeeds.
+It records the original directory identity and fixture, so the same command can
+finish a partial recursive deletion even after `fixture.json` or the run root is
+gone. This final local-only retry needs no provider credentials or state reads.
+The receipt is locked during disposal and removed on success; it is temporary
+cleanup state, with no diagnostic preservation copy.

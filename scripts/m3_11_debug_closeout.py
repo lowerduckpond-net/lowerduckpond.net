@@ -8,6 +8,7 @@ Resolve any remaining shared archive objects or DNS challenges first.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import re
@@ -19,13 +20,14 @@ from pathlib import Path
 from typing import cast
 
 from lowerduckpond_m3_archive.storage import S3Client, assert_storage_empty, create_client
+from lowerduckpond_static_host_agent.durable import DurableDirectory
 
 from scripts import m3_11_backup_discard as backups
 from scripts import m3_11_qualification_evidence as evidence
 from scripts import qualification_restore as owned
 from scripts.check_m3_7_production_edge import CloudflareClient, _require_zone_identity
 from scripts.m3_11_backup_fixture import Target
-from scripts.m3_11_combined_inputs import _directory, environment_for
+from scripts.m3_11_combined_inputs import FORMAT, _directory, _environment, environment_for
 from scripts.m3_11_dns_witness import ZONES, DnsWitness
 from scripts.m3_11_private_inputs import read_private, read_private_bytes
 from scripts.qualification_case import remove_owned_image
@@ -35,10 +37,97 @@ from scripts.qualification_storage_lease import storage_lease
 LABEL = "lowerduckpond.qualification.run"
 ROLES = ("destination", "host", "acme", "archive")
 IDENTITY = ("id", "name", "owner", "image")
+DISPOSAL_FORMAT = "lowerduckpond-m3-11-debug-directory-disposal-v1"
 
 
 class CloseoutError(ValueError):
     """A fixed operator explanation without private provider or fixture data."""
+
+
+def disposal_receipt(run: Path) -> Path:
+    return run.with_name(run.name + ".debug-closeout.json")
+
+
+def finish_directory(run: Path, *, apply: bool) -> None:
+    """Resume local deletion after cloud and Docker absence were already proved."""
+    _directory(run.parent)
+    receipt = disposal_receipt(run)
+    descriptor = os.open(receipt, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise CloseoutError("directory disposal is already running") from error
+        metadata = os.fstat(descriptor)
+        saved = evidence.fields(
+            read_private(receipt), {"format", "directory", "device", "inode", "fixture"}
+        )
+        fixture = evidence.fields(saved["fixture"], {"format", "run_id", "environment"})
+        run_id = str(evidence.uuid7(fixture["run_id"]))
+        environment = fixture["environment"]
+        endpoint = environment.get("DOCKER_HOST") if isinstance(environment, dict) else None
+        if (
+            saved["format"] != DISPOSAL_FORMAT
+            or saved["directory"] != str(run)
+            or type(saved["device"]) is not int
+            or type(saved["inode"]) is not int
+            or saved["device"] < 0
+            or saved["inode"] <= 0
+            or fixture["format"] != FORMAT
+            or not isinstance(endpoint, str)
+            or not endpoint.startswith("unix:///")
+            or environment != _environment(run, run_id, endpoint)
+        ):
+            raise CloseoutError("directory disposal lost its original identity")
+        if run.exists() or run.is_symlink():
+            _directory(run)
+            if (run.stat().st_dev, run.stat().st_ino) != (saved["device"], saved["inode"]):
+                raise CloseoutError("directory was replaced after disposal authorization")
+            manifest = run / "fixture.json"
+            if (manifest.exists() or manifest.is_symlink()) and read_private(manifest) != fixture:
+                raise CloseoutError("run manifest changed after disposal authorization")
+        if not apply:
+            print("Local directory disposal remains. Add --discard to finish it.")
+            return
+        if run.exists():
+            shutil.rmtree(run)
+        with DurableDirectory.open(
+            run.parent, expected_owner=os.geteuid(), expected_directory_mode=0o700
+        ) as parent:
+            parent_fd = parent.duplicate_descriptor()
+            try:
+                os.fsync(parent_fd)  # Persist root removal before deleting its retry receipt.
+            finally:
+                os.close(parent_fd)
+            current = receipt.lstat()
+            if (current.st_dev, current.st_ino) != (metadata.st_dev, metadata.st_ino):
+                raise CloseoutError("directory disposal receipt was replaced")
+            parent.remove((receipt.name,))
+        print(
+            "Debugging closed: remote backups and local resources removed; attempt remains failed."
+        )
+    finally:
+        os.close(descriptor)
+
+
+def stage_directory(run: Path, fixture: dict[str, object], identity: tuple[int, int]) -> None:
+    _directory(run.parent)
+    raw = evidence.canonical_bytes(
+        {
+            "format": DISPOSAL_FORMAT,
+            "directory": str(run),
+            "device": identity[0],
+            "inode": identity[1],
+            "fixture": fixture,
+        }
+    )
+    if len(raw) > evidence.MAX_BYTES:
+        raise CloseoutError("directory disposal receipt exceeds its byte bound")
+    with DurableDirectory.open(
+        run.parent, expected_owner=os.geteuid(), expected_directory_mode=0o700
+    ) as parent:
+        parent.create_immutable((disposal_receipt(run).name,), raw)
+    finish_directory(run, apply=True)
 
 
 def target_for(run: Path, environment: Mapping[str, str]) -> Target:
@@ -180,6 +269,13 @@ def cloud_absent(
 
 
 def closeout(run: Path, ambient: Mapping[str, str], *, apply: bool) -> None:
+    receipt = disposal_receipt(run)
+    if receipt.exists() or receipt.is_symlink():
+        with ExitStack() as locks:
+            if (run / "run.lock").exists():
+                locks.enter_context(run_lease(run))
+            finish_directory(run, apply=apply)
+        return
     _directory(run)
     original_inode = run.stat().st_dev, run.stat().st_ino
     original = read_private(run / "fixture.json")
@@ -203,7 +299,7 @@ def closeout(run: Path, ambient: Mapping[str, str], *, apply: bool) -> None:
             endpoint_url=f"https://{target.region}.digitaloceanspaces.com",
         )
         cloud_absent(run, environment, target, client)
-        if not (run / "qualification-inputs.json").exists():
+        if not (run / "live-storage.json").exists():
             assert_storage_empty(client, bucket=target.backup_bucket, prefix=target.prefix)
         # Remote inventory errors must leave the original local fixture available.
         backup_inventory = backups.inventory(
@@ -246,10 +342,7 @@ def closeout(run: Path, ambient: Mapping[str, str], *, apply: bool) -> None:
             run / "fixture.json"
         ) != original:
             raise CloseoutError("run manifest changed before directory removal")
-        shutil.rmtree(run)
-        print(
-            "Debugging closed: remote backups and local resources removed; attempt remains failed."
-        )
+        stage_directory(run, original, original_inode)
 
 
 def main() -> int:
