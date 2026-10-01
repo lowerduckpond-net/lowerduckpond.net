@@ -125,6 +125,19 @@ The report separates:
   an assertion can fail after an operation succeeds. A recorded validation
   marker is historical evidence, not a new validation of every lifecycle
   invariant. A missing marker or missing observation is never success.
+- The bound job's current worker invocation ID, state, result, exit code/status, peak memory
+  and CPU usage. Only the unit named by the validated durable job is queried;
+  missing units or unsupported counters remain `unknown`. These observations
+  distinguish resource termination from an ordinary worker exit without
+  exposing command lines or journal text. They describe the current unit
+  invocation, which may have changed since the failed submission; they do not
+  establish a terminal operation result or authorize a retry.
+- Current termination and resource counters for the three fixed archive
+  services, independently of their exception records. An OOM kill or signal can
+  prevent Python from recording an exception. These service observations are
+  not bound to the submitted job and may describe an earlier or later request;
+  missing units remain `unknown`. Invocation IDs permit comparison with
+  captured helper exceptions; a never-started unit has no observed invocation.
 - Current counts of intents, intake, exports, staging and Caddy intents;
   quarantine presence; and a whole-bucket inventory of versions/delete markers
   and multipart uploads using the fixture's installed archive credential.

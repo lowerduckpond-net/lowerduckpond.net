@@ -744,6 +744,23 @@ the required minimum 1.5-times margin around that observed interval, retains a
 fixed deadline and immediate unit-failure detection, and does not restart the
 coordinator or change production service limits, job ceilings or phase assertions.
 
+The final post-fault completion wait in `restore-tls-bootstrap` is a specific
+exception to that five-minute default. In
+[PR #189 CI run 36789290279](https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/36789290279/job/110141009164),
+`restore-verify-state` exhausted 300.4 seconds after the injected DNS/ACME
+failures were repaired. The retained observation found `installed`, the
+coordinator still activating, Caddy active and public ingress gated. This is a
+censored observation, not a successful duration or proof of the eventual
+service outcome. Pinned Caddy's
+[CertMagic retry schedule](https://github.com/caddyserver/certmagic/blob/v0.25.3/async.go)
+retains multi-minute backoff after failed issuance. The repaired test now
+observes the unchanged 30-minute coordinator ceiling plus 30 seconds for
+shutdown/status reporting, stopping immediately on service failure. Other
+native phase waits retain their five-minute default. No Caddy restart, attempt
+reset, production timeout increase, relaxed TLS proof or CI job-ceiling change
+is introduced. This amendment does not establish a successful runtime or accept
+an engineering-target overrun.
+
 ### Live reconstruction follow-up
 
 The failed live attempt at `bfd2f5bb03710560e3168cccaf4be88dbbc9ec31`

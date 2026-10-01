@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import restore_scenarios as restore
+from lowerduckpond_static_host_agent.host_restore_coordinator import COORDINATOR_SECONDS
 from restore_fixture import UNIT, checked
 from testinfra.host import Host
 
@@ -30,6 +31,10 @@ def test_installed_restore_tls_bootstrap(host: Host, tmp_path: Path) -> None:
     # the issuer policy, seed a certificate, or delete acquired Caddy storage.
     fixture.fault("none")
     fixture.start()
+    # The deliberately failed issuance retains Caddy's native retry backoff.
+    # Observe the existing service deadline, rather than abandoning a still
+    # active recovery at the ordinary five-minute phase observation boundary.
+    fixture.wait({"complete"}, seconds=COORDINATOR_SECONDS + 30)
     restore.finish(fixture, tenants, replay)
     checked(
         fixture.destination,
