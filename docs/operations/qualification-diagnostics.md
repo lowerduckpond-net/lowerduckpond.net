@@ -3,17 +3,41 @@
 `just check-ansible-m3-8` runs the existing full installed sequence and records
 monotonic timing observations. Its private timing directory is printed before
 the run, under `${XDG_DATA_HOME:-$HOME/.local/share}/lowerduckpond.net/qualification/`
-by default. CI places it under the runner's temporary directory and retains only
-`timing.json` and `timing.txt` as the `m3-8-timing` artifact, including on failure.
+by default. CI places it under the runner's temporary directory. Installed groups,
+the complete journey, and the baseline acceptance scenario retain allowlisted
+reports in `installed-diagnostics-CASE`, `complete-journey-diagnostics`, and
+`baseline-diagnostics`, respectively, including on failure.
 An artifact-upload problem does not replace the original qualification result.
 
 If cancellation kills the timing wrapper before it writes its summary, CI makes
 one separate `timing-interrupted.json` observation before uploading diagnostics.
 It retains the original source and fixture identities and validates the recorded
 spans. Its elapsed time runs through diagnostic collection, its exit status is
-unknown (`null`), and unfinished spans and any incomplete final append are omitted.
+unknown (`null`), and unfinished phase spans and any incomplete final append are omitted.
 It cannot establish completion or success. Existing normal summaries and the first
 interrupted observation are preserved; raw timing inputs are never rewritten.
+
+The `ansible_tasks` section separately reports the 30 longest completed tasks and
+up to 30 unfinished tasks, with total counts. Task starts are appended **before**
+execution, so a killed playbook can still identify an unfinished image build,
+package installation, or Caddy build. Source coordinates refer only to tracked checkout
+Ansible YAML or the fixed Molecule Docker create/destroy playbooks; generated
+private playbooks say `unknown`. Actions and groups use fixed allowlists. Task
+names, host names, loop values, arguments, environment values, and result output
+are never copied. APT's recognized numeric `apt_download_seconds` is retained
+after a result, allowing comparison of download time with the entire task;
+unrecognized, absent, or `no_log` output leaves it `null`.
+
+Task intervals run from the callback's task start through its next task or final
+playbook statistics, including orchestration and all hosts in the current linear
+strategy. They overlap the existing phase categories and nested playbooks; do not
+add them to wall time. `seconds_until_collection` for an unfinished task is an
+observation window, **not** a completed duration or proof that it remained active
+until collection. Missing ends can also reflect diagnostic write failure. The
+private task journal is bounded at 8 MiB, excludes payloads, and is not uploaded.
+Collection validates it again; unavailable or corrupt task diagnostics do not
+suppress the phase report or change command status. Older artifacts cannot
+retroactively acquire this detail.
 
 `just m3-10-spaces-qualification` records the same diagnostics in its existing
 private run directory on the secure workstation. `timing.json` and `timing.txt`
@@ -304,6 +328,120 @@ choose pacing and scheduling changes before making performance claims.
 
 `just check-python` also prints the 20 slowest tests lasting at least one second.
 This identifies fast-lane costs without rerunning the test suite for profiling.
+
+## Setup timeout investigation for PR 192
+
+The first attempt of [run 36897261018](https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/36897261018)
+at PR head `8a39adcc9be14270af29146fba1ca65295ec4e50` reached the
+45-minute limits in audit protection and negative restore. Its checkout/timing
+revision was the synthetic merge `e7b90dfc87347fc91fecd80cdebc83103df7e39e`.
+Unchanged retries passed; they neither explain the failures nor establish a fix.
+
+| Completed initial phase | Audit failure | Audit retry | Negative restore failure | Negative restore retry |
+| --- | ---: | ---: | ---: | ---: |
+| Create | 1,242.03 s | 45.57 s | 645.52 s | 55.10 s |
+| Prepare | 37.86 s | 34.71 s | 186.53 s | 37.93 s |
+| Converge | Unfinished | 380.94 s | 859.94 s | 313.94 s |
+
+The failed negative-restore artifact also contains **completed** source activation
+(460.39 s), source history (38.89 s), and source capture/destination bootstrap
+(397.66 s) spans. It does not support saying cancellation occurred inside those
+preparation phases. The exact remaining operation is unavailable. Both failed
+jobs had four reported CPUs; cache state and package download time were unmeasured.
+
+At the next head, `aa3913fd7953b176e564b7d5b44ba313cf1a02aa`, the
+[baseline Ansible job](https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/36911546475/job/110535140035)
+hit its separate 30-minute ceiling. Its public console records
+`podman : Install rootless Podman prerequisites` from 19:07:51.070 to
+19:28:16.699 UTC on 2026-10-01: **1,225.63 seconds**. The pinned Caddy build
+took about 75.62 seconds. Package installation completed, but consumed most of
+the job before its idempotence pass. The console lacks APT's download/install
+breakdown. This establishes a slow package-install task in the shared roles;
+it does not prove a mirror, network, cache, lock, or runner cause, or explain the
+earlier two jobs retrospectively.
+
+Passing artifacts from that same current-head run still show large setup
+variation: core creation took 430.88 seconds, reboot-journey creation 541.61
+seconds, and audit-rotation convergence 1,108.61 seconds. Audit protection and
+negative restore completed their timed entry points in 1,031.62 and 1,887.77
+seconds respectively. These passing executions do not resolve the baseline
+timeout or the original failures. Entry-point durations exclude queue and initial
+CI tool setup, and overlapping categories must not be summed.
+
+The run finished on attempt 1 with all 24 installed groups passing, but its
+overall GitHub conclusion is `cancelled`; the final `Ansible` and `Gate` checks
+failed because of the baseline timeout. The last production-rollout artifact
+records **1,255.79 seconds creating its fixture**, despite eventually passing
+in 4,193.85 entry-point seconds. This repeats the roughly 20-minute creation
+pattern seen in the original failed audit job; the missing task detail still
+prevents attributing the delay to a specific Docker or APT operation. Combined
+reconstruction finished in 3,123.78 entry-point seconds. No jobs were rerun.
+
+Targeted local probes on 2026-10-01 did not reproduce the slowdown. Uncached RUN
+layers of the M3.8 Dockerfile took about 48 seconds with an already available
+Ubuntu base image; APT installation was 32.4 seconds. Building the same pinned
+Caddy with empty Go caches took 34.14 seconds. Installing the six Podman
+prerequisites, including an index refresh, took 38.37 seconds. These used a
+different development host and Docker BuildKit for the image probe, whereas
+Molecule uses the Docker API builder. They are setup observations, not passing
+qualification, runner equivalence, or evidence that an intermittent failure is
+resolved. No live provider was used.
+
+One local baseline acceptance run exercised the new recorder through creation,
+preparation, convergence, idempotence, 45 passing acceptance tests, and teardown.
+Its entry point in the dirty development checkout took 915.31 seconds; the task report
+retained 820 completed tasks with no unfinished tasks. Podman prerequisites took
+17.62 seconds, including APT's reported three-second download. This validates
+the diagnostic path and ordinary fixture cleanup, not a correction to the CI
+package-install slowdown.
+
+The task recorder and baseline artifact retention correct the missing diagnostic
+evidence. They are **not a validated performance fix**. The package-install
+slowdown's underlying cause remains unproved. Preserve failures; do not rerun
+unchanged jobs to relabel them green. The execution-window correction below
+addresses the demonstrated budget shortfall without claiming that setup became
+faster.
+
+### Setup-budget correction
+
+The operator authorized extending execution windows if necessary on 2026-10-01.
+Only the three jobs with demonstrated insufficient windows change:
+
+| Job | Previous ceiling | Corrected ceiling | Evidence supporting the increase |
+| --- | ---: | ---: | --- |
+| Baseline Ansible | 30 min | 45 min | The preceding completed CI job took 20.45 min, already requiring 30.68 min under the 1.5-times runtime-margin policy. Substituting the observed 1,225.63-second Podman task for its 12.27-second task gives a 40.67-minute planning estimate. |
+| Negative restore | 45 min | 60 min | The current completed entry point took 31.46 min, requiring at least 47.19 min before CI setup under the same policy. Combining the failed attempt's completed 28.20-minute initial setup with the retry's remaining 22.04 minutes gives a 50.24-minute planning estimate. |
+| Audit protection | 45 min | 75 min | Cancellation found initial convergence unfinished at 44.76 entry-point minutes. The completed retry still needed 13.75 minutes for idempotence, verification and destruction after convergence. Even immediate convergence completion would imply about 58.51 minutes before remaining controller/CI overhead; 60 minutes would leave less than 1.5 minutes for the unfinished work and overhead. |
+
+The baseline comparison is the completed
+[CI job 110521007724](https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/36897261018/job/110521007724)
+(17:09:10–17:29:37 UTC). Its first Podman task took 12.27 seconds, and its
+idempotence, verification and final destruction completed. The 40.67-, 50.24-
+and 58.51-minute figures are **planning estimates assembled from measured
+segments**, not completed slow-run measurements or guaranteed upper bounds.
+They use sequential outer phases only, never overlapping nested categories.
+The audit estimate is particularly uncertain because cancellation censored the
+remaining convergence duration; its 75-minute ceiling leaves approximately
+16.5 minutes above that estimate.
+
+These changes let the existing assertions and cleanup run beyond the known
+shortfalls. They neither retry failed jobs nor convert the recorded failures to
+passes. Required completion receipts and the `Ansible` gate still reject missing
+or unsuccessful work. Validate the workflow expression and required-result
+checks locally; the next changed-revision CI run must establish its own result.
+
+The secure workstation uses the M3.8 image and the same package/Caddy roles for
+the source and reconstruction setup, so it shares this exposure. Its complete
+Spaces journey has a separate 600-minute deadline, including setup; neither a
+45-minute CI cancellation nor a passing retry predicts that complete duration.
+The separate 600-minute window already exceeds 1.5 times the measured
+311.79-minute workstation attempt (467.69 minutes); that attempt reached final
+teardown before its inventory failure. There is no measured need to extend it.
+The three CI ceilings above change; production service deadlines, assertions,
+the 330-minute complete CI window and the 600-minute live-run budget remain.
+The main-based 18,707.6-second workstation attempt failed final backup teardown
+at the former 1,024-entry bound. That established cleanup defect and PR 192's
+inventory correction are separate from these setup delays.
 
 ## Owned local fixtures
 

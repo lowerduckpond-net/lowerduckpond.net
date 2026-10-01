@@ -652,6 +652,15 @@ with at least 1.5 times the typical observed runtime. P6b applies this rule to
 the installed matrix: `combined-reconstruction` gets a provisional 90 minutes;
 `core`, `archive-cycles`, `backup-mutation-overlap`, `restore-reconstruction`,
 and `restore-tls-bootstrap` get 60 minutes; other cases retain 45 minutes.
+The operator's 2026-10-01 authorization to extend windows where needed adds
+75 minutes for `audit-protection`, 60 for `restore-negative`, and 45 for the
+separate baseline Ansible job. The
+[setup-budget correction](../operations/qualification-diagnostics.md#setup-budget-correction)
+retains the failed attempts, completed setup measurements and remaining-work
+estimates supporting those changes. The underlying package-install slowdown
+remains unproved; the correction supplies execution time without accepting a
+performance target overrun. The complete CI and live Spaces windows stay at
+330 and 600 minutes respectively.
 The original [CI run 36112371887](https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/36112371887)
 at PR head `1bfaa14936787a3ae3977e2672e78a165c8998df` passed 21 of 22 installed
 groups. The combined case was cancelled at 45 minutes. Its retained interrupted

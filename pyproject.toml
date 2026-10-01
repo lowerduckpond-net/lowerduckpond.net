@@ -175,6 +175,8 @@ files = [
   "scripts/qualification_probe.py",
   "tests/infrastructure/test_qualification_failure.py",
   "scripts/qualification_timing.py",
+  "scripts/qualification_task_timing.py",
+  "tests/infrastructure/test_qualification_task_timing.py",
   "tests/infrastructure/test_qualification_timing.py",
   "scripts/qualification_deadline.py",
   "scripts/qualification_budget.py",

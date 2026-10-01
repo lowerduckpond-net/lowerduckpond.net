@@ -181,8 +181,16 @@ including setup. The operator-authorized P6b adjustment is recorded in the
 | `combined-reconstruction` | 90 minutes, provisional pending a complete measured run. |
 | `production-rollout` | 90 minutes, provisional pending its first complete CI measurement. |
 | `failed-retirement` | 90 minutes, provisional pending its first complete CI measurement. |
-| `core`, `archive-cycles`, `backup-mutation-overlap`, `restore-reconstruction`, `restore-tls-bootstrap` | 60 minutes. |
+| `audit-protection` | 75 minutes, allowing the observed slow setup plus the remaining idempotence and verification. |
+| `core`, `archive-cycles`, `backup-mutation-overlap`, `restore-reconstruction`, `restore-tls-bootstrap`, `restore-negative` | 60 minutes. |
 | Other installed cases | 45 minutes. |
+
+The separate baseline Ansible job allows 45 minutes. The
+[PR 192 setup-budget correction](qualification-diagnostics.md#setup-budget-correction)
+records why the baseline, audit-protection and negative-restore windows needed
+increases. These execution ceilings accommodate measured setup variation; they
+do not establish a package-install performance fix or accept an engineering
+target overrun.
 
 The combined case preserves one source/destination history through mutation,
 two full protected rotations, interrupted reconstruction, reboot, replay,
