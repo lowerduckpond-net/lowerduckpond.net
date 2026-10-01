@@ -639,7 +639,8 @@ typical observed duration, including setup. Any increase must retain the
 measured cause and coverage, and must not disguise an engineering-target overrun
 as performance compliance. Collect measurements
 from normal validations, including failures, setup, pacing, wall time and total
-runner minutes. The complete live run retains the existing 330-minute safeguard;
+runner minutes. The complete live run uses the provisional 600-minute ceiling
+in the [live deadline amendment](#live-qualification-deadline-amendment);
 record its measured cost. A budget exception requires explicit review before
 closing the milestone. Avoid repeated expensive runs without changed inputs or
 an unresolved failure. When only a long lane remains, record head/run links and
@@ -679,7 +680,8 @@ completed runs and retain the minimum 1.5-times margin.
 
 This execution-budget adjustment does not approve an exception to the 30-minute
 engineering target, alter production service limits or admission pacing, or
-change the 330-minute complete-journey safeguard. Keep all original failures and
+change the then-current 330-minute complete-journey safeguard (superseded for
+live Spaces only by the amendment below). Keep all original failures and
 collect completed timing through normal CI. Any remaining performance-target
 overrun still needs measured resolution or explicit acceptance before milestone
 closeout; a passing job alone is insufficient.
@@ -742,6 +744,23 @@ the required minimum 1.5-times margin around that observed interval, retains a
 fixed deadline and immediate unit-failure detection, and does not restart the
 coordinator or change production service limits, job ceilings or phase assertions.
 
+The final post-fault completion wait in `restore-tls-bootstrap` is a specific
+exception to that five-minute default. In
+[PR #189 CI run 36789290279](https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/36789290279/job/110141009164),
+`restore-verify-state` exhausted 300.4 seconds after the injected DNS/ACME
+failures were repaired. The retained observation found `installed`, the
+coordinator still activating, Caddy active and public ingress gated. This is a
+censored observation, not a successful duration or proof of the eventual
+service outcome. Pinned Caddy's
+[CertMagic retry schedule](https://github.com/caddyserver/certmagic/blob/v0.25.3/async.go)
+retains multi-minute backoff after failed issuance. The repaired test now
+observes the unchanged 30-minute coordinator ceiling plus 30 seconds for
+shutdown/status reporting, stopping immediately on service failure. Other
+native phase waits retain their five-minute default. No Caddy restart, attempt
+reset, production timeout increase, relaxed TLS proof or CI job-ceiling change
+is introduced. This amendment does not establish a successful runtime or accept
+an engineering-target overrun.
+
 ### Live reconstruction follow-up
 
 The failed live attempt at `bfd2f5bb03710560e3168cccaf4be88dbbc9ec31`
@@ -783,8 +802,10 @@ coherent backup.
 The live combined phase observer is amended to follow the unchanged 30-minute
 coordinator limit plus 30 seconds for shutdown and status reporting. Its fixed
 deadline and immediate service-failure/activation checks remain. The native
-five-minute default, CI job ceilings, production limits and complete-journey
-330-minute safeguard remain unchanged. The failed 668-second observation is not
+five-minute default, CI job ceilings and production limits remain unchanged.
+This observer amendment retained the then-current 330-minute full-run safeguard;
+the later live deadline amendment below supersedes that live ceiling.
+The failed 668-second observation is not
 a successful runtime measurement; the larger observer exposes the actual bounded
 service outcome while preserving more than the required 1.5-times margin around
 that observation. This amendment does not accept an engineering-target overrun.
@@ -864,7 +885,49 @@ relax. The controller reported 32 visible CPUs and an unmeasured cache state;
 this local observation cannot predict the four-CPU CI duration. Its CI ceiling
 remains provisional until that normal run completes, and P6c review must assess
 that result before accepting this exception. Final live qualification must
-separately record its measured cost under the unchanged 330-minute safeguard.
+separately record its measured cost under the live deadline amendment below.
+
+### Live qualification deadline amendment
+
+The secure-workstation Spaces journey now has a provisional 600-minute execution
+ceiling, including wrapper setup. CI's complete MinIO journey retains 330 minutes.
+This change follows the full live run at `f3375f4b`: its 330-minute wrapper deadline
+expired in the combined reboot/replay phase after reconstruction completed.
+Completed combined spans measured 21.49 minutes for backup/mutation overlap,
+10.44 for protected rotation and 43.09 for reconstruction. These nested spans
+must not be added to the outer elapsed duration. The later interrupted timing
+snapshot's 49,120.8 seconds includes waiting until diagnostic collection and is
+not the qualification runtime.
+
+Size the initial complete window conservatively at 400 minutes: the exhausted
+330-minute budget, up to 47 minutes for fresh replay (an earlier retained live
+diagnostic took 2,789.9 seconds), the latest 365.4-second cold public-CA diagnostic,
+and about 15 minutes reserved for accounting, actual teardown, packaging and
+variation. This is a provisional estimate, not a measured successful total.
+The 600-minute ceiling supplies the required 1.5-times margin around that window.
+The latest continuation's 68.8-second replay can skip already-retired tenants
+and must not be used to estimate fresh replay. Its cold public-CA diagnostic did
+pass actual interruption, public TLS and cleanup in both zones; that downstream
+observation cannot complete the original failed qualification.
+
+The complete journey must retain one source, restored state, protected history,
+provider observations and final accounting chain. Splitting it into independent
+fixtures would remove that proof. Keep the existing independently runnable
+components and the full uninterrupted live journey. The supervisor now owns the
+deadline outside the controller's signal group, records its actual exit and
+duration, signals that group, then gives read-only failure collection five minutes.
+Both processes have a 30-second TERM grace and a bounded 30-second wait after
+SIGKILL. An unreapable child records a cleanup failure without changing the result.
+A child EXIT trap reporting zero cannot
+replace a deadline's 124 status. Collection does not continue qualification,
+restart guest services or grant cleanup authority.
+
+This amendment changes no production service limit, admission pacing or required
+assertion. It does not accept the outstanding sustainability-target overrun or
+establish that the earlier unobserved archive failure is fixed. Review this
+provisional ceiling with the next complete live measurement and retain at least
+1.5 times the typical observed full window. Record cost and any remaining budget
+exception explicitly before M3.11 closeout.
 
 Final qualification includes the original complete installed/live Spaces
 workflow plus the new combined reconstruction cases on disposable supported

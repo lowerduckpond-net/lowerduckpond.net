@@ -465,3 +465,59 @@ def test_restore_phase_wait_requires_progress_within_one_fixed_deadline(
         command == ("systemctl show --value --property=ActiveState %s", fixture_module.UNIT)
         for command in commands
     )
+
+
+@pytest.mark.parametrize("ready_after", [450, 1840])
+def test_tls_fault_repair_observes_service_outcome_beyond_ordinary_phase_window(
+    monkeypatch: pytest.MonkeyPatch,
+    installed_module: Callable[[str], ModuleType],
+    tmp_path: Path,
+    ready_after: int,
+) -> None:
+    scenario = installed_module("test_restore_tls_bootstrap")
+    fixture_module = installed_module("restore_fixture")
+    elapsed = 0.0
+    repaired = False
+    finished = []
+
+    def sleep(seconds: float) -> None:
+        nonlocal elapsed
+        elapsed += seconds
+
+    def fault(name: str) -> None:
+        nonlocal repaired
+        repaired = name == "none"
+
+    def status() -> dict[str, object]:
+        complete = repaired and elapsed >= ready_after
+        return {"phase": "complete" if complete else "installed", "activationPending": not complete}
+
+    fixture = SimpleNamespace(
+        live_storage=None,
+        destination=SimpleNamespace(
+            service=lambda _: SimpleNamespace(is_running=True),
+            run=lambda *_: SimpleNamespace(rc=0, stdout="activating"),
+        ),
+        status=status,
+        fault=fault,
+        fault_observed=lambda _: None,
+        start=lambda: None,
+        reboot=lambda: None,
+    )
+    fixture.wait = lambda phases, **kwargs: fixture_module.Fixture.wait(fixture, phases, **kwargs)
+    monkeypatch.setattr(
+        fixture_module, "time", SimpleNamespace(monotonic=lambda: elapsed, sleep=sleep)
+    )
+    monkeypatch.setattr(scenario.restore, "source", lambda *_: (fixture, [], {}))
+    monkeypatch.setattr(scenario.restore, "gate_closed", lambda _: None)
+    monkeypatch.setattr(scenario.restore, "finish", lambda *_: finished.append(status()))
+    monkeypatch.setattr(scenario, "checked", lambda *_: "")
+    if ready_after < fixture_module.COORDINATOR_SECONDS:
+        scenario.test_installed_restore_tls_bootstrap(object(), tmp_path)
+        assert elapsed == ready_after
+        assert finished == [{"phase": "complete", "activationPending": False}]
+    else:
+        with pytest.raises(AssertionError, match="expected phase"):
+            scenario.test_installed_restore_tls_bootstrap(object(), tmp_path)
+        assert elapsed == fixture_module.COORDINATOR_SECONDS + 30
+        assert not finished

@@ -741,8 +741,17 @@ not that supported controller topology.
 just m3-11-spaces-qualification
 ```
 
-This invokes the existing Spaces wrapper with `--milestone 3.11`, under the
-330-minute full-run safeguard. Its default invocation remains M3.10. The new
+This supervises the existing Spaces wrapper with `--milestone 3.11`, under a
+600-minute full-run deadline, including wrapper setup. The
+[live deadline amendment](../plans/milestone-3.11.md#live-qualification-deadline-amendment)
+records the provisional budget and required follow-up measurement. The supervisor
+signals the controller process group before collecting diagnostics separately for
+at most five minutes. Shutdown allows 30 seconds after TERM and 30 after SIGKILL;
+failure to reap the child is reported without replacing the result. A deadline exit remains
+124 even if collection fails. `qualification-exit.json` records the actual
+supervised duration and last entered phase; later observation cannot extend it.
+See [qualification diagnostics](qualification-diagnostics.md) for report limits.
+The wrapper's default invocation remains M3.10. The M3.11
 mode allocates unique source, archive, destination and controlled-CA resources
 and uses a fresh password and run-owned `m3-11-qualification/<run UUID>/restic`
 prefix in the backup Space. It retains the existing provider acceptance,

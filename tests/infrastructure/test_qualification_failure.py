@@ -639,10 +639,19 @@ def test_job_observation_uses_contracts_and_checks_result_provenance(
         return value
 
     monkeypatch.setattr(probe, "document", read)
+    workers = []
+
+    def worker(job_id: str) -> dict[str, object]:
+        workers.append(job_id)
+        return {"result": "oom-kill"}
+
+    monkeypatch.setattr(probe, "worker_observation", worker)
     observed = probe.job_observation(job["request"]["correlationId"])
     assert observed["job_id"] == job["jobId"]
     assert observed["phase"] == "completed"
     assert observed["result_status"] == "succeeded"
+    assert observed["worker"] == {"result": "oom-kill"}
+    assert workers == [job["jobId"]]
     # Legacy records without the execution marker must not imply validation.
     assert observed["execution_validated"] is (True if current else None)
     if current:
@@ -650,6 +659,88 @@ def test_job_observation_uses_contracts_and_checks_result_provenance(
     result["provenance"]["jobId"] = JOB
     with pytest.raises(ValueError, match="provenance"):
         probe.job_observation(job["request"]["correlationId"])
+
+
+@pytest.mark.parametrize("load_state", ["loaded", "not-found", CANARY])
+def test_worker_observation_retains_bounded_exit_reason_without_unit_text(
+    monkeypatch: pytest.MonkeyPatch, load_state: str
+) -> None:
+    def command(arguments: list[str], **kwargs: object) -> bytes:
+        assert arguments[:3] == ["systemctl", "show", f"lowerduckpond-static-worker@{JOB}.service"]
+        return (
+            f"LoadState={load_state}\nInvocationID={'1' * 32}\n"
+            "ActiveState=failed\nResult=oom-kill\n"
+            f"ExecMainCode=2\nExecMainStatus=9\nMemoryPeak=268435456\n"
+            f"CPUUsageNSec=12789000000\nExecStart={CANARY}\n"
+        ).encode()
+
+    monkeypatch.setattr(probe, "bounded_command", command)
+    observed = probe.worker_observation(JOB)
+    if load_state == "loaded":
+        assert observed == {
+            "invocation_id": "1" * 32,
+            "state": "failed",
+            "result": "oom-kill",
+            "exit_code": 2,
+            "exit_status": 9,
+            "memory_peak_bytes": 268435456,
+            "cpu_usage_nsec": 12789000000,
+        }
+    else:
+        assert set(observed.values()) == {"unknown"}
+    assert CANARY not in json.dumps(observed)
+    job = probe.sanitize({"job": {"worker": observed}})["job"]
+    assert isinstance(job, dict) and job["worker"] == observed
+
+
+def test_worker_observation_refuses_unbound_identity_and_drops_malformed_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands = []
+
+    def command(*args: object, **kwargs: object) -> bytes:
+        commands.append(args)
+        return (
+            f"LoadState=loaded\nActiveState={CANARY}\nResult={CANARY}\n"
+            "ExecMainCode=-1\nExecMainStatus=256\nMemoryPeak=[not set]\n"
+            "CPUUsageNSec=9999999999999999999\n"
+        ).encode()
+
+    monkeypatch.setattr(probe, "bounded_command", command)
+    with pytest.raises(ValueError, match="identity"):
+        probe.worker_observation(CANARY)
+    assert not commands
+    assert set(probe.worker_observation(JOB).values()) == {"unknown"}
+    assert set(probe.safe_worker(dict.fromkeys(probe.WORKER_PROPERTIES, True)).values()) == {
+        "unknown"
+    }
+
+
+def test_archive_service_observations_keep_oom_without_an_exception_record(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def command(arguments: list[str], **kwargs: object) -> bytes:
+        assert arguments[2:5] == list(probe.ARCHIVE_SERVICES.values())
+        return (
+            "Id=lowerduckpond-archive-export@request.service\nLoadState=loaded\n"
+            f"InvocationID={'a' * 32}\n"
+            "ActiveState=failed\nResult=oom-kill\nExecMainStatus=9\n\n"
+            f"Id={CANARY}\nLoadState=loaded\nResult=success\n\n"
+            "Id=lowerduckpond-archive-cleanup@request.service\nLoadState=not-found\n"
+            "Result=success\n"
+        ).encode()
+
+    monkeypatch.setattr(probe, "bounded_command", command)
+    observed = probe.archive_service_observations()
+    export = observed["export"]
+    assert isinstance(export, dict) and export["result"] == "oom-kill"
+    assert export["invocation_id"] == "a" * 32
+    assert export["exit_status"] == 9  # noqa: PLR2004 - SIGKILL
+    for name in ("cleanup", "construction"):
+        item = observed[name]
+        assert isinstance(item, dict) and set(item.values()) == {"unknown"}
+    assert probe.sanitize({"archive_services": observed})["archive_services"] == observed
+    assert CANARY not in json.dumps(observed)
 
 
 def test_directory_inventory_is_bounded_and_refuses_a_symlink(tmp_path: Path) -> None:

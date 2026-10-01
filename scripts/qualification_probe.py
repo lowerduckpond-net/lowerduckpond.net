@@ -124,6 +124,104 @@ LOCAL_PATHS = {
     "staging": "/srv/lowerduckpond/sites/.staging",
     "caddy_intents": "/etc/caddy/intents",
 }
+WORKER_PROPERTIES = {
+    "invocation_id": "InvocationID",
+    "state": "ActiveState",
+    "result": "Result",
+    "exit_code": "ExecMainCode",
+    "exit_status": "ExecMainStatus",
+    "memory_peak_bytes": "MemoryPeak",
+    "cpu_usage_nsec": "CPUUsageNSec",
+}
+ARCHIVE_SERVICES = {
+    name: f"lowerduckpond-archive-{name}@request.service"
+    for name in ("construction", "cleanup", "export")
+}
+
+
+def safe_worker(raw: object) -> dict[str, object]:
+    value = raw if isinstance(raw, dict) else {}
+    result: dict[str, object] = {
+        "invocation_id": matching(value.get("invocation_id"), re.compile(r"[0-9a-f]{32}")),
+        "state": label(
+            value.get("state"),
+            frozenset({"active", "activating", "deactivating", "inactive", "failed"}),
+        ),
+        "result": label(
+            value.get("result"),
+            frozenset(
+                {
+                    "success",
+                    "exit-code",
+                    "signal",
+                    "core-dump",
+                    "timeout",
+                    "oom-kill",
+                    "resources",
+                    "start-limit-hit",
+                    "watchdog",
+                    "protocol",
+                }
+            ),
+        ),
+    }
+    for key in ("exit_code", "exit_status", "memory_peak_bytes", "cpu_usage_nsec"):
+        number = value.get(key)
+        maximum = 255 if key in {"exit_code", "exit_status"} else 2**63 - 1
+        result[key] = number if type(number) is int and 0 <= number <= maximum else UNKNOWN
+    return result
+
+
+def _unit_properties(output: bytes) -> dict[str, str]:
+    return dict(
+        line.split("=", 1)
+        for line in output.decode("ascii", errors="replace").splitlines()
+        if "=" in line
+    )
+
+
+def _unit_observation(properties: dict[str, str]) -> dict[str, object]:
+    if properties.get("LoadState") != "loaded":
+        return safe_worker({})
+    raw: dict[str, object] = {}
+    for key, name in WORKER_PROPERTIES.items():
+        item = properties.get(name, "")
+        raw[key] = (
+            int(item) if key != "invocation_id" and re.fullmatch(r"[0-9]{1,19}", item) else item
+        )
+    return safe_worker(raw)
+
+
+def worker_observation(job_id: str) -> dict[str, object]:
+    """Observe only the unit bound to a validated durable authorization job."""
+    if not UUID.fullmatch(job_id):
+        raise ValueError("invalid worker job identity")
+    output = bounded_command(
+        [
+            "systemctl",
+            "show",
+            f"lowerduckpond-static-worker@{job_id}.service",
+            "--property=LoadState," + ",".join(WORKER_PROPERTIES.values()),
+        ]
+    )
+    return _unit_observation(_unit_properties(output or b""))
+
+
+def archive_service_observations() -> dict[str, object]:
+    """Service termination can prevent the helper from recording an exception."""
+    output = bounded_command(
+        [
+            "systemctl",
+            "show",
+            *ARCHIVE_SERVICES.values(),
+            "--property=Id,LoadState," + ",".join(WORKER_PROPERTIES.values()),
+        ]
+    )
+    units = {}
+    for section in (output or b"").split(b"\n\n"):
+        properties = _unit_properties(section)
+        units[properties.get("Id")] = _unit_observation(properties)
+    return {name: units.get(unit, safe_worker({})) for name, unit in ARCHIVE_SERVICES.items()}
 
 
 def _command_failure(error: BaseException, *, check: bool) -> bytes | None:
@@ -273,6 +371,7 @@ def sanitize(raw: dict[str, object]) -> dict[str, object]:
         return value if isinstance(value, dict) else {}
 
     job, local, remote, service = (section(k) for k in ("job", "local", "remote", "service"))
+    archive_services = section("archive_services")
     # The host emits an already-sanitized nested diagnostic. Revalidate it when
     # the controller receives that payload or reads its retained snapshot.
     remote_diagnostic = remote.get("diagnostic")
@@ -292,6 +391,7 @@ def sanitize(raw: dict[str, object]) -> dict[str, object]:
             "result_status": label(job.get("result_status"), frozenset({"succeeded", "failed"})),
             "result_error": label(job.get("result_error"), ERRORS | {"none"}),
             "executor_failure": boolean(job.get("executor_failure")),
+            "worker": safe_worker(job.get("worker")),
         },
         "local": {
             **{name: count(local.get(name)) for name in LOCAL_PATHS},
@@ -304,6 +404,9 @@ def sanitize(raw: dict[str, object]) -> dict[str, object]:
             "diagnostic": safe_diagnostic(remote_diagnostic),
         },
         "service": safe_diagnostic(service),
+        "archive_services": {
+            name: safe_worker(archive_services.get(name)) for name in ARCHIVE_SERVICES
+        },
     }
 
 
@@ -343,6 +446,7 @@ def job_observation(correlation: str) -> dict[str, object]:
         "operation": request.get("operation"),
         "phase": job.get("phase"),
         "execution_validated": job.get("executionValidated"),
+        "worker": worker_observation(job_id),
     }
     try:
         result = document(root / "results" / f"{job_id}.json")
@@ -402,6 +506,7 @@ def probe(correlation: str) -> dict[str, object]:
     except OSError:
         pass
     raw["local"] = local
+    raw["archive_services"] = archive_service_observations()
     journal = bounded_command(
         [
             "journalctl",

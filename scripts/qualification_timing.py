@@ -456,8 +456,8 @@ def interrupted_run(directory: Path) -> None:
             temporary.unlink(missing_ok=True)
 
 
-def finish_run(directory: Path, status: int) -> dict[str, object]:
-    report = _report(directory, status)
+def finish_run(directory: Path, status: int, *, interrupted: bool = False) -> dict[str, object]:
+    report = _report(directory, status, interrupted=interrupted)
     categories = cast(list[Category], report["categories"])
     (directory / "timing.json").write_text(
         json.dumps(report, sort_keys=True) + "\n", encoding="ascii"

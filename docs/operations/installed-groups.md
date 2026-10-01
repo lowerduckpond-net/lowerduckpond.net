@@ -23,12 +23,20 @@ survive destination restart; they do not contact the public ACME or DNS API.
 Recovery also drains and gates the periodic health reader: its read-only audit
 inspection holds the tenant-state lock and can otherwise race installed archive
 verification. Completion restores its timer alongside the ordinary schedules.
-The native fixture waits at most five minutes for each requested restore phase, using
+The native fixture normally waits at most five minutes for each requested restore phase, using
 one fixed deadline and stopping immediately if the restore unit fails. The
 combined two-segment restore exceeded the former three-minute observation
 window; five minutes provides at least 1.5 times that observed interval.
 Completion still requires cleared activation state. This harness deadline does
 not extend the production coordinator's 30-minute limit or any CI job ceiling.
+The final completion wait in `restore-tls-bootstrap`, after repairing its DNS
+and ACME faults, instead observes the existing coordinator ceiling plus 30
+seconds for shutdown/reporting. The deliberately failed issuance retains
+Caddy's retry backoff. PR #189 CI exhausted the shorter observer while recovery
+was still active at `installed`; that is not evidence the service had exhausted
+its own deadline. Service failure still stops the observer immediately, and
+completion still requires verified TLS and cleared activation state. The test
+does not restart Caddy, reset its attempts or change production limits.
 The live combined journey restores all preceding groups' retained history. Its
 phase observer follows the existing 30-minute coordinator ceiling plus 30 seconds
 for shutdown/status reporting, with the same immediate failure detection and
@@ -203,8 +211,10 @@ those overruns.
 
 These ceilings do not establish compliance with the 30-minute engineering
 target. Production service limits, admission pacing, assertions, required
-completion receipts, and the 330-minute complete-journey ceiling remain
-unchanged. A higher ceiling does not lengthen a successfully completed job.
+completion receipts, and the 330-minute CI complete-journey ceiling remain
+unchanged. The separate secure-workstation Spaces journey uses the provisional
+600-minute [live deadline amendment](../plans/milestone-3.11.md#live-qualification-deadline-amendment).
+A higher ceiling does not lengthen a successfully completed job.
 
 The original combined backup case passed in [CI run 35563599873](https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/35563599873)
 but took 39.35 minutes including setup, exceeding the target. Its timing report

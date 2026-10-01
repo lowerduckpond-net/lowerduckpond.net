@@ -22,6 +22,51 @@ intermediate files private. Production credentials remain on that workstation.
 These commands retain the production admission policy, resource limits, full
 lifecycle order, existing cleanup behavior, and original exit status.
 
+`just m3-11-spaces-qualification` supervises that complete live journey with a
+fixed 600-minute deadline, including wrapper setup; see the
+[budget amendment](../plans/milestone-3.11.md#live-qualification-deadline-amendment).
+Its controller runs in a separate process group. On expiry the supervisor sends
+TERM, allows at most 30 seconds for its direct child, then sends SIGKILL to remaining
+group members and waits at most another 30 seconds to reap that child. A kernel
+I/O stall can prevent reaping even after SIGKILL. This is recorded as
+`direct_child_reaped: false`, with a fixed warning; the already determined exit
+status and subsequent diagnostic collection are preserved. Docker guests are
+retained; stopping controller processes does not stop their guest services.
+Collection runs in a separate process with a five-minute limit and the same
+bounded termination/reaping policy.
+It is read-only against the fixture and providers and cannot extend qualification.
+
+Before collection, the supervisor writes `qualification-exit.json` with the
+actual status, fixed reason (`command-exit`, `deadline-exceeded` or `interrupted`),
+last entered wrapper phase, configured limit and monotonic supervised duration
+including controller shutdown. This allowlisted diagnostic contains no command
+arguments or credentials. Deadline expiry stays 124 and TERM/INT interruptions
+stay 143/130 even if a child exits zero or reporting fails. Direct signal death
+of the controller also records `interrupted` and status 128 plus the signal
+number (137 for SIGKILL), so a truncated final timing append does not discard
+the completed spans. An ordinary command that exits 137 remains `command-exit`.
+The TERM/INT traps apply only to supervised M3.11; the default M3.10 wrapper
+retains its original signal handling. The supervisor records the first TERM/INT
+without raising from its signal handler. Cancellation during process creation
+is handled once the child handle is available; the child inherits no additional
+blocked signals. During execution, waits check cancellation at most one second
+apart against the original monotonic deadline. Repeated signals cannot unwind
+shutdown or replace an already determined result. If process creation fails,
+a pending cancellation still returns 130/143; otherwise it returns 1 with a
+fixed message, without copying exception payloads. Failure collection
+also records `full-run-deadline` as the controller stage for expiry. The phase
+is the last entered step, not a completion receipt. If the wrapper fails before
+allocating a run directory, no per-run report is available.
+
+The supervisor preserves existing timing/failure reports. On forced termination,
+new timing collection accepts only completed event appends; incomplete final
+writes and unfinished spans cannot establish completion. Its elapsed time ends
+at immediate collection, whereas `qualification-exit.json` fixes the supervised
+duration before collection begins. A later read-only observation cannot refresh
+that exit measurement. Reporter failure may leave only the exit receipt; share
+it with any available `failure.json`. These diagnostics never substitute for a
+passing qualification envelope.
+
 ## Collecting a failure
 
 An unsuccessful installed run writes `failure.json` beside its timing report
@@ -80,6 +125,19 @@ The report separates:
   an assertion can fail after an operation succeeds. A recorded validation
   marker is historical evidence, not a new validation of every lifecycle
   invariant. A missing marker or missing observation is never success.
+- The bound job's current worker invocation ID, state, result, exit code/status, peak memory
+  and CPU usage. Only the unit named by the validated durable job is queried;
+  missing units or unsupported counters remain `unknown`. These observations
+  distinguish resource termination from an ordinary worker exit without
+  exposing command lines or journal text. They describe the current unit
+  invocation, which may have changed since the failed submission; they do not
+  establish a terminal operation result or authorize a retry.
+- Current termination and resource counters for the three fixed archive
+  services, independently of their exception records. An OOM kill or signal can
+  prevent Python from recording an exception. These service observations are
+  not bound to the submitted job and may describe an earlier or later request;
+  missing units remain `unknown`. Invocation IDs permit comparison with
+  captured helper exceptions; a never-started unit has no observed invocation.
 - Current counts of intents, intake, exports, staging and Caddy intents;
   quarantine presence; and a whole-bucket inventory of versions/delete markers
   and multipart uploads using the fixture's installed archive credential.
