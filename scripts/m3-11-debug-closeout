@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+set +x
+umask 077
+
+repository_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+cd -- "${repository_root}"
+case ${1:-} in
+    --help|-h) ;;
+    *) source "${repository_root}/scripts/lib/m3-10-production-state" ;;
+esac
+exec uv run --frozen python -m scripts.m3_11_debug_closeout "$@"

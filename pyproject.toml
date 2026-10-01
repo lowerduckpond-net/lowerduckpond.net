@@ -239,6 +239,8 @@ files = [
   "scripts/m3_11_backup_removal.py",
   "scripts/m3_11_backup_discard.py",
   "tests/infrastructure/test_m3_11_backup_discard.py",
+  "scripts/m3_11_debug_closeout.py",
+  "tests/infrastructure/test_m3_11_debug_closeout.py",
   "scripts/m3_11_owned_teardown.py",
   "tests/infrastructure/test_m3_11_owned_teardown.py",
   "tests/infrastructure/test_m3_11_backup_removal.py",

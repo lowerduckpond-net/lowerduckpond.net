@@ -461,3 +461,8 @@ For branch-based diagnosis beyond the first failed assertion, use the
 records all reachable downstream failures and supports captured branch repair
 scripts. Its results are permanently diagnostic; this read-only failure collector
 and the final fresh qualification keep their existing authority.
+
+After debugging every failed M3.11 attempt, perform the
+[required local and DigitalOcean closeout](m3-11-debugging.md#required-closeout-after-debugging).
+Retain its resources only while investigation remains useful. Cleanup is part of
+finishing the failed run, even if some diagnostic checks remain unsuccessful.

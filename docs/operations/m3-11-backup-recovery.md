@@ -821,6 +821,12 @@ they do not establish live Spaces or public-CA qualification.
 
 ### Discarding abandoned qualification backups
 
+After debugging every failed run, complete the mandatory
+[local and DigitalOcean closeout](m3-11-debugging.md#required-closeout-after-debugging)
+before starting its replacement. That command includes backup disposal and local
+fixture removal. The standalone command below also handles selected remote
+prefixes after their local run directories have already been discarded.
+
 Once an abandoned attempt's diagnostics are no longer needed, permanently remove
 its disposable backup repository with `scripts/m3-11-backup-discard`. Stop that
 run's source and destination writers first. This is administrative disposal; it

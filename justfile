@@ -190,6 +190,11 @@ m3-11-failed-retirement action directory *arguments: _sync
 m3-11-debug directory *arguments: _sync
     scripts/m3-11-debug "$@"
 
+# Required final debugging step: dispose of this abandoned run locally and in Spaces.
+[positional-arguments]
+m3-11-debug-closeout directory *arguments: _sync
+    scripts/m3-11-debug-closeout "$@"
+
 # Prove the M3.7 CA, edge inputs, and direct production state without mutation.
 preflight-m3-7-production: _sync
     scripts/preflight-m3-7-production
