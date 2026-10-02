@@ -306,6 +306,21 @@ jobs:
           QUALIFICATION_CASE: ${{ matrix.case }}
           LDP_QUALIFICATION_TIMING_DIRECTORY: ${{ runner.temp }}/ldp-installed
         run: just check-installed-group "$QUALIFICATION_CASE"
+      # This job uses synthetic tenants and disposable local MinIO credentials.
+      # Live-workstation logs have a different policy and never enter this job.
+      - name: Show failed synthetic fixture phase logs
+        if: failure() || cancelled()
+        continue-on-error: true
+        run: |
+          log_marker=$(cat /proc/sys/kernel/random/uuid)
+          for phase in create prepare converge verify destroy; do
+            phase_log="$RUNNER_TEMP/ldp-installed/$phase.log"
+            if [[ -f "$phase_log" ]]; then
+              printf '%s\n' "::group::$phase log (last 2 MiB)" "::stop-commands::$log_marker"
+              tail --bytes=2097152 "$phase_log"
+              printf '\n%s\n' "::$log_marker::" "::endgroup::"
+            fi
+          done
       - name: Retain required installed completion receipt
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

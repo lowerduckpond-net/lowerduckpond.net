@@ -9,6 +9,24 @@ reports in `installed-diagnostics-CASE`, `complete-journey-diagnostics`, and
 `baseline-diagnostics`, respectively, including on failure.
 An artifact-upload problem does not replace the original qualification result.
 
+Failed or cancelled installed-group CI jobs also print the last 2 MiB of each
+existing create, prepare, converge, verify and destroy log in the job's
+**Show failed synthetic fixture phase logs** step. This includes pytest
+tracebacks and command stderr, rather than only the summary's failure category.
+The step cannot change the original result, and log text is printed with GitHub
+workflow-command interpretation disabled. Baseline and complete-journey output
+already goes directly to their job consoles.
+
+This policy applies to the CI job's synthetic tenant data and disposable local
+MinIO credentials. That job receives no live Spaces or Cloudflare credentials;
+the local entry point also rejects a Spaces backend and removes inherited live
+provider inputs. The step reads only the named phase logs; it does not upload
+fixture directories or key files. Normal GitHub log masking remains in effect,
+but [automatic redaction is not guaranteed](https://docs.github.com/en/actions/reference/security/secure-use);
+masking alone does not make live logs safe to publish. The live-workstation raw
+logs remain private. Adding live credentials or data to this CI job requires
+revisiting its output policy.
+
 If cancellation kills the timing wrapper before it writes its summary, CI makes
 one separate `timing-interrupted.json` observation before uploading diagnostics.
 It retains the original source and fixture identities and validates the recorded
@@ -94,17 +112,19 @@ passing qualification envelope.
 ## Collecting a failure
 
 An unsuccessful installed run writes `failure.json` beside its timing report
-and prints a short summary. CI retains this separate, allowlisted file as the
-`m3-8-failure` artifact. The live wrapper keeps raw logs private on the secure
+and prints a short summary. CI retains it in the diagnostic artifacts named
+above and prints the synthetic fixture's phase logs on failure. The live wrapper
+keeps raw logs private on the secure
 workstation. Share the JSON report when reporting a failure; it contains no raw
 exception, provider response, credential, bucket/key name, or tenant content.
 The first failed test and its submission context are retained even if later
-tests or teardown also fail. Later errors remain available in the private log.
+tests or teardown also fail. Later errors remain available in the phase log.
 The separately recorded first Ansible failure can come from an intentional
 rejection test inside a passing group. It is context, not necessarily the cause
 of the run's failure; use the failed test location and its terminal traceback.
 Restore and production-rollout command failures identify the calling fixture
-step rather than the shared command wrapper; command output remains private.
+step rather than the shared command wrapper; the JSON summary omits command
+output, while synthetic CI phase logs retain it.
 The console names the operation separately from its observed outcome. Known
 burst-limit and ordinary-deletion eligibility rejections receive fixed categories;
 unrecognized transport errors stay generic without copying private messages.
