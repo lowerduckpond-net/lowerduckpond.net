@@ -324,6 +324,8 @@ creation and a workstation crash with no final exit record.
 If storage preparation never saved `live-storage.json`, its backup prefix must
 still be empty. A captured input file alone does not authorize deletion of data
 that may have caused the original ownership claim to fail.
+When `live-storage.json` exists, both storage principals must verify its original
+owner version and exact binding before closeout stops or deletes any resource.
 
 Closeout requires the shared archive Space and this run's public DNS challenges
 to be absent before stopping anything. Resolve remaining run-owned archives
@@ -342,7 +344,16 @@ whole private run directory, including diagnostic workspaces and any earlier
 retirement disk copies. It creates no preservation copies. Shared images, other
 runs and production backups stay outside its removal scope.
 
-If interrupted, rerun the same closeout command. Completed deletions stay
+Before mutation, closeout inventories the expected container names independently
+of their labels and compares the image tag with the original fixture image ID.
+Replacement containers, ownership markers or image tags block cleanup. Private
+local and backup removal receipts retain the original identities and exact
+authorized versions across interruptions; deletion of the ownership marker is
+authorized durably only after the backup data is gone.
+
+If interrupted, rerun the same closeout command. Removing a delete marker may
+expose an already authorized historical version; retries accept that transition
+but reject new versions or uploads. Completed deletions stay
 permanent; the directory remains available until remote cleanup, container and
 image removal have all succeeded. After successful closeout, review/merge the
 fixes and run one fresh complete qualification from clean merged inputs. Only

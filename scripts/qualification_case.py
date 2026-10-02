@@ -101,7 +101,7 @@ def record_created_containers(
     return identities
 
 
-def remove_owned_image(environment: dict[str, str]) -> None:
+def remove_owned_image(environment: dict[str, str], *, expected_image: str | None = None) -> None:
     """Untag only this run's Molecule build after its containers are absent."""
     host_name(environment)
     if not environment.get(RUN_ENV):
@@ -130,6 +130,8 @@ def remove_owned_image(environment: dict[str, str]) -> None:
         identity = output.decode("ascii").strip()
         if identity and re.fullmatch(r"sha256:[0-9a-f]{64}", identity) is None:
             raise ValueError("owned build image inventory is invalid")
+        if identity and expected_image is not None and identity != expected_image:
+            raise ValueError("owned image tag was replaced")
         return bool(identity)
 
     if not present():

@@ -43,12 +43,11 @@ class Storage:
         self, *, Bucket: str, Prefix: str, MaxKeys: int, ContinuationToken: str | None = None
     ) -> dict[str, object]:
         assert Bucket == self.target.backup_bucket and MaxKeys == LIST_PAGE_SIZE
+        # Insertion order is version creation order. A latest delete marker
+        # hides older data until deleting that marker exposes the prior version.
+        latest = {key: kind for (key, _), kind in self.versions.items()}
         keys = sorted(
-            {
-                key
-                for (key, _), kind in self.versions.items()
-                if key.startswith(Prefix) and kind == "version"
-            }
+            key for key, kind in latest.items() if key.startswith(Prefix) and kind == "version"
         )
         start = 0 if ContinuationToken is None else keys.index(ContinuationToken) + 1
         page = keys[start : start + MaxKeys]
@@ -234,6 +233,7 @@ def test_large_versioned_repository_is_removed_and_resumes_its_original_inventor
         storage.versions[key, f"data-version-{index:04d}"] = "version"
     for index in range(500):
         key = value.target.prefix + f"restic/locks/{index:064x}"
+        storage.versions[key, f"lock-version-{index:04d}"] = "version"
         storage.versions[key, f"marker-version-{index:04d}"] = "delete-marker"
     expected = {
         identity for identity in storage.versions if identity[0].startswith(value.target.prefix)
@@ -308,6 +308,26 @@ def test_lost_response_resumes_original_cleanup_without_redeleting_absent_versio
     assert storage.operations[-1][-1] == "owner-version"
 
 
+def test_retry_accepts_historical_version_exposed_by_deleting_latest_marker(
+    removal: tuple[Removal, Storage],
+) -> None:
+    value, storage = removal
+    key = value.target.prefix + "restic/locks/hidden"
+    storage.versions[key, "historical-version"] = "version"
+    storage.versions[key, "latest-marker"] = "delete-marker"
+    assert key not in cast("list[str]", value._inventory(value.writer)["current"])
+    storage.fail_after = "latest-marker"
+    with pytest.raises(OSError, match="response lost"):
+        value.run()
+    assert key in cast("list[str]", value._inventory(value.writer)["current"])
+    assert (key, "historical-version") in storage.versions
+    original = (value.directory / "intent.json").read_bytes()
+    assert value.run()["remaining_backup_objects"] == 0
+    assert (value.directory / "intent.json").read_bytes() == original
+    assert storage.operations.count(("delete", key, "latest-marker")) == 1
+    assert storage.operations.count(("delete", key, "historical-version")) == 1
+
+
 @pytest.mark.parametrize(
     "fault", ["owner", "observer", "quiescence", "foreign", "traversal", "unversioned"]
 )
@@ -336,14 +356,16 @@ def test_uncertain_ownership_or_independent_accounting_prevents_all_deletion(
     assert not storage.operations
 
 
+@pytest.mark.parametrize("key_suffix", ["new", "data/owned"])
 def test_new_bytes_after_interruption_are_retained_instead_of_added_to_the_plan(
     removal: tuple[Removal, Storage],
+    key_suffix: str,
 ) -> None:
     value, storage = removal
     storage.fail_after = "upload-id"
     with pytest.raises(OSError):
         value.run()
-    storage.versions[(value.target.prefix + "restic/new", "new-version")] = "version"
+    storage.versions[(value.target.prefix + "restic/" + key_suffix, "new-version")] = "version"
     operations = list(storage.operations)
     with pytest.raises(ValueError, match="new backup bytes"):
         value.run()

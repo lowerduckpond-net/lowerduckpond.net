@@ -9,12 +9,13 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 import re
 import shutil
 import sys
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import ExitStack
 from pathlib import Path
 from typing import cast
@@ -26,12 +27,14 @@ from scripts import m3_11_backup_discard as backups
 from scripts import m3_11_qualification_evidence as evidence
 from scripts import qualification_restore as owned
 from scripts.check_m3_7_production_edge import CloudflareClient, _require_zone_identity
-from scripts.m3_11_backup_fixture import Target
+from scripts.m3_11_backup_fixture import Target, _version
+from scripts.m3_11_backup_removal import Removal, _once
 from scripts.m3_11_combined_inputs import FORMAT, _directory, _environment, environment_for
 from scripts.m3_11_dns_witness import ZONES, DnsWitness
+from scripts.m3_11_live_storage import FORMAT as STORAGE_FORMAT
 from scripts.m3_11_private_inputs import read_private, read_private_bytes
 from scripts.qualification_case import remove_owned_image
-from scripts.qualification_context import RUN_ENV, run_lease
+from scripts.qualification_context import IMAGE_ENV, RUN_ENV, run_lease
 from scripts.qualification_storage_lease import storage_lease
 
 LABEL = "lowerduckpond.qualification.run"
@@ -161,33 +164,111 @@ def target_for(run: Path, environment: Mapping[str, str]) -> Target:
 
 
 def containers(environment: dict[str, str]) -> dict[str, dict[str, object]]:
-    raw = owned.command(
-        environment,
-        "docker",
-        "container",
-        "ls",
-        "--all",
-        "--no-trunc",
-        "--filter",
+    ids: set[str] = set()
+    # A replacement can retain the expected name without the original label.
+    # Separate inventories find it as well as unexpected names with our label.
+    for selector in (
         f"label={LABEL}={environment[RUN_ENV]}",
-        "--format",
-        "{{.ID}}",
-    )
-    ids = raw.decode("ascii").splitlines()
+        f"name=^/ldp-m3-{environment[RUN_ENV]}-({'|'.join(ROLES)})$",
+    ):
+        raw = owned.command(
+            environment,
+            "docker",
+            "container",
+            "ls",
+            "--all",
+            "--no-trunc",
+            "--filter",
+            selector,
+            "--format",
+            "{{.ID}}",
+        )
+        listed = raw.decode("ascii").splitlines()
+        if len(listed) != len(set(listed)):
+            raise CloseoutError("Docker returned an ambiguous run inventory")
+        ids.update(listed)
     names = {f"/ldp-m3-{environment[RUN_ENV]}-{role}" for role in ROLES}
-    if len(ids) > len(ROLES) or len(set(ids)) != len(ids):
+    if len(ids) > len(ROLES):
         raise CloseoutError("Docker returned an ambiguous run inventory")
     result = {}
     for identity in ids:
         if re.fullmatch(r"[0-9a-f]{64}", identity) is None:
             raise CloseoutError("Docker returned an invalid container identity")
         row = owned.inspect(environment, identity)
-        if row["name"] not in names:
+        if row["id"] != identity or row["name"] not in names:
             raise CloseoutError("an unexpected container carries this run's ownership label")
         result[identity] = row
     if len({row["name"] for row in result.values()}) != len(result):
         raise CloseoutError("Docker returned duplicate fixture names")
     return result
+
+
+def image(environment: dict[str, str]) -> str:
+    identity = (
+        owned.command(
+            environment,
+            "docker",
+            "image",
+            "ls",
+            "--all",
+            "--no-trunc",
+            "--filter",
+            f"reference=molecule_local/{environment[IMAGE_ENV]}",
+            "--format",
+            "{{.ID}}",
+        )
+        .decode("ascii")
+        .strip()
+    )
+    if identity and re.fullmatch(r"sha256:[0-9a-f]{64}", identity) is None:
+        raise CloseoutError("Docker returned an ambiguous image identity")
+    return identity
+
+
+def local_intent(
+    run: Path, environment: dict[str, str], rows: dict[str, dict[str, object]]
+) -> dict[str, object]:
+    """Keep original local identities through partial container/image removal."""
+    path = run / "debug-closeout-local.json"
+    fixture = read_private(run / "fixture.json")
+    if path.exists() or path.is_symlink():
+        value = evidence.fields(read_private(path), {"fixture", "containers", "image"})
+        saved = value["containers"]
+        if (
+            value["fixture"] != fixture
+            or not isinstance(saved, dict)
+            or any(
+                {key: row[key] for key in IDENTITY} != saved.get(identity)
+                for identity, row in rows.items()
+            )
+        ):
+            raise CloseoutError("local resources differ from closeout authorization")
+    else:
+        images = {
+            row["image"]
+            for row in rows.values()
+            if row["name"] == f"/ldp-m3-{environment[RUN_ENV]}-host"
+        }
+        source = run / "restore/source.json"
+        if source.exists():
+            images.add(read_private(source).get("image"))
+        if len(images) > 1 or (not images and image(environment)):
+            raise CloseoutError("run image lacks its original fixture identity")
+        value = {
+            "fixture": fixture,
+            "containers": {
+                identity: {key: row[key] for key in IDENTITY} for identity, row in rows.items()
+            },
+            "image": images.pop() if images else "",
+        }
+    expected = value["image"]
+    if not isinstance(expected, str) or (
+        expected and re.fullmatch(r"sha256:[0-9a-f]{64}", expected) is None
+    ):
+        raise CloseoutError("invalid original fixture image")
+    if image(environment) not in {"", expected}:
+        raise CloseoutError("owned image tag was replaced")
+    return value
 
 
 def require_bound_containers(run: Path, rows: dict[str, dict[str, object]]) -> None:
@@ -268,13 +349,61 @@ def cloud_absent(
     dns_absent(run, environment, target)
 
 
-def closeout(run: Path, ambient: Mapping[str, str], *, apply: bool) -> None:
+def backup_removal(
+    run: Path, environment: dict[str, str], quiescent: Callable[[], str]
+) -> Removal | None:
+    path = run / "live-storage.json"
+    if not path.exists():
+        return None
+    target = target_for(run, environment)
+    storage = read_private(path)
+    if storage.get("format") != STORAGE_FORMAT:
+        raise CloseoutError("invalid saved Spaces ownership")
+    binding = evidence.fields(storage.get("binding"), evidence.BINDING_FIELDS)
+    writer, observer = target.clients(environment)
+    removal = Removal(
+        target,
+        binding,
+        _version(storage.get("owner_version")),
+        writer,
+        observer,
+        run / "debug-closeout-backup",
+        quiescent,
+    )
+    removal.preflight()
+    return removal
+
+
+def stop_containers(environment: dict[str, str], before: dict[str, dict[str, object]]) -> None:
+    for role in ROLES:
+        for identity, row in before.items():
+            if row["name"] == f"/ldp-m3-{environment[RUN_ENV]}-{role}" and row["running"]:
+                require_same(environment, before)
+                owned.command(environment, "docker", "stop", "--time", "60", identity, timeout=75)
+    require_same(environment, before, stopped=True)
+
+
+def remove_containers(environment: dict[str, str], before: dict[str, dict[str, object]]) -> None:
+    for identity in before:
+        require_same(environment, before, stopped=True)
+        owned.command(environment, "docker", "container", "rm", "--volumes", identity)
+        before = {key: row for key, row in before.items() if key != identity}
+    require_same(environment, {}, stopped=True)
+
+
+def resume_directory(run: Path, *, apply: bool) -> bool:
     receipt = disposal_receipt(run)
-    if receipt.exists() or receipt.is_symlink():
-        with ExitStack() as locks:
-            if (run / "run.lock").exists():
-                locks.enter_context(run_lease(run))
-            finish_directory(run, apply=apply)
+    if not (receipt.exists() or receipt.is_symlink()):
+        return False
+    with ExitStack() as locks:
+        if (run / "run.lock").exists():
+            locks.enter_context(run_lease(run))
+        finish_directory(run, apply=apply)
+    return True
+
+
+def closeout(run: Path, ambient: Mapping[str, str], *, apply: bool) -> None:
+    if resume_directory(run, apply=apply):
         return
     _directory(run)
     original_inode = run.stat().st_dev, run.stat().st_ino
@@ -292,6 +421,7 @@ def closeout(run: Path, ambient: Mapping[str, str], *, apply: bool) -> None:
             locks.enter_context(run_lease(run, create=not lock.exists()))
         before = containers(environment)
         require_bound_containers(run, before)
+        intent = local_intent(run, environment, before)
         client = create_client(
             access_key_id=environment["SPACES_ACCESS_KEY_ID"],
             secret_access_key=environment["SPACES_SECRET_ACCESS_KEY"],
@@ -299,7 +429,15 @@ def closeout(run: Path, ambient: Mapping[str, str], *, apply: bool) -> None:
             endpoint_url=f"https://{target.region}.digitaloceanspaces.com",
         )
         cloud_absent(run, environment, target, client)
-        if not (run / "live-storage.json").exists():
+
+        def quiescent() -> str:
+            require_same(environment, before, stopped=True)
+            local_intent(run, environment, before)
+            cloud_absent(run, environment, target, client)
+            return hashlib.sha256(evidence.canonical_bytes(intent)).hexdigest()
+
+        removal = backup_removal(run, environment, quiescent)
+        if removal is None:
             assert_storage_empty(client, bucket=target.backup_bucket, prefix=target.prefix)
         # Remote inventory errors must leave the original local fixture available.
         backup_inventory = backups.inventory(
@@ -317,24 +455,18 @@ def closeout(run: Path, ambient: Mapping[str, str], *, apply: bool) -> None:
         if not apply:
             print("Add --discard when debugging is finished to remove these resources.")
             return
-        for role in ROLES:
-            for identity, row in before.items():
-                if row["name"] == f"/ldp-m3-{environment[RUN_ENV]}-{role}" and row["running"]:
-                    require_same(environment, before)
-                    owned.command(
-                        environment, "docker", "stop", "--time", "60", identity, timeout=75
-                    )
+        _once(run / "debug-closeout-local.json", intent)
+        stop_containers(environment, before)
+        cloud_absent(run, environment, target, client)
+        if removal is not None:
+            removal.run()
+        else:
+            assert_storage_empty(client, bucket=target.backup_bucket, prefix=target.prefix)
         require_same(environment, before, stopped=True)
         cloud_absent(run, environment, target, client)
-        backups.run(client, bucket=target.backup_bucket, targets=[target.run_id], apply=True)
-        require_same(environment, before, stopped=True)
-        cloud_absent(run, environment, target, client)
-        for identity in before:
-            require_same(environment, before, stopped=True)
-            owned.command(environment, "docker", "container", "rm", "--volumes", identity)
-            before = {key: row for key, row in before.items() if key != identity}
-        require_same(environment, {}, stopped=True)
-        remove_owned_image(environment)
+        remove_containers(environment, before)
+        local_intent(run, environment, {})
+        remove_owned_image(environment, expected_image=str(intent["image"]))
         assert_storage_empty(client, bucket=target.backup_bucket, prefix=target.prefix)
         cloud_absent(run, environment, target, client)
         _directory(run)

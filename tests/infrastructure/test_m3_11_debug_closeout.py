@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import fcntl
+import io
 import json
 import os
+import re
 import shutil
 import subprocess
 from contextlib import nullcontext
@@ -15,12 +17,16 @@ from unittest.mock import Mock
 import pytest
 from lowerduckpond_m3_archive.storage import S3Client
 
+from scripts import m3_11_backup_fixture as backup_fixture
 from scripts import m3_11_debug_closeout as cleanup
 from scripts import m3_11_qualification_evidence as evidence
+from scripts import qualification_case
 from scripts import qualification_restore as owned
 from scripts.m3_11_backup_fixture import Target
 from scripts.m3_11_combined_inputs import FORMAT, _environment
+from scripts.m3_11_live_storage import FORMAT as STORAGE_FORMAT
 from scripts.m3_11_private_inputs import read_private, write_private
+from scripts.production_qualification_inputs import POLICY
 from scripts.qualification_context import RUN_ENV, run_lease
 
 RUN = "0198d17f-6f4a-7000-8000-000000000001"
@@ -28,6 +34,15 @@ NONCE = "0198d17f-6f4a-7000-8000-000000000002"
 TARGET = Target(RUN, "ams3", "example-backups", "example-archives")
 ENDPOINT = "unix:///var/run/docker.sock"
 IMAGE = "sha256:" + "e" * 64
+BINDING: dict[str, object] = {
+    "source_revision": "a" * 40,
+    "artifact_sha256": "b" * 64,
+    "input_policy": POLICY,
+    "qualification_inputs_sha256": "c" * 64,
+    "storage_target_sha256": TARGET.storage_target_sha256,
+    "storage_run_id": NONCE,
+    "storage_report_sha256": "d" * 64,
+}
 
 
 @dataclass
@@ -41,6 +56,8 @@ class Fixture:
     dirty_archive: bool = False
     image_busy: bool = False
     image_present: bool = True
+    image_id: str = IMAGE
+    manifest: bytes = evidence.canonical_bytes(TARGET.manifest(BINDING))
     cloud_unavailable: bool = False
 
     def objects(self, **request: object) -> dict[str, object]:
@@ -50,14 +67,35 @@ class Fixture:
             keys = ["unknown/archive"] if self.dirty_archive else []
         else:
             assert request["Bucket"] == TARGET.backup_bucket and request["Prefix"] == TARGET.prefix
-            keys = [key for (key, _identity), kind in self.versions.items() if kind == "version"]
+            latest = {key: kind for (key, _), kind in self.versions.items()}
+            keys = [key for key, kind in latest.items() if kind == "version"]
         return {"IsTruncated": False, "Contents": [{"Key": key} for key in keys]}
 
     def version_list(self, **request: object) -> dict[str, object]:
         values = self.versions if request["Bucket"] == TARGET.backup_bucket else {}
         return {
             "IsTruncated": False,
-            "Versions": [{"Key": key, "VersionId": identity} for key, identity in values],
+            **{
+                output: [
+                    {"Key": key, "VersionId": identity}
+                    for (key, identity), kind in values.items()
+                    if key.startswith(str(request["Prefix"])) and kind == selected
+                ]
+                for selected, output in (
+                    ("version", "Versions"),
+                    ("delete-marker", "DeleteMarkers"),
+                )
+            },
+        }
+
+    def owner(self, **request: object) -> dict[str, object]:
+        assert request["Bucket"] == TARGET.backup_bucket
+        assert request["Key"] == TARGET.owner_key
+        assert (TARGET.owner_key, str(request["VersionId"])) in self.versions
+        return {
+            "VersionId": request["VersionId"],
+            "ContentLength": len(self.manifest),
+            "Body": io.BytesIO(self.manifest),
         }
 
     def delete(self, **request: object) -> dict[str, object]:
@@ -73,13 +111,14 @@ class Fixture:
         client.list_objects_v2.side_effect = self.objects
         client.list_object_versions.side_effect = self.version_list
         client.list_multipart_uploads.return_value = {"IsTruncated": False}
+        client.get_object.side_effect = self.owner
         client.delete_object.side_effect = self.delete
         client.abort_multipart_upload.side_effect = AssertionError("no uploads in this fixture")
         return client
 
     def changed(self, kind: str, identity: str) -> None:
         self.events.append((kind, identity))
-        if self.fail_after == kind:
+        if self.fail_after in {kind, identity}:
             self.fail_after = None
             raise OSError("response lost after commit")
 
@@ -90,10 +129,34 @@ class Fixture:
         assert "DOCKER_CONTEXT" not in environment
         assert arguments[0] == "docker"
         if arguments[1:3] == ("container", "ls"):
-            assert f"label={cleanup.LABEL}={environment[RUN_ENV]}" in arguments
-            return "\n".join(self.rows).encode()
+            selector = arguments[arguments.index("--filter") + 1]
+            if selector.startswith("label="):
+                assert selector == f"label={cleanup.LABEL}={environment[RUN_ENV]}"
+                ids = [
+                    key for key, row in self.rows.items() if row["owner"] == environment[RUN_ENV]
+                ]
+            else:
+                assert selector.startswith("name=")
+                ids = [
+                    key
+                    for key, row in self.rows.items()
+                    if re.search(selector[5:], str(row["name"]))
+                ]
+            return "\n".join(ids).encode()
+        if arguments[1:3] == ("image", "ls"):
+            assert f"reference=molecule_local/{environment['LDP_QUALIFICATION_IMAGE']}" in arguments
+            return self.image_id.encode() if self.image_present else b""
+        if arguments[1:3] == ("image", "rm"):
+            assert arguments[3:] == (f"molecule_local/{environment['LDP_QUALIFICATION_IMAGE']}",)
+            self.image(environment)
+            return b""
         if arguments[1] == "inspect":
-            return json.dumps(self.rows[arguments[-1]]).encode()
+            row = next(
+                row
+                for row in self.rows.values()
+                if arguments[-1] in {row["id"], str(row["name"]).removeprefix("/")}
+            )
+            return json.dumps(row).encode()
         if arguments[1] == "stop":
             assert arguments[2:4] == ("--time", "60")
             self.rows[arguments[-1]]["running"] = False
@@ -119,7 +182,12 @@ class Fixture:
         if self.image_busy:
             raise ValueError("image still referenced")
         self.image_present = False
-        self.changed("image", IMAGE)
+        self.changed("image", self.image_id)
+
+    def bounded(
+        self, arguments: list[str], *, environment: dict[str, str], **options: object
+    ) -> bytes:
+        return self.command(environment, *arguments)
 
 
 @pytest.fixture
@@ -136,10 +204,14 @@ def fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Fixture:
     write_private(
         run / "live-storage.json",
         {
+            "format": STORAGE_FORMAT,
             "run_id": RUN,
             "region": TARGET.region,
             "backup_bucket": TARGET.backup_bucket,
             "archive_bucket": TARGET.archive_bucket,
+            "binding": BINDING,
+            "owner_version": "owner-version",
+            "restic_password": "f" * 64,
         },
     )
     write_private(run / "failure-exit.json", {"exit_status": 124, "phase": "verify"})
@@ -149,6 +221,8 @@ def fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Fixture:
         "SPACES_ARCHIVE_BUCKET": TARGET.archive_bucket,
         "SPACES_ACCESS_KEY_ID": "example-key",
         "SPACES_SECRET_ACCESS_KEY": "example-credential",
+        "SPACES_BACKUP_ACCESS_KEY_ID": "runtime-key",
+        "SPACES_BACKUP_SECRET_ACCESS_KEY": "runtime-credential",
         "CLOUDFLARE_API_TOKEN": "example-token",
         "CLOUDFLARE_ZONE_ID": "a" * 32,
         "CLOUDFLARE_TENANT_ZONE_ID": "b" * 32,
@@ -171,7 +245,8 @@ def fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Fixture:
     monkeypatch.setattr(owned, "command", value.command)
     monkeypatch.setattr(cleanup, "create_client", Mock(return_value=value.client()))
     monkeypatch.setattr(cleanup, "storage_lease", lambda environment: nullcontext())
-    monkeypatch.setattr(cleanup, "remove_owned_image", value.image)
+    monkeypatch.setattr(backup_fixture, "create_client", lambda **options: value.client())
+    monkeypatch.setattr(qualification_case, "bounded_command", value.bounded)
     return value
 
 
@@ -182,6 +257,138 @@ def test_preview_retains_every_resource_and_original_failure(fixture: Fixture) -
     assert fixture.rows and fixture.versions
     assert (fixture.run / "failure-exit.json").read_bytes() == original
     assert not (fixture.run / "run.lock").exists()
+    assert not (fixture.run / "debug-closeout-local.json").exists()
+    assert not (fixture.run / "debug-closeout-backup").exists()
+
+
+@pytest.mark.parametrize("apply", [False, True])
+@pytest.mark.parametrize("fault", ["version", "body", "binding", "missing"])
+def test_original_remote_ownership_is_required_before_any_mutation(
+    fixture: Fixture, fault: str, apply: bool
+) -> None:
+    if fault in {"version", "missing"}:
+        del fixture.versions[TARGET.owner_key, "owner-version"]
+        if fault == "version":
+            fixture.versions[TARGET.owner_key, "replacement-version"] = "version"
+    elif fault == "body":
+        fixture.manifest = evidence.canonical_bytes(
+            TARGET.manifest({**BINDING, "artifact_sha256": "f" * 64})
+        )
+    else:
+        path = fixture.run / "live-storage.json"
+        storage = read_private(path)
+        storage["binding"] = {**BINDING, "artifact_sha256": "f" * 64}
+        path.unlink()
+        write_private(path, storage)
+    before = dict(fixture.versions)
+    with pytest.raises(ValueError, match="ownership"):
+        cleanup.closeout(fixture.run, fixture.environment, apply=apply)
+    assert not fixture.events
+    assert fixture.versions == before and fixture.rows and fixture.image_present
+
+
+@pytest.mark.parametrize("role", cleanup.ROLES)
+@pytest.mark.parametrize("owner", [None, "another-run"])
+def test_expected_name_with_replacement_label_is_rejected_before_mutation(
+    fixture: Fixture, role: str, owner: str | None
+) -> None:
+    replacement = next(
+        row for row in fixture.rows.values() if str(row["name"]).endswith("-" + role)
+    )
+    replacement["owner"] = owner
+    environment = _environment(fixture.run, RUN, ENDPOINT)
+    # Docker's label filter really does omit the replacement in this reproduction.
+    listed = fixture.command(
+        environment,
+        "docker",
+        "container",
+        "ls",
+        "--filter",
+        f"label={cleanup.LABEL}={environment[RUN_ENV]}",
+    )
+    assert str(replacement["id"]).encode() not in listed
+    with pytest.raises(ValueError, match="ownership"):
+        cleanup.closeout(fixture.run, fixture.environment, apply=True)
+    assert not fixture.events
+    assert fixture.versions and fixture.image_present and fixture.run.exists()
+
+
+@pytest.mark.parametrize("interruption", [None, "container", "image"])
+def test_reassigned_image_tag_is_retained_before_cleanup_and_on_retry(
+    fixture: Fixture, interruption: str | None
+) -> None:
+    if interruption is not None:
+        fixture.fail_after = interruption
+        with pytest.raises(OSError, match="response lost"):
+            cleanup.closeout(fixture.run, fixture.environment, apply=True)
+    fixture.image_present = True
+    fixture.image_id = "sha256:" + "f" * 64
+    events = list(fixture.events)
+    with pytest.raises(cleanup.CloseoutError, match="tag was replaced"):
+        cleanup.closeout(fixture.run, fixture.environment, apply=True)
+    assert fixture.events == events
+    assert fixture.image_present and fixture.run.exists()
+    assert not cleanup.disposal_receipt(fixture.run).exists()
+
+
+def test_real_image_removal_helper_rechecks_tag_identity(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def command(arguments: list[str], *, environment: dict[str, str], **options: object) -> bytes:
+        if arguments[1:3] == ["image", "ls"]:
+            fixture.image_id = "sha256:" + "f" * 64
+        return fixture.command(environment, *arguments)
+
+    monkeypatch.setattr(qualification_case, "bounded_command", command)
+    with pytest.raises(ValueError, match="tag was replaced"):
+        cleanup.closeout(fixture.run, fixture.environment, apply=True)
+    assert fixture.image_present and fixture.run.exists()
+    assert all(kind != "image" for kind, _ in fixture.events)
+
+
+@pytest.mark.parametrize("image", [IMAGE, "sha256:" + "f" * 64])
+def test_retained_source_receipt_binds_image_after_original_host_is_gone(
+    fixture: Fixture, image: str
+) -> None:
+    identity, source = next(
+        (identity, row)
+        for identity, row in fixture.rows.items()
+        if str(row["name"]).endswith("-host")
+    )
+    (fixture.run / "restore").mkdir(mode=0o700)
+    write_private(fixture.run / "restore/source.json", source)
+    del fixture.rows[identity]
+    fixture.image_id = image
+    if image == IMAGE:
+        cleanup.closeout(fixture.run, fixture.environment, apply=True)
+        assert not fixture.run.exists()
+    else:
+        with pytest.raises(cleanup.CloseoutError, match="tag was replaced"):
+            cleanup.closeout(fixture.run, fixture.environment, apply=True)
+        assert not fixture.events and fixture.image_present
+
+
+@pytest.mark.parametrize("authorization", ["original", "missing", "changed"])
+def test_lost_owner_deletion_response_requires_original_authorization_to_resume(
+    fixture: Fixture, authorization: str
+) -> None:
+    fixture.fail_after = TARGET.owner_key
+    with pytest.raises(OSError, match="response lost"):
+        cleanup.closeout(fixture.run, fixture.environment, apply=True)
+    assert not fixture.versions and fixture.rows
+    path = fixture.run / "debug-closeout-backup/owner-delete.started.json"
+    if authorization != "original":
+        path.unlink()
+        if authorization == "changed":
+            write_private(path, {"intent_sha256": "f" * 64})
+        events = list(fixture.events)
+        with pytest.raises(ValueError, match=r"ownership|authorization"):
+            cleanup.closeout(fixture.run, fixture.environment, apply=True)
+        assert fixture.events == events and fixture.run.exists()
+    else:
+        cleanup.closeout(fixture.run, fixture.environment, apply=True)
+        assert not fixture.run.exists()
+        assert len(fixture.events) == len(set(fixture.events))
 
 
 def test_completed_inner_case_without_full_qualification_can_be_closed_out(
@@ -471,12 +678,14 @@ def test_redirected_run_directory_is_rejected(fixture: Fixture) -> None:
 def test_manifest_change_after_image_removal_prevents_directory_deletion(
     fixture: Fixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def image(environment: dict[str, str]) -> None:
-        fixture.image(environment)
-        (fixture.run / "fixture.json").unlink()
-        write_private(fixture.run / "fixture.json", {"format": "changed"})
+    def command(arguments: list[str], *, environment: dict[str, str], **options: object) -> bytes:
+        result = fixture.command(environment, *arguments)
+        if arguments[1:3] == ["image", "rm"]:
+            (fixture.run / "fixture.json").unlink()
+            write_private(fixture.run / "fixture.json", {"format": "changed"})
+        return result
 
-    monkeypatch.setattr(cleanup, "remove_owned_image", image)
+    monkeypatch.setattr(qualification_case, "bounded_command", command)
     with pytest.raises(cleanup.CloseoutError, match="manifest changed"):
         cleanup.closeout(fixture.run, fixture.environment, apply=True)
     assert fixture.run.exists()
