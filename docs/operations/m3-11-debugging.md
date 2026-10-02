@@ -326,6 +326,10 @@ still be empty. A captured input file alone does not authorize deletion of data
 that may have caused the original ownership claim to fail.
 When `live-storage.json` exists, both storage principals must verify its original
 owner version and exact binding before closeout stops or deletes any resource.
+If normal teardown already removed the backups, closeout validates its retained
+`owned-teardown/backup` deletion authorization and independently checks that no
+objects, versions, delete markers or uploads remain. It rechecks absence after
+stopping local writers and leaves the original teardown journal unchanged.
 
 Closeout requires the shared archive Space and this run's public DNS challenges
 to be absent before stopping anything. Resolve remaining run-owned archives

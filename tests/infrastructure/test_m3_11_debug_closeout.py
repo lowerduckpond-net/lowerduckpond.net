@@ -23,6 +23,7 @@ from scripts import m3_11_qualification_evidence as evidence
 from scripts import qualification_case
 from scripts import qualification_restore as owned
 from scripts.m3_11_backup_fixture import Target
+from scripts.m3_11_backup_removal import Removal
 from scripts.m3_11_combined_inputs import FORMAT, _environment
 from scripts.m3_11_live_storage import FORMAT as STORAGE_FORMAT
 from scripts.m3_11_private_inputs import read_private, write_private
@@ -347,8 +348,10 @@ def test_real_image_removal_helper_rechecks_tag_identity(
 
 
 @pytest.mark.parametrize("image", [IMAGE, "sha256:" + "f" * 64])
-def test_retained_source_receipt_binds_image_after_original_host_is_gone(
-    fixture: Fixture, image: str
+@pytest.mark.parametrize("host_present", [False, True])
+@pytest.mark.parametrize("apply", [False, True])
+def test_real_source_receipt_binds_image_before_and_after_original_host_is_gone(
+    fixture: Fixture, image: str, host_present: bool, apply: bool
 ) -> None:
     identity, source = next(
         (identity, row)
@@ -356,16 +359,148 @@ def test_retained_source_receipt_binds_image_after_original_host_is_gone(
         if str(row["name"]).endswith("-host")
     )
     (fixture.run / "restore").mkdir(mode=0o700)
-    write_private(fixture.run / "restore/source.json", source)
-    del fixture.rows[identity]
+    qualification_case.private_document(fixture.run / "restore", "source.json", source)
+    if not host_present:
+        del fixture.rows[identity]
     fixture.image_id = image
     if image == IMAGE:
-        cleanup.closeout(fixture.run, fixture.environment, apply=True)
-        assert not fixture.run.exists()
+        cleanup.closeout(fixture.run, fixture.environment, apply=apply)
+        assert fixture.run.exists() is not apply
+        if not apply:
+            assert not fixture.events
     else:
         with pytest.raises(cleanup.CloseoutError, match="tag was replaced"):
-            cleanup.closeout(fixture.run, fixture.environment, apply=True)
+            cleanup.closeout(fixture.run, fixture.environment, apply=apply)
         assert not fixture.events and fixture.image_present
+
+
+def normal_backup_removal(fixture: Fixture, *, lost_response: bool = False) -> Path:
+    root = fixture.run / "owned-teardown"
+    root.mkdir(mode=0o700)
+    for row in fixture.rows.values():
+        row["running"] = False
+    removal = Removal(
+        TARGET,
+        BINDING,
+        "owner-version",
+        fixture.client(),
+        fixture.client(),
+        root / "backup",
+        lambda: "a" * 64,
+    )
+    if lost_response:
+        fixture.fail_after = TARGET.owner_key
+        with pytest.raises(OSError, match="response lost"):
+            removal.run()
+    else:
+        removal.run()
+    assert not fixture.versions
+    return removal.directory
+
+
+@pytest.mark.parametrize("apply", [False, True])
+@pytest.mark.parametrize("lost_response", [False, True])
+def test_closeout_accepts_backup_removal_authorized_by_normal_teardown(
+    fixture: Fixture, apply: bool, lost_response: bool
+) -> None:
+    journal = normal_backup_removal(fixture, lost_response=lost_response)
+    original = {path.name: path.read_bytes() for path in journal.iterdir()}
+    events = list(fixture.events)
+    cleanup.closeout(fixture.run, fixture.environment, apply=apply)
+    assert fixture.run.exists() is not apply
+    assert [event for event in fixture.events if event[0] == "remote"] == events
+    if not apply:
+        assert fixture.events == events
+        assert {path.name: path.read_bytes() for path in journal.iterdir()} == original
+        assert not (fixture.run / "debug-closeout-backup").exists()
+
+
+@pytest.mark.parametrize("fault", ["binding", "version", "authorization", "completion", "missing"])
+def test_closeout_rejects_invalid_normal_teardown_authorization_before_mutation(
+    fixture: Fixture, fault: str
+) -> None:
+    journal = normal_backup_removal(fixture)
+    name = {
+        "binding": "intent.json",
+        "version": "intent.json",
+        "authorization": "owner-delete.started.json",
+        "missing": "owner-delete.started.json",
+        "completion": "removed.json",
+    }[fault]
+    path = journal / name
+    value = read_private(path)
+    path.unlink()
+    if fault == "binding":
+        value["ownership"] = TARGET.manifest({**BINDING, "artifact_sha256": "f" * 64})
+    elif fault == "version":
+        value["owner_version"] = "another-version"
+    else:
+        value["intent_sha256"] = "f" * 64
+    if fault != "missing":
+        write_private(path, value)
+    events = list(fixture.events)
+    with pytest.raises(ValueError):
+        cleanup.closeout(fixture.run, fixture.environment, apply=True)
+    assert fixture.events == events and fixture.rows and fixture.run.exists()
+
+
+@pytest.mark.parametrize("kind", ["version", "delete-marker", "upload", "observer"])
+def test_normal_teardown_receipt_does_not_override_fresh_storage_inventory(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    normal_backup_removal(fixture)
+    if kind in {"version", "delete-marker"}:
+        fixture.versions[TARGET.prefix + "restic/new", "new-version"] = kind
+    else:
+
+        def client(**options: str) -> Mock:
+            result = fixture.client()
+            if kind == "upload" or options["access_key_id"] == "example-key":
+                result.list_multipart_uploads.return_value = {
+                    "IsTruncated": False,
+                    "Uploads": [{"Key": TARGET.prefix + "restic/new", "UploadId": "new-upload"}],
+                }
+            return result
+
+        monkeypatch.setattr(backup_fixture, "create_client", client)
+    events = list(fixture.events)
+    with pytest.raises(ValueError, match=r"reappeared|disagree"):
+        cleanup.closeout(fixture.run, fixture.environment, apply=True)
+    assert fixture.events == events and fixture.run.exists()
+
+
+def test_closeout_rechecks_normal_removal_absence_after_stopping_local_writers(
+    fixture: Fixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    normal_backup_removal(fixture)
+    for row in fixture.rows.values():
+        row["running"] = True
+    events = list(fixture.events)
+
+    def command(environment: dict[str, str], *arguments: str, **options: object) -> bytes:
+        result = fixture.command(environment, *arguments)
+        if arguments[1] == "stop":
+            fixture.versions[TARGET.prefix + "restic/new", "new-version"] = "version"
+        return result
+
+    monkeypatch.setattr(owned, "command", command)
+    with pytest.raises(ValueError, match="reappeared"):
+        cleanup.closeout(fixture.run, fixture.environment, apply=True)
+    assert all(kind == "stop" for kind, _ in fixture.events[len(events) :])
+    assert fixture.rows and fixture.versions and fixture.run.exists()
+
+
+def test_interrupted_local_closeout_keeps_normal_backup_authorization(fixture: Fixture) -> None:
+    journal = normal_backup_removal(fixture)
+    original = {path.name: path.read_bytes() for path in journal.iterdir()}
+    fixture.fail_after = "container"
+    with pytest.raises(OSError, match="response lost"):
+        cleanup.closeout(fixture.run, fixture.environment, apply=True)
+    assert {path.name: path.read_bytes() for path in journal.iterdir()} == original
+    assert not (fixture.run / "debug-closeout-backup").exists()
+    cleanup.closeout(fixture.run, fixture.environment, apply=True)
+    assert not fixture.run.exists()
+    assert len(fixture.events) == len(set(fixture.events))
 
 
 @pytest.mark.parametrize("authorization", ["original", "missing", "changed"])
@@ -395,6 +530,12 @@ def test_completed_inner_case_without_full_qualification_can_be_closed_out(
     fixture: Fixture,
 ) -> None:
     write_private(fixture.run / "combined.json", {"status": "passed"})
+    normal_backup_removal(fixture)
+    source = next(row for row in fixture.rows.values() if str(row["name"]).endswith("-host"))
+    (fixture.run / "restore").mkdir(mode=0o700)
+    qualification_case.private_document(fixture.run / "restore", "source.json", source)
+    fixture.rows.clear()
+    fixture.image_present = False
     cleanup.closeout(fixture.run, fixture.environment, apply=True)
     assert not fixture.run.exists()
 

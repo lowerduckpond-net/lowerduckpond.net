@@ -148,21 +148,44 @@ class Removal:
         self._validate_inventory(intent["inventory"])
         return intent
 
-    def preflight(self) -> None:
-        """Check ownership before fencing; only an authorized empty retry may lack it."""
+    def is_removed(self) -> bool:
+        """Read original deletion authorization and independently observe absence."""
         self._private_directory()
         _version(self.owner_version)
-        if self.directory.exists():
-            intent = self._saved_intent()
-            owner_started = self.directory / "owner-delete.started.json"
-            if owner_started.exists() or owner_started.is_symlink():
-                if read_private(owner_started) != {
-                    "intent_sha256": hashlib.sha256(canonical_bytes(intent)).hexdigest()
-                }:
-                    raise ValueError("backup owner removal lost its original authorization")
-                if self._observed() == {"current": [], "versions": [], "uploads": []}:
-                    return
-        self._owner()
+        if self.writer is self.observer:
+            raise ValueError("backup removal requires an independent observer")
+        if not self.directory.exists():
+            return False
+        intent = self._saved_intent()
+        authorization = {"intent_sha256": hashlib.sha256(canonical_bytes(intent)).hexdigest()}
+        owner_started = self.directory / "owner-delete.started.json"
+        removed = self.directory / "removed.json"
+        receipt_exists = removed.exists() or removed.is_symlink()
+        if not (owner_started.exists() or owner_started.is_symlink()):
+            if receipt_exists:
+                raise ValueError("backup owner removal lost its original authorization")
+            return False
+        if read_private(owner_started) != authorization:
+            raise ValueError("backup owner removal lost its original authorization")
+        if receipt_exists and read_private(removed) != {
+            **authorization,
+            "remaining_backup_objects": 0,
+        }:
+            raise ValueError("backup removal completion differs from its authorization")
+        empty = self._observed() == {"current": [], "versions": [], "uploads": []}
+        if receipt_exists and not empty:
+            raise ValueError("backup bytes reappeared after completed removal")
+        return empty
+
+    def require_removed(self) -> None:
+        """Validate completed deletion without reusing another controller's fencing proof."""
+        if not self.is_removed():
+            raise ValueError("independent backup absence was not established")
+
+    def preflight(self) -> None:
+        """Check ownership before fencing; only an authorized empty retry may lack it."""
+        if not self.is_removed():
+            self._owner()
 
     def _intent(self) -> dict[str, object]:
         original = self.target.manifest(self.binding)

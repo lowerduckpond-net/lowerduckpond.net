@@ -17,6 +17,7 @@ import shutil
 import sys
 from collections.abc import Callable, Mapping
 from contextlib import ExitStack
+from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
@@ -251,7 +252,7 @@ def local_intent(
         }
         source = run / "restore/source.json"
         if source.exists():
-            images.add(read_private(source).get("image"))
+            images.add(json.loads(read_private_bytes(source)).get("image"))
         if len(images) > 1 or (not images and image(environment)):
             raise CloseoutError("run image lacks its original fixture identity")
         value = {
@@ -351,7 +352,7 @@ def cloud_absent(
 
 def backup_removal(
     run: Path, environment: dict[str, str], quiescent: Callable[[], str]
-) -> Removal | None:
+) -> Callable[[], object] | None:
     path = run / "live-storage.json"
     if not path.exists():
         return None
@@ -370,8 +371,14 @@ def backup_removal(
         run / "debug-closeout-backup",
         quiescent,
     )
+    normal = replace(removal, directory=run / "owned-teardown/backup")
+    if (normal.directory.exists() or normal.directory.is_symlink()) and normal.is_removed():
+        # Normal teardown's fencing proof belongs to that teardown. Revalidate
+        # its deletion authorization and current absence without rewriting it
+        # or running its mutation path under closeout's different writer proof.
+        return normal.require_removed
     removal.preflight()
-    return removal
+    return removal.run
 
 
 def stop_containers(environment: dict[str, str], before: dict[str, dict[str, object]]) -> None:
@@ -459,7 +466,7 @@ def closeout(run: Path, ambient: Mapping[str, str], *, apply: bool) -> None:
         stop_containers(environment, before)
         cloud_absent(run, environment, target, client)
         if removal is not None:
-            removal.run()
+            removal()
         else:
             assert_storage_empty(client, bucket=target.backup_bucket, prefix=target.prefix)
         require_same(environment, before, stopped=True)
