@@ -180,6 +180,11 @@ m3-10-spaces-qualification: _sync
 m3-11-spaces-qualification: _sync
     uv run --frozen python -m scripts.qualification_deadline
 
+# Prepare, set up, start, inspect, cancel, or export one approved detached attempt.
+[positional-arguments]
+m3-11-unattended action *arguments: _sync
+    uv run --frozen python -m scripts.m3_11_unattended "$@"
+
 # Prepare, explicitly approve, or inspect a failed disposable archive retirement.
 [positional-arguments]
 m3-11-failed-retirement action directory *arguments: _sync

@@ -18,6 +18,7 @@ from scripts.check_m3_10_provider import (
     page_rules_client,
     required,
 )
+from scripts.m3_11_fixture_tokens import check_fixture_tokens
 from scripts.qualification_budget import MINIMUM_TOKEN_REMAINING
 
 
@@ -27,12 +28,20 @@ def check(environment: Mapping[str, str], *, now: datetime) -> None:
     account_id = _require_zone_identity(
         caddy, required(environment, "CLOUDFLARE_ZONE_ID"), "lowerduckpond.net"
     )
-    check_caddy_token(
-        environment,
-        account_id=account_id,
-        now=now,
-        minimum_audit_remaining=MINIMUM_TOKEN_REMAINING,
-    )
+    if "LDP_M3_11_MANAGED_INPUTS" in environment:
+        check_fixture_tokens(
+            environment,
+            account_id=account_id,
+            now=now,
+            minimum_remaining=MINIMUM_TOKEN_REMAINING,
+        )
+    else:
+        check_caddy_token(
+            environment,
+            account_id=account_id,
+            now=now,
+            minimum_audit_remaining=MINIMUM_TOKEN_REMAINING,
+        )
 
 
 def main() -> int:

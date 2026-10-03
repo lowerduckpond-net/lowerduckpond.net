@@ -18,6 +18,13 @@ current policy.
 
 ## Secure-workstation workflow
 
+M3.11 also supports the explicitly approved dedicated Docker-host
+[unattended qualification path](m3-11-backup-recovery.md#unattended-qualification-on-the-dedicated-docker-host).
+Its short isolated production check and separately provisioned fixture inputs do
+not change this production deployment workflow or relax the production Caddy
+token's non-expiring exact policy. The managed wrapper rejects incomplete or
+ambiguous temporary inputs instead of replacing them from production state.
+
 Production credentials remain on the operator's secure workstation. They are
 not supplied to the coder workspace. The coder task implements the tooling,
 completes local qualification, opens the dependent PRs, and iterates review.

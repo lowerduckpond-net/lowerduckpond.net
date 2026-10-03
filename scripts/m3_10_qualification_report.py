@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import re
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -12,6 +13,9 @@ from pathlib import Path
 from lowerduckpond_m3_archive.report import ArchiveQualificationReport
 
 from scripts import m3_11_qualification_evidence as combined
+from scripts.m3_11_unattended import inputs as managed_inputs
+from scripts.m3_11_unattended.model import digest as managed_digest
+from scripts.m3_11_unattended.model import instant
 from scripts.production_qualification_inputs import (
     POLICY,
     ROOT,
@@ -26,6 +30,7 @@ from scripts.production_qualification_inputs import (
 
 FORMAT = "lowerduckpond-m3-10-installed-spaces-v1"
 INPUT_BOUND_FORMAT = "lowerduckpond-m3-10-installed-spaces-v2"
+MANAGED_FORMAT = "lowerduckpond-m3-11-installed-spaces-managed-v1"
 PROVIDER_EVIDENCE_MAX_AGE = timedelta(days=7)
 PHASES = ("create", "prepare", "converge", "idempotence", "verify", "destroy")
 EMPTY_ACCOUNTING = {
@@ -58,7 +63,12 @@ def verify_report(  # noqa: PLR0913 - candidate bindings plus explicit milestone
     raw, report = combined.read_document(path)
     if not isinstance(report.get("format"), str):
         raise ValueError("qualification report format is invalid")
-    input_bound = report.get("format") in {INPUT_BOUND_FORMAT, combined.REPORT_FORMAT}
+    managed = report.get("format") == MANAGED_FORMAT
+    input_bound = report.get("format") in {
+        INPUT_BOUND_FORMAT,
+        combined.REPORT_FORMAT,
+        MANAGED_FORMAT,
+    }
     expected_fields = {
         "format",
         "source_revision",
@@ -76,6 +86,7 @@ def verify_report(  # noqa: PLR0913 - candidate bindings plus explicit milestone
         if input_bound
         else set()
     )
+    expected_fields |= {"managed_credentials"} if managed else set()
     expected_fields |= (
         {"combined", "combined_report_sha256", "packaged_at", "legacy_observations"}
         if milestone == "3.11"
@@ -85,7 +96,12 @@ def verify_report(  # noqa: PLR0913 - candidate bindings plus explicit milestone
         not isinstance(report, dict)
         or set(report) != expected_fields
         or report["format"] not in formats
-        or report["environment"] != "secure-workstation-installed-production-spaces"
+        or report["environment"]
+        != (
+            "trusted-controller-installed-production-spaces"
+            if managed
+            else "secure-workstation-installed-production-spaces"
+        )
         or (not input_bound and report["source_revision"] != source)
         or re.fullmatch(r"[0-9a-f]{40}", source) is None
         or report["artifact_sha256"] != artifact
@@ -104,6 +120,8 @@ def verify_report(  # noqa: PLR0913 - candidate bindings plus explicit milestone
         if raw != combined.canonical_bytes(report):
             raise ValueError("M3.11 qualification envelope must be canonical")
         _verify_combined(report, maximum_age=maximum_age)
+        if managed:
+            _verify_managed(report, maximum_age=maximum_age)
     if (
         not isinstance(report["storage_report_sha256"], str)
         or re.fullmatch(r"[0-9a-f]{64}", report["storage_report_sha256"]) is None
@@ -142,7 +160,7 @@ def _formats(milestone: str) -> set[str]:
     if milestone == "3.10":
         return {FORMAT, INPUT_BOUND_FORMAT}
     if milestone == "3.11":
-        return {combined.REPORT_FORMAT}
+        return {combined.REPORT_FORMAT, MANAGED_FORMAT}
     raise ValueError("unknown qualification milestone")
 
 
@@ -302,7 +320,63 @@ def create_report(
         report.update(format=INPUT_BOUND_FORMAT, **expected_inputs)
     if milestone == "3.11":
         _add_combined(report, directory)
+        _add_managed(report, directory)
     return report
+
+
+def _add_managed(report: dict[str, object], directory: Path) -> None:
+    path = directory / "managed-credentials.json"
+    if not path.exists() and not path.is_symlink():
+        if os.environ.get(managed_inputs.MANAGED_ENV):
+            raise ValueError("managed qualification omitted its production and fixture receipts")
+        return
+    _, receipt = combined.read_document(path)
+    report.update(
+        format=MANAGED_FORMAT,
+        environment="trusted-controller-installed-production-spaces",
+        managed_credentials=receipt,
+    )
+    receipts = combined.fields(receipt.get("receipts"), {"production", "fixture"})
+    times = [_fresh_timestamp(report["oldest_evidence_at"])]
+    for value in receipts.values():
+        if not isinstance(value, dict):
+            raise ValueError("managed credential receipt is invalid")
+        times.append(_fresh_timestamp(value.get("started_at")))
+    report["oldest_evidence_at"] = min(times).isoformat().replace("+00:00", "Z")
+    _verify_managed(report, maximum_age=timedelta(hours=24))
+    _verify_combined(report, maximum_age=timedelta(hours=24))
+
+
+def _verify_managed(report: dict[str, object], *, maximum_age: timedelta) -> None:
+    credential = combined.fields(
+        report["managed_credentials"],
+        managed_inputs.BINDING | {"format", "receipts", "receipts_sha256"},
+    )
+    if (
+        credential["format"] != "lowerduckpond-m3-11-managed-credentials-v1"
+        or any(
+            credential[key] != report[key]
+            for key in managed_inputs.BINDING - {"managed_run_id", "helper_revision"}
+        )
+        or credential["receipts_sha256"] != managed_digest(credential["receipts"])
+    ):
+        raise ValueError("managed credential evidence does not bind the qualification")
+    receipts = managed_inputs.receipt_pair(
+        credential["receipts"],
+        binding=credential,
+        now=datetime.now(UTC),
+        maximum_age=maximum_age,
+    )
+    legacy = combined.fields(
+        report["legacy_observations"], {"storage_at", "installed_at", "phases"}
+    )
+    storage = _fresh_timestamp(legacy["storage_at"], maximum_age=maximum_age)
+    oldest = _fresh_timestamp(report["oldest_evidence_at"], maximum_age=maximum_age)
+    for value in receipts.values():
+        if not isinstance(value, dict):
+            raise ValueError("managed credential receipt is invalid")
+        if not oldest <= instant(value["started_at"]) <= instant(value["completed_at"]) <= storage:
+            raise ValueError("managed credential evidence chronology is invalid")
 
 
 def _add_combined(report: dict[str, object], directory: Path) -> None:
