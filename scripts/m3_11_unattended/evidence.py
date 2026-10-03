@@ -6,6 +6,7 @@ import argparse
 import json
 from pathlib import Path
 
+from scripts import qualification_deadline, qualification_failure
 from scripts.m3_10_qualification_report import verify_report
 from scripts.m3_11_private_inputs import read_private
 from scripts.m3_11_qualification_evidence import digest as sha256
@@ -26,6 +27,15 @@ def export(directory: Path, *, repository: Path, include_report: bool) -> dict[s
     for name in BINDING - {"managed_run_id", "source_revision", "helper_revision"}:
         sha256(binding[name])
     result: dict[str, object] = {"binding": binding, "status": state.status()}
+    # Reuse the supervisor's private, bounded context and existing fixed-label
+    # failure projection. Phase is an observation, never a completion receipt.
+    context = directory / "supervisor/context.json"
+    if context.exists():
+        selected, phase, _endpoint = qualification_deadline.context(context)
+        if not selected.is_relative_to(directory / "qualification"):
+            raise LifecycleError("supervisor context escaped its original attempt")
+        result["last_qualification_phase"] = phase
+        result["controller_failure"] = qualification_failure.controller_failure(selected)
     receipt = directory / "revocation.json"
     if receipt.exists():
         value = fields(

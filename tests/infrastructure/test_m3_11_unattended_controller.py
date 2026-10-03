@@ -317,3 +317,30 @@ def test_bootstrap_time_consumes_the_original_run_ceiling(
     status = selected.state.status()
     assert status["qualification"] == "failed"
     assert status["exit_status"] == 124  # noqa: PLR2004 - deadline status
+
+
+def test_status_exposes_real_supervisor_phase_but_never_raw_failure_payloads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected, _ = subject(tmp_path, monkeypatch)
+    selected.state.begin(selected.binding)
+    supervisor = selected.directory / "supervisor"
+    supervisor.mkdir(mode=0o700)
+    fixture = selected.directory / "qualification/example"
+    fixture.mkdir(mode=0o700, parents=True)
+    write_private(
+        supervisor / "context.json",
+        {
+            "directory": str(fixture),
+            "phase": "verify",
+            "docker_host": "unix:///var/run/docker.sock",
+        },
+    )
+    write_private(
+        fixture / "failure-controller.json",
+        {"stage": CANARY, "category": CANARY, "return_code": CANARY, "provider_response": CANARY},
+    )
+    result = evidence.export(selected.directory, repository=selected.source, include_report=False)
+    assert result["last_qualification_phase"] == "verify"
+    assert CANARY not in json.dumps(result)
