@@ -10,13 +10,18 @@ import subprocess
 import time
 import uuid
 import zipfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from io import BytesIO
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from ansible_output import assert_reapply_result, plain_environment, plain_output
-from correlation_pacing import CorrelationPacer
+from correlation_pacing import (
+    RATE_LIMIT_EXIT_STATUS,
+    RATE_LIMIT_MESSAGES,
+    AdmissionRateLimitError,
+    CorrelationPacer,
+)
 from lowerduckpond_static_contracts import canonical_json_bytes, manifest_digest
 from lowerduckpond_static_operator import OperatorClientError, submit
 from testinfra.host import Host
@@ -39,6 +44,9 @@ _CORRELATION_PACER: CorrelationPacer | None = None
 _RETRYABLE_BUSY = frozenset(
     f"operator transport failed: {name}.lock is busy"
     for name in ("intake", "export", "publication", "tenant-state")
+)
+_RETRYABLE_RATE = frozenset(
+    f"operator transport failed: {reason}" for reason in RATE_LIMIT_MESSAGES
 )
 _BUSY_RETRY_ATTEMPTS = 50
 _BUSY_RETRY_SECONDS = 0.1
@@ -257,7 +265,6 @@ def _replace_state(host: Host, path: str, document: dict[str, object]) -> None:
 
 
 def _issue_without_handoff(host: Host, request: dict[str, object]) -> str:
-    _pace_new_correlation(request)
     selected = host.run("readlink --canonicalize /opt/lowerduckpond/static-host-agent/current")
     assert selected.rc == 0, selected.stderr
     request_hex = canonical_json_bytes(request).hex()
@@ -272,6 +279,7 @@ sys.path.insert(0, {(selected.stdout.strip() + "/site-packages")!r})
 from lowerduckpond_static_host_agent import (
     AuthorizationIssuer,
     CommandPublicationGate,
+    CorrelationRateLimitError,
     StateRepository,
 )
 from lowerduckpond_static_host_agent.locks import StateBusyError
@@ -293,14 +301,23 @@ with StateRepository(pathlib.Path({STATE_ROOT!r}), expected_owner=0) as reposito
                 artifact=None,
             )
             break
+        except CorrelationRateLimitError as error:
+            print(str(error), file=sys.stderr)
+            raise SystemExit({RATE_LIMIT_EXIT_STATUS}) from error
         except StateBusyError:
             if attempt == {_BUSY_RETRY_ATTEMPTS - 1}:
                 raise
             time.sleep({_BUSY_RETRY_SECONDS})
     print(issued.job_id)
 """
+    return _paced_issue(request, lambda: _issue_command(host, command))
+
+
+def _issue_command(host: Host, command: str) -> str:
     with measure("operator"):
         result = host.run("/usr/bin/python3 -I -B -c %s", command)
+    if result.rc == RATE_LIMIT_EXIT_STATUS and result.stderr.strip() in RATE_LIMIT_MESSAGES:
+        raise AdmissionRateLimitError(result.stderr.strip())
     assert result.rc == 0, result.stderr
     return result.stdout.strip()
 
@@ -501,7 +518,6 @@ def _submit(  # noqa: PLR0913
     artifact: bytes | None = None,
     export_path: Path | None = None,
 ) -> dict[str, object]:
-    _pace_new_correlation(request)
     request_path = tmp_path / f"{request['correlationId']}.json"
     artifact_path = None
     if artifact is not None:
@@ -512,35 +528,40 @@ def _submit(  # noqa: PLR0913
         artifact_path.chmod(0o600)
     request_path.write_bytes(canonical_json_bytes(request))
     request_path.chmod(0o600)
-    with measure("operator"):
-        for attempt in range(_BUSY_RETRY_ATTEMPTS):
-            try:
-                return submit(
-                    host=host,
-                    identity_path=identity,
-                    request_path=request_path,
-                    artifact_path=artifact_path,
-                    export_path=export_path,
-                    ssh_executable=ssh,
-                )
-            except OperatorClientError as error:
-                if str(error) not in _RETRYABLE_BUSY or attempt == _BUSY_RETRY_ATTEMPTS - 1:
-                    raise
-                time.sleep(_BUSY_RETRY_SECONDS)
-    raise AssertionError(
-        "busy retry loop exhausted without a terminal response"
-    )  # pragma: no cover
+
+    def issue() -> dict[str, object]:
+        with measure("operator"):
+            for attempt in range(_BUSY_RETRY_ATTEMPTS):
+                try:
+                    return submit(
+                        host=host,
+                        identity_path=identity,
+                        request_path=request_path,
+                        artifact_path=artifact_path,
+                        export_path=export_path,
+                        ssh_executable=ssh,
+                    )
+                except OperatorClientError as error:
+                    if str(error) in _RETRYABLE_RATE:
+                        raise AdmissionRateLimitError(str(error)) from error
+                    if str(error) not in _RETRYABLE_BUSY or attempt == _BUSY_RETRY_ATTEMPTS - 1:
+                        raise
+                    time.sleep(_BUSY_RETRY_SECONDS)
+        raise AssertionError(
+            "busy retry loop exhausted without a terminal response"
+        )  # pragma: no cover
+
+    return _paced_issue(request, issue)
 
 
-def _pace_new_correlation(request: dict[str, object]) -> None:
+def _paced_issue[T](request: dict[str, object], issue: Callable[[], T]) -> T:
     record_submission(request)
     assert _CORRELATION_PACER is not None, (
         "initialize host admission pacing before issuing requests"
     )
     correlation_id = request["correlationId"]
     assert type(correlation_id) is str
-    with measure("pacing"):
-        _CORRELATION_PACER.pace(correlation_id)
+    return _CORRELATION_PACER.issue(correlation_id, issue)
 
 
 def _request(operation: str, correlation_id: str, **fields: object) -> dict[str, object]:

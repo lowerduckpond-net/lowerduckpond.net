@@ -3,9 +3,12 @@ from __future__ import annotations
 import json
 import os
 import random
+import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
 
 import pytest
 from lowerduckpond_static_host_agent.correlations import CorrelationRateLimitError, _admit_rate
@@ -86,6 +89,256 @@ def test_real_work_refills_capacity_without_an_extra_minute(
     pacing.CorrelationPacer(observe=clocks.observe).pace("new")
     clocks.admit("new")
     assert not clocks.sleeps
+
+
+def test_clock_step_between_probe_and_issuance_reproduces_burst_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clocks = Clocks(history={str(index): NOW for index in range(5)})
+    monkeypatch.setattr(pacing, "time", clocks)
+    pacer = pacing.CorrelationPacer(observe=clocks.observe)
+    pacer.pace("new")
+    clocks.host -= timedelta(seconds=56)
+    with pytest.raises(CorrelationRateLimitError, match="correlation burst limit is exhausted"):
+        clocks.admit("new")
+
+
+@pytest.mark.parametrize("race", ["clock-step", "competing-admission"])
+def test_issuance_rechecks_a_rejected_prediction_without_relaxing_policy(
+    monkeypatch: pytest.MonkeyPatch, race: str
+) -> None:
+    clocks = Clocks(history={str(index): NOW for index in range(5)})
+    monkeypatch.setattr(pacing, "time", clocks)
+    attempts = []
+
+    def issue() -> str:
+        attempts.append(clocks.host)
+        if len(attempts) == 1:
+            if race == "clock-step":
+                clocks.host -= timedelta(seconds=56)
+            else:
+                clocks.admit("competitor")
+        try:
+            clocks.admit("new")
+        except CorrelationRateLimitError as error:
+            assert "new" not in clocks.history
+            raise pacing.AdmissionRateLimitError(str(error)) from error
+        return "accepted"
+
+    assert pacing.CorrelationPacer(observe=clocks.observe).issue("new", issue) == "accepted"
+    assert len(attempts) == 2  # noqa: PLR2004 - rejected prediction, then actual admission
+    assert clocks.elapsed < pacing.WAIT_TIMEOUT_SECONDS
+    _admit_rate(tuple(clocks.history.values()), clocks.host + timedelta(minutes=1))
+
+
+def test_repeated_admission_refusals_are_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    clocks = Clocks()
+    monkeypatch.setattr(pacing, "time", clocks)
+    attempts = []
+
+    def issue() -> None:
+        attempts.append(clocks.host)
+        raise pacing.AdmissionRateLimitError("correlation burst limit is exhausted")
+
+    with pytest.raises(pacing.AdmissionRateLimitError, match="burst"):
+        pacing.CorrelationPacer(observe=clocks.observe).issue("new", issue)
+    assert len(attempts) == pacing.MAX_ADMISSION_ATTEMPTS
+    assert not clocks.history
+
+
+def test_rejection_does_not_reset_the_original_pacing_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clocks = Clocks()
+    monkeypatch.setattr(pacing, "time", clocks)
+
+    def issue() -> None:
+        clocks.advance(pacing.WAIT_TIMEOUT_SECONDS - 1)
+        clocks.history = {str(index): clocks.host for index in range(5)}
+        raise pacing.AdmissionRateLimitError("correlation burst limit is exhausted")
+
+    with pytest.raises(AssertionError, match="pacing deadline"):
+        pacing.CorrelationPacer(observe=clocks.observe).issue("new", issue)
+    assert clocks.elapsed == pacing.WAIT_TIMEOUT_SECONDS
+
+
+def test_issuance_does_not_retry_other_failures(monkeypatch: pytest.MonkeyPatch) -> None:
+    clocks = Clocks()
+    monkeypatch.setattr(pacing, "time", clocks)
+
+    def issue() -> None:
+        raise RuntimeError("unexpected worker or transport failure")
+
+    with pytest.raises(RuntimeError, match="unexpected worker"):
+        pacing.CorrelationPacer(observe=clocks.observe).issue("new", issue)
+    assert not clocks.sleeps
+
+
+@pytest.mark.parametrize("artifact", [None, b"unchanged artifact bytes"])
+def test_direct_issuance_repeats_the_same_command_only_after_a_rate_refusal(
+    installed_module: Callable[[str], ModuleType],
+    monkeypatch: pytest.MonkeyPatch,
+    artifact: bytes | None,
+) -> None:
+    support = installed_module("test_lifecycle")
+    helper_pacing = installed_module("correlation_pacing")
+    clocks = Clocks()
+    monkeypatch.setattr(helper_pacing, "time", clocks)
+    monkeypatch.setattr(
+        support, "_CORRELATION_PACER", helper_pacing.CorrelationPacer(observe=clocks.observe)
+    )
+    commands = []
+
+    class Host:
+        def run(self, command: str, *arguments: str) -> SimpleNamespace:
+            if command.startswith("readlink"):
+                return SimpleNamespace(rc=0, stdout="/opt/fixture", stderr="")
+            assert len(arguments) == 1
+            compile(arguments[0], "<remote-issuance>", "exec")
+            commands.append(arguments[0])
+            if len(commands) == 1:
+                clocks.history = {str(index): clocks.host for index in range(5)}
+                return SimpleNamespace(
+                    rc=pacing.RATE_LIMIT_EXIT_STATUS,
+                    stdout="",
+                    stderr="correlation burst limit is exhausted\n",
+                )
+            clocks.admit(IDENTITY)
+            return SimpleNamespace(rc=0, stdout="accepted-job\n", stderr="")
+
+    request = support._request("create" if artifact is None else "deploy", IDENTITY)
+    if artifact is None:
+        result = support._issue_without_handoff(Host(), request)
+    else:
+        transport = installed_module("test_transport_recovery")
+        result = transport._issue_artifact_without_handoff(Host(), request, artifact)
+    assert result == "accepted-job"
+    assert len(commands) == 2  # noqa: PLR2004 - same command before and after re-pacing
+    assert commands[0] == commands[1]
+    assert clocks.sleeps
+
+
+@pytest.mark.parametrize(
+    ("status", "message"),
+    [(1, "correlation burst limit is exhausted"), (75, "unexpected remote failure")],
+)
+def test_direct_issuance_does_not_misclassify_other_errors(
+    installed_module: Callable[[str], ModuleType], status: int, message: str
+) -> None:
+    support = installed_module("test_lifecycle")
+    host = SimpleNamespace(
+        run=lambda *_arguments: SimpleNamespace(rc=status, stdout="", stderr=message)
+    )
+    with pytest.raises(AssertionError, match=message):
+        support._issue_command(host, "unused")
+
+
+@pytest.mark.parametrize("reason", sorted(pacing.RATE_LIMIT_MESSAGES))
+def test_ssh_issuance_repaces_with_unchanged_request_and_artifact(
+    installed_module: Callable[[str], ModuleType],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    reason: str,
+) -> None:
+    support = installed_module("test_lifecycle")
+    helper_pacing = installed_module("correlation_pacing")
+    clocks = Clocks()
+    monkeypatch.setattr(helper_pacing, "time", clocks)
+    monkeypatch.setattr(
+        support, "_CORRELATION_PACER", helper_pacing.CorrelationPacer(observe=clocks.observe)
+    )
+    requests: list[bytes] = []
+
+    def submit(**arguments: object) -> dict[str, object]:
+        path, artifact = arguments["request_path"], arguments["artifact_path"]
+        assert isinstance(path, Path) and isinstance(artifact, Path)
+        requests.append(path.read_bytes())
+        assert artifact.read_bytes() == b"unchanged artifact bytes"
+        if len(requests) == 1:
+            clocks.history = {str(index): clocks.host for index in range(5)}
+            raise support.OperatorClientError(f"operator transport failed: {reason}")
+        clocks.admit(IDENTITY)
+        return {"status": "succeeded"}
+
+    monkeypatch.setattr(support, "submit", submit)
+    result = support._submit(
+        tmp_path,
+        "fixture-host",
+        tmp_path / "key",
+        tmp_path / "ssh",
+        support._request("deploy", IDENTITY),
+        artifact=b"unchanged artifact bytes",
+    )
+    assert result == {"status": "succeeded"}
+    assert len(requests) == 2  # noqa: PLR2004 - one rejected and one accepted submission
+    assert requests[0] == requests[1]
+    assert clocks.sleeps
+
+
+def test_ssh_issuance_preserves_an_unrelated_transport_failure(
+    installed_module: Callable[[str], ModuleType],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    support = installed_module("test_lifecycle")
+    helper_pacing = installed_module("correlation_pacing")
+    clocks = Clocks()
+    monkeypatch.setattr(
+        support, "_CORRELATION_PACER", helper_pacing.CorrelationPacer(observe=clocks.observe)
+    )
+    calls = []
+
+    def submit(**arguments: object) -> dict[str, object]:
+        calls.append(arguments)
+        raise support.OperatorClientError("operator transport failed: peer closed connection")
+
+    monkeypatch.setattr(support, "submit", submit)
+    with pytest.raises(support.OperatorClientError, match="peer closed connection"):
+        support._submit(
+            tmp_path,
+            "fixture",
+            tmp_path / "key",
+            tmp_path / "ssh",
+            support._request("create", IDENTITY),
+        )
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("status", "message", "rate_limited"),
+    [
+        (1, "correlation burst limit is exhausted", True),
+        (1, "peer closed connection", False),
+        (0, "correlation burst limit is exhausted", False),
+    ],
+)
+def test_disconnect_session_recognizes_only_an_explicit_pre_admission_refusal(
+    installed_module: Callable[[str], ModuleType],
+    tmp_path: Path,
+    status: int,
+    message: str,
+    *,
+    rate_limited: bool,
+) -> None:
+    transport = installed_module("test_transport_recovery")
+    ssh = tmp_path / "ssh"
+    ssh.write_text(
+        f"#!{sys.executable}\nimport sys\nsys.stdin.buffer.read()\n"
+        f"sys.stderr.write({message!r})\nraise SystemExit({status})\n"
+    )
+    ssh.chmod(0o700)
+    host = SimpleNamespace(run=lambda *_arguments: SimpleNamespace(rc=1, stdout="", stderr=""))
+    with transport._start_operator_session(
+        operator_host="fixture-host",
+        identity=tmp_path / "key",
+        ssh=ssh,
+        request=transport.support._request("suspend", IDENTITY),
+    ) as process:
+        assert process.stdin is None
+        process.wait(timeout=5)
+        error = transport.support.AdmissionRateLimitError if rate_limited else AssertionError
+        with pytest.raises(error, match=message):
+            transport._job_id_for_correlation(host, IDENTITY, process)
 
 
 def test_a_new_group_uses_remaining_capacity_without_forcing_a_full_refill(
