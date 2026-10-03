@@ -18,6 +18,7 @@ from scripts.qualification_failure import (
     record_ansible_failure,
     record_phase,
 )
+from scripts.qualification_task_timing import TaskEvent, finish_task, observe_result, start_task
 from scripts.qualification_timing import EVENT_ENV, record_span
 
 if TYPE_CHECKING:
@@ -65,12 +66,24 @@ class CallbackModule(CallbackBase):  # type: ignore[misc]
         if os.environ.get("LDP_QUALIFICATION_TIMING_GROUP", "unclassified") == "unclassified":
             record_phase("syntax" if "--syntax-check" in sys.argv else self._timing_phase)
         self._reboot_timing: tuple[str, int] | None = None
+        self._task_timing: TaskEvent | None = None
+        self._task_outcome = "completed"
 
     def v2_playbook_on_task_start(self, task: Task, is_conditional: bool) -> None:
+        self._finish_task()
+        self._task_timing = start_task(self._timing_phase, task.action, task.get_path())
+        self._task_outcome = "skipped"
         self._reboot_timing = None
         name = task.get_name().strip()
         if name in REBOOT_TASKS and os.environ.get(EVENT_ENV):
             self._reboot_timing = REBOOT_TASKS[name], time.monotonic_ns()
+
+    def v2_playbook_on_handler_task_start(self, task: Task) -> None:
+        self.v2_playbook_on_task_start(task, False)
+
+    def _finish_task(self) -> None:
+        finish_task(self._task_timing, self._task_outcome)
+        self._task_timing = None
 
     def _finish_reboot(self, outcome: str) -> None:
         if self._reboot_timing:
@@ -78,10 +91,15 @@ class CallbackModule(CallbackBase):  # type: ignore[misc]
             record_span(label, start, outcome)
             self._reboot_timing = None
 
-    def v2_runner_on_ok(self, result: object) -> None:
+    def v2_runner_on_ok(self, result: CallbackResult) -> None:
+        observe_result(self._task_timing, result._result)
+        if self._task_outcome != "failed":
+            self._task_outcome = "completed"
         self._finish_reboot("completed")
 
     def v2_runner_on_failed(self, result: CallbackResult, ignore_errors: bool = False) -> None:
+        observe_result(self._task_timing, result._result)
+        self._task_outcome = "failed"
         self._finish_reboot("failed")
         if not ignore_errors:
             record_ansible_failure(
@@ -95,6 +113,7 @@ class CallbackModule(CallbackBase):  # type: ignore[misc]
         self._reboot_timing = None
 
     def v2_runner_on_unreachable(self, result: CallbackResult) -> None:
+        self._task_outcome = "failed"
         self._finish_reboot("failed")
         record_ansible_failure(
             result._task.action,
@@ -104,6 +123,7 @@ class CallbackModule(CallbackBase):  # type: ignore[misc]
         )
 
     def v2_playbook_on_stats(self, stats: AggregateStats) -> None:
+        self._finish_task()
         if self._timing_phase == "create":
             capture_fixture()
         failed = any(stats.failures.values()) or any(stats.dark.values())

@@ -4,7 +4,9 @@ Use `just m3-11-debug` to continue a failed live reconstruction on its existing
 disposable Docker source, destination and controlled-CA containers. It does not
 rerun create/prepare/converge or the preceding lifecycle groups. The destination
 can be changed for diagnosis; the original fenced source, selected artifact,
-backup prefix and original failed reports remain retained.
+backup prefix and original failed reports remain retained during investigation.
+Every failed run must be closed out locally and in DigitalOcean after debugging
+is finished, including runs whose remaining failures cannot usefully be explored.
 
 This command runs on the secure workstation in the existing private production
 environment shell. It reads current storage credentials from the encrypted
@@ -295,11 +297,76 @@ retaining the earlier observations and original failed qualification.
 
 The retained backup and fenced source remain the recovery reference. The
 diagnostic workspace is **not** a complete disk snapshot or automatic rollback.
-The final teardown stage deliberately retains containers and the backup prefix
-for further investigation. It does not authorize generic bucket cleanup or reuse
-a previous failed-fixture retirement approval.
+The diagnostic teardown-check stage retains resources for the next debugging
+iteration. Completing an iteration does not mean investigation of the run has
+finished.
 
-After reaching the downstream checks and consolidating fixes, review/merge those
-fixes, resolve the retained fixture through its applicable owned cleanup path,
-and run one fresh complete qualification from clean merged inputs. Only that
-fresh run can supply release evidence.
+## Required closeout after debugging
+
+A failed run's debugging process is complete only after its local and remote
+resources have been removed. Once useful investigation is finished, record the
+findings and fixes in the tracked changes, then close out the run before starting
+its replacement qualification. Diagnostic stages need not all pass: an unresolved
+failure stays failed and a fresh run will exercise the next modifications.
+
+In the same private environment shell, preview the closeout, then execute it:
+
+```bash
+just m3-11-debug-closeout /absolute/path/to/failed-run
+just m3-11-debug-closeout /absolute/path/to/failed-run --discard
+```
+
+`--discard` declares debugging finished. The wrapper loads the current Spaces
+targets from encrypted state and checks them against the original run. Closeout
+holds the shared workstation storage lease and the run lock; an active local
+qualification, debugger or retirement prevents cleanup. It also supports failed
+creation and a workstation crash with no final exit record.
+If storage preparation never saved `live-storage.json`, its backup prefix must
+still be empty. A captured input file alone does not authorize deletion of data
+that may have caused the original ownership claim to fail.
+When `live-storage.json` exists, both storage principals must verify its original
+owner version and exact binding before closeout stops or deletes any resource.
+If normal teardown already removed the backups, closeout validates its retained
+`owned-teardown/backup` deletion authorization and independently checks that no
+objects, versions, delete markers or uploads remain. It rechecks absence after
+stopping local writers and leaves the original teardown journal unchanged.
+
+Closeout requires the shared archive Space and this run's public DNS challenges
+to be absent before stopping anything. Resolve remaining run-owned archives
+through their existing recovery/retirement path, and stale DNS through the
+diagnostic retirement above, while the local ownership records are available.
+Unknown or foreign archive objects are never bulk-deleted. A missing or nonempty
+provider inventory leaves closeout incomplete; the failed run is still waiting
+for resource cleanup even if no more code fixes are planned.
+
+The command stops only the run's labeled Docker source, destination, controlled
+CA and unused archive fixture. It permanently purges the exact
+`m3-11-qualification/<run UUID>/` backup prefix, including every version, delete
+marker and unfinished upload. After fresh provider absence checks, it removes
+the owned containers and their anonymous volumes, the run's image tag, and the
+whole private run directory, including diagnostic workspaces and any earlier
+retirement disk copies. It creates no preservation copies. Shared images, other
+runs and production backups stay outside its removal scope.
+
+Before mutation, closeout inventories the expected container names independently
+of their labels and compares the image tag with the original fixture image ID.
+Replacement containers, ownership markers or image tags block cleanup. Private
+local and backup removal receipts retain the original identities and exact
+authorized versions across interruptions; deletion of the ownership marker is
+authorized durably only after the backup data is gone.
+
+If interrupted, rerun the same closeout command. Removing a delete marker may
+expose an already authorized historical version; retries accept that transition
+but reject new versions or uploads. Completed deletions stay
+permanent; the directory remains available until remote cleanup, container and
+image removal have all succeeded. After successful closeout, review/merge the
+fixes and run one fresh complete qualification from clean merged inputs. Only
+that fresh run can supply release evidence.
+
+Final directory disposal first publishes a small private sibling receipt named
+`<run-directory>.debug-closeout.json`, after cloud and Docker cleanup succeeds.
+It records the original directory identity and fixture, so the same command can
+finish a partial recursive deletion even after `fixture.json` or the run root is
+gone. This final local-only retry needs no provider credentials or state reads.
+The receipt is locked during disposal and removed on success; it is temporary
+cleanup state, with no diagnostic preservation copy.

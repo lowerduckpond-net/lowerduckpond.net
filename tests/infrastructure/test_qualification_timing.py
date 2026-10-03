@@ -55,6 +55,15 @@ def test_interval_union_handles_overlapping_processes() -> None:
     assert timing.union_ns([(5, 15), (0, 10), (20, 30), (6, 8)]) == expected
 
 
+def test_baseline_metadata_retains_its_distinct_scenario(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(timing, "_tool_output", lambda _: "unknown")
+    monkeypatch.setenv("LDP_QUALIFICATION_TIMING_SCENARIO", "default")
+    timing.start_run(tmp_path, "minio")
+    assert timing.finish_run(tmp_path, 1)["scenario"] == "default"
+
+
 @pytest.mark.parametrize(
     ("output", "expected"),
     [
@@ -212,7 +221,9 @@ def test_real_ansible_callback_captures_playbook_and_reboot_without_payloads(
     events = timing._events(run_directory / "timing-events.jsonl")
     assert [event["kind"] for event in events] == ["reboot", "prepare"]
     assert events[-1]["outcome"] == ("failed" if failed else "completed")
-    timing.finish_run(run_directory, result.returncode)
+    report = timing.finish_run(run_directory, result.returncode)
+    assert report["ansible_tasks"]["status"] == "observed"  # type: ignore[index]
+    assert report["ansible_tasks"]["unfinished_count"] == 0  # type: ignore[index]
     assert CANARY not in report_text(run_directory)
 
 

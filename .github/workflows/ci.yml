@@ -201,7 +201,8 @@ jobs:
   ansible-static:
     name: Ansible static
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # Includes package installation; see the PR 192 setup-budget measurements.
+    timeout-minutes: 45
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -214,7 +215,26 @@ jobs:
           version: 2026.8.8
           install_args: just python uv
       - name: Check static and baseline Ansible behavior
+        env:
+          LDP_QUALIFICATION_TIMING_DIRECTORY: ${{ runner.temp }}/ldp-static
         run: just check-ansible-static
+      - name: Snapshot interrupted baseline timing
+        if: always()
+        continue-on-error: true
+        run: python -m scripts.qualification_timing interrupted "$RUNNER_TEMP/ldp-static"
+      - name: Retain allowlisted baseline diagnostics
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: baseline-diagnostics
+          path: |
+            ${{ runner.temp }}/ldp-static/timing.json
+            ${{ runner.temp }}/ldp-static/timing.txt
+            ${{ runner.temp }}/ldp-static/timing-interrupted.json
+            ${{ runner.temp }}/ldp-static/failure.json
+          if-no-files-found: ignore
+          retention-days: 30
 
   installed-selection:
     name: Installed check selection
@@ -255,7 +275,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: >-
       ${{ contains(fromJSON('["combined-reconstruction","production-rollout","failed-retirement"]'), matrix.case) && 90 ||
-          contains(fromJSON('["core","archive-cycles","backup-mutation-overlap","restore-reconstruction","restore-tls-bootstrap"]'), matrix.case) && 60 ||
+          matrix.case == 'audit-protection' && 75 ||
+          contains(fromJSON('["core","archive-cycles","backup-mutation-overlap","restore-reconstruction","restore-tls-bootstrap","restore-negative"]'), matrix.case) && 60 ||
           45 }}
     strategy:
       fail-fast: false
@@ -285,6 +306,21 @@ jobs:
           QUALIFICATION_CASE: ${{ matrix.case }}
           LDP_QUALIFICATION_TIMING_DIRECTORY: ${{ runner.temp }}/ldp-installed
         run: just check-installed-group "$QUALIFICATION_CASE"
+      # This job uses synthetic tenants and disposable local MinIO credentials.
+      # Live-workstation logs have a different policy and never enter this job.
+      - name: Show failed synthetic fixture phase logs
+        if: failure() || cancelled()
+        continue-on-error: true
+        run: |
+          log_marker=$(cat /proc/sys/kernel/random/uuid)
+          for phase in create prepare converge verify destroy; do
+            phase_log="$RUNNER_TEMP/ldp-installed/$phase.log"
+            if [[ -f "$phase_log" ]]; then
+              printf '%s\n' "::group::$phase log (last 2 MiB)" "::stop-commands::$log_marker"
+              tail --bytes=2097152 "$phase_log"
+              printf '\n%s\n' "::$log_marker::" "::endgroup::"
+            fi
+          done
       - name: Retain required installed completion receipt
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

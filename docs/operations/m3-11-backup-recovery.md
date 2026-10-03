@@ -737,6 +737,28 @@ The controller and Docker daemon must share the host network namespace used for
 published SSH ports. A forwarded Unix socket from a different container host is
 not that supported controller topology.
 
+At the start of each fresh M3.11 attempt, the wrapper checks that the temporary
+Account API Tokens Read and Page Rules tokens each have at least **12 hours
+remaining from now**: the shared 600-minute run ceiling plus a two-hour cleanup
+and reporting margin. It does this after dependency sync and before building
+the storage fixture, allocating hosts, or writing qualification data to providers.
+A short-lived token is named in the error with an instruction to roll it.
+The existing eight-day audit-token and 91-day Page Rules maximum remaining
+lifetimes still apply. Old issue/start dates retained by rolled tokens are valid;
+these checks do not measure the original issue-to-expiry interval.
+
+To check the same starting condition separately in the private environment shell:
+
+```bash
+uv run --frozen python -m scripts.m3_11_token_preflight
+```
+
+The qualification command always repeats this read-only check at startup, so an
+earlier preflight cannot authorize starting with less time remaining. Later
+provider checks still require active, unexpired tokens and the exact runtime
+policy, without restarting the 12-hour minimum. The reserve cannot prevent
+external revocation. Caddy's runtime token remains non-expiring.
+
 ```bash
 just m3-11-spaces-qualification
 ```
@@ -790,12 +812,58 @@ remove the original ownership version last, stop/remove the source and unused
 empty local archive fixture, and remove only the run's image tag. Independent
 backup, archive and DNS absence must hold before the combined receipt is written.
 
+Backup removal paginates the complete owned prefix, including historical Restic
+lock versions and delete markers. Its inventory is bounded at 100,000 combined
+current-object, version/delete-marker and multipart-upload entries; its private
+deletion intent has a separate 32-MiB bound. Other private evidence retains its
+256-KiB bound. Exceeding either removal bound stops before any backup deletion.
+
 Share only `qualification.json` and `qualification.sha256` from the printed
 private run directory. The [evidence contract](m3-11-qualification-evidence.md)
 defines their original bindings and chronology. Private names, captured system
 inputs, provider coordinates, phase details, teardown journals and logs remain
 in that directory. Local tests and the complete MinIO journey remain diagnostic;
 they do not establish live Spaces or public-CA qualification.
+
+### Discarding abandoned qualification backups
+
+After debugging every failed run, complete the mandatory
+[local and DigitalOcean closeout](m3-11-debugging.md#required-closeout-after-debugging)
+before starting its replacement. That command includes backup disposal and local
+fixture removal. The standalone command below also handles selected remote
+prefixes after their local run directories have already been discarded.
+
+Once an abandoned attempt's diagnostics are no longer needed, permanently remove
+its disposable backup repository with `scripts/m3-11-backup-discard`. Stop that
+run's source and destination writers first. This is administrative disposal; it
+does not complete a failed qualification or produce acceptance evidence.
+
+In the private environment shell, use `SPACES_ACCESS_KEY_ID` and
+`SPACES_SECRET_ACCESS_KEY` for the Spaces operator. `--region` defaults to
+`SPACES_REGION`; `--bucket` defaults to `SPACES_BACKUP_BUCKET` if already loaded.
+Otherwise supply the backup Space's name explicitly. This command needs no
+OpenTofu state credentials or surviving local run directory.
+
+Pass one or more run UUIDs or exact `m3-11-qualification/<UUID>/` prefixes. The
+following uses example coordinates; substitute the abandoned run IDs and backup
+Space name. Without `--discard`, it only previews the selected inventories:
+
+```bash
+scripts/m3-11-backup-discard --bucket example-backup-space \
+    0198d17f-6f4a-7000-8000-000000000001 \
+    m3-11-qualification/0198d17f-6f4a-7000-8000-000000000002/
+```
+
+Add `--discard` to the same command to delete permanently. It removes every
+stored object version and delete marker, aborts unfinished multipart uploads,
+removes ownership markers last, and verifies all three inventory views are
+empty. All selected prefixes are inventoried before deletion begins.
+The 100,000-entry bound applies to the combined current objects, versions/delete
+markers and unfinished uploads for each prefix, before deletion begins.
+Broad prefixes, production repository paths, URLs, and subdirectories are rejected.
+An inventory change stops deletion; it does not repeatedly purge a live writer.
+If interrupted, completed deletions remain permanent. Rerun the same selected
+targets to finish, including when ownership markers are already gone.
 
 ### Interrupted combined teardown
 

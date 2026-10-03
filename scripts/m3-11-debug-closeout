@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+set +x
+umask 077
+
+repository_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+cd -- "${repository_root}"
+case ${1:-} in
+    --help|-h) ;;
+    *)
+        # Final local disposal can resume after the run manifest or root is gone.
+        if [[ ! -e ${1:-}.debug-closeout.json && ! -L ${1:-}.debug-closeout.json ]]; then
+            source "${repository_root}/scripts/lib/m3-10-production-state"
+        fi
+        ;;
+esac
+exec uv run --frozen python -m scripts.m3_11_debug_closeout "$@"

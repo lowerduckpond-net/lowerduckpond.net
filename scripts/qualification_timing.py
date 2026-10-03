@@ -248,7 +248,9 @@ def start_run(directory: Path, backend: str) -> None:
     metadata = {
         "format": FORMAT,
         "started_ns": started,
-        "scenario": "m3_8",
+        "scenario": "default"
+        if os.environ.get("LDP_QUALIFICATION_TIMING_SCENARIO") == "default"
+        else "m3_8",
         "source_revision": source if re.fullmatch(r"[0-9a-f]{40}", source) else "unknown",
         "backend": backend if backend in {"minio", "spaces"} else "unknown",
         "policy": POLICY,
@@ -296,7 +298,7 @@ def _metadata(directory: Path) -> dict[str, object]:
         raise ValueError("invalid timing metadata fields")
     if (
         value["format"] != FORMAT
-        or value["scenario"] != "m3_8"
+        or value["scenario"] not in {"m3_8", "default"}
         or value["policy"] != POLICY
         or value["source_tree_state"] not in {"clean", "dirty", "unknown"}
         or value["backend"] not in {"minio", "spaces", "unknown"}
@@ -375,6 +377,9 @@ def _events(path: Path, *, interrupted: bool = False) -> list[Event]:
 
 
 def _report(directory: Path, status: int | None, *, interrupted: bool = False) -> dict[str, object]:
+    sys.path.insert(0, str(ROOT))
+    from scripts.qualification_task_timing import summarize  # noqa: PLC0415
+
     ended = time.monotonic_ns()
     metadata = _metadata(directory)
     started = metadata.pop("started_ns")
@@ -423,6 +428,7 @@ def _report(directory: Path, status: int | None, *, interrupted: bool = False) -
         "outside_instrumentation_seconds": (ended - started - covered) / 1e9,
         "categories": categories,
         "event_count": len(events),
+        "ansible_tasks": summarize(directory, started, ended),
         "authority": "diagnostic-only",
     }
 
@@ -440,7 +446,7 @@ def interrupted_run(directory: Path) -> None:
         {
             "observation": "interrupted-run-snapshot",
             "elapsed_scope": "start-through-diagnostic-collection",
-            "spans": "completed-appends-only-inflight-spans-unavailable",
+            "spans": "completed-phase-appends-only; ansible-task-starts-reported-separately",
         }
     )
     # Publish only a complete file, and refuse a racing collector's first output.

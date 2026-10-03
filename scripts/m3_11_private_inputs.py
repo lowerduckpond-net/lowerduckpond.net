@@ -39,8 +39,8 @@ def read_private_bytes(path: Path, *, maximum: int = MAX_BYTES) -> bytes:
         os.close(descriptor)
 
 
-def read_private(path: Path) -> dict[str, object]:
-    raw = read_private_bytes(path)
+def read_private(path: Path, *, maximum: int = MAX_BYTES) -> dict[str, object]:
+    raw = read_private_bytes(path, maximum=maximum)
     value = json.loads(raw)
     # Canonical equality also rejects duplicate fields at every depth.
     if not isinstance(value, dict) or raw != canonical_bytes(value):
@@ -48,10 +48,10 @@ def read_private(path: Path) -> dict[str, object]:
     return cast(dict[str, object], value)
 
 
-def write_private(path: Path, value: dict[str, object]) -> None:
+def write_private(path: Path, value: dict[str, object], *, maximum: int = MAX_BYTES) -> None:
     """Never replace original evidence, including a partial interrupted write."""
     raw = canonical_bytes(value)
-    if len(raw) > MAX_BYTES:
+    if len(raw) > maximum:
         raise ValueError("combined private inputs exceed their byte bound")
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(descriptor, "wb") as stream:

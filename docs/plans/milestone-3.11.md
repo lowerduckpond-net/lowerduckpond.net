@@ -652,6 +652,15 @@ with at least 1.5 times the typical observed runtime. P6b applies this rule to
 the installed matrix: `combined-reconstruction` gets a provisional 90 minutes;
 `core`, `archive-cycles`, `backup-mutation-overlap`, `restore-reconstruction`,
 and `restore-tls-bootstrap` get 60 minutes; other cases retain 45 minutes.
+The operator's 2026-10-01 authorization to extend windows where needed adds
+75 minutes for `audit-protection`, 60 for `restore-negative`, and 45 for the
+separate baseline Ansible job. The
+[setup-budget correction](../operations/qualification-diagnostics.md#setup-budget-correction)
+retains the failed attempts, completed setup measurements and remaining-work
+estimates supporting those changes. The underlying package-install slowdown
+remains unproved; the correction supplies execution time without accepting a
+performance target overrun. The complete CI and live Spaces windows stay at
+330 and 600 minutes respectively.
 The original [CI run 36112371887](https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/36112371887)
 at PR head `1bfaa14936787a3ae3977e2672e78a165c8998df` passed 21 of 22 installed
 groups. The combined case was cancelled at 45 minutes. Its retained interrupted
@@ -1087,6 +1096,18 @@ age or issue-to-expiry interval applies. Active status, unexpired credentials,
 future-date checks, exact permissions and exact resource scopes remain required.
 The Page Rules local zone-ID error must name both environment variables and
 explain that token verification has not yet run.
+
+Fresh M3.11 qualification additionally requires both temporary tokens to have
+at least 12 hours remaining at startup. This minimum is derived from the
+shared 600-minute live-run ceiling plus a two-hour cleanup/reporting reserve,
+and is independent of their original issue/start dates. The check runs before
+fixture allocation or qualification provider writes, including when the Spaces
+wrapper is invoked directly. A separate read-only token preflight is available;
+its result is not reused to skip the startup check. Existing maximum remaining
+lifetimes and policy/role validation remain mandatory. Ordinary M3.10 checks,
+production convergence and later M3.11 provider checks do not acquire a new
+12-hour minimum. This startup guard does not extend the qualification deadline
+or establish live provider evidence.
 
 P6c retains the exact original report, artifact, predecessor completion and
 hash-linked phase proposals on the workstation and host. A complete proposal

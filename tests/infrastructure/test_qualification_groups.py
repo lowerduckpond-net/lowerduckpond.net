@@ -27,6 +27,92 @@ from scripts.qualification_groups import GROUPS
 
 ROOT = Path(__file__).resolve().parents[2]
 FAILURE_STATUS = 17
+ANSIBLE_FAILURE_STATUS = 2
+
+
+def test_ci_prints_command_stderr_through_pytest_ansible_and_private_phase_log(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An unfamiliar error must survive the same output layers as an installed failure."""
+    inner_test = tmp_path / "test_command_failure.py"
+    inner_test.write_text(
+        "import subprocess, sys\n"
+        "def test_command():\n"
+        "    result = subprocess.run([sys.executable, '-c', "
+        "\"raise RuntimeError('synthetic-command-failure')\"], "
+        "capture_output=True, text=True)\n"
+        "    assert result.returncode == 0, result.stderr\n"
+    )
+    playbook = tmp_path / "failure.yml"
+    playbook.write_text(
+        yaml.safe_dump(
+            [
+                {
+                    "name": "Exercise installed failure output",
+                    "hosts": "localhost",
+                    "gather_facts": False,
+                    "tasks": [
+                        {
+                            "name": "Run the deliberately failing test",
+                            "ansible.builtin.command": {
+                                "argv": [
+                                    sys.executable,
+                                    "-m",
+                                    "pytest",
+                                    "-c",
+                                    "/dev/null",
+                                    "--color=no",
+                                    str(inner_test),
+                                ]
+                            },
+                            "changed_when": False,
+                        }
+                    ],
+                }
+            ]
+        )
+    )
+    ansible = Path(sys.executable).with_name("ansible-playbook")
+    shim = tmp_path / "phase-command"
+    shim.write_text(
+        f"#!{sys.executable}\nimport os\n"
+        f"os.execv({str(ansible)!r}, "
+        f"{[str(ansible), '-i', 'localhost,', '-c', 'local', str(playbook)]!r})\n"
+    )
+    shim.chmod(0o700)
+    configuration = tmp_path / "ansible.cfg"
+    configuration.write_text("[defaults]\n")
+    environment = {
+        "PATH": os.environ["PATH"],
+        "HOME": str(tmp_path),
+        "ANSIBLE_CONFIG": str(configuration),
+        "ANSIBLE_NOCOLOR": "1",
+        "RUNNER_TEMP": str(tmp_path),
+    }
+    directory = tmp_path / "ldp-installed"
+    directory.mkdir()
+    (directory / "fixture.json").write_text("unpublished-fixture-canary")
+    status = primitives.phase(directory, environment, str(shim), "verify")
+    assert status == ANSIBLE_FAILURE_STATUS
+    assert "synthetic-command-failure" not in capsys.readouterr().out
+    workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
+    step = next(
+        step
+        for step in workflow["jobs"]["ansible-m3-8"]["steps"]
+        if step["name"] == "Show failed synthetic fixture phase logs"
+    )
+    result = subprocess.run(  # noqa: S603 - exercise the committed CI log-printing step
+        ["/bin/bash", "-euo", "pipefail", "-c", step["run"]],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "RuntimeError: synthetic-command-failure" in result.stdout
+    assert "test_command_failure.py" in result.stdout
+    assert "unpublished-fixture-canary" not in result.stdout
 
 
 @pytest.mark.parametrize(

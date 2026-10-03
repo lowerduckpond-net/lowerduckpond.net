@@ -21,8 +21,10 @@ from lowerduckpond_m3_archive.storage import (
     list_versions,
 )
 
+from scripts import m3_11_backup_removal as backup_removal
 from scripts.m3_11_backup_fixture import Target
 from scripts.m3_11_backup_removal import Removal
+from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes
 from scripts.production_qualification_inputs import POLICY
 
@@ -37,26 +39,58 @@ class Storage:
     fail_after: str | None = None
     late_write: bool = False
 
-    def objects(self, *, Bucket: str, Prefix: str, MaxKeys: int) -> dict[str, object]:
+    def objects(
+        self, *, Bucket: str, Prefix: str, MaxKeys: int, ContinuationToken: str | None = None
+    ) -> dict[str, object]:
         assert Bucket == self.target.backup_bucket and MaxKeys == LIST_PAGE_SIZE
+        # Insertion order is version creation order. A latest delete marker
+        # hides older data until deleting that marker exposes the prior version.
+        latest = {key: kind for (key, _), kind in self.versions.items()}
         keys = sorted(
-            {
-                key
-                for (key, _), kind in self.versions.items()
-                if key.startswith(Prefix) and kind == "version"
-            }
+            key for key, kind in latest.items() if key.startswith(Prefix) and kind == "version"
         )
-        return {"IsTruncated": False, "Contents": [{"Key": key} for key in keys]}
-
-    def version_list(self, *, Bucket: str, Prefix: str, MaxKeys: int) -> dict[str, object]:
-        assert Bucket == self.target.backup_bucket and MaxKeys == LIST_PAGE_SIZE
+        start = 0 if ContinuationToken is None else keys.index(ContinuationToken) + 1
+        page = keys[start : start + MaxKeys]
+        truncated = start + len(page) < len(keys)
         return {
-            "IsTruncated": False,
+            "IsTruncated": truncated,
+            "Contents": [{"Key": key} for key in page],
+            **({"NextContinuationToken": page[-1]} if truncated else {}),
+        }
+
+    def version_list(
+        self,
+        *,
+        Bucket: str,
+        Prefix: str,
+        MaxKeys: int,
+        KeyMarker: str | None = None,
+        VersionIdMarker: str | None = None,
+    ) -> dict[str, object]:
+        assert Bucket == self.target.backup_bucket and MaxKeys == LIST_PAGE_SIZE
+        identities = sorted(
+            identity for identity in self.versions if identity[0].startswith(Prefix)
+        )
+        start = 0
+        if KeyMarker is None:
+            assert VersionIdMarker is None
+        else:
+            assert VersionIdMarker is not None
+            start = identities.index((KeyMarker, VersionIdMarker)) + 1
+        page = identities[start : start + MaxKeys]
+        truncated = start + len(page) < len(identities)
+        return {
+            "IsTruncated": truncated,
+            **(
+                {"NextKeyMarker": page[-1][0], "NextVersionIdMarker": page[-1][1]}
+                if truncated
+                else {}
+            ),
             **{
                 output: [
                     {"Key": key, "VersionId": version}
-                    for (key, version), kind in sorted(self.versions.items())
-                    if key.startswith(Prefix) and kind == selected
+                    for key, version in page
+                    if self.versions[key, version] == selected
                 ]
                 for selected, output in (
                     ("version", "Versions"),
@@ -65,15 +99,33 @@ class Storage:
             },
         }
 
-    def upload_list(self, *, Bucket: str, Prefix: str, MaxUploads: int) -> dict[str, object]:
+    def upload_list(
+        self,
+        *,
+        Bucket: str,
+        Prefix: str,
+        MaxUploads: int,
+        KeyMarker: str | None = None,
+        UploadIdMarker: str | None = None,
+    ) -> dict[str, object]:
         assert Bucket == self.target.backup_bucket and MaxUploads == LIST_PAGE_SIZE
+        identities = sorted(identity for identity in self.uploads if identity[0].startswith(Prefix))
+        start = 0
+        if KeyMarker is None:
+            assert UploadIdMarker is None
+        else:
+            assert UploadIdMarker is not None
+            start = identities.index((KeyMarker, UploadIdMarker)) + 1
+        page = identities[start : start + MaxUploads]
+        truncated = start + len(page) < len(identities)
         return {
-            "IsTruncated": False,
-            "Uploads": [
-                {"Key": key, "UploadId": upload}
-                for key, upload in sorted(self.uploads)
-                if key.startswith(Prefix)
-            ],
+            "IsTruncated": truncated,
+            "Uploads": [{"Key": key, "UploadId": upload} for key, upload in page],
+            **(
+                {"NextKeyMarker": page[-1][0], "NextUploadIdMarker": page[-1][1]}
+                if truncated
+                else {}
+            ),
         }
 
     def owner(self, *, Bucket: str, Key: str, VersionId: str) -> dict[str, object]:
@@ -170,6 +222,74 @@ def test_only_owned_exact_versions_are_removed_and_owner_is_last(
     assert (value.directory / "removed.json").exists()
 
 
+@pytest.mark.parametrize("interruption", [None, "data-version-0000", "owner-version"])
+def test_large_versioned_repository_is_removed_and_resumes_its_original_inventory(
+    removal: tuple[Removal, Storage], interruption: str | None
+) -> None:
+    value, storage = removal
+    for index in range(1500):
+        # Multiple versions per data key plus deleted locks reproduce Restic churn.
+        key = value.target.prefix + f"restic/data/{index // 3:064x}"
+        storage.versions[key, f"data-version-{index:04d}"] = "version"
+    for index in range(500):
+        key = value.target.prefix + f"restic/locks/{index:064x}"
+        storage.versions[key, f"lock-version-{index:04d}"] = "version"
+        storage.versions[key, f"marker-version-{index:04d}"] = "delete-marker"
+    expected = {
+        identity for identity in storage.versions if identity[0].startswith(value.target.prefix)
+    }
+    storage.fail_after = interruption
+    if interruption is not None:
+        with pytest.raises(OSError, match="response lost"):
+            value.run()
+        original = (value.directory / "intent.json").read_bytes()
+        assert not (value.directory / "removed.json").exists()
+    assert value.run()["remaining_backup_objects"] == 0
+    path = value.directory / "intent.json"
+    if interruption is not None:
+        assert path.read_bytes() == original
+    # Raising the entry cap must not merely move the failure to the evidence byte cap.
+    with pytest.raises(ValueError, match="unsafe metadata"):
+        read_private(path)
+    intent = read_private(path, maximum=backup_removal.MAX_INTENT_BYTES)
+    ordinary_input = value.directory / "ordinary-input.json"
+    with pytest.raises(ValueError, match="byte bound"):
+        write_private(ordinary_input, intent)
+    assert not ordinary_input.exists()
+    assert storage.versions == {("backups/production/untouched", "production-version"): "version"}
+    deleted = [
+        (key, identity) for action, key, identity in storage.operations if action == "delete"
+    ]
+    assert set(deleted) == expected and len(deleted) == len(expected)
+    assert storage.operations[-1] == ("delete", value.target.owner_key, "owner-version")
+    for client in (value.writer, value.observer):
+        assert any(
+            "KeyMarker" in call.kwargs
+            for call in cast(Mock, client).list_object_versions.call_args_list
+        )
+
+
+def test_combined_inventory_bound_prevents_all_deletion(
+    removal: tuple[Removal, Storage], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    value, storage = removal
+    # Each listing fits separately; their combined deletion inventory does not.
+    monkeypatch.setattr(backup_removal, "MAX_ENTRIES", 4)
+    with pytest.raises(ValueError, match="inventory exceeds its bound"):
+        value.run()
+    assert not storage.operations and not value.directory.exists()
+
+
+def test_removal_intent_byte_bound_prevents_all_deletion(
+    removal: tuple[Removal, Storage], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    value, storage = removal
+    monkeypatch.setattr(backup_removal, "MAX_INTENT_BYTES", 100)
+    with pytest.raises(ValueError, match="byte bound"):
+        value.run()
+    assert not storage.operations and not (value.directory / "intent.json").exists()
+
+
 @pytest.mark.parametrize(
     "identity", ["data-version", "marker-version", "upload-id", "owner-version"]
 )
@@ -186,6 +306,26 @@ def test_lost_response_resumes_original_cleanup_without_redeleting_absent_versio
     assert (value.directory / "intent.json").read_bytes() == original
     assert len(storage.operations) == len(set(storage.operations))
     assert storage.operations[-1][-1] == "owner-version"
+
+
+def test_retry_accepts_historical_version_exposed_by_deleting_latest_marker(
+    removal: tuple[Removal, Storage],
+) -> None:
+    value, storage = removal
+    key = value.target.prefix + "restic/locks/hidden"
+    storage.versions[key, "historical-version"] = "version"
+    storage.versions[key, "latest-marker"] = "delete-marker"
+    assert key not in cast("list[str]", value._inventory(value.writer)["current"])
+    storage.fail_after = "latest-marker"
+    with pytest.raises(OSError, match="response lost"):
+        value.run()
+    assert key in cast("list[str]", value._inventory(value.writer)["current"])
+    assert (key, "historical-version") in storage.versions
+    original = (value.directory / "intent.json").read_bytes()
+    assert value.run()["remaining_backup_objects"] == 0
+    assert (value.directory / "intent.json").read_bytes() == original
+    assert storage.operations.count(("delete", key, "latest-marker")) == 1
+    assert storage.operations.count(("delete", key, "historical-version")) == 1
 
 
 @pytest.mark.parametrize(
@@ -216,14 +356,16 @@ def test_uncertain_ownership_or_independent_accounting_prevents_all_deletion(
     assert not storage.operations
 
 
+@pytest.mark.parametrize("key_suffix", ["new", "data/owned"])
 def test_new_bytes_after_interruption_are_retained_instead_of_added_to_the_plan(
     removal: tuple[Removal, Storage],
+    key_suffix: str,
 ) -> None:
     value, storage = removal
     storage.fail_after = "upload-id"
     with pytest.raises(OSError):
         value.run()
-    storage.versions[(value.target.prefix + "restic/new", "new-version")] = "version"
+    storage.versions[(value.target.prefix + "restic/" + key_suffix, "new-version")] = "version"
     operations = list(storage.operations)
     with pytest.raises(ValueError, match="new backup bytes"):
         value.run()

@@ -17,13 +17,14 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from types import FrameType
 
+from scripts import qualification_budget as budget
 from scripts import qualification_failure as failure
 from scripts import qualification_timing as timing
 from scripts.qualification_storage_lease import FD_ENV
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTEXT_ENV = "LDP_QUALIFICATION_SUPERVISOR_CONTEXT"
-LIVE_SECONDS = 600 * 60
+LIVE_SECONDS = budget.LIVE_SECONDS
 GRACE_SECONDS = 30
 REPORT_SECONDS = 300
 INTERRUPT_POLL_SECONDS = 1

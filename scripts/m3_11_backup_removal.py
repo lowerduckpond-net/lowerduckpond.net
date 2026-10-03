@@ -28,7 +28,10 @@ from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes, digest, fields
 
 FORMAT = "lowerduckpond-m3-11-backup-removal-v1"
-MAX_ENTRIES = 1024
+# Versioned Restic lock churn alone can exceed a single S3 listing page.
+MAX_ENTRIES = 100_000
+# Only the exact deletion inventory uses this larger private-file bound.
+MAX_INTENT_BYTES = 32 * 1024 * 1024
 
 
 def _once(path: Path, value: dict[str, object]) -> None:
@@ -128,25 +131,69 @@ class Removal:
             raise ValueError("backup writers changed after removal authorization")
         return actual
 
+    def _saved_intent(self) -> dict[str, object]:
+        intent = fields(
+            read_private(self.directory / "intent.json", maximum=MAX_INTENT_BYTES),
+            {"format", "ownership", "owner_version", "quiescent_sha256", "inventory"},
+        )
+        if (
+            intent["format"] != FORMAT
+            or intent["ownership"] != self.target.manifest(self.binding)
+            or intent["owner_version"] != self.owner_version
+            or not isinstance(intent["quiescent_sha256"], str)
+            or not isinstance(intent["inventory"], dict)
+        ):
+            raise ValueError("backup removal belongs to different original inputs")
+        digest(intent["quiescent_sha256"])
+        self._validate_inventory(intent["inventory"])
+        return intent
+
+    def is_removed(self) -> bool:
+        """Read original deletion authorization and independently observe absence."""
+        self._private_directory()
+        _version(self.owner_version)
+        if self.writer is self.observer:
+            raise ValueError("backup removal requires an independent observer")
+        if not self.directory.exists():
+            return False
+        intent = self._saved_intent()
+        authorization = {"intent_sha256": hashlib.sha256(canonical_bytes(intent)).hexdigest()}
+        owner_started = self.directory / "owner-delete.started.json"
+        removed = self.directory / "removed.json"
+        receipt_exists = removed.exists() or removed.is_symlink()
+        if not (owner_started.exists() or owner_started.is_symlink()):
+            if receipt_exists:
+                raise ValueError("backup owner removal lost its original authorization")
+            return False
+        if read_private(owner_started) != authorization:
+            raise ValueError("backup owner removal lost its original authorization")
+        if receipt_exists and read_private(removed) != {
+            **authorization,
+            "remaining_backup_objects": 0,
+        }:
+            raise ValueError("backup removal completion differs from its authorization")
+        empty = self._observed() == {"current": [], "versions": [], "uploads": []}
+        if receipt_exists and not empty:
+            raise ValueError("backup bytes reappeared after completed removal")
+        return empty
+
+    def require_removed(self) -> None:
+        """Validate completed deletion without reusing another controller's fencing proof."""
+        if not self.is_removed():
+            raise ValueError("independent backup absence was not established")
+
+    def preflight(self) -> None:
+        """Check ownership before fencing; only an authorized empty retry may lack it."""
+        if not self.is_removed():
+            self._owner()
+
     def _intent(self) -> dict[str, object]:
         original = self.target.manifest(self.binding)
         _version(self.owner_version)
         path = self.directory / "intent.json"
         if self.directory.exists() or self.directory.is_symlink():
-            intent = fields(
-                read_private(path),
-                {"format", "ownership", "owner_version", "quiescent_sha256", "inventory"},
-            )
-            if (
-                intent["format"] != FORMAT
-                or intent["ownership"] != original
-                or intent["owner_version"] != self.owner_version
-                or not isinstance(intent["quiescent_sha256"], str)
-                or not isinstance(intent["inventory"], dict)
-            ):
-                raise ValueError("backup removal belongs to different original inputs")
-            self._validate_inventory(intent["inventory"])
-            self._quiet(intent["quiescent_sha256"])
+            intent = self._saved_intent()
+            self._quiet(str(intent["quiescent_sha256"]))
             return intent
         quiet = self._quiet()
         self._owner()
@@ -160,7 +207,7 @@ class Removal:
             "quiescent_sha256": quiet,
             "inventory": inventory,
         }
-        write_private(path, intent)
+        write_private(path, intent, maximum=MAX_INTENT_BYTES)
         return intent
 
     def _delete(self, key: str, version: str) -> None:
@@ -200,10 +247,15 @@ class Removal:
         if not (owner_started.exists() and remaining == empty):
             self._owner()
             original = cast("dict[str, object]", intent["inventory"])
-            for key, rows in remaining.items():
+            # Deleting a current delete marker can expose an originally listed
+            # historical version. Current keys need not remain a subset of the
+            # original current listing; _validate_inventory binds them to the
+            # remaining exact versions, all of which must be authorized below.
+            for key in ("versions", "uploads"):
+                authorized = {canonical_bytes(row) for row in cast("list[object]", original[key])}
                 if any(
-                    row not in cast("list[object]", original[key])
-                    for row in cast("list[object]", rows)
+                    canonical_bytes(row) not in authorized
+                    for row in cast("list[object]", remaining[key])
                 ):
                     raise ValueError("new backup bytes appeared after removal authorization")
             only_owner = {
