@@ -124,6 +124,7 @@ def build_image(docker: Docker, source: str) -> str:
         for name, path in (
             ("Dockerfile", "config/qualification/Dockerfile"),
             ("mise.toml", "mise.toml"),
+            ("mise.lock", "mise.lock"),
         ):
             content = git(ROOT, "show", f"{source}:{path}")
             info = tarfile.TarInfo(name)

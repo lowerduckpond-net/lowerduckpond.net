@@ -23,7 +23,7 @@ from scripts.m3_11_unattended.config import (
     cleanup_configuration,
 )
 from scripts.m3_11_unattended.http import Api
-from scripts.m3_11_unattended.journal import OpJournal, event
+from scripts.m3_11_unattended.journal import Journal, OpJournal, event
 from scripts.m3_11_unattended.lifecycle import Lifecycle, Provider, intents
 from scripts.m3_11_unattended.model import (
     Credential,
@@ -165,6 +165,59 @@ def require_independent_ready(journal: OpJournal, *, helper: str, now: datetime)
         <= now + timedelta(minutes=5)
     ):
         raise LifecycleError("independent cleanup is stale, overdue or bound to another helper")
+
+
+def status_document(journal: Journal, *, helper: str, now: datetime) -> dict[str, object]:
+    """Observe external obligations without deleting, provisioning, or exporting IDs."""
+    records = journal.records()
+    pending = 0
+    overdue = 0
+    for intent in intents(journal):
+        results = [
+            record
+            for record in records
+            if record["kind"] in {"resolved", "cleanup"}
+            and isinstance(record["payload"], dict)
+            and record["payload"].get("intent_sha256") == intent.sha256
+        ]
+        latest = max(results, key=lambda record: str(record["event_id"])) if results else None
+        unresolved = latest is None or latest["kind"] != "resolved"
+        pending += unresolved
+        overdue += unresolved and instant(intent.deadline) < now
+    heartbeats = [
+        record
+        for record in records
+        if record["kind"] == "heartbeat"
+        and isinstance(record["payload"], dict)
+        and record["payload"].get("actor") == "github"
+    ]
+    independent: dict[str, object] = {"status": "missing", "observed_at": None}
+    if heartbeats:
+        latest = max(heartbeats, key=lambda record: instant(record["recorded_at"]))
+        value = fields(
+            latest["payload"],
+            {"actor", "helper_revision", "observed_at", "status", "overdue", "results"},
+        )
+        observed = instant(value["observed_at"])
+        fresh = now - HEARTBEAT_MAX_AGE <= observed <= now + timedelta(minutes=5)
+        independent = {
+            "observed_at": stamp(observed),
+            "status": "ready"
+            if fresh
+            and value["helper_revision"] == revision(helper)
+            and value["status"] == "ready"
+            and value["overdue"] == 0
+            else "stale-or-unresolved",
+        }
+    return {
+        "observed_at": stamp(now),
+        "outstanding": pending,
+        "overdue": overdue,
+        "github": independent,
+        "new_start": "blocked"
+        if pending or independent["status"] != "ready"
+        else "eligible-for-preflight",
+    }
 
 
 def main() -> int:

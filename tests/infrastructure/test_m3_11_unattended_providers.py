@@ -6,8 +6,11 @@ import copy
 import dataclasses
 import hashlib
 import json
+import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -16,15 +19,18 @@ from scripts import check_m3_10_provider as production
 from scripts import m3_11_fixture_tokens as fixture
 from scripts.check_m3_7_production_edge import ProductionEdgePreflightError
 from scripts.m3_11_private_inputs import write_private
-from scripts.m3_11_unattended import cloudflare
+from scripts.m3_11_unattended import cleanup, cloudflare
+from scripts.m3_11_unattended import production as isolated
 from scripts.m3_11_unattended.cloudflare import Cloudflare
+from scripts.m3_11_unattended.config import Bootstrap
 from scripts.m3_11_unattended.http import Api, Response
 from scripts.m3_11_unattended.journal import OnePassword, OpJournal, event
+from scripts.m3_11_unattended.lifecycle import Lifecycle
 from scripts.m3_11_unattended.model import ROLES, Credential, LifecycleError, stamp
 from scripts.m3_11_unattended.spaces import Spaces
 
 from .test_m3_10_runtime_token import _ACCOUNT, _AUDIT, _RUNTIME, _SECRETS, _ZONES, TokenFixture
-from .test_m3_11_unattended_lifecycle import CANARY, Case
+from .test_m3_11_unattended_lifecycle import CANARY, TARGETS, Case
 
 
 class Responses:
@@ -258,3 +264,142 @@ def test_expiring_caddy_passes_only_fixture_validator(
     )
     with pytest.raises(ProductionEdgePreflightError):
         production.check_caddy_token(environment, account_id=_ACCOUNT, now=now)
+
+
+def test_actual_independent_cleanup_entrypoint_recovers_after_failure_without_host(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    case = Case(tmp_path)
+    journal = OpJournal(cast(OnePassword, JournalCli()), "a" * 26)
+    case.lifecycle = Lifecycle(journal, {"spaces": case.provider}, clock=lambda: case.now)
+    case.create()
+    case.lifecycle.request_revocation(case.run_id)
+    case.provider.fail_delete = True
+    monkeypatch.setattr(
+        cleanup, "cleanup_configuration", lambda _path: (TARGETS, "a" * 26, Bootstrap({}))
+    )
+    monkeypatch.setattr(cleanup, "connect_cleanup", lambda *_args: case.lifecycle)
+    monkeypatch.setattr(
+        sys, "argv", ["cleanup", "--actor", "github", "--config", "/unused/private.json"]
+    )
+    for key, value in {
+        "GITHUB_ACTIONS": "true",
+        "GITHUB_REF": "refs/heads/main",
+        "GITHUB_REPOSITORY": "lowerduckpond-net/lowerduckpond.net",
+    }.items():
+        monkeypatch.setenv(key, value)
+    assert cleanup.main() == 1
+    assert CANARY not in capsys.readouterr().out
+    case.provider.fail_delete = False
+    assert cleanup.main() == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["results"][0]["status"] == "verified"
+    assert output["results"][0]["negative_authentication"] == "unavailable"
+    assert not case.provider.items
+    monkeypatch.setenv("GITHUB_REF", "refs/heads/untrusted")
+    with pytest.raises(SystemExit) as stopped:
+        cleanup.main()
+    assert stopped.value.code == 1
+
+
+def test_production_bootstrap_and_state_passphrase_stay_in_the_short_check_process(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Reader:
+        def __init__(self, token: str) -> None:
+            assert token == CANARY + "service-account"
+
+        def read(self, reference: str) -> str:
+            return CANARY + reference
+
+    observed: dict[str, object] = {}
+
+    def execute(command: list[str], **arguments: object) -> SimpleNamespace:
+        observed.update(arguments)
+        assert command[:3] == ["/bin/bash", "--noprofile", "--norc"]
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(isolated, "OnePassword", Reader)
+    monkeypatch.setattr(subprocess, "run", execute)
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", CANARY + "ambient")
+    request: dict[str, object] = {
+        "service_account": CANARY + "service-account",
+        "references": dict(zip(isolated.REFERENCES, isolated.REFERENCES, strict=True)),
+        "targets": dataclasses.asdict(TARGETS),
+        "binding": {},
+        "output": str(tmp_path / "receipt.json"),
+        "fixture": {
+            key: "fixture-" + key
+            for key in ("audit", "observer", "archive_id", "backup_id", "caddy_id")
+        },
+    }
+    assert isolated.bootstrap(request, tmp_path) == 0
+    environment = observed["env"]
+    assert isinstance(environment, dict)
+    assert "OP_SERVICE_ACCOUNT_TOKEN" not in environment
+    assert CANARY + "service-account" not in environment.values()
+    assert (
+        environment["OPENTOFU_ENCRYPTION_PASSPHRASE"] == CANARY + "OPENTOFU_ENCRYPTION_PASSPHRASE"
+    )
+    assert CANARY.encode() not in cast(bytes, observed["input"])
+
+
+def test_production_storage_probe_receives_only_actual_storage_credentials(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = tmp_path / "source"
+    repository.mkdir()
+    output = tmp_path / "production.json"
+    case = Case(tmp_path / "journal")
+    binding = {
+        "managed_run_id": case.run_id,
+        "source_revision": "e" * 40,
+        "helper_revision": "f" * 40,
+        "artifact_sha256": "a" * 64,
+        "qualification_inputs_sha256": "b" * 64,
+        "storage_target_sha256": TARGETS.storage_digest,
+    }
+    for key, value in {
+        **TARGETS.environment(),
+        "OPENTOFU_ENCRYPTION_PASSPHRASE": CANARY,
+        "OPENTOFU_STATE_SECRET_ACCESS_KEY": CANARY,
+        "CADDY_CLOUDFLARE_API_TOKEN": CANARY,
+        "SPACES_ARCHIVE_ACCESS_KEY_ID": "actual-archive",
+        "SPACES_BACKUP_ACCESS_KEY_ID": "actual-backup",
+        "SPACES_ARCHIVE_SECRET_ACCESS_KEY": "actual-archive-secret",
+        "SPACES_BACKUP_SECRET_ACCESS_KEY": "actual-backup-secret",
+    }.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(isolated, "current_candidate", lambda *_args: repository)
+    monkeypatch.setattr(isolated, "fingerprint", lambda *_args: "b" * 64)
+    monkeypatch.setattr(isolated, "check_caddy_token", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        isolated, "verify_active_account_token", lambda *_args, **_kwargs: "actual-caddy"
+    )
+
+    def execute(command: list[str], **arguments: object) -> SimpleNamespace:
+        assert "credential-check" in command
+        environment = arguments["env"]
+        assert isinstance(environment, dict) and CANARY not in environment.values()
+        assert not any(
+            key.startswith(("OP_", "OPENTOFU_", "TF_VAR_", "AWS_")) for key in environment
+        )
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(subprocess, "run", execute)
+    isolated.validate(
+        {
+            "targets": dataclasses.asdict(TARGETS),
+            "binding": binding,
+            "fixture_ids": {key: "fixture-" + key for key in ("archive", "backup", "caddy")},
+            "started_at": stamp(datetime.now(UTC)),
+            "output": str(output),
+        },
+        repository,
+    )
+    assert CANARY not in output.read_text()
+    assert "actual-archive-secret" not in output.read_text()

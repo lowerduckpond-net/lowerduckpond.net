@@ -153,6 +153,7 @@ mise exec -- just m3-11-unattended start FULL_COMMIT_SHA \
 mise exec -- just m3-11-unattended status RUN_UUID
 mise exec -- just m3-11-unattended evidence RUN_UUID
 mise exec -- just m3-11-unattended cancel RUN_UUID
+mise exec -- just m3-11-unattended cleanup-status --config /private/controller.json
 ```
 
 The rehearsal performs bounded real production/fixture probes, delivers private
@@ -161,6 +162,8 @@ interruption. Before `start --mode qualification`, GitHub must independently
 read back every rehearsal revocation. The full run uses the same start operation
 with that mode. Status and evidence work from another terminal; routine monitoring
 does not require operator log-pasting. Raw logs and any retained cleanup secrets
+stay private. `cleanup-status` reads external obligations without a Docker
+dependency and exposes overdue obligations and stale GitHub execution. Logs
 stay in `ldp-m311-evidence` under `/evidence/runs/RUN_UUID`. Named helper/source
 volumes retain the clean checkouts. `evidence` exports validated status and
 revocation receipts, and the existing strictly verified passing report.

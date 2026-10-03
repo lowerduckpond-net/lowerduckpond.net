@@ -245,8 +245,11 @@ class Lifecycle:
                     _owned(intent, current, known=selected)
                     client.delete(selected)
                 known = selected
-            elif known is None and self.clock() <= instant(intent.create_before):
-                # A request may still be in flight. Absence cannot yet resolve it.
+            elif known is None:
+                # Neither API gives a server-side bound on a request whose reply
+                # was lost. Empty inventory cannot prove that creation will never
+                # commit, even after our five-minute submission window. Preserve
+                # this uncertainty until an exact provider identity is observed.
                 return CleanupResult(intent.sha256, "creation-uncertain", negative)
             if known is not None and client.inspect(known) is not None:
                 raise LifecycleError("deleted credential remains visible")

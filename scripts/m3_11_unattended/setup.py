@@ -7,6 +7,7 @@ import hashlib
 import json
 import shutil
 import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -142,6 +143,8 @@ def validate(configuration: Configuration) -> None:
 def configure(manifest: Path, output: Path, *, token_file: Path | None = None) -> None:
     if output.exists() or output.is_symlink():
         raise LifecycleError("initial setup refuses to overwrite private configuration")
+    if token_file is None and not sys.stdin.isatty():
+        raise LifecycleError("setup requires a hidden terminal or private service-accounts file")
     tokens = (
         strings(read_private(token_file))
         if token_file is not None
@@ -168,6 +171,8 @@ def attest_digitalocean(*, reference: str, expires: str, provisioning: bool, out
     DigitalOcean does not expose PAT expiry/scopes through the Spaces API.
     """
     expiry = instant(expires)
+    if not sys.stdin.isatty():
+        raise LifecycleError("provider attestation requires a hidden local terminal")
     now = datetime.now(UTC)
     if expiry < now + timedelta(days=3):
         raise LifecycleError("bootstrap expiry cannot cover a new qualification and cleanup")

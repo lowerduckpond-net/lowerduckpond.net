@@ -1,5 +1,5 @@
 # The controller joins the dedicated daemon's host network. No secret enters
-# this build context; the launcher sends only this Dockerfile and mise.toml.
+# this build context; only this Dockerfile and the mise manifest/lock are sent.
 FROM ubuntu:26.04@sha256:3595d7fc4286a33fad0fd853a4063e654287a9c3787437d7937c94ca3f7a804e
 
 RUN apt-get update \
@@ -20,9 +20,8 @@ ENV MISE_DATA_DIR=/opt/mise-data \
     MISE_TRUSTED_CONFIG_PATHS=/opt/qualification-tools:/opt/lifecycle:/work/source \
     PATH=/opt/mise-data/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 WORKDIR /opt/qualification-tools
-COPY mise.toml ./mise.toml
+COPY mise.toml mise.lock ./
 RUN mise install \
-    && mise install aqua:1password/cli@2.33.0 \
     && ln -s /opt/mise-data/installs/aqua-1password-cli/2.33.0/op /usr/local/bin/op \
     && mise reshim
 

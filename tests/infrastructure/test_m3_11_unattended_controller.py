@@ -175,6 +175,10 @@ def test_stale_independent_cleanup_blocks_admission(tmp_path: Path, age: timedel
         cleanup.require_independent_ready(
             cast(OpJournal, case.journal), helper="f" * 40, now=datetime.now(UTC)
         )
+    status = cleanup.status_document(case.journal, helper="f" * 40, now=datetime.now(UTC))
+    assert status["new_start"] == "blocked"
+    github = status["github"]
+    assert isinstance(github, dict) and github["status"] == "stale-or-unresolved"
 
 
 @pytest.mark.parametrize("field", ["status", "outcome", "observed_at", "format"])

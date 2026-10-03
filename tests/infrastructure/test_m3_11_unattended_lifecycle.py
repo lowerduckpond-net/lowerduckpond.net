@@ -228,7 +228,7 @@ def test_cleanup_interrupted_after_delete_requires_new_provider_readback(
     assert result.negative_authentication == "denied"
 
 
-def test_unknown_creation_absence_must_wait_for_inflight_window(
+def test_unknown_creation_absence_cannot_manufacture_resolution_after_timeout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     case = Case(tmp_path)
@@ -242,7 +242,10 @@ def test_unknown_creation_absence_must_wait_for_inflight_window(
     case.lifecycle.request_revocation(case.run_id)
     assert case.lifecycle.sweep()[0].status == "creation-uncertain"
     case.now += timedelta(minutes=6)
-    assert case.lifecycle.sweep()[0].status == "verified"
+    assert case.lifecycle.sweep()[0].status == "creation-uncertain"
+    case.now += timedelta(days=1)
+    with pytest.raises(LifecycleError, match="outstanding"):
+        case.lifecycle.require_clear()
 
 
 def test_preexisting_and_similarly_named_credentials_are_never_deleted(tmp_path: Path) -> None:

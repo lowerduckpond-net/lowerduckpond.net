@@ -11,7 +11,7 @@ from pathlib import Path
 
 from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes, fields
-from scripts.m3_11_unattended import approval, setup
+from scripts.m3_11_unattended import approval, cleanup, setup
 from scripts.m3_11_unattended.config import Configuration
 from scripts.m3_11_unattended.docker import (
     EVIDENCE_VOLUME,
@@ -25,8 +25,9 @@ from scripts.m3_11_unattended.docker import (
     prepare,
     source_volume,
 )
+from scripts.m3_11_unattended.journal import OpJournal
 from scripts.m3_11_unattended.model import LifecycleError, Targets, digest, identity
-from scripts.production_qualification_inputs import current_candidate, fingerprint, revision
+from scripts.production_qualification_inputs import current_candidate, fingerprint, git, revision
 
 
 def start(  # noqa: PLR0913 - all approval and host bindings are explicit
@@ -130,7 +131,7 @@ def operate(docker: Docker, run_id: str, action: str) -> bytes:
     )
 
 
-def main() -> int:
+def argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="action", required=True)
     subparsers.add_parser("setup-template")
@@ -147,6 +148,8 @@ def main() -> int:
     github = subparsers.add_parser("install-github-cleanup")
     github.add_argument("--config", type=Path, required=True)
     github.add_argument("--helper-revision", required=True)
+    remote = subparsers.add_parser("cleanup-status")
+    remote.add_argument("--config", type=Path, required=True)
     build = subparsers.add_parser("prepare")
     build.add_argument("revision")
     build.add_argument("--output", type=Path, required=True)
@@ -159,6 +162,11 @@ def main() -> int:
     for name in ("status", "cancel", "evidence"):
         selected = subparsers.add_parser(name)
         selected.add_argument("run_id")
+    return parser
+
+
+def main() -> int:
+    parser = argument_parser()
     args = parser.parse_args()
     os.umask(0o077)
     try:
@@ -179,6 +187,19 @@ def main() -> int:
             setup.install_github(args.config, args.helper_revision)
             print(
                 "Protected main-only cleanup environment configured; verify its workflow execution."
+            )
+        elif args.action == "cleanup-status":
+            configured = Configuration.load(args.config)
+            journal = configured.cleanup.op()
+            print(
+                json.dumps(
+                    cleanup.status_document(
+                        OpJournal(journal, configured.journal_vault),
+                        helper=revision(git(ROOT, "rev-parse", "HEAD").decode().strip()),
+                        now=datetime.now(UTC),
+                    ),
+                    sort_keys=True,
+                )
             )
         elif args.action == "prepare":
             write_private(args.output, prepare(Docker(), revision(args.revision)))
