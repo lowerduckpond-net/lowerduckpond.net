@@ -18,8 +18,10 @@ or credentials from another workspace.
 `just m3-11-unattended` prepares and operates a detached controller. It calls the
 existing `just m3-11-spaces-qualification`, deadline supervisor, live wrapper,
 provider/storage checks, Molecule phases, combined recovery and report packager.
-The live journey retains its 600-minute ceiling. Provisioning has a separate
-14-hour credential deadline; it cannot extend qualification. Neither controller
+The start operation counts provisioning and the short production check against
+the original 600-minute ceiling, with the existing bounded diagnostic allowance.
+Provisioning has a separate 14-hour credential deadline; it cannot extend
+qualification. Neither controller
 restart nor diagnostic continuation reruns or promotes an interrupted attempt.
 
 The controller joins the **daemon's host network** and receives the daemon-side
@@ -172,7 +174,12 @@ revocation receipts, and the existing strictly verified passing report.
 
 Before each create request, an immutable external 1Password item records the
 run, unique provider name, exact scope, source/helper, baseline inventory and
-deadline. Returned IDs are immediately recorded locally and externally. Lost
+deadline.
+Each intent also pins its cleanup authority's secret hash: a different account's
+empty inventory or a replaced bootstrap token cannot manufacture removal proof.
+Changing that authority with outstanding obligations needs a separate reviewed
+authorization decision, not an automatic token roll.
+Returned IDs are immediately recorded locally and externally. Lost
 responses reconcile exact intent metadata and provider inventory; no creation
 request is retried. Missing or ambiguous ownership remains unresolved.
 

@@ -81,6 +81,7 @@ class Cloudflare:
         if account is not None and re.fullmatch(r"[0-9a-f]{32}", account) is None:
             raise LifecycleError("invalid Cloudflare account identity")
         self.api = api
+        self.authority_sha256 = api.credential_sha256
         self.kind: ProviderKind = "cloudflare-user" if account is None else "cloudflare-account"
         self.path = "/user/tokens" if account is None else f"/accounts/{account}/tokens"
 

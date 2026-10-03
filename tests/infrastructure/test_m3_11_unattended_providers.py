@@ -34,6 +34,8 @@ from .test_m3_11_unattended_lifecycle import CANARY, TARGETS, Case
 
 
 class Responses:
+    credential_sha256 = "d" * 64
+
     def __init__(self, *values: Response) -> None:
         self.values = list(values)
         self.calls: list[tuple[str, str, dict[str, object] | None]] = []

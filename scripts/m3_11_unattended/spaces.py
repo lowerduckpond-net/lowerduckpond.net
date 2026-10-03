@@ -21,6 +21,7 @@ class Spaces:
 
     def __init__(self, api: Api) -> None:
         self.api = api
+        self.authority_sha256 = api.credential_sha256
 
     @staticmethod
     def _metadata(value: dict[str, object]) -> dict[str, object]:

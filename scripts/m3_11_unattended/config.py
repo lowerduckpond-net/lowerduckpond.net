@@ -135,6 +135,7 @@ class UnavailableProvider:
 
     def __init__(self, kind: ProviderKind) -> None:
         self.kind = kind
+        self.authority_sha256 = "unavailable"
 
     def inventory(self) -> list[dict[str, object]]:
         raise LifecycleError("provider cleanup authority is unavailable")
@@ -269,6 +270,11 @@ def connect(
             instant(metadata["expires_at"]),
             instant(bootstrap.values["service_account_expires_at"]),
         ),
+        {
+            "spaces": spaces.authority_sha256,
+            "cloudflare-account": account.authority_sha256,
+            "cloudflare-user": user.authority_sha256,
+        },
     )
     providers = cast(
         dict[ProviderKind, Provider],

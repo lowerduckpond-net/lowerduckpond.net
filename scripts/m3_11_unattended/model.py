@@ -127,6 +127,7 @@ class Intent:
     source_revision: str
     helper_revision: str
     provider: ProviderKind
+    cleanup_authority_sha256: str
     name: str
     requested_at: str
     create_before: str
@@ -141,6 +142,7 @@ class Intent:
         revision(self.helper_revision)
         if (
             self.role not in ROLES
+            or re.fullmatch(r"[0-9a-f]{64}", self.cleanup_authority_sha256) is None
             or self.provider not in {"spaces", "cloudflare-account", "cloudflare-user"}
             or self.name != f"ldp-m311-{uuid.UUID(self.run_id).hex}-{self.role}"
             or not instant(self.requested_at) < instant(self.create_before) < instant(self.deadline)
@@ -176,6 +178,7 @@ class Intent:
             source_revision=text["source_revision"],
             helper_revision=text["helper_revision"],
             provider=cast(ProviderKind, text["provider"]),
+            cleanup_authority_sha256=text["cleanup_authority_sha256"],
             name=text["name"],
             requested_at=text["requested_at"],
             create_before=text["create_before"],
@@ -203,6 +206,10 @@ class Authority:
 
     identity_sha256: str
     valid_until: datetime
+    providers: dict[ProviderKind, str] = field(default_factory=dict)
+
+    def provider_identity(self, kind: ProviderKind) -> str:
+        return self.providers.get(kind, self.identity_sha256)
 
     def require(self, deadline: datetime) -> None:
         if (

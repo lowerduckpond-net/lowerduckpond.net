@@ -26,6 +26,7 @@ from scripts.m3_11_unattended.model import (
 
 class Provider(Protocol):
     kind: ProviderKind
+    authority_sha256: str
 
     def inventory(self) -> list[dict[str, object]]:
         """Complete bounded inventory; failures and partial pages must raise."""
@@ -148,6 +149,7 @@ class Lifecycle:
             source_revision=source,
             helper_revision=helper,
             provider=provider,
+            cleanup_authority_sha256=authority.provider_identity(provider),
             name=name,
             requested_at=stamp(now),
             create_before=stamp(now + CREATION_SETTLE),
@@ -217,6 +219,8 @@ class Lifecycle:
                 key=lambda record: str(record["event_id"]),
             )
             client = self.providers[intent.provider]
+            if client.authority_sha256 != intent.cleanup_authority_sha256:
+                raise LifecycleError("cleanup authority differs from the original obligation")
             known = known_id(self.journal, intent)
             inventory = client.inventory()
             candidates = [

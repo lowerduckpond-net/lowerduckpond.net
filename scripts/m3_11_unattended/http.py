@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import urllib.error
 import urllib.request
@@ -41,6 +42,7 @@ class Api:
         if origin not in ORIGINS or not token or any(char.isspace() for char in token):
             raise LifecycleError("invalid provider bootstrap input")
         self.origin, self._token = origin, token
+        self.credential_sha256 = hashlib.sha256(token.encode()).hexdigest()
 
     def request(self, method: str, path: str, body: dict[str, object] | None = None) -> Response:
         if (

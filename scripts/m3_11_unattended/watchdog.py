@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from scripts import qualification_deadline
 from scripts.m3_11_private_inputs import read_private
 from scripts.m3_11_unattended.docker import Docker, controller_name
 from scripts.m3_11_unattended.lifecycle import Lifecycle
@@ -28,9 +29,15 @@ def reconcile_processes(lifecycle: Lifecycle, root: Path, docker: Docker) -> dic
         except RuntimeError, OSError, ValueError:
             # A failed daemon read is uncertainty, never proof of process death.
             alive = True
-        expired = datetime.now(UTC) > instant(attempt["started_at"]) + timedelta(hours=12)
+        elapsed = datetime.now(UTC) - instant(attempt["started_at"])
+        expired = elapsed > timedelta(seconds=qualification_deadline.LIVE_SECONDS)
+        reporting_expired = elapsed > timedelta(
+            seconds=qualification_deadline.LIVE_SECONDS
+            + qualification_deadline.REPORT_SECONDS
+            + 4 * qualification_deadline.GRACE_SECONDS
+        )
         terminal = (directory / "journey-result.json").exists()
-        if not alive or terminal or expired:
+        if not alive or terminal or reporting_expired:
             lifecycle.request_revocation(run_id)
             available.update(retained_credentials(directory))
         if not alive and not terminal:

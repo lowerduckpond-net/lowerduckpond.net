@@ -6,6 +6,7 @@ import dataclasses
 import json
 import sys
 import threading
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
@@ -299,3 +300,20 @@ def test_preparation_process_is_cancelled_without_leaking_pipe_inputs(
     finally:
         timer.join()
     assert CANARY not in (selected.directory / "preparation.log").read_text()
+
+
+def test_bootstrap_time_consumes_the_original_run_ceiling(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected, _case = subject(tmp_path, monkeypatch)
+    selected.ends_at = time.monotonic() - 1
+
+    def provision() -> None:
+        selected.check_cancelled()
+
+    monkeypatch.setattr(selected, "_provision", provision)
+    assert selected.run() == 1
+    status = selected.state.status()
+    assert status["qualification"] == "failed"
+    assert status["exit_status"] == 124  # noqa: PLR2004 - deadline status

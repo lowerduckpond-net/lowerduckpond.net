@@ -33,6 +33,7 @@ CANARY = "not-a-real-secret-CANARY-never-export-9cd8"
 
 class ProviderDouble:
     kind: ProviderKind = "spaces"
+    authority_sha256 = "d" * 64
 
     def __init__(self) -> None:
         self.items: dict[str, dict[str, object]] = {}
@@ -302,6 +303,20 @@ def test_partial_provisioning_revokes_each_created_role(tmp_path: Path) -> None:
     results = case.lifecycle.sweep({first.sha256: secret})
     assert [result.status for result in results] == ["verified", "verified"]
     assert case.provider.deletes == ["credential00000001", "credential00000002"]
+
+
+def test_another_account_or_replaced_cleanup_authority_cannot_prove_absence(tmp_path: Path) -> None:
+    case = Case(tmp_path)
+    intent, _credential = case.create()
+    case.lifecycle.request_revocation(case.run_id)
+    other = ProviderDouble()
+    other.authority_sha256 = "a" * 64
+    independent = Lifecycle(case.journal, {"spaces": other}, clock=lambda: case.now)
+    assert independent.reconcile(intent).status == "unresolved"
+    assert not other.deletes
+    assert case.provider.items
+    with pytest.raises(LifecycleError, match="outstanding"):
+        independent.require_clear()
 
 
 def test_late_provider_creation_is_not_hidden_by_past_resolution(tmp_path: Path) -> None:

@@ -88,10 +88,13 @@ class Worker:
         self.revision = revision(self.binding["source_revision"])
         self.directory = directory
         self.pending = qualification_deadline.Interruption()
+        self.ends_at = time.monotonic() + qualification_deadline.LIVE_SECONDS
 
     def check_cancelled(self) -> None:
         if self.state.cancelled or self.pending.signum is not None:
             raise LifecycleError("qualification was cancelled")
+        if time.monotonic() >= self.ends_at:
+            raise LifecycleError("qualification exceeded its original 600-minute ceiling")
 
     def remember(self, intent: Intent, credential: Credential) -> None:
         write_private(
@@ -149,7 +152,7 @@ class Worker:
                 stderr=stream,
                 start_new_session=True,
             )
-            deadline = time.monotonic() + seconds
+            deadline = min(time.monotonic() + seconds, self.ends_at)
             first = True
             try:
                 while True:
@@ -407,9 +410,14 @@ class Worker:
                 start_new_session=True,
             )
             interrupted = False
+            interrupted_status = 143
             stop_at: float | None = None
             while child.poll() is None:
-                if (self.state.cancelled or self.pending.signum is not None) and not interrupted:
+                expired = time.monotonic() >= self.ends_at
+                if (
+                    self.state.cancelled or self.pending.signum is not None or expired
+                ) and not interrupted:
+                    interrupted_status = 124 if expired else 143
                     os.killpg(child.pid, signal.SIGTERM)
                     interrupted, stop_at = (
                         True,
@@ -424,7 +432,7 @@ class Worker:
                 self.state.update("running", cleanup="pending")
                 time.sleep(1)
             return (
-                143
+                interrupted_status
                 if interrupted
                 else (128 - child.returncode if child.returncode < 0 else child.returncode)
             )
@@ -568,9 +576,14 @@ class Worker:
                 subprocess.SubprocessError,
             ):
                 if not (self.directory / "journey-result.json").exists():
+                    expired = time.monotonic() >= self.ends_at
                     self.state.finish_journey(
-                        "interrupted" if self.state.cancelled or pending.signum else "failed",
-                        143 if self.state.cancelled or pending.signum else 1,
+                        "failed"
+                        if expired
+                        else "interrupted"
+                        if self.state.cancelled or pending.signum
+                        else "failed",
+                        124 if expired else 143 if self.state.cancelled or pending.signum else 1,
                     )
                 return 1
             finally:
