@@ -594,6 +594,13 @@ rate denials, change timestamps, or rewrite records.
 Issuance remains sequential within each fixture, including cases that run the
 already admitted workers concurrently. Parallel cases use separate owned hosts.
 
+A successful probe does not reserve admission. If the issuer explicitly rejects
+the request because its rate window changed after the probe, the harness reads
+the host again, waits, and retries the identical request and correlation. This
+allows at most three issuance attempts within the original 600-second monotonic
+pacing budget. Other failures still stop the test. The production issuer remains
+the authority for every attempt; no request timestamp or rate limit is changed.
+
 Real operation time therefore contributes to the production policy's existing
 refill. Starting another verification group no longer imposes a full five-token
 refill. Exact retained correlations need no new admission credit, including

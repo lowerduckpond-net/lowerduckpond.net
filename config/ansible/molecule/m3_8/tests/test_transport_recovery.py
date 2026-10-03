@@ -54,7 +54,6 @@ def _issue_artifact_without_handoff(
 ) -> str:
     digest = hashlib.sha256(artifact).hexdigest()
     request["artifact"] = {"size": len(artifact), "sha256": digest}
-    support._pace_new_correlation(request)
     selected = host.run("readlink --canonicalize /opt/lowerduckpond/static-host-agent/current")
     assert selected.rc == 0, selected.stderr
     request_hex = canonical_json_bytes(request).hex()
@@ -71,6 +70,7 @@ from lowerduckpond_static_host_agent import (
     ArtifactIntake,
     AuthorizationIssuer,
     CommandPublicationGate,
+    CorrelationRateLimitError,
     StateRepository,
     VerifiedArtifact,
 )
@@ -89,23 +89,25 @@ with (
         read=BytesIO(payload).read,
         blocking=True,
     ) as lease:
-        issued = AuthorizationIssuer(
-            repository,
-            gate=CommandPublicationGate(pathlib.Path({support.PUBLICATION_GATE!r})),
-            entropy=os.getrandom,
-        ).issue(
-            raw_request,
-            operator_principal="molecule-m3-8-operator-v1",
-            now=datetime.now(UTC),
-            artifact=lease.artifact.verified,
-            blocking=True,
-        )
+        try:
+            issued = AuthorizationIssuer(
+                repository,
+                gate=CommandPublicationGate(pathlib.Path({support.PUBLICATION_GATE!r})),
+                entropy=os.getrandom,
+            ).issue(
+                raw_request,
+                operator_principal="molecule-m3-8-operator-v1",
+                now=datetime.now(UTC),
+                artifact=lease.artifact.verified,
+                blocking=True,
+            )
+        except CorrelationRateLimitError as error:
+            print(str(error), file=sys.stderr)
+            raise SystemExit({support.RATE_LIMIT_EXIT_STATUS}) from error
         lease.commit()
         print(issued.job_id)
 """
-    result = host.run("/usr/bin/python3 -I -B -c %s", command)
-    assert result.rc == 0, result.stderr
-    return result.stdout.strip()
+    return support._paced_issue(request, lambda: support._issue_command(host, command))
 
 
 def _replace_intake_artifact(host: Host, correlation_id: str, artifact: bytes) -> None:
@@ -271,6 +273,7 @@ def _start_operator_session(
         encode_header(FrameHeader(FrameKind.REQUEST, len(canonical), None)) + canonical
     )
     process.stdin.close()
+    process.stdin = None
     return process
 
 
@@ -361,7 +364,9 @@ def _exercise_ansible_worker_overlap(
     return result
 
 
-def _job_id_for_correlation(host: Host, correlation_id: str) -> str:
+def _job_id_for_correlation(
+    host: Host, correlation_id: str, process: subprocess.Popen[bytes]
+) -> str:
     path = f"{support.STATE_ROOT}/authorization/correlations/{correlation_id}.json"
     deadline = time.monotonic() + 30.0
     while time.monotonic() < deadline:
@@ -371,6 +376,13 @@ def _job_id_for_correlation(host: Host, correlation_id: str) -> str:
             job_id = record["jobId"]
             assert type(job_id) is str
             return job_id
+        status = process.poll()
+        if status is not None:
+            _stdout, stderr = process.communicate(timeout=5)
+            message = stderr.decode("utf-8", errors="replace").strip()
+            if status != 0 and message in support.RATE_LIMIT_MESSAGES:
+                raise support.AdmissionRateLimitError(message)
+            raise AssertionError(f"operator session ended before admission: {status}: {message}")
         time.sleep(0.1)
     raise AssertionError(f"correlation {correlation_id} was not admitted")
 
@@ -842,17 +854,22 @@ def _exercise_admission_recovery(  # noqa: PLR0915 - ordered admission and worke
         next(identities),
         tenantId=tenant_id,
     )
-    support._pace_new_correlation(disconnect_request)
     _install_worker_delay(host, seconds=10)
     process: subprocess.Popen[bytes] | None = None
-    try:
+
+    def connect() -> str:
+        nonlocal process
         process = _start_operator_session(
             operator_host=operator_host,
             identity=identity,
             ssh=ssh,
             request=disconnect_request,
         )
-        disconnect_job = _job_id_for_correlation(host, str(disconnect_request["correlationId"]))
+        return _job_id_for_correlation(host, str(disconnect_request["correlationId"]), process)
+
+    try:
+        disconnect_job = support._paced_issue(disconnect_request, connect)
+        assert process is not None
         _await_worker_start(host, disconnect_job)
         process.kill()
         process.wait(timeout=10)

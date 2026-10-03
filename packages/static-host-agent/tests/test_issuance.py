@@ -6,6 +6,7 @@ import subprocess
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from lowerduckpond_static_contracts import (
@@ -21,14 +22,18 @@ from lowerduckpond_static_host_agent import (
     ClosedPublicationGate,
     CommandPublicationGate,
     CorrelationConflictError,
+    CorrelationRateLimitError,
     FilesystemCapacity,
     IssuanceError,
+    IssuedAuthorization,
     LockManager,
     PublicationDisabledError,
     StateRecordPath,
     StateRepository,
     VerifiedArtifact,
 )
+
+from config.ansible.molecule.m3_8.tests import admission_probe, correlation_pacing
 
 _FIXTURE_ROOT = Path(__file__).parents[3] / "tests/static-publication/fixtures/accepted"
 _NOW = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
@@ -235,6 +240,64 @@ def test_create_issues_immutable_platform_bound_job_and_exact_retry(tmp_path: Pa
         "platformStateDigest": platform_state_digest(namespace).to_dict(),
     }
     assert first.document["sourceAuthority"] is None
+
+
+def test_qualification_repaces_real_issuance_after_clock_correction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    now, elapsed = _NOW, 0.0
+
+    def sleep(seconds: float) -> None:
+        nonlocal now, elapsed
+        now += timedelta(seconds=seconds)
+        elapsed += seconds
+
+    monkeypatch.setattr(
+        correlation_pacing, "time", SimpleNamespace(monotonic=lambda: elapsed, sleep=sleep)
+    )
+    directory = root / "authorization/correlations"
+
+    def observe(identity: str) -> dict[str, object]:
+        return admission_probe.observation(admission_probe.history_from(directory), identity, now)
+
+    attempts = 0
+    identity = "0198d17f-6f4a-7000-8000-000000000006"
+    raw = _create_request(identity)
+    with _repository(root) as repository:
+        issuer = AuthorizationIssuer(repository, gate=_OpenGate(), entropy=_Entropy())
+        for index in range(5):
+            issuer.issue(
+                _create_request(f"0198d17f-6f4a-7000-8000-{index + 1:012d}"),
+                operator_principal="operator@example.test",
+                now=now,
+                artifact=None,
+            )
+
+        def issue() -> IssuedAuthorization:
+            nonlocal now, attempts
+            attempts += 1
+            if attempts == 1:
+                now -= timedelta(seconds=56)
+            try:
+                return issuer.issue(
+                    raw, operator_principal="operator@example.test", now=now, artifact=None
+                )
+            except CorrelationRateLimitError as error:
+                assert str(error) == "correlation burst limit is exhausted"
+                assert not (directory / f"{identity}.json").exists()
+                raise correlation_pacing.AdmissionRateLimitError(str(error)) from error
+
+        admitted = correlation_pacing.CorrelationPacer(observe=observe).issue(identity, issue)
+        retried = issuer.issue(
+            raw, operator_principal="operator@example.test", now=now, artifact=None
+        )
+    assert attempts == 2  # noqa: PLR2004 - rejected prediction followed by actual admission
+    assert admitted.created and not retried.created
+    assert admitted.job_id == retried.job_id
+    assert len(list(directory.iterdir())) == 6  # noqa: PLR2004 - five originals and one new job
+    assert elapsed < correlation_pacing.WAIT_TIMEOUT_SECONDS
 
 
 def test_exact_retry_recognition_requires_the_original_full_binding(tmp_path: Path) -> None:
