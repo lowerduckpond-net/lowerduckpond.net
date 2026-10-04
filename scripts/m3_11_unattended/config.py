@@ -8,14 +8,14 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import cast
+from typing import Protocol, cast
 
 from scripts.check_m3_7_production_edge import validate_account_token_policy
 from scripts.m3_11_private_inputs import read_private
 from scripts.m3_11_qualification_evidence import fields
 from scripts.m3_11_unattended.cloudflare import ORIGIN, Cloudflare, result
 from scripts.m3_11_unattended.http import Api
-from scripts.m3_11_unattended.journal import OnePassword, OpJournal
+from scripts.m3_11_unattended.journal import Journal, OnePassword, OpJournal
 from scripts.m3_11_unattended.lifecycle import Provider
 from scripts.m3_11_unattended.model import (
     Authority,
@@ -44,18 +44,53 @@ BOOTSTRAP_FIELDS = {
 }
 
 
+class Reader(Protocol):
+    def read(self, reference: str) -> str: ...
+
+
 @dataclass(frozen=True)
 class Bootstrap:
     values: dict[str, str] = field(repr=False)
+    connect_settings: dict[str, object] | None = field(default=None, repr=False)
 
     @classmethod
     def parse(cls, value: object) -> Bootstrap:
+        if isinstance(value, dict) and value.get("format") == "lowerduckpond-m3-11-connect-role-v1":
+            from scripts.m3_11_unattended.connect_configuration import parse_role  # noqa: PLC0415
+
+            return parse_role(value)
         values = strings(fields(value, BOOTSTRAP_FIELDS))
         instant(values["service_account_expires_at"])
         return cls(values)
 
     def op(self) -> OnePassword:
+        if self.connect_settings is not None:
+            raise LifecycleError("Connect inputs cannot fall back to a service account")
         return OnePassword(self.values["service_account_token"])
+
+    def reader(self) -> Reader:
+        if self.connect_settings is None:
+            return self.op()
+        from scripts.m3_11_unattended.connect_configuration import reader  # noqa: PLC0415
+
+        return reader(self.connect_settings["reader"])
+
+    def journal(self, vault: str, *, directory: Path | None = None) -> Journal:
+        if self.connect_settings is None:
+            return OpJournal(self.op(), vault)
+        from scripts.m3_11_unattended.connect_configuration import journal  # noqa: PLC0415
+
+        return journal(self, vault, directory=directory)
+
+    def expires_at(self) -> datetime:
+        if self.connect_settings is None:
+            return instant(self.values["service_account_expires_at"])
+        from scripts.m3_11_unattended.connect_configuration import expires_at  # noqa: PLC0415
+
+        return expires_at(self.connect_settings)
+
+    def document(self) -> dict[str, object]:
+        return dict(self.values) if self.connect_settings is None else dict(self.connect_settings)
 
 
 @dataclass(frozen=True)
@@ -74,16 +109,28 @@ class Configuration:
         )
         vault = value["journal_vault"]
         if (
-            value["format"] != "lowerduckpond-m3-11-controller-config-v1"
+            value["format"]
+            not in {
+                "lowerduckpond-m3-11-controller-config-v1",
+                "lowerduckpond-m3-11-controller-connect-v1",
+            }
             or not isinstance(vault, str)
             or re.fullmatch(r"[a-z0-9]{26}", vault) is None
         ):
             raise LifecycleError("invalid controller configuration")
+        provision, cleanup = Bootstrap.parse(value["provision"]), Bootstrap.parse(value["cleanup"])
+        if value["format"] == "lowerduckpond-m3-11-controller-connect-v1":
+            from scripts.m3_11_unattended.connect_configuration import (  # noqa: PLC0415
+                configuration,
+            )
+
+            return configuration(value, provision, cleanup)
+        if provision.connect_settings is not None or cleanup.connect_settings is not None:
+            raise LifecycleError("controller credential backends are ambiguous")
         production = fields(
             value["production"],
             {"service_account_token", "service_account_expires_at", "references"},
         )
-        provision, cleanup = Bootstrap.parse(value["provision"]), Bootstrap.parse(value["cleanup"])
         token = production["service_account_token"]
         if (
             not isinstance(token, str)
@@ -106,7 +153,7 @@ class Configuration:
             "format": "lowerduckpond-m3-11-cleanup-config-v1",
             "targets": asdict(self.targets),
             "journal_vault": self.journal_vault,
-            "cleanup": self.cleanup.values,
+            "cleanup": self.cleanup.document(),
         }
 
 
@@ -125,7 +172,7 @@ def cleanup_configuration(path: Path) -> tuple[Targets, str, Bootstrap]:
 
 @dataclass(frozen=True)
 class Connections:
-    journal: OpJournal
+    journal: Journal
     providers: dict[ProviderKind, Provider]
     authority: Authority
 
@@ -214,10 +261,16 @@ def _cloudflare_authority(
     return selected, expiry
 
 
-def connect(
-    bootstrap: Bootstrap, *, targets: Targets, vault: str, now: datetime, provisioning: bool = False
+def connect(  # noqa: PLR0913 - authority, target and persistence boundaries are explicit
+    bootstrap: Bootstrap,
+    *,
+    targets: Targets,
+    vault: str,
+    now: datetime,
+    provisioning: bool = False,
+    journal_directory: Path | None = None,
 ) -> Connections:
-    op = bootstrap.op()
+    op = bootstrap.reader()
     values = {
         key: op.read(bootstrap.values[key])
         for key in (
@@ -270,7 +323,7 @@ def connect(
             account_expiry,
             user_expiry,
             instant(metadata["expires_at"]),
-            instant(bootstrap.values["service_account_expires_at"]),
+            bootstrap.expires_at(),
         ),
         {
             "spaces": spaces.authority_sha256,
@@ -282,4 +335,4 @@ def connect(
         dict[ProviderKind, Provider],
         {"spaces": spaces, "cloudflare-account": account, "cloudflare-user": user},
     )
-    return Connections(OpJournal(op, vault), providers, authority)
+    return Connections(bootstrap.journal(vault, directory=journal_directory), providers, authority)

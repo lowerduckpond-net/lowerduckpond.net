@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import uuid
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import override
 
@@ -19,11 +20,13 @@ from infrastructure.test_m3_11_connect_ledger import (
     note,
 )
 from infrastructure.test_m3_11_unattended_lifecycle import Case as LifecycleCase
+from scripts.m3_11_unattended.cleanup import require_independent_ready, status_document
 from scripts.m3_11_unattended.connect_api import Response
 from scripts.m3_11_unattended.connect_checkpoint import Checkpoint
 from scripts.m3_11_unattended.connect_journal import ConnectJournal, IndependentJournal, Witness
+from scripts.m3_11_unattended.github_checkpoint import MINIMUM_START_CAPACITY
 from scripts.m3_11_unattended.journal import event
-from scripts.m3_11_unattended.model import LifecycleError, digest
+from scripts.m3_11_unattended.model import LifecycleError, digest, stamp
 
 
 class RemoteReplica(Replica):
@@ -228,3 +231,81 @@ def test_cancelled_wait_does_not_accept_an_unconfirmed_record(tmp_path: Path) ->
     case.controller.check_cancelled = cancelled
     with pytest.raises(LifecycleError, match="cancelled"):
         case.controller.persist(event("run", str(uuid.uuid7()), {"binding": "double"}))
+
+
+@pytest.mark.parametrize(
+    "fault", ["none", "local-author", "capacity", "stale", "helper", "cache", "epoch"]
+)
+def test_readiness_needs_independent_authorship_freshness_and_reserved_capacity(
+    tmp_path: Path,
+    fault: str,
+) -> None:
+    case = Case(tmp_path)
+    now = datetime.now(UTC)
+    case.github.capacity = lambda: MINIMUM_START_CAPACITY + 1
+    connect = case.github.readiness()
+    value: dict[str, object] = {
+        "actor": "github",
+        "helper_revision": case.witness.helper,
+        "observed_at": stamp(now),
+        "status": "ready",
+        "overdue": 0,
+        "results": [],
+        "connect": connect,
+    }
+    if fault == "capacity":
+        connect["remaining_capacity"] = MINIMUM_START_CAPACITY - 1
+    elif fault == "stale":
+        value["observed_at"] = stamp(now - timedelta(hours=2))
+    elif fault == "helper":
+        value["helper_revision"] = "b" * 40
+    elif fault == "cache":
+        connect["cache_complete"] = False
+    elif fault == "epoch":
+        connect["epoch"] = str(uuid.uuid7())
+    heartbeat = event("heartbeat", str(uuid.uuid7()), value)
+    if fault == "local-author":
+        case.controller.append(heartbeat)
+        case.witness_once()
+        assert case.controller.confirmed(heartbeat)  # An ACK alone is insufficient.
+    else:
+        case.github.persist(heartbeat)
+        case.witness_once()
+    if fault == "none":
+        require_independent_ready(case.controller, helper=case.witness.helper, now=now)
+        assert (
+            status_document(case.controller, helper=case.witness.helper, now=now)["new_start"]
+            == "eligible-for-preflight"
+        )
+    else:
+        with pytest.raises(LifecycleError):
+            require_independent_ready(case.controller, helper=case.witness.helper, now=now)
+        assert (
+            status_document(case.controller, helper=case.witness.helper, now=now)["new_start"]
+            == "blocked"
+        )
+
+
+def test_sanitized_status_cannot_treat_a_staged_denial_as_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = Case(tmp_path)
+    runtime = LifecycleCase(tmp_path / "unused-local-double")
+    runtime.lifecycle.journal = case.controller
+    case.controller.wait_seconds = 1
+    monkeypatch.setattr(
+        "scripts.m3_11_unattended.connect_journal.time.sleep", lambda _seconds: case.witness_once()
+    )
+    intent, credential = runtime.create()
+    case.controller.wait_seconds = 0
+    runtime.lifecycle.request_revocation(runtime.run_id)
+    assert runtime.lifecycle.reconcile(intent, credential).status == "unresolved"
+    case.witness_once()  # Persist the authentication marker.
+    assert runtime.lifecycle.reconcile(intent, credential).status == "unresolved"
+    assert not runtime.provider.items
+    assert any(record["kind"] == "resolved" for record in case.controller.records())
+    now = datetime.now(UTC)
+    assert status_document(case.controller, helper=case.witness.helper, now=now)["outstanding"] == 1
+    case.witness_once()
+    assert status_document(case.controller, helper=case.witness.helper, now=now)["outstanding"] == 0

@@ -21,6 +21,7 @@ from scripts.m3_11_qualification_evidence import canonical_bytes, fields
 from scripts.m3_11_unattended import cleanup, inputs, quota
 from scripts.m3_11_unattended.cloudflare import Cloudflare
 from scripts.m3_11_unattended.config import Configuration, connect
+from scripts.m3_11_unattended.connect_journal import ConnectJournal
 from scripts.m3_11_unattended.docker import SOCKET, Docker
 from scripts.m3_11_unattended.journal import OpJournal, event
 from scripts.m3_11_unattended.lifecycle import Lifecycle, intents
@@ -229,7 +230,7 @@ class Worker:
             )
         self.check_cancelled()
 
-    def _provision(self) -> tuple[dict[str, Credential], dict[str, object]]:  # noqa: PLR0912 - independent admission and credential roles
+    def _provision(self) -> tuple[dict[str, Credential], dict[str, object]]:  # noqa: PLR0912, PLR0915 - independent admission and credential roles
         for sibling in self.directory.parent.iterdir():
             if sibling != self.directory and (sibling / "status.json").exists():
                 progress = RunState(sibling).status()
@@ -243,6 +244,7 @@ class Worker:
             targets=self.config.targets,
             vault=self.config.journal_vault,
             now=now,
+            journal_directory=self.directory.parent.parent / "connect-journal" / "cleanup",
         )
         if isinstance(separate.journal, OpJournal):
             separate.journal.use_cache(self.cleanup_cache)
@@ -256,9 +258,12 @@ class Worker:
             vault=self.config.journal_vault,
             now=now,
             provisioning=True,
+            journal_directory=self.directory.parent.parent / "connect-journal" / "provision",
         )
         if self.request["mode"] == "qualification":
             self._require_rehearsal(creator.journal.records())
+        if isinstance(creator.journal, ConnectJournal):
+            creator.journal.check_cancelled = self.check_cancelled
         for kind in separate.providers:
             # Establish the same provider inventory/owner through independent
             # authorities before allocating any child credential.
@@ -266,7 +271,13 @@ class Worker:
             if not before or before != {item["id"] for item in creator.providers[kind].inventory()}:
                 raise LifecycleError("provisioning and cleanup provider identities differ")
         records = creator.journal.records()
-        quota.require_capacity(creator.journal.op, separate.journal.op, records=len(records))
+        if isinstance(creator.journal, OpJournal) and isinstance(separate.journal, OpJournal):
+            quota.require_capacity(creator.journal.op, separate.journal.op, records=len(records))
+        elif (
+            self.config.provision.connect_settings is None
+            or self.config.cleanup.connect_settings is None
+        ):
+            raise LifecycleError("controller credential backends are ambiguous")
         for record in records:
             payload = record["payload"]
             if (
@@ -402,10 +413,10 @@ class Worker:
                 },
             },
         }
-        # The bootstrap checker consumes a service account, not its expiry field.
-        if instant(request.pop("service_account_expires_at")) <= datetime.now(UTC):
-            raise LifecycleError("production reader authority has expired")
-        request["service_account"] = request.pop("service_account_token")
+        if "connect" not in request:
+            if instant(request.pop("service_account_expires_at")) <= datetime.now(UTC):
+                raise LifecycleError("production reader authority has expired")
+            request["service_account"] = request.pop("service_account_token")
         self._command(
             [sys.executable, "-m", "scripts.m3_11_unattended.production", "bootstrap"],
             log="production-check.log",
@@ -502,7 +513,10 @@ class Worker:
         self.state.update("revoking", cleanup="pending")
         try:
             lifecycle = cleanup.connect_cleanup(
-                self.config.cleanup, self.config.targets, self.config.journal_vault
+                self.config.cleanup,
+                self.config.targets,
+                self.config.journal_vault,
+                journal_directory=self.directory.parent.parent / "connect-journal" / "cleanup",
             )
             if self.cleanup_journal is None:
                 if isinstance(lifecycle.journal, OpJournal):

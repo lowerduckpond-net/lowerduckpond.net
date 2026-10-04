@@ -455,7 +455,7 @@ def test_actual_independent_cleanup_entrypoint_recovers_after_failure_without_ho
     monkeypatch.setattr(
         cleanup, "cleanup_configuration", lambda _path: (TARGETS, "a" * 26, Bootstrap({}))
     )
-    monkeypatch.setattr(cleanup, "connect_cleanup", lambda *_args: case.lifecycle)
+    monkeypatch.setattr(cleanup, "connect_cleanup", lambda *_args, **_kwargs: case.lifecycle)
     monkeypatch.setattr(
         sys, "argv", ["cleanup", "--actor", "github", "--config", "/unused/private.json"]
     )

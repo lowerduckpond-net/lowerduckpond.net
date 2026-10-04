@@ -65,7 +65,7 @@ def subject(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[worker.Wor
         "Docker",
         lambda: SimpleNamespace(endpoint="unix://" + SOCKET, info=lambda: DAEMON),
     )
-    monkeypatch.setattr(cleanup, "connect_cleanup", lambda *_args: case.lifecycle)
+    monkeypatch.setattr(cleanup, "connect_cleanup", lambda *_args, **_kwargs: case.lifecycle)
     return selected, case
 
 

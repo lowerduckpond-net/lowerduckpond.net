@@ -23,6 +23,9 @@ from scripts.m3_11_unattended.config import (
     _cloudflare_authority,
     cleanup_configuration,
 )
+from scripts.m3_11_unattended.connect_checkpoint import Stored
+from scripts.m3_11_unattended.connect_journal import ConnectJournal, IndependentJournal
+from scripts.m3_11_unattended.github_checkpoint import MINIMUM_START_CAPACITY
 from scripts.m3_11_unattended.http import Api
 from scripts.m3_11_unattended.journal import Journal, OpJournal, event
 from scripts.m3_11_unattended.lifecycle import Lifecycle, Provider, intents, pending_authentication
@@ -44,8 +47,10 @@ REMOTE_SECONDS = 3600
 RETRY_SECONDS = 300
 
 
-def connect_cleanup(bootstrap: Bootstrap, targets: Targets, vault: str) -> Lifecycle:
-    op = bootstrap.op()
+def connect_cleanup(
+    bootstrap: Bootstrap, targets: Targets, vault: str, *, journal_directory: Path | None = None
+) -> Lifecycle:
+    op = bootstrap.reader()
     providers: dict[ProviderKind, Provider] = {}
     for kind, reference in (
         ("spaces", "digitalocean"),
@@ -84,7 +89,7 @@ def connect_cleanup(bootstrap: Bootstrap, targets: Targets, vault: str) -> Lifec
                 providers[selected] = client
         except RuntimeError, OSError, ValueError, TypeError, KeyError:
             providers[selected] = UnavailableProvider(selected)
-    return Lifecycle(OpJournal(op, vault), providers)
+    return Lifecycle(bootstrap.journal(vault, directory=journal_directory), providers)
 
 
 def sweep(
@@ -114,6 +119,8 @@ def sweep(
         if healthy and all(value.status in {"verified", "not-due"} for value in observed)
         else "unresolved"
     )
+    if isinstance(lifecycle.journal, IndependentJournal) and not lifecycle.journal.cache_complete:
+        status = "unresolved"
     receipt: dict[str, object] = {
         "actor": actor,
         "helper_revision": revision(helper),
@@ -122,6 +129,10 @@ def sweep(
         "overdue": overdue,
         "results": [dataclasses.asdict(value) for value in observed],
     }
+    if isinstance(lifecycle.journal, IndependentJournal):
+        receipt["connect"] = lifecycle.journal.readiness()
+        if not lifecycle.journal.cache_complete:
+            receipt["status"] = "unresolved"
     prior = [
         record["payload"]
         for record in lifecycle.journal.records()
@@ -148,7 +159,7 @@ def sweep(
     return receipt
 
 
-def require_independent_ready(journal: OpJournal, *, helper: str, now: datetime) -> None:
+def require_independent_ready(journal: Journal, *, helper: str, now: datetime) -> None:
     records = [
         record
         for record in journal.records()
@@ -159,9 +170,12 @@ def require_independent_ready(journal: OpJournal, *, helper: str, now: datetime)
     if not records:
         raise LifecycleError("independent GitHub cleanup has not demonstrated readiness")
     newest = max(records, key=lambda record: instant(record["recorded_at"]))
+    selected_fields = {"actor", "helper_revision", "observed_at", "status", "overdue", "results"}
+    if isinstance(journal, ConnectJournal):
+        selected_fields.add("connect")
     value = fields(
         newest["payload"],
-        {"actor", "helper_revision", "observed_at", "status", "overdue", "results"},
+        selected_fields,
     )
     if (
         value["helper_revision"] != helper
@@ -172,6 +186,29 @@ def require_independent_ready(journal: OpJournal, *, helper: str, now: datetime)
         <= now + timedelta(minutes=5)
     ):
         raise LifecycleError("independent cleanup is stale, overdue or bound to another helper")
+    if isinstance(journal, ConnectJournal):
+        proof = fields(
+            value["connect"], {"epoch", "remaining_capacity", "cache_complete", "checkpoint"}
+        )
+        pointer = fields(proof["checkpoint"], {"identity", "sha256"})
+        if type(pointer["identity"]) is not int or not isinstance(pointer["sha256"], str):
+            raise LifecycleError("independent cleanup checkpoint is invalid")
+        checkpoint = Stored(pointer["identity"], pointer["sha256"])
+        if (
+            journal.witness.helper != helper
+            or proof["epoch"] != journal.witness.epoch
+            or proof["cache_complete"] is not True
+            or type(proof["remaining_capacity"]) is not int
+            or proof["remaining_capacity"] < MINIMUM_START_CAPACITY
+            or checkpoint.identity < journal.witness.genesis.identity
+            or (
+                checkpoint.identity == journal.witness.genesis.identity
+                and checkpoint != journal.witness.genesis
+            )
+            or not journal.confirmed(newest)
+            or not journal.ledger.authored(newest, journal.witness.author)
+        ):
+            raise LifecycleError("independent Connect readiness or cleanup capacity is unverified")
 
 
 def status_document(journal: Journal, *, helper: str, now: datetime) -> dict[str, object]:
@@ -186,6 +223,11 @@ def status_document(journal: Journal, *, helper: str, now: datetime) -> dict[str
             if record["kind"] in {"resolved", "cleanup"}
             and isinstance(record["payload"], dict)
             and record["payload"].get("intent_sha256") == intent.sha256
+            and (
+                record["kind"] != "resolved"
+                or not isinstance(journal, ConnectJournal)
+                or journal.confirmed(record)
+            )
         ]
         unresolved = not any(record["kind"] == "resolved" for record in results) or bool(
             pending_authentication(results)
@@ -202,12 +244,27 @@ def status_document(journal: Journal, *, helper: str, now: datetime) -> dict[str
     independent: dict[str, object] = {"status": "missing", "observed_at": None}
     if heartbeats:
         latest = max(heartbeats, key=lambda record: instant(record["recorded_at"]))
+        selected_fields = {
+            "actor",
+            "helper_revision",
+            "observed_at",
+            "status",
+            "overdue",
+            "results",
+        }
+        if isinstance(journal, ConnectJournal):
+            selected_fields.add("connect")
         value = fields(
             latest["payload"],
-            {"actor", "helper_revision", "observed_at", "status", "overdue", "results"},
+            selected_fields,
         )
         observed = instant(value["observed_at"])
         fresh = now - HEARTBEAT_MAX_AGE <= observed <= now + timedelta(minutes=5)
+        if isinstance(journal, ConnectJournal):
+            try:
+                require_independent_ready(journal, helper=helper, now=now)
+            except LifecycleError, ValueError:
+                fresh = False
         independent = {
             "observed_at": stamp(observed),
             "status": "ready"
@@ -253,12 +310,12 @@ def parse_arguments() -> argparse.Namespace:
     return args
 
 
-def main() -> int:  # noqa: PLR0915 - remote cadence plus locked local reconciliation
+def main() -> int:  # noqa: PLR0912, PLR0915 - remote cadence and explicit backend boundaries
     args = parse_arguments()
     repository = Path(__file__).resolve().parents[2]
     helper = revision(git(repository, "rev-parse", "HEAD").decode().strip())
     status = 1
-    journal: OpJournal | None = None
+    journal: Journal | None = None
     next_remote = next_retry = 0.0
     retry_seconds = RETRY_SECONDS
     last_due: set[Path] = set()
@@ -290,11 +347,20 @@ def main() -> int:  # noqa: PLR0915 - remote cadence plus locked local reconcili
             last_due = due
             with cleanup_lock(args.runs) if args.runs is not None else nullcontext():
                 targets, vault, bootstrap = cleanup_configuration(args.config)
-                lifecycle = connect_cleanup(bootstrap, targets, vault)
+                if bootstrap.connect_settings is not None and args.actor == "github":
+                    raise LifecycleError(
+                        "GitHub Connect cleanup requires its independent checkpoint action"
+                    )
+                journal_directory = (
+                    (args.runs.parent if args.runs is not None else args.config.parent)
+                    / "connect-journal"
+                    / "cleanup"
+                )
+                lifecycle = connect_cleanup(
+                    bootstrap, targets, vault, journal_directory=journal_directory
+                )
                 if journal is None:
-                    if not isinstance(lifecycle.journal, OpJournal):
-                        raise LifecycleError("independent cleanup requires the external journal")
-                    if args.journal_cache is not None:
+                    if isinstance(lifecycle.journal, OpJournal) and args.journal_cache is not None:
                         lifecycle.journal.use_cache(
                             args.journal_cache, output=args.journal_cache_output
                         )
@@ -302,7 +368,8 @@ def main() -> int:  # noqa: PLR0915 - remote cadence plus locked local reconcili
                 else:
                     # Refresh after acquiring the shared lock: a preceding
                     # controller may have resolved obligations and removed keys.
-                    journal.refresh()
+                    if isinstance(journal, OpJournal):
+                        journal.refresh()
                     lifecycle.journal = journal
                 available = None
                 if args.runs is not None:

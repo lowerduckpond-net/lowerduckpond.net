@@ -234,7 +234,7 @@ def test_full_day_of_cleanup_stays_within_quota_and_preserves_unresolved_credent
         def now(_zone: object) -> datetime:
             return datetime(2026, 10, 5, tzinfo=UTC) + timedelta(seconds=clock[0])
 
-    def connect(*_args: object) -> Lifecycle:
+    def connect(*_args: object, **_kwargs: object) -> Lifecycle:
         connections.append(clock[0])
         cli.requests += 4  # the four immutable bootstrap references
         return Lifecycle(OpJournal(cast(OnePassword, cli), "a" * 26), {"spaces": case.provider})
@@ -338,7 +338,7 @@ def test_local_death_detection_does_not_wait_for_hourly_remote_poll(
     (tmp_path / "runs").mkdir(mode=0o700)
     cli = CountedCli()
 
-    def connect(*_args: object) -> Lifecycle:
+    def connect(*_args: object, **_kwargs: object) -> Lifecycle:
         calls.append(clock[0])
         return Lifecycle(OpJournal(cast(OnePassword, cli), "a" * 26), {"spaces": case.provider})
 
@@ -666,7 +666,7 @@ def test_dead_controller_leaves_retry_set_only_after_verified_revocation(
             assert name == docker.controller_name(case.run_id)
             return {"State": {"Running": clock[0] < death_at}}
 
-    def connect(*_args: object) -> Lifecycle:
+    def connect(*_args: object, **_kwargs: object) -> Lifecycle:
         calls.append(clock[0])
         return Lifecycle(
             OpJournal(cast(OnePassword, cli), "a" * 26),
@@ -804,7 +804,7 @@ def test_local_cleanup_serializes_refresh_probe_and_secret_disposal(  # noqa: PL
             assert release.wait(10)
         return inventory()
 
-    def connect(*_args: object) -> Lifecycle:
+    def connect(*_args: object, **_kwargs: object) -> Lifecycle:
         if current_thread().name == "follower":
             follower_connected.set()
         return Lifecycle(

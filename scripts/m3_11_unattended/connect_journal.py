@@ -135,11 +135,19 @@ class ConnectJournal(_Canonical):
 class IndependentJournal(_Canonical):
     """Protected GitHub adapter: recoverable checkpoints precede any acknowledgement."""
 
-    def __init__(self, ledger: ConnectLedger, checkpoint: Checkpoint, witness: Witness) -> None:
+    def __init__(
+        self,
+        ledger: ConnectLedger,
+        checkpoint: Checkpoint,
+        witness: Witness,
+        *,
+        capacity: Callable[[], int] = lambda: 0,
+    ) -> None:
         super().__init__(ledger)
         if checkpoint.epoch != witness.epoch or checkpoint.genesis != witness.genesis:
             raise LifecycleError("independent Connect checkpoint differs from its pinned witness")
         self.checkpoint, self.witness = checkpoint, witness
+        self.capacity = capacity
         checkpoint.restore()
         self.cache_complete = False
 
@@ -177,6 +185,19 @@ class IndependentJournal(_Canonical):
 
     def append(self, record: dict[str, object]) -> None:
         self.persist(record)
+
+    def readiness(self) -> dict[str, object]:
+        stored = self._retain(self.records())
+        capacity = self.capacity()
+        if type(capacity) is not int or capacity < 0:
+            raise LifecycleError("independent checkpoint write capacity is unavailable")
+        return {
+            "epoch": self.witness.epoch,
+            "checkpoint": {"identity": stored.identity, "sha256": stored.sha256},
+            "cache_complete": self.cache_complete,
+            # Publishing this heartbeat consumes one additional registry entry.
+            "remaining_capacity": max(0, capacity - 1),
+        }
 
     def acknowledge(self, *, run_id: int, attempt: int) -> int:
         if type(run_id) is not int or run_id < 1 or type(attempt) is not int or attempt < 1:

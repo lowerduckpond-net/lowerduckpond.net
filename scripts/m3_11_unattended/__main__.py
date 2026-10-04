@@ -26,7 +26,6 @@ from scripts.m3_11_unattended.docker import (
     prepare,
     source_volume,
 )
-from scripts.m3_11_unattended.journal import OpJournal
 from scripts.m3_11_unattended.model import LifecycleError, Targets, digest, identity
 from scripts.production_qualification_inputs import current_candidate, fingerprint, git, revision
 
@@ -196,11 +195,14 @@ def main() -> int:
             )
         elif args.action == "cleanup-status":
             configured = Configuration.load(args.config)
-            journal = configured.cleanup.op()
+            journal = configured.cleanup.journal(
+                configured.journal_vault,
+                directory=args.config.parent / "connect-journal" / "cleanup",
+            )
             print(
                 json.dumps(
                     cleanup.status_document(
-                        OpJournal(journal, configured.journal_vault),
+                        journal,
                         helper=revision(git(ROOT, "rev-parse", "HEAD").decode().strip()),
                         now=datetime.now(UTC),
                     ),
