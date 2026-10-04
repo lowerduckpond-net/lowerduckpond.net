@@ -134,6 +134,24 @@ def test_successful_setup_resumes_without_issuing_more_credentials(tmp_path: Pat
     assert all(path.read_bytes() == original for path, original in before.items())
 
 
+def test_native_uppercase_server_identity_is_pinned_and_reused_exactly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Native op 2.33.0 server metadata reported by the operator: id is an
+    # uppercase 26-character string; metadata keys differ from vault records.
+    monkeypatch.setitem(SERVERS, "shared", "S" * 26)
+    monkeypatch.setitem(SERVERS, "cleanup", "I" * 26)
+    operator = Operator()
+    run(operator, tmp_path)
+    run(operator, tmp_path)
+    assert read_private(tmp_path / "shared.server-identity.json")["id"] == "S" * 26
+    assert read_private(tmp_path / "provision.token.json")["server"] == "S" * 26
+    assert read_private(tmp_path / "github-cleanup.token.json")["server"] == "I" * 26
+    assert operator.tokens == 4
+    assert operator.servers == 1
+    assert ("connect", "server", "get", "S" * 26, "--format=json") in operator.calls
+
+
 def test_lost_response_reconciles_exact_intent_without_recreating(tmp_path: Path) -> None:
     operator = Operator()
     operator.fail_role = "cleanup"
@@ -236,6 +254,85 @@ def test_op_diagnostics_do_not_expose_failed_cli_response(
         setup.Operator().command("connect", "token", "list", "--server", "test")
     assert CANARY not in str(caught.value)
     assert CANARY not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("stderr", "hint"),
+    [
+        ("You are not currently signed in", "sign-in required"),
+        ("Rate limit exceeded", "request allowance unavailable"),
+        ("unknown flag: --example", "unsupported CLI operation"),
+        ("Could not be found", "requested object not found"),
+        ("unexpected native error", "native command rejected"),
+    ],
+)
+def test_failed_commands_identify_operation_without_exporting_native_text(
+    monkeypatch: pytest.MonkeyPatch, stderr: str, hint: str
+) -> None:
+    monkeypatch.setattr(shutil, "which", lambda *_a, **_k: "/example/op")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_a, **_k: subprocess.CompletedProcess(
+            args=[], returncode=17, stdout=CANARY.encode(), stderr=(stderr + CANARY).encode()
+        ),
+    )
+    with pytest.raises(LifecycleError) as caught:
+        setup.Operator().command("connect", "server", "get", CANARY, "--format=json")
+    message = str(caught.value)
+    assert "Connect server inspection" in message
+    assert "exit 17" in message
+    assert hint in message
+    assert CANARY not in message
+    assert setup.operation((CANARY,)) == "1Password operation"
+
+
+def test_read_only_diagnosis_never_retries_an_uncertain_creation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    saved = tmp_path / "provision.intent.json"
+    write_private(saved, {"private-canary": CANARY})
+    before = saved.read_bytes()
+    monkeypatch.setattr(setup, "manifest", lambda *_args: manifest())
+    operator = Operator()
+    setup.diagnose(
+        operator, reference="test", expected_sha256="test", server="shared", output=tmp_path
+    )
+    output = capsys.readouterr().out
+    assert "Saved provision.intent.json: present" in output
+    assert "Saved provision.token.json: absent" in output
+    assert "Operator sign-in: OK" in output
+    assert CANARY not in output
+    assert saved.read_bytes() == before
+    assert operator.calls == [
+        ("whoami", "--format=json"),
+        ("connect", "server", "get", "shared", "--format=json"),
+    ]
+
+
+def test_diagnosis_reports_retained_files_even_when_login_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(shutil, "which", lambda *_a, **_k: "/example/op")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_a, **_k: subprocess.CompletedProcess(
+            args=[], returncode=1, stdout=CANARY.encode(), stderr=b"not currently signed in"
+        ),
+    )
+    with pytest.raises(LifecycleError, match=r"operator sign-in check.*sign-in required"):
+        setup.diagnose(
+            setup.Operator(),
+            reference="test",
+            expected_sha256="test",
+            server="shared",
+            output=tmp_path,
+        )
+    output = capsys.readouterr().out
+    assert "Saved provision.intent.json: absent" in output
+    assert "Read-only diagnosis complete" not in output
+    assert CANARY not in output
 
 
 def test_foreign_vault_and_untrusted_output_fail_before_issuing(tmp_path: Path) -> None:

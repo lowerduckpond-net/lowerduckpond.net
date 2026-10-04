@@ -33,6 +33,39 @@ MAXIMUM = 1024 * 1024
 REFERENCE = re.compile(r"op://([a-z0-9]{26})/[a-z0-9]{26}/[A-Za-z0-9_/-]+")
 
 
+def operation(arguments: tuple[str, ...]) -> str:
+    """Expose only a fixed operation label, never an argument or CLI response."""
+    names = {
+        ("whoami",): "operator sign-in check",
+        ("read",): "setup manifest read",
+        ("connect", "server", "get"): "Connect server inspection",
+        ("connect", "server", "list"): "Connect server inventory",
+        ("connect", "server", "create"): "independent Connect server creation",
+        ("connect", "vault", "grant"): "Connect vault grant",
+        ("connect", "token", "create"): "Connect client creation",
+        ("connect", "token", "list"): "Connect client inventory",
+    }
+    return next(
+        (name for prefix, name in names.items() if arguments[: len(prefix)] == prefix),
+        "1Password operation",
+    )
+
+
+def failure_reason(stderr: bytes) -> str:
+    """Allowlisted hints only; unrecognized native diagnostics remain private."""
+    message = stderr[:MAXIMUM].lower()
+    for markers, reason in (
+        ((b"not signed in", b"not currently signed in", b"session expired"), "sign-in required"),
+        ((b"more than one account", b"multiple accounts"), "account selection required"),
+        ((b"rate limit", b"too many requests"), "request allowance unavailable"),
+        ((b"unknown flag", b"unknown command"), "unsupported CLI operation"),
+        ((b"not found", b"couldn't be found", b"could not be found"), "requested object not found"),
+    ):
+        if any(marker in message for marker in markers):
+            return reason
+    return "native command rejected"
+
+
 def directory(path: Path) -> None:
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
     stat = path.lstat()
@@ -57,6 +90,7 @@ class Operator:
             raise LifecycleError("the operator's 1Password CLI is unavailable")
 
     def command(self, *arguments: str, cwd: Path | None = None) -> bytes:
+        action = operation(arguments)
         try:
             response = subprocess.run(  # noqa: S603 - fixed op calls; no secret arguments
                 [cast(str, self.executable), *arguments],
@@ -66,13 +100,57 @@ class Operator:
                 check=False,
                 timeout=90,
             )
+        except subprocess.TimeoutExpired:
+            raise LifecycleError(
+                f"Connect setup failed during {action}: timed out; retain private setup files"
+            ) from None
         except OSError, subprocess.SubprocessError:
             raise LifecycleError(
-                "Connect setup operation failed; retain its creation intent"
+                f"Connect setup failed during {action}: process unavailable; "
+                "retain private setup files"
             ) from None
-        if response.returncode or len(response.stdout) > MAXIMUM:
-            raise LifecycleError("Connect setup operation failed; retain its creation intent")
+        if response.returncode:
+            raise LifecycleError(
+                f"Connect setup failed during {action}: exit {response.returncode}, "
+                f"{failure_reason(response.stderr)}; retain private setup files"
+            )
+        if len(response.stdout) > MAXIMUM:
+            raise LifecycleError(
+                f"Connect setup failed during {action}: response too large; "
+                "retain private setup files"
+            )
         return response.stdout
+
+
+def diagnose(
+    operator: Operator, *, reference: str, expected_sha256: str, server: str, output: Path
+) -> None:
+    """Read-only checks; even an uncertain creation must never be retried here."""
+    for name in (
+        "setup.json",
+        "shared.server-identity.json",
+        "provision.intent.json",
+        "provision.token.json",
+        "cleanup.intent.json",
+        "cleanup.token.json",
+        "production.intent.json",
+        "production.token.json",
+        "independent-cleanup/creation-intent.json",
+        "independent-cleanup/1password-credentials.json",
+        "github-cleanup.intent.json",
+        "github-cleanup.token.json",
+        "controller-connect.json",
+        "github-connect.json",
+    ):
+        # Fixed relative filenames, no contents or provider-supplied values.
+        print(f"Saved {name}: {'present' if (output / name).exists() else 'absent'}")
+    operator.command("whoami", "--format=json")
+    print("Operator sign-in: OK")
+    manifest(operator, reference, expected_sha256)
+    print("Approved setup manifest: OK")
+    operator.command("connect", "server", "get", server, "--format=json")
+    print("Shared Connect server lookup: OK")
+    print("Read-only diagnosis complete; no credentials created or retried.")
 
 
 def manifest(operator: Operator, reference: str, expected_sha256: str) -> dict[str, object]:
@@ -187,7 +265,10 @@ def _server_identity(operator: Operator, root: Path, server: str, role: str) -> 
         raise LifecycleError("Connect server identity is unavailable")
     response = json.loads(operator.command("connect", "server", "get", selector, "--format=json"))
     identity = response.get("id") if isinstance(response, dict) else None
-    if not isinstance(identity, str) or re.fullmatch(r"[a-z0-9]{26}", identity) is None:
+    # Connect server IDs from native `op connect server get` may be uppercase,
+    # unlike the lowercase vault/item IDs used by our immutable references.
+    # Preserve the returned identity exactly for every subsequent operation.
+    if not isinstance(identity, str) or re.fullmatch(r"[A-Za-z0-9]{26}", identity) is None:
         raise LifecycleError("Connect server did not return an immutable identity")
     if saved is not None:
         if identity != saved["id"]:
@@ -391,7 +472,9 @@ def main() -> int:
     parser.add_argument("--shared-url", required=True)
     parser.add_argument("--shared-server", required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--apply", action="store_true")
+    actions = parser.add_mutually_exclusive_group()
+    actions.add_argument("--apply", action="store_true")
+    actions.add_argument("--diagnose", action="store_true")
     parser.add_argument("--unraid")
     parser.add_argument("--workspace")
     parser.add_argument("--workspace-id")
@@ -400,6 +483,15 @@ def main() -> int:
     try:
         current_candidate(Path(__file__).resolve().parents[2], arguments.revision)
         operator = Operator()
+        if arguments.diagnose:
+            diagnose(
+                operator,
+                reference=arguments.manifest_reference,
+                expected_sha256=arguments.manifest_sha256,
+                server=arguments.shared_server,
+                output=arguments.output,
+            )
+            return 0
         value = manifest(operator, arguments.manifest_reference, arguments.manifest_sha256)
         vaults = role_vaults(value)
         endpoint(arguments.shared_url)

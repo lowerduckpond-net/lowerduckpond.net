@@ -129,6 +129,7 @@ Provider contracts used by setup are documented by
 
 The operator can stage Connect access using a normal 1Password login on the
 **secure workstation**. This setup step does not use service-account quota.
+Sign in to the operator's normal 1Password account before running the helper.
 The shared Connect server belongs in the existing Unraid `services` Compose
 project; workspaces receive scoped clients. The server credentials file stays
 on Unraid. Keep its API behind the private HTTPS route and retain its persistent
@@ -169,6 +170,11 @@ arguments or terminal output. The operation retains mode-0600 creation intents,
 returned credentials and provider metadata on the workstation. Repeating it
 reuses completed issuance; a lost token response records inventory and stops
 without creating another token. Keep those private files for reconciliation.
+If a step fails, its message identifies the operation and a sanitized failure
+category. Replace `--apply` with `--diagnose` and omit the delivery arguments for
+read-only checks of sign-in, the approved manifest and shared server lookup.
+Diagnosis lists only the presence of fixed setup files and never retries an
+uncertain credential creation or prints their contents.
 
 **Staging is not activation.** These bundles are deliberately not accepted by
 the qualification runner's service-account configuration. The setup checks
